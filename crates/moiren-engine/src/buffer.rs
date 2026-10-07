@@ -45,17 +45,17 @@ pub struct BufferArena<S: ProcessingSample> {
 pub struct AudioBlock<'a, S: ProcessingSample> {
     /// a view of SlotStorage.data
     data: &'a [S],
-    pub channels: usize,
+    channels: usize,
     channel_stride: usize,
     /// indicates how many frames this block will process
-    pub frames: usize, // this is not related to the capacity field of SlotStorage. Becareful with the difference.
+    frames: usize,
 }
 
 pub struct AudioBlockMut<'a, S: ProcessingSample> {
     data: &'a mut [S],
-    pub channels: usize,
+    channels: usize,
     channel_stride: usize,
-    pub frames: usize,
+    frames: usize,
 }
 
 impl<S: ProcessingSample> SlotStorage<S> {
@@ -81,6 +81,16 @@ impl<S: ProcessingSample> SlotStorage<S> {
 }
 
 impl<S: ProcessingSample> AudioBlock<'_, S> {
+    #[inline]
+    pub const fn channel_count(&self) -> usize {
+        self.channels
+    }
+
+    #[inline]
+    pub const fn frame_count(&self) -> usize {
+        self.frames
+    }
+
     pub fn channel(&self, channel: usize) -> &[S] {
         assert!(channel < self.channels);
         let start = channel * self.channel_stride;
@@ -97,6 +107,16 @@ impl<S: ProcessingSample> AudioBlock<'_, S> {
 }
 
 impl<S: ProcessingSample> AudioBlockMut<'_, S> {
+    #[inline]
+    pub const fn channel_count(&self) -> usize {
+        self.channels
+    }
+
+    #[inline]
+    pub const fn frame_count(&self) -> usize {
+        self.frames
+    }
+
     pub fn channel(&self, channel: usize) -> &[S] {
         assert!(channel < self.channels);
 
@@ -164,6 +184,70 @@ impl<S: ProcessingSample> BufferArena<S> {
             channels: slot.channels,
             channel_stride: slot.channel_stride,
             frames,
+        }
+    }
+
+    pub(crate) fn resolve_separate_pair(
+        &mut self,
+        input_id: BufferSlotId,
+        output_id: BufferSlotId,
+        frames: usize,
+    ) -> (AudioBlock<'_, S>, AudioBlockMut<'_, S>) {
+        let input_idx = input_id.idx();
+        let output_idx = output_id.idx();
+
+        assert!(input_idx < self.slots.len());
+        assert!(output_idx < self.slots.len());
+        assert_ne!(
+            input_idx, output_idx,
+            "separate I/O requires distinct buffer slots"
+        );
+        assert!(frames > 0);
+
+        if input_idx < output_idx {
+            let (before_output, from_output) = self.slots.split_at_mut(output_idx);
+            let input = &before_output[input_idx];
+            let output = &mut from_output[0];
+
+            assert!(frames <= input.capacity);
+            assert!(frames <= output.capacity);
+
+            (
+                AudioBlock {
+                    data: input.data.as_ref(),
+                    channels: input.channels,
+                    channel_stride: input.channel_stride,
+                    frames,
+                },
+                AudioBlockMut {
+                    data: output.data.as_mut(),
+                    channels: output.channels,
+                    channel_stride: output.channel_stride,
+                    frames,
+                },
+            )
+        } else {
+            let (before_input, from_input) = self.slots.split_at_mut(input_idx);
+            let output = &mut before_input[output_idx];
+            let input = &from_input[0];
+
+            assert!(frames <= input.capacity);
+            assert!(frames <= output.capacity);
+
+            (
+                AudioBlock {
+                    data: input.data.as_ref(),
+                    channels: input.channels,
+                    channel_stride: input.channel_stride,
+                    frames,
+                },
+                AudioBlockMut {
+                    data: output.data.as_mut(),
+                    channels: output.channels,
+                    channel_stride: output.channel_stride,
+                    frames,
+                },
+            )
         }
     }
 }
@@ -312,6 +396,48 @@ mod test {
     fn test_buffer_arena_empty_layouts() {
         let arena = BufferArena::<f32>::new(&[]);
         assert_eq!(arena.slots.len(), 0);
+    }
+
+    #[test]
+    fn test_resolve_separate_pair_supports_both_slot_orders() {
+        let layouts = [
+            BufferSlotLayout {
+                channels: 2,
+                capacity_frames: 8,
+            },
+            BufferSlotLayout {
+                channels: 2,
+                capacity_frames: 8,
+            },
+        ];
+
+        for (input_id, output_id) in [
+            (BufferSlotId::new(0), BufferSlotId::new(1)),
+            (BufferSlotId::new(1), BufferSlotId::new(0)),
+        ] {
+            let mut arena = BufferArena::<f32>::new(&layouts);
+            arena.block_mut(input_id, 4).channel_mut(0).fill(1.0);
+
+            let (input, mut output) =
+                arena.resolve_separate_pair(input_id, output_id, 4);
+            assert_eq!(input.channel(0), &[1.0; 4]);
+            output.channel_mut(0).copy_from_slice(input.channel(0));
+
+            assert_eq!(arena.block(output_id, 4).channel(0), &[1.0; 4]);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "separate I/O requires distinct buffer slots")]
+    fn test_resolve_separate_pair_rejects_aliasing_slots() {
+        let layouts = [BufferSlotLayout {
+            channels: 1,
+            capacity_frames: 8,
+        }];
+        let mut arena = BufferArena::<f32>::new(&layouts);
+        let id = BufferSlotId::new(0);
+
+        let _ = arena.resolve_separate_pair(id, id, 4);
     }
 
     // ---------- AudioBlock ----------
