@@ -1,6 +1,6 @@
 # LogicalGraph 与 Bus / Pan
 
-本轮实现控制侧拓扑模型及 engine 内置 processor。`LogicalGraph` 位于 core，不依赖 engine；音频执行继续使用手工准备的 `ExecutionPlan`，自动 lowering、Send DSP、Pre/Post tap、slot liveness 与在线换图属于后续 Graph Compiler / Control 工作。
+`LogicalGraph` 位于 core，不依赖 engine。首版 [Graph Compiler](05-graph-compiler.md) 已自动准备 ExecutionPlan 和 PostFader Send DSP；Pre/Post channel strip、slot liveness 优化与在线换图仍是后续工作。以下保持拓扑、Bus 与 Pan 的契约。
 
 ## 拓扑契约
 
@@ -32,7 +32,7 @@ let second_edge = connect_to_new_bus_input(&mut graph, output, bus, SendParams::
 
 `disconnect(edge)` 保留 Bus 输入，允许重新连接；`remove_input_port(bus, port)` 只移除未连接的 Bus 输入；`remove_node(node)` 同时移除关联边。删除后的 ID 不再使用，组合编辑失败已消耗的端口 ID 也不回收。此 helper 保证拓扑回滚，尚非完整 Undo/Redo 命令系统。Bus 输入上限为 65536，以适配当前 engine 的 `u16` 端口索引。
 
-一个 Edge 直接保存 `SendParams`，不另外维护 Send ID 或节点 send 列表。默认 gain 为线性 1，pan 为 0，mute 为 false，tap 为 PostFader。gain 必须有限且非负，pan 必须有限并在 `[-1, 1]`；`set_send_params()` 不改变拓扑。该方法编辑逻辑意图，当前不会自动下发 RT 参数；后续 Control/Compiler 负责参数绑定与更新。首版连接仅比较声道数量，详细 speaker layout、SRC 与 conversion policy 尚未实现。
+一个 Edge 直接保存 `SendParams`，不另外维护 Send ID 或节点 send 列表。默认 gain 为线性 1，pan 为 0，mute 为 false，tap 为 PostFader。gain 必须有限且非负，pan 必须有限并在 `[-1, 1]`；`set_send_params()` 不改变拓扑。该方法编辑逻辑意图，不自动下发 RT 参数；Compiler 已返回边参数绑定，Control owner 负责同步实时更新。首版连接仅比较声道数量，详细 speaker layout、SRC 与 conversion policy 尚未实现。
 
 ## Engine processor
 
@@ -60,6 +60,6 @@ cargo clippy --locked -p moiren-core -p moiren-engine -p moiren-app --all-target
 cargo fmt -p moiren-core -p moiren-engine -p moiren-app -- --check
 ```
 
-例子建立两个 Source → Bus → Pan → Sink 的逻辑图，校验稳定排序，然后为此已知拓扑手工绑定 engine processors、三个 slots 和软件输出桥。它检查实际 stereo 样本及跨 block Pan ramp，不打开设备。
+例子建立两个 Source → Bus → Pan → Sink 的逻辑图，校验稳定排序，绑定外部 IO 和 Pan 初始值，然后由 Compiler 生成 processors、slots 和 IO。它检查实际 stereo 样本及跨 block Pan ramp，不打开设备。
 
 测试覆盖固定与动态布局、连接约束、重复源、环路、深链、删除/重连、ID 溢出与编辑回滚；DSP 覆盖空 Bus、重复只读输入、声道一致性、Pan 两种 IO 模式与两种精度、越界参数、有效窗口和跨 block ramp。完整链路通过线程局部 allocator 计数验证 render 无分配与释放，此结论仅适用于被测试的内置路径。

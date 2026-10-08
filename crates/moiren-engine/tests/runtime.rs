@@ -46,6 +46,106 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
+#[test]
+fn compiler_prepared_graph_renders_without_allocations_or_deallocations() {
+    use moiren_core::graph::*;
+    use moiren_engine::compiler::*;
+    fn check<S: moiren_engine::sample::ProcessingSample>() {
+        let mut graph = LogicalGraph::new();
+        let source = graph.create_node(NodeKind::Source, 2).unwrap();
+        let bus = graph.create_node(NodeKind::Bus, 2).unwrap();
+        let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
+        let mut edges = Vec::new();
+        for _ in 0..2 {
+            let input = graph.add_input_port(bus, 2).unwrap();
+            edges.push(
+                graph
+                    .connect(
+                        graph.get_node(source).unwrap().outputs()[0].id(),
+                        input,
+                        SendParams::default(),
+                    )
+                    .unwrap(),
+            );
+        }
+        graph
+            .connect(
+                graph.get_node(bus).unwrap().outputs()[0].id(),
+                graph.get_node(sink).unwrap().inputs()[0].id(),
+                SendParams::default(),
+            )
+            .unwrap();
+        let (writer, mut reader) = audio_bridge::<S>(2, 32, 4096).unwrap();
+        let mut bindings = NodeBindings::new();
+        bindings
+            .bind_source(
+                source,
+                ConstantSource {
+                    channels: 2,
+                    value: 0.25,
+                },
+            )
+            .unwrap();
+        bindings.bind_sink(sink, writer).unwrap();
+        let mut compiled = compile(
+            &graph,
+            bindings,
+            CompileConfig {
+                engine: EngineConfig {
+                    processing_sr: 48000.0,
+                    max_block_frames: 8,
+                    max_events_per_block: 8,
+                },
+                audio_byte_budget: 4096,
+                plan_revision: REV,
+                timeline_epoch: EPOCH,
+                control_capacity: 8,
+                control_horizon_frames: 48000,
+            },
+        )
+        .unwrap();
+        let keys = compiled.bindings.edge(edges[0]).unwrap();
+        assert_eq!(
+            compiled
+                .control
+                .submit(
+                    ParameterRequest {
+                        request_id: 1,
+                        plan_revision: REV,
+                        timeline_epoch: EPOCH,
+                        target: keys.pan,
+                        at: ApplyAt::Frame(1),
+                        value: ParamValue::Float(1.0),
+                        ramp_frames: 4,
+                    },
+                    0
+                )
+                .code,
+            ReplyCode::Accepted
+        );
+        COUNTS.with(|counts| counts.set((0, 0)));
+        TRACK.with(|track| track.set(true));
+        let results = [
+            compiled.engine.render(3),
+            compiled.engine.render(1),
+            compiled.engine.render(4),
+        ];
+        TRACK.with(|track| track.set(false));
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(COUNTS.with(Cell::get), (0, 0));
+        let mut samples = [S::ZERO; 16];
+        assert_eq!(
+            reader
+                .read_interleaved(&mut samples)
+                .unwrap()
+                .transferred_frames,
+            8
+        );
+    }
+    check::<f32>();
+    check::<f64>();
+}
+
 const REV: u64 = 7;
 const EPOCH: u64 = 3;
 const SOURCE: ProcessorId = ProcessorId(10);

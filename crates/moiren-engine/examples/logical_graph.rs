@@ -1,16 +1,9 @@
-//! Editable topology plus a matching manually prepared execution plan.
-//! This demonstrates Bus/Pan, not a general Graph Compiler. No devices open.
+//! Editable topology compiled into a runnable Bus/Pan graph. No devices open.
 use moiren_core::{
     graph::{edit::connect_to_new_bus_input, *},
     protocol::*,
 };
-use moiren_engine::{boundary::*, buffer::*, control::*, processor::*, runtime::*};
-
-const SOURCE_A: ProcessorId = ProcessorId(1);
-const SOURCE_B: ProcessorId = ProcessorId(2);
-const BUS: ProcessorId = ProcessorId(3);
-const PAN: ProcessorId = ProcessorId(4);
-const SINK: ProcessorId = ProcessorId(5);
+use moiren_engine::{boundary::*, compiler::*, processor::Pan, runtime::EngineConfig};
 
 fn input(graph: &LogicalGraph, id: NodeId) -> PortId {
     graph.get_node(id).expect("example node").inputs()[0].id()
@@ -49,107 +42,55 @@ fn main() -> anyhow::Result<()> {
         graph.edges().len()
     );
 
-    // Bind this known topology explicitly. Logical IDs and ProcessorIds are
-    // distinct; a future compiler will produce this mapping and buffer plan.
+    // Bind only external IO and initial values. The compiler assigns processors,
+    // slots, sends and PreparedIo from the graph, including future topology edits.
     let (output_writer, mut output_reader) = audio_bridge::<f64>(2, 16, 4096)?;
-    let resources = RtResources::new(vec![
-        ProcessorInstance::new(
-            SOURCE_A,
-            SourceAdapter(ConstantSource {
-                channels: 2,
-                value: 0.25,
-            }),
-        ),
-        ProcessorInstance::new(
-            SOURCE_B,
-            SourceAdapter(ConstantSource {
-                channels: 2,
-                value: 0.125,
-            }),
-        ),
-        ProcessorInstance::new(BUS, Bus),
-        ProcessorInstance::new(PAN, Pan),
-        ProcessorInstance::new(SINK, SinkAdapter(output_writer)),
-    ])?;
-    let (mut control, parameters) =
-        parameter_channel(vec![Pan::parameter(PAN, -1.0)], 1, 1, 8, 48000)?;
-    let arena = BufferArena::new(
-        &[BufferSlotLayout {
+    let mut io = NodeBindings::new();
+    io.bind_source(
+        a,
+        ConstantSource {
             channels: 2,
-            capacity_frames: 8,
-        }; 3],
-        4096,
-    )?;
-    let a_slot = arena.slot(0).expect("source a slot");
-    let b_slot = arena.slot(1).expect("source b slot");
-    let bus_slot = arena.slot(2).expect("bus slot");
-    let specs = vec![
-        OpSpec {
-            processor: SOURCE_A,
-            io: arena.prepare_io(&[PortAccess::Write {
-                port: 0,
-                slot: a_slot,
-            }])?,
-        },
-        OpSpec {
-            processor: SOURCE_B,
-            io: arena.prepare_io(&[PortAccess::Write {
-                port: 0,
-                slot: b_slot,
-            }])?,
-        },
-        OpSpec {
-            processor: BUS,
-            io: arena.prepare_io(&[
-                PortAccess::Read {
-                    port: 0,
-                    slot: a_slot,
-                },
-                PortAccess::Read {
-                    port: 1,
-                    slot: b_slot,
-                },
-                PortAccess::Write {
-                    port: 0,
-                    slot: bus_slot,
-                },
-            ])?,
-        },
-        OpSpec {
-            processor: PAN,
-            io: arena.prepare_io(&[PortAccess::InPlace {
-                input: 0,
-                output: 0,
-                slot: bus_slot,
-            }])?,
-        },
-        OpSpec {
-            processor: SINK,
-            io: arena.prepare_io(&[PortAccess::Read {
-                port: 0,
-                slot: bus_slot,
-            }])?,
-        },
-    ];
-    let plan = ExecutionPlan::prepare(
-        arena,
-        specs,
-        &resources,
-        &parameters,
-        EngineConfig {
-            processing_sr: 48_000.0,
-            max_block_frames: 8,
-            max_events_per_block: 8,
+            value: 0.25,
         },
     )?;
-    let mut engine = Engine::new(plan, resources, parameters)?;
+    io.bind_source(
+        b,
+        ConstantSource {
+            channels: 2,
+            value: 0.125,
+        },
+    )?;
+    io.bind_pan(pan, -1.0)?;
+    io.bind_sink(sink, output_writer)?;
+    let CompiledGraph {
+        mut engine,
+        mut control,
+        bindings,
+        stats,
+    } = compile(
+        &graph,
+        io,
+        CompileConfig {
+            engine: EngineConfig {
+                processing_sr: 48_000.0,
+                max_block_frames: 8,
+                max_events_per_block: 8,
+            },
+            audio_byte_budget: 4096,
+            plan_revision: 1,
+            timeline_epoch: 1,
+            control_capacity: 8,
+            control_horizon_frames: 48_000,
+        },
+    )?;
+    println!("compiled: {stats:?}");
     let accepted = control.submit(
         ParameterRequest {
             request_id: 1,
             plan_revision: 1,
             timeline_epoch: 1,
             target: ParameterKey {
-                processor: PAN,
+                processor: bindings.node(pan).expect("compiled pan binding"),
                 parameter: Pan::POSITION,
             },
             at: ApplyAt::Frame(2),

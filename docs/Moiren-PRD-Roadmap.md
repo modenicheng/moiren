@@ -857,6 +857,21 @@ Graph 始终是 canonical topology。
 
 出口条件：不依赖真实 Windows 设备，也能稳定运行一张非平凡 Graph，并验证 buffer 生命周期、fan-out、mixing 和 plan swap。
 
+### M0.5 — First Real Audio Path
+
+目标：首次同时验证自动 Graph 编译、实时执行与真实 Windows 音频路径。本阶段先用 headless 入口完成设备选择和音频验收，完整 GUI 属于 M1。
+
+交付顺序：
+
+1. Graph Compiler 参考实现：Source/Sink/Gain/Bus/Pan、PostFader send 参数、自动独立槽位和 IO 绑定；已落地，优化 BufferPlanner 与 channel-strip PreFader 分别后续验收。
+2. Test signal → Engine → 用户显式选择的单 WASAPI Shared 输出，验证实际可听 PCM、可变 demand、无 RT 分配、正常停止和设备释放。
+3. Physical Capture / Process Loopback → Graph → 单输出；先单输入再混音。首次跨独立 capture/render 时同时实现有界 bridge、SRC 和填充量控制，不能等到多输出才处理时钟。
+4. 运行中 Plan publish/swap/retire：控制侧准备，RT 块边界切换，非 RT 回收；master 音频事件停止时，control wake 仍能推进停机。
+
+Takeover 可行性是并行 P0 Gate：验证原始输出抑制、session mute/volume 对捕获的影响、进程树隔离、OBS 共存和恢复。未通过时交付 Capture / Monitor，保留原始播放；不为实验自动修改默认设备或其他应用设置。
+
+出口条件：通过 Compiler 建立真实输入 → Bus/基本处理 → 指定输出，可实时改 Gain/Pan/Mute，跨钟长时运行无持续积压，停止后释放资源。漂亮 GUI、虚拟设备、插件和 Named Pipe 不作为该阶段前置条件；进程隔离仍是后续部署选择。
+
 ### M1 — Windows 可用路由 MVP
 
 目标：形成第一版真正可操作桌面应用。
@@ -964,28 +979,20 @@ MIDI 当前优先级很低，不应影响早期音频引擎与 Windows 路由设
 
 ## 16. 当前最高优先级开发清单
 
-从现有进度看，下一阶段不应继续扩展 UI 概念，而应把 realtime engine 运行契约真正落进代码。
+2026-10-08 校准基线为 `main@adc725d`：平铺 slab、Safe ProcessIo、内置 Gain/Bus/Pan、可变 block Executor、参数 SPSC/ramp/ACK 和软件 IO 已实现。本轮首版 Compiler 在其基础上补齐自动计划准备，详见 [Compiler 契约](designs/05-graph-compiler.md)。W00 的 Process Loopback 与物理 capture/静音 render 实验有实机证据，但尚无正式设备 → Graph → 设备链路。
 
 推荐顺序：
 
-1. 完成 `BufferSlot` / `AudioBlock` 单 Slot API；
-2. 完成 BufferPlanner 与 signal lifetime；
-3. 定义 validated BufferBinding；
-4. 完成多 Slot `ProcessIo` / Resolver；
-5. 实现 fan-out zero-copy；
-6. 实现 Bus accumulation；
-7. 明确 in-place / out-of-place execution instruction；
-8. 定义 Processor 接口；
-9. 完成 ExecutionPlan schedule；
-10. 设计 realtime parameter binding；
-11. 完成 Graph compile / prepare / atomic swap / retire；
-12. 验证 Variable Block；
-13. 接入 WASAPI render；
-14. 接入 WASAPI capture；
-15. 接入 Process Loopback；
-16. 再开始第一版 Graph GUI 与真实设备联调。
+1. Compiler 正确性基线 → WASAPI Shared Render（下一项）。
+2. Physical Capture / Process Loopback 与最小 Clock Bridge/SRC 联合完成稳定闭环。
+3. Plan Swap 与资源生命周期、失联停机协议。
+4. 最小 Slint Graph GUI、绑定、编辑、状态与项目保存。
+5. 多输出、恢复与长期稳定性，形成日常可用 MVP。
+6. Mixer/Rack/EQ 等操作与 DSP，再按需求推进 ASIO、VAD、CLAP/VST3。
 
-这一顺序的目的很简单：先证明“音频块如何安全流过 Graph”，再做完整桌面体验。否则 UI、设备层和底层 buffer 生命周期会同时变化，调试成本会迅速失控。
+Takeover 实验始终并行，不能以捕获成功代替重定向验收。槽位复用优化不阻塞首次真实音频；先保留无复用 Compiler 作为差分参照。单进程控制通道先服务上述闭环，Named Pipe 在明确跨进程需求后实施。
+
+CI 常规矩阵覆盖整个 workspace 的编译、测试、Clippy 与格式检查，包括 Windows crate；Miri 继续覆盖 core/engine/app。CI 不打开音频设备。公开发行前仍需用户确定 LICENSE，并完成相应实机验收；本地通过不等于远程 CI 已执行。
 
 ---
 
@@ -996,14 +1003,14 @@ MIDI 当前优先级很低，不应影响早期音频引擎与 Windows 路由设
 1. **Application Redirect / Takeover**  
    如何在捕获某进程后避免它继续直接输出到原 Endpoint？如何与 OBS 等其它 Process Loopback 捕获者并存？
 
-2. **Variable Block 是否正式采用**  
-   需要用 WASAPI Shared / Exclusive 实测，并考虑未来插件 block 约束。
+2. **Variable Block 的设备接入验证**
+   Engine 已采用可变 block；后续验证 WASAPI demand 拆分、SRC 状态连续及插件固定 block 适配。
 
 3. **ExecutionPlan swap / retire**  
    新 Plan 怎样无锁或最小同步地进入 RT，旧 Plan 何时安全释放？
 
-4. **Realtime 参数通道**  
-   Gain、Pan、Mute、Send 等高频参数如何更新，哪些变化需要 recompile？
+4. **参数控制与计划迁移**
+   单计划内已使用参数 SPSC、ramp 与 ACK，Compiler 已返回节点/边参数键；后续明确换图时参数迁移、业务身份和多客户端调度。
 
 5. **Latency model**  
    Processor、SRC、设备边界、后续插件怎样统一报告并补偿延迟？
@@ -1011,7 +1018,7 @@ MIDI 当前优先级很低，不应影响早期音频引擎与 Windows 路由设
 ### P1：会影响专业能力
 
 6. Processing SR 与 Master Clock 的最终关系；
-7. 多设备 async SRC / drift correction；
+7. 多输出 async SRC / drift correction 的深化（首次独立输入输出的最小实现属于 P0）；
 8. ASIO 与外部 DAW 共存策略；
 9. 多通道 channel layout / mapping 细节；
 10. Scene / Profile / Project 的数据边界。

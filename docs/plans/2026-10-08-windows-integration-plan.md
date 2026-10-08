@@ -444,11 +444,13 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 ## 8. 推荐开始顺序
 
-1. 并行推进 W00 小探针与引擎最小 Gain / Executor 闭环。
-2. 完成 W01–W03，先把身份、owner 和失败 / 回收协议固定下来。
-3. 完成 W05、W06 与 W11 基础，证明 fake source → 单 Shared 输出。
-4. W04、W07、W08 可以并行；与 W09 联合形成应用 / 麦克风 → Graph → 输出的稳定链路。
-5. 完成 W10 的恢复与 ack，随后 W12 / W17 形成桌面 MVP；多输出在 W09 验证后加入。
-6. W13–W16 按用户需求独立推进。插件 GUI / hosting、MIDI、network audio 和 Graph 并行调度属于其他计划，仅在需要共享 Windows 窗口、线程或 Boundary 能力时协调。
+2026-10-08 更新：W00 已取得被动进程捕获、物理输入 / 静音输出及时钟证据；Engine 已有离线 IO 和首版 [Graph Compiler](../designs/05-graph-compiler.md)。下一切片优先验证实际可听输出，完整目录与设备管理器按该切片所需范围推进。
+
+1. 保留无复用 Compiler 正确性基线；W00 Takeover 作为独立并行实验，验证 session mute/volume、原始播放、进程隔离、OBS 共存和恢复，不将其结果作为普通 Capture/Monitor 的阻塞条件。
+2. 从 W01–W03、W05、W06、W11 取最小单输出切片：显式 endpoint selector、COM owner、格式校验、control/stop wake、可变 demand 拆分和错误清理。先支持已验证的 48 kHz stereo f32 Shared，其他格式返回清楚原因，不默认改设备。
+3. 接入 W07 / W08 的单输入，再增加 Bus 与第二输入；W09 的有界 ring、SRC 和填充量控制随首次独立 capture → render 联合实现。短时透传不能代替跨钟稳定性验收。
+4. Engine Plan Swap 与 W10 生命周期联合推进：块边界切换、非 RT retire、迟到回调与 master 无事件时的停机，随后接 W12 最小 Slint Graph GUI / 保存恢复。
+5. follower output、多输出、设备恢复和 W17 长期验收逐项完成；无硬件测试纳入 workspace CI，实机结果仍单独记录。
+6. W13–W16 按用户需求独立推进。Named Pipe 在确需跨进程部署后实施；专业 DSP、插件、ASIO 与驱动不作为首次真实音频路径的前置条件。
 
 下一份编码实施计划应只选一个可独立验证的切片，例如 W02 + W03 设备目录，或 W05 + W06 单 Shared 输出，并给出该切片的具体接口、文件和测试；不要把本文件全部工作合并为一个实现任务。
