@@ -20,12 +20,13 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      - run: cargo +stable test --locked -p moiren-core -p moiren-engine
+      - run: cargo +stable test --locked -p moiren-core -p moiren-engine -p moiren-app
       - if: always()
-        run: cargo +stable clippy --locked -p moiren-core -p moiren-engine --all-targets -- -D warnings
+        run: cargo +stable clippy --locked -p moiren-core -p moiren-engine -p moiren-app --all-targets -- -D warnings
       - if: always()
-        run: cargo +stable fmt -p moiren-core -p moiren-engine -- --check
+        run: cargo +stable fmt -p moiren-core -p moiren-engine -p moiren-app -- --check
       - run: cargo +stable run --locked -p moiren-engine --example offline
+      - run: cargo +stable run --locked -p moiren-app
   miri:
     runs-on: ubuntu-latest
     steps:
@@ -34,7 +35,7 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install nightly --profile minimal --component miri
       - run: cargo +nightly miri setup
-      - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine
-      - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine
+      - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine -p moiren-app
+      - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine -p moiren-app
         env:
           MIRIFLAGS: '-Zmiri-tree-borrows'

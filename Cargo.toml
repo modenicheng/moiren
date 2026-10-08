@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/moiren-core",
     "crates/moiren-engine",
+    "crates/moiren-app",
     "crates/moiren-windows-audio",
 ]
 

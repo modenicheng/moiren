@@ -4,6 +4,7 @@ pub mod boundary;
 pub mod buffer;
 pub mod control;
 pub mod meter;
+pub mod node;
 pub mod processor;
 pub mod runtime;
 pub mod sample;

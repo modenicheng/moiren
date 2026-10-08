@@ -1,0 +1,10 @@
+[package]
+name = "moiren-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+moiren-engine = { path = "../moiren-engine" }
+moiren-core = { path = "../moiren-core" }
+thiserror = { workspace = true }
+anyhow = { workspace = true }

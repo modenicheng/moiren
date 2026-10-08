@@ -221,7 +221,7 @@ Graph 只面向 `RtAudioSource` / `RtAudioSink` 的同步 streaming 面；设备
 | Recorder / file playback | 文件读写与编码在 worker；Graph 仅与预分配 bridge 交互 |
 | 虚拟 Endpoint / 软件客户端 | 明确系统可见 I/O 与内部 Bus 的差异；单独的 IPC data plane 与故障恢复 |
 
-Source adapter 提前提供初始化静音，不足输入可留下静音尾部。Sink 不可写入或丢失设备时应计数并报告，不能阻塞。当前 BoundaryReport 只是返回契约，adapter 尚未转发其状态到 Control；**正式设备接入前必须补齐报告、越界 transferred_frames 校验、epoch/discontinuity、silence/xrun 策略**，不能只以 trait 已存在宣告 backend 完成。
+Source adapter 提前提供初始化静音，不足输入可留下静音尾部。Sink 不可写入或丢失设备时应计数并报告，不能阻塞。基础骨架最初的 BoundaryReport 只是返回契约；后续 [IO 节点设计](../designs/03-io-nodes.md)已补齐 engine InputNode/OutputNode 的有界状态快照、越界 transferred_frames 校验、timeline discontinuity、silence/xrun 策略，以及软件 sample ring 和首版离线 app。旧 adapter 仍不转发快照。正式设备接入仍需 worker→Control 状态通道、capture flags、epoch 重置、PCM、SRC/drift 与设备生命周期，不能只以 trait 或软件桥已存在宣告 backend 完成。
 
 只有 master demand 驱动 Graph；follower 只消费各自 bridge，不重复执行全图。输入与输出均可能独立时钟，名义采样率相同不代表共钟。Processing SR 转换与实际 clock drift 分开建模；ring fill、时间戳、SRC ratio 和恢复属于 Boundary，不进入普通 AudioBlock。
 
