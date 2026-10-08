@@ -8,7 +8,7 @@ use thiserror::Error;
 
 pub mod builtin;
 
-pub use builtin::{Gain, Sum};
+pub use builtin::{Bus, Gain, Pan, Sum};
 
 #[cfg(test)]
 mod tests;
@@ -26,6 +26,8 @@ pub enum ProcessorError {
     InvalidIo,
     #[error("a required parameter is missing from the runtime table")]
     MissingParameter,
+    #[error("parameter domain exceeds the processor's supported range")]
+    InvalidParameterDomain,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessorRole {

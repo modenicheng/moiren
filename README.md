@@ -15,6 +15,8 @@ cargo run --locked -p moiren-app -- --gain 0.25
 
 ## 运行引擎骨架
 
+LogicalGraph 已提供节点/端口/边编辑、独立 Bus 动态输入、连接校验及稳定 DAG 排序；engine 新增 Bus 与立体声 Pan。执行 `cargo run --locked -p moiren-engine --example logical_graph` 可验证两个 Source → Bus → Pan → 软件输出及跨 block 声像 ramp。例子为已知拓扑手工准备执行计划，见 [LogicalGraph / Bus / Pan 契约](docs/designs/04-logical-graph.md)。
+
 在仓库根目录执行；Windows 与 Linux 使用相同 Cargo 命令：
 
 ```sh
@@ -33,6 +35,7 @@ cargo run --locked -p moiren-engine --example offline
 - [产品与路线图](docs/Moiren-PRD-Roadmap.md)
 - [Graph 设计](docs/designs/01-audio-graph.md)与[Engine 总体设计](docs/designs/02-engine-design.md)
 - [基础 IO 节点](docs/designs/03-io-nodes.md)与[IO / App 实施记录](docs/plans/2026-10-08-basic-io-nodes.md)
+- [LogicalGraph、Bus 与 Pan](docs/designs/04-logical-graph.md)与[实施记录](docs/plans/2026-10-08-logical-graph.md)
 - [实时基础实施计划](docs/plans/2026-10-08-runtime-foundation.md)：本轮具体实现契约；与历史 buffer 草案冲突时以该计划为准
 - [Windows 接入计划](docs/plans/2026-10-08-windows-integration-plan.md)与[W00 实验说明](crates/moiren-windows-audio/README.md)
 

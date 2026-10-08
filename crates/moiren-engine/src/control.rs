@@ -239,8 +239,15 @@ pub(crate) struct ParameterBindings {
 pub struct ProcessParameters<'a> {
     states: &'a [ParamState],
     slots: &'a [(ParameterId, usize)],
+    specs: &'a [ParamSpec],
 }
 impl ProcessParameters<'_> {
+    /// Schema metadata for non-RT processor preparation. Binding the correct
+    /// type alone does not guarantee that later automation stays in DSP range.
+    pub fn domain(&self, id: ParameterId) -> Option<ParamDomain> {
+        let (_, slot) = self.slots.iter().find(|(key, _)| *key == id)?;
+        Some(self.specs[*slot].domain)
+    }
     pub fn float(&self, id: ParameterId) -> Option<FloatRamp> {
         let (_, slot) = self.slots.iter().find(|(key, _)| *key == id)?;
         match self.states[*slot] {
@@ -284,6 +291,7 @@ impl ParameterRuntime {
         ProcessParameters {
             states: &self.states,
             slots: &bindings.slots,
+            specs: &self.specs,
         }
     }
     pub(crate) fn queued(&mut self) -> usize {

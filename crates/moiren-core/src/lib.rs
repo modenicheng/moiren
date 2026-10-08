@@ -1,3 +1,5 @@
 #![forbid(unsafe_code)]
-//! Transport-neutral control messages. No realtime memory addresses cross IPC.
+//! Editable logical topology and transport-neutral control messages.
+//! No realtime memory addresses cross IPC.
+pub mod graph;
 pub mod protocol;
