@@ -1,0 +1,40 @@
+name: Runtime foundation
+on:
+  push:
+    branches: [main, engine/flat-buffer-control-foundation]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: runtime-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - run: cargo +stable test --locked -p moiren-core -p moiren-engine
+      - if: always()
+        run: cargo +stable clippy --locked -p moiren-core -p moiren-engine --all-targets -- -D warnings
+      - if: always()
+        run: cargo +stable fmt -p moiren-core -p moiren-engine -- --check
+      - run: cargo +stable run --locked -p moiren-engine --example offline
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install nightly --profile minimal --component miri
+      - run: cargo +nightly miri setup
+      - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine
+      - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine
+        env:
+          MIRIFLAGS: '-Zmiri-tree-borrows'
