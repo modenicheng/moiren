@@ -185,6 +185,10 @@ impl<S: ProcessingSample> Engine<S> {
     pub fn timeline(&self) -> u64 {
         self.timeline
     }
+    /// Prepared processing configuration; does not query devices or allocate.
+    pub fn config(&self) -> EngineConfig {
+        self.plan.config
+    }
     pub fn epoch(&self) -> u64 {
         self.plan.epoch
     }

@@ -1,12 +1,53 @@
-# W00 Windows audio probes
+# Moiren Windows audio
 
-This crate contains experimental, opt-in probes. It has no dependency on the
-Moiren graph or engine and does not implement the W01–W17 backend contracts.
+This crate contains the first Engine-backed Shared render path and independent,
+opt-in W00 probes. It does not yet implement the complete W01–W17 backend contracts.
 
 The examples enumerate active endpoints and audio sessions, capture an explicitly
 selected process tree, or probe explicit physical endpoints. Physical capture
 reads microphone statistics; physical render submits SILENT frames. Neither
 example saves PCM, changes volume/mute/defaults, or opens Exclusive mode.
+
+## First Engine-backed Shared output
+
+```powershell
+cargo run --locked -p moiren-app -- render --list
+cargo run --locked -p moiren-app -- render --endpoint '<reviewed render endpoint ID>' --seconds 10 --frequency 440 --gain 0.05
+```
+
+This opt-in command submits audible PCM from a compiler-prepared tone graph.
+Only native 48 kHz, stereo, f32 is supported; other formats are rejected before
+Start. The selector queries active render endpoints, without requiring capture
+or default devices. Per-endpoint errors remain visible; empty-ID diagnostics
+cannot be selected. No volumes, mute settings or default endpoints are changed.
+
+`render::DemandRenderer` owns exactly one Engine and its matching, initially
+drained output reader. The WASAPI owner prepares COM/services, audio and separate
+stop events, bounded staging and optional MMCSS. It primes PCM before Start and
+renders `capacity - padding` frames on each audio wake, splitting processing into
+Engine maximum blocks. Zero demand skips DSP and buffer acquisition. DSP and
+bridge draining finish before acquiring the driver lease; only a bounded byte
+copy occurs during it. Every lease is paired on its acquiring thread; an
+abandoned shared-mode lease is cancelled with zero frames.
+
+The same-owner bridge converts planar Graph output to interleaved staging; it
+does not adapt independent clocks. Short transfers initialize missing samples
+and fail the stream instead of submitting a stale or partial packet. Persistent
+DSP counters include completed blocks even when their subsequent transfer fails;
+session processed frames exclude any earlier Engine processing.
+
+`RenderSession::request_stop` wakes independently of audio events. `join` returns
+after stop/release, and dropping an unjoined session requests stop and joins.
+Waits are bounded to 100 ms and duration is 1–600 seconds. The successful loop
+uses prepared storage and scalar counters, with no Rust allocation, log
+formatting or file writes. JSON is serialized after cleanup; optional period,
+ducking and MMCSS failures retain HRESULTs. Own-session ducking opt-out affects
+only this render session. `empty_padding_wakes` is diagnostic, not proof of an
+underrun; `GetStreamLatency == 0` is not evidence of zero end-to-end latency.
+
+The [10-second FreeDSP test](../../docs/experiments/windows/2026-10-08-shared-render.md)
+completed with nonzero PCM and user-confirmed sound. Device loss/recovery, long
+stress runs, capture-to-render/SRC and plan replacement remain separate work.
 
 ## Process Loopback on Windows
 
@@ -211,11 +252,14 @@ cargo clippy -p moiren-windows-audio --all-targets --locked -- -D warnings
 
 Pure statistics tests do not require hardware. Windows callback/BLOB lifetime
 tests use locally implemented COM objects, without activating an audio device.
-Real device tests are only run through the examples, not by `cargo test`.
+Demand splitting, shortfall, allocation counting and CLI tests are pure. Stop
+wake, format and render-lease tests use kernel events or local fake COM clients,
+without opening an audio device. Real device tests are opt-in examples or the
+app's explicit `render` command, never `cargo test`.
 
 The W00 result is limited to the tested machine, application, format, and duration.
 Process isolation controls, include/exclude comparisons, browsers/children,
-restart/PID reuse, OBS, Takeover, audible render, cross-clock bridges, device loss,
+restart/PID reuse, OBS, Takeover, cross-clock bridges, device loss,
 and long-term behavior remain separate experiments.
 
 References: [Microsoft Application Loopback Sample](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/),

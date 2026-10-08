@@ -1,7 +1,7 @@
 # Moiren 需求文档与功能规划
 
 > 状态：Draft / 当前讨论基线  
-> 更新日期：2026-10-07  
+> 更新日期：2026-10-08
 > 文档目标：统一产品需求、功能边界、架构约束与开发顺序。本文优先采用最近一次已收敛设计；尚未验证或仍有争议内容统一标为“待定”。
 
 ---
@@ -864,7 +864,7 @@ Graph 始终是 canonical topology。
 交付顺序：
 
 1. Graph Compiler 参考实现：Source/Sink/Gain/Bus/Pan、PostFader send 参数、自动独立槽位和 IO 绑定；已落地，优化 BufferPlanner 与 channel-strip PreFader 分别后续验收。
-2. Test signal → Engine → 用户显式选择的单 WASAPI Shared 输出，验证实际可听 PCM、可变 demand、无 RT 分配、正常停止和设备释放。
+2. Test signal → Engine → 用户显式选择的单 WASAPI Shared 输出：首版 native 48 kHz/stereo/f32 已落地，FreeDSP 10 秒测试获用户试听确认；纯测试覆盖可变 demand、数据路径分配计数和停止唤醒。CPU 压力、反复启停和失联恢复另行验收，见 [Shared Render 记录](experiments/windows/2026-10-08-shared-render.md)。
 3. Physical Capture / Process Loopback → Graph → 单输出；先单输入再混音。首次跨独立 capture/render 时同时实现有界 bridge、SRC 和填充量控制，不能等到多输出才处理时钟。
 4. 运行中 Plan publish/swap/retire：控制侧准备，RT 块边界切换，非 RT 回收；master 音频事件停止时，control wake 仍能推进停机。
 
@@ -979,11 +979,11 @@ MIDI 当前优先级很低，不应影响早期音频引擎与 Windows 路由设
 
 ## 16. 当前最高优先级开发清单
 
-2026-10-08 校准基线为 `main@adc725d`：平铺 slab、Safe ProcessIo、内置 Gain/Bus/Pan、可变 block Executor、参数 SPSC/ramp/ACK 和软件 IO 已实现。本轮首版 Compiler 在其基础上补齐自动计划准备，详见 [Compiler 契约](designs/05-graph-compiler.md)。W00 的 Process Loopback 与物理 capture/静音 render 实验有实机证据，但尚无正式设备 → Graph → 设备链路。
+2026-10-08 的首版 Compiler 已合入 `main@2fb754e`，补齐自动计划准备，详见 [Compiler 契约](designs/05-graph-compiler.md)。其后在 main 接入首条 `Test signal → Engine → WASAPI Shared` 实际输出，FreeDSP 10 秒实机测试获用户试听确认。W00 的 Process Loopback 与物理 capture/静音 render 仍作为独立实验；真实设备/应用输入尚未接入 Graph，M0.5 整体验收仍未完成。
 
 推荐顺序：
 
-1. Compiler 正确性基线 → WASAPI Shared Render（下一项）。
+1. 保留 Compiler 和单 Shared 输出的正确性基线；扩展格式、压力/重复启停与故障测试随后续切片推进。
 2. Physical Capture / Process Loopback 与最小 Clock Bridge/SRC 联合完成稳定闭环。
 3. Plan Swap 与资源生命周期、失联停机协议。
 4. 最小 Slint Graph GUI、绑定、编辑、状态与项目保存。

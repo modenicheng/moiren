@@ -27,6 +27,8 @@ dependencies = [
  "anyhow",
  "moiren-core",
  "moiren-engine",
+ "moiren-windows-audio",
+ "serde_json",
  "thiserror",
 ]
 
@@ -52,6 +54,8 @@ name = "moiren-windows-audio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "moiren-core",
+ "moiren-engine",
  "serde",
  "serde_json",
  "thiserror",

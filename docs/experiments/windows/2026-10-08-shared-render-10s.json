@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-08",
+  "graph": "Sine -> Gain -> Pan -> Sink -> WASAPI Shared",
+  "frequency_hz": 440,
+  "linear_gain": 0.05,
+  "pan": 0,
+  "max_block_frames": 256,
+  "render": {
+    "schema_version": 1,
+    "endpoint_id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+    "status": "completed",
+    "requested_seconds": 10.0,
+    "elapsed_seconds": 10.007983,
+    "sample_rate": 48000,
+    "channels": 2,
+    "native_mix_sample_rate": 48000,
+    "native_mix_channels": 2,
+    "native_mix_container_bits": 32,
+    "format_supported": true,
+    "buffer_frames": 1056,
+    "engine_period_frames": 480,
+    "period_hresult": null,
+    "stream_latency_100ns": 0,
+    "mmcss_registered": true,
+    "mmcss_hresult": null,
+    "own_session_ducking_opt_out": true,
+    "ducking_hresult": null,
+    "stop_succeeded": true,
+    "stream_started": true,
+    "stop_hresult": null,
+    "stats": {
+      "primed_frames": 1056,
+      "submitted_frames": 481536,
+      "processed_frames": 481536,
+      "dsp_blocks": 2007,
+      "dsp_segments": 2007,
+      "audio_wakes": 1001,
+      "timeout_wakes": 0,
+      "zero_demand_wakes": 0,
+      "empty_padding_wakes": 0,
+      "min_writable_frames": 480,
+      "max_writable_frames": 480,
+      "bridge_shortfall_frames": 0,
+      "nonzero_samples": 963070,
+      "peak_amplitude": 0.05
+    },
+    "failure": null
+  },
+  "settings_comparison": {
+    "before_catalog_errors": [],
+    "after_catalog_errors": [],
+    "endpoint_and_session_query_errors": [
+      {
+        "endpoint_id": "{0.0.0.00000000}.{3543a63a-4a4d-48ae-ba27-f2155d619370}",
+        "after": [
+          {
+            "stage": "process identity",
+            "hresult": "0x80070005"
+          }
+        ],
+        "before": [
+          {
+            "stage": "process identity",
+            "hresult": "0x80070005"
+          }
+        ],
+        "process_id": 2672
+      },
+      {
+        "endpoint_id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+        "after": [
+          {
+            "stage": "process identity",
+            "hresult": "0x80070005"
+          }
+        ],
+        "before": [
+          {
+            "stage": "process identity",
+            "hresult": "0x80070005"
+          }
+        ],
+        "process_id": 2672
+      }
+    ],
+    "endpoints_compared": 8,
+    "original_sessions_compared": 13,
+    "defaults_before": [
+      {
+        "flow": "render",
+        "role": "console",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "render",
+        "role": "multimedia",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "render",
+        "role": "communications",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "capture",
+        "role": "console",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      },
+      {
+        "flow": "capture",
+        "role": "multimedia",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      },
+      {
+        "flow": "capture",
+        "role": "communications",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      }
+    ],
+    "defaults_after": [
+      {
+        "flow": "render",
+        "role": "console",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "render",
+        "role": "multimedia",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "render",
+        "role": "communications",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "capture",
+        "role": "console",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      },
+      {
+        "flow": "capture",
+        "role": "multimedia",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      },
+      {
+        "flow": "capture",
+        "role": "communications",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      }
+    ],
+    "selected_before": {
+      "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+      "name": "耳机 (5- FreeDSP)",
+      "volume_scalar": 0.023705458,
+      "muted": false,
+      "errors": []
+    },
+    "selected_after": {
+      "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+      "name": "耳机 (5- FreeDSP)",
+      "volume_scalar": 0.023705458,
+      "muted": false,
+      "errors": []
+    },
+    "observed_state_changes": []
+  },
+  "listening_observation": {
+    "source": "user",
+    "message": "听到了",
+    "quality_and_latency_assessed": false,
+    "audibility_confirmed": true
+  }
+}

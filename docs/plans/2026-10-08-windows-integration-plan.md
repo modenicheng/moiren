@@ -18,7 +18,7 @@
 - [Engine 设计](../designs/02-engine-design.md)：单 Graph RT 执行、Processing Timeline、设备 Boundary 与 SRC / drift 的分离。
 - [整体架构评估](2026-10-07%20plan.md)：先验证执行闭环、runtime 状态复用、Windows 可行性实验并行开展。
 
-制定计划时 workspace 只有 `moiren-core` 和 `moiren-engine`。现已新增独立 `moiren-windows-audio` W00 实验 crate，可查询设备 / session、采集指定进程树或物理输入统计、提交 Shared 静音输出并观测时钟；尚未接入 Graph / Engine，也未实现正式 Boundary bridge 或动态目录。本文件的复选框表示整项验收，局部实测不自动勾选整项。
+制定计划时 workspace 只有 `moiren-core` 和 `moiren-engine`。现有 `moiren-windows-audio` 保留 W00 独立设备 / session、进程捕获、物理输入 / 静音输出及时钟实验；另已新增连接 Compiler / Engine 的单 Shared 实际输出。该切片只支持 native 48 kHz/stereo/f32 与同 owner 出口桥，尚无跨时钟 Boundary、输入接入或动态目录。本文件的复选框表示整项验收，局部实测不自动勾选整项。
 
 PRD 的 M1 已包含物理输入和多输出，而 clock adaptation 在原路线中较晚。这里调整依赖：**首次独立 capture → render 就需要最小跨时钟适配；多个物理输出必须在 follower bridge 验证后交付。**完整专业设备管理、自动 master 切换和输出间同步仍可后置。
 
@@ -208,6 +208,8 @@ Valid bits 与 container bits、channel mask 是不同字段；Shared period 必
 - [ ] 等待集合包含独立 control / stop wake。即使没有 audio event 或 demand 为零，仍在执行安全点处理 detach / quiesce 并 ack，不通过调用零帧 DSP 强迫推进停机。超时 / invalidation 上报给 Control，由非 streaming 流程重建。
 
 **验收：**fake source → Gain / Bus → 输出；覆盖不同 event 间隔、0 / 小 / 多 block 需求、全静音、CPU 压力和重复启停。音频线程无分配 / 析构，实际提交帧数与请求一致。
+
+**单输出切片（2026-10-08）：**`Sine → Gain → Pan → Sink` 已由 Compiler 准备，Shared owner 按可变 padding demand 拆分 Engine，预分配 staging 后提交实际 PCM；独立 stop event 和同线程 lease guard 已实现。FreeDSP native 48 kHz/stereo/f32 的 10 秒测试正常 Stop，用户确认听到；[报告与限制](../experiments/windows/2026-10-08-shared-render.md)。无 SRC、control detach/ack、Plan Swap 或重建恢复；纯测试分配计数与短时实机不替代上述压力/重复启停验收，W06 整项保持未勾选。
 
 [GetCurrentPadding](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclient-getcurrentpadding)、[IAudioRenderClient::GetBuffer](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiorenderclient-getbuffer)、[IAudioRenderClient::ReleaseBuffer](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiorenderclient-releasebuffer)
 
@@ -444,13 +446,13 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 ## 8. 推荐开始顺序
 
-2026-10-08 更新：W00 已取得被动进程捕获、物理输入 / 静音输出及时钟证据；Engine 已有离线 IO 和首版 [Graph Compiler](../designs/05-graph-compiler.md)。下一切片优先验证实际可听输出，完整目录与设备管理器按该切片所需范围推进。
+2026-10-08 更新：W00 已取得被动进程捕获、物理输入 / 静音输出及时钟证据；Engine 已有离线 IO、首版 [Graph Compiler](../designs/05-graph-compiler.md)和 [Shared 实际输出](../experiments/windows/2026-10-08-shared-render.md)。下一切片接入单输入与最小 Clock Bridge，完整目录与设备管理器按该切片所需范围推进。
 
 1. 保留无复用 Compiler 正确性基线；W00 Takeover 作为独立并行实验，验证 session mute/volume、原始播放、进程隔离、OBS 共存和恢复，不将其结果作为普通 Capture/Monitor 的阻塞条件。
-2. 从 W01–W03、W05、W06、W11 取最小单输出切片：显式 endpoint selector、COM owner、格式校验、control/stop wake、可变 demand 拆分和错误清理。先支持已验证的 48 kHz stereo f32 Shared，其他格式返回清楚原因，不默认改设备。
+2. 已落地的单输出切片覆盖显式 endpoint selector、COM owner、native 格式校验、stop wake、可变 demand 拆分和错误清理。保留 48 kHz stereo f32 Shared 正确性基线；其他格式、control detach/ack 与完整管理器随后续切片扩展，不默认改设备。
 3. 接入 W07 / W08 的单输入，再增加 Bus 与第二输入；W09 的有界 ring、SRC 和填充量控制随首次独立 capture → render 联合实现。短时透传不能代替跨钟稳定性验收。
 4. Engine Plan Swap 与 W10 生命周期联合推进：块边界切换、非 RT retire、迟到回调与 master 无事件时的停机，随后接 W12 最小 Slint Graph GUI / 保存恢复。
 5. follower output、多输出、设备恢复和 W17 长期验收逐项完成；无硬件测试纳入 workspace CI，实机结果仍单独记录。
 6. W13–W16 按用户需求独立推进。Named Pipe 在确需跨进程部署后实施；专业 DSP、插件、ASIO 与驱动不作为首次真实音频路径的前置条件。
 
-下一份编码实施计划应只选一个可独立验证的切片，例如 W02 + W03 设备目录，或 W05 + W06 单 Shared 输出，并给出该切片的具体接口、文件和测试；不要把本文件全部工作合并为一个实现任务。
+下一份编码实施计划应只选一个可独立验证的切片，例如 W07 单物理输入 + W09 最小 Clock Bridge/SRC，并给出该切片的具体接口、文件和测试；不要把本文件全部工作合并为一个实现任务。

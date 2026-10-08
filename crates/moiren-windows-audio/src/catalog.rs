@@ -299,6 +299,34 @@ pub fn snapshot() -> Result<CatalogSnapshot> {
     }
 }
 
+/// Render selector snapshot: no capture or default-role query. A missing
+/// microphone cannot hide usable outputs; failures stay local to endpoints.
+pub fn render_snapshot() -> Result<CatalogSnapshot> {
+    unsafe {
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+        let devices = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?;
+        let mut result = CatalogSnapshot {
+            defaults: Vec::new(),
+            endpoints: Vec::new(),
+            errors: Vec::new(),
+        };
+        for index in 0..devices.GetCount()? {
+            if let Some(item) = record(
+                "render endpoint snapshot",
+                &mut result.errors,
+                devices
+                    .Item(index)
+                    .and_then(|device| endpoint(&device, "render")),
+            ) {
+                result.endpoints.push(item);
+            }
+        }
+        result.endpoints.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(result)
+    }
+}
+
 /// Observations only: never restore settings or attribute external changes to the probe.
 pub fn changes(before: &CatalogSnapshot, after: &CatalogSnapshot, pid: u32) -> Vec<String> {
     let mut result = Vec::new();

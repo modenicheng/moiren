@@ -1,6 +1,7 @@
-//! Experimental W00 probes, independent of Moiren's graph and engine.
+//! Windows audio probes and a minimal engine-driven Shared render backend.
 
 pub mod clock;
+pub mod render;
 pub mod stats;
 
 #[cfg(windows)]

@@ -8,3 +8,7 @@ moiren-engine = { path = "../moiren-engine" }
 moiren-core = { path = "../moiren-core" }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+moiren-windows-audio = { path = "../moiren-windows-audio" }
+serde_json = "1.0"

@@ -2,7 +2,7 @@
 
 A real-time audio graph for Windows.
 
-当前仓库包含 Rust 音频引擎基础骨架与独立 Windows 可行性实验，尚非可安装音频路由产品。
+当前仓库包含 Rust 音频引擎、自动 Graph Compiler、首条 WASAPI Shared 实际输出链路和独立 Windows 可行性实验，尚非可安装音频路由产品。
 
 ## 运行首版应用
 
@@ -11,7 +11,17 @@ cargo run --locked -p moiren-app
 cargo run --locked -p moiren-app -- --gain 0.25
 ```
 
-`moiren-app` 跑通 `软件输入 → InputNode → Gain → OutputNode → 软件输出`，打印处理后样本与 IO 状态。应用使用一个 planar slab 和两个预分配音频桥，支持多声道、可变 block 与经控制队列下发增益；当前入口为离线 headless 模式，不打开设备。见 [App 说明](crates/moiren-app/README.md)与 [IO 节点设计](docs/designs/03-io-nodes.md)。
+默认入口跑通 `软件输入 → InputNode → Gain → OutputNode → 软件输出`，打印处理后样本与 IO 状态。应用使用一个 planar slab 和两个预分配音频桥，支持多声道、可变 block 与经控制队列下发增益；此离线模式不打开设备。见 [App 说明](crates/moiren-app/README.md)与 [IO 节点设计](docs/designs/03-io-nodes.md)。
+
+Windows 下可播放 Compiler 准备的 `Sine → Gain → Pan → Sink → WASAPI Shared` 测试信号：
+
+```powershell
+cargo run --locked -p moiren-app -- render --list
+# 从列表选择 endpoint；默认 10 秒、440 Hz、gain 0.05，不修改设备或其他应用音量。
+cargo run --locked -p moiren-app -- render --endpoint '<endpoint ID>'
+```
+
+首版仅接受 native 48 kHz / stereo / f32；不转换其他设备格式。FreeDSP 的 10 秒实机输出已获用户试听确认，见[验收记录](docs/experiments/windows/2026-10-08-shared-render.md)。该单输出 owner 直接驱动 Engine，尚未接入真实 capture、跨设备 SRC 或运行中换图。
 
 ## 运行引擎骨架
 
@@ -28,7 +38,7 @@ cargo run --locked -p moiren-engine --example offline
 
 `offline` 演示 `Source → Pre Meter → In-place Gain → Post Meter`，全部音频使用一个 planar slab；参数经版本化消息编解码、有界控制队列及 Processing Timeline 下发。示例不打开音频设备，不播放声音。
 
-平铺 buffer、unsafe 不变量与 IPC 分层见[实时基础实施计划](docs/plans/2026-10-08-runtime-foundation.md)；新增编译能力见 [Compiler 契约](docs/designs/05-graph-compiler.md)。Named Pipe、标准 LUFS、正式 WASAPI、优化 BufferPlanner 与在线换图尚未实现。
+平铺 buffer、unsafe 不变量与 IPC 分层见[实时基础实施计划](docs/plans/2026-10-08-runtime-foundation.md)；新增编译能力见 [Compiler 契约](docs/designs/05-graph-compiler.md)。Named Pipe、标准 LUFS、完整 Windows backend、优化 BufferPlanner 与在线换图尚未实现。
 
 ## 文档入口
 
@@ -37,7 +47,8 @@ cargo run --locked -p moiren-engine --example offline
 - [基础 IO 节点](docs/designs/03-io-nodes.md)与[IO / App 实施记录](docs/plans/2026-10-08-basic-io-nodes.md)
 - [LogicalGraph、Bus 与 Pan](docs/designs/04-logical-graph.md)与[实施记录](docs/plans/2026-10-08-logical-graph.md)
 - [Graph Compiler](docs/designs/05-graph-compiler.md)与[实施计划](docs/superpowers/plans/2026-10-08-graph-compiler.md)
+- [Shared Render 设计](docs/superpowers/specs/2026-10-08-shared-render-design.md)、[实施记录](docs/superpowers/plans/2026-10-08-shared-render.md)与[实机验收](docs/experiments/windows/2026-10-08-shared-render.md)
 - [实时基础实施计划](docs/plans/2026-10-08-runtime-foundation.md)：本轮具体实现契约；与历史 buffer 草案冲突时以该计划为准
 - [Windows 接入计划](docs/plans/2026-10-08-windows-integration-plan.md)与[W00 实验说明](crates/moiren-windows-audio/README.md)
 
-W00 探针与引擎保持分离；已有实验记录不表示已完成应用输出接管、多设备桥接或长期稳定性验收。
+W00 探针仍保持独立；新增 render 模块连接正式 Engine。已有实验与单输出结果不表示已完成应用输出接管、多设备桥接或长期稳定性验收。

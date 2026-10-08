@@ -1,6 +1,9 @@
 //! Application ownership and offline IO orchestration.
 #![forbid(unsafe_code)]
 
+pub mod render_cli;
+pub mod tone;
+
 use moiren_core::protocol::{
     ApplyAt, ControlReply, ParamValue, ParameterKey, ParameterRequest, ProcessorId, ReplyCode,
 };
