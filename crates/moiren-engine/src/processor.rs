@@ -5,6 +5,7 @@ use crate::{
     sample::ProcessingSample,
 };
 use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
+use thiserror::Error;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessContext {
@@ -13,9 +14,11 @@ pub struct ProcessContext {
     pub frames: usize,
     pub processing_sr: f64,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ProcessorError {
+    #[error("prepared IO does not match the processor's port contract")]
     InvalidIo,
+    #[error("a required parameter is missing from the runtime table")]
     MissingParameter,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

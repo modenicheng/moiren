@@ -476,9 +476,9 @@ pub struct Report {
     pub audio_ids_after: Vec<String>,
     pub observed_state_changes: Vec<String>,
 }
-pub fn run(iterations: u32, observe_pid: Option<u32>) -> Result<Report> {
+pub fn run(iterations: u32, observe_pid: Option<u32>) -> anyhow::Result<Report> {
     if !(1..=10).contains(&iterations) {
-        return Err(unexpected());
+        anyhow::bail!("--iterations must be within 1..=10, got {iterations}");
     }
     let _apartment = Apartment::new()?;
     let before = catalog::snapshot()?;

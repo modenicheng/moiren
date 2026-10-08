@@ -13,7 +13,7 @@ use serde::Serialize;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows::{
     Win32::{
-        Foundation::{E_INVALIDARG, E_UNEXPECTED, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{E_UNEXPECTED, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Media::Audio::*,
         System::{
             Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance},
@@ -448,13 +448,20 @@ fn write_silence(render: &IAudioRenderClient, frames: u32) -> Result<()> {
 }
 
 /// All endpoints are explicit. No name matching or default switching occurs here.
-pub fn run(ids: Vec<String>, seconds: u32, observe_pid: Option<u32>) -> Result<PhysicalReport> {
+pub fn run(
+    ids: Vec<String>,
+    seconds: u32,
+    observe_pid: Option<u32>,
+) -> anyhow::Result<PhysicalReport> {
     if ids.is_empty()
         || ids.len() > 8
         || !(1..=600).contains(&seconds)
         || ids.iter().enumerate().any(|(i, id)| ids[..i].contains(id))
     {
-        return Err(windows::core::Error::from_hresult(E_INVALIDARG));
+        anyhow::bail!(
+            "expected 1..=8 unique endpoint IDs and --seconds within 1..=600, got {} IDs and {seconds}s",
+            ids.len()
+        );
     }
     let _apartment = Apartment::new()?;
     let before = catalog::snapshot()?;
@@ -519,7 +526,7 @@ pub fn run(ids: Vec<String>, seconds: u32, observe_pid: Option<u32>) -> Result<P
     }
     if worker_panicked {
         // Join every owner before returning; dropping a JoinHandle detaches it.
-        return Err(unexpected());
+        anyhow::bail!("an endpoint worker thread panicked during sampling");
     }
     // Packet timestamps refer to the first captured frame. Preserve the separate
     // IAudioClock observations, including stale or inconsistent capture QPC pairs.

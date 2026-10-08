@@ -5,3 +5,7 @@ members = [
     "crates/moiren-engine",
     "crates/moiren-windows-audio",
 ]
+
+[workspace.dependencies]
+thiserror = "2.0"
+anyhow = "1.0"

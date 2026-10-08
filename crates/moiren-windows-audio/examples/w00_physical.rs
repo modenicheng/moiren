@@ -1,5 +1,6 @@
 #[cfg(windows)]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
+    use anyhow::Context;
     let mut endpoints = Vec::new();
     let mut seconds = 60;
     let mut observe_pid = None;
@@ -8,19 +9,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match arg.as_str() {
             "--endpoint" => endpoints.push(
                 args.next()
-                    .ok_or("--endpoint requires an opaque endpoint ID")?,
+                    .context("--endpoint requires an opaque endpoint ID")?,
             ),
             "--seconds" => {
                 seconds = args
                     .next()
-                    .ok_or("--seconds requires a duration")?
-                    .parse::<u32>()?
+                    .context("--seconds requires a duration")?
+                    .parse::<u32>()
+                    .context("--seconds expects a number of seconds")?
             }
             "--observe-pid" => {
                 observe_pid = Some(
                     args.next()
-                        .ok_or("--observe-pid requires a process ID")?
-                        .parse::<u32>()?,
+                        .context("--observe-pid requires a process ID")?
+                        .parse::<u32>()
+                        .context("--observe-pid expects a numeric PID")?,
                 )
             }
             "--help" | "-h" => {
@@ -29,11 +32,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 return Ok(());
             }
-            _ => return Err(format!("unknown argument: {arg}").into()),
+            _ => anyhow::bail!("unknown argument: {arg}"),
         }
     }
     let report = moiren_windows_audio::physical::run(endpoints, seconds, observe_pid)?;
-    serde_json::to_writer_pretty(std::io::stdout().lock(), &report)?;
+    serde_json::to_writer_pretty(std::io::stdout().lock(), &report)
+        .context("writing the JSON report to stdout")?;
     if report
         .endpoints
         .iter()

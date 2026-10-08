@@ -1,5 +1,6 @@
 #[cfg(windows)]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
+    use anyhow::Context;
     let mut iterations = 3;
     let mut observe_pid = None;
     let mut output = None;
@@ -9,31 +10,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--iterations" => {
                 iterations = args
                     .next()
-                    .ok_or("--iterations requires 1..10")?
-                    .parse::<u32>()?
+                    .context("--iterations requires 1..10")?
+                    .parse::<u32>()
+                    .context("--iterations expects a number")?
             }
             "--observe-pid" => {
                 observe_pid = Some(
                     args.next()
-                        .ok_or("--observe-pid requires PID")?
-                        .parse::<u32>()?,
+                        .context("--observe-pid requires PID")?
+                        .parse::<u32>()
+                        .context("--observe-pid expects a numeric PID")?,
                 )
             }
-            "--output" => output = Some(args.next().ok_or("--output requires a path")?),
+            "--output" => output = Some(args.next().context("--output requires a path")?),
             "--help" | "-h" => {
                 println!(
                     "w00_swdevice [--iterations 1..10] [--observe-pid PID] [--output PATH]\nCreates only temporary MoirenW00 PnP nodes and uninstalls those exact instances. No driver packages or audio endpoints installed. Administrator rights required for successful device creation."
                 );
                 return Ok(());
             }
-            _ => return Err(format!("unknown argument: {arg}").into()),
+            _ => anyhow::bail!("unknown argument: {arg}"),
         }
     }
     let report = moiren_windows_audio::swdevice::run(iterations, observe_pid)?;
     if let Some(path) = output {
-        serde_json::to_writer_pretty(std::fs::File::create(path)?, &report)?;
+        serde_json::to_writer_pretty(
+            std::fs::File::create(&path)
+                .with_context(|| format!("creating report file {path:?}"))?,
+            &report,
+        )
+        .with_context(|| format!("writing report file {path:?}"))?;
     } else {
-        serde_json::to_writer_pretty(std::io::stdout().lock(), &report)?;
+        serde_json::to_writer_pretty(std::io::stdout().lock(), &report)
+            .context("writing the JSON report to stdout")?;
     }
     if report
         .cycles

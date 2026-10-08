@@ -1,6 +1,8 @@
 //! One owned planar slab. Only this module turns validated ranges into references.
 use std::{marker::PhantomData, mem::size_of, ops::Range, sync::Arc};
 
+use thiserror::Error;
+
 use crate::sample::ProcessingSample;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -12,16 +14,25 @@ pub struct BufferSlotLayout {
     pub capacity_frames: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum BufferError {
+    #[error("slot layout has zero channels or zero capacity")]
     InvalidLayout,
+    #[error("slot size in samples exceeds addressable memory")]
     SizeOverflow,
+    #[error("arena allocation exceeds the configured byte budget")]
     BudgetExceeded,
+    #[error("the system allocator refused a non-RT reservation")]
     AllocationFailed,
+    #[error("port references a slot outside this arena")]
     InvalidSlot,
+    #[error("an input or output port number is declared twice")]
     DuplicatePort,
+    #[error("two writable views would alias the same slot range")]
     AliasedWrite,
+    #[error("prepared IO belongs to a different arena")]
     ForeignAccess,
+    #[error("window is empty or exceeds the prepared maximum")]
     InvalidFrames,
 }
 

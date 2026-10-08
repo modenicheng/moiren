@@ -1,8 +1,19 @@
 use serde::Serialize;
+use thiserror::Error;
 
 pub const DISCONTINUITY: u32 = 1;
 pub const SILENT: u32 = 2;
 pub const TIMESTAMP_ERROR: u32 = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum PacketError {
+    #[error("zero channel count")]
+    ZeroChannels,
+    #[error("packet size overflow")]
+    SizeOverflow,
+    #[error("packet length does not match frames and channels")]
+    LengthMismatch,
+}
 
 #[derive(Default)]
 pub struct PacketMetrics {
@@ -31,9 +42,9 @@ pub fn analyze_f32(
     frames: u32,
     channels: u16,
     silent: bool,
-) -> Result<PacketMetrics, &'static str> {
+) -> Result<PacketMetrics, PacketError> {
     if channels == 0 {
-        return Err("zero channel count");
+        return Err(PacketError::ZeroChannels);
     }
     let samples = u64::from(frames) * u64::from(channels);
     let mut metrics = PacketMetrics {
@@ -46,9 +57,9 @@ pub fn analyze_f32(
     let expected = usize::try_from(samples)
         .ok()
         .and_then(|n| n.checked_mul(4))
-        .ok_or("packet size overflow")?;
+        .ok_or(PacketError::SizeOverflow)?;
     if data.len() != expected {
-        return Err("packet length does not match frames and channels");
+        return Err(PacketError::LengthMismatch);
     }
     for sample in data.as_chunks::<4>().0 {
         let value = f64::from(f32::from_le_bytes(*sample));

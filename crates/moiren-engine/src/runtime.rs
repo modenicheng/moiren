@@ -7,6 +7,7 @@ use crate::{
 };
 use moiren_core::protocol::ProcessorId;
 use std::sync::Arc;
+use thiserror::Error;
 
 #[derive(Debug, Clone, Copy)]
 pub struct EngineConfig {
@@ -14,27 +15,26 @@ pub struct EngineConfig {
     pub max_block_frames: usize,
     pub max_events_per_block: usize,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RuntimeError {
+    #[error("engine configuration has invalid sample rate or block/event bounds")]
     InvalidConfig,
+    #[error("requested frames are zero or exceed the prepared block maximum")]
     InvalidFrames,
+    #[error("timeline frame counter would overflow u64")]
     TimelineOverflow,
+    #[error("two processor instances share one identifier")]
     DuplicateProcessor,
+    #[error("op spec references a processor absent from the resources")]
     MissingProcessor,
+    #[error("plan was prepared against different resources")]
     ForeignResources,
+    #[error("plan was prepared against a different parameter table")]
     ForeignParameters,
-    Buffer(BufferError),
-    Processor(ProcessorError),
-}
-impl From<BufferError> for RuntimeError {
-    fn from(e: BufferError) -> Self {
-        Self::Buffer(e)
-    }
-}
-impl From<ProcessorError> for RuntimeError {
-    fn from(e: ProcessorError) -> Self {
-        Self::Processor(e)
-    }
+    #[error(transparent)]
+    Buffer(#[from] BufferError),
+    #[error(transparent)]
+    Processor(#[from] ProcessorError),
 }
 
 pub struct ProcessorInstance<S: ProcessingSample> {

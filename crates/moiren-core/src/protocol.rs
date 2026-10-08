@@ -1,6 +1,7 @@
 //! Versioned, length-prefixed control frames for a NON-RT pipe/socket worker.
 //! No pointer, Rust layout, buffer slot or callback-relative offset is a wire ID.
 use std::io::{self, Read, Write};
+use thiserror::Error;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const PARAM_BODY_BYTES: usize = 64;
@@ -36,18 +37,18 @@ pub struct ParameterRequest {
     pub value: ParamValue,
     pub ramp_frames: u32,
 }
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ProtocolError {
-    Io(io::Error),
+    #[error("transport failed while framing or reading the message body")]
+    Io(#[from] io::Error),
+    #[error("frame length does not match the versioned protocol layout")]
     InvalidLength,
+    #[error("protocol version is not supported by this endpoint")]
     UnsupportedVersion,
+    #[error("opcode is not supported by this endpoint")]
     UnsupportedOpcode,
+    #[error("encoded value is outside the representable protocol range")]
     InvalidValue,
-}
-impl From<io::Error> for ProtocolError {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
 }
 
 impl ParameterRequest {

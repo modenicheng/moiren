@@ -6,6 +6,7 @@ use moiren_core::protocol::{
 };
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::Arc;
+use thiserror::Error;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ParamDomain {
@@ -41,9 +42,11 @@ impl ParamSpec {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ControlError {
+    #[error("zero capacity/horizon or an initial value outside its domain")]
     InvalidConfiguration,
+    #[error("two parameters declare the same processor/parameter key")]
     DuplicateParameter,
 }
 

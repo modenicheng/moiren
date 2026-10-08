@@ -1,5 +1,6 @@
 #[cfg(windows)]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
+    use anyhow::Context;
     let mut pid = None;
     let mut seconds = 60;
     let mut list = false;
@@ -10,15 +11,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--pid" => {
                 pid = Some(
                     args.next()
-                        .ok_or("--pid requires a process ID")?
-                        .parse::<u32>()?,
+                        .context("--pid requires a process ID")?
+                        .parse::<u32>()
+                        .context("--pid expects a numeric PID")?,
                 )
             }
             "--seconds" => {
                 seconds = args
                     .next()
-                    .ok_or("--seconds requires a duration")?
-                    .parse::<u32>()?
+                    .context("--seconds requires a duration")?
+                    .parse::<u32>()
+                    .context("--seconds expects a number of seconds")?
             }
             "--help" | "-h" => {
                 println!(
@@ -26,15 +29,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 return Ok(());
             }
-            _ => return Err(format!("unknown argument: {arg}").into()),
+            _ => anyhow::bail!("unknown argument: {arg}"),
         }
     }
     if list == pid.is_some() {
-        return Err("choose exactly one of --list or --pid <PID>".into());
+        anyhow::bail!("choose exactly one of --list or --pid <PID>");
     }
     let report = moiren_windows_audio::probe::run(pid, seconds)?;
     // Write only after streaming has stopped and owner resources have been released.
-    serde_json::to_writer_pretty(std::io::stdout().lock(), &report)?;
+    serde_json::to_writer_pretty(std::io::stdout().lock(), &report)
+        .context("writing the JSON report to stdout")?;
     if report
         .capture
         .as_ref()

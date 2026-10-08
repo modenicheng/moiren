@@ -15,7 +15,7 @@ use std::{
 };
 use windows::{
     Win32::{
-        Foundation::{E_INVALIDARG, E_UNEXPECTED, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{E_UNEXPECTED, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Media::{Audio::*, Multimedia::WAVE_FORMAT_IEEE_FLOAT},
         System::{
             Com::{
@@ -340,9 +340,12 @@ fn capture_format() -> WAVEFORMATEX {
 }
 
 /// None only enumerates. An explicit PID opts into capture of that process tree.
-pub fn run(pid: Option<u32>, seconds: u32) -> Result<ProbeReport> {
-    if !(1..=600).contains(&seconds) || pid == Some(0) {
-        return Err(windows::core::Error::from_hresult(E_INVALIDARG));
+pub fn run(pid: Option<u32>, seconds: u32) -> anyhow::Result<ProbeReport> {
+    if !(1..=600).contains(&seconds) {
+        anyhow::bail!("--seconds must be within 1..=600, got {seconds}");
+    }
+    if pid == Some(0) {
+        anyhow::bail!("pid 0 (system idle process) cannot be a capture target");
     }
     let _apartment = Apartment::new()?;
     let started_unix_ms = SystemTime::now()
