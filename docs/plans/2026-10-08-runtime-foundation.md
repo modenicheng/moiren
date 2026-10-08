@@ -304,7 +304,8 @@ crossfade、warm-up 和 state transfer 仍是后续策略，不是本轮既成�
 | `moiren-core/src/protocol.rs` | wire DTO、显式字段编码与 framing；无 unsafe、无 RT 内存地址 |
 | `moiren-engine/src/buffer.rs` | slab、access prepare、唯一引用构造边界、safe block/port view |
 | `moiren-engine/src/control.rs` | 参数 schema/表、控制到 RT 队列、时间和 ACK、ramp |
-| `moiren-engine/src/processor.rs` | safe Processor/Observer 契约、Gain、Sum |
+| `moiren-engine/src/processor/mod.rs` | safe Processor/Observer 契约；兼容导出 Gain、Sum |
+| `moiren-engine/src/processor/builtin/` | 内置 Gain、Sum DSP 实现 |
 | `moiren-engine/src/runtime.rs` | prepare、runtime identity、线性执行与参数分段 |
 | `moiren-engine/src/meter.rs` | 只读 sample peak/RMS 和有界遥测 |
 | `moiren-engine/src/boundary.rs` | backend 无关 streaming 面与 fake source |
