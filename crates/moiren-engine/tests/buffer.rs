@@ -231,6 +231,7 @@ fn in_place_pairs_can_coexist_with_sidechain_and_aux_output() {
 }
 
 #[test]
+#[allow(clippy::forget_non_drop)] // Deliberately test that safety does not require Drop.
 fn forget_and_unwind_do_not_release_a_dynamic_borrow_token() {
     let mut arena = arena::<f32>();
     let access = arena

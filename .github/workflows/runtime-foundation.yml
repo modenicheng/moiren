@@ -1,7 +1,7 @@
 name: Runtime foundation
 on:
   push:
-    branches: [engine/flat-buffer-control-foundation]
+    branches: [main, engine/flat-buffer-control-foundation]
   pull_request:
 permissions:
   contents: read
@@ -9,43 +9,16 @@ concurrency:
   group: runtime-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 jobs:
-  prepare:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/engine/flat-buffer-control-foundation'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      sha: ${{ steps.commit.outputs.sha }}
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup toolchain install stable --profile minimal --component rustfmt
-      - name: Resolve only the added dependency and format the two touched crates
-        run: |
-          cargo +stable metadata --format-version 1 > "$RUNNER_TEMP/metadata.json"
-          cargo +stable fmt -p moiren-core -p moiren-engine
-      - name: Commit generated lockfile and formatting on the task branch
-        id: commit
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Cargo.lock crates/moiren-core crates/moiren-engine
-          if ! git diff --cached --quiet; then
-            git commit -m 'chore: format runtime foundation and resolve queue dependency'
-            git push origin HEAD:engine/flat-buffer-control-foundation
-          fi
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
   test:
-    needs: prepare
-    if: always() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ needs.prepare.outputs.sha || github.sha }}
+          persist-credentials: false
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - run: cargo +stable test --locked -p moiren-core -p moiren-engine
       - if: always()
@@ -54,13 +27,11 @@ jobs:
         run: cargo +stable fmt -p moiren-core -p moiren-engine -- --check
       - run: cargo +stable run --locked -p moiren-engine --example offline
   miri:
-    needs: prepare
-    if: always() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ needs.prepare.outputs.sha || github.sha }}
+          persist-credentials: false
       - run: rustup toolchain install nightly --profile minimal --component miri
       - run: cargo +nightly miri setup
       - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine
