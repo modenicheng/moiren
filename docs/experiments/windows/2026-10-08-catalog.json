@@ -1,0 +1,346 @@
+{
+  "schema_version": 1,
+  "started_unix_ms": 1791426841704,
+  "before": {
+    "defaults": [
+      {
+        "flow": "render",
+        "role": "console",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "render",
+        "role": "multimedia",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "render",
+        "role": "communications",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "capture",
+        "role": "console",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      },
+      {
+        "flow": "capture",
+        "role": "multimedia",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      },
+      {
+        "flow": "capture",
+        "role": "communications",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      }
+    ],
+    "endpoints": [
+      {
+        "id": "{0.0.0.00000000}.{3543a63a-4a4d-48ae-ba27-f2155d619370}",
+        "name": "CABLE Input (VB-Audio Virtual Cable)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 96000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 20000,
+        "volume_scalar": 0.84806824,
+        "muted": false,
+        "sessions": [
+          {
+            "process_id": 2672,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": null,
+            "instance_key": "6fdbcb761d9f8800",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": [
+              {
+                "stage": "process identity",
+                "hresult": "0x80070005"
+              }
+            ]
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.0.00000000}.{93f962ad-26f6-4485-8a34-e1c7b27f44d5}",
+        "name": "CABLE In 16ch (VB-Audio Virtual Cable)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 20000,
+        "volume_scalar": 0.84806824,
+        "muted": false,
+        "sessions": [
+          {
+            "process_id": 0,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": "System Sounds",
+            "instance_key": "ab4f9148438c5911",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": true,
+            "errors": []
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.0.00000000}.{95e89537-8f6e-486d-92c3-5a92d91f3cce}",
+        "name": "Monitor (HD Audio Driver for Display Audio)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 1.0,
+        "muted": false,
+        "sessions": [
+          {
+            "process_id": 0,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": "System Sounds",
+            "instance_key": "72dcaa18fd707437",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.0.00000000}.{c20f8868-6ff2-476f-8734-a1e2812fa650}",
+        "name": "扬声器 (Realtek(R) Audio)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 0.0,
+        "muted": true,
+        "sessions": [
+          {
+            "process_id": 0,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": "System Sounds",
+            "instance_key": "629547113ff4b930",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+        "name": "耳机 (5- FreeDSP)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 0.023705458,
+        "muted": false,
+        "sessions": [
+          {
+            "process_id": 2672,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": null,
+            "instance_key": "1196b8ce53c3985c",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": [
+              {
+                "stage": "process identity",
+                "hresult": "0x80070005"
+              }
+            ]
+          },
+          {
+            "process_id": 33356,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "QQMusic.exe",
+            "instance_key": "47d76ad4b7532bf8",
+            "state": 1,
+            "volume_scalar": 0.4,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 9652,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "zen.exe",
+            "instance_key": "4eca0e3279a75394",
+            "state": 1,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 24396,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "ZCode.exe",
+            "instance_key": "7e1c5bbc427d35cf",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 26196,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": "Starward.exe",
+            "instance_key": "8330d9cd687d96d5",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 28816,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "Discord.exe",
+            "instance_key": "a9963eaf0d7013cf",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 27912,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "Discord.exe",
+            "instance_key": "d8f747547e705289",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.1.00000000}.{016ba892-8717-4bc5-b29b-f543ddfdeb98}",
+        "name": "CABLE Output (VB-Audio Virtual Cable)",
+        "flow": "capture",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 96000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 1.0,
+        "muted": false,
+        "sessions": [],
+        "errors": []
+      },
+      {
+        "id": "{0.0.1.00000000}.{0a18f197-0246-471d-9142-5ea67fe99450}",
+        "name": "麦克风阵列 (Realtek(R) Audio)",
+        "flow": "capture",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 4,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 16,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 0,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 0.8791499,
+        "muted": false,
+        "sessions": [],
+        "errors": []
+      },
+      {
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}",
+        "name": "麦克风 (5- FreeDSP)",
+        "flow": "capture",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 1,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 4,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 4,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 1.0,
+        "muted": false,
+        "sessions": [],
+        "errors": []
+      }
+    ],
+    "errors": []
+  },
+  "capture": null,
+  "after": null,
+  "observed_state_changes": [],
+  "errors": []
+}

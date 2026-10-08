@@ -1,7 +1,7 @@
 # Moiren Windows 音频接入工作计划
 
 > 日期：2026-10-08  
-> 状态：工作分解与验证计划；后端实现尚未开始  
+> 状态：W00 被动捕获、物理输入 / 静音输出与时钟探针已有实机记录；正式后端接入尚未开始
 > 范围：Windows 设备、应用音频、WASAPI、设备时钟、生命周期、桌面集成，以及后续 ASIO / 虚拟 I/O  
 > 执行说明：按阶段拆成独立实现任务；每项完成后记录验证结果，再进入依赖它的任务。本文件不冻结尚未验证的 Rust 签名，也不要求一次实现全部后端。
 
@@ -18,7 +18,7 @@
 - [Engine 设计](../designs/02-engine-design.md)：单 Graph RT 执行、Processing Timeline、设备 Boundary 与 SRC / drift 的分离。
 - [整体架构评估](2026-10-07%20plan.md)：先验证执行闭环、runtime 状态复用、Windows 可行性实验并行开展。
 
-当前 workspace 只有 `moiren-core` 和 `moiren-engine`；已有 Buffer / Sample 基础和正在编写的 Processor 骨架，没有 Windows backend、Boundary bridge、设备目录或应用音频目录。本文件的复选框表示未来工作，不表示已有实现或已通过实机验证。
+制定计划时 workspace 只有 `moiren-core` 和 `moiren-engine`。现已新增独立 `moiren-windows-audio` W00 实验 crate，可查询设备 / session、采集指定进程树或物理输入统计、提交 Shared 静音输出并观测时钟；尚未接入 Graph / Engine，也未实现正式 Boundary bridge 或动态目录。本文件的复选框表示整项验收，局部实测不自动勾选整项。
 
 PRD 的 M1 已包含物理输入和多输出，而 clock adaptation 在原路线中较晚。这里调整依赖：**首次独立 capture → render 就需要最小跨时钟适配；多个物理输出必须在 follower bridge 验证后交付。**完整专业设备管理、自动 master 切换和输出间同步仍可后置。
 
@@ -93,6 +93,8 @@ W11 的调度、统计与延迟测量贯穿 C–F，不等到最后才增加。
 
 **依赖：**无需完整引擎。**交付：**可重复的探针、机器 / OS / driver / format 记录、支持矩阵与每项实验结论。
 
+**首轮进展（2026-10-08）：**[QQMusic 被动捕获记录](../experiments/windows/2026-10-08-w00-qqmusic.md)已完成目录快照和 60 秒 Process Loopback 非零信号采集、正常停止与播放设置前后对比。后续[物理输入 / 静音输出与时钟记录](../experiments/windows/2026-10-08-w00-physical-clock.md)完成 Realtek 与 FreeDSP 四路并发 Shared 的 60 秒和 300 秒观测；输入无后续 discontinuity / timestamp error，输出无空 padding，前后播放设置一致。capture IAudioClock 的 QPC 隔次重复，IAudioClock2 全零；有效 packet frame/QPC 可用于该窗口的速率估计。300 秒最大相对差约 0.03374 ppm，不能据此认定共钟或免除 follower bridge。按用户约束未执行 mute、默认切换、可听测试音、Exclusive 或回放。Takeover、隔离对照、输入到输出回路、设备失联和长期稳定性仍未测。实施与复现入口见 [被动捕获计划](2026-10-08-w00-passive-probe-plan.md)和[物理时钟计划](2026-10-08-w00-physical-clock-plan.md)；W00 整体验收尚未完成。
+
 - [ ] 记录 OS build、CPU 架构、驱动版本、设备型号、连接方式、默认角色、增强 / spatial 设置与电源状态。
 - [ ] Shared render：播放已知测试信号，记录实际 buffer size、period、每次可写 frames 和 event 间隔。
 - [ ] Physical capture：记录 packet frames、flags、device / QPC timestamp，包含无声音和设备失联。
@@ -100,7 +102,7 @@ W11 的调度、统计与延迟测量贯穿 C–F，不等到最后才增加。
 - [ ] Capture / Takeover：分别观察原始输出、Moiren 捕获输出；实验 session mute / volume、应用自行切换输出、endpoint 音量、OBS 并行捕获、shared / exclusive / 受保护内容。
 - [ ] 普通 loopback：确认捕获范围、默认输出变化和 Moiren 自身 render 是否进入捕获；记录外部反馈路径。
 - [ ] 独立 capture + render 与双 render endpoint：采集长期 ring / timestamp 数据，不把短时能出声当作跨钟稳定。
-- [ ] 输出三类结论：已实测支持、已知不支持、需要指定条件。Takeover 失败也必须形成结论，不能把它写成待实现即必然可行的功能。
+- [ ] 输出五类结论：已实测支持、已知不支持、需要指定条件、未测试、结果无法判定。缺少设备、探针错误和证据不足不能归为平台不支持；Takeover 失败也必须形成有适用范围的结论。
 
 **验收：**每个实验有操作步骤、观测数据、预期 / 实际差异和适用范围。若 Takeover 不成立，MVP 使用 Capture / Monitor 命名，必要时以简单 Recorder + 监听形成任务闭环。实验结果是后续 API 选择依据，不能用示例代码存在代替实测。
 

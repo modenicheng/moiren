@@ -1,0 +1,1975 @@
+{
+  "schema_version": 1,
+  "started_unix_ms": 1791433006761,
+  "requested_seconds": 60,
+  "before": {
+    "defaults": [
+      {
+        "flow": "render",
+        "role": "console",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "render",
+        "role": "multimedia",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "render",
+        "role": "communications",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "capture",
+        "role": "console",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      },
+      {
+        "flow": "capture",
+        "role": "multimedia",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      },
+      {
+        "flow": "capture",
+        "role": "communications",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      }
+    ],
+    "endpoints": [
+      {
+        "id": "{0.0.0.00000000}.{3543a63a-4a4d-48ae-ba27-f2155d619370}",
+        "name": "CABLE Input (VB-Audio Virtual Cable)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 96000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 20000,
+        "volume_scalar": 0.84806824,
+        "muted": false,
+        "sessions": [
+          {
+            "process_id": 2672,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": null,
+            "instance_key": "6fdbcb761d9f8800",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": [
+              {
+                "stage": "process identity",
+                "hresult": "0x80070005"
+              }
+            ]
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.0.00000000}.{93f962ad-26f6-4485-8a34-e1c7b27f44d5}",
+        "name": "CABLE In 16ch (VB-Audio Virtual Cable)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 20000,
+        "volume_scalar": 0.84806824,
+        "muted": false,
+        "sessions": [
+          {
+            "process_id": 0,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": "System Sounds",
+            "instance_key": "ab4f9148438c5911",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": true,
+            "errors": []
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.0.00000000}.{95e89537-8f6e-486d-92c3-5a92d91f3cce}",
+        "name": "Monitor (HD Audio Driver for Display Audio)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 1.0,
+        "muted": false,
+        "sessions": [
+          {
+            "process_id": 0,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": "System Sounds",
+            "instance_key": "72dcaa18fd707437",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.0.00000000}.{c20f8868-6ff2-476f-8734-a1e2812fa650}",
+        "name": "扬声器 (Realtek(R) Audio)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 0.0,
+        "muted": true,
+        "sessions": [
+          {
+            "process_id": 0,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": "System Sounds",
+            "instance_key": "629547113ff4b930",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+        "name": "耳机 (5- FreeDSP)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 0.023705458,
+        "muted": false,
+        "sessions": [
+          {
+            "process_id": 2672,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": null,
+            "instance_key": "1196b8ce53c3985c",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": [
+              {
+                "stage": "process identity",
+                "hresult": "0x80070005"
+              }
+            ]
+          },
+          {
+            "process_id": 42436,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "Resolve.exe",
+            "instance_key": "3fa5bdd393fb5e69",
+            "state": 1,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 33356,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "QQMusic.exe",
+            "instance_key": "47d76ad4b7532bf8",
+            "state": 1,
+            "volume_scalar": 0.4,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 9652,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "zen.exe",
+            "instance_key": "4eca0e3279a75394",
+            "state": 1,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 24396,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "ZCode.exe",
+            "instance_key": "7e1c5bbc427d35cf",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 26196,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": "Starward.exe",
+            "instance_key": "8330d9cd687d96d5",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 28816,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "Discord.exe",
+            "instance_key": "a9963eaf0d7013cf",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 27912,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "Discord.exe",
+            "instance_key": "d8f747547e705289",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.1.00000000}.{016ba892-8717-4bc5-b29b-f543ddfdeb98}",
+        "name": "CABLE Output (VB-Audio Virtual Cable)",
+        "flow": "capture",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 96000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 1.0,
+        "muted": false,
+        "sessions": [],
+        "errors": []
+      },
+      {
+        "id": "{0.0.1.00000000}.{0a18f197-0246-471d-9142-5ea67fe99450}",
+        "name": "麦克风阵列 (Realtek(R) Audio)",
+        "flow": "capture",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 4,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 16,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 0,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 0.8791499,
+        "muted": false,
+        "sessions": [],
+        "errors": []
+      },
+      {
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}",
+        "name": "麦克风 (5- FreeDSP)",
+        "flow": "capture",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 1,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 4,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 4,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 1.0,
+        "muted": false,
+        "sessions": [],
+        "errors": []
+      }
+    ],
+    "errors": []
+  },
+  "endpoints": [
+    {
+      "endpoint_id": "{0.0.0.00000000}.{c20f8868-6ff2-476f-8734-a1e2812fa650}",
+      "name": "扬声器 (Realtek(R) Audio)",
+      "flow": "render",
+      "status": "completed",
+      "last_stage": "completed",
+      "elapsed_seconds": 60.0084255,
+      "format": {
+        "format_tag": 65534,
+        "channels": 2,
+        "sample_rate": 48000,
+        "container_bits": 32,
+        "block_align": 8,
+        "extra_bytes": 22,
+        "valid_bits": 32,
+        "channel_mask": 3,
+        "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+      },
+      "buffer_frames": 1056,
+      "stream_latency_100ns": 0,
+      "engine_period_frames": 480,
+      "category": "Other",
+      "own_session_ducking_opt_out": true,
+      "mmcss_registered": true,
+      "stop_succeeded": true,
+      "audio_wakes": 6002,
+      "timeout_wakes": 0,
+      "frequency_units_per_second": 384000,
+      "clock": {
+        "accepted_reads": 6002,
+        "low_accuracy_reads": 0,
+        "failed_reads": 0,
+        "zero_qpc_reads": 0,
+        "regressions": 0,
+        "duplicate_reads": 0,
+        "inconsistent_qpc_reads": 0,
+        "stationary_reads": 1,
+        "fit": {
+          "samples": 5858,
+          "span_seconds": 58.5700558,
+          "rate_ratio": 0.9999997416561149,
+          "drift_ppm": -0.25834388506229544,
+          "rms_residual_us": 43.63482696810058
+        }
+      },
+      "capture_packet_clock": null,
+      "comparison_clock_source": "IAudioClock_position / GetFrequency",
+      "device_clock": {
+        "diagnostics": {
+          "accepted_reads": 6002,
+          "low_accuracy_reads": 0,
+          "failed_reads": 0,
+          "zero_qpc_reads": 0,
+          "regressions": 0,
+          "duplicate_reads": 0,
+          "inconsistent_qpc_reads": 0,
+          "stationary_reads": 0,
+          "fit": null
+        },
+        "fit": {
+          "samples": 5858,
+          "span_seconds": 58.5700563,
+          "frames_per_second": 48000.0075106306,
+          "rms_residual_frames": 3.4285391594671895
+        }
+      },
+      "capture": null,
+      "render": {
+        "primed_frames": 1056,
+        "submitted_frames": 2880960,
+        "zero_demand_wakes": 0,
+        "empty_padding_wakes": 0,
+        "min_writable_frames": 480,
+        "max_writable_frames": 480
+      },
+      "metadata_dropped": 0,
+      "errors": [],
+      "metadata_counts": {
+        "clock_points": 6002,
+        "capture_packets": 0,
+        "render_demands": 6002,
+        "device_clock_points": 6002
+      },
+      "device_clock_first_points": [
+        {
+          "arrival_ms": 0.011600000000000001,
+          "position_units": 0,
+          "qpc_100ns": 585297705470,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 8.7234,
+          "position_units": 192,
+          "qpc_100ns": 585297792588,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 18.4364,
+          "position_units": 672,
+          "qpc_100ns": 585297889722,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 28.4517,
+          "position_units": 1152,
+          "qpc_100ns": 585297989873,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 38.4858,
+          "position_units": 1632,
+          "qpc_100ns": 585298090215,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 48.4632,
+          "position_units": 2112,
+          "qpc_100ns": 585298189989,
+          "hresult": 0
+        }
+      ],
+      "device_clock_last_points": [
+        {
+          "arrival_ms": 59988.484399999994,
+          "position_units": 2879232,
+          "qpc_100ns": 585897590204,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 59998.4434,
+          "position_units": 2879712,
+          "qpc_100ns": 585897689789,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 60008.4202,
+          "position_units": 2880192,
+          "qpc_100ns": 585897789561,
+          "hresult": 0
+        }
+      ],
+      "device_clock_hresult_histogram": {
+        "0x00000000": 6002
+      },
+      "clock_first_points": [
+        {
+          "arrival_ms": 0.0079,
+          "position_units": 0,
+          "qpc_100ns": 585297705435,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 8.718200000000001,
+          "position_units": 0,
+          "qpc_100ns": 585297792516,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 18.4335,
+          "position_units": 1712,
+          "qpc_100ns": 585297889666,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 28.4476,
+          "position_units": 5552,
+          "qpc_100ns": 585297989816,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 38.482,
+          "position_units": 9408,
+          "qpc_100ns": 585298090150,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 48.4586,
+          "position_units": 13240,
+          "qpc_100ns": 585298189919,
+          "hresult": 0
+        }
+      ],
+      "clock_last_points": [
+        {
+          "arrival_ms": 59988.4827,
+          "position_units": 23030144,
+          "qpc_100ns": 585897590176,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 59998.4401,
+          "position_units": 23033976,
+          "qpc_100ns": 585897689731,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 60008.4187,
+          "position_units": 23037824,
+          "qpc_100ns": 585897789538,
+          "hresult": 0
+        }
+      ],
+      "clock_qpc_step_ms": {
+        "count": 6001,
+        "min": 8.7081,
+        "median": 9.9993,
+        "p95": 10.1419,
+        "p99": 10.236,
+        "max": 10.8913
+      },
+      "clock_reused_qpc_examples": [],
+      "arrival_interval_ms": {
+        "count": 6001,
+        "min": 8.7136,
+        "median": 9.998799999997573,
+        "p95": 10.142800000001444,
+        "p99": 10.235099999998056,
+        "max": 10.892699999996694
+      },
+      "packet_frame_histogram": {},
+      "render_writable_histogram": {
+        "480": 6002
+      },
+      "render_padding_histogram": {
+        "576": 6002
+      },
+      "packet_position_gap_count": 0,
+      "packet_qpc_step_ms": null,
+      "analysis_30s_windows": [
+        {
+          "qpc_window_100ns": [
+            585309626454,
+            585609626454
+          ],
+          "fit": {
+            "samples": 3000,
+            "span_seconds": 29.9902451,
+            "rate_ratio": 0.9999999379972687,
+            "drift_ppm": -0.06200273128253997,
+            "rms_residual_us": 41.54032145526647
+          }
+        },
+        {
+          "qpc_window_100ns": [
+            585609626454,
+            585895455015
+          ],
+          "fit": {
+            "samples": 2858,
+            "span_seconds": 28.5700051,
+            "rate_ratio": 0.9999999485079325,
+            "drift_ppm": -0.051492067498770666,
+            "rms_residual_us": 45.64349495682898
+          }
+        }
+      ],
+      "independent_fit_check": {
+        "samples": 5858,
+        "span_seconds": 58.5700558,
+        "rate_ratio": 0.9999997416561112,
+        "drift_ppm": -0.2583438888370537,
+        "rms_residual_us": 43.63482696812344
+      },
+      "independent_device_clock_fit_check": {
+        "samples": 5858,
+        "span_seconds": 58.5700563,
+        "frames_per_second": 48000.00751063062,
+        "rms_residual_frames": 3.428539159468967
+      }
+    },
+    {
+      "endpoint_id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+      "name": "耳机 (5- FreeDSP)",
+      "flow": "render",
+      "status": "completed",
+      "last_stage": "completed",
+      "elapsed_seconds": 60.0025053,
+      "format": {
+        "format_tag": 65534,
+        "channels": 2,
+        "sample_rate": 48000,
+        "container_bits": 32,
+        "block_align": 8,
+        "extra_bytes": 22,
+        "valid_bits": 32,
+        "channel_mask": 3,
+        "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+      },
+      "buffer_frames": 1056,
+      "stream_latency_100ns": 0,
+      "engine_period_frames": 480,
+      "category": "Other",
+      "own_session_ducking_opt_out": true,
+      "mmcss_registered": true,
+      "stop_succeeded": true,
+      "audio_wakes": 6001,
+      "timeout_wakes": 0,
+      "frequency_units_per_second": 384000,
+      "clock": {
+        "accepted_reads": 6001,
+        "low_accuracy_reads": 0,
+        "failed_reads": 0,
+        "zero_qpc_reads": 0,
+        "regressions": 0,
+        "duplicate_reads": 0,
+        "inconsistent_qpc_reads": 0,
+        "stationary_reads": 0,
+        "fit": {
+          "samples": 5859,
+          "span_seconds": 58.5800503,
+          "rate_ratio": 0.9999998473057276,
+          "drift_ppm": -0.15269427244835043,
+          "rms_residual_us": 31.32755353693185
+        }
+      },
+      "capture_packet_clock": null,
+      "comparison_clock_source": "IAudioClock_position / GetFrequency",
+      "device_clock": {
+        "diagnostics": {
+          "accepted_reads": 6001,
+          "low_accuracy_reads": 0,
+          "failed_reads": 0,
+          "zero_qpc_reads": 0,
+          "regressions": 0,
+          "duplicate_reads": 0,
+          "inconsistent_qpc_reads": 0,
+          "stationary_reads": 0,
+          "fit": null
+        },
+        "fit": {
+          "samples": 5859,
+          "span_seconds": 58.5800477,
+          "frames_per_second": 48000.01489865899,
+          "rms_residual_frames": 4.330538404984195
+        }
+      },
+      "capture": null,
+      "render": {
+        "primed_frames": 1056,
+        "submitted_frames": 2880480,
+        "zero_demand_wakes": 0,
+        "empty_padding_wakes": 0,
+        "min_writable_frames": 480,
+        "max_writable_frames": 480
+      },
+      "metadata_dropped": 0,
+      "errors": [],
+      "metadata_counts": {
+        "clock_points": 6001,
+        "capture_packets": 0,
+        "render_demands": 6001,
+        "device_clock_points": 6001
+      },
+      "device_clock_first_points": [
+        {
+          "arrival_ms": 2.6055,
+          "position_units": 2744029389,
+          "qpc_100ns": 585295939872,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 12.8022,
+          "position_units": 2744029870,
+          "qpc_100ns": 585296041843,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 22.7499,
+          "position_units": 2744030351,
+          "qpc_100ns": 585296141318,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 32.8286,
+          "position_units": 2744030830,
+          "qpc_100ns": 585296242109,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 42.793400000000005,
+          "position_units": 2744031312,
+          "qpc_100ns": 585296341758,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 52.653400000000005,
+          "position_units": 2744031789,
+          "qpc_100ns": 585296440349,
+          "hresult": 0
+        }
+      ],
+      "device_clock_last_points": [
+        {
+          "arrival_ms": 59982.642499999994,
+          "position_units": 2746908428,
+          "qpc_100ns": 585895740243,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 59992.6364,
+          "position_units": 2746908908,
+          "qpc_100ns": 585895840187,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 60002.4958,
+          "position_units": 2746909388,
+          "qpc_100ns": 585895938781,
+          "hresult": 0
+        }
+      ],
+      "device_clock_hresult_histogram": {
+        "0x00000000": 6001
+      },
+      "clock_first_points": [
+        {
+          "arrival_ms": 2.6013,
+          "position_units": 0,
+          "qpc_100ns": 585295939817,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 12.798399999999999,
+          "position_units": 328,
+          "qpc_100ns": 585296041767,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 22.744899999999998,
+          "position_units": 4144,
+          "qpc_100ns": 585296141244,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 32.8247,
+          "position_units": 8008,
+          "qpc_100ns": 585296242046,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 42.7896,
+          "position_units": 11840,
+          "qpc_100ns": 585296341690,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 52.6485,
+          "position_units": 15616,
+          "qpc_100ns": 585296440274,
+          "hresult": 0
+        }
+      ],
+      "clock_last_points": [
+        {
+          "arrival_ms": 59982.638,
+          "position_units": 23028720,
+          "qpc_100ns": 585895740185,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 59992.6337,
+          "position_units": 23032560,
+          "qpc_100ns": 585895840144,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 60002.4926,
+          "position_units": 23036344,
+          "qpc_100ns": 585895938724,
+          "hresult": 0
+        }
+      ],
+      "clock_qpc_step_ms": {
+        "count": 6000,
+        "min": 9.32,
+        "median": 9.9989,
+        "p95": 10.189035,
+        "p99": 10.275113000000001,
+        "max": 10.4925
+      },
+      "clock_reused_qpc_examples": [],
+      "arrival_interval_ms": {
+        "count": 6000,
+        "min": 9.311199999996461,
+        "median": 9.99914999999919,
+        "p95": 10.193400000003749,
+        "p99": 10.280602999998228,
+        "max": 10.500199999998586
+      },
+      "packet_frame_histogram": {},
+      "render_writable_histogram": {
+        "480": 6001
+      },
+      "render_padding_histogram": {
+        "576": 6001
+      },
+      "packet_position_gap_count": 0,
+      "packet_qpc_step_ms": null,
+      "analysis_30s_windows": [
+        {
+          "qpc_window_100ns": [
+            585309626454,
+            585609626454
+          ],
+          "fit": {
+            "samples": 3000,
+            "span_seconds": 29.9897861,
+            "rate_ratio": 0.9999997625368081,
+            "drift_ppm": -0.23746319188777676,
+            "rms_residual_us": 27.56934381631941
+          }
+        },
+        {
+          "qpc_window_100ns": [
+            585609626454,
+            585895455015
+          ],
+          "fit": {
+            "samples": 2859,
+            "span_seconds": 28.5799905,
+            "rate_ratio": 1.0000001279772277,
+            "drift_ppm": 0.12797722770407916,
+            "rms_residual_us": 34.747588080025686
+          }
+        }
+      ],
+      "independent_fit_check": {
+        "samples": 5859,
+        "span_seconds": 58.5800503,
+        "rate_ratio": 0.9999998473057268,
+        "drift_ppm": -0.15269427322550655,
+        "rms_residual_us": 31.327553536940847
+      },
+      "independent_device_clock_fit_check": {
+        "samples": 5859,
+        "span_seconds": 58.5800477,
+        "frames_per_second": 48000.014898658985,
+        "rms_residual_frames": 4.330538404983686
+      }
+    },
+    {
+      "endpoint_id": "{0.0.1.00000000}.{0a18f197-0246-471d-9142-5ea67fe99450}",
+      "name": "麦克风阵列 (Realtek(R) Audio)",
+      "flow": "capture",
+      "status": "completed",
+      "last_stage": "completed",
+      "elapsed_seconds": 60.0024696,
+      "format": {
+        "format_tag": 65534,
+        "channels": 4,
+        "sample_rate": 48000,
+        "container_bits": 32,
+        "block_align": 16,
+        "extra_bytes": 22,
+        "valid_bits": 32,
+        "channel_mask": 0,
+        "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+      },
+      "buffer_frames": 1056,
+      "stream_latency_100ns": 0,
+      "engine_period_frames": 480,
+      "category": "Other",
+      "own_session_ducking_opt_out": false,
+      "mmcss_registered": true,
+      "stop_succeeded": true,
+      "audio_wakes": 6000,
+      "timeout_wakes": 0,
+      "frequency_units_per_second": 768000,
+      "clock": {
+        "accepted_reads": 3000,
+        "low_accuracy_reads": 0,
+        "failed_reads": 0,
+        "zero_qpc_reads": 1,
+        "regressions": 0,
+        "duplicate_reads": 0,
+        "inconsistent_qpc_reads": 2999,
+        "stationary_reads": 0,
+        "fit": null
+      },
+      "capture_packet_clock": {
+        "accepted_reads": 5999,
+        "low_accuracy_reads": 0,
+        "failed_reads": 0,
+        "zero_qpc_reads": 0,
+        "regressions": 0,
+        "duplicate_reads": 0,
+        "inconsistent_qpc_reads": 0,
+        "stationary_reads": 0,
+        "fit": {
+          "samples": 5859,
+          "span_seconds": 58.5799207,
+          "rate_ratio": 0.9999997301580585,
+          "drift_ppm": -0.2698419414581821,
+          "rms_residual_us": 43.07290062979523
+        }
+      },
+      "comparison_clock_source": "capture_packet_frames / sample_rate",
+      "device_clock": {
+        "diagnostics": {
+          "accepted_reads": 0,
+          "low_accuracy_reads": 0,
+          "failed_reads": 0,
+          "zero_qpc_reads": 6000,
+          "regressions": 0,
+          "duplicate_reads": 0,
+          "inconsistent_qpc_reads": 0,
+          "stationary_reads": 0,
+          "fit": null
+        },
+        "fit": null
+      },
+      "capture": {
+        "packets": 5999,
+        "frames": 2879520,
+        "samples": 11518080,
+        "silent_packets": 0,
+        "signal_packets": 5999,
+        "startup_discontinuities": 1,
+        "later_discontinuities": 0,
+        "timestamp_error_packets": 0,
+        "valid_timestamp_packets": 5999,
+        "timestamp_regressions": 0,
+        "non_finite_samples": 0,
+        "min_packet_frames": 480,
+        "max_packet_frames": 480,
+        "first_device_position_frames": 0,
+        "last_device_position_frames": 2879040,
+        "first_qpc_100ns": 585299725654,
+        "last_qpc_100ns": 585899525242,
+        "rms": 0.0020748330449560687,
+        "peak": 0.15856105089187622
+      },
+      "render": null,
+      "metadata_dropped": 0,
+      "errors": [],
+      "metadata_counts": {
+        "clock_points": 6000,
+        "capture_packets": 5999,
+        "render_demands": 0,
+        "device_clock_points": 6000
+      },
+      "device_clock_first_points": [
+        {
+          "arrival_ms": 12.4849,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 22.4934,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 32.5048,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 42.4077,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 52.4522,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 62.436899999999994,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        }
+      ],
+      "device_clock_last_points": [
+        {
+          "arrival_ms": 59982.500199999995,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 59992.5249,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 60002.4689,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        }
+      ],
+      "device_clock_hresult_histogram": {
+        "0x00000000": 6000
+      },
+      "clock_first_points": [
+        {
+          "arrival_ms": 12.4817,
+          "position_units": 7680,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 22.4877,
+          "position_units": 15360,
+          "qpc_100ns": 585299985652,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 32.5004,
+          "position_units": 23040,
+          "qpc_100ns": 585299985652,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 42.4062,
+          "position_units": 30720,
+          "qpc_100ns": 585300185508,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 52.4505,
+          "position_units": 38400,
+          "qpc_100ns": 585300185508,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 62.4355,
+          "position_units": 46080,
+          "qpc_100ns": 585300386178,
+          "hresult": 0
+        }
+      ],
+      "clock_last_points": [
+        {
+          "arrival_ms": 59982.498,
+          "position_units": 46064640,
+          "qpc_100ns": 585899585680,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 59992.5227,
+          "position_units": 46072320,
+          "qpc_100ns": 585899585680,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 60002.4666,
+          "position_units": 46080000,
+          "qpc_100ns": 585899784972,
+          "hresult": 0
+        }
+      ],
+      "clock_qpc_step_ms": {
+        "count": 5998,
+        "min": 0.0,
+        "median": 9.58745,
+        "p95": 20.058945,
+        "p99": 20.110806,
+        "max": 20.8288
+      },
+      "clock_reused_qpc_examples": [
+        {
+          "before": {
+            "arrival_ms": 22.4877,
+            "position_units": 15360,
+            "qpc_100ns": 585299985652,
+            "hresult": 0
+          },
+          "after": {
+            "arrival_ms": 32.5004,
+            "position_units": 23040,
+            "qpc_100ns": 585299985652,
+            "hresult": 0
+          }
+        },
+        {
+          "before": {
+            "arrival_ms": 42.4062,
+            "position_units": 30720,
+            "qpc_100ns": 585300185508,
+            "hresult": 0
+          },
+          "after": {
+            "arrival_ms": 52.4505,
+            "position_units": 38400,
+            "qpc_100ns": 585300185508,
+            "hresult": 0
+          }
+        },
+        {
+          "before": {
+            "arrival_ms": 62.4355,
+            "position_units": 46080,
+            "qpc_100ns": 585300386178,
+            "hresult": 0
+          },
+          "after": {
+            "arrival_ms": 72.4702,
+            "position_units": 53760,
+            "qpc_100ns": 585300386178,
+            "hresult": 0
+          }
+        }
+      ],
+      "arrival_interval_ms": {
+        "count": 5998,
+        "min": 9.147500000006403,
+        "median": 10.000199999999495,
+        "p95": 10.12371500000081,
+        "p99": 10.206727000002429,
+        "max": 10.894999999996799
+      },
+      "packet_frame_histogram": {
+        "480": 5999
+      },
+      "render_writable_histogram": {},
+      "render_padding_histogram": {},
+      "packet_position_gap_count": 0,
+      "packet_qpc_step_ms": {
+        "count": 5998,
+        "min": 9.1445,
+        "median": 10.0002,
+        "p95": 10.0781,
+        "p99": 10.135005999999999,
+        "max": 10.8713
+      },
+      "analysis_30s_windows": [
+        {
+          "qpc_window_100ns": [
+            585309626454,
+            585609626454
+          ],
+          "fit": {
+            "samples": 3001,
+            "span_seconds": 29.999957,
+            "rate_ratio": 0.9999999013174299,
+            "drift_ppm": -0.09868257011547144,
+            "rms_residual_us": 39.257489728928114
+          }
+        },
+        {
+          "qpc_window_100ns": [
+            585609626454,
+            585895455015
+          ],
+          "fit": {
+            "samples": 2858,
+            "span_seconds": 28.5700021,
+            "rate_ratio": 0.9999999780677461,
+            "drift_ppm": -0.021932253901901788,
+            "rms_residual_us": 46.65326251490033
+          }
+        }
+      ],
+      "independent_fit_check": {
+        "samples": 5859,
+        "span_seconds": 58.5799207,
+        "rate_ratio": 0.9999997301580225,
+        "drift_ppm": -0.2698419775404304,
+        "rms_residual_us": 43.072900629830755
+      }
+    },
+    {
+      "endpoint_id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}",
+      "name": "麦克风 (5- FreeDSP)",
+      "flow": "capture",
+      "status": "completed",
+      "last_stage": "completed",
+      "elapsed_seconds": 60.005778,
+      "format": {
+        "format_tag": 65534,
+        "channels": 1,
+        "sample_rate": 48000,
+        "container_bits": 32,
+        "block_align": 4,
+        "extra_bytes": 22,
+        "valid_bits": 32,
+        "channel_mask": 4,
+        "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+      },
+      "buffer_frames": 1056,
+      "stream_latency_100ns": 0,
+      "engine_period_frames": 480,
+      "category": "Other",
+      "own_session_ducking_opt_out": false,
+      "mmcss_registered": true,
+      "stop_succeeded": true,
+      "audio_wakes": 6001,
+      "timeout_wakes": 0,
+      "frequency_units_per_second": 192000,
+      "clock": {
+        "accepted_reads": 3000,
+        "low_accuracy_reads": 0,
+        "failed_reads": 0,
+        "zero_qpc_reads": 1,
+        "regressions": 0,
+        "duplicate_reads": 0,
+        "inconsistent_qpc_reads": 3000,
+        "stationary_reads": 0,
+        "fit": null
+      },
+      "capture_packet_clock": {
+        "accepted_reads": 6000,
+        "low_accuracy_reads": 0,
+        "failed_reads": 0,
+        "zero_qpc_reads": 0,
+        "regressions": 0,
+        "duplicate_reads": 0,
+        "inconsistent_qpc_reads": 0,
+        "stationary_reads": 0,
+        "fit": {
+          "samples": 5859,
+          "span_seconds": 58.5799981,
+          "rate_ratio": 0.999999843782761,
+          "drift_ppm": -0.15621723903347373,
+          "rms_residual_us": 29.39143008154952
+        }
+      },
+      "comparison_clock_source": "capture_packet_frames / sample_rate",
+      "device_clock": {
+        "diagnostics": {
+          "accepted_reads": 0,
+          "low_accuracy_reads": 0,
+          "failed_reads": 0,
+          "zero_qpc_reads": 6001,
+          "regressions": 0,
+          "duplicate_reads": 0,
+          "inconsistent_qpc_reads": 0,
+          "stationary_reads": 0,
+          "fit": null
+        },
+        "fit": null
+      },
+      "capture": {
+        "packets": 6000,
+        "frames": 2880000,
+        "samples": 2880000,
+        "silent_packets": 0,
+        "signal_packets": 6000,
+        "startup_discontinuities": 1,
+        "later_discontinuities": 0,
+        "timestamp_error_packets": 0,
+        "valid_timestamp_packets": 6000,
+        "timestamp_regressions": 0,
+        "non_finite_samples": 0,
+        "min_packet_frames": 480,
+        "max_packet_frames": 480,
+        "first_device_position_frames": 22257120,
+        "last_device_position_frames": 25136640,
+        "first_qpc_100ns": 585295555139,
+        "last_qpc_100ns": 585895455015,
+        "rms": 0.0009565628332169833,
+        "peak": 0.08142467588186264
+      },
+      "render": null,
+      "metadata_dropped": 0,
+      "errors": [],
+      "metadata_counts": {
+        "clock_points": 6001,
+        "capture_packets": 6000,
+        "render_demands": 0,
+        "device_clock_points": 6001
+      },
+      "device_clock_first_points": [
+        {
+          "arrival_ms": 5.810700000000001,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 15.7776,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 25.8759,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 35.8167,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 45.777499999999996,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 55.7968,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        }
+      ],
+      "device_clock_last_points": [
+        {
+          "arrival_ms": 59985.7835,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 59995.7804,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 60005.7772,
+          "position_units": 0,
+          "qpc_100ns": 0,
+          "hresult": 0
+        }
+      ],
+      "device_clock_hresult_histogram": {
+        "0x00000000": 6001
+      },
+      "clock_first_points": [
+        {
+          "arrival_ms": 5.7902,
+          "position_units": 1920,
+          "qpc_100ns": 0,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 15.773800000000001,
+          "position_units": 3840,
+          "qpc_100ns": 585295655044,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 25.8704,
+          "position_units": 5760,
+          "qpc_100ns": 585295655044,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 35.8127,
+          "position_units": 7680,
+          "qpc_100ns": 585295855089,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 45.7746,
+          "position_units": 9600,
+          "qpc_100ns": 585295855089,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 55.794200000000004,
+          "position_units": 11520,
+          "qpc_100ns": 585296055042,
+          "hresult": 0
+        }
+      ],
+      "clock_last_points": [
+        {
+          "arrival_ms": 59985.7825,
+          "position_units": 11518080,
+          "qpc_100ns": 585895255301,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 59995.779200000004,
+          "position_units": 11520000,
+          "qpc_100ns": 585895455015,
+          "hresult": 0
+        },
+        {
+          "arrival_ms": 60005.7749,
+          "position_units": 11521920,
+          "qpc_100ns": 585895455015,
+          "hresult": 0
+        }
+      ],
+      "clock_qpc_step_ms": {
+        "count": 5999,
+        "min": 0.0,
+        "median": 0.0,
+        "p95": 20.03292,
+        "p99": 20.057804,
+        "max": 20.2502
+      },
+      "clock_reused_qpc_examples": [
+        {
+          "before": {
+            "arrival_ms": 15.773800000000001,
+            "position_units": 3840,
+            "qpc_100ns": 585295655044,
+            "hresult": 0
+          },
+          "after": {
+            "arrival_ms": 25.8704,
+            "position_units": 5760,
+            "qpc_100ns": 585295655044,
+            "hresult": 0
+          }
+        },
+        {
+          "before": {
+            "arrival_ms": 35.8127,
+            "position_units": 7680,
+            "qpc_100ns": 585295855089,
+            "hresult": 0
+          },
+          "after": {
+            "arrival_ms": 45.7746,
+            "position_units": 9600,
+            "qpc_100ns": 585295855089,
+            "hresult": 0
+          }
+        },
+        {
+          "before": {
+            "arrival_ms": 55.794200000000004,
+            "position_units": 11520,
+            "qpc_100ns": 585296055042,
+            "hresult": 0
+          },
+          "after": {
+            "arrival_ms": 65.7706,
+            "position_units": 13440,
+            "qpc_100ns": 585296055042,
+            "hresult": 0
+          }
+        }
+      ],
+      "arrival_interval_ms": {
+        "count": 5999,
+        "min": 8.482500000000073,
+        "median": 10.00050000000192,
+        "p95": 10.1017300000025,
+        "p99": 10.151605999999934,
+        "max": 11.554400000000896
+      },
+      "packet_frame_histogram": {
+        "480": 6000
+      },
+      "render_writable_histogram": {},
+      "render_padding_histogram": {},
+      "packet_position_gap_count": 0,
+      "packet_qpc_step_ms": {
+        "count": 5999,
+        "min": 8.4224,
+        "median": 10.0003,
+        "p95": 10.04201,
+        "p99": 10.0663,
+        "max": 11.5604
+      },
+      "analysis_30s_windows": [
+        {
+          "qpc_window_100ns": [
+            585309626454,
+            585609626454
+          ],
+          "fit": {
+            "samples": 3000,
+            "span_seconds": 29.9899998,
+            "rate_ratio": 0.9999998091503911,
+            "drift_ppm": -0.19084960889426128,
+            "rms_residual_us": 35.20857643492742
+          }
+        },
+        {
+          "qpc_window_100ns": [
+            585609626454,
+            585895455015
+          ],
+          "fit": {
+            "samples": 2859,
+            "span_seconds": 28.5799786,
+            "rate_ratio": 0.9999999759767345,
+            "drift_ppm": -0.024023265488004597,
+            "rms_residual_us": 21.6370271404493
+          }
+        }
+      ],
+      "independent_fit_check": {
+        "samples": 5859,
+        "span_seconds": 58.5799981,
+        "rate_ratio": 0.9999998437827237,
+        "drift_ppm": -0.15621727633696736,
+        "rms_residual_us": 29.39143008155477
+      }
+    }
+  ],
+  "common_qpc_window_100ns": [
+    585309626454,
+    585895455015
+  ],
+  "relative_clocks": [
+    {
+      "left_endpoint": "{0.0.0.00000000}.{c20f8868-6ff2-476f-8734-a1e2812fa650}",
+      "right_endpoint": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+      "left_faster_ppm": -0.10564962871217887,
+      "left_name": "扬声器 (Realtek(R) Audio)",
+      "right_name": "耳机 (5- FreeDSP)"
+    },
+    {
+      "left_endpoint": "{0.0.0.00000000}.{c20f8868-6ff2-476f-8734-a1e2812fa650}",
+      "right_endpoint": "{0.0.1.00000000}.{0a18f197-0246-471d-9142-5ea67fe99450}",
+      "left_faster_ppm": 0.011498059393488802,
+      "left_name": "扬声器 (Realtek(R) Audio)",
+      "right_name": "麦克风阵列 (Realtek(R) Audio)"
+    },
+    {
+      "left_endpoint": "{0.0.0.00000000}.{c20f8868-6ff2-476f-8734-a1e2812fa650}",
+      "right_endpoint": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}",
+      "left_faster_ppm": -0.10212666201603326,
+      "left_name": "扬声器 (Realtek(R) Audio)",
+      "right_name": "麦克风 (5- FreeDSP)"
+    },
+    {
+      "left_endpoint": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+      "right_endpoint": "{0.0.1.00000000}.{0a18f197-0246-471d-9142-5ea67fe99450}",
+      "left_faster_ppm": 0.11714770065118785,
+      "left_name": "耳机 (5- FreeDSP)",
+      "right_name": "麦克风阵列 (Realtek(R) Audio)"
+    },
+    {
+      "left_endpoint": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+      "right_endpoint": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}",
+      "left_faster_ppm": 0.0035229670292125093,
+      "left_name": "耳机 (5- FreeDSP)",
+      "right_name": "麦克风 (5- FreeDSP)"
+    },
+    {
+      "left_endpoint": "{0.0.1.00000000}.{0a18f197-0246-471d-9142-5ea67fe99450}",
+      "right_endpoint": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}",
+      "left_faster_ppm": -0.11362472018827674,
+      "left_name": "麦克风阵列 (Realtek(R) Audio)",
+      "right_name": "麦克风 (5- FreeDSP)"
+    }
+  ],
+  "after": {
+    "defaults": [
+      {
+        "flow": "render",
+        "role": "console",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "render",
+        "role": "multimedia",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "render",
+        "role": "communications",
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}"
+      },
+      {
+        "flow": "capture",
+        "role": "console",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      },
+      {
+        "flow": "capture",
+        "role": "multimedia",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      },
+      {
+        "flow": "capture",
+        "role": "communications",
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      }
+    ],
+    "endpoints": [
+      {
+        "id": "{0.0.0.00000000}.{3543a63a-4a4d-48ae-ba27-f2155d619370}",
+        "name": "CABLE Input (VB-Audio Virtual Cable)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 96000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 20000,
+        "volume_scalar": 0.84806824,
+        "muted": false,
+        "sessions": [
+          {
+            "process_id": 2672,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": null,
+            "instance_key": "6fdbcb761d9f8800",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": [
+              {
+                "stage": "process identity",
+                "hresult": "0x80070005"
+              }
+            ]
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.0.00000000}.{93f962ad-26f6-4485-8a34-e1c7b27f44d5}",
+        "name": "CABLE In 16ch (VB-Audio Virtual Cable)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 20000,
+        "volume_scalar": 0.84806824,
+        "muted": false,
+        "sessions": [
+          {
+            "process_id": 0,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": "System Sounds",
+            "instance_key": "ab4f9148438c5911",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": true,
+            "errors": []
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.0.00000000}.{95e89537-8f6e-486d-92c3-5a92d91f3cce}",
+        "name": "Monitor (HD Audio Driver for Display Audio)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 1.0,
+        "muted": false,
+        "sessions": [
+          {
+            "process_id": 0,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": "System Sounds",
+            "instance_key": "72dcaa18fd707437",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.0.00000000}.{c20f8868-6ff2-476f-8734-a1e2812fa650}",
+        "name": "扬声器 (Realtek(R) Audio)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 0.0,
+        "muted": true,
+        "sessions": [
+          {
+            "process_id": 0,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": "System Sounds",
+            "instance_key": "629547113ff4b930",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 42516,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "w00_physical.exe",
+            "instance_key": "773ae466118ac1c9",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+        "name": "耳机 (5- FreeDSP)",
+        "flow": "render",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 0.023705458,
+        "muted": false,
+        "sessions": [
+          {
+            "process_id": 2672,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": null,
+            "instance_key": "1196b8ce53c3985c",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": [
+              {
+                "stage": "process identity",
+                "hresult": "0x80070005"
+              }
+            ]
+          },
+          {
+            "process_id": 42436,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "Resolve.exe",
+            "instance_key": "3fa5bdd393fb5e69",
+            "state": 1,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 33356,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "QQMusic.exe",
+            "instance_key": "47d76ad4b7532bf8",
+            "state": 1,
+            "volume_scalar": 0.4,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 9652,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "zen.exe",
+            "instance_key": "4eca0e3279a75394",
+            "state": 1,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 42516,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "w00_physical.exe",
+            "instance_key": "7defd8616338749d",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 24396,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "ZCode.exe",
+            "instance_key": "7e1c5bbc427d35cf",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 26196,
+            "pid_query_hresult": "0x0889000D",
+            "process_name": "Starward.exe",
+            "instance_key": "8330d9cd687d96d5",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 28816,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "Discord.exe",
+            "instance_key": "a9963eaf0d7013cf",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          },
+          {
+            "process_id": 27912,
+            "pid_query_hresult": "0x00000000",
+            "process_name": "Discord.exe",
+            "instance_key": "d8f747547e705289",
+            "state": 0,
+            "volume_scalar": 1.0,
+            "muted": false,
+            "errors": []
+          }
+        ],
+        "errors": []
+      },
+      {
+        "id": "{0.0.1.00000000}.{016ba892-8717-4bc5-b29b-f543ddfdeb98}",
+        "name": "CABLE Output (VB-Audio Virtual Cable)",
+        "flow": "capture",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 2,
+          "sample_rate": 96000,
+          "container_bits": 32,
+          "block_align": 8,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 3,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 1.0,
+        "muted": false,
+        "sessions": [],
+        "errors": []
+      },
+      {
+        "id": "{0.0.1.00000000}.{0a18f197-0246-471d-9142-5ea67fe99450}",
+        "name": "麦克风阵列 (Realtek(R) Audio)",
+        "flow": "capture",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 4,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 16,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 0,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 0.8791499,
+        "muted": false,
+        "sessions": [],
+        "errors": []
+      },
+      {
+        "id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}",
+        "name": "麦克风 (5- FreeDSP)",
+        "flow": "capture",
+        "mix_format": {
+          "format_tag": 65534,
+          "channels": 1,
+          "sample_rate": 48000,
+          "container_bits": 32,
+          "block_align": 4,
+          "extra_bytes": 22,
+          "valid_bits": 32,
+          "channel_mask": 4,
+          "sub_format": "00000003-0000-0010-8000-00AA00389B71"
+        },
+        "default_period_100ns": 100000,
+        "minimum_period_100ns": 30000,
+        "volume_scalar": 1.0,
+        "muted": false,
+        "sessions": [],
+        "errors": []
+      }
+    ],
+    "errors": []
+  },
+  "observed_state_changes": [],
+  "errors": [],
+  "raw_trace": "target/w00/2026-10-08-physical-clock2-60s.json",
+  "summary_note": "Full before/after snapshots and run diagnostics retained. Streaming metadata condensed; 30-second fits are post-stop analysis. No PCM."
+}

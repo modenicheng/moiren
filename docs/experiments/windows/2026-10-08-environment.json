@@ -1,0 +1,60 @@
+{
+  "recorded_at": "2026-10-08T10:34:31.8996706+08:00",
+  "os": {
+    "Caption": "Microsoft Windows 11 专业版",
+    "Version": "10.0.26300",
+    "BuildNumber": "26300",
+    "OSArchitecture": "64 位"
+  },
+  "cpu": [
+    {
+      "Name": "Intel(R) Core(TM) Ultra 9 285H",
+      "Architecture": 9,
+      "NumberOfCores": 16,
+      "NumberOfLogicalProcessors": 16
+    }
+  ],
+  "audio_drivers": [
+    {
+      "DeviceName": "VB-Audio Virtual Cable",
+      "DriverProviderName": "VB-Audio Software",
+      "DriverVersion": "3.3.1.7",
+      "DriverDate": "2024-10-07T08:00:00+08:00",
+      "InfName": "oem77.inf"
+    },
+    {
+      "DeviceName": "HD Audio Driver for Display Audio",
+      "DriverProviderName": "Intel Corporation",
+      "DriverVersion": "32.0.101.8132",
+      "DriverDate": "2025-09-19T08:00:00+08:00",
+      "InfName": "oem138.inf"
+    },
+    {
+      "DeviceName": "HD Audio Driver for Display Audio",
+      "DriverProviderName": "Intel Corporation",
+      "DriverVersion": "32.0.101.8132",
+      "DriverDate": "2025-09-19T08:00:00+08:00",
+      "InfName": "oem138.inf"
+    },
+    {
+      "DeviceName": "Realtek High Definition Audio",
+      "DriverProviderName": "Realtek Semiconductor Corp.",
+      "DriverVersion": "6.0.9802.1",
+      "DriverDate": "2025-02-24T08:00:00+08:00",
+      "InfName": "oem63.inf"
+    }
+  ],
+  "power_scheme": [
+    "电源方案 GUID: 27fa6203-3987-4dcc-918d-748559d549ec  (Performance)"
+  ],
+  "enhancements": "Unknown - not changed or verified",
+  "spatial_audio": "Unknown - not changed or verified",
+  "physical_connection": "User reported builtin and USB headset; PnP identified FreeDSP",
+  "usb_headset_driver": {
+    "DeviceName": "USB Audio 2.0",
+    "DriverProviderName": "Microsoft",
+    "DriverVersion": "10.0.26100.9457",
+    "DriverDate": "2026-09-12T08:00:00+08:00",
+    "InfName": "usbaudio2.inf"
+  }
+}
