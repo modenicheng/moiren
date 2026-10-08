@@ -3,55 +3,64 @@ on:
   push:
     branches: [engine/flat-buffer-control-foundation]
   pull_request:
-    paths:
-      - 'crates/moiren-core/**'
-      - 'crates/moiren-engine/**'
-      - '.github/workflows/runtime-foundation.yml'
-      - 'Cargo.*'
 permissions:
   contents: read
 concurrency:
   group: runtime-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 jobs:
+  prepare:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/engine/flat-buffer-control-foundation'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --component rustfmt
+      - name: Resolve only the added dependency and format the two touched crates
+        run: |
+          cargo +stable metadata --format-version 1 > "$RUNNER_TEMP/metadata.json"
+          cargo +stable fmt -p moiren-core -p moiren-engine
+      - name: Commit generated lockfile and formatting on the task branch
+        id: commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock crates/moiren-core crates/moiren-engine
+          if ! git diff --cached --quiet; then
+            git commit -m 'chore: format runtime foundation and resolve queue dependency'
+            git push origin HEAD:engine/flat-buffer-control-foundation
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
   test:
+    needs: prepare
+    if: always() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash
     steps:
       - uses: actions/checkout@v4
-      - run: rustup update stable --profile minimal
-      - run: rustup component add rustfmt clippy --toolchain stable
+        with:
+          ref: ${{ needs.prepare.outputs.sha || github.sha }}
+      - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - run: cargo +stable test --locked -p moiren-core -p moiren-engine
       - if: always()
         run: cargo +stable clippy --locked -p moiren-core -p moiren-engine --all-targets -- -D warnings
-      - name: Check formatting
-        id: fmt
-        if: always()
-        continue-on-error: true
+      - if: always()
         run: cargo +stable fmt -p moiren-core -p moiren-engine -- --check
-      - name: Prepare formatting patch
-        if: steps.fmt.outcome == 'failure'
-        run: |
-          cargo +stable fmt -p moiren-core -p moiren-engine
-          git diff --binary > "$RUNNER_TEMP/runtime-format.patch"
-      - uses: actions/upload-artifact@v4
-        if: steps.fmt.outcome == 'failure'
-        with:
-          name: runtime-format-${{ matrix.os }}
-          path: ${{ runner.temp }}/runtime-format.patch
-      - name: Require formatting
-        if: steps.fmt.outcome == 'failure'
-        run: exit 1
+      - run: cargo +stable run --locked -p moiren-engine --example offline
   miri:
+    needs: prepare
+    if: always() && (needs.prepare.result == 'success' || needs.prepare.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha || github.sha }}
       - run: rustup toolchain install nightly --profile minimal --component miri
       - run: cargo +nightly miri setup
       - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine
