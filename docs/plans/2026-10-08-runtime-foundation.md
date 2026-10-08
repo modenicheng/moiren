@@ -10,7 +10,7 @@
 依据 [Graph 设计](../designs/01-audio-graph.md)、[Engine Draft v0.3](../designs/02-engine-design.md)、[10 月 7 日实施评估](2026-10-07%20plan.md)、[Windows 接入计划](2026-10-08-windows-integration-plan.md)，以及本轮明确要求：改为一整个平铺音频 buffer，以集中 unsafe 提供易用 safe 接口。本文件负责本轮具体接口与实施状态；不另建一份平行的全项目架构说明。
 
 | 既有讨论或尝试 | 本轮处理 |
-|---|---|
+| --- | --- |
 | `Vec<&mut Slot>`、对外暴露 `&mut Vec<S>` | 不采用。所有权属于 Arena，RT 不得 resize，也不向 Processor 暴露内存拥有者。 |
 | 每 Slot 一个 `Box<[S]>` | 本轮替换为一个 `Box<[S]>` 音频 slab，另存只读 SlotMeta。保留 planar 与 slot/view 分离。 |
 | PR #1 的 safe 双 slot resolver、Separate Gain | 保留为历史独立尝试，不自动合并或关闭。本轮直接从最新 main 建分支，覆盖 N 路 IO、只读与原位配对。 |
@@ -25,7 +25,7 @@
 ## 2. 本轮交付与明确未交付项
 
 | 领域 | 本轮可执行内容 | 尚未实现，不能据此验收 |
-|---|---|---|
+| --- | --- | --- |
 | Buffer | 单音频 slab、检查尺寸与预算、范围别名验证、作用域借用、N 路 IO、原位配对 | 全图 liveness / 自动 slot 分配、64-byte 自定义分配、声道级别名复用 |
 | Processor | Safe trait、IO/参数 prepare 验证、Gain、最小 Sum、独立 RtResources | Rack 插件宿主、Send matrix 融合、插件 ABI、PDC |
 | 参数 | Float/Int/Bool/Enum、稳定业务键、prepare 绑定、SPSC、时间分段、Float ramp、Accepted/Applied | 多客户端调度服务、事务批次、未来事件取消、自动拖动合并 |
@@ -86,7 +86,7 @@ prepare 后不修改布局、不重新分配、不增长。所有者移动不会
 这里必须区分三件事：内存安全、音频语义正确、实时预算。内存安全不能依赖插件承诺完整写出、没有 panic 或遵守性能约束；后两项需要独立验证。
 
 | 不变量 | 建立或维护位置 |
-|---|---|
+| --- | --- |
 | 每个引用位于同一个活跃分配内，长度与指针算术不溢出，满足 S 对齐 | Arena 构造检查；RawWindow 只对同一 slab 内 SlotMeta 寻址 |
 | 引用指向有效、已初始化的 S | 整个 slab 在 prepare 时以 `S::ZERO` 初始化；不向 safe DSP 暴露未初始化 slice |
 | 所有写区域与其他读写区域不重叠，重复只读允许 | `prepare_io` 比较实际 slot 范围，不只比较符号 ID |
@@ -214,7 +214,7 @@ Observer 必须参与 liveness：Source → Pre Meter → In-place Gain → Post
 Graph 只面向 `RtAudioSource` / `RtAudioSink` 的同步 streaming 面；设备枚举、格式协商、打开/停止、COM 对象与 native buffer lease 留在 backend owner。Source 只写当前 AudioBlockMut；Sink 在调用内消费样本，或复制到自己预分配的存储。
 
 | 输入/输出类型 | 进入 Graph 之前/之后的职责 |
-|---|---|
+| --- | --- |
 | WASAPI physical capture / render | PCM 打包、de/interleave、packet lease、timestamps、Shared/Exclusive、event 调度 |
 | 应用 process loopback | 进程身份、捕获范围、与原始播放及 Moiren 自身输出的关系；不等于 Takeover |
 | ASIO | 驱动 callback/通道布局、设备拥有权；不强行争抢 DAW 占用 |
@@ -300,7 +300,7 @@ crossfade、warm-up 和 state transfer 仍是后续策略，不是本轮既成�
 ## 13. 代码归属和验证方法
 
 | 文件 | 单一职责 |
-|---|---|
+| --- | --- |
 | `moiren-core/src/protocol.rs` | wire DTO、显式字段编码与 framing；无 unsafe、无 RT 内存地址 |
 | `moiren-engine/src/buffer.rs` | slab、access prepare、唯一引用构造边界、safe block/port view |
 | `moiren-engine/src/control.rs` | 参数 schema/表、控制到 RT 队列、时间和 ACK、ramp |

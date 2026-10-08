@@ -38,7 +38,7 @@ PRD 的 M1 已包含物理输入和多输出，而 clock adaptation 在原路线
 ## 3. 阶段与依赖
 
 | 阶段 | 工作项 | 可交付能力 | 出口条件 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | A：可行性与契约 | W00、W01 | 能力实验、Boundary 契约、支持范围 | 核心场景有实验记录；Capture / Takeover 未混淆 |
 | B：Windows 基础 | W02–W05 | 设备 / session 目录、身份、格式、period 协商 | 能可靠发现和解析资源，所有失败可分类 |
 | C：单 master 输出 | W06、W11 基础 | fake source / engine → Shared render | 可变需求正确、无 RT 分配、启动停止完整 |
@@ -75,7 +75,7 @@ W11 的调度、统计与延迟测量贯穿 C–F，不等到最后才增加。
 ## 4. 模块与交付物归属
 
 | 位置 | 职责与预计交付物 |
-|---|---|
+| --- | --- |
 | `crates/moiren-core/src/` | 持久化 device / application selector、Port/Layout、配置值、领域状态；不持有 COM 或设备运行实例 |
 | `crates/moiren-engine/src/` | Boundary 逻辑契约、bridge、Processing Timeline、RT demand、参数 / plan 协调；保持 fake backend 可测试 |
 | `crates/moiren-windows-audio/src/` | 新建 Windows backend：COM owner、Endpoint / Session 目录、WASAPI stream、Process Loopback、MMCSS、Windows 错误映射 |
@@ -411,7 +411,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ## 6. 必须覆盖的验收矩阵
 
 | 类别 | 场景 | 必须观察的结果 |
-|---|---|---|
+| --- | --- | --- |
 | 身份 | 同名双设备、Pinned / FollowDefault、StableId 缺失或失效 | 无错误自动绑定，配置可恢复或明确 unresolved |
 | 应用 | 多 session、子进程、退出重启、PID 复用、OBS 同时捕获 | 捕获范围准确，无重复混音或错误接管 |
 | 数据 | f32 / 实际 PCM、mono / stereo / mask、多 packet、SILENT | 帧数与声道正确，旧 samples 不泄漏到输出 |
@@ -431,7 +431,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ## 7. Gate 与后续决策
 
 | Gate | 在何时完成 | 通过 / 未通过后的动作 |
-|---|---|---|
+| --- | --- | --- |
 | Capture 能力 | W00 / W08 | 按已验证范围交付；未支持应用显示原因 |
 | Takeover | 产品承诺重定向之前 | 全部实验通过才命名为 Takeover；否则保留 Capture / Monitor |
 | 最小跨钟 | 首次独立 capture → render | 未通过不能将短时 passthrough 作为稳定 MVP |
