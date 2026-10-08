@@ -32,7 +32,7 @@
 
 ## Task 3：音频桥与实时集成
 
-文件：`crates/moiren-engine/src/boundary/bridge.rs`、`tests/io.rs`、`tests/runtime.rs`。
+文件：`crates/moiren-engine/src/boundary/bridge.rs`、`tests/io.rs`、`tests/runtime/main.rs`。
 
 - [x] 先写 stereo f32/f64 roundtrip、ring wrap、容量溢出、欠载与对端退出测试；确认未实现桥失败。
 - [x] 实现 `audio_bridge<S>(channels, capacity_frames, byte_budget) -> Result<(AudioWriter<S>, AudioReader<S>), BridgeError>`；完整 frame chunk 发布/消费，检查零尺寸、乘加溢出及预算。

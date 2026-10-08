@@ -4,28 +4,29 @@ use crate::{
     owner::{Apartment, OwnedHandle, take_string},
 };
 use serde::Serialize;
-use std::{
-    ffi::c_void,
-    panic::{AssertUnwindSafe, catch_unwind},
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::{Duration, Instant},
-};
 use windows::{
     Win32::{
-        Devices::{DeviceAndDriverInstallation::*, Enumeration::Pnp::*, Properties::*},
-        Foundation::{E_ACCESSDENIED, E_UNEXPECTED, HANDLE, HWND, WAIT_OBJECT_0},
+        Devices::{
+            DeviceAndDriverInstallation::{CONFIGRET, CR_NO_SUCH_DEVNODE, CR_SUCCESS},
+            Enumeration::Pnp::{SWDeviceLifetimeHandle, SwDeviceGetLifetime, SwDeviceSetLifetime},
+        },
+        Foundation::{E_ACCESSDENIED, E_UNEXPECTED, HANDLE},
         Media::Audio::{DEVICE_STATEMASK_ALL, IMMDeviceEnumerator, MMDeviceEnumerator, eAll},
         Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
         System::{
             Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance},
-            Threading::{GetCurrentProcess, OpenProcessToken, SetEvent, WaitForSingleObject},
+            Threading::{GetCurrentProcess, OpenProcessToken},
         },
     },
-    core::{HRESULT, HSTRING, PCWSTR, Result, w},
+    core::{HRESULT, Result},
 };
+
+mod devnode;
+mod lifecycle;
+
+pub use devnode::NodeState;
+use devnode::{node_state, owned_identity, uninstall_owned, wait_absent};
+use lifecycle::create;
 
 const ENUMERATOR: &str = "MoirenW00";
 
@@ -39,245 +40,6 @@ fn cr(value: CONFIGRET) -> String {
     format!("0x{:08X}", value.0)
 }
 
-// This is deliberately stricter than the API's possible name decoration. A
-// surprising callback identity is recorded, but never passed to uninstallation.
-fn owned_identity(actual: &str, instance: &str) -> bool {
-    actual.eq_ignore_ascii_case(&format!("SWD\\{ENUMERATOR}\\{instance}"))
-        && instance.starts_with("W00-")
-        && !instance.contains(['\\', '/', '\0'])
-}
-
-#[derive(Clone)]
-struct Completion {
-    result: HRESULT,
-    id: Option<String>,
-}
-struct Context {
-    event: OwnedHandle,
-    completion: Mutex<Option<Completion>>,
-    panicked: AtomicBool,
-}
-unsafe extern "system" fn completed(
-    _: HSWDEVICE,
-    result: HRESULT,
-    context: *const c_void,
-    id: PCWSTR,
-) {
-    if context.is_null() {
-        return;
-    }
-    // The box stays alive through SwDeviceClose, which joins late callbacks.
-    let context = unsafe { &*context.cast::<Context>() };
-    if catch_unwind(AssertUnwindSafe(|| {
-        let id = if id.is_null() {
-            None
-        } else {
-            unsafe { id.to_string().ok() }
-        };
-        *context.completion.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(Completion { result, id });
-    }))
-    .is_err()
-    {
-        context.panicked.store(true, Ordering::Release);
-    }
-    let _ = unsafe { SetEvent(context.event.0) };
-}
-
-struct SwLease(Option<HSWDEVICE>);
-impl SwLease {
-    fn close(&mut self) {
-        if let Some(handle) = self.0.take() {
-            unsafe { SwDeviceClose(handle) };
-        }
-    }
-}
-impl Drop for SwLease {
-    fn drop(&mut self) {
-        self.close();
-    }
-}
-struct Created {
-    // Struct fields drop in declaration order: close/join before freeing context.
-    lease: SwLease,
-    context: Box<Context>,
-}
-impl Created {
-    fn wait(&self) -> Result<Completion> {
-        if unsafe { WaitForSingleObject(self.context.event.0, 5_000) } != WAIT_OBJECT_0 {
-            return Err(windows::core::Error::from_hresult(HRESULT::from_win32(
-                1460,
-            )));
-        }
-        if self.context.panicked.load(Ordering::Acquire) {
-            return Err(unexpected());
-        }
-        self.context
-            .completion
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .ok_or_else(unexpected)
-    }
-}
-
-fn create(instance: &str, driver_required: bool) -> Result<Created> {
-    let context = Box::new(Context {
-        event: OwnedHandle::event()?,
-        completion: Mutex::new(None),
-        panicked: AtomicBool::new(false),
-    });
-    let instance = HSTRING::from(instance);
-    let info = SW_DEVICE_CREATE_INFO {
-        cbSize: size_of::<SW_DEVICE_CREATE_INFO>() as u32,
-        pszInstanceId: PCWSTR(instance.as_ptr()),
-        // No installed audio package matches this W00-only hardware identity.
-        pszzHardwareIds: w!("Moiren\\W00NoDriver\0"),
-        pszzCompatibleIds: w!("Moiren\\W00Probe\0"),
-        CapabilityFlags: (SWDeviceCapabilitiesRemovable.0
-            | SWDeviceCapabilitiesSilentInstall.0
-            | SWDeviceCapabilitiesNoDisplayInUI.0
-            | if driver_required {
-                SWDeviceCapabilitiesDriverRequired.0
-            } else {
-                0
-            }) as u32,
-        pszDeviceDescription: w!("Moiren W00 temporary lifecycle probe - no audio driver"),
-        ..Default::default()
-    };
-    let handle = unsafe {
-        SwDeviceCreate(
-            &HSTRING::from(ENUMERATOR),
-            w!("HTREE\\ROOT\\0"),
-            &info,
-            None,
-            Some(completed),
-            Some((&*context as *const Context).cast()),
-        )?
-    };
-    Ok(Created {
-        lease: SwLease(Some(handle)),
-        context,
-    })
-}
-
-#[derive(Default, Serialize)]
-pub struct NodeState {
-    pub locate_configret: String,
-    pub include_nonpresent: bool,
-    pub located: bool,
-    pub status_configret: Option<String>,
-    pub status_flags: Option<u32>,
-    pub problem_code: Option<u32>,
-    pub driver_inf_configret: Option<String>,
-    pub driver_inf_path: Option<String>,
-}
-fn node_state(id: &str, phantom: bool) -> NodeState {
-    let mut devinst = 0;
-    let result = unsafe {
-        CM_Locate_DevNodeW(
-            &mut devinst,
-            &HSTRING::from(id),
-            if phantom {
-                CM_LOCATE_DEVNODE_PHANTOM
-            } else {
-                CM_LOCATE_DEVNODE_NORMAL
-            },
-        )
-    };
-    let mut state = NodeState {
-        locate_configret: cr(result),
-        include_nonpresent: phantom,
-        located: result == CR_SUCCESS,
-        ..Default::default()
-    };
-    if result == CR_SUCCESS {
-        let (mut status, mut problem) = (CM_DEVNODE_STATUS_FLAGS::default(), CM_PROB::default());
-        let result = unsafe { CM_Get_DevNode_Status(&mut status, &mut problem, devinst, 0) };
-        state.status_configret = Some(cr(result));
-        if result == CR_SUCCESS {
-            state.status_flags = Some(status.0);
-            state.problem_code = Some(problem.0);
-        }
-        let mut property_type = DEVPROPTYPE::default();
-        let mut length = 0;
-        let result = unsafe {
-            CM_Get_DevNode_PropertyW(
-                devinst,
-                &DEVPKEY_Device_DriverInfPath,
-                &mut property_type,
-                None,
-                &mut length,
-                0,
-            )
-        };
-        state.driver_inf_configret = Some(cr(result));
-        if result == CR_BUFFER_SMALL && length <= 65_536 {
-            let mut data = vec![0u8; length as usize];
-            let result = unsafe {
-                CM_Get_DevNode_PropertyW(
-                    devinst,
-                    &DEVPKEY_Device_DriverInfPath,
-                    &mut property_type,
-                    Some(data.as_mut_ptr()),
-                    &mut length,
-                    0,
-                )
-            };
-            state.driver_inf_configret = Some(cr(result));
-            if result == CR_SUCCESS
-                && property_type == DEVPROP_TYPE_STRING
-                && length as usize <= data.len()
-            {
-                let text: Vec<u16> = data[..length as usize]
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|p| u16::from_le_bytes([p[0], p[1]]))
-                    .take_while(|&v| v != 0)
-                    .collect();
-                state.driver_inf_path = Some(String::from_utf16_lossy(&text));
-            }
-        }
-    }
-    state
-}
-fn wait_absent(id: &str, phantom: bool) -> NodeState {
-    let start = Instant::now();
-    loop {
-        let state = node_state(id, phantom);
-        if state.locate_configret == cr(CR_NO_SUCH_DEVNODE)
-            || start.elapsed() >= Duration::from_secs(5)
-        {
-            return state;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-struct DeviceInfo(HDEVINFO);
-impl Drop for DeviceInfo {
-    fn drop(&mut self) {
-        let _ = unsafe { SetupDiDestroyDeviceInfoList(self.0) };
-    }
-}
-fn uninstall_owned(actual: &str, instance: &str) -> Result<bool> {
-    if !owned_identity(actual, instance) {
-        return Err(windows::core::Error::from_hresult(E_ACCESSDENIED));
-    }
-    let info = DeviceInfo(unsafe { SetupDiCreateDeviceInfoList(None, None)? });
-    let mut data = SP_DEVINFO_DATA {
-        cbSize: size_of::<SP_DEVINFO_DATA>() as u32,
-        ..Default::default()
-    };
-    unsafe {
-        SetupDiOpenDeviceInfoW(info.0, &HSTRING::from(actual), None, 0, Some(&mut data))?;
-    }
-    let mut reboot = windows::core::BOOL::default();
-    unsafe {
-        DiUninstallDevice(HWND::default(), info.0, &data, 0, Some(&mut reboot))?;
-    }
-    Ok(reboot.as_bool())
-}
 fn all_audio_ids() -> Result<Vec<String>> {
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
@@ -379,7 +141,7 @@ fn cycle(instance: &str, iteration: u32, driver_required: bool, audio_ids: &[Str
             return Err(unexpected());
         }
         stage = "GetLifetime / SetLifetime(Handle)";
-        let handle = created.lease.0.ok_or_else(unexpected)?;
+        let handle = created.handle()?;
         report.lifetime = Some(unsafe { SwDeviceGetLifetime(handle)? }.0);
         unsafe {
             SwDeviceSetLifetime(handle, SWDeviceLifetimeHandle)?;
@@ -389,7 +151,7 @@ fn cycle(instance: &str, iteration: u32, driver_required: bool, audio_ids: &[Str
             Err(error) => report.duplicate_create_hresult = Some(hr(error.code())),
             Ok(mut duplicate) => {
                 report.duplicate_create_hresult = Some(hr(HRESULT(0)));
-                duplicate.lease.close();
+                duplicate.close();
                 return Err(unexpected());
             }
         }
@@ -412,16 +174,11 @@ fn cycle(instance: &str, iteration: u32, driver_required: bool, audio_ids: &[Str
     if let Err(error) = result {
         report.errors.push(ApiFailure::new(stage, error));
     }
-    created.lease.close();
+    created.close();
     report.close_returned = true;
     // Close joins callbacks; recover an identity even if the bounded wait timed out.
     if report.callback_instance.is_none()
-        && let Some(completion) = created
-            .context
-            .completion
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        && let Some(completion) = created.completion()
     {
         report.callback_hresult = Some(hr(completion.result));
         report.callback_instance = completion.id;
@@ -509,54 +266,4 @@ pub fn run(iterations: u32, observe_pid: Option<u32>) -> anyhow::Result<Report> 
         audio_ids_after,
         observed_state_changes,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn uninstall_guard_accepts_only_exact_created_identity() {
-        assert!(owned_identity("SWD\\MOIRENW00\\W00-abc", "W00-abc"));
-        for id in [
-            "ROOT\\MEDIA\\0000",
-            "SWD\\MMDEVAPI\\W00-abc",
-            "SWD\\MOIRENW000\\W00-abc",
-            "SWD\\MOIRENW00\\W00-other",
-        ] {
-            assert!(!owned_identity(id, "W00-abc"));
-        }
-        assert!(!owned_identity("SWD\\MOIRENW00\\other", "other"));
-        assert!(!owned_identity("SWD\\MOIRENW00\\W00-a\\b", "W00-a\\b"));
-    }
-    #[test]
-    fn callback_records_identity_before_create_returns_without_real_device() {
-        let context = Context {
-            event: OwnedHandle::event().unwrap(),
-            completion: Mutex::new(None),
-            panicked: AtomicBool::new(false),
-        };
-        unsafe {
-            completed(
-                HSWDEVICE::default(),
-                HRESULT(0),
-                (&context as *const Context).cast(),
-                w!("SWD\\MOIRENW00\\W00-abc"),
-            );
-        }
-        assert_eq!(
-            unsafe { WaitForSingleObject(context.event.0, 100) },
-            WAIT_OBJECT_0
-        );
-        assert_eq!(
-            context
-                .completion
-                .lock()
-                .unwrap()
-                .as_ref()
-                .unwrap()
-                .id
-                .as_deref(),
-            Some("SWD\\MOIRENW00\\W00-abc")
-        );
-    }
 }

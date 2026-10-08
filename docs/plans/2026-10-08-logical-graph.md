@@ -24,7 +24,7 @@
 4. [x] 增加完整 engine 链路：重复 source 输入 → Bus → Pan → 软件输出，覆盖 fan-out、参数事件、跨 block ramp 和 render 零分配/释放。
 5. [x] 更新文档与离线演示，运行测试、Clippy 和格式检查；检查 diff，保留用户其他改动。
 
-关键文件：`moiren-core/src/graph.rs`（编辑算法）、`graph/model.rs`（数据模型）、`graph/edit.rs`（组合编辑）、`moiren-core/tests/graph.rs`（拓扑契约）、`moiren-engine/src/processor/builtin/`（DSP）、`moiren-engine/tests/runtime.rs`（RT 回归）、`moiren-engine/examples/`（可运行离线示例）。
+关键文件：`moiren-core/src/graph.rs`（编辑算法）、`graph/model.rs`（数据模型）、`graph/edit.rs`（组合编辑）、`moiren-core/tests/graph.rs`（拓扑契约）、`moiren-engine/src/processor/builtin/`（DSP）、`moiren-engine/tests/runtime/main.rs`（RT 回归）、`moiren-engine/examples/`（可运行离线示例）。
 
 检查命令：
 

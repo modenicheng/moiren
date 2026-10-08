@@ -18,7 +18,7 @@
 
 ### Task 1: Compiler and Send lowering
 
-**Files:** Create `crates/moiren-engine/src/compiler.rs`, `src/compiler/send.rs`, `tests/compiler.rs`; modify `src/lib.rs`.
+**Files:** Create `crates/moiren-engine/src/compiler.rs`, `src/compiler/send.rs`, `tests/compiler/main.rs`; modify `src/lib.rs`.
 
 **Interfaces:**
 
@@ -41,7 +41,7 @@ pub fn compile<S: ProcessingSample>(
 
 ### Task 2: Safety and graph variation
 
-**Files:** Modify `tests/compiler.rs`, `tests/runtime.rs`.
+**Files:** Modify `tests/compiler/main.rs`, `tests/runtime/main.rs`.
 
 **Interfaces:** Consume Task 1's compiler and parameter bindings; no new public API.
 

@@ -3,24 +3,23 @@
 use std::{collections::BTreeMap, mem::size_of};
 
 use moiren_core::{
-    graph::*,
+    graph::{EdgeId, GraphError, LogicalGraph, NodeId, SendTap},
     protocol::{ParameterKey, ProcessorId},
 };
 use thiserror::Error;
 
 use crate::{
-    boundary::{RtAudioSink, RtAudioSource, SinkAdapter, SourceAdapter},
-    buffer::{BufferArena, BufferError, BufferSlotLayout, PortAccess},
-    control::{ControlError, ControlPort, ParamSpec, parameter_channel},
-    processor::{Bus, Gain, Pan, ProcessorRole, RtProcessor},
-    runtime::{
-        Engine, EngineConfig, ExecutionPlan, OpSpec, ProcessorInstance, RtResources, RuntimeError,
-    },
+    buffer::{BufferArena, BufferError},
+    control::{ControlError, ControlPort, parameter_channel},
+    runtime::{Engine, EngineConfig, ExecutionPlan, RtResources, RuntimeError},
     sample::ProcessingSample,
 };
 
+mod bindings;
+mod plan;
 mod send;
-use send::Send;
+
+pub use bindings::NodeBindings;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CompileConfig {
@@ -59,66 +58,6 @@ pub enum CompileError {
     TooManyProcessors,
 }
 
-enum Binding<S: ProcessingSample> {
-    Io(Box<dyn RtProcessor<S>>),
-    Gain(f64),
-    Pan(f64),
-}
-
-/// Prepared backend ownership and initial DSP values, separate from editable
-/// topology. All methods and all destruction are control-side operations.
-pub struct NodeBindings<S: ProcessingSample> {
-    nodes: BTreeMap<NodeId, Binding<S>>,
-}
-impl<S: ProcessingSample> Default for NodeBindings<S> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl<S: ProcessingSample> NodeBindings<S> {
-    pub fn new() -> Self {
-        Self {
-            nodes: BTreeMap::new(),
-        }
-    }
-
-    fn insert(&mut self, node: NodeId, binding: Binding<S>) -> Result<(), CompileError> {
-        if self.nodes.contains_key(&node) {
-            return Err(CompileError::DuplicateBinding { node });
-        }
-        self.nodes.insert(node, binding);
-        Ok(())
-    }
-    pub fn bind_source(
-        &mut self,
-        node: NodeId,
-        source: impl RtAudioSource<S> + 'static,
-    ) -> Result<(), CompileError> {
-        self.bind_io(node, SourceAdapter(source))
-    }
-    pub fn bind_sink(
-        &mut self,
-        node: NodeId,
-        sink: impl RtAudioSink<S> + 'static,
-    ) -> Result<(), CompileError> {
-        self.bind_io(node, SinkAdapter(sink))
-    }
-    /// Also accepts already prepared InputNode/OutputNode with their telemetry.
-    pub fn bind_io(
-        &mut self,
-        node: NodeId,
-        processor: impl RtProcessor<S> + 'static,
-    ) -> Result<(), CompileError> {
-        self.insert(node, Binding::Io(Box::new(processor)))
-    }
-    pub fn bind_gain(&mut self, node: NodeId, initial: f64) -> Result<(), CompileError> {
-        self.insert(node, Binding::Gain(initial))
-    }
-    pub fn bind_pan(&mut self, node: NodeId, initial: f64) -> Result<(), CompileError> {
-        self.insert(node, Binding::Pan(initial))
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct SendParameterKeys {
     pub gain: ParameterKey,
@@ -155,71 +94,6 @@ pub struct CompiledGraph<S: ProcessingSample> {
     pub stats: CompileStats,
 }
 
-struct DraftOp {
-    processor: ProcessorId,
-    reads: Vec<(u16, usize)>,
-    output: Option<usize>,
-}
-struct Builder<S: ProcessingSample> {
-    frames: usize,
-    layouts: Vec<BufferSlotLayout>,
-    instances: Vec<ProcessorInstance<S>>,
-    params: Vec<ParamSpec>,
-    ops: Vec<DraftOp>,
-}
-impl<S: ProcessingSample> Builder<S> {
-    fn slot(&mut self, channels: usize) -> usize {
-        let slot = self.layouts.len();
-        self.layouts.push(BufferSlotLayout {
-            channels,
-            capacity_frames: self.frames,
-        });
-        slot
-    }
-    fn processor(
-        &mut self,
-        processor: impl RtProcessor<S> + 'static,
-    ) -> Result<ProcessorId, CompileError> {
-        let id = ProcessorId(
-            u64::try_from(self.instances.len()).map_err(|_| CompileError::TooManyProcessors)?,
-        );
-        self.instances.push(ProcessorInstance::new(id, processor));
-        Ok(id)
-    }
-}
-
-// Forwarding a boxed user processor preserves its role and validation hooks.
-// This wrapper stays private, avoiding a blanket public Box implementation.
-struct BoundIo<S: ProcessingSample>(Box<dyn RtProcessor<S>>);
-impl<S: ProcessingSample> RtProcessor<S> for BoundIo<S> {
-    fn role(&self) -> ProcessorRole {
-        self.0.role()
-    }
-    fn latency_frames(&self) -> u32 {
-        self.0.latency_frames()
-    }
-    fn validate_io(
-        &self,
-        io: &crate::buffer::PreparedIo,
-    ) -> Result<(), crate::processor::ProcessorError> {
-        self.0.validate_io(io)
-    }
-    fn validate_parameters(
-        &self,
-        params: crate::control::ProcessParameters<'_>,
-    ) -> Result<(), crate::processor::ProcessorError> {
-        self.0.validate_parameters(params)
-    }
-    fn process(
-        &mut self,
-        ctx: &crate::processor::ProcessContext,
-        io: crate::buffer::ProcessIo<'_, S>,
-        params: crate::control::ProcessParameters<'_>,
-    ) {
-        self.0.process(ctx, io, params);
-    }
-}
-
 /// Compile and prepare entirely off the realtime thread. Unsupported edge
 /// semantics are diagnosed before consuming any backend into an engine.
 pub fn compile<S: ProcessingSample>(
@@ -249,100 +123,8 @@ pub fn compile<S: ProcessingSample>(
             });
         }
     }
-    for (&id, binding) in &bindings.nodes {
-        let kind = graph.get_node(id)?.kind();
-        let valid = match (kind, binding) {
-            (NodeKind::Source, Binding::Io(p)) => p.role() == ProcessorRole::Source,
-            (NodeKind::Sink, Binding::Io(p)) => p.role() == ProcessorRole::Sink,
-            (NodeKind::Gain, Binding::Gain(_)) | (NodeKind::Pan, Binding::Pan(_)) => true,
-            _ => false,
-        };
-        if !valid {
-            return Err(CompileError::BindingKind { node: id });
-        }
-    }
-    let incoming: BTreeMap<_, _> = graph.edges().iter().map(|e| (e.dst_port(), e)).collect();
-    let mut outputs = BTreeMap::new();
-    let mut mapping = CompiledBindings {
-        nodes: BTreeMap::new(),
-        edges: BTreeMap::new(),
-    };
-    let mut builder = Builder {
-        frames: cfg.max_block_frames,
-        layouts: Vec::new(),
-        instances: Vec::new(),
-        params: Vec::new(),
-        ops: Vec::new(),
-    };
-    for id in graph.topological_order()? {
-        let node = graph.get_node(id)?;
-        let mut reads = Vec::with_capacity(node.inputs().len());
-        for (index, port) in node.inputs().iter().enumerate() {
-            let slot = if let Some(edge) = incoming.get(&port.id()) {
-                let source = outputs[&edge.src_port()];
-                let slot = builder.slot(port.channels());
-                let send = Send {
-                    channels: port.channels(),
-                };
-                let processor = builder.processor(send)?;
-                let (specs, keys) = Send::parameters(processor, port.channels(), *edge.params());
-                builder.params.extend(specs);
-                mapping.edges.insert(edge.id(), keys);
-                builder.ops.push(DraftOp {
-                    processor,
-                    reads: vec![(0, source)],
-                    output: Some(slot),
-                });
-                slot
-            } else {
-                // Dedicated initialized silence. No operation ever writes here.
-                builder.slot(port.channels())
-            };
-            let port_index = u16::try_from(index).map_err(|_| GraphError::TooManyPorts)?;
-            reads.push((port_index, slot));
-        }
-        let binding = bindings.nodes.remove(&id);
-        let processor = match node.kind() {
-            NodeKind::Source | NodeKind::Sink => {
-                let Some(Binding::Io(processor)) = binding else {
-                    return Err(CompileError::MissingBinding { node: id });
-                };
-                builder.processor(BoundIo(processor))?
-            }
-            NodeKind::Gain => {
-                let initial = if let Some(Binding::Gain(initial)) = binding {
-                    initial
-                } else {
-                    1.0
-                };
-                let processor = builder.processor(Gain)?;
-                builder.params.push(Gain::parameter(processor, initial));
-                processor
-            }
-            NodeKind::Pan => {
-                let initial = if let Some(Binding::Pan(initial)) = binding {
-                    initial
-                } else {
-                    0.0
-                };
-                let processor = builder.processor(Pan)?;
-                builder.params.push(Pan::parameter(processor, initial));
-                processor
-            }
-            NodeKind::Bus => builder.processor(Bus)?,
-        };
-        mapping.nodes.insert(id, processor);
-        let output = node.outputs().first().map(|port| {
-            let slot = builder.slot(port.channels());
-            outputs.insert(port.id(), slot);
-            slot
-        });
-        builder.ops.push(DraftOp {
-            processor,
-            reads,
-            output,
-        });
-    }
+    bindings.validate(graph)?;
+    let (builder, mapping) = plan::build(graph, &mut bindings, cfg.max_block_frames)?;
     let audio_bytes = builder.layouts.iter().try_fold(0usize, |total, layout| {
         layout
             .channels
@@ -367,30 +149,7 @@ pub fn compile<S: ProcessingSample>(
         config.control_capacity,
         config.control_horizon_frames,
     )?;
-    let specs = builder
-        .ops
-        .into_iter()
-        .map(|op| {
-            let mut access: Vec<_> = op
-                .reads
-                .into_iter()
-                .map(|(port, slot)| PortAccess::Read {
-                    port,
-                    slot: arena.slot(slot).expect("compiler allocated slot"),
-                })
-                .collect();
-            if let Some(slot) = op.output {
-                access.push(PortAccess::Write {
-                    port: 0,
-                    slot: arena.slot(slot).expect("compiler allocated slot"),
-                });
-            }
-            Ok(OpSpec {
-                processor: op.processor,
-                io: arena.prepare_io(&access)?,
-            })
-        })
-        .collect::<Result<Vec<_>, BufferError>>()?;
+    let specs = plan::prepare_operations(builder.ops, &arena)?;
     let plan = ExecutionPlan::prepare(arena, specs, &resources, &parameters, cfg)?;
     let engine = Engine::new(plan, resources, parameters)?;
     Ok(CompiledGraph {

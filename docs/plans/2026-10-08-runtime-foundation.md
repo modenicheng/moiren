@@ -81,7 +81,7 @@ prepare 后不修改布局、不重新分配、不增长。所有者移动不会
 
 ## 5. Unsafe 覆盖与安全证明
 
-生产代码的自有 buffer unsafe 集中在 `buffer.rs`：私有 RawWindow 从一次获得的 slab base 生成经过验证的 slot slice。算术检查、布局构建、别名验证、声道切分、DSP、参数编解码、调度逻辑保持 safe Rust。并发队列复用 `rtrb`，不再自行实现另一套 unsafe ring。
+生产代码的自有 buffer unsafe 集中在 `buffer/view.rs`，由 `buffer.rs` 的 IO 校验约束：私有 RawWindow 从一次获得的 slab base 生成经过验证的 slot slice。算术检查、布局构建、别名验证、声道切分、DSP、参数编解码、调度逻辑保持 safe Rust。并发队列复用 `rtrb`，不再自行实现另一套 unsafe ring。
 
 这里必须区分三件事：内存安全、音频语义正确、实时预算。内存安全不能依赖插件承诺完整写出、没有 panic 或遵守性能约束；后两项需要独立验证。
 
@@ -302,7 +302,7 @@ crossfade、warm-up 和 state transfer 仍是后续策略，不是本轮既成�
 | 文件 | 单一职责 |
 | --- | --- |
 | `moiren-core/src/protocol.rs` | wire DTO、显式字段编码与 framing；无 unsafe、无 RT 内存地址 |
-| `moiren-engine/src/buffer.rs` | slab、access prepare、唯一引用构造边界、safe block/port view |
+| `moiren-engine/src/buffer.rs`、`buffer/view.rs` | slab 与 access prepare；受校验约束的唯一引用构造边界和 safe block/port view |
 | `moiren-engine/src/control.rs` | 参数 schema/表、控制到 RT 队列、时间和 ACK、ramp |
 | `moiren-engine/src/processor/mod.rs` | safe Processor/Observer 契约；兼容导出 Gain、Sum |
 | `moiren-engine/src/processor/builtin/` | 内置 Gain、Sum DSP 实现 |
