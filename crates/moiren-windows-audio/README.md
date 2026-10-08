@@ -146,6 +146,60 @@ statistics can be background noise; they do not establish intelligibility,
 channel routing, or physical input-to-output latency. Before/after equal settings
 do not rule out temporary audible effects during the experiment.
 
+## Software-device lifecycle and privileges
+
+`w00_swdevice` tests generic PnP software nodes. It does not implement an audio
+driver or create a usable WASAPI endpoint. It uses the fixed `MoirenW00`
+enumerator, a fresh GUID identity per scenario, and hardware IDs unrelated to
+installed audio packages. No existing device ID can be supplied for removal.
+
+```powershell
+$music = @(Get-Process QQMusic -ErrorAction Stop)
+if ($music.Count -ne 1) { throw 'Expected exactly one QQMusic process.' }
+New-Item -ItemType Directory -Path target/w00 -Force | Out-Null
+cargo build -p moiren-windows-audio --example w00_swdevice --locked
+if ($LASTEXITCODE -ne 0) { throw 'Probe build failed.' }
+$probeExe = (Resolve-Path -LiteralPath target/debug/examples/w00_swdevice.exe).Path
+$probeOutput = Join-Path (Resolve-Path -LiteralPath target/w00).Path swdevice.json
+$probeArgs = @('--iterations', '3', '--observe-pid', $music[0].Id, '--output', $probeOutput)
+
+# Normal token: expect exit 1 and permission_denied / 0x80070005 in both cases.
+& $probeExe @probeArgs
+
+# Successful lifecycle test: Windows presents its UAC consent prompt.
+# The elevated executable writes JSON after closing and uninstalling its nodes.
+$elevatedProbeArgs = @('--iterations', '3', '--observe-pid', $music[0].Id,
+    '--output', ('"{0}"' -f $probeOutput))
+$probeProcess = Start-Process -FilePath $probeExe -ArgumentList $elevatedProbeArgs `
+    -Verb RunAs -WindowStyle Hidden -PassThru -Wait
+if ($probeProcess.ExitCode -ne 0) { throw 'Inspect swdevice.json for incomplete cleanup.' }
+```
+
+Each scenario tests the asynchronous callback, default Handle lifetime, rejection
+of a second open handle with the same identity, and three create/close/uninstall
+cycles by default (1–10 allowed). The callback context exists before creation and
+survives until `SwDeviceClose` returns; the FFI callback catches Rust panics.
+Closing a handle initiates removal. The probe waits for not-present status,
+records the remaining phantom instance, then calls `DiUninstallDevice` on only
+the exact callback identity created by that cycle and waits for its absence.
+`NeedReboot` is recorded; the probe never reboots.
+
+The raw-node case bound the Windows inbox `c_swdevice.inf` on the tested machine.
+The DriverRequired case had problem code 28 and no bound INF. Neither created an
+audio endpoint. All-state endpoint IDs are compared during each cycle and after
+the run, alongside default roles, endpoint volume/mute and the observed PID's
+session volume/mute. JSON preserves HRESULTs and CONFIGRET values. Exit 1 means
+a cycle, cleanup or state comparison did not pass; a rejected normal-token
+creation is an expected negative test, not successful lifecycle coverage.
+
+This example does not install, update or delete driver packages, use persistent
+ParentPresent lifetime, test forced process termination, or test deletion of an
+audio endpoint held open by another application. See the
+[2026-10-08 experiment](../../docs/experiments/windows/2026-10-08-w00-swdevice.md).
+API contracts: [SwDeviceCreate](https://learn.microsoft.com/en-us/windows/win32/api/swdevice/nf-swdevice-swdevicecreate),
+[SwDeviceClose](https://learn.microsoft.com/en-us/windows/win32/api/swdevice/nf-swdevice-swdeviceclose),
+[DiUninstallDevice](https://learn.microsoft.com/en-us/windows/win32/api/newdev/nf-newdev-diuninstalldevice).
+
 ## Checks
 
 ```powershell

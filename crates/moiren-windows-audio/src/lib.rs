@@ -10,6 +10,9 @@ pub mod probe;
 pub mod physical;
 
 #[cfg(windows)]
+pub mod swdevice;
+
+#[cfg(windows)]
 mod catalog;
 #[cfg(windows)]
 mod owner;

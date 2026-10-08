@@ -1,0 +1,246 @@
+{
+  "recorded_at": "2026-10-08T14:22:53.4099238+08:00",
+  "probe_exe_sha256": "FDBD6F5F01D884249A83B5122FA2EC1790FBC83CCB95C19E082836D48871C65C",
+  "observe_pid": 33356,
+  "checks": {
+    "normal_token_denied_both": true,
+    "admin_six_completed": true,
+    "two_identities_reused_three_times": true,
+    "callback_and_duplicate_expected": true,
+    "raw_problem_zero_inbox_inf": true,
+    "driver_required_problem_28_no_inf": true,
+    "phantom_persists_after_close": true,
+    "all_uninstalled_no_reboot": true,
+    "audio_ids_unchanged": true,
+    "observed_settings_unchanged": true,
+    "qqmusic_readable_before_after": true,
+    "no_remaining_nodes": true,
+    "media_drivers_unchanged": true
+  },
+  "remaining_moiren_nodes": [],
+  "media_driver_changes": [],
+  "media_drivers_before": [
+    {
+      "DeviceID": "ACPI\\CSC3556\\1",
+      "DeviceName": "Cirrus Logic Awesome Speaker Amps",
+      "InfName": "oem109.inf",
+      "DriverVersion": "21.51.46.157",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "HDAUDIO\\FUNC_01&VEN_10DE&DEV_00AD&SUBSYS_10DE0000&REV_1001\\5&2CA36041&0&0001",
+      "DeviceName": "NVIDIA High Definition Audio",
+      "InfName": "oem116.inf",
+      "DriverVersion": "1.4.5.6",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "HDAUDIO\\SUBFUNC_01&VEN_8086&DEV_281D&NID_0001&SUBSYS_00000000&REV_1000\\6&16CBA003&3&0002&0000001D",
+      "DeviceName": "HD Audio Driver for Display Audio",
+      "InfName": "oem138.inf",
+      "DriverVersion": "32.0.101.8132",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "INTELAUDIO\\CTLR_DEV_7728&LINKTYPE_03&DEVTYPE_00&VEN_8086&DEV_AE30&SUBSYS_10341043&REV_0001\\5&7420144&0&0000DIF_000B&UIF_0000",
+      "DeviceName": "适用于蓝牙® 音频的英特尔® 智音技术",
+      "InfName": "oem16.inf",
+      "DriverVersion": "20.40.11880.2",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "INTELAUDIO\\CTLR_DEV_7728&LINKTYPE_03&DEVTYPE_03&VEN_8086&DEV_AE33&SUBSYS_10341043&REV_0001\\5&7420144&0&0301DIF_000B&UIF_0000",
+      "DeviceName": "Intel® Smart Sound Technology for Bluetooth® LE Audio",
+      "InfName": "oem18.inf",
+      "DriverVersion": "20.40.11880.2",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "INTELAUDIO\\CTLR_DEV_7728&LINKTYPE_06&DEVTYPE_06&VEN_8086&DEV_AE50&SUBSYS_10341043&REV_0001\\0604DIF_000B&UIF_0000",
+      "DeviceName": "适用于 USB 音频的英特尔® 智音技术",
+      "InfName": "oem13.inf",
+      "DriverVersion": "20.40.11880.2",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "INTELAUDIO\\FUNC_01&VEN_10EC&DEV_0285&SUBSYS_10431034&REV_1000\\5&7420144&0&0001DIF_000B&UIF_0000",
+      "DeviceName": "Realtek High Definition Audio",
+      "InfName": "oem63.inf",
+      "DriverVersion": "6.0.9802.1",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "INTELAUDIO\\SGPC_FUNC_01&VEN_8086&DEV_281D&SUBSYS_80860101&REV_1000\\5&7420144&0&0201DIF_000B&UIF_0000",
+      "DeviceName": "HD Audio Driver for Display Audio",
+      "InfName": "oem138.inf",
+      "DriverVersion": "32.0.101.8132",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "ROOT\\MEDIA\\0000",
+      "DeviceName": "VB-Audio Virtual Cable",
+      "InfName": "oem77.inf",
+      "DriverVersion": "3.3.1.7",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "ROOT\\MEDIA\\0001",
+      "DeviceName": "teVirtualMIDI - Virtual MIDI Driver x64",
+      "InfName": "oem79.inf",
+      "DriverVersion": "1.3.0.43",
+      "IsSigned": false
+    },
+    {
+      "DeviceID": "ROOT\\MEDIA\\0002",
+      "DeviceName": "SteelSeries Sonar Virtual Audio Device",
+      "InfName": "oem132.inf",
+      "DriverVersion": "15.7.9.759",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "ROOT\\UNNAMED_DEVICE\\0000",
+      "DeviceName": "NVIDIA Virtual Audio Device (Wave Extensible) (WDM)",
+      "InfName": "oem149.inf",
+      "DriverVersion": "4.65.0.12",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "SW\\{96E080C7-143C-11D1-B40F-00A0C9223196}\\{3C0D501A-140B-11D1-B40F-00A0C9223196}",
+      "DeviceName": "Microsoft Streaming Service Proxy",
+      "InfName": "ksfilter.inf",
+      "DriverVersion": "10.0.26100.1",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "USB\\VID_35D8&PID_1496&MI_00\\7&151DF69B&0&0000",
+      "DeviceName": "USB Audio 2.0",
+      "InfName": "usbaudio2.inf",
+      "DriverVersion": "10.0.26100.9457",
+      "IsSigned": true
+    }
+  ],
+  "media_drivers_after": [
+    {
+      "DeviceID": "ACPI\\CSC3556\\1",
+      "DeviceName": "Cirrus Logic Awesome Speaker Amps",
+      "InfName": "oem109.inf",
+      "DriverVersion": "21.51.46.157",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "HDAUDIO\\FUNC_01&VEN_10DE&DEV_00AD&SUBSYS_10DE0000&REV_1001\\5&2CA36041&0&0001",
+      "DeviceName": "NVIDIA High Definition Audio",
+      "InfName": "oem116.inf",
+      "DriverVersion": "1.4.5.6",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "HDAUDIO\\SUBFUNC_01&VEN_8086&DEV_281D&NID_0001&SUBSYS_00000000&REV_1000\\6&16CBA003&3&0002&0000001D",
+      "DeviceName": "HD Audio Driver for Display Audio",
+      "InfName": "oem138.inf",
+      "DriverVersion": "32.0.101.8132",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "INTELAUDIO\\CTLR_DEV_7728&LINKTYPE_03&DEVTYPE_00&VEN_8086&DEV_AE30&SUBSYS_10341043&REV_0001\\5&7420144&0&0000DIF_000B&UIF_0000",
+      "DeviceName": "适用于蓝牙® 音频的英特尔® 智音技术",
+      "InfName": "oem16.inf",
+      "DriverVersion": "20.40.11880.2",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "INTELAUDIO\\CTLR_DEV_7728&LINKTYPE_03&DEVTYPE_03&VEN_8086&DEV_AE33&SUBSYS_10341043&REV_0001\\5&7420144&0&0301DIF_000B&UIF_0000",
+      "DeviceName": "Intel® Smart Sound Technology for Bluetooth® LE Audio",
+      "InfName": "oem18.inf",
+      "DriverVersion": "20.40.11880.2",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "INTELAUDIO\\CTLR_DEV_7728&LINKTYPE_06&DEVTYPE_06&VEN_8086&DEV_AE50&SUBSYS_10341043&REV_0001\\0604DIF_000B&UIF_0000",
+      "DeviceName": "适用于 USB 音频的英特尔® 智音技术",
+      "InfName": "oem13.inf",
+      "DriverVersion": "20.40.11880.2",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "INTELAUDIO\\FUNC_01&VEN_10EC&DEV_0285&SUBSYS_10431034&REV_1000\\5&7420144&0&0001DIF_000B&UIF_0000",
+      "DeviceName": "Realtek High Definition Audio",
+      "InfName": "oem63.inf",
+      "DriverVersion": "6.0.9802.1",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "INTELAUDIO\\SGPC_FUNC_01&VEN_8086&DEV_281D&SUBSYS_80860101&REV_1000\\5&7420144&0&0201DIF_000B&UIF_0000",
+      "DeviceName": "HD Audio Driver for Display Audio",
+      "InfName": "oem138.inf",
+      "DriverVersion": "32.0.101.8132",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "ROOT\\MEDIA\\0000",
+      "DeviceName": "VB-Audio Virtual Cable",
+      "InfName": "oem77.inf",
+      "DriverVersion": "3.3.1.7",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "ROOT\\MEDIA\\0001",
+      "DeviceName": "teVirtualMIDI - Virtual MIDI Driver x64",
+      "InfName": "oem79.inf",
+      "DriverVersion": "1.3.0.43",
+      "IsSigned": false
+    },
+    {
+      "DeviceID": "ROOT\\MEDIA\\0002",
+      "DeviceName": "SteelSeries Sonar Virtual Audio Device",
+      "InfName": "oem132.inf",
+      "DriverVersion": "15.7.9.759",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "ROOT\\UNNAMED_DEVICE\\0000",
+      "DeviceName": "NVIDIA Virtual Audio Device (Wave Extensible) (WDM)",
+      "InfName": "oem149.inf",
+      "DriverVersion": "4.65.0.12",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "SW\\{96E080C7-143C-11D1-B40F-00A0C9223196}\\{3C0D501A-140B-11D1-B40F-00A0C9223196}",
+      "DeviceName": "Microsoft Streaming Service Proxy",
+      "InfName": "ksfilter.inf",
+      "DriverVersion": "10.0.26100.1",
+      "IsSigned": true
+    },
+    {
+      "DeviceID": "USB\\VID_35D8&PID_1496&MI_00\\7&151DF69B&0&0000",
+      "DeviceName": "USB Audio 2.0",
+      "InfName": "usbaudio2.inf",
+      "DriverVersion": "10.0.26100.9457",
+      "IsSigned": true
+    }
+  ],
+  "qqmusic_before": [
+    {
+      "process_id": 33356,
+      "pid_query_hresult": "0x00000000",
+      "process_name": "QQMusic.exe",
+      "instance_key": "47d76ad4b7532bf8",
+      "state": 1,
+      "volume_scalar": 0.4,
+      "muted": false,
+      "errors": []
+    }
+  ],
+  "qqmusic_after": [
+    {
+      "process_id": 33356,
+      "pid_query_hresult": "0x00000000",
+      "process_name": "QQMusic.exe",
+      "instance_key": "47d76ad4b7532bf8",
+      "state": 1,
+      "volume_scalar": 0.4,
+      "muted": false,
+      "errors": []
+    }
+  ]
+}

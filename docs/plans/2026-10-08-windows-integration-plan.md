@@ -1,7 +1,7 @@
 # Moiren Windows 音频接入工作计划
 
 > 日期：2026-10-08  
-> 状态：W00 被动捕获、物理输入 / 静音输出与时钟探针已有实机记录；正式后端接入尚未开始
+> 状态：W00 被动捕获、物理输入 / 静音输出、时钟与 PnP 生命周期 / 权限已有实机记录；正式后端接入尚未开始
 > 范围：Windows 设备、应用音频、WASAPI、设备时钟、生命周期、桌面集成，以及后续 ASIO / 虚拟 I/O  
 > 执行说明：按阶段拆成独立实现任务；每项完成后记录验证结果，再进入依赖它的任务。本文件不冻结尚未验证的 Rust 签名，也不要求一次实现全部后端。
 
@@ -94,6 +94,8 @@ W11 的调度、统计与延迟测量贯穿 C–F，不等到最后才增加。
 **依赖：**无需完整引擎。**交付：**可重复的探针、机器 / OS / driver / format 记录、支持矩阵与每项实验结论。
 
 **首轮进展（2026-10-08）：**[QQMusic 被动捕获记录](../experiments/windows/2026-10-08-w00-qqmusic.md)已完成目录快照和 60 秒 Process Loopback 非零信号采集、正常停止与播放设置前后对比。后续[物理输入 / 静音输出与时钟记录](../experiments/windows/2026-10-08-w00-physical-clock.md)完成 Realtek 与 FreeDSP 四路并发 Shared 的 60 秒和 300 秒观测；输入无后续 discontinuity / timestamp error，输出无空 padding，前后播放设置一致。capture IAudioClock 的 QPC 隔次重复，IAudioClock2 全零；有效 packet frame/QPC 可用于该窗口的速率估计。300 秒最大相对差约 0.03374 ppm，不能据此认定共钟或免除 follower bridge。按用户约束未执行 mute、默认切换、可听测试音、Exclusive 或回放。Takeover、隔离对照、输入到输出回路、设备失联和长期稳定性仍未测。实施与复现入口见 [被动捕获计划](2026-10-08-w00-passive-probe-plan.md)和[物理时钟计划](2026-10-08-w00-physical-clock-plan.md)；W00 整体验收尚未完成。
+
+补充[软件设备 PnP 生命周期 / 权限记录](../experiments/windows/2026-10-08-w00-swdevice.md)：普通权限两种 create 均返回 `0x80070005`；管理员 raw / DriverRequired 各三轮创建、关闭与精确实例卸载通过，无遗留实例、无需重启。close 后仍可查询 phantom 实例，不能用 close 代替卸载；raw 绑定 inbox `c_swdevice.inf`，DriverRequired 无匹配驱动、problem code 28。所有状态的 68 个 audio endpoint ID 和 QQMusic 设置前后一致。这验证通用 PnP 管理，尚无对应音频驱动包；动态音频 endpoint、PCM、驱动包安装 / 升级 / 卸载和签名仍未测，W15 不勾选。复现入口见[生命周期计划](2026-10-08-w00-swdevice-plan.md)。
 
 - [ ] 记录 OS build、CPU 架构、驱动版本、设备型号、连接方式、默认角色、增强 / spatial 设置与电源状态。
 - [ ] Shared render：播放已知测试信号，记录实际 buffer size、period、每次可写 frames 和 event 间隔。
