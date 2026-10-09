@@ -1,0 +1,274 @@
+[
+  {
+    "phases": [
+      {
+        "name": "baseline",
+        "endpoint": {
+          "count": 192960,
+          "nonzero": 192760,
+          "peak": 0.020008087158203125,
+          "rms": 0.0141452993563939
+        },
+        "capture_a": {
+          "count": 192630,
+          "nonzero": 192630,
+          "peak": 0.019999919459223747,
+          "rms": 0.014139499507796088
+        },
+        "capture_b": {
+          "count": 192630,
+          "nonzero": 192630,
+          "peak": 0.01999981701374054,
+          "rms": 0.014137933557524221
+        }
+      },
+      {
+        "name": "muted",
+        "endpoint": {
+          "count": 192960,
+          "nonzero": 0,
+          "peak": 0.0,
+          "rms": 0.0
+        },
+        "capture_a": {
+          "count": 192682,
+          "nonzero": 0,
+          "peak": 0.0,
+          "rms": 0.0
+        },
+        "capture_b": {
+          "count": 192682,
+          "nonzero": 0,
+          "peak": 0.0,
+          "rms": 0.0
+        }
+      },
+      {
+        "name": "restored_after_mute",
+        "endpoint": {
+          "count": 191232,
+          "nonzero": 191032,
+          "peak": 0.020008087158203125,
+          "rms": 0.014145670878233992
+        },
+        "capture_a": {
+          "count": 192580,
+          "nonzero": 192580,
+          "peak": 0.019999990239739418,
+          "rms": 0.014139879069161244
+        },
+        "capture_b": {
+          "count": 192580,
+          "nonzero": 192580,
+          "peak": 0.019999714568257332,
+          "rms": 0.01413825871773334
+        }
+      },
+      {
+        "name": "quarter_volume",
+        "endpoint": {
+          "count": 192960,
+          "nonzero": 192758,
+          "peak": 0.0050048828125,
+          "rms": 0.0035363069192325194
+        },
+        "capture_a": {
+          "count": 193020,
+          "nonzero": 193020,
+          "peak": 0.0049999188631772995,
+          "rms": 0.0035345082587951216
+        },
+        "capture_b": {
+          "count": 193020,
+          "nonzero": 193020,
+          "peak": 0.004999913275241852,
+          "rms": 0.003534629427883254
+        }
+      },
+      {
+        "name": "zero_volume",
+        "endpoint": {
+          "count": 191232,
+          "nonzero": 0,
+          "peak": 0.0,
+          "rms": 0.0
+        },
+        "capture_a": {
+          "count": 192398,
+          "nonzero": 0,
+          "peak": 0.0,
+          "rms": 0.0
+        },
+        "capture_b": {
+          "count": 192398,
+          "nonzero": 0,
+          "peak": 0.0,
+          "rms": 0.0
+        }
+      },
+      {
+        "name": "restored_after_volume",
+        "endpoint": {
+          "count": 192960,
+          "nonzero": 192760,
+          "peak": 0.020008087158203125,
+          "rms": 0.014145952657222715
+        },
+        "capture_a": {
+          "count": 192486,
+          "nonzero": 192486,
+          "peak": 0.019999995827674866,
+          "rms": 0.014137816779934009
+        },
+        "capture_b": {
+          "count": 192486,
+          "nonzero": 192486,
+          "peak": 0.019999830052256584,
+          "rms": 0.01413821788406866
+        }
+      }
+    ],
+    "restoration": {
+      "volume": 1.0,
+      "muted": false,
+      "verified": true
+    },
+    "failure": null
+  },
+  {
+    "phases": [
+      {
+        "name": "baseline",
+        "endpoint": {
+          "count": 193920,
+          "nonzero": 193716,
+          "peak": 0.020008087158203125,
+          "rms": 0.014146463076357833
+        },
+        "capture_a": {
+          "count": 192204,
+          "nonzero": 192204,
+          "peak": 0.019999941810965538,
+          "rms": 0.014137040187624024
+        },
+        "capture_b": {
+          "count": 192204,
+          "nonzero": 192204,
+          "peak": 0.019999995827674866,
+          "rms": 0.014138231120810033
+        }
+      },
+      {
+        "name": "muted",
+        "endpoint": {
+          "count": 193920,
+          "nonzero": 0,
+          "peak": 0.0,
+          "rms": 0.0
+        },
+        "capture_a": {
+          "count": 192692,
+          "nonzero": 0,
+          "peak": 0.0,
+          "rms": 0.0
+        },
+        "capture_b": {
+          "count": 192692,
+          "nonzero": 0,
+          "peak": 0.0,
+          "rms": 0.0
+        }
+      },
+      {
+        "name": "restored_after_mute",
+        "endpoint": {
+          "count": 192960,
+          "nonzero": 192758,
+          "peak": 0.020008087158203125,
+          "rms": 0.01414652404214932
+        },
+        "capture_a": {
+          "count": 192486,
+          "nonzero": 192486,
+          "peak": 0.019999980926513672,
+          "rms": 0.01413753682545703
+        },
+        "capture_b": {
+          "count": 192486,
+          "nonzero": 192486,
+          "peak": 0.01999976485967636,
+          "rms": 0.014137732578259368
+        }
+      },
+      {
+        "name": "quarter_volume",
+        "endpoint": {
+          "count": 192000,
+          "nonzero": 191800,
+          "peak": 0.0050048828125,
+          "rms": 0.0035364740559434664
+        },
+        "capture_a": {
+          "count": 193006,
+          "nonzero": 193006,
+          "peak": 0.004999998956918716,
+          "rms": 0.0035348462411800984
+        },
+        "capture_b": {
+          "count": 193006,
+          "nonzero": 193006,
+          "peak": 0.004999978933483362,
+          "rms": 0.003534559130026299
+        }
+      },
+      {
+        "name": "zero_volume",
+        "endpoint": {
+          "count": 191040,
+          "nonzero": 0,
+          "peak": 0.0,
+          "rms": 0.0
+        },
+        "capture_a": {
+          "count": 192642,
+          "nonzero": 0,
+          "peak": 0.0,
+          "rms": 0.0
+        },
+        "capture_b": {
+          "count": 192642,
+          "nonzero": 0,
+          "peak": 0.0,
+          "rms": 0.0
+        }
+      },
+      {
+        "name": "restored_after_volume",
+        "endpoint": {
+          "count": 192000,
+          "nonzero": 191800,
+          "peak": 0.020008087158203125,
+          "rms": 0.014145832031536455
+        },
+        "capture_a": {
+          "count": 192162,
+          "nonzero": 192162,
+          "peak": 0.019999876618385315,
+          "rms": 0.014137649687168468
+        },
+        "capture_b": {
+          "count": 192162,
+          "nonzero": 192162,
+          "peak": 0.019999979063868523,
+          "rms": 0.014138690513195324
+        }
+      }
+    ],
+    "restoration": {
+      "volume": 1.0,
+      "muted": false,
+      "verified": true
+    },
+    "failure": null
+  }
+]
