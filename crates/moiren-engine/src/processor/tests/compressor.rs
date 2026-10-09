@@ -169,6 +169,11 @@ fn same_samples(actual: &[Vec<f64>], expected: &[Vec<f64>]) {
     for (actual, expected) in actual.iter().zip(expected) {
         assert_eq!(actual.len(), expected.len());
         for (&actual, &expected) in actual.iter().zip(expected) {
+            // Infinity would make both the difference and tolerance infinite.
+            assert!(
+                actual.is_finite() && expected.is_finite(),
+                "{actual} != {expected}"
+            );
             // Miri can vary the last bits of transcendental results between
             // calls. Block invariance is numerical, rather than bit identity.
             let tolerance = 32.0 * f64::EPSILON * actual.abs().max(expected.abs()).max(1.0);
@@ -178,6 +183,31 @@ fn same_samples(actual: &[Vec<f64>], expected: &[Vec<f64>]) {
             );
         }
     }
+}
+
+#[test]
+fn compressor_sample_comparison_rejects_non_finite_values_on_either_side() {
+    let finite = vec![vec![0.0, 1.0], vec![-1.0, 0.25]];
+    for sample in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+        // Exercise a later channel/sample so comparison cannot stop at a
+        // matching prefix and overlook a non-finite split-render result.
+        let mut non_finite = finite.clone();
+        non_finite[1][1] = sample;
+        for (actual, expected) in [(&non_finite, &finite), (&finite, &non_finite)] {
+            assert!(std::panic::catch_unwind(|| same_samples(actual, expected)).is_err());
+        }
+    }
+}
+
+#[test]
+fn compressor_sample_comparison_accepts_finite_rounding() {
+    let expected = vec![vec![0.0, 1.0], vec![-1.0, 128.0]];
+    let mut rounded = expected.clone();
+    rounded[0][0] += f64::EPSILON;
+    rounded[0][1] = f64::from_bits(expected[0][1].to_bits() + 1);
+    rounded[1][0] = f64::from_bits(expected[1][0].to_bits() + 1);
+    rounded[1][1] = f64::from_bits(expected[1][1].to_bits() + 1);
+    same_samples(&rounded, &expected);
 }
 
 #[test]

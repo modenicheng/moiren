@@ -73,8 +73,8 @@ fn render(renderer: &mut DemandRenderer, inputs: &mut [(SourceId, AudioWriter<f3
     out
 }
 fn finish(mut session: HostSession, renderer: DemandRenderer) -> Vec<HostEvent> {
-    let (engine, reader) = renderer.into_parts();
-    session.host.take().unwrap().finish_parts(engine, reader)
+    session.finish_renderer(renderer);
+    std::mem::take(&mut session.events)
 }
 #[test]
 fn native_observation_drives_runtime_and_stopping_one_source_preserves_the_other() {
@@ -150,4 +150,66 @@ fn exited_process_requires_new_selection_and_shutdown_returns_future_receipt() {
     assert_eq!(reply.code, ReplyCode::Accepted);
     let events = finish(session, renderer);
     assert!(events.iter().any(|event|matches!(event,HostEvent::Parameter(r) if r.request_id==reply.request_id && r.code!=ReplyCode::Accepted)));
+}
+
+#[test]
+fn stopping_before_candidate_render_settles_graph_runtime_and_future_receipts() {
+    let (mut session, mut renderer, mut inputs) = fixture();
+    render(&mut renderer, &mut inputs);
+    session.poll();
+    let active = session.graph_snapshot().unwrap().plan.active_revision;
+    let frames = session.runtime_snapshot().rendered_frames;
+    let source = inputs[0].0;
+    session
+        .set_compressor(source, Some(Default::default()))
+        .unwrap();
+    let candidate = session.publish().unwrap();
+    let gain = session.graph_snapshot().unwrap().sources[0].gain_node;
+    let future = session
+        .submit_parameter(
+            gain,
+            moiren_engine::processor::Gain::LEVEL,
+            ParamValue::Float(0.25),
+            ApplyAt::Frame(1000),
+            0,
+        )
+        .unwrap();
+    assert_eq!(future.code, ReplyCode::Accepted);
+    assert!(session.runtime_snapshot().pending);
+
+    // Return the software renderer without another block, exactly as shutdown
+    // does after joining the native output owner.
+    session.finish_renderer(renderer);
+    assert!(session.events.iter().any(|event| matches!(
+        event,
+        HostEvent::PlanRejected { revision, reason }
+            if *revision == candidate && *reason == moiren_engine::runtime::PlanSwapError::Cancelled
+    )));
+    assert_eq!(
+        session.events.iter().filter(|event| matches!(
+            event,
+            HostEvent::Parameter(reply)
+                if reply.request_id == future.request_id && reply.code == ReplyCode::StaleRevision
+        )).count(),
+        1
+    );
+    let report = session.stop();
+    assert_eq!(report.snapshot.status, SessionStatus::Stopped);
+    let runtime = &report.snapshot.runtime;
+    assert_eq!(runtime.active_revision, active);
+    assert_eq!(runtime.desired_revision, active);
+    assert!(!runtime.pending);
+    assert!(!runtime.dirty);
+    assert_eq!(runtime.rendered_frames, frames);
+    let graph = session.graph_snapshot().unwrap();
+    assert_eq!(graph.plan.active_revision, active);
+    assert_eq!(graph.plan.pending_revision, None);
+    assert_eq!(graph.desired, graph.active);
+    assert!(
+        graph
+            .sources
+            .iter()
+            .all(|source| source.compressor_node.is_none())
+    );
+    assert_eq!(report.events.len(), 2);
 }

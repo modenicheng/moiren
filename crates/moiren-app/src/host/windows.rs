@@ -394,6 +394,21 @@ impl HostSession {
                 .collect(),
         }
     }
+    /// The native owner has joined. Keep final graph/runtime metadata from the
+    /// same settled host state that produced shutdown's terminal events.
+    fn finish_renderer(&mut self, renderer: DemandRenderer) {
+        self.observe();
+        if let Some(host) = self.host.take() {
+            let (engine, reader) = renderer.into_parts();
+            let (events, graph, runtime) = host.finish_parts_with_snapshot(engine, reader);
+            self.events.extend(events);
+            self.final_graph = Some(graph);
+            self.runtime.active_revision = runtime.active_revision;
+            self.runtime.desired_revision = runtime.desired_revision;
+            self.runtime.pending = runtime.pending;
+            self.runtime.dirty = runtime.dirty;
+        }
+    }
     fn shutdown(&mut self) {
         for source in self.sources.values_mut() {
             source.gate.set_available(false);
@@ -414,14 +429,7 @@ impl HostSession {
                         self.status = SessionStatus::Failed;
                         self.failure = report.failure.clone();
                     }
-                    self.observe();
-                    if let Some(mut host) = self.host.take() {
-                        self.events.extend(host.poll());
-                        self.final_graph = Some(host.graph_snapshot());
-                        let (engine, reader) = renderer.into_parts();
-                        self.events.extend(host.finish_parts(engine, reader));
-                    }
-                    self.runtime.pending = false;
+                    self.finish_renderer(renderer);
                     self.render_report = Some(report);
                 }
                 Err(error) => {

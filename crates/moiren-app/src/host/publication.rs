@@ -198,9 +198,22 @@ impl AudioHost {
     /// Call after backend join. This consumes the matching session's Engine and
     /// output reader and rejects accepted requests without an extra audio block.
     /// Both runtime ownership and SPSC queue destruction remain on control.
-    pub fn finish_parts(mut self, engine: Engine<f32>, reader: AudioReader<f32>) -> Vec<HostEvent> {
+    pub fn finish_parts(self, engine: Engine<f32>, reader: AudioReader<f32>) -> Vec<HostEvent> {
+        self.finish_parts_with_snapshot(engine, reader).0
+    }
+
+    /// Return settled control snapshots so stopped sessions cannot retain a
+    /// candidate that shutdown has just rejected. Unpublished edits remain
+    /// inspectable; cancelling a published candidate rolls back as in poll.
+    pub(super) fn finish_parts_with_snapshot(
+        mut self,
+        engine: Engine<f32>,
+        reader: AudioReader<f32>,
+    ) -> (Vec<HostEvent>, GraphSnapshot, RuntimeSnapshot) {
         let mut events = self.poll();
-        let (_, _, mut parameters) = engine.into_parts();
+        // Keep processor and IO ownership alive until every accepted request
+        // has a terminal event; shutdown follows the same ordering as poll.
+        let (plan, resources, mut parameters) = engine.into_parts();
         loop {
             drain(&mut self.active.control, &mut events);
             let remaining = parameters.retire_and_reject_pending();
@@ -214,9 +227,13 @@ impl AudioHost {
                 revision: pending.active.snapshot.revision(),
                 reason: moiren_engine::runtime::PlanSwapError::Cancelled,
             });
+            self.desired = self.active.state.clone();
+            self.dirty = false;
         }
-        drop((parameters, reader));
-        events
+        let graph = self.graph_snapshot();
+        let runtime = self.runtime_snapshot();
+        drop((plan, resources, parameters, reader));
+        (events, graph, runtime)
     }
 }
 
