@@ -231,11 +231,11 @@ Source adapter 提前提供初始化静音，不足输入可留下静音尾部�
 
 当前 ExecutionPlan 持有 Arena 和已绑定操作；RtResources 持有持久 Processor state。prepare 和 Engine::new 检查资源/参数表身份，避免同样形状的新 registry 冒充原 registry。一次计划每个 Processor runtime 只安排一次，避免意外重复推进状态。当前有界参数分段会对同一个 Processor 处理连续子区间，这是正常时间推进，不是重复实例调用。
 
-现阶段 Engine 不提供运行中换表、移除 Processor 或切换 epoch。`into_parts` 要求外层已停止 render，将拥有权交回非 RT 线程析构；代码不声称任意线程直接 drop Engine 都符合实时契约。
+F0 阶段尚未提供在线换表。2026-10-09 的 [Plan 切换实现](../designs/06-compressor-plan-swap.md)已补充完整候选 runtime 发布、增删 / 显式复用 Processor 和参数 ramp 迁移；要求固定 EngineConfig 与 epoch。`into_parts` 仍要求外层已停止 render，将拥有权交回非 RT 线程析构，包括候选和 retire 队列；代码不声称任意线程直接 drop Engine 都符合实时契约。
 
-下一步 publish/retire 协议：Control 准备新计划→最多一个 pending→RT block boundary 接收→切换→旧计划通过 retire queue 回 Control。retire 无容量时维持旧 active plan，不能在 RT 随手 drop 新旧 Box。失败/取消候选在 Control 清理；关闭流程先撤回设备 callback，再移交全部资源，最后销毁 queues。
+现有 publish/retire 协议：Control 准备新计划→最多一个 pending→RT block boundary 接收→切换→旧计划通过 retire queue 回 Control。retire 无容量时维持旧 active plan，不能在 RT 随手 drop 新旧 Box。失败 / 取消候选在 Control 清理；关闭流程先撤回设备 callback，再移交全部资源，最后销毁 queues。自动 pending coalescing 与跨 epoch 切换仍待后续实现。
 
-持久 DSP registry 需要与计划 swap 同步增删，但不让 Control 在 RT 运行中读取/复制可变 DSP state。复用已有实例应通过 RT 所有权下的 slot/handle 迁移；替换实例在非 RT prepare，旧实例退出所有可达计划后延迟回收。参数表也要迁移当前值与 ramp 进度，并对不兼容 schema 和旧 epoch 请求明确回复。
+持久 DSP 实例随计划 swap 同步增删，Control 不读取 / 复制可变 DSP state。当前通过不可变 PlanSnapshot 校验显式 ProcessorReuse，RT 交换对应 Box、复制兼容参数当前值与 ramp 进度；替换实例在非 RT prepare，旧实例随 retire package 延迟回收。不兼容 schema 在 prepare 拒绝，旧参数通道在退休后返回 StaleRevision；旧通道已接受但未应用的请求由 Control 回收时逐一回复。
 
 crossfade、warm-up 和 state transfer 仍是后续策略，不是本轮既成设计。crossfade 同时渲染两个计划时不能对同一状态实例执行两次；必须明确分离、复制或一次计算后 fan-out，并计入额外计算与延迟预算。
 

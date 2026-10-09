@@ -8,7 +8,7 @@ use thiserror::Error;
 
 pub mod builtin;
 
-pub use builtin::{Bus, Gain, Pan, Sum};
+pub use builtin::{Bus, Compressor, CompressorSettings, Gain, Pan, Sum};
 
 #[cfg(test)]
 mod tests;
@@ -38,6 +38,13 @@ pub enum ProcessorRole {
 }
 
 pub trait RtProcessor<S: ProcessingSample>: Send {
+    /// Concrete persistent DSP identity, forwarded by type-erasing wrappers.
+    fn state_type_id(&self) -> std::any::TypeId
+    where
+        Self: 'static,
+    {
+        std::any::TypeId::of::<Self>()
+    }
     fn role(&self) -> ProcessorRole {
         ProcessorRole::Transform
     }

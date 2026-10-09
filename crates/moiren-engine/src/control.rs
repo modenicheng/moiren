@@ -5,10 +5,13 @@ use moiren_core::protocol::{
     ReplyCode,
 };
 use rtrb::{Consumer, Producer, RingBuffer};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ParamDomain {
     Float { min: f64, max: f64 },
     Int { min: i64, max: i64 },
@@ -114,6 +117,7 @@ pub struct ControlPort {
     epoch: u64,
     last_frame: u64,
     horizon_frames: u64,
+    retired: Arc<AtomicBool>,
 }
 pub struct ParameterRuntime {
     specs: Arc<[ParamSpec]>,
@@ -122,6 +126,7 @@ pub struct ParameterRuntime {
     replies: Producer<ControlReply>,
     revision: u64,
     epoch: u64,
+    retired: Arc<AtomicBool>,
 }
 
 /// Construct on a non-RT thread. Both endpoints must be destroyed after RT stops.
@@ -151,6 +156,7 @@ pub fn parameter_channel(
     let specs: Arc<[ParamSpec]> = specs.into();
     let (tx, rx) = RingBuffer::new(capacity);
     let (reply_tx, reply_rx) = RingBuffer::new(capacity);
+    let retired = Arc::new(AtomicBool::new(false));
     Ok((
         ControlPort {
             specs: Arc::clone(&specs),
@@ -160,6 +166,7 @@ pub fn parameter_channel(
             epoch,
             last_frame: 0,
             horizon_frames,
+            retired: Arc::clone(&retired),
         },
         ParameterRuntime {
             specs,
@@ -168,6 +175,7 @@ pub fn parameter_channel(
             replies: reply_tx,
             revision,
             epoch,
+            retired,
         },
     ))
 }
@@ -190,6 +198,9 @@ impl ControlPort {
         }
     }
     fn enqueue(&mut self, request: ParameterRequest, observed: u64) -> Result<(), ReplyCode> {
+        if self.retired.load(Ordering::Acquire) || self.tx.is_abandoned() {
+            return Err(ReplyCode::StaleRevision);
+        }
         if request.plan_revision != self.revision {
             return Err(ReplyCode::StaleRevision);
         }
@@ -264,6 +275,42 @@ impl ProcessParameters<'_> {
     }
 }
 impl ParameterRuntime {
+    pub(crate) fn schema(&self) -> Arc<[ParamSpec]> {
+        Arc::clone(&self.specs)
+    }
+    pub(crate) fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::Acquire)
+    }
+    pub(crate) fn retire(&self) {
+        self.retired.store(true, Ordering::Release);
+    }
+    pub(crate) fn copy_states_from(&mut self, source: &Self, slots: &[(usize, usize)]) {
+        for &(old, new) in slots {
+            self.states[new] = source.states[old];
+        }
+    }
+    /// Non-RT reclamation. Keep the retired runtime alive and drain the old
+    /// ControlPort if reply backpressure leaves requests to reject.
+    pub(crate) fn reject_pending(&mut self) -> usize {
+        while !self.rx.is_empty() {
+            if !self.replies.is_abandoned() && self.replies.is_full() {
+                break;
+            }
+            let event = self.rx.pop().expect("single retired consumer");
+            if !self.replies.is_abandoned() {
+                self.replies
+                    .push(ControlReply {
+                        request_id: event.request_id,
+                        plan_revision: self.revision,
+                        timeline_epoch: self.epoch,
+                        code: ReplyCode::StaleRevision,
+                        effective_frame: 0,
+                    })
+                    .expect("single producer reserved reply capacity");
+            }
+        }
+        self.rx.slots()
+    }
     pub fn revision(&self) -> u64 {
         self.revision
     }

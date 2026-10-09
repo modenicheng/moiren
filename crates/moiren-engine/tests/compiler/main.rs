@@ -4,6 +4,9 @@ use moiren_engine::{
     sample::ProcessingSample,
 };
 
+#[path = "../runtime/allocation.rs"]
+mod allocation;
+mod compressor;
 mod reference;
 mod rendering;
 mod sends;

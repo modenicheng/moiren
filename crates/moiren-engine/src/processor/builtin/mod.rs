@@ -1,8 +1,10 @@
 //! Built-in realtime DSP processors.
+mod compressor;
 mod gain;
 mod pan;
 mod sum;
 
+pub use compressor::{Compressor, CompressorSettings};
 pub use gain::Gain;
 pub use pan::Pan;
 /// Bus and Sum share the same prepared mixing kernel. Dynamic logical input

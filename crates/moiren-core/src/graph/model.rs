@@ -46,6 +46,8 @@ pub enum NodeKind {
     Source,
     Sink,
     Gain,
+    /// Linked peak compressor with one input and output of matching width.
+    Compressor,
     Bus,
     /// Stereo balance with one stereo input and output.
     Pan,
@@ -62,7 +64,7 @@ impl NodeKind {
         match self {
             Self::Source | Self::Bus => (0, 1),
             Self::Sink => (1, 0),
-            Self::Gain | Self::Pan => (1, 1),
+            Self::Gain | Self::Pan | Self::Compressor => (1, 1),
         }
     }
 }

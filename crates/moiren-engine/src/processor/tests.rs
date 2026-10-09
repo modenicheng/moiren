@@ -10,6 +10,7 @@ use moiren_core::protocol::{ParamValue, ParameterKey, ProcessorId};
 const PROCESSOR: ProcessorId = ProcessorId(1);
 const METER: ProcessorId = ProcessorId(2);
 
+mod compressor;
 mod contracts;
 mod gain;
 mod pan;

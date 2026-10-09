@@ -1,6 +1,6 @@
 # Graph Compiler：无槽位复用参考实现
 
-日期：2026-10-08。`moiren_engine::compiler::compile()` 在控制侧将只读 `LogicalGraph`、外部 IO 绑定和初始参数准备为可运行引擎。该实现是后续优化 BufferPlanner 的正确性参照，尚未实现槽位复用、原位选择、Pre/Post channel strip 或运行中换图。
+日期：2026-10-08；2026-10-09 补充 Compressor 和 Plan 发布。`moiren_engine::compiler::compile()` 在控制侧将只读 `LogicalGraph`、外部 IO 绑定和初始参数准备为可运行引擎。该实现是后续优化 BufferPlanner 的正确性参照，尚未实现槽位复用、原位选择或 Pre/Post channel strip。编译后的候选可通过 [Plan 发布接口](06-compressor-plan-swap.md)用于运行中换图。
 
 ## 编译与绑定
 
@@ -14,7 +14,7 @@ LogicalGraph + NodeBindings + CompileConfig
 
 `NodeBindings<S>` 使用逻辑 NodeId。Source/Sink 必须显式绑定，即使节点孤立；`bind_source` / `bind_sink` 接受 `RtAudioSource` / `RtAudioSink`，`bind_io` 接受已经准备好的 Source/Sink processor，例如带 Boundary telemetry 的 InputNode/OutputNode。role、声道和端口由编译器与现有 prepare 验证。绑定不匹配、重复绑定、已删除节点均返回错误。
 
-Gain/Pan 自动创建内置 processor，初始值默认为 1/0；`bind_gain` / `bind_pan` 可覆盖。Gain 节点沿用现有 `[0, 16]` 参数域，Pan 为 `[-1, 1]`。Bus 不需要绑定。Source/Sink 的 backend 必须已经适配 Processing SR；Compiler 不打开设备、不实现 SRC，也不提供参数化自定义 IO processor 的参数 schema 注入。
+Gain/Pan 自动创建内置 processor，初始值默认为 1/0；`bind_gain` / `bind_pan` 可覆盖。Gain 节点沿用现有 `[0, 16]` 参数域，Pan 为 `[-1, 1]`。Compressor 默认使用 `CompressorSettings::default()`，`bind_compressor` 可覆盖全部 10 个初始值。Bus 不需要绑定。Source/Sink 的 backend 必须已经适配 Processing SR；Compiler 不打开设备、不实现 SRC，也不提供参数化自定义 IO processor 的参数 schema 注入。
 
 `CompileConfig` 包含 EngineConfig、音频字节预算、plan revision、timeline epoch、控制队列容量和调度 horizon。返回的 `CompiledGraph` 包含 engine、control、逻辑绑定和统计。所有构造、编译、失败清理和停止后析构均在非 RT 侧完成；编译不会改变 LogicalGraph，也不会将 Engine 自动发布给运行中的音频线程。
 
@@ -34,7 +34,7 @@ Gain/Pan 自动创建内置 processor，初始值默认为 1/0；`bind_gain` / `
 
 - **PreFader：**返回 `CompileError::UnsupportedTap { edge }`。旧 Graph 设计中的取样点位于同一节点 channel strip 的 Gain/Pan 之前；当前节点尚无该 strip，不能将独立 Gain 节点输入擅自定义为所有节点的 PreFader。
 - **非 stereo pan：**非零初始值返回 `UnsupportedPan { edge, channels }`，其运行时 pan 参数域固定为 0。mono / multichannel 的 gain/mute 仍受支持，无隐式 upmix/downmix。
-- **逻辑编辑与 RT 更新：**`graph.set_send_params()` 修改逻辑快照；它不会自动向现有 Engine 下发消息。Control owner 同步 desired state 与 ParameterRequest；拓扑编辑后重新编译，当前仍需停机后更换引擎。
+- **逻辑编辑与 RT 更新：**`graph.set_send_params()` 修改逻辑快照；它不会自动向现有 Engine 下发消息。Control owner 同步 desired state 与 ParameterRequest；拓扑编辑后重新编译，再通过 `PreparedPlan` 和 `PlanControlPort::publish` 发布。复用节点时用两份 `CompiledBindings` 从相同 NodeId 得到旧 / 新 ProcessorId，不能假设局部编号相同。需要保留 Edge gain/pan/mute 时，调用方也应显式复用对应 Send processor；映射可由 edge keys 的 `gain.processor` 取得。
 
 有限 gain 并不保证样本始终有限；参考实现不裁剪、不提供 limiter，不新增独立的安全音量策略。
 

@@ -6,10 +6,16 @@ use crate::{
     sample::ProcessingSample,
 };
 use moiren_core::protocol::ProcessorId;
-use std::sync::Arc;
+use std::{any::TypeId, sync::Arc};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy)]
+mod swap;
+pub use swap::{
+    PlanControlPort, PlanSnapshot, PlanSwapError, PreparedPlan, ProcessorReuse, PublishFailure,
+    RetireOutcome, RetiredPlan,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EngineConfig {
     pub processing_sr: f64,
     pub max_block_frames: usize,
@@ -39,18 +45,20 @@ pub enum RuntimeError {
 
 pub struct ProcessorInstance<S: ProcessingSample> {
     id: ProcessorId,
+    state_type: TypeId,
     processor: Box<dyn RtProcessor<S>>,
 }
 impl<S: ProcessingSample> ProcessorInstance<S> {
     pub fn new(id: ProcessorId, processor: impl RtProcessor<S> + 'static) -> Self {
         Self {
             id,
+            state_type: processor.state_type_id(),
             processor: Box::new(processor),
         }
     }
 }
 /// Owns persistent DSP state independently from the schedule. Existing slots
-/// may be rebound by a future prepared plan without reinitializing processors.
+/// may be migrated into a compatible prepared plan without reinitialization.
 pub struct RtResources<S: ProcessingSample> {
     identity: Arc<()>,
     instances: Box<[ProcessorInstance<S>]>,
@@ -151,6 +159,8 @@ pub struct Engine<S: ProcessingSample> {
     resources: RtResources<S>,
     parameters: ParameterRuntime,
     timeline: u64,
+    snapshot: PlanSnapshot,
+    swaps: Option<swap::RtPlanPort<S>>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderReport {
@@ -175,11 +185,14 @@ impl<S: ProcessingSample> Engine<S> {
         {
             return Err(RuntimeError::ForeignParameters);
         }
+        let snapshot = PlanSnapshot::capture(&plan, &resources, &parameters);
         Ok(Self {
             plan,
             resources,
             parameters,
             timeline: 0,
+            snapshot,
+            swaps: None,
         })
     }
     pub fn timeline(&self) -> u64 {
@@ -192,6 +205,9 @@ impl<S: ProcessingSample> Engine<S> {
     pub fn epoch(&self) -> u64 {
         self.plan.epoch
     }
+    pub fn revision(&self) -> u64 {
+        self.plan.revision
+    }
     pub fn render(&mut self, frames: usize) -> Result<RenderReport, RuntimeError> {
         if frames == 0 || frames > self.plan.config.max_block_frames {
             return Err(RuntimeError::InvalidFrames);
@@ -200,6 +216,7 @@ impl<S: ProcessingSample> Engine<S> {
         let end = start
             .checked_add(frames as u64)
             .ok_or(RuntimeError::TimelineOverflow)?;
+        self.apply_pending_plan();
         // Snapshot availability once: concurrent producer traffic cannot make
         // callback work unbounded or sneak new events into the current batch.
         let budget = self

@@ -13,7 +13,7 @@ use super::{
 use crate::{
     buffer::{BufferArena, BufferError, BufferSlotLayout, PortAccess},
     control::ParamSpec,
-    processor::{Bus, Gain, Pan, RtProcessor},
+    processor::{Bus, Compressor, Gain, Pan, RtProcessor},
     runtime::{OpSpec, ProcessorInstance},
     sample::ProcessingSample,
 };
@@ -80,6 +80,17 @@ impl<S: ProcessingSample> Builder<S> {
                 };
                 let processor = self.processor(Pan)?;
                 self.params.push(Pan::parameter(processor, initial));
+                processor
+            }
+            NodeKind::Compressor => {
+                let settings = if let Some(Binding::Compressor(settings)) = binding {
+                    settings
+                } else {
+                    Default::default()
+                };
+                let processor = self.processor(Compressor::new())?;
+                self.params
+                    .extend(Compressor::parameters(processor, settings));
                 processor
             }
             NodeKind::Bus => self.processor(Bus)?,

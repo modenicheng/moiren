@@ -1,10 +1,10 @@
 # LogicalGraph 与 Bus / Pan
 
-`LogicalGraph` 位于 core，不依赖 engine。首版 [Graph Compiler](05-graph-compiler.md) 已自动准备 ExecutionPlan 和 PostFader Send DSP；Pre/Post channel strip、slot liveness 优化与在线换图仍是后续工作。以下保持拓扑、Bus 与 Pan 的契约。
+`LogicalGraph` 位于 core，不依赖 engine。[Graph Compiler](05-graph-compiler.md) 已自动准备 ExecutionPlan 和 PostFader Send DSP；后续增加了 [Compressor 与运行时 Plan 切换](06-compressor-plan-swap.md)。Pre/Post channel strip 与 slot liveness 优化仍是后续工作。以下保持拓扑、Bus 与 Pan 的契约。
 
 ## 拓扑契约
 
-每个端口承载完整多声道流。`Source` 为 0 入 / 1 出，`Sink` 为 1 入 / 0 出，`Gain` 为 1 入 / 1 出；它们接受正数声道数。`Bus` 从 0 入 / 1 出开始，只允许动态增删输入，所有输入与输出声道相同。`Pan` 当前为 stereo balance，固定 2 声道、1 入 / 1 出。
+每个端口承载完整多声道流。`Source` 为 0 入 / 1 出，`Sink` 为 1 入 / 0 出，`Gain` / `Compressor` 为 1 入 / 1 出；它们接受正数声道数。`Bus` 从 0 入 / 1 出开始，只允许动态增删输入，所有输入与输出声道相同。`Pan` 当前为 stereo balance，固定 2 声道、1 入 / 1 出。
 
 节点、端口与边只能经图的编辑 API 修改；查询返回只读对象。`create_node(kind, channels)` 一次生成固定布局，创建失败时不消耗部分 ID。Logical IDs 是图内身份，与 `ProcessorId`、engine 的 `u16` 本地端口序号及 buffer slot 分开；复制整张图保持身份，用作独立编辑快照。节点的设备配置和持久项目文件编解码尚未接入该拓扑模型。
 

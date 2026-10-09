@@ -5,3 +5,4 @@ mod automation;
 mod graph;
 mod io;
 mod support;
+mod swap;

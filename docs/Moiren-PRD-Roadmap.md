@@ -866,7 +866,7 @@ Graph 始终是 canonical topology。
 1. Graph Compiler 参考实现：Source/Sink/Gain/Bus/Pan、PostFader send 参数、自动独立槽位和 IO 绑定；已落地，优化 BufferPlanner 与 channel-strip PreFader 分别后续验收。
 2. Test signal → Engine → 用户显式选择的单 WASAPI Shared 输出：首版 native 48 kHz/stereo/f32 已落地，FreeDSP 10 秒测试获用户试听确认；纯测试覆盖可变 demand、数据路径分配计数和停止唤醒。CPU 压力、反复启停和失联恢复另行验收，见 [Shared Render 记录](experiments/windows/2026-10-08-shared-render.md)。
 3. Physical Capture / Process Loopback → Graph → 单输出；先单输入再混音。首次跨独立 capture/render 时同时实现有界 bridge、SRC 和填充量控制，不能等到多输出才处理时钟。
-4. 运行中 Plan publish/swap/retire：控制侧准备，RT 块边界切换，非 RT 回收；master 音频事件停止时，control wake 仍能推进停机。
+4. 运行中 Plan publish/swap/retire：固定 EngineConfig / epoch 的 engine API 已落地，控制侧准备、RT 块边界切换、非 RT 回收，并支持显式 DSP / 参数 ramp 迁移，见 [Compressor 与 Plan 切换](designs/06-compressor-plan-swap.md)。实际输出应用的换图入口和设备在线编辑另行接入；master 音频事件停止时仍须由 control wake 推进停机，已有 Shared stop 路径覆盖无音频事件的停止唤醒。
 
 Takeover 可行性是并行 P0 Gate：验证原始输出抑制、session mute/volume 对捕获的影响、进程树隔离、OBS 共存和恢复。未通过时交付 Capture / Monitor，保留原始播放；不为实验自动修改默认设备或其他应用设置。
 
@@ -1007,10 +1007,10 @@ CI 常规矩阵覆盖整个 workspace 的编译、测试、Clippy 与格式检�
    Engine 已采用可变 block；后续验证 WASAPI demand 拆分、SRC 状态连续及插件固定 block 适配。
 
 3. **ExecutionPlan swap / retire**  
-   新 Plan 怎样无锁或最小同步地进入 RT，旧 Plan 何时安全释放？
+   固定配置版本已采用单 pending SPSC、块边界交换和有界 retire，满队列继续旧计划，控制侧最终析构。跨 epoch / Processing SR 切换、crossfade 和实际设备编辑仍需后续协议。
 
 4. **参数控制与计划迁移**
-   单计划内已使用参数 SPSC、ramp 与 ACK，Compiler 已返回节点/边参数键；后续明确换图时参数迁移、业务身份和多客户端调度。
+   参数 SPSC、ramp 与 ACK、Compiler 节点 / 边参数键已落地；换图可按显式旧 / 新 ProcessorId 映射迁移兼容参数当前值和 ramp。调用方由 NodeId / EdgeId 维护业务身份；多客户端调度与自动迁移策略仍待实现。
 
 5. **Latency model**  
    Processor、SRC、设备边界、后续插件怎样统一报告并补偿延迟？

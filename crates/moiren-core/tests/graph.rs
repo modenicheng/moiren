@@ -15,6 +15,7 @@ fn node_kinds_create_fixed_layouts_and_bus_starts_without_inputs() {
         (NodeKind::Source, 6, 0, 1),
         (NodeKind::Sink, 6, 1, 0),
         (NodeKind::Gain, 6, 1, 1),
+        (NodeKind::Compressor, 6, 1, 1),
         (NodeKind::Bus, 6, 0, 1),
         (NodeKind::Pan, 2, 1, 1),
     ] {
@@ -42,7 +43,7 @@ fn node_kinds_create_fixed_layouts_and_bus_starts_without_inputs() {
         graph.create_node(NodeKind::Pan, 1),
         Err(GraphError::InvalidChannelCount)
     );
-    assert_eq!(graph.nodes().len(), 5);
+    assert_eq!(graph.nodes().len(), 6);
     graph.validate().unwrap();
 }
 
@@ -65,6 +66,7 @@ fn only_bus_inputs_are_dynamic_and_channels_match_the_output() {
         NodeKind::Source,
         NodeKind::Sink,
         NodeKind::Gain,
+        NodeKind::Compressor,
         NodeKind::Pan,
     ] {
         let id = graph.create_node(kind, 2).unwrap();

@@ -127,6 +127,12 @@ impl PreparedIo {
             .find(|b| b.input == Some(port))
             .map(|b| b.meta.channels)
     }
+    pub fn output_ports(&self) -> impl Iterator<Item = (u16, usize)> {
+        self.writes
+            .iter()
+            .chain(self.pairs.iter())
+            .map(|b| (b.output.unwrap(), b.meta.channels))
+    }
     pub fn output_channels(&self, port: u16) -> Option<usize> {
         self.writes
             .iter()

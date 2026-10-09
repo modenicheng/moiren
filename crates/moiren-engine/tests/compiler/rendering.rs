@@ -128,7 +128,13 @@ fn empty_graph_empty_bus_and_unconnected_fixed_inputs_produce_silence() {
     let mut empty = compile::<f64>(&LogicalGraph::new(), NodeBindings::new(), config()).unwrap();
     assert_eq!(empty.stats.slot_count, 0);
     assert_eq!(empty.engine.render(8).unwrap().end, 8);
-    for kind in [NodeKind::Bus, NodeKind::Gain, NodeKind::Pan, NodeKind::Sink] {
+    for kind in [
+        NodeKind::Bus,
+        NodeKind::Gain,
+        NodeKind::Pan,
+        NodeKind::Compressor,
+        NodeKind::Sink,
+    ] {
         let mut graph = LogicalGraph::new();
         let node = graph.create_node(kind, 2).unwrap();
         let sink = if kind == NodeKind::Sink {

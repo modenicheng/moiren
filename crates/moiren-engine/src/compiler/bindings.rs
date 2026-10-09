@@ -8,7 +8,7 @@ use crate::{
     boundary::{RtAudioSink, RtAudioSource, SinkAdapter, SourceAdapter},
     buffer::{PreparedIo, ProcessIo},
     control::ProcessParameters,
-    processor::{ProcessContext, ProcessorError, ProcessorRole, RtProcessor},
+    processor::{CompressorSettings, ProcessContext, ProcessorError, ProcessorRole, RtProcessor},
     sample::ProcessingSample,
 };
 
@@ -16,6 +16,7 @@ pub(super) enum Binding<S: ProcessingSample> {
     Io(Box<dyn RtProcessor<S>>),
     Gain(f64),
     Pan(f64),
+    Compressor(CompressorSettings),
 }
 
 /// Prepared backend ownership and initial DSP values, separate from editable
@@ -46,6 +47,7 @@ impl<S: ProcessingSample> NodeBindings<S> {
                 (NodeKind::Source, Binding::Io(p)) => p.role() == ProcessorRole::Source,
                 (NodeKind::Sink, Binding::Io(p)) => p.role() == ProcessorRole::Sink,
                 (NodeKind::Gain, Binding::Gain(_)) | (NodeKind::Pan, Binding::Pan(_)) => true,
+                (NodeKind::Compressor, Binding::Compressor(_)) => true,
                 _ => false,
             };
             if !valid {
@@ -93,12 +95,22 @@ impl<S: ProcessingSample> NodeBindings<S> {
     pub fn bind_pan(&mut self, node: NodeId, initial: f64) -> Result<(), CompileError> {
         self.insert(node, Binding::Pan(initial))
     }
+    pub fn bind_compressor(
+        &mut self,
+        node: NodeId,
+        settings: CompressorSettings,
+    ) -> Result<(), CompileError> {
+        self.insert(node, Binding::Compressor(settings))
+    }
 }
 
 // Forwarding a boxed user processor preserves its role and validation hooks.
 // This wrapper stays private, avoiding a blanket public Box implementation.
 pub(super) struct BoundIo<S: ProcessingSample>(pub(super) Box<dyn RtProcessor<S>>);
 impl<S: ProcessingSample> RtProcessor<S> for BoundIo<S> {
+    fn state_type_id(&self) -> std::any::TypeId {
+        self.0.state_type_id()
+    }
     fn role(&self) -> ProcessorRole {
         self.0.role()
     }
@@ -118,5 +130,27 @@ impl<S: ProcessingSample> RtProcessor<S> for BoundIo<S> {
         params: ProcessParameters<'_>,
     ) {
         self.0.process(ctx, io, params);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::boundary::ConstantSource;
+
+    #[test]
+    fn type_erased_io_forwards_concrete_dsp_identity() {
+        let bound = BoundIo::<f64>(Box::new(SourceAdapter(ConstantSource {
+            channels: 2,
+            value: 1.0,
+        })));
+        assert_eq!(
+            bound.state_type_id(),
+            std::any::TypeId::of::<SourceAdapter<ConstantSource>>()
+        );
+        assert_ne!(
+            bound.state_type_id(),
+            std::any::TypeId::of::<BoundIo<f64>>()
+        );
     }
 }
