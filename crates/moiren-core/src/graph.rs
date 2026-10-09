@@ -12,6 +12,14 @@ mod tests;
 // Prepared engine IO uses u16 port numbers; 0 through u16::MAX are usable.
 const MAX_INPUT_PORTS: usize = u16::MAX as usize + 1;
 
+fn check_input_capacity(input_count: usize) -> Result<(), GraphError> {
+    if input_count >= MAX_INPUT_PORTS {
+        Err(GraphError::TooManyPorts)
+    } else {
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct IdCounter {
     node: u64,
@@ -133,9 +141,7 @@ impl LogicalGraph {
         if node.channels != channels {
             return Err(GraphError::ChannelMismatch);
         }
-        if node.inputs.len() >= MAX_INPUT_PORTS {
-            return Err(GraphError::TooManyPorts);
-        }
+        check_input_capacity(node.inputs.len())?;
         let next = self
             .counts
             .port

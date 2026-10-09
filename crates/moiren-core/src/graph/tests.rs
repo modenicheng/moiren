@@ -46,6 +46,23 @@ fn id_exhaustion_is_atomic_for_nodes_ports_and_edges() {
 }
 
 #[test]
+fn input_capacity_checks_the_exact_engine_index_boundary() {
+    assert_eq!(check_input_capacity(0), Ok(()));
+    assert_eq!(check_input_capacity(u16::MAX as usize), Ok(()));
+    assert_eq!(
+        check_input_capacity(MAX_INPUT_PORTS),
+        Err(GraphError::TooManyPorts)
+    );
+    assert_eq!(
+        check_input_capacity(usize::MAX),
+        Err(GraphError::TooManyPorts)
+    );
+}
+
+// Full-size allocation is a native stress test. Miri exercises the same
+// production capacity guard above and the small editable Bus graph tests.
+#[cfg(not(miri))]
+#[test]
 fn bus_input_count_fits_engine_port_indices() {
     let mut graph = LogicalGraph::new();
     let bus = graph.create_node(NodeKind::Bus, 1).unwrap();

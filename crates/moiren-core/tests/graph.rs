@@ -348,7 +348,10 @@ fn composed_bus_edit_rolls_back_port_on_failed_connection() {
 #[test]
 fn deep_chains_use_iterative_traversal_and_remain_reconnectable() {
     let mut graph = LogicalGraph::new();
-    let nodes = (0..512)
+    // Keep iterative traversal/reconnection coverage under Miri without the
+    // quadratic construction cost of the native topology stress fixture.
+    let node_count = if cfg!(miri) { 32 } else { 512 };
+    let nodes = (0..node_count)
         .map(|_| graph.create_node(NodeKind::Gain, 1).unwrap())
         .collect::<Vec<_>>();
     let mut edges = Vec::new();
