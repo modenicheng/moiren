@@ -17,7 +17,7 @@
 - Reuse the output bridge identity and retained input backend identities across plans.
 - Publish only prepared plans; acknowledge desired/active revisions separately and drain terminal parameter replies before retirement destruction.
 - UI depends on moiren-app domain APIs, never engine or WASAPI internal ownership types.
-- Modify only explicitly assigned files. Commit explicit paths. Share `CARGO_TARGET_DIR=D:\coding\moiren\target` for native checks.
+- Modify only explicitly assigned files. Commit explicit paths. Use `CARGO_TARGET_DIR=D:\coding\moiren\.worktrees\audio-host\target` for native checks so frontend builds remain independent.
 
 ### Task 1: Continuous backend ownership
 

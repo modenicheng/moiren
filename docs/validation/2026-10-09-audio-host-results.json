@@ -1,0 +1,264 @@
+{
+  "schema_version": 1,
+  "hardware_conditions": {
+    "physical_input_sample_rate": 48000,
+    "physical_input_channels": 1,
+    "output_sample_rate": 48000,
+    "output_channels": 2,
+    "output_buffer_frames": 1056,
+    "generator": "owned 440 Hz amplitude 0.02 on an existing isolated endpoint",
+    "initial_strip_gain": 0.05,
+    "prewarm_seconds": 0,
+    "concurrent_work": "WSL native and Miri test workloads; two additional 30-second cold sessions overlap the long run",
+    "pcm_or_private_ids_stored": false
+  },
+  "cold_runs": [
+    {
+      "label": "cold_2",
+      "duration_seconds": 30.0316554,
+      "rendered_frames": 1441536,
+      "source_underrun_max": 0.0,
+      "render_bridge_shortfall": 0,
+      "empty_padding_wakes": 0,
+      "plan_revisions": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "parameter_accepted": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "parameter_applied": [
+        1,
+        2,
+        3,
+        4,
+        6
+      ],
+      "parameter_terminal": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "parameter_racing_publication": [
+        5
+      ],
+      "target_exit_observed": true,
+      "stop_succeeded": true
+    },
+    {
+      "label": "cold_3",
+      "duration_seconds": 30.0367464,
+      "rendered_frames": 1441056,
+      "source_underrun_max": 0.0,
+      "render_bridge_shortfall": 0,
+      "empty_padding_wakes": 0,
+      "plan_revisions": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "parameter_accepted": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "parameter_applied": [
+        1,
+        2,
+        3,
+        4,
+        6
+      ],
+      "parameter_terminal": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "parameter_racing_publication": [
+        5
+      ],
+      "target_exit_observed": true,
+      "stop_succeeded": true
+    }
+  ],
+  "continuous": {
+    "requested_seconds": 620,
+    "elapsed_seconds": 620.0562715,
+    "render": {
+      "buffer_frames": 1056,
+      "elapsed_seconds": 620.0102083,
+      "failure": null,
+      "native_mix_channels": 2,
+      "native_mix_sample_rate": 48000,
+      "stats": {
+        "audio_wakes": 62002,
+        "bridge_shortfall_frames": 0,
+        "dsp_blocks": 124008,
+        "dsp_segments": 124008,
+        "empty_padding_wakes": 0,
+        "max_writable_frames": 480,
+        "min_writable_frames": 96,
+        "nonzero_samples": 59521408,
+        "peak_amplitude": 0.014592127874493599,
+        "primed_frames": 1056,
+        "processed_frames": 29761632,
+        "submitted_frames": 29761632,
+        "timeout_wakes": 0,
+        "zero_demand_wakes": 0
+      },
+      "status": "stopped",
+      "stop_succeeded": true,
+      "stream_started": true
+    },
+    "source_underrun_max": 0.0,
+    "plan_revisions": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "parameter_accepted": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "parameter_applied": [
+      1,
+      2,
+      3,
+      4,
+      6
+    ],
+    "parameter_terminal": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "parameter_racing_publication": [
+      5
+    ],
+    "target_exit_observed": true,
+    "steady_window_seconds": 591.9975681999999,
+    "steady_sources": [
+      {
+        "role": "physical",
+        "status": "running",
+        "captured_frames": 28968480,
+        "output_frames": 28965941,
+        "underrun_frames": 0,
+        "dropped_frames": 0,
+        "priming_frames": 3104,
+        "prime_discarded_frames": 703,
+        "resets": 1,
+        "discontinuities": 2,
+        "timestamp_errors": 0,
+        "nonfinite_samples": 0,
+        "min_fill_frames": 1431,
+        "max_fill_frames": 2648,
+        "final_fill_frames": 1911,
+        "final_correction_ppm": -5.67485011372073,
+        "steady_underrun_delta": 0,
+        "steady_dropped_delta": 0,
+        "steady_reset_delta": 1
+      },
+      {
+        "role": "owned_process",
+        "status": "running",
+        "captured_frames": 28699680,
+        "output_frames": 28697856,
+        "underrun_frames": 0,
+        "dropped_frames": 0,
+        "priming_frames": 2880,
+        "prime_discarded_frames": 352,
+        "resets": 0,
+        "discontinuities": 0,
+        "timestamp_errors": 0,
+        "nonfinite_samples": 0,
+        "min_fill_frames": 952,
+        "max_fill_frames": 3127,
+        "final_fill_frames": 1911,
+        "final_correction_ppm": -5.6661294540822364,
+        "steady_underrun_delta": 0,
+        "steady_dropped_delta": 0,
+        "steady_reset_delta": 0
+      }
+    ]
+  },
+  "simulated_clock_drift": [
+    {
+      "input_rate": 44100,
+      "drift_ppm": -1000,
+      "seconds": 7200,
+      "fill_frames": 1847,
+      "correction_ppm": -1009.39,
+      "underrun_frames": 0,
+      "dropped_frames": 0
+    },
+    {
+      "input_rate": 44100,
+      "drift_ppm": 1000,
+      "seconds": 7200,
+      "fill_frames": 1846,
+      "correction_ppm": 990.31,
+      "underrun_frames": 0,
+      "dropped_frames": 0
+    },
+    {
+      "input_rate": 48000,
+      "drift_ppm": -1000,
+      "seconds": 7200,
+      "fill_frames": 1829,
+      "correction_ppm": -1009.71,
+      "underrun_frames": 0,
+      "dropped_frames": 0
+    },
+    {
+      "input_rate": 48000,
+      "drift_ppm": 1000,
+      "seconds": 7200,
+      "fill_frames": 1828,
+      "correction_ppm": 989.99,
+      "underrun_frames": 0,
+      "dropped_frames": 0
+    }
+  ],
+  "cli": {
+    "bounded_eof_seconds": 3,
+    "bounded_eof_stop_verified": true,
+    "explicit_json_stop_verified": true,
+    "graph_status_json_verified": true,
+    "invalid_process_structured_failure_verified": true
+  }
+}
