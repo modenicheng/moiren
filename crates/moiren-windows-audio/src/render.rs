@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -52,6 +52,8 @@ pub enum RenderError {
     WorkerSpawn { code: Option<i32> },
     #[error("render worker panicked")]
     WorkerPanicked,
+    #[error("render observer already has an attached publisher")]
+    ObserverInUse,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +119,7 @@ pub struct RenderObservation {
 
 #[derive(Debug, Default)]
 struct ObservationState {
+    publisher_claimed: AtomicBool,
     revision: AtomicU64,
     timeline: AtomicU64,
     frames: AtomicU64,
@@ -151,15 +154,36 @@ impl RenderObserver {
         }
     }
 
+    fn claim(self) -> Result<ObserverPublisher, RenderError> {
+        self.0
+            .publisher_claimed
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .map_err(|_| RenderError::ObserverInUse)?;
+        Ok(ObserverPublisher(self))
+    }
+}
+
+/// Only this non-cloneable token can publish. Claims are acquired and released
+/// on the control owner; renderer publication never changes ownership.
+struct ObserverPublisher(RenderObserver);
+impl ObserverPublisher {
     fn publish(&self, timeline: u64, counters: DemandCounters) {
         // A sequence protects coherence across the individual atomics. SeqCst
         // keeps the odd revision ahead of all fields and the even one after them.
-        self.0.revision.fetch_add(1, Ordering::SeqCst);
-        self.0.timeline.store(timeline, Ordering::SeqCst);
-        self.0.frames.store(counters.frames, Ordering::SeqCst);
-        self.0.blocks.store(counters.blocks, Ordering::SeqCst);
-        self.0.segments.store(counters.segments, Ordering::SeqCst);
-        self.0.revision.fetch_add(1, Ordering::SeqCst);
+        self.0.0.revision.fetch_add(1, Ordering::SeqCst);
+        self.0.0.timeline.store(timeline, Ordering::SeqCst);
+        self.0.0.frames.store(counters.frames, Ordering::SeqCst);
+        self.0.0.blocks.store(counters.blocks, Ordering::SeqCst);
+        self.0.0.segments.store(counters.segments, Ordering::SeqCst);
+        self.0.0.revision.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl Drop for ObserverPublisher {
+    fn drop(&mut self) {
+        // The renderer is returned to control before destruction/extraction;
+        // releasing its publication claim cannot occur inside render demand.
+        self.0.0.publisher_claimed.store(false, Ordering::Release);
     }
 }
 
@@ -167,7 +191,7 @@ pub struct DemandRenderer {
     engine: Engine<f32>,
     output: AudioReader<f32>,
     counters: DemandCounters,
-    observer: Option<RenderObserver>,
+    observer: Option<ObserverPublisher>,
 }
 impl DemandRenderer {
     /// Non-RT preparation. The reader must be the matching, initially drained
@@ -190,14 +214,19 @@ impl DemandRenderer {
     }
     /// Attach on the control owner before starting the native worker. The
     /// initial snapshot includes any engine timeline predating preparation.
-    pub fn set_observer(&mut self, observer: RenderObserver) {
-        observer.publish(self.timeline(), self.counters);
-        self.observer = Some(observer);
+    /// Rejects an observer claimed by any renderer, retaining this renderer's
+    /// existing observer and leaving both observers' snapshots unchanged.
+    pub fn set_observer(&mut self, observer: RenderObserver) -> Result<(), RenderError> {
+        let publisher = observer.claim()?;
+        publisher.publish(self.timeline(), self.counters);
+        self.observer = Some(publisher);
+        Ok(())
     }
 
     /// Extract on the control caller after joining the native worker. Neither
     /// the engine's processors nor the bridge allocation is destroyed on the
-    /// COM/render owner during ordinary stop or backend failure.
+    /// COM/render owner during ordinary stop or backend failure. Extraction
+    /// also releases the observer publication claim on this control caller.
     pub fn into_parts(self) -> (Engine<f32>, AudioReader<f32>) {
         (self.engine, self.output)
     }

@@ -236,7 +236,7 @@ fn render_demand_has_no_allocations_or_deallocations() {
     let (engine, reader) = graph(48000.0);
     let mut renderer = DemandRenderer::new(engine, reader).unwrap();
     let observer = RenderObserver::default();
-    renderer.set_observer(observer.clone());
+    renderer.set_observer(observer.clone()).unwrap();
     let mut samples = [0.0; 38];
     COUNTS.with(|n| n.set((0, 0)));
     TRACK.with(|t| t.set(true));
@@ -289,7 +289,7 @@ fn observer_tracks_initial_timeline_completed_blocks_and_failed_transfer() {
     reader.read_interleaved(&mut [0.0; 6]).unwrap();
     let mut renderer = DemandRenderer::new(engine, reader).unwrap();
     let observer = RenderObserver::default();
-    renderer.set_observer(observer.clone());
+    renderer.set_observer(observer.clone()).unwrap();
     assert_eq!(
         observer.snapshot(),
         RenderObservation {
@@ -318,7 +318,7 @@ fn observer_tracks_initial_timeline_completed_blocks_and_failed_transfer() {
     let (engine, _actual_reader) = graph(48000.0);
     let (_unused_writer, reader) = audio_bridge::<f32>(2, 8, 4096).unwrap();
     let mut renderer = DemandRenderer::new(engine, reader).unwrap();
-    renderer.set_observer(observer.clone());
+    renderer.set_observer(observer.clone()).unwrap();
     assert!(renderer.render_interleaved(&mut [0.0; 38]).is_err());
     assert_eq!(
         observer.snapshot(),
@@ -443,7 +443,7 @@ fn observer_snapshots_remain_coherent_across_worker_publication() {
     let (engine, reader) = graph(48000.0);
     let mut renderer = DemandRenderer::new(engine, reader).unwrap();
     let observer = RenderObserver::default();
-    renderer.set_observer(observer.clone());
+    renderer.set_observer(observer.clone()).unwrap();
     let finished = Arc::new(AtomicBool::new(false));
     let worker_finished = Arc::clone(&finished);
     let worker = std::thread::spawn(move || {
@@ -466,5 +466,65 @@ fn observer_snapshots_remain_coherent_across_worker_publication() {
             timeline: renderer.timeline(),
             counters: renderer.counters()
         }
+    );
+}
+
+#[test]
+fn duplicate_observer_attachment_keeps_each_existing_publisher_and_snapshot() {
+    let (engine, reader) = graph(48000.0);
+    let mut first = DemandRenderer::new(engine, reader).unwrap();
+    let first_observer = RenderObserver::default();
+    first.set_observer(first_observer.clone()).unwrap();
+    first.render_interleaved(&mut [0.0; 16]).unwrap();
+
+    let (engine, reader) = graph(48000.0);
+    let mut second = DemandRenderer::new(engine, reader).unwrap();
+    let second_observer = RenderObserver::default();
+    second.set_observer(second_observer.clone()).unwrap();
+    second.render_interleaved(&mut [0.0; 6]).unwrap();
+    let first_before = first_observer.snapshot();
+    let second_before = second_observer.snapshot();
+
+    assert_eq!(
+        second.set_observer(first_observer.clone()),
+        Err(RenderError::ObserverInUse)
+    );
+    assert_eq!(first_observer.snapshot(), first_before);
+    assert_eq!(second_observer.snapshot(), second_before);
+    // Both original publisher tokens survive rejection and still publish only
+    // to their own observers when their separate renderers advance.
+    first.render_interleaved(&mut [0.0; 2]).unwrap();
+    second.render_interleaved(&mut [0.0; 2]).unwrap();
+    assert_eq!(first_observer.snapshot().timeline, 9);
+    assert_eq!(second_observer.snapshot().timeline, 4);
+    assert_eq!(
+        first.set_observer(second_observer),
+        Err(RenderError::ObserverInUse)
+    );
+}
+
+#[test]
+fn observer_claim_can_be_reused_after_control_drop_extraction_and_replacement() {
+    let observer = RenderObserver::default();
+    let (engine, reader) = graph(48000.0);
+    let mut renderer = DemandRenderer::new(engine, reader).unwrap();
+    renderer.set_observer(observer.clone()).unwrap();
+    drop(renderer);
+
+    let (engine, reader) = graph(48000.0);
+    let mut renderer = DemandRenderer::new(engine, reader).unwrap();
+    renderer.set_observer(observer.clone()).unwrap();
+    let (engine, reader) = renderer.into_parts();
+    let mut renderer = DemandRenderer::new(engine, reader).unwrap();
+    renderer.set_observer(observer.clone()).unwrap();
+
+    let replacement = RenderObserver::default();
+    renderer.set_observer(replacement.clone()).unwrap();
+    let (engine, reader) = graph(48000.0);
+    let mut other = DemandRenderer::new(engine, reader).unwrap();
+    other.set_observer(observer).unwrap();
+    assert_eq!(
+        other.set_observer(replacement),
+        Err(RenderError::ObserverInUse)
     );
 }
