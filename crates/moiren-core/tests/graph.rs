@@ -373,7 +373,7 @@ fn deep_chains_use_iterative_traversal_and_remain_reconnectable() {
         Err(GraphError::CycleDetected)
     );
     assert_eq!(graph.topological_order().unwrap(), nodes);
-    graph.disconnect(edges[255]).unwrap();
+    graph.disconnect(edges[edges.len() / 2]).unwrap();
     graph.connect(last, first, SendParams::default()).unwrap();
     graph.validate().unwrap();
 }
