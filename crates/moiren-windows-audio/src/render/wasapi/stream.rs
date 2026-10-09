@@ -160,6 +160,7 @@ fn owner(
         };
     let mut streaming = api("Start", Streaming::start(&client))?;
     report.stream_started = true;
+    renderer.set_stream_started(true);
     let started = Instant::now();
     let result = (|| {
         while started.elapsed() < options.duration {

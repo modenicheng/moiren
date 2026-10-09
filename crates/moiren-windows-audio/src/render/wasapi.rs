@@ -109,10 +109,13 @@ pub fn start_render(
 /// stream can end the pair before its potentially slow native cleanup finishes.
 pub fn start_render_with_stop(
     options: RenderOptions,
-    renderer: DemandRenderer,
+    mut renderer: DemandRenderer,
     signal: StopSignal,
 ) -> Result<RenderSession, RenderError> {
     options.validate()?;
+    // A renderer can be returned and started again. Clear the previous owner's
+    // start acknowledgement on control before spawning its replacement.
+    renderer.set_stream_started(false);
     let stop = signal.event;
     let worker_stop = Arc::clone(&stop);
     let worker = thread::Builder::new()

@@ -11,7 +11,7 @@ mod identity;
 #[cfg(windows)]
 mod stream;
 #[cfg(windows)]
-pub use identity::inspect_process;
+pub use identity::{inspect_process, list_processes};
 #[cfg(windows)]
 pub(crate) use stream::capture_format;
 #[cfg(windows)]

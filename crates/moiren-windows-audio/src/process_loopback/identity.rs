@@ -24,6 +24,35 @@ pub fn inspect_process(pid: u32) -> Result<ProcessIdentity, CaptureError> {
     }
     Ok(process.identity)
 }
+
+/// Accessible live candidates for explicit process-tree selection. Enumeration
+/// never activates capture and omits inaccessible/exited processes, this host,
+/// and its ancestors. Startup still revalidates PID plus creation time.
+pub fn list_processes() -> Result<Vec<ProcessIdentity>, CaptureError> {
+    let parents = process_parents()?;
+    let host_pid = std::process::id();
+    let ancestors = ancestor_ids(&parents, host_pid);
+    let host = api("OpenProcess(host identity)", Process::open(host_pid))?;
+    let mut choices = Vec::new();
+    for pid in parents
+        .keys()
+        .copied()
+        .filter(|&pid| pid != 0 && pid != host_pid)
+    {
+        let Ok(process) = Process::open(pid) else {
+            continue;
+        };
+        if ancestors.contains(&pid)
+            && process.identity.creation_time_100ns <= host.identity.creation_time_100ns
+        {
+            continue;
+        }
+        if matches!(process.exited(), Ok(false)) {
+            choices.push(process.identity);
+        }
+    }
+    Ok(choices)
+}
 pub(super) fn open_selected(selected: &ProcessIdentity) -> Result<Process, CaptureError> {
     let process = api("OpenProcess(loopback owner)", Process::open(selected.pid))?;
     if !selected.same_process(&process.identity) {
@@ -43,10 +72,7 @@ fn ancestor_ids(parents: &BTreeMap<u32, u32>, host: u32) -> BTreeSet<u32> {
     }
     ids
 }
-fn reject_feedback_target(target: &ProcessIdentity) -> Result<(), CaptureError> {
-    if target.pid == std::process::id() {
-        return Err(CaptureError::FeedbackTarget);
-    }
+fn process_parents() -> Result<BTreeMap<u32, u32>, CaptureError> {
     let snapshot = OwnedHandle(api("Snapshot(process ancestry)", unsafe {
         CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     })?);
@@ -75,7 +101,13 @@ fn reject_feedback_target(target: &ProcessIdentity) -> Result<(), CaptureError> 
             }
         }
     }
-    if ancestor_ids(&parents, std::process::id()).contains(&target.pid) {
+    Ok(parents)
+}
+fn reject_feedback_target(target: &ProcessIdentity) -> Result<(), CaptureError> {
+    if target.pid == std::process::id() {
+        return Err(CaptureError::FeedbackTarget);
+    }
+    if ancestor_ids(&process_parents()?, std::process::id()).contains(&target.pid) {
         // Parent PIDs can be recycled. Only a process created before this host
         // can be its ancestor; conservative rejection avoids output feedback.
         let host = api(
@@ -105,5 +137,14 @@ mod tests {
             open_selected(&identity),
             Err(CaptureError::ProcessIdentityChanged)
         ));
+    }
+    #[test]
+    fn process_choices_are_pinned_and_exclude_the_host() {
+        let choices = list_processes().unwrap();
+        assert!(choices.iter().all(|choice| choice.pid != std::process::id()
+            && choice.creation_time_100ns != 0
+            && !choice.executable_name.is_empty()
+            && !choice.executable_name.contains(['\\', '/'])));
+        assert!(choices.windows(2).all(|pair| pair[0].pid < pair[1].pid));
     }
 }

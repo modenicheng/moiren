@@ -41,6 +41,24 @@ pub struct EdgeId(pub(super) u64);
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Clone, Copy, Hash)]
 pub struct PortId(pub(super) u64);
 
+impl NodeId {
+    /// Stable identity for snapshots and external adapters; graph ownership
+    /// still determines whether the ID refers to an existing object.
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+impl EdgeId {
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+impl PortId {
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
     Source,

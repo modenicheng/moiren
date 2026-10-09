@@ -68,6 +68,13 @@ fn graph(sample_rate: f64) -> (Engine<f32>, AudioReader<f32>) {
     (graph_with_sink(sample_rate, writer), reader)
 }
 fn graph_with_sink(sample_rate: f64, writer: impl RtAudioSink<f32> + 'static) -> Engine<f32> {
+    graph_with_source_and_sink(sample_rate, RampSource, writer)
+}
+fn graph_with_source_and_sink(
+    sample_rate: f64,
+    source_backend: impl RtAudioSource<f32> + 'static,
+    writer: impl RtAudioSink<f32> + 'static,
+) -> Engine<f32> {
     let mut graph = LogicalGraph::new();
     let source = graph.create_node(NodeKind::Source, 2).unwrap();
     let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
@@ -79,7 +86,7 @@ fn graph_with_sink(sample_rate: f64, writer: impl RtAudioSink<f32> + 'static) ->
         )
         .unwrap();
     let mut bindings = NodeBindings::new();
-    bindings.bind_source(source, RampSource).unwrap();
+    bindings.bind_source(source, source_backend).unwrap();
     bindings.bind_sink(sink, writer).unwrap();
     let compiled = compile(
         &graph,
@@ -295,6 +302,7 @@ fn observer_tracks_initial_timeline_completed_blocks_and_failed_transfer() {
         RenderObservation {
             timeline: 3,
             counters: DemandCounters::default(),
+            ..RenderObservation::default()
         }
     );
     renderer.render_interleaved(&mut []).unwrap();
@@ -309,6 +317,8 @@ fn observer_tracks_initial_timeline_completed_blocks_and_failed_transfer() {
                 blocks: 3,
                 segments: 3
             },
+            peak_amplitude: 0.021,
+            stream_started: false,
         }
     );
     let (engine, reader) = renderer.into_parts();
@@ -329,6 +339,7 @@ fn observer_tracks_initial_timeline_completed_blocks_and_failed_transfer() {
                 blocks: 1,
                 segments: 1
             },
+            ..RenderObservation::default()
         }
     );
 }
@@ -458,15 +469,69 @@ fn observer_snapshots_remain_coherent_across_worker_publication() {
         assert_eq!(snapshot.timeline, snapshot.counters.frames);
         assert_eq!(snapshot.counters.frames, snapshot.counters.blocks * 8);
         assert_eq!(snapshot.counters.blocks, snapshot.counters.segments);
+        if snapshot.timeline > 0 {
+            assert_eq!(
+                snapshot.peak_amplitude,
+                (snapshot.timeline - 1) as f32 / 1000.0
+            );
+        }
+        assert!(!snapshot.stream_started);
     }
     let renderer = worker.join().unwrap();
     assert_eq!(
         observer.snapshot(),
         RenderObservation {
             timeline: renderer.timeline(),
-            counters: renderer.counters()
+            counters: renderer.counters(),
+            peak_amplitude: 7.999,
+            stream_started: false,
         }
     );
+}
+
+#[test]
+fn observer_peak_follows_current_output_and_priming_does_not_acknowledge_native_start() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct SwitchSource(Arc<AtomicBool>);
+    impl RtAudioSource<f32> for SwitchSource {
+        fn channel_count(&self) -> usize {
+            2
+        }
+        fn read(
+            &mut self,
+            ctx: &moiren_engine::processor::ProcessContext,
+            mut output: moiren_engine::buffer::AudioBlockMut<'_, f32>,
+        ) -> BoundaryReport {
+            let value = if self.0.load(Ordering::Relaxed) {
+                0.25
+            } else {
+                0.0
+            };
+            for channel in output.channels_mut() {
+                channel.fill(value);
+            }
+            BoundaryReport {
+                transferred_frames: ctx.frames,
+                ..BoundaryReport::default()
+            }
+        }
+    }
+    let audible = Arc::new(AtomicBool::new(true));
+    let (writer, reader) = audio_bridge::<f32>(2, 8, 4096).unwrap();
+    let engine = graph_with_source_and_sink(48000.0, SwitchSource(Arc::clone(&audible)), writer);
+    let mut renderer = DemandRenderer::new(engine, reader).unwrap();
+    let observer = RenderObserver::default();
+    renderer.set_observer(observer.clone()).unwrap();
+    renderer.render_interleaved(&mut [0.0; 38]).unwrap();
+    assert_eq!(observer.snapshot().peak_amplitude, 0.25);
+    assert!(!observer.snapshot().stream_started);
+    audible.store(false, Ordering::Relaxed);
+    renderer.render_interleaved(&mut [99.0; 6]).unwrap();
+    assert_eq!(observer.snapshot().peak_amplitude, 0.0);
+    assert_eq!(observer.snapshot().timeline, 22);
 }
 
 #[test]
