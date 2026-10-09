@@ -382,9 +382,12 @@ fn actual_multi_source_render_and_swaps_never_allocate_or_deallocate() {
 
 #[test]
 fn compile_failure_preserves_prepared_backend_for_corrected_graph() {
+    // Exercise the same real budget failure and backend retry under Miri with
+    // fewer graph clones; the native fixture still stresses 100 edits.
+    let (node_count, byte_budget) = if cfg!(miri) { (16, 1024) } else { (100, 4096) };
     let (mut host, mut renderer) = AudioHost::prepare(HostConfig {
         max_block_frames: 8,
-        audio_byte_budget: 4096,
+        audio_byte_budget: byte_budget,
         ..Default::default()
     })
     .unwrap();
@@ -396,7 +399,7 @@ fn compile_failure_preserves_prepared_backend_for_corrected_graph() {
         value: 0.5,
     })
     .unwrap();
-    let nodes: Vec<_> = (0..100)
+    let nodes: Vec<_> = (0..node_count)
         .map(|_| {
             let GraphEdit::Node(node) = host
                 .graph_command(GraphCommand::CreateNode {
