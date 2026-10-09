@@ -164,6 +164,24 @@ fn close(actual: f64, expected: f64) {
     assert!((actual - expected).abs() < 2e-6, "{actual} != {expected}");
 }
 
+/// Under Miri the software libm is not run-to-run bit-deterministic (the same
+/// `powf` call varies by several ULP within one process), so per-sample
+/// equality between chunkings only holds to a tight tolerance there. Host
+/// builds keep the exact bit-for-bit assertion.
+fn assert_chunkings_match(whole: &[Vec<f64>], split: &[Vec<f64>]) {
+    if cfg!(miri) {
+        assert_eq!(whole.len(), split.len());
+        for (whole, split) in whole.iter().zip(split) {
+            assert_eq!(whole.len(), split.len());
+            for (whole, split) in whole.iter().zip(split) {
+                assert!((whole - split).abs() < 1e-12, "{whole} != {split}");
+            }
+        }
+    } else {
+        assert_eq!(whole, split);
+    }
+}
+
 #[test]
 fn compressor_hard_and_quadratic_soft_knee_include_both_boundaries() {
     for knee in [0.0, 6.0] {
@@ -237,7 +255,7 @@ fn compressor_hold_delays_release_but_never_attack_and_persists_between_windows(
     let input = vec![vec![1.0, 0.01, 0.01, 0.01, 1.0, 2.0, 0.01]];
     let whole = render::<f64>(settings, &input, &[7], false, 1000.0);
     let split = render::<f64>(settings, &input, &[1, 2, 1, 1, 2], true, 1000.0);
-    assert_eq!(whole, split);
+    assert_chunkings_match(&whole, &split);
     for (actual, expected) in whole[0].iter().zip([
         db(-9.0),
         0.01 * db(-9.0),
@@ -303,7 +321,7 @@ fn compressor_silence_remains_finite_and_matches_variable_blocks() {
     for in_place in [false, true] {
         let whole = render::<f64>(settings, &input, &[7], in_place, 1000.0);
         let split = render::<f64>(settings, &input, &[1, 3, 1, 2], in_place, 1000.0);
-        assert_eq!(whole, split);
+        assert_chunkings_match(&whole, &split);
         assert!(whole[0].iter().all(|sample| sample.is_finite()));
         assert_eq!(whole[0][0], 0.0);
     }
