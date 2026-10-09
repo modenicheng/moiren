@@ -171,3 +171,142 @@ fn render_leases_copy_full_pcm_or_cancel_without_submitting_stale_data() {
         );
     }
 }
+
+struct DropTrackedSource(std::sync::Arc<std::sync::Mutex<Option<std::thread::ThreadId>>>);
+impl moiren_engine::boundary::RtAudioSource<f32> for DropTrackedSource {
+    fn channel_count(&self) -> usize {
+        2
+    }
+    fn read(
+        &mut self,
+        ctx: &moiren_engine::processor::ProcessContext,
+        mut output: moiren_engine::buffer::AudioBlockMut<'_, f32>,
+    ) -> moiren_engine::boundary::BoundaryReport {
+        for channel in output.channels_mut() {
+            channel.fill(0.0);
+        }
+        moiren_engine::boundary::BoundaryReport {
+            transferred_frames: ctx.frames,
+            ..Default::default()
+        }
+    }
+}
+impl Drop for DropTrackedSource {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap() = Some(std::thread::current().id());
+    }
+}
+
+fn tracked_renderer(
+    dropped_on: Arc<std::sync::Mutex<Option<std::thread::ThreadId>>>,
+) -> DemandRenderer {
+    use moiren_core::graph::*;
+    use moiren_engine::{boundary::audio_bridge, compiler::*, runtime::EngineConfig};
+    let (writer, reader) = audio_bridge::<f32>(2, 8, 4096).unwrap();
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 2).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
+    graph
+        .connect(
+            graph.get_node(source).unwrap().outputs()[0].id(),
+            graph.get_node(sink).unwrap().inputs()[0].id(),
+            SendParams::default(),
+        )
+        .unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings
+        .bind_source(source, DropTrackedSource(dropped_on))
+        .unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    let engine = compile(
+        &graph,
+        bindings,
+        CompileConfig {
+            engine: EngineConfig {
+                processing_sr: 48000.0,
+                max_block_frames: 8,
+                max_events_per_block: 8,
+            },
+            audio_byte_budget: 4096,
+            plan_revision: 1,
+            timeline_epoch: 1,
+            control_capacity: 8,
+            control_horizon_frames: 48000,
+        },
+    )
+    .unwrap()
+    .engine;
+    DemandRenderer::new(engine, reader).unwrap()
+}
+
+#[test]
+fn stopped_and_panicking_owner_return_resources_after_scope_cleanup() {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct OwnerScope(Arc<AtomicBool>);
+    impl Drop for OwnerScope {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let caller = std::thread::current().id();
+    for panic in [false, true] {
+        for cleanup in 0..3 {
+            let dropped_on = Arc::new(Mutex::new(None));
+            let cleaned = Arc::new(AtomicBool::new(false));
+            let renderer = tracked_renderer(Arc::clone(&dropped_on));
+            let stop = Arc::new(stop_event().unwrap());
+            let worker_stop = Arc::clone(&stop);
+            let worker_cleaned = Arc::clone(&cleaned);
+            let worker = std::thread::spawn(move || {
+                stream::run_owner_with(
+                    RenderOptions::continuous("synthetic"),
+                    renderer,
+                    worker_stop,
+                    |_, _, _, _| {
+                        let _native_scope = OwnerScope(worker_cleaned);
+                        if panic {
+                            panic!("synthetic owner failure");
+                        }
+                        Ok(crate::render::RenderStatus::Stopped)
+                    },
+                )
+            });
+            let session = RenderSession {
+                stop,
+                worker: Some(worker),
+            };
+            let expected = if panic {
+                crate::render::RenderStatus::Failed
+            } else {
+                crate::render::RenderStatus::Stopped
+            };
+            match cleanup {
+                0 => {
+                    let (report, renderer) = session.join_with_renderer().unwrap();
+                    assert_eq!(report.status, expected);
+                    assert_eq!(
+                        report.failure.as_deref(),
+                        panic.then_some("render worker panicked")
+                    );
+                    assert!(cleaned.load(Ordering::SeqCst));
+                    assert_eq!(*dropped_on.lock().unwrap(), None);
+                    drop(renderer);
+                }
+                1 => {
+                    let result = session.join();
+                    if panic {
+                        assert!(matches!(result, Err(RenderError::WorkerPanicked)));
+                    } else {
+                        assert_eq!(result.unwrap().status, expected);
+                    }
+                }
+                _ => drop(session),
+            }
+            assert!(cleaned.load(Ordering::SeqCst));
+            assert_eq!(*dropped_on.lock().unwrap(), Some(caller));
+        }
+    }
+}

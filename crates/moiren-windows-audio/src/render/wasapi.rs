@@ -39,9 +39,15 @@ fn stop_event() -> Result<StdHandle, RenderError> {
     Ok(unsafe { StdHandle::from_raw_handle(raw.0) })
 }
 
+struct WorkerOutcome {
+    report: RenderReport,
+    renderer: DemandRenderer,
+    panicked: bool,
+}
+
 pub struct RenderSession {
     stop: Arc<StdHandle>,
-    worker: Option<JoinHandle<RenderReport>>,
+    worker: Option<JoinHandle<WorkerOutcome>>,
 }
 impl RenderSession {
     pub fn is_finished(&self) -> bool {
@@ -52,7 +58,27 @@ impl RenderSession {
     }
     /// Waits for normal duration completion or a requested stop. The returned
     /// report is created after all stream/COM objects have been released.
-    pub fn join(mut self) -> Result<RenderReport, RenderError> {
+    pub fn join(self) -> Result<RenderReport, RenderError> {
+        let outcome = self.join_worker()?;
+        if outcome.panicked {
+            // Preserve the legacy panic error while dropping the returned
+            // engine on this caller, exactly as for any completed report.
+            Err(RenderError::WorkerPanicked)
+        } else {
+            Ok(outcome.report)
+        }
+    }
+
+    /// Returns render resources to the control caller only after the worker
+    /// released native stream services and uninitialized its COM apartment.
+    /// A caught owner panic returns a failed report and the retained renderer;
+    /// legacy `join()` continues returning `RenderError::WorkerPanicked`.
+    pub fn join_with_renderer(self) -> Result<(RenderReport, DemandRenderer), RenderError> {
+        let outcome = self.join_worker()?;
+        Ok((outcome.report, outcome.renderer))
+    }
+
+    fn join_worker(mut self) -> Result<WorkerOutcome, RenderError> {
         self.worker
             .take()
             .expect("owned worker")
@@ -62,7 +88,8 @@ impl RenderSession {
 }
 impl Drop for RenderSession {
     fn drop(&mut self) {
-        // Joining keeps cleanup on the COM owner and avoids detaching a live stream.
+        // Joining releases native resources on their COM owner, then destroys
+        // the returned engine and bridge on this control caller.
         if let Some(worker) = self.worker.take() {
             let _ = self.request_stop();
             let _ = worker.join();

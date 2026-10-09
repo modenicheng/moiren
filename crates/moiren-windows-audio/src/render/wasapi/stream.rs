@@ -1,5 +1,5 @@
 //! All COM objects stay on the worker; preparation precedes the event loop.
-use super::{Wake, api, format::mix_format, handle, packet::submit, wait};
+use super::{Wake, WorkerOutcome, api, format::mix_format, handle, packet::submit, wait};
 use crate::{
     owner::{Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory},
     render::{
@@ -218,9 +218,25 @@ fn owner(
 
 pub(super) fn run_owner(
     options: RenderOptions,
+    renderer: DemandRenderer,
+    stop: Arc<StdHandle>,
+) -> WorkerOutcome {
+    run_owner_with(options, renderer, stop, owner)
+}
+
+// The native scope is a borrow so an error or unwind cannot consume engine
+// ownership. Tests substitute this scope to cover stop and panic without a device.
+pub(super) fn run_owner_with(
+    options: RenderOptions,
     mut renderer: DemandRenderer,
     stop: Arc<StdHandle>,
-) -> RenderReport {
+    owner: impl FnOnce(
+        &RenderOptions,
+        &mut DemandRenderer,
+        &StdHandle,
+        &mut RenderReport,
+    ) -> Result<RenderStatus, RenderError>,
+) -> WorkerOutcome {
     let initial_frame = renderer.timeline();
     let mut report = RenderReport {
         schema_version: 1,
@@ -248,14 +264,23 @@ pub(super) fn run_owner(
         stats: RenderStats::default(),
         failure: None,
     };
-    // owner() has stopped and released services/client/apartment before any
-    // formatting. Engine/ring ownership is dropped here outside streaming.
-    let result = owner(&options, &mut renderer, &stop, &mut report);
+    // Borrow rather than move the renderer into the native owner scope. Both
+    // error returns and panic unwinding release COM before handing the engine
+    // back; processors and bridge storage are destroyed by the control caller.
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        owner(&options, &mut renderer, &stop, &mut report)
+    }));
+    let panicked = caught.is_err();
+    let result = caught.unwrap_or(Err(RenderError::WorkerPanicked));
     let _ = unsafe { SetEvent(handle(&stop)) };
     match result {
         Ok(status) => report.status = status,
         Err(error) => report.failure = Some(error.to_string()),
     }
     report.stats.processed_frames = renderer.timeline().saturating_sub(initial_frame);
-    report
+    WorkerOutcome {
+        report,
+        renderer,
+        panicked,
+    }
 }

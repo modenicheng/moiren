@@ -35,6 +35,15 @@ pub struct ProcessLoopbackOptions {
     pub duration: Duration,
 }
 impl ProcessLoopbackOptions {
+    /// Runs until explicitly stopped. `Duration::MAX` is the continuous sentinel;
+    /// all other durations retain the bounded 1..=600 second contract.
+    pub fn continuous(target: ProcessIdentity) -> Self {
+        Self {
+            target,
+            duration: Duration::MAX,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), CaptureError> {
         if self.target.pid == 0 || self.target.creation_time_100ns == 0 {
             return Err(CaptureError::InvalidProcess);

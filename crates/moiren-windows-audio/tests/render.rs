@@ -235,6 +235,8 @@ fn demand_counters_exclude_engine_work_before_preparation() {
 fn render_demand_has_no_allocations_or_deallocations() {
     let (engine, reader) = graph(48000.0);
     let mut renderer = DemandRenderer::new(engine, reader).unwrap();
+    let observer = RenderObserver::default();
+    renderer.set_observer(observer.clone());
     let mut samples = [0.0; 38];
     COUNTS.with(|n| n.set((0, 0)));
     TRACK.with(|t| t.set(true));
@@ -277,5 +279,192 @@ fn padding_and_explicit_render_options_are_checked() {
         }
         .validate()
         .is_ok()
+    );
+}
+
+#[test]
+fn observer_tracks_initial_timeline_completed_blocks_and_failed_transfer() {
+    let (mut engine, mut reader) = graph(48000.0);
+    engine.render(3).unwrap();
+    reader.read_interleaved(&mut [0.0; 6]).unwrap();
+    let mut renderer = DemandRenderer::new(engine, reader).unwrap();
+    let observer = RenderObserver::default();
+    renderer.set_observer(observer.clone());
+    assert_eq!(
+        observer.snapshot(),
+        RenderObservation {
+            timeline: 3,
+            counters: DemandCounters::default(),
+        }
+    );
+    renderer.render_interleaved(&mut []).unwrap();
+    assert_eq!(observer.snapshot().timeline, 3);
+    renderer.render_interleaved(&mut [0.0; 38]).unwrap();
+    assert_eq!(
+        observer.snapshot(),
+        RenderObservation {
+            timeline: 22,
+            counters: DemandCounters {
+                frames: 19,
+                blocks: 3,
+                segments: 3
+            },
+        }
+    );
+    let (engine, reader) = renderer.into_parts();
+    assert_eq!(engine.timeline(), 22);
+    assert_eq!(reader.channel_count(), 2);
+
+    let (engine, _actual_reader) = graph(48000.0);
+    let (_unused_writer, reader) = audio_bridge::<f32>(2, 8, 4096).unwrap();
+    let mut renderer = DemandRenderer::new(engine, reader).unwrap();
+    renderer.set_observer(observer.clone());
+    assert!(renderer.render_interleaved(&mut [0.0; 38]).is_err());
+    assert_eq!(
+        observer.snapshot(),
+        RenderObservation {
+            timeline: 8,
+            counters: DemandCounters {
+                frames: 8,
+                blocks: 1,
+                segments: 1
+            },
+        }
+    );
+}
+
+#[test]
+fn continuous_render_keeps_other_duration_boundaries_and_endpoint_validation() {
+    assert_eq!(RenderOptions::continuous("id").duration, Duration::MAX);
+    assert!(RenderOptions::continuous("id").validate().is_ok());
+    assert_eq!(
+        RenderOptions::continuous("").validate(),
+        Err(RenderError::InvalidEndpoint)
+    );
+    for duration in [Duration::from_secs(1), Duration::from_secs(600)] {
+        assert!(
+            RenderOptions {
+                endpoint_id: "id".into(),
+                duration
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+    for duration in [
+        Duration::from_millis(999),
+        Duration::from_secs(600) + Duration::from_nanos(1),
+        Duration::MAX - Duration::from_nanos(1),
+    ] {
+        assert_eq!(
+            RenderOptions {
+                endpoint_id: "id".into(),
+                duration
+            }
+            .validate(),
+            Err(RenderError::InvalidDuration)
+        );
+    }
+}
+
+#[cfg(windows)]
+struct DropTrackedSink {
+    writer: AudioWriter<f32>,
+    dropped_on: std::sync::Arc<std::sync::Mutex<Option<std::thread::ThreadId>>>,
+}
+#[cfg(windows)]
+impl RtAudioSink<f32> for DropTrackedSink {
+    fn channel_count(&self) -> usize {
+        2
+    }
+    fn write(
+        &mut self,
+        ctx: &moiren_engine::processor::ProcessContext,
+        input: moiren_engine::buffer::AudioBlock<'_, f32>,
+    ) -> BoundaryReport {
+        self.writer.write(ctx, input)
+    }
+}
+#[cfg(windows)]
+impl Drop for DropTrackedSink {
+    fn drop(&mut self) {
+        *self.dropped_on.lock().unwrap() = Some(std::thread::current().id());
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_native_start_returns_renderer_and_legacy_cleanup_runs_on_control_caller() {
+    use std::sync::{Arc, Mutex};
+    let caller = std::thread::current().id();
+    // An unresolvable pinned ID reliably exercises COM startup failure without
+    // relying on hardware, the selected default device, or driver timing.
+    for cleanup in 0..3 {
+        let dropped_on = Arc::new(Mutex::new(None));
+        let (writer, reader) = audio_bridge::<f32>(2, 8, 4096).unwrap();
+        let engine = graph_with_sink(
+            48000.0,
+            DropTrackedSink {
+                writer,
+                dropped_on: Arc::clone(&dropped_on),
+            },
+        );
+        let renderer = DemandRenderer::new(engine, reader).unwrap();
+        let session = start_render(
+            RenderOptions::continuous("moiren-test-nonexistent-endpoint"),
+            renderer,
+        )
+        .unwrap();
+        match cleanup {
+            0 => {
+                let (report, renderer) = session.join_with_renderer().unwrap();
+                assert_eq!(report.status, RenderStatus::Failed);
+                assert!(report.failure.is_some());
+                assert_eq!(*dropped_on.lock().unwrap(), None);
+                let (engine, output) = renderer.into_parts();
+                assert_eq!(engine.timeline(), 0);
+                drop((engine, output));
+            }
+            1 => {
+                assert_eq!(session.join().unwrap().status, RenderStatus::Failed);
+            }
+            _ => drop(session),
+        }
+        assert_eq!(*dropped_on.lock().unwrap(), Some(caller));
+    }
+}
+
+#[test]
+fn observer_snapshots_remain_coherent_across_worker_publication() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let (engine, reader) = graph(48000.0);
+    let mut renderer = DemandRenderer::new(engine, reader).unwrap();
+    let observer = RenderObserver::default();
+    renderer.set_observer(observer.clone());
+    let finished = Arc::new(AtomicBool::new(false));
+    let worker_finished = Arc::clone(&finished);
+    let worker = std::thread::spawn(move || {
+        for _ in 0..1000 {
+            renderer.render_interleaved(&mut [0.0; 16]).unwrap();
+        }
+        worker_finished.store(true, Ordering::Release);
+        renderer
+    });
+    while !finished.load(Ordering::Acquire) {
+        let snapshot = observer.snapshot();
+        assert_eq!(snapshot.timeline, snapshot.counters.frames);
+        assert_eq!(snapshot.counters.frames, snapshot.counters.blocks * 8);
+        assert_eq!(snapshot.counters.blocks, snapshot.counters.segments);
+    }
+    let renderer = worker.join().unwrap();
+    assert_eq!(
+        observer.snapshot(),
+        RenderObservation {
+            timeline: renderer.timeline(),
+            counters: renderer.counters()
+        }
     );
 }

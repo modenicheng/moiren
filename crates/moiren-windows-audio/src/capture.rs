@@ -53,6 +53,15 @@ pub struct CaptureOptions {
     pub duration: Duration,
 }
 impl CaptureOptions {
+    /// Runs until explicitly stopped. `Duration::MAX` is the continuous sentinel;
+    /// all other durations retain the bounded 1..=600 second contract.
+    pub fn continuous(endpoint_id: impl Into<String>) -> Self {
+        Self {
+            endpoint_id: endpoint_id.into(),
+            duration: Duration::MAX,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), CaptureError> {
         if self.endpoint_id.trim().is_empty() || self.endpoint_id.contains('\0') {
             return Err(CaptureError::InvalidEndpoint);
@@ -61,7 +70,9 @@ impl CaptureOptions {
     }
 }
 pub(crate) fn validate_duration(duration: Duration) -> Result<(), CaptureError> {
-    if duration < Duration::from_secs(1) || duration > Duration::from_secs(600) {
+    if duration != Duration::MAX
+        && (duration < Duration::from_secs(1) || duration > Duration::from_secs(600))
+    {
         return Err(CaptureError::InvalidDuration);
     }
     Ok(())

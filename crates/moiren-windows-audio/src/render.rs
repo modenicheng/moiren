@@ -5,7 +5,13 @@ use moiren_engine::{
     runtime::{Engine, RuntimeError},
 };
 use serde::Serialize;
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use thiserror::Error;
 
 #[cfg(windows)]
@@ -54,11 +60,22 @@ pub struct RenderOptions {
     pub duration: Duration,
 }
 impl RenderOptions {
+    /// Runs until explicitly stopped. `Duration::MAX` is the continuous sentinel;
+    /// all other durations must retain the bounded 1..=600 second contract.
+    pub fn continuous(endpoint_id: impl Into<String>) -> Self {
+        Self {
+            endpoint_id: endpoint_id.into(),
+            duration: Duration::MAX,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), RenderError> {
         if self.endpoint_id.trim().is_empty() || self.endpoint_id.contains('\0') {
             return Err(RenderError::InvalidEndpoint);
         }
-        if self.duration < Duration::from_secs(1) || self.duration > Duration::from_secs(600) {
+        if self.duration != Duration::MAX
+            && (self.duration < Duration::from_secs(1) || self.duration > Duration::from_secs(600))
+        {
             return Err(RenderError::InvalidDuration);
         }
         Ok(())
@@ -90,10 +107,67 @@ pub struct DemandCounters {
     pub segments: u64,
 }
 
+/// A coherent observation of successful DSP work, including work before a
+/// subsequent output bridge transfer fails.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RenderObservation {
+    pub timeline: u64,
+    pub counters: DemandCounters,
+}
+
+#[derive(Debug, Default)]
+struct ObservationState {
+    revision: AtomicU64,
+    timeline: AtomicU64,
+    frames: AtomicU64,
+    blocks: AtomicU64,
+    segments: AtomicU64,
+}
+
+/// Control-side observation without sharing the engine or consuming its output.
+/// Attach once before handing the renderer to the render owner. Clones only read;
+/// the single renderer publishes without locks, allocation, or destruction.
+#[derive(Debug, Clone, Default)]
+pub struct RenderObserver(Arc<ObservationState>);
+impl RenderObserver {
+    pub fn snapshot(&self) -> RenderObservation {
+        loop {
+            let before = self.0.revision.load(Ordering::SeqCst);
+            if !before.is_multiple_of(2) {
+                std::hint::spin_loop();
+                continue;
+            }
+            let observation = RenderObservation {
+                timeline: self.0.timeline.load(Ordering::SeqCst),
+                counters: DemandCounters {
+                    frames: self.0.frames.load(Ordering::SeqCst),
+                    blocks: self.0.blocks.load(Ordering::SeqCst),
+                    segments: self.0.segments.load(Ordering::SeqCst),
+                },
+            };
+            if before == self.0.revision.load(Ordering::SeqCst) {
+                return observation;
+            }
+        }
+    }
+
+    fn publish(&self, timeline: u64, counters: DemandCounters) {
+        // A sequence protects coherence across the individual atomics. SeqCst
+        // keeps the odd revision ahead of all fields and the even one after them.
+        self.0.revision.fetch_add(1, Ordering::SeqCst);
+        self.0.timeline.store(timeline, Ordering::SeqCst);
+        self.0.frames.store(counters.frames, Ordering::SeqCst);
+        self.0.blocks.store(counters.blocks, Ordering::SeqCst);
+        self.0.segments.store(counters.segments, Ordering::SeqCst);
+        self.0.revision.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 pub struct DemandRenderer {
     engine: Engine<f32>,
     output: AudioReader<f32>,
     counters: DemandCounters,
+    observer: Option<RenderObserver>,
 }
 impl DemandRenderer {
     /// Non-RT preparation. The reader must be the matching, initially drained
@@ -111,8 +185,23 @@ impl DemandRenderer {
             engine,
             output,
             counters: DemandCounters::default(),
+            observer: None,
         })
     }
+    /// Attach on the control owner before starting the native worker. The
+    /// initial snapshot includes any engine timeline predating preparation.
+    pub fn set_observer(&mut self, observer: RenderObserver) {
+        observer.publish(self.timeline(), self.counters);
+        self.observer = Some(observer);
+    }
+
+    /// Extract on the control caller after joining the native worker. Neither
+    /// the engine's processors nor the bridge allocation is destroyed on the
+    /// COM/render owner during ordinary stop or backend failure.
+    pub fn into_parts(self) -> (Engine<f32>, AudioReader<f32>) {
+        (self.engine, self.output)
+    }
+
     pub fn timeline(&self) -> u64 {
         self.engine.timeline()
     }
@@ -138,6 +227,9 @@ impl DemandRenderer {
             self.counters.frames += frames as u64;
             self.counters.blocks += 1;
             self.counters.segments += rendered.segments as u64;
+            if let Some(observer) = &self.observer {
+                observer.publish(self.timeline(), self.counters);
+            }
             let transferred = self.output.read_interleaved(samples)?;
             if transferred.transferred_frames != frames {
                 return Err(RenderError::IncompleteTransfer {

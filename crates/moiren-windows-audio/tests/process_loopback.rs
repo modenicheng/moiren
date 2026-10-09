@@ -42,3 +42,27 @@ fn identity_uses_creation_time_rather_than_name() {
     reopened.pid = 124;
     assert!(!selected.same_process(&reopened));
 }
+
+#[test]
+fn continuous_process_capture_preserves_identity_and_duration_checks() {
+    let mut continuous = ProcessLoopbackOptions::continuous(options(123, 1).target);
+    assert_eq!(continuous.duration, Duration::MAX);
+    assert!(continuous.validate().is_ok());
+    assert_eq!(
+        ProcessLoopbackOptions::continuous(options(0, 1).target).validate(),
+        Err(CaptureError::InvalidProcess)
+    );
+    for duration in [Duration::from_secs(1), Duration::from_secs(600)] {
+        continuous.duration = duration;
+        assert!(continuous.validate().is_ok());
+    }
+    for duration in [
+        Duration::ZERO,
+        Duration::from_millis(999),
+        Duration::from_secs(600) + Duration::from_nanos(1),
+        Duration::MAX - Duration::from_nanos(1),
+    ] {
+        continuous.duration = duration;
+        assert_eq!(continuous.validate(), Err(CaptureError::InvalidDuration));
+    }
+}
