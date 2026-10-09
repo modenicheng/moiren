@@ -1,4 +1,4 @@
-use serde::Serialize;
+pub use crate::process_loopback::ProcessIdentity;
 use std::{marker::PhantomData, rc::Rc};
 use windows::{
     Win32::{
@@ -109,13 +109,6 @@ impl<T> Drop for TaskMemory<T> {
 pub fn take_string(value: PWSTR) -> Result<String> {
     let _memory = TaskMemory(value.0);
     unsafe { Ok(value.to_string()?) }
-}
-
-#[derive(Serialize)]
-pub struct ProcessIdentity {
-    pub pid: u32,
-    pub creation_time_100ns: u64,
-    pub executable_name: String,
 }
 
 pub struct Process {

@@ -1,91 +1,58 @@
-//! Native preparation, streaming and destruction run on one COM owner thread.
-use super::{Startup, Wake, api, format::mix_format, handle, packet::transfer_packet, wait};
+//! Native service/bridge lifecycle shared by physical and virtual capture.
+use super::{Startup, Wake, api, handle, packet::transfer_packet, wait_target};
 use crate::{
-    capture::{CaptureError, CaptureOptions, CaptureReport, CaptureStatus},
+    capture::{CaptureError, CaptureReport, CaptureSource, CaptureStatus},
     clock_bridge::{ClockBridgeConfig, capture_bridge},
-    owner::{Apartment, Mmcss, OwnedHandle, Streaming},
+    owner::{Mmcss, Streaming},
 };
 use std::{
-    os::windows::io::OwnedHandle as StdHandle,
-    sync::{Arc, mpsc::SyncSender},
-    time::Instant,
+    os::windows::io::OwnedHandle,
+    sync::mpsc::SyncSender,
+    time::{Duration, Instant},
 };
-use windows::{
-    Win32::{
-        Media::Audio::{
-            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            AUDCLNT_STREAMFLAGS_NOPERSIST, AudioCategory_Other, AudioClientProperties,
-            IAudioCaptureClient, IAudioClient, IAudioClient2, IMMDeviceEnumerator, IMMEndpoint,
-            MMDeviceEnumerator, eCapture,
-        },
-        System::{
-            Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance},
-            Threading::{AvSetMmThreadCharacteristicsW, SetEvent},
-        },
-    },
-    core::{HSTRING, Interface},
+use windows::Win32::{
+    Foundation::HANDLE,
+    Media::Audio::{IAudioCaptureClient, IAudioClient},
+    System::Threading::{AvSetMmThreadCharacteristicsW, SetEvent},
 };
 
-fn owner(
-    options: &CaptureOptions,
-    stop: &StdHandle,
+pub(crate) struct StreamInput<'a> {
+    pub client: &'a IAudioClient,
+    pub audio: HANDLE,
+    pub target: Option<HANDLE>,
+    pub stop: &'a OwnedHandle,
+    pub duration: Duration,
+    pub sample_rate: u32,
+    pub channels: usize,
+}
+pub(crate) fn run(
+    input: StreamInput<'_>,
     sender: &SyncSender<Result<Startup, CaptureError>>,
     report: &mut CaptureReport,
 ) -> Result<CaptureStatus, CaptureError> {
-    // Reverse declaration order releases stream/services/client before apartment.
-    let _apartment = api("CoInitializeEx(capture)", Apartment::new())?;
-    let enumerator: IMMDeviceEnumerator = api("CoCreateInstance(capture)", unsafe {
-        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+    let capacity = api("GetBufferSize(capture)", unsafe {
+        input.client.GetBufferSize()
     })?;
-    let device = api("GetDevice(capture pinned)", unsafe {
-        enumerator.GetDevice(&HSTRING::from(&options.endpoint_id))
-    })?;
-    let endpoint: IMMEndpoint = api("IMMEndpoint(capture)", device.cast())?;
-    if api("GetDataFlow(capture)", unsafe { endpoint.GetDataFlow() })? != eCapture {
-        return Err(CaptureError::InvalidEndpoint);
-    }
-    let event = api("CreateEvent(capture audio)", OwnedHandle::event())?;
-    let client: IAudioClient = api("Activate(capture)", unsafe {
-        device.Activate(CLSCTX_ALL, None)
-    })?;
-    let client2: IAudioClient2 = api("IAudioClient2(capture)", client.cast())?;
-    api("SetClientProperties(capture)", unsafe {
-        client2.SetClientProperties(&AudioClientProperties {
-            cbSize: size_of::<AudioClientProperties>() as u32,
-            eCategory: AudioCategory_Other,
-            ..Default::default()
-        })
-    })?;
-    let memory = mix_format(&client)?;
-    // SAFETY: mix_format validated the owned packed native structure.
-    let base = unsafe { memory.0.read_unaligned() };
-    report.sample_rate = Some(base.nSamplesPerSec);
-    report.channels = Some(usize::from(base.nChannels));
-    let guid = api("CoCreateGuid(capture)", unsafe { CoCreateGuid() })?;
-    api("Initialize(capture Shared)", unsafe {
-        client.Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
-            0,
-            0,
-            memory.0,
-            Some(&guid),
-        )
-    })?;
-    api("SetEventHandle(capture)", unsafe {
-        client.SetEventHandle(event.0)
-    })?;
-    let capacity = api("GetBufferSize(capture)", unsafe { client.GetBufferSize() })?;
-    if capacity == 0 || u64::from(capacity) * u64::from(base.nBlockAlign) > 8 * 1024 * 1024 {
+    if capacity == 0 || u64::from(capacity) * input.channels as u64 * 4 > 8 * 1024 * 1024 {
         return Err(CaptureError::BufferBudget);
     }
     report.buffer_frames = Some(capacity);
-    let capture: IAudioCaptureClient = api("GetService(capture)", unsafe { client.GetService() })?;
+    report.sample_rate = Some(input.sample_rate);
+    report.channels = Some(input.channels);
+    let capture: IAudioCaptureClient =
+        api("GetService(capture)", unsafe { input.client.GetService() })?;
     let (mut ingress, source, observer) = capture_bridge(ClockBridgeConfig {
-        input_sample_rate: base.nSamplesPerSec,
-        input_channels: usize::from(base.nChannels),
+        input_sample_rate: input.sample_rate,
+        input_channels: input.channels,
+        detect_position_gaps: report.source == CaptureSource::Physical,
         ..ClockBridgeConfig::default()
     })?;
+    // Check stop/target again after preparation, before Start or publishing source.
+    match wait_target(handle(input.stop), input.audio, input.target, 0)? {
+        Wake::Stop => return Err(CaptureError::Cancelled),
+        Wake::TargetExited => return Err(CaptureError::TargetExited),
+        Wake::Audio | Wake::Timeout => {}
+    }
     let mut index = 0;
     let _mmcss =
         match unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Audio"), &mut index) } {
@@ -98,7 +65,7 @@ fn owner(
                 None
             }
         };
-    let mut streaming = api("Start(capture)", Streaming::start(&client))?;
+    let mut streaming = api("Start(capture)", Streaming::start(input.client))?;
     report.stream_started = true;
     let started = Instant::now();
     let result = (|| {
@@ -106,29 +73,32 @@ fn owner(
             .send(Ok(Startup {
                 source,
                 observer,
-                sample_rate: base.nSamplesPerSec,
-                channels: usize::from(base.nChannels),
+                sample_rate: input.sample_rate,
+                channels: input.channels,
             }))
             .map_err(|_| CaptureError::StartupLost)?;
-        while started.elapsed() < options.duration {
-            let remaining = options.duration.saturating_sub(started.elapsed());
-            match wait(
-                handle(stop),
-                event.0,
+        while started.elapsed() < input.duration {
+            let remaining = input.duration.saturating_sub(started.elapsed());
+            match wait_target(
+                handle(input.stop),
+                input.audio,
+                input.target,
                 remaining.as_millis().clamp(1, 100) as u32,
             )? {
                 Wake::Stop => return Ok(CaptureStatus::Stopped),
+                Wake::TargetExited => return Ok(CaptureStatus::TargetExited),
                 Wake::Timeout => {
                     report.timeout_wakes += 1;
                     continue;
                 }
                 Wake::Audio => report.audio_wakes += 1,
             }
-            // Check cancellation between packets so a busy producer cannot keep
-            // an owner draining indefinitely, including when Render has failed.
-            while started.elapsed() < options.duration {
-                if wait(handle(stop), event.0, 0)? == Wake::Stop {
-                    return Ok(CaptureStatus::Stopped);
+            // Stop and process-exit checks also bound a continuously busy producer.
+            while started.elapsed() < input.duration {
+                match wait_target(handle(input.stop), input.audio, input.target, 0)? {
+                    Wake::Stop => return Ok(CaptureStatus::Stopped),
+                    Wake::TargetExited => return Ok(CaptureStatus::TargetExited),
+                    Wake::Audio | Wake::Timeout => {}
                 }
                 if api("GetNextPacketSize(capture)", unsafe {
                     capture.GetNextPacketSize()
@@ -145,10 +115,9 @@ fn owner(
         Ok(CaptureStatus::Completed)
     })();
     report.elapsed_seconds = started.elapsed().as_secs_f64();
-    // Wake linked Render before retiring the producer or releasing COM. A
-    // control-side JoinHandle can remain unfinished throughout native cleanup.
+    // Wake peer before retiring producer or releasing COM, including target exit.
     let peer_stop = api("SetEvent(capture peer stop)", unsafe {
-        SetEvent(handle(stop))
+        SetEvent(handle(input.stop))
     });
     let stopped = streaming.stop();
     report.stop_succeeded = stopped.is_ok();
@@ -162,34 +131,14 @@ fn owner(
         }
     }
 }
-pub(super) fn run_owner(
-    options: CaptureOptions,
-    stop: Arc<StdHandle>,
-    sender: SyncSender<Result<Startup, CaptureError>>,
+pub(crate) fn finish(
+    result: Result<CaptureStatus, CaptureError>,
+    stop: &OwnedHandle,
+    sender: &SyncSender<Result<Startup, CaptureError>>,
+    mut report: CaptureReport,
 ) -> CaptureReport {
-    let mut report = CaptureReport {
-        schema_version: 1,
-        endpoint_id: options.endpoint_id.clone(),
-        status: CaptureStatus::Failed,
-        requested_seconds: options.duration.as_secs_f64(),
-        elapsed_seconds: 0.0,
-        sample_rate: None,
-        channels: None,
-        buffer_frames: None,
-        stream_started: false,
-        stop_succeeded: false,
-        stop_hresult: None,
-        mmcss_registered: false,
-        mmcss_hresult: None,
-        audio_wakes: 0,
-        timeout_wakes: 0,
-        packets: 0,
-        failure: None,
-    };
-    // Formatting and startup-error delivery happen after native objects drop.
-    let result = owner(&options, &stop, &sender, &mut report);
-    // Initialization failures also cancel a linked peer, if any.
-    let _ = unsafe { SetEvent(handle(&stop)) };
+    // Called after owner-local COM has dropped; setup failures cancel peers too.
+    let _ = unsafe { SetEvent(handle(stop)) };
     match result {
         Ok(status) => report.status = status,
         Err(error) => {

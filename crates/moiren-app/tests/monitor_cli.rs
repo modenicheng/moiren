@@ -46,3 +46,31 @@ fn malformed_cli_cannot_start_capture_or_render() {
         assert!(parse(&args).is_err(), "{args:?}");
     }
 }
+
+#[test]
+fn process_selection_is_explicit_and_exclusive() {
+    let MonitorCommand::Process {
+        pid,
+        output_endpoint_id,
+        seconds,
+        config,
+    } = parse(&["--process", "123", "--output", "speakers"]).unwrap()
+    else {
+        panic!("process expected");
+    };
+    assert_eq!(
+        (pid, output_endpoint_id.as_str(), seconds, config.gain),
+        (123, "speakers", 10, 0.05)
+    );
+    for args in [
+        vec!["--process", "0", "--output", "out"],
+        vec!["--process", "-1", "--output", "out"],
+        vec!["--process", "4294967296", "--output", "out"],
+        vec!["--process", "123"],
+        vec!["--process", "123", "--input", "mic", "--output", "out"],
+        vec!["--process", "123", "--process", "124", "--output", "out"],
+        vec!["--list", "--process", "123"],
+    ] {
+        assert!(parse(&args).is_err(), "{args:?}");
+    }
+}

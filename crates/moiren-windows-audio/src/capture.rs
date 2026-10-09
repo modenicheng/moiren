@@ -1,11 +1,12 @@
-//! Physical Shared capture, with backend clock adaptation before the graph.
+//! Shared capture lifecycle, with backend clock adaptation before the graph.
 use crate::clock_bridge::ClockBridgeError;
+use crate::process_loopback::ProcessIdentity;
 use serde::Serialize;
 use std::time::Duration;
 use thiserror::Error;
 
 #[cfg(windows)]
-mod wasapi;
+pub(crate) mod wasapi;
 #[cfg(windows)]
 pub use wasapi::{
     CaptureEndpoint, CaptureSession, PreparedCapture, list_capture_endpoints, start_capture,
@@ -33,6 +34,18 @@ pub enum CaptureError {
     WorkerPanicked,
     #[error("capture startup channel closed before preparation completed")]
     StartupLost,
+    #[error("process capture requires a nonzero PID and creation time")]
+    InvalidProcess,
+    #[error("target process identity changed since selection")]
+    ProcessIdentityChanged,
+    #[error("target process tree contains this audio host and would capture its own output")]
+    FeedbackTarget,
+    #[error("capture preparation was cancelled")]
+    Cancelled,
+    #[error("target process exited before capture preparation completed")]
+    TargetExited,
+    #[error("process audio activation exceeded the 10 second deadline")]
+    ActivationTimeout,
 }
 #[derive(Debug, Clone)]
 pub struct CaptureOptions {
@@ -44,23 +57,37 @@ impl CaptureOptions {
         if self.endpoint_id.trim().is_empty() || self.endpoint_id.contains('\0') {
             return Err(CaptureError::InvalidEndpoint);
         }
-        if self.duration < Duration::from_secs(1) || self.duration > Duration::from_secs(600) {
-            return Err(CaptureError::InvalidDuration);
-        }
-        Ok(())
+        validate_duration(self.duration)
     }
+}
+pub(crate) fn validate_duration(duration: Duration) -> Result<(), CaptureError> {
+    if duration < Duration::from_secs(1) || duration > Duration::from_secs(600) {
+        return Err(CaptureError::InvalidDuration);
+    }
+    Ok(())
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureSource {
+    Physical,
+    ProcessLoopback,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureStatus {
     Completed,
     Stopped,
+    TargetExited,
     Failed,
 }
 #[derive(Debug, Serialize)]
 pub struct CaptureReport {
     pub schema_version: u32,
-    pub endpoint_id: String,
+    pub source: CaptureSource,
+    pub endpoint_id: Option<String>,
+    pub process: Option<ProcessIdentity>,
+    pub windows_auto_conversion: bool,
+    pub activation_seconds: Option<f64>,
     pub status: CaptureStatus,
     pub requested_seconds: f64,
     pub elapsed_seconds: f64,
@@ -76,4 +103,32 @@ pub struct CaptureReport {
     pub timeout_wakes: u64,
     pub packets: u64,
     pub failure: Option<String>,
+}
+#[cfg(windows)]
+impl CaptureReport {
+    pub(crate) fn new(source: CaptureSource, duration: Duration) -> Self {
+        Self {
+            schema_version: 2,
+            source,
+            endpoint_id: None,
+            process: None,
+            windows_auto_conversion: source == CaptureSource::ProcessLoopback,
+            activation_seconds: None,
+            status: CaptureStatus::Failed,
+            requested_seconds: duration.as_secs_f64(),
+            elapsed_seconds: 0.0,
+            sample_rate: None,
+            channels: None,
+            buffer_frames: None,
+            stream_started: false,
+            stop_succeeded: false,
+            stop_hresult: None,
+            mmcss_registered: false,
+            mmcss_hresult: None,
+            audio_wakes: 0,
+            timeout_wakes: 0,
+            packets: 0,
+            failure: None,
+        }
+    }
 }

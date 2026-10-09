@@ -10,7 +10,10 @@ use thiserror::Error;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{MonitorOptions, MonitorReport, MonitorSession, MonitorStatus, start_monitor};
+pub use windows::{
+    MonitorOptions, MonitorReport, MonitorSession, MonitorStatus, ProcessMonitorOptions,
+    start_monitor, start_process_monitor, start_process_monitor_with_stop,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct MonitorConfig {

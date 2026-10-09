@@ -3,50 +3,64 @@ use super::{CaptureError, CaptureOptions, CaptureReport};
 use crate::StopSignal;
 use crate::clock_bridge::{BridgeObserver, ClockSource};
 use std::{
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle as StdHandle},
+    os::windows::io::{AsRawHandle, OwnedHandle as StdHandle},
     sync::{Arc, mpsc},
     thread::{self, JoinHandle},
 };
 use windows::Win32::{
     Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
-    System::Threading::{CreateEventW, SetEvent, WaitForMultipleObjects},
+    System::Threading::{SetEvent, WaitForMultipleObjects},
 };
 
 mod endpoint;
 mod format;
 mod packet;
-mod stream;
+mod physical;
+pub(crate) mod stream;
 #[cfg(test)]
 mod tests;
 pub use endpoint::{CaptureEndpoint, list_capture_endpoints};
 
-fn api<T>(stage: &'static str, result: windows::core::Result<T>) -> Result<T, CaptureError> {
+pub(crate) fn api<T>(
+    stage: &'static str,
+    result: windows::core::Result<T>,
+) -> Result<T, CaptureError> {
     result.map_err(|error| CaptureError::Api {
         stage,
         hresult: error.code().0,
     })
 }
-fn handle(value: &StdHandle) -> HANDLE {
+pub(crate) fn handle(value: &StdHandle) -> HANDLE {
     HANDLE(value.as_raw_handle())
-}
-fn stop_event() -> Result<StdHandle, CaptureError> {
-    let raw = api("CreateEvent(capture stop)", unsafe {
-        CreateEventW(None, true, false, None)
-    })?;
-    // SAFETY: CreateEvent returned a uniquely owned valid kernel handle.
-    Ok(unsafe { StdHandle::from_raw_handle(raw.0) })
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Wake {
     Stop,
+    TargetExited,
     Audio,
     Timeout,
 }
+#[cfg(test)]
 fn wait(stop: HANDLE, audio: HANDLE, timeout_ms: u32) -> Result<Wake, CaptureError> {
+    wait_target(stop, audio, None, timeout_ms)
+}
+fn wait_target(
+    stop: HANDLE,
+    audio: HANDLE,
+    target: Option<HANDLE>,
+    timeout_ms: u32,
+) -> Result<Wake, CaptureError> {
     // Lowest signaled index wins. Stop must also work without any audio wake.
-    match unsafe { WaitForMultipleObjects(&[stop, audio], false, timeout_ms) } {
+    let handles = [stop, target.unwrap_or(audio), audio];
+    let handles = if target.is_some() {
+        &handles[..]
+    } else {
+        &handles[..2]
+    };
+    match unsafe { WaitForMultipleObjects(handles, false, timeout_ms) } {
         event if event == WAIT_OBJECT_0 => Ok(Wake::Stop),
-        event if event.0 == WAIT_OBJECT_0.0 + 1 => Ok(Wake::Audio),
+        event if event.0 == WAIT_OBJECT_0.0 + 1 && target.is_some() => Ok(Wake::TargetExited),
+        event if event.0 == WAIT_OBJECT_0.0 + handles.len() as u32 - 1 => Ok(Wake::Audio),
         WAIT_TIMEOUT => Ok(Wake::Timeout),
         _ => Err(CaptureError::Api {
             stage: "WaitForMultipleObjects(capture)",
@@ -99,7 +113,7 @@ pub struct PreparedCapture {
     pub sample_rate: u32,
     pub channels: usize,
 }
-pub(super) struct Startup {
+pub(crate) struct Startup {
     source: ClockSource,
     observer: BridgeObserver,
     sample_rate: u32,
@@ -109,12 +123,23 @@ pub(super) struct Startup {
 /// rejected format can never be attached to a supposedly running graph.
 pub fn start_capture(options: CaptureOptions) -> Result<PreparedCapture, CaptureError> {
     options.validate()?;
-    let stop = Arc::new(stop_event()?);
+    let stop = api("CreateEvent(capture stop)", StopSignal::new())?;
+    start_owner(stop, move |stop, sender| {
+        physical::run_owner(options, stop, sender)
+    })
+}
+pub(crate) fn start_owner(
+    signal: StopSignal,
+    owner: impl FnOnce(Arc<StdHandle>, mpsc::SyncSender<Result<Startup, CaptureError>>) -> CaptureReport
+    + Send
+    + 'static,
+) -> Result<PreparedCapture, CaptureError> {
+    let stop = signal.event;
     let worker_stop = Arc::clone(&stop);
     let (tx, rx) = mpsc::sync_channel(1);
     let worker = thread::Builder::new()
         .name("moiren-shared-capture".into())
-        .spawn(move || stream::run_owner(options, worker_stop, tx))
+        .spawn(move || owner(worker_stop, tx))
         .map_err(|error| CaptureError::WorkerSpawn {
             code: error.raw_os_error(),
         })?;

@@ -10,8 +10,11 @@ fn monitor(command: MonitorCommand) -> anyhow::Result<()> {
     }
     #[cfg(windows)]
     {
-        use moiren_app::monitor::{MonitorOptions, MonitorStatus, start_monitor};
+        use moiren_app::monitor::{
+            MonitorOptions, ProcessMonitorOptions, start_monitor, start_process_monitor,
+        };
         use moiren_windows_audio::capture::list_capture_endpoints;
+        use moiren_windows_audio::process_loopback::inspect_process;
         match command {
             MonitorCommand::List => {
                 let endpoints = list_capture_endpoints().context("listing capture endpoints")?;
@@ -34,18 +37,32 @@ fn monitor(command: MonitorCommand) -> anyhow::Result<()> {
                     duration: std::time::Duration::from_secs(u64::from(seconds)),
                     config,
                 })?;
-                let report = session
-                    .join()
-                    .context("joining capture and render owners")?;
-                serde_json::to_writer_pretty(std::io::stdout().lock(), &report)?;
-                println!();
-                if report.status == MonitorStatus::Failed {
-                    bail!(
-                        "monitor failed: capture={:?}, render={:?}",
-                        report.capture.failure,
-                        report.render.failure
-                    );
-                }
+                print_monitor_report(session)?;
+            }
+            MonitorCommand::Process {
+                pid,
+                output_endpoint_id,
+                seconds,
+                config,
+            } => {
+                let target = inspect_process(pid).context("resolving selected process identity")?;
+                eprintln!(
+                    "Monitoring process {} ({}, created {}) -> {} for {} seconds, gain {}, pan {}",
+                    target.pid,
+                    target.executable_name,
+                    target.creation_time_100ns,
+                    output_endpoint_id,
+                    seconds,
+                    config.gain,
+                    config.pan
+                );
+                let session = start_process_monitor(ProcessMonitorOptions {
+                    target,
+                    output_endpoint_id,
+                    duration: std::time::Duration::from_secs(u64::from(seconds)),
+                    config,
+                })?;
+                print_monitor_report(session)?;
             }
             MonitorCommand::Help => unreachable!("handled above"),
         }
@@ -56,6 +73,23 @@ fn monitor(command: MonitorCommand) -> anyhow::Result<()> {
         let _ = command;
         bail!("WASAPI monitoring requires Windows");
     }
+}
+
+#[cfg(windows)]
+fn print_monitor_report(session: moiren_app::monitor::MonitorSession) -> anyhow::Result<()> {
+    let report = session
+        .join()
+        .context("joining capture and render owners")?;
+    serde_json::to_writer_pretty(std::io::stdout().lock(), &report)?;
+    println!();
+    if report.status == moiren_app::monitor::MonitorStatus::Failed {
+        bail!(
+            "monitor failed: capture={:?}, render={:?}",
+            report.capture.failure,
+            report.render.failure
+        );
+    }
+    Ok(())
 }
 
 fn render(command: RenderCommand) -> anyhow::Result<()> {
@@ -132,7 +166,7 @@ fn main() -> anyhow::Result<()> {
         match arg.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "Moiren\nUsage: moiren-app [--gain 0..16]\nRuns the offline software IO demo.\nUse moiren-app render --help for a Windows output, or monitor --help for physical input monitoring."
+                    "Moiren\nUsage: moiren-app [--gain 0..16]\nRuns the offline software IO demo.\nUse moiren-app render --help for a Windows output, or monitor --help for physical/process input monitoring."
                 );
                 return Ok(());
             }

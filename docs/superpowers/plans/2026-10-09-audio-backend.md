@@ -22,8 +22,8 @@
 
 | 阶段 | 交付 | Gate |
 | --- | --- | --- |
-| A，本次执行 | Physical Capture、最小 Clock Bridge、CLI 闭环与控制侧报告 | 自动测试与所有 workspace 检查通过；未执行实机项明确标记 |
-| B，下一独立切片 | Process Loopback 复用同一 ingress/bridge，include-process-tree，PID + creation-time identity | 退出/取消/迟到 activation 和指定应用实机捕获通过 |
+| A，已交付 `f72b6fc` | Physical Capture、最小 Clock Bridge、CLI 闭环与控制侧报告 | 自动检查与 FreeDSP 10 秒实机通过，用户确认听感/延迟 |
+| B，已实现 | Process Loopback 复用同一 ingress/bridge，include-process-tree，PID + creation-time identity | activation 生命周期测试、指定测试进程/子进程捕获与退出通过；冷启动短读单独记录 |
 | C | 多输入、Bus、SRC 质量升级、双小时跨钟压力 | 漂移无持续积累、已知回流可诊断后才开放多输出 |
 | D | 设备失效/重新绑定、epoch/generation、睡眠恢复与长期状态接口 | 故障不会错误绑定，停止无需 master 音频事件 |
 
@@ -104,4 +104,4 @@ pub fn parse_monitor_args(args: impl IntoIterator<Item = String>)
 
 ## 本次执行结果
 
-A 切片代码与文档已完成；FreeDSP 麦克风 → FreeDSP 耳机、gain 0.05 的 10 秒闭环经停机竞态修复后为 0 欠载、0 溢出、0 重置。用户确认“听感与延迟都还行”，主观验收通过；未测量端到端毫秒延迟。44.1/48 kHz × ±1000 ppm 四组各两小时模拟时钟测试通过。B 将作为下一独立切片实施；实机长期漂移和故障恢复仍待验证。完整数字及异常保留在本地 [验收记录](../../experiments/windows/2026-10-09-capture-clock-bridge.md)，该目录按仓库规则忽略。
+A 切片代码与文档已完成；FreeDSP 麦克风 → FreeDSP 耳机、gain 0.05 的 10 秒闭环经停机竞态修复后为 0 欠载、0 溢出、0 重置。用户确认“听感与延迟都还行”，主观验收通过；未测量端到端毫秒延迟。44.1/48 kHz × ±1000 ppm 四组各两小时模拟时钟测试通过。B 已接入正式应用闭环，验证与限制见 [Process Loopback 计划](2026-10-09-process-loopback.md)。C/D、实机长期漂移和故障恢复仍待验证。完整数字及异常保留在本地 [验收记录](../../experiments/windows/2026-10-09-capture-clock-bridge.md)，该目录按仓库规则忽略。

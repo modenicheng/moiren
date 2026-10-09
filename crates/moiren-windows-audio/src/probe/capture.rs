@@ -9,13 +9,10 @@ use std::time::{Duration, Instant};
 use windows::{
     Win32::{
         Foundation::{E_UNEXPECTED, WAIT_OBJECT_0, WAIT_TIMEOUT},
-        Media::{
-            Audio::{
-                AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-                AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient, WAVEFORMATEX,
-            },
-            Multimedia::WAVE_FORMAT_IEEE_FLOAT,
+        Media::Audio::{
+            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
+            AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient, WAVEFORMATEX,
         },
         System::Threading::{AvSetMmThreadCharacteristicsW, WaitForSingleObject},
     },
@@ -189,13 +186,5 @@ pub(super) fn capture(process: &Process, report: &mut CaptureReport) -> Result<(
 }
 
 pub(super) fn capture_format() -> WAVEFORMATEX {
-    WAVEFORMATEX {
-        wFormatTag: WAVE_FORMAT_IEEE_FLOAT as u16,
-        nChannels: 2,
-        nSamplesPerSec: 48000,
-        nAvgBytesPerSec: 48000 * 8,
-        nBlockAlign: 8,
-        wBitsPerSample: 32,
-        cbSize: 0,
-    }
+    crate::process_loopback::capture_format()
 }

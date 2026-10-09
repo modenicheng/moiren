@@ -49,6 +49,46 @@ The [10-second FreeDSP test](../../docs/experiments/windows/2026-10-08-shared-re
 completed with nonzero PCM and user-confirmed sound. Device loss/recovery, long
 stress runs, SRC quality upgrades and plan replacement remain separate work.
 
+## Engine-backed Process Loopback
+
+```powershell
+cargo run --locked -p moiren-app -- monitor --process <PID> --output '<reviewed render ID>' --seconds 10 --gain 0.05
+```
+
+`process_loopback::inspect_process(pid)` returns a PID, creation time in 100 ns
+units, and executable basename. `ProcessLoopbackOptions` requires that identity;
+the owner reopens and verifies it before activation. A stale/recycled PID fails
+instead of binding another application. Targets containing this host (itself or
+an ancestor) are rejected to prevent output feedback. Ancestry checks are
+conservative when Windows parent PIDs are stale. Other application sources are
+not enumerated or captured automatically.
+
+The supported mode includes the target process tree. The virtual stream requests
+48 kHz stereo f32 with Windows AUTOCONVERTPCM/SRC_DEFAULT_QUALITY, independently
+of endpoint mix formats. Process Loopback requires a supported Windows build;
+API failures retain the exact stage/HRESULT. See the [Microsoft sample](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/).
+
+`start_process_capture` returns the same `PreparedCapture` as physical capture.
+For cancellable startup, create `StopSignal::new()` first, clone it for the
+control side, and pass it to `start_process_capture_with_stop`. Activation waits
+at most 10 seconds after the async API returns and checks cancellation/target
+liveness every 10 ms. The agile callback only sets an atomic flag; GetActivateResult
+and audio-interface use/destruction stay on the capture owner. Arc-owned
+activation parameters survive a late callback after cancellation/timeout; the
+borrowed PROPVARIANT never frees Rust memory through PropVariantClear.
+
+Streaming shares the physical packet lease, Clock Bridge and stop lifecycle.
+The wait includes the pinned process handle, so a silent target can exit without
+an audio event. `TargetExited` is distinct from duration completion and stops the
+linked Render before native cleanup. No automatic rebinding occurs. Virtual
+clients observed on this machine return zero device position for every packet;
+process sources disable inferred position gaps while retaining native
+DATA_DISCONTINUITY and timestamp diagnostics. Physical sources retain frame-gap
+detection. Capture JSON schema 2 identifies source kind and process identity;
+`endpoint_id` is null for a virtual process source, and Windows conversion is explicit.
+
+Implementation and acceptance: [Process Loopback plan](../../docs/superpowers/plans/2026-10-09-process-loopback.md).
+
 ## Physical capture and clock bridge
 
 ```powershell

@@ -3,7 +3,7 @@ use super::monitor::{MonitorConfig, MonitorError};
 use std::collections::BTreeSet;
 use thiserror::Error;
 
-pub const MONITOR_HELP: &str = "Moiren physical input monitoring\nUsage:\n  moiren-app monitor --list\n  moiren-app monitor --input <capture ID> --output <render ID> [--seconds 1..600] [--gain 0..1] [--pan -1..1]\nDefaults: 10 seconds, gain 0.05, centered stereo. Native 44.1/48 kHz mono/stereo f32 input; 48 kHz stereo f32 Shared output. Linear SRC with bounded clock correction.";
+pub const MONITOR_HELP: &str = "Moiren input monitoring\nUsage:\n  moiren-app monitor --list\n  moiren-app monitor --input <capture ID> --output <render ID> [--seconds 1..600] [--gain 0..1] [--pan -1..1]\n  moiren-app monitor --process <PID> --output <render ID> [--seconds 1..600] [--gain 0..1] [--pan -1..1]\nDefaults: 10 seconds, gain 0.05, centered stereo. Physical input: native 44.1/48 kHz mono/stereo f32. Process input: include target process tree, Windows-converted 48 kHz stereo f32; creation time pinned and checked at startup. Targets containing this host are rejected. Output: 48 kHz stereo f32 Shared. Linear SRC with bounded clock correction.";
 #[derive(Debug)]
 pub enum MonitorCommand {
     List,
@@ -14,13 +14,19 @@ pub enum MonitorCommand {
         seconds: u32,
         config: MonitorConfig,
     },
+    Process {
+        pid: u32,
+        output_endpoint_id: String,
+        seconds: u32,
+        config: MonitorConfig,
+    },
 }
 #[derive(Debug, Error)]
 pub enum MonitorCliError {
-    #[error(
-        "monitor requires --input <ID> and --output <ID>; use monitor --list and render --list"
-    )]
+    #[error("monitor requires one of --input <ID> or --process <PID>, plus --output <ID>")]
     MissingEndpoint,
+    #[error("--input and --process are mutually exclusive")]
+    ConflictingInput,
     #[error("{0} requires a value")]
     MissingValue(String),
     #[error("{0} was specified more than once")]
@@ -42,6 +48,7 @@ pub fn parse_monitor_args(
     let mut list = false;
     let mut help = false;
     let mut input = None;
+    let mut process = None;
     let mut output = None;
     let mut seconds = 10u32;
     let mut config = MonitorConfig::default();
@@ -62,7 +69,16 @@ pub fn parse_monitor_args(
             help = true;
             continue;
         }
-        if !["--input", "--output", "--seconds", "--gain", "--pan"].contains(&key.as_str()) {
+        if ![
+            "--input",
+            "--process",
+            "--output",
+            "--seconds",
+            "--gain",
+            "--pan",
+        ]
+        .contains(&key.as_str())
+        {
             return Err(MonitorCliError::UnknownArgument(key));
         }
         let value = args
@@ -70,6 +86,13 @@ pub fn parse_monitor_args(
             .ok_or_else(|| MonitorCliError::MissingValue(key.clone()))?;
         let invalid = || MonitorCliError::InvalidValue(key.clone());
         match key.as_str() {
+            "--process" => {
+                let pid: u32 = value.parse().map_err(|_| invalid())?;
+                if pid == 0 {
+                    return Err(invalid());
+                }
+                process = Some(pid);
+            }
             "--input" | "--output" => {
                 if value.trim().is_empty() || value.contains('\0') {
                     return Err(invalid());
@@ -102,6 +125,17 @@ pub fn parse_monitor_args(
         });
     }
     config.validate()?;
+    if input.is_some() && process.is_some() {
+        return Err(MonitorCliError::ConflictingInput);
+    }
+    if let Some(pid) = process {
+        return Ok(MonitorCommand::Process {
+            pid,
+            output_endpoint_id: output.ok_or(MonitorCliError::MissingEndpoint)?,
+            seconds,
+            config,
+        });
+    }
     Ok(MonitorCommand::Run {
         input_endpoint_id: input.ok_or(MonitorCliError::MissingEndpoint)?,
         output_endpoint_id: output.ok_or(MonitorCliError::MissingEndpoint)?,

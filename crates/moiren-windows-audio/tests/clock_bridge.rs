@@ -7,6 +7,42 @@ use std::{
     cell::Cell,
 };
 
+#[test]
+fn virtual_zero_positions_do_not_create_gaps_but_native_flags_still_reset() {
+    let (mut ingress, _source, observer) = capture_bridge(ClockBridgeConfig {
+        detect_position_gaps: false,
+        ..ClockBridgeConfig::default()
+    })
+    .unwrap();
+    let bytes = [0u8; 480 * 2 * 4];
+    for index in 0..5 {
+        ingress
+            .push_packet(
+                &bytes,
+                CapturePacket {
+                    frames: 480,
+                    flags: 0,
+                    device_position_frames: 0,
+                    qpc_100ns: 1 + index * 100000,
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(observer.snapshot().discontinuities, 0);
+    ingress
+        .push_packet(
+            &bytes,
+            CapturePacket {
+                frames: 480,
+                flags: DISCONTINUITY,
+                device_position_frames: 0,
+                qpc_100ns: 600001,
+            },
+        )
+        .unwrap();
+    assert_eq!(observer.snapshot().discontinuities, 1);
+}
+
 struct CountingAllocator;
 thread_local! {
     static TRACK: Cell<bool> = const { Cell::new(false) };

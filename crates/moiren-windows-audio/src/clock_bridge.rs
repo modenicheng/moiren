@@ -24,6 +24,10 @@ pub struct ClockBridgeConfig {
     /// Discard older queued frames once at each prime to bound startup latency.
     /// Disable when consuming a finite offline recording from its first frame.
     pub trim_on_prime: bool,
+    /// Physical clients expose a frame clock; some virtual process clients
+    /// return zero for every device position. Native discontinuity flags remain
+    /// authoritative even when position-gap inference is disabled.
+    pub detect_position_gaps: bool,
     pub max_correction_ppm: f64,
     /// Ring sample/metadata storage budget, excluding Arc/ring bookkeeping.
     pub byte_budget: usize,
@@ -36,6 +40,7 @@ impl Default for ClockBridgeConfig {
             capacity_frames: 8192,
             target_fill_frames: 2048,
             trim_on_prime: true,
+            detect_position_gaps: true,
             max_correction_ppm: 2000.0,
             byte_budget: 8 * 1024 * 1024,
         }

@@ -33,7 +33,7 @@ cargo run --locked -p moiren-app -- render --endpoint '<endpoint ID>' --seconds 
 
 正常时长结束后 Stop、释放全部 stream/COM 对象，再输出 JSON 标量报告。库的 `RenderSession` 支持 `request_stop` / `join`，Drop 也会发 stop 并 join；命令行尚无 Ctrl+C 优雅停机处理。运行期报告区分处理帧、成功提交帧和失败阶段；空 padding 只是诊断，不能单独证明 underrun。
 
-FreeDSP 10 秒实际输出已获用户试听确认，见[实机记录](../../docs/experiments/windows/2026-10-08-shared-render.md)。Engine 已提供 [Plan swap API 与离线例子](../../docs/designs/06-compressor-plan-swap.md)，实际输出应用的换图控制入口仍待接入。其他 native output formats、Process Loopback、多设备、设备恢复和 GUI 仍待后续实现；完整长期接口见 [IO 节点设计](../../docs/designs/03-io-nodes.md)。
+FreeDSP 10 秒实际输出已获用户试听确认，见[实机记录](../../docs/experiments/windows/2026-10-08-shared-render.md)。Engine 已提供 [Plan swap API 与离线例子](../../docs/designs/06-compressor-plan-swap.md)，实际输出应用的换图控制入口仍待接入。其他 native output formats、多设备、设备恢复和 GUI 仍待后续实现；完整长期接口见 [IO 节点设计](../../docs/designs/03-io-nodes.md)。
 
 ## Windows 物理输入闭环
 
@@ -52,3 +52,15 @@ JSON 分别报告 capture、render 与 bridge。2048 输入帧的目标缓冲约
 两端共享独立于音频事件的 kernel stop signal，在 streaming 结束时立即通知 peer，再完成 COM 清理；控制侧的 join 轮询只负责回收。Capture 时长先开始计时，自然完成时会停止稍后启动的 Render；报告保留各自实际 elapsed 和状态，整体 Completed 不要求两端都单独耗尽计时器。
 
 测试范围、实机结果与后续验收见[本次记录](../../docs/experiments/windows/2026-10-09-capture-clock-bridge.md)；后续任务按[音频后端计划](../../docs/superpowers/plans/2026-10-09-audio-backend.md)独立推进。
+
+## Windows 应用声音闭环
+
+```powershell
+cargo run --locked -p moiren-app -- monitor --process <PID> --output '<render ID>' --seconds 10 --gain 0.05 --pan 0
+```
+
+`--process` 与 `--input` 互斥。CLI 先读取 PID + 创建时间，owner 启动时再次校验；当前仅支持包含目标进程及其子进程的模式。目标退出后显示 `target_exited` 并停止输出，不自动选择同名的新进程。不允许目标进程树包含此音频 host，以免自身输出形成回流。
+
+Process Loopback 由 Windows 转成 48 kHz stereo f32，再复用 `ClockSource → Gain → Pan → Sink`。`ProcessMonitorOptions` 保存已解析的身份；`start_process_monitor` 返回现有 `MonitorSession`，控制端口和参数绑定与物理输入相同。异步启动可在控制侧先创建 `StopSignal`，通过 `start_process_monitor_with_stop` 传入，同时保留 clone 来取消准备过程。
+
+Capture 报告 schema 2 包含 `source`、`process`、`windows_auto_conversion` 和 activation 耗时；虚拟源无 endpoint ID。原生设备位置恒为零的 Process client 不使用位置差推断断点，仍处理 Windows discontinuity flags；物理 Capture 保留原有位置检测。静默的目标是有效来源，报告音频计数不会把静音冒充非零声音。验收与剩余限制见 [Process Loopback 计划](../../docs/superpowers/plans/2026-10-09-process-loopback.md)。

@@ -56,7 +56,8 @@ impl CaptureIngress {
             return Ok(0);
         }
         let invalid_time = packet.flags & TIMESTAMP_ERROR != 0 || packet.qpc_100ns == 0;
-        let gap = !invalid_time
+        let gap = self.config.detect_position_gaps
+            && !invalid_time
             && self
                 .next_position
                 .is_some_and(|p| p != packet.device_position_frames);

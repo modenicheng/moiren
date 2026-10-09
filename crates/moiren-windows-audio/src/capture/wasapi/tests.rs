@@ -1,4 +1,32 @@
 use super::*;
+
+#[test]
+fn target_exit_wakes_without_audio_and_stop_wins_all_signals() {
+    let stop = crate::StopSignal::new().unwrap();
+    let target = crate::owner::OwnedHandle::event().unwrap();
+    let audio = crate::owner::OwnedHandle::event().unwrap();
+    unsafe {
+        SetEvent(target.0).unwrap();
+    }
+    assert_eq!(
+        wait_target(handle(&stop.event), audio.0, Some(target.0), 1000).unwrap(),
+        Wake::TargetExited
+    );
+    // Keep target signaled alongside audio; target wins the packet wake.
+    unsafe {
+        SetEvent(target.0).unwrap();
+        SetEvent(audio.0).unwrap();
+    }
+    assert_eq!(
+        wait_target(handle(&stop.event), audio.0, Some(target.0), 0).unwrap(),
+        Wake::TargetExited
+    );
+    stop.request_stop().unwrap();
+    assert_eq!(
+        wait_target(handle(&stop.event), audio.0, Some(target.0), 0).unwrap(),
+        Wake::Stop
+    );
+}
 use super::{format::validate_format, packet::transfer_packet};
 use crate::{
     clock_bridge::{ClockBridgeConfig, capture_bridge},
@@ -16,7 +44,7 @@ use windows::{
 
 #[test]
 fn capture_stop_is_responsive_without_audio_and_has_priority() {
-    let stop = stop_event().unwrap();
+    let stop = StopSignal::new().unwrap().event;
     let audio = OwnedHandle::event().unwrap();
     assert_eq!(wait(handle(&stop), audio.0, 0).unwrap(), Wake::Timeout);
     unsafe {
@@ -29,7 +57,7 @@ fn capture_stop_is_responsive_without_audio_and_has_priority() {
 #[test]
 fn linked_render_and_capture_stop_without_waiting_for_worker_cleanup() {
     let session = CaptureSession {
-        stop: Arc::new(stop_event().unwrap()),
+        stop: StopSignal::new().unwrap().event,
         worker: None,
     };
     let peer = session.stop_signal();
