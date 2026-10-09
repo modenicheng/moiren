@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod host;
+pub mod host_cli;
 pub mod monitor;
 pub mod monitor_cli;
 pub mod render_cli;

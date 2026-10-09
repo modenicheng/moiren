@@ -33,7 +33,56 @@ cargo run --locked -p moiren-app -- render --endpoint '<endpoint ID>' --seconds 
 
 正常时长结束后 Stop、释放全部 stream/COM 对象，再输出 JSON 标量报告。库的 `RenderSession` 支持 `request_stop` / `join`，Drop 也会发 stop 并 join；命令行尚无 Ctrl+C 优雅停机处理。运行期报告区分处理帧、成功提交帧和失败阶段；空 padding 只是诊断，不能单独证明 underrun。
 
-FreeDSP 10 秒实际输出已获用户试听确认，见[实机记录](../../docs/experiments/windows/2026-10-08-shared-render.md)。Engine 已提供 [Plan swap API 与离线例子](../../docs/designs/06-compressor-plan-swap.md)，实际输出应用的换图控制入口仍待接入。其他 native output formats、多设备、设备恢复和 GUI 仍待后续实现；完整长期接口见 [IO 节点设计](../../docs/designs/03-io-nodes.md)。
+FreeDSP 10 秒实际输出已获用户试听确认，见[实机记录](../../docs/experiments/windows/2026-10-08-shared-render.md)。Engine 已提供 [Plan swap API 与离线例子](../../docs/designs/06-compressor-plan-swap.md)，持续 host 的换图控制入口见下文。其他 native output formats、多输出设备和设备恢复仍待后续实现；完整长期接口见 [IO 节点设计](../../docs/designs/03-io-nodes.md)。
+
+## Windows 持续多源 host
+
+```powershell
+cargo run --locked -p moiren-app -- host --list
+cargo run --locked -p moiren-app -- host --output '<render ID>' --input '<capture ID>' --process <PID>
+# 有界测试：可超过 600 秒；stdin EOF 后仍运行到截止时间。
+cargo run --locked -p moiren-app -- host --output '<render ID>' --input '<capture ID>' --seconds 7200
+```
+
+`host` 必须显式选择输出，可重复指定 `--input`、`--process` 并混合使用；不指定输入时运行空 Bus 的静音输出。每个输入独立 `Source → Gain(0.05) → Pan → [Compressor] → Bus → Output`。初值在首次发布前编译，避免短暂 unity gain。所有 capture 与 render 使用独立 stop event；一个输入退出/失败会立即 gate 为静音并 join 该输入，其他输入与输出继续运行。输出失败则 host 进入 `failed` 并停止、join 全部输入。
+
+不带 `--seconds` 时会话持续到 stdin `stop` 或 EOF；带 `--seconds` 时，时长从启动握手完成后计算，EOF 保持输出到截止时间，`stop` 可提前结束。stdin 由独立线程读取到容量 32 的有界队列，控制侧每 10 ms 继续轮询 worker 与回执，即使没有输入也每秒输出状态。每行一个 JSON 命令，例如：
+
+```json
+{"op":"status"}
+{"op":"graph"}
+{"op":"gain","source":1,"value":0.1,"ramp_frames":480}
+{"op":"pan","source":1,"value":-0.5,"ramp_frames":480}
+{"op":"compressor","source":1,"enabled":true,"settings":{"threshold_db":-24,"ratio":4}}
+{"op":"publish"}
+{"op":"add","selection":{"kind":"physical","endpoint_id":"<capture ID>"}}
+{"op":"publish"}
+{"op":"enable","source":1,"enabled":false}
+{"op":"stop_source","source":1}
+{"op":"restart","source":1}
+{"op":"publish"}
+{"op":"remove","source":2}
+{"op":"publish"}
+{"op":"processes"}
+{"op":"replace","source":1,"selection":{"kind":"process","pid":1234,"creation_time_100ns":987654321}}
+{"op":"publish"}
+{"op":"compressor","source":1,"enabled":false}
+{"op":"publish"}
+{"op":"stop"}
+```
+
+Source IDs 由 `started` / `status` / `add` 返回；这些命令是语法示例，应按实际 source ID 发送。源添加、替换、移除和 Compressor 编辑先 staged，再显式 `publish`；一个 candidate pending 时另一图编辑返回 Busy，先轮询 `plan_applied` 或 `plan_rejected`。`cancel` 请求取消 pending candidate，提交与取消竞态以终态回执为准。`gain` / `pan` 的 `Accepted` 是暂收，须按 `request_id` 等待 `parameter` 的 `Applied` / `AppliedLate` 或拒绝终态。`devices`、`processes` 只读查询；Process add/replace 必须使用列表中的 PID + 创建时间，过时身份返回明确错误，已退出 process 不能通过 `restart` 自动绑定复用 PID。物理输入可在同一 selection 上显式 restart。
+
+JSONL 输出包含 `started`、带输入序号的 `ack`、parameter/plan 终态、`status`、`startup_failed` 和 `final`。`final` 保存 capture/render 原生报告、bridge XRUN/填充/时钟补偿、输出 peak/timeline/blocks/frames/segments 以及停机回收的终态。Bridge underrun/dropped 计数与原生设备故障分别报告；原生空 padding 不单独视为确定的 XRUN。source `staged` / `running` / `disabled` / `stopped` / `target_exited` / `failed` / `removed` 保留在注册表，`last_start_failure` 解释失败的替换尝试而不抹掉仍在运行的输入状态。
+
+UI 使用 `host::windows::HostSession` 的纯控制接口：`start(SessionOptions)`、`add_source` / `replace_source` / `restart_source` / `remove_source` / `stop_source` / `enable_source`、gain/pan/Compressor、`submit_parameter`、typed `GraphCommand`、`publish` / `cancel_pending`、`poll`、`snapshot` / `runtime_snapshot` / `source_snapshots` / `graph_snapshot`、设备/进程目录和 `stop`。正常接口不暴露 Engine、DemandRenderer 或 WASAPI 对象。UI 应在自己的控制工作线程执行准备、轮询和 join，再把数据快照交给界面。`start` 仅在观察到实际 native Start 且初始图确认后返回 Running；partial startup 错误在控制侧停止回收全部 owner。`stop` 在 render join 返回 Engine 与 reader 后调用 `finish_parts`，不用额外 audible block 就能回收旧图和未来参数回执；Drop 同样负责停机回收。
+
+`HostSession` 实现不依赖 GUI。普通回归测试使用软件源执行真实 DemandRenderer/Compiler/plan 控制，并只向 native API 传入无效 selection，不打开有效音频设备：
+
+```powershell
+cargo test --locked -p moiren-app
+cargo clippy --locked -p moiren-app --all-targets -- -D warnings
+```
 
 ## Windows 物理输入闭环
 

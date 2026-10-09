@@ -21,7 +21,7 @@ cargo run --locked -p moiren-app -- render --list
 cargo run --locked -p moiren-app -- render --endpoint '<endpoint ID>'
 ```
 
-首版仅接受 native 48 kHz / stereo / f32；不转换其他设备格式。FreeDSP 的 10 秒实机输出已获用户试听确认，见[验收记录](docs/experiments/windows/2026-10-08-shared-render.md)。该单输出 owner 直接驱动 Engine，尚未接入真实 capture、跨设备 SRC 或运行中换图的应用控制入口。
+首版仅接受 native 48 kHz / stereo / f32；不转换其他输出设备格式。FreeDSP 的 10 秒实机输出已获用户试听确认，见[验收记录](docs/experiments/windows/2026-10-08-shared-render.md)。持续多源 host 已接入独立物理/process capture、Clock Bridge、运行中参数控制与换图，命令及 UI 控制契约见 [App 说明](crates/moiren-app/README.md#windows-持续多源-host)。
 
 ## 运行引擎骨架
 

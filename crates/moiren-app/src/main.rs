@@ -154,6 +154,18 @@ fn render(command: RenderCommand) -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     let mut config = AppConfig::default();
     let mut args = std::env::args().skip(1).peekable();
+    if args.peek().is_some_and(|arg| arg == "host") {
+        args.next();
+        let command = moiren_app::host_cli::parse_host_args(args)?;
+        if matches!(command, moiren_app::host_cli::HostCommand::Help) {
+            println!("{}", moiren_app::host_cli::HOST_HELP);
+            return Ok(());
+        }
+        #[cfg(windows)]
+        return moiren_app::host_cli::run_host(command);
+        #[cfg(not(windows))]
+        bail!("WASAPI audio host requires Windows");
+    }
     if args.peek().is_some_and(|arg| arg == "monitor") {
         args.next();
         return monitor(parse_monitor_args(args)?);
@@ -166,7 +178,7 @@ fn main() -> anyhow::Result<()> {
         match arg.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "Moiren\nUsage: moiren-app [--gain 0..16]\nRuns the offline software IO demo.\nUse moiren-app render --help for a Windows output, or monitor --help for physical/process input monitoring."
+                    "Moiren\nUsage: moiren-app [--gain 0..16]\nRuns the offline software IO demo.\nUse moiren-app host --help for a continuous multi-source host, render --help for a Windows output, or monitor --help for physical/process input monitoring."
                 );
                 return Ok(());
             }

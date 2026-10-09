@@ -4,6 +4,8 @@ mod graph;
 mod model;
 mod publication;
 mod renderer;
+#[cfg(windows)]
+pub mod windows;
 
 pub use graph::{GraphCommand, GraphEdit};
 pub use model::*;
