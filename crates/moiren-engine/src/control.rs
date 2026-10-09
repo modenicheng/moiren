@@ -275,6 +275,14 @@ impl ProcessParameters<'_> {
     }
 }
 impl ParameterRuntime {
+    /// Stop-side, non-RT reclamation after the engine has returned to control.
+    /// Prevent new submissions and reject queued requests without rendering.
+    /// Drain `ControlPort::poll_applied` and retry while the return value is
+    /// nonzero: a full reply queue must never silently discard accepted work.
+    pub fn retire_and_reject_pending(&mut self) -> usize {
+        self.retire();
+        self.reject_pending()
+    }
     pub(crate) fn schema(&self) -> Arc<[ParamSpec]> {
         Arc::clone(&self.specs)
     }
