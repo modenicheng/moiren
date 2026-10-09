@@ -1,5 +1,6 @@
 //! Thread-owned WASAPI objects. Only the stop kernel handle is shared.
 use super::{DemandRenderer, RenderError, RenderOptions, RenderReport};
+use crate::StopSignal;
 use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle as StdHandle},
     sync::Arc,
@@ -43,6 +44,9 @@ pub struct RenderSession {
     worker: Option<JoinHandle<RenderReport>>,
 }
 impl RenderSession {
+    pub fn is_finished(&self) -> bool {
+        self.worker.as_ref().is_none_or(JoinHandle::is_finished)
+    }
     pub fn request_stop(&self) -> Result<(), RenderError> {
         api("SetEvent(stop)", unsafe { SetEvent(handle(&self.stop)) })
     }
@@ -71,6 +75,18 @@ pub fn start_render(
 ) -> Result<RenderSession, RenderError> {
     options.validate()?;
     let stop = Arc::new(stop_event()?);
+    start_render_with_stop(options, renderer, StopSignal { event: stop })
+}
+
+/// Uses a linked capture stop event. No stream interfaces cross owners; either
+/// stream can end the pair before its potentially slow native cleanup finishes.
+pub fn start_render_with_stop(
+    options: RenderOptions,
+    renderer: DemandRenderer,
+    signal: StopSignal,
+) -> Result<RenderSession, RenderError> {
+    options.validate()?;
+    let stop = signal.event;
     let worker_stop = Arc::clone(&stop);
     let worker = thread::Builder::new()
         .name("moiren-shared-render".into())

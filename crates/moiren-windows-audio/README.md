@@ -1,6 +1,6 @@
 # Moiren Windows audio
 
-This crate contains the first Engine-backed Shared render path and independent,
+This crate contains Engine-backed Shared capture/render paths and independent,
 opt-in W00 probes. It does not yet implement the complete W01–W17 backend contracts.
 
 The examples enumerate active endpoints and audio sessions, capture an explicitly
@@ -47,7 +47,73 @@ underrun; `GetStreamLatency == 0` is not evidence of zero end-to-end latency.
 
 The [10-second FreeDSP test](../../docs/experiments/windows/2026-10-08-shared-render.md)
 completed with nonzero PCM and user-confirmed sound. Device loss/recovery, long
-stress runs, capture-to-render/SRC and plan replacement remain separate work.
+stress runs, SRC quality upgrades and plan replacement remain separate work.
+
+## Physical capture and clock bridge
+
+```powershell
+cargo run --locked -p moiren-app -- monitor --list
+cargo run --locked -p moiren-app -- render --list
+cargo run --locked -p moiren-app -- monitor --input '<reviewed capture ID>' --output '<reviewed render ID>' --seconds 10 --gain 0.05 --pan 0
+```
+
+`capture::start_capture` prepares a native Shared stream on a dedicated COM owner,
+and returns `PreparedCapture { session, source, observer, sample_rate, channels }`.
+The startup handshake rejects unsupported native formats before returning a
+prepared source. Only native 44.1/48 kHz mono/stereo f32 is accepted; mono is
+explicitly copied to both graph channels. The read-only capture selector does
+not require a render/default endpoint. Other formats appear as unsupported;
+the command never changes device format or system/session settings.
+
+Every nonempty packet is released on its acquiring thread, including invalid
+packets and bridge overflow. SILENT needs no readable pointer, TIMESTAMP_ERROR
+invalidates timing diagnostics without discarding valid audio, and nonfinite
+samples become zero. DATA_DISCONTINUITY, position gaps and overflow change the
+frame generation; interpolation never crosses generations. Stop is checked
+between packets and wins over audio events. `CaptureSession` supports
+`request_stop`, `is_finished`, `join`; Drop stops and joins the owner.
+
+To link both streams, pass `CaptureSession::stop_signal()` to
+`render::start_render_with_stop`. Both owners broadcast the shared kernel stop
+event before retiring their bridge or releasing native objects. A finished
+producer must not leave Render running while control waits for COM cleanup;
+this shutdown race was reproduced and fixed during hardware validation.
+
+`clock_bridge::capture_bridge` prepares a fixed-capacity SPSC frame ring, a
+`CaptureIngress`, stereo `ClockSource: RtAudioSource<f32>`, and cloneable scalar
+`BridgeObserver`. Default storage is 8192 stereo frames including generation
+metadata (128 KiB), with a 2048-input-frame target. Initial/reprime backlog is
+trimmed to the target once; `prime_discarded_frames` records intentional old
+frame removal. Offline callers can disable `trim_on_prime` to start at frame 0.
+Overflow drops new tail frames; underrun clears the tail and reprimes.
+
+Continuous linear interpolation handles nominal 44.1→48 kHz and small clock
+differences. A smoothed fill PI servo, with anti-windup, bounds correction to
+±2000 ppm. This is a functional SRC baseline, with frequency-response limits;
+it is not a professional bandlimited converter. `correction_ppm` is a queue
+control signal, not a hardware clock measurement. The target adds buffering
+latency and neither `GetStreamLatency` nor nominal sample rate measures the
+complete input-to-output latency.
+
+Snapshots are approximate independent atomic scalars; final snapshots after
+joining both owners are stable. Capture/render failures, packet discontinuity,
+dropped/silent/nonfinite samples, startup trim, priming silence, underrun,
+resets, fill and correction remain separately observable. No PCM is saved.
+The last underrun's output position and producer-finished flag distinguish a
+running starvation from a teardown race; diagnostics never clear xrun counters.
+Stop/rebind must prepare a fresh bridge; Process Loopback, multiple devices,
+quality SRC and automatic recovery remain separate slices.
+
+The [implementation plan](../../docs/superpowers/plans/2026-10-09-audio-backend.md)
+and [validation record](../../docs/experiments/windows/2026-10-09-capture-clock-bridge.md)
+distinguish simulation from hardware testing. Repeat the two-hour synthetic
+drift test for both native rates and both ±1000 ppm signs:
+
+```powershell
+$env:MOIREN_CLOCK_SIM_SECONDS = '7200'
+cargo test --release --locked -p moiren-windows-audio --test clock_bridge adaptive_bridge_handles_both_drift_signs_and_packet_jitter -- --nocapture
+Remove-Item Env:MOIREN_CLOCK_SIM_SECONDS
+```
 
 ## Process Loopback on Windows
 

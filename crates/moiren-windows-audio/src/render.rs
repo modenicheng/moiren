@@ -11,7 +11,9 @@ use thiserror::Error;
 #[cfg(windows)]
 mod wasapi;
 #[cfg(windows)]
-pub use wasapi::{RenderEndpoint, RenderSession, list_render_endpoints, start_render};
+pub use wasapi::{
+    RenderEndpoint, RenderSession, list_render_endpoints, start_render, start_render_with_stop,
+};
 
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: usize = 2;

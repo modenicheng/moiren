@@ -1,8 +1,15 @@
-//! Windows audio probes and a minimal engine-driven Shared render backend.
+//! Windows audio probes, Shared capture/render and backend clock adaptation.
 
+pub mod capture;
 pub mod clock;
+pub mod clock_bridge;
 pub mod render;
 pub mod stats;
+
+#[cfg(windows)]
+mod session;
+#[cfg(windows)]
+pub use session::StopSignal;
 
 #[cfg(windows)]
 pub mod probe;

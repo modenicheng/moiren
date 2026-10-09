@@ -18,7 +18,7 @@ use windows::{
         },
         System::{
             Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance},
-            Threading::AvSetMmThreadCharacteristicsW,
+            Threading::{AvSetMmThreadCharacteristicsW, SetEvent},
         },
     },
     core::{HSTRING, Interface},
@@ -197,6 +197,9 @@ fn owner(
         Ok(RenderStatus::Completed)
     })();
     report.elapsed_seconds = started.elapsed().as_secs_f64();
+    let peer_stop = api("SetEvent(render peer stop)", unsafe {
+        SetEvent(handle(stop))
+    });
     let stopped = streaming.stop();
     report.stop_succeeded = stopped.is_ok();
     if let Err(error) = &stopped {
@@ -206,6 +209,7 @@ fn owner(
     match result {
         Err(error) => Err(error),
         Ok(status) => {
+            peer_stop?;
             api("Stop", stopped)?;
             Ok(status)
         }
@@ -246,7 +250,9 @@ pub(super) fn run_owner(
     };
     // owner() has stopped and released services/client/apartment before any
     // formatting. Engine/ring ownership is dropped here outside streaming.
-    match owner(&options, &mut renderer, &stop, &mut report) {
+    let result = owner(&options, &mut renderer, &stop, &mut report);
+    let _ = unsafe { SetEvent(handle(&stop)) };
+    match result {
         Ok(status) => report.status = status,
         Err(error) => report.failure = Some(error.to_string()),
     }

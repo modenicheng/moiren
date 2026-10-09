@@ -33,4 +33,22 @@ cargo run --locked -p moiren-app -- render --endpoint '<endpoint ID>' --seconds 
 
 正常时长结束后 Stop、释放全部 stream/COM 对象，再输出 JSON 标量报告。库的 `RenderSession` 支持 `request_stop` / `join`，Drop 也会发 stop 并 join；命令行尚无 Ctrl+C 优雅停机处理。运行期报告区分处理帧、成功提交帧和失败阶段；空 padding 只是诊断，不能单独证明 underrun。
 
-FreeDSP 10 秒实际输出已获用户试听确认，见[实机记录](../../docs/experiments/windows/2026-10-08-shared-render.md)。Engine 已提供 [Plan swap API 与离线例子](../../docs/designs/06-compressor-plan-swap.md)，实际输出应用的换图控制入口仍待接入。其他 native formats、capture/loopback 到 Graph 的连接、跨钟 bridge、设备恢复和 GUI 仍待后续实现；完整长期接口见 [IO 节点设计](../../docs/designs/03-io-nodes.md)。
+FreeDSP 10 秒实际输出已获用户试听确认，见[实机记录](../../docs/experiments/windows/2026-10-08-shared-render.md)。Engine 已提供 [Plan swap API 与离线例子](../../docs/designs/06-compressor-plan-swap.md)，实际输出应用的换图控制入口仍待接入。其他 native output formats、Process Loopback、多设备、设备恢复和 GUI 仍待后续实现；完整长期接口见 [IO 节点设计](../../docs/designs/03-io-nodes.md)。
+
+## Windows 物理输入闭环
+
+```powershell
+cargo run --locked -p moiren-app -- monitor --list
+cargo run --locked -p moiren-app -- render --list
+cargo run --locked -p moiren-app -- monitor --input '<capture ID>' --output '<render ID>' --seconds 10 --gain 0.05 --pan 0
+```
+
+输入仅支持原生 44.1/48 kHz、mono/stereo f32；输出保持 48 kHz stereo f32 Shared。mono 明确复制为 stereo，再由 Compiler 准备 `Capture ClockSource → Gain → Pan → Sink`。输入 owner 与输出 master 通过预分配 Clock Bridge 隔离；连续相位线性插值及 fill PI 补偿独立时钟，不将 COM 或 native packet 放入 Graph。
+
+`monitor::prepare_monitor` 可接受任意 stereo `RtAudioSource<f32>`，并返回真实 compiled Graph、Gain/Pan NodeId 和 output reader。Windows 的 `start_monitor` 返回 `MonitorSession`，暴露原有 `ControlPort`、参数 bindings 与标量 bridge observer，供后续应用控制层使用；CLI 只设置初值。`request_stop` 尝试停止两端，`join` 在控制侧协调完成并回收，任一端失败不会被另一端的静音/成功掩盖。
+
+JSON 分别报告 capture、render 与 bridge。2048 输入帧的目标缓冲约为 42.7 ms（48 kHz）或 46.4 ms（44.1 kHz），另有设备/输出缓冲；启动时主动丢弃的旧缓存与 overflow 分别计数。线性 SRC 是功能基线，尚未提供专业重采样音质或无缝故障恢复。CLI 尚无 Ctrl+C 优雅退出入口；库 session Drop 和显式 stop 会协调释放。
+
+两端共享独立于音频事件的 kernel stop signal，在 streaming 结束时立即通知 peer，再完成 COM 清理；控制侧的 join 轮询只负责回收。Capture 时长先开始计时，自然完成时会停止稍后启动的 Render；报告保留各自实际 elapsed 和状态，整体 Completed 不要求两端都单独耗尽计时器。
+
+测试范围、实机结果与后续验收见[本次记录](../../docs/experiments/windows/2026-10-09-capture-clock-bridge.md)；后续任务按[音频后端计划](../../docs/superpowers/plans/2026-10-09-audio-backend.md)独立推进。

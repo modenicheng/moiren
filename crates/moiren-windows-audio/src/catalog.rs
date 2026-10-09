@@ -302,10 +302,18 @@ pub fn snapshot() -> Result<CatalogSnapshot> {
 /// Render selector snapshot: no capture or default-role query. A missing
 /// microphone cannot hide usable outputs; failures stay local to endpoints.
 pub fn render_snapshot() -> Result<CatalogSnapshot> {
+    selector_snapshot(eRender, "render")
+}
+
+pub fn capture_snapshot() -> Result<CatalogSnapshot> {
+    selector_snapshot(eCapture, "capture")
+}
+
+fn selector_snapshot(flow: EDataFlow, name: &'static str) -> Result<CatalogSnapshot> {
     unsafe {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-        let devices = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?;
+        let devices = enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE)?;
         let mut result = CatalogSnapshot {
             defaults: Vec::new(),
             endpoints: Vec::new(),
@@ -313,11 +321,11 @@ pub fn render_snapshot() -> Result<CatalogSnapshot> {
         };
         for index in 0..devices.GetCount()? {
             if let Some(item) = record(
-                "render endpoint snapshot",
+                "selector endpoint snapshot",
                 &mut result.errors,
                 devices
                     .Item(index)
-                    .and_then(|device| endpoint(&device, "render")),
+                    .and_then(|device| endpoint(&device, name)),
             ) {
                 result.endpoints.push(item);
             }
