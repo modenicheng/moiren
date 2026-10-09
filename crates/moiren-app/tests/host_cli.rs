@@ -193,3 +193,31 @@ fn invalid_selections_fail_without_opening_valid_audio_hardware() {
         .is_err()
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn initial_process_preflight_failure_emits_one_json_record_and_nonzero_exit() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_moiren-app"))
+        .args([
+            "host",
+            "--output",
+            "deliberately-invalid-output-id",
+            "--process",
+            "4294967295",
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "unexpected startup output: {stdout}");
+    let event: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(event["type"], "startup_failed");
+    assert!(
+        event["error"]
+            .as_str()
+            .is_some_and(|error| !error.is_empty())
+    );
+    assert!(String::from_utf8(output.stderr).unwrap().contains("Error:"));
+}

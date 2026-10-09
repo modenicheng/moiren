@@ -25,26 +25,11 @@ pub fn run_host(command: HostCommand) -> anyhow::Result<()> {
             inputs,
             seconds,
         } => {
-            let selections = inputs
-                .into_iter()
-                .map(|input| match input {
-                    InitialInput::Physical(endpoint_id) => {
-                        Ok(CaptureSelection::Physical { endpoint_id })
-                    }
-                    InitialInput::Process(pid) => Ok(CaptureSelection::Process {
-                        identity: inspect_process(pid)?,
-                    }),
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            let mut session = match HostSession::start(SessionOptions {
-                output_endpoint_id: output,
-                sources: selections,
-                config: HostConfig::default(),
-            }) {
+            let mut session = match start_host(output, inputs) {
                 Ok(session) => session,
                 Err(error) => {
                     emit(&json!({"type":"startup_failed","error":error.to_string()}))?;
-                    return Err(error.into());
+                    return Err(error);
                 }
             };
             let deadline = seconds
@@ -145,6 +130,26 @@ pub fn run_host(command: HostCommand) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+/// Selection preflight and native startup share one failure projection. Resolve
+/// every process identity before starting captures, so a later invalid PID
+/// cannot leave an earlier selection partially running.
+fn start_host(output: String, inputs: Vec<InitialInput>) -> anyhow::Result<HostSession> {
+    let selections = inputs
+        .into_iter()
+        .map(|input| match input {
+            InitialInput::Physical(endpoint_id) => Ok(CaptureSelection::Physical { endpoint_id }),
+            InitialInput::Process(pid) => Ok(CaptureSelection::Process {
+                identity: inspect_process(pid)?,
+            }),
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    HostSession::start(SessionOptions {
+        output_endpoint_id: output,
+        sources: selections,
+        config: HostConfig::default(),
+    })
+    .map_err(Into::into)
 }
 fn emit(value: &Value) -> anyhow::Result<()> {
     let mut stdout = std::io::stdout().lock();
