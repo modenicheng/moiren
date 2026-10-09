@@ -122,18 +122,20 @@ fn native_format_validation_rejects_conversion_and_bad_layouts() {
 }
 #[implement(IAudioRenderClient)]
 struct FakeRender {
-    data: Rc<UnsafeCell<[f32; 4]>>,
+    data: Rc<UnsafeCell<Vec<f32>>>,
     calls: Rc<RefCell<Vec<(u32, u32)>>>,
     null_buffer: bool,
 }
 impl IAudioRenderClient_Impl for FakeRender_Impl {
     fn GetBuffer(&self, frames: u32) -> WinResult<*mut u8> {
-        assert_eq!(frames, 2);
+        // SAFETY: This fake and its buffer are confined to the test thread.
+        assert!(frames as usize * 2 <= unsafe { &*self.data.get() }.len());
         self.calls.borrow_mut().push((frames, u32::MAX));
         Ok(if self.null_buffer {
             std::ptr::null_mut()
         } else {
-            self.data.get().cast()
+            // SAFETY: The Vec is never resized while the COM fake is alive.
+            unsafe { &mut *self.data.get() }.as_mut_ptr().cast()
         })
     }
     fn ReleaseBuffer(&self, frames: u32, flags: u32) -> WinResult<()> {
@@ -144,7 +146,7 @@ impl IAudioRenderClient_Impl for FakeRender_Impl {
 #[test]
 fn render_leases_copy_full_pcm_or_cancel_without_submitting_stale_data() {
     for null_buffer in [false, true] {
-        let data = Rc::new(UnsafeCell::new([99.0; 4]));
+        let data = Rc::new(UnsafeCell::new(vec![99.0; 4]));
         let calls = Rc::new(RefCell::new(Vec::new()));
         let client: IAudioRenderClient = FakeRender {
             data: Rc::clone(&data),
@@ -162,7 +164,7 @@ fn render_leases_copy_full_pcm_or_cancel_without_submitting_stale_data() {
         );
         // SAFETY: Single-threaded test reads after the buffer lease ended.
         assert_eq!(
-            unsafe { *data.get() },
+            unsafe { &*data.get() }.as_slice(),
             if null_buffer {
                 [99.0; 4]
             } else {
@@ -170,6 +172,150 @@ fn render_leases_copy_full_pcm_or_cancel_without_submitting_stale_data() {
             }
         );
     }
+}
+
+fn capture_renderer() -> (
+    crate::clock_bridge::CaptureIngress,
+    crate::clock_bridge::BridgeObserver,
+    DemandRenderer,
+) {
+    use crate::clock_bridge::{CapturePacket, ClockBridgeConfig, capture_bridge};
+    use moiren_core::graph::*;
+    use moiren_engine::{boundary::audio_bridge, compiler::*, runtime::EngineConfig};
+
+    let (mut ingress, capture, observer) = capture_bridge(ClockBridgeConfig {
+        max_correction_ppm: 0.0,
+        ..ClockBridgeConfig::default()
+    })
+    .unwrap();
+    let bytes = 0.25f32.to_le_bytes().repeat(2048 * 2);
+    assert_eq!(
+        ingress
+            .push_packet(
+                &bytes,
+                CapturePacket {
+                    frames: 2048,
+                    flags: 0,
+                    device_position_frames: 0,
+                    qpc_100ns: 1,
+                },
+            )
+            .unwrap(),
+        2048
+    );
+    let (writer, reader) = audio_bridge::<f32>(2, 256, 4096).unwrap();
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 2).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
+    graph
+        .connect(
+            graph.get_node(source).unwrap().outputs()[0].id(),
+            graph.get_node(sink).unwrap().inputs()[0].id(),
+            SendParams::default(),
+        )
+        .unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_source(source, capture).unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    let engine = compile(
+        &graph,
+        bindings,
+        CompileConfig {
+            engine: EngineConfig {
+                processing_sr: 48000.0,
+                max_block_frames: 256,
+                max_events_per_block: 8,
+            },
+            audio_byte_budget: 8192,
+            plan_revision: 1,
+            timeline_epoch: 1,
+            control_capacity: 8,
+            control_horizon_frames: 48000,
+        },
+    )
+    .unwrap()
+    .engine;
+    (
+        ingress,
+        observer,
+        DemandRenderer::new(engine, reader).unwrap(),
+    )
+}
+
+#[test]
+fn prestart_dsp_burst_exhausts_prepared_capture_reserve() {
+    // Model the old startup demand, keeping ingress alive but with no capture
+    // cadence during preparation. The actual engine/output bridge stay intact.
+    let (_ingress, capture, mut renderer) = capture_renderer();
+    let mut samples = vec![99.0; 4096 * 2];
+    renderer.render_interleaved(&mut samples).unwrap();
+    let snapshot = capture.snapshot();
+    assert_eq!(renderer.timeline(), 4096);
+    assert_eq!(snapshot.output_frames, 2047);
+    assert_eq!(snapshot.underrun_frames, 1);
+    assert_eq!(snapshot.last_underrun_at_output_frame, 2047);
+    assert!(!snapshot.last_underrun_producer_finished);
+    assert_eq!(snapshot.priming_frames, 2048);
+    assert_eq!(snapshot.resets, 1);
+    assert!(samples[..2047 * 2].iter().all(|&sample| sample == 0.25));
+    assert!(samples[2047 * 2..].iter().all(|&sample| sample == 0.0));
+}
+
+#[test]
+fn oversized_native_prime_submits_silence_without_consuming_capture_or_timeline() {
+    let (_ingress, capture, mut renderer) = capture_renderer();
+    let observer = crate::render::RenderObserver::default();
+    renderer.set_observer(observer.clone()).unwrap();
+    let data = Rc::new(UnsafeCell::new(vec![99.0; 4096 * 2]));
+    let calls = Rc::new(RefCell::new(Vec::with_capacity(4)));
+    let client: IAudioRenderClient = FakeRender {
+        data: Rc::clone(&data),
+        calls: Rc::clone(&calls),
+        null_buffer: false,
+    }
+    .into();
+    let mut staging = vec![99.0; 4096 * 2];
+    let mut stats = crate::render::RenderStats::default();
+    stream::prime(&client, &mut staging, &mut stats).unwrap();
+    assert_eq!(renderer.timeline(), 0);
+    assert_eq!(
+        renderer.counters(),
+        crate::render::DemandCounters::default()
+    );
+    assert!(!observer.snapshot().stream_started);
+    assert_eq!(*calls.borrow(), [(4096, u32::MAX), (4096, 0)]);
+    // SAFETY: Single-threaded inspection after ReleaseBuffer ended the lease.
+    assert!(unsafe { &*data.get() }.iter().all(|&sample| sample == 0.0));
+    assert_eq!(stats.primed_frames, 4096);
+    assert_eq!(stats.submitted_frames, 4096);
+    assert_eq!(stats.dsp_blocks, 0);
+    assert_eq!(stats.dsp_segments, 0);
+    assert_eq!(stats.nonzero_samples, 0);
+    let snapshot = capture.snapshot();
+    assert_eq!(snapshot.written_frames, 2048);
+    assert_eq!(snapshot.output_frames, 0);
+    assert_eq!(snapshot.underrun_frames, 0);
+    assert_eq!(snapshot.priming_frames, 0);
+    assert_eq!(snapshot.prime_discarded_frames, 0);
+    assert_eq!(snapshot.resets, 0);
+
+    // The first ordinary demand, after native Start, consumes the same reserve.
+    renderer.set_stream_started(true);
+    renderer
+        .render_interleaved(&mut staging[..256 * 2])
+        .unwrap();
+    submit(&client, &staging[..256 * 2]).unwrap();
+    assert!(staging[..256 * 2].iter().all(|&sample| sample == 0.25));
+    assert_eq!(renderer.timeline(), 256);
+    assert_eq!(capture.snapshot().output_frames, 256);
+    assert_eq!(capture.snapshot().underrun_frames, 0);
+    assert!(observer.snapshot().stream_started);
+    // SAFETY: Single-threaded inspection after the second lease ended.
+    assert!(
+        unsafe { &*data.get() }[..256 * 2]
+            .iter()
+            .all(|&sample| sample == 0.25)
+    );
 }
 
 struct DropTrackedSource(std::sync::Arc<std::sync::Mutex<Option<std::thread::ThreadId>>>);

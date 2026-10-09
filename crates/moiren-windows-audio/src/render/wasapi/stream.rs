@@ -77,6 +77,23 @@ fn record_submit(samples: &[f32], stats: &mut RenderStats) {
     }
 }
 
+pub(super) fn prime(
+    render: &IAudioRenderClient,
+    staging: &mut [f32],
+    stats: &mut RenderStats,
+) -> Result<(), RenderError> {
+    // Device capacity can exceed the capture bridge's startup reserve. Before
+    // Start there is no render clock cadence, so advancing DSP here could drain
+    // that reserve in one burst. Submit initialized silence instead; normal
+    // audio wakes begin DSP after Start. Deliberate startup silence is bounded
+    // to this one native buffer; it never counts as processed DSP frames.
+    staging.fill(0.0);
+    submit(render, staging)?;
+    stats.primed_frames = (staging.len() / CHANNELS) as u32;
+    record_submit(staging, stats);
+    Ok(())
+}
+
 fn owner(
     options: &RenderOptions,
     renderer: &mut DemandRenderer,
@@ -141,10 +158,7 @@ fn owner(
     if wait(handle(stop), event.0, 0)? == Wake::Stop {
         return Ok(RenderStatus::Stopped);
     }
-    produce(renderer, &mut staging, &mut report.stats)?;
-    submit(&render, &staging)?;
-    report.stats.primed_frames = capacity;
-    record_submit(&staging, &mut report.stats);
+    prime(&render, &mut staging, &mut report.stats)?;
     let mut task_index = 0;
     let _mmcss =
         match unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Audio"), &mut task_index) }
