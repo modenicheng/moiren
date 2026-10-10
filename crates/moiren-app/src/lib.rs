@@ -4,6 +4,7 @@
 pub mod monitor;
 pub mod monitor_cli;
 pub mod render_cli;
+pub mod service;
 pub mod tone;
 
 use moiren_core::protocol::{
