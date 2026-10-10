@@ -6,7 +6,10 @@ use moiren_engine::{
     processor::ProcessContext,
 };
 use rtrb::Consumer;
-use std::sync::{Arc, atomic::Ordering::Relaxed};
+use std::sync::{
+    Arc,
+    atomic::Ordering::{Acquire, Relaxed},
+};
 
 pub struct ClockSource {
     rx: Consumer<Frame>,
@@ -92,7 +95,8 @@ impl ClockSource {
             + usize::from(self.next.is_some());
         self.counters.fill_frames.store(fill, Relaxed);
         if self.current.is_none() {
-            let target = if self.rx.is_abandoned() {
+            let target = if self.rx.is_abandoned() || self.counters.producer_finished.load(Acquire)
+            {
                 2
             } else {
                 self.config.target_fill_frames
@@ -132,13 +136,37 @@ impl ClockSource {
                 self.next = self.rx.pop().ok();
             }
             let (Some(a), Some(b)) = (self.current, self.next) else {
+                if self.counters.underrun_frames.load(Relaxed) == 0 {
+                    let elapsed = self
+                        .counters
+                        .prepared_at
+                        .elapsed()
+                        .as_micros()
+                        .min(u64::MAX as u128) as u64;
+                    self.counters.first_underrun_packet_age_us.store(
+                        elapsed.saturating_sub(self.counters.last_packet_elapsed_us.load(Relaxed)),
+                        Relaxed,
+                    );
+                    self.counters
+                        .first_underrun_captured_frames
+                        .store(self.counters.captured_frames.load(Relaxed), Relaxed);
+                    self.counters
+                        .first_underrun_packets
+                        .store(self.counters.packets.load(Relaxed), Relaxed);
+                }
                 self.counters.last_underrun_at_output_frame.store(
                     self.counters.output_frames.load(Relaxed) + frame as u64,
                     Relaxed,
                 );
+                let producer_finished = self.counters.producer_finished.load(Acquire);
                 self.counters
                     .last_underrun_producer_finished
-                    .store(self.counters.producer_finished.load(Relaxed), Relaxed);
+                    .store(producer_finished, Relaxed);
+                if !producer_finished {
+                    self.counters
+                        .live_underrun_frames
+                        .fetch_add((frames - frame) as u64, Relaxed);
+                }
                 self.counters
                     .underrun_frames
                     .fetch_add((frames - frame) as u64, Relaxed);

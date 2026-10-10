@@ -115,7 +115,10 @@ pub(crate) fn run(
         Ok(CaptureStatus::Completed)
     })();
     report.elapsed_seconds = started.elapsed().as_secs_f64();
-    // Wake peer before retiring producer or releasing COM, including target exit.
+    // Publication is over even if native Stop or COM cleanup blocks. Consumers
+    // must observe retirement before they can exhaust the final queued packet.
+    ingress.finish();
+    // Wake peer before stopping the native client, including target exit.
     let peer_stop = api("SetEvent(capture peer stop)", unsafe {
         SetEvent(handle(input.stop))
     });

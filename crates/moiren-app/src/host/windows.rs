@@ -214,9 +214,9 @@ impl HostSession {
             .get_mut(&id)
             .ok_or(SessionError::UnknownSource(id))?;
         source.enabled = enabled;
-        source
-            .gate
-            .set_available(enabled && source.session.is_some());
+        source.gate.set_available(
+            enabled && source.session.is_some() && !source.observer.producer_finished(),
+        );
         if matches!(
             source.status,
             SourceStatus::Running | SourceStatus::Disabled
@@ -318,6 +318,12 @@ impl HostSession {
                 .any(|e| matches!(e, HostEvent::PlanRejected { .. }));
             let graph = host.graph_snapshot();
             for (id, source) in &mut self.sources {
+                // Capture publishes retirement before its potentially blocking
+                // native cleanup. Silence immediately; join/report only when
+                // the owner thread has actually finished.
+                if source.observer.producer_finished() {
+                    source.gate.set_available(false);
+                }
                 if source
                     .session
                     .as_ref()

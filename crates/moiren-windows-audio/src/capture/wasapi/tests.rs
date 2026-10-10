@@ -39,8 +39,149 @@ use std::{
 };
 use windows::{
     Win32::Media::Audio::*,
-    core::{Result as WinResult, implement},
+    core::{Interface, Result as WinResult, implement},
 };
+
+#[implement(IAudioClient)]
+struct RetiringClient {
+    stop: HANDLE,
+    capture: IAudioCaptureClient,
+    ready: Rc<RefCell<std::sync::mpsc::Receiver<Result<Startup, CaptureError>>>>,
+    observed_finished: Rc<RefCell<Vec<bool>>>,
+}
+impl IAudioClient_Impl for RetiringClient_Impl {
+    fn Initialize(
+        &self,
+        _: AUDCLNT_SHAREMODE,
+        _: u32,
+        _: i64,
+        _: i64,
+        _: *const WAVEFORMATEX,
+        _: *const windows::core::GUID,
+    ) -> WinResult<()> {
+        Err(windows::core::Error::from_hresult(
+            windows::Win32::Foundation::E_NOTIMPL,
+        ))
+    }
+    fn GetBufferSize(&self) -> WinResult<u32> {
+        Ok(480)
+    }
+    fn GetStreamLatency(&self) -> WinResult<i64> {
+        Err(windows::core::Error::from_hresult(
+            windows::Win32::Foundation::E_NOTIMPL,
+        ))
+    }
+    fn GetCurrentPadding(&self) -> WinResult<u32> {
+        Err(windows::core::Error::from_hresult(
+            windows::Win32::Foundation::E_NOTIMPL,
+        ))
+    }
+    fn IsFormatSupported(
+        &self,
+        _: AUDCLNT_SHAREMODE,
+        _: *const WAVEFORMATEX,
+        _: *mut *mut WAVEFORMATEX,
+    ) -> windows::core::HRESULT {
+        windows::Win32::Foundation::E_NOTIMPL
+    }
+    fn GetMixFormat(&self) -> WinResult<*mut WAVEFORMATEX> {
+        Err(windows::core::Error::from_hresult(
+            windows::Win32::Foundation::E_NOTIMPL,
+        ))
+    }
+    fn GetDevicePeriod(&self, _: *mut i64, _: *mut i64) -> WinResult<()> {
+        Err(windows::core::Error::from_hresult(
+            windows::Win32::Foundation::E_NOTIMPL,
+        ))
+    }
+    fn Start(&self) -> WinResult<()> {
+        unsafe { SetEvent(self.stop) }
+    }
+    fn Stop(&self) -> WinResult<()> {
+        // Hold the real published bridge alive throughout simulated native
+        // cleanup. Record outside-FFI assertions so failures cannot unwind COM.
+        if let Ok(Ok(ready)) = self.ready.borrow().try_recv() {
+            self.observed_finished
+                .borrow_mut()
+                .push(ready.observer.producer_finished());
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            self.observed_finished
+                .borrow_mut()
+                .push(ready.observer.producer_finished());
+        }
+        Ok(())
+    }
+    fn Reset(&self) -> WinResult<()> {
+        Err(windows::core::Error::from_hresult(
+            windows::Win32::Foundation::E_NOTIMPL,
+        ))
+    }
+    fn SetEventHandle(&self, _: HANDLE) -> WinResult<()> {
+        Err(windows::core::Error::from_hresult(
+            windows::Win32::Foundation::E_NOTIMPL,
+        ))
+    }
+    fn GetService(
+        &self,
+        riid: *const windows::core::GUID,
+        ppv: *mut *mut core::ffi::c_void,
+    ) -> WinResult<()> {
+        // SAFETY: run() requests this service with valid IID/output pointers.
+        unsafe {
+            if *riid != IAudioCaptureClient::IID {
+                return Err(windows::core::Error::from_hresult(
+                    windows::Win32::Foundation::E_NOINTERFACE,
+                ));
+            }
+            *ppv = self.capture.clone().into_raw();
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn producer_retirement_is_visible_before_and_during_native_stop_cleanup() {
+    let stop = StopSignal::new().unwrap();
+    let audio = OwnedHandle::event().unwrap();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let capture: IAudioCaptureClient = FakeCapture {
+        data: Rc::new(UnsafeCell::new([0.0; 4])),
+        releases: Rc::new(RefCell::new(Vec::new())),
+        frames: 0,
+        flags: 0,
+        null_buffer: true,
+    }
+    .into();
+    let client: IAudioClient = RetiringClient {
+        stop: handle(&stop.event),
+        capture,
+        ready: Rc::new(RefCell::new(receiver)),
+        observed_finished: Rc::clone(&observed),
+    }
+    .into();
+    let mut report = CaptureReport::new(
+        crate::capture::CaptureSource::Physical,
+        std::time::Duration::from_secs(1),
+    );
+    let status = stream::run(
+        stream::StreamInput {
+            client: &client,
+            audio: audio.0,
+            target: None,
+            stop: &stop.event,
+            duration: std::time::Duration::from_secs(1),
+            sample_rate: 48000,
+            channels: 2,
+        },
+        &sender,
+        &mut report,
+    )
+    .unwrap();
+    assert_eq!(status, crate::capture::CaptureStatus::Stopped);
+    assert!(report.stop_succeeded);
+    assert_eq!(*observed.borrow(), [true, true]);
+}
 
 #[test]
 fn capture_stop_is_responsive_without_audio_and_has_priority() {

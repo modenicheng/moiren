@@ -206,6 +206,105 @@ fn underrun_clears_tail_and_reprime_never_replays_old_samples() {
 }
 
 #[test]
+fn live_underrun_diagnostics_survive_a_later_producer_exit() {
+    let (mut input, mut source, observer) = capture_bridge(config()).unwrap();
+    input
+        .push_packet(&bytes(&[1.0; 12]), packet(6, 0, 0))
+        .unwrap();
+    let report = source.read_interleaved(&mut [0.0; 20]).unwrap();
+    assert_eq!(report.xruns, 1);
+    input
+        .push_packet(&bytes(&[1.0; 12]), packet(6, 6, 0))
+        .unwrap();
+    drop(input);
+    let report = source.read_interleaved(&mut [0.0; 20]).unwrap();
+    assert_eq!(report.xruns, 1);
+    let snapshot = observer.snapshot();
+    assert_eq!(snapshot.underrun_frames, 10);
+    assert!(snapshot.last_underrun_producer_finished);
+    let json = serde_json::to_value(snapshot).unwrap();
+    assert_eq!(json["live_underrun_frames"].as_u64(), Some(5));
+}
+
+#[test]
+fn finite_producer_shortfall_remains_visible_without_live_underrun() {
+    let (mut input, mut source, observer) = capture_bridge(config()).unwrap();
+    input
+        .push_packet(&bytes(&[1.0; 12]), packet(6, 0, 0))
+        .unwrap();
+    drop(input);
+    let report = source.read_interleaved(&mut [0.0; 20]).unwrap();
+    assert_eq!(report.xruns, 1);
+    let snapshot = observer.snapshot();
+    assert_eq!(snapshot.underrun_frames, 5);
+    assert!(snapshot.last_underrun_producer_finished);
+    let json = serde_json::to_value(snapshot).unwrap();
+    assert_eq!(json["live_underrun_frames"].as_u64(), Some(0));
+}
+
+#[test]
+fn explicit_finish_drains_a_short_finite_tail_while_owner_is_still_alive() {
+    let (mut input, mut source, observer) = capture_bridge(config()).unwrap();
+    input
+        .push_packet(&bytes(&[1.0; 6]), packet(3, 0, 0))
+        .unwrap();
+    input.finish();
+    input.finish();
+    assert!(observer.producer_finished());
+    assert_eq!(
+        input.push_packet(&bytes(&[2.0; 2]), packet(1, 3, 0)),
+        Err(ClockBridgeError::ProducerFinished)
+    );
+    let mut out = [0.0; 10];
+    let report = source.read_interleaved(&mut out).unwrap();
+    assert_eq!(report.transferred_frames, 2);
+    assert_eq!(report.xruns, 1);
+    assert_eq!(out, [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    let snapshot = observer.snapshot();
+    assert_eq!(snapshot.underrun_frames, 3);
+    assert_eq!(snapshot.live_underrun_frames, 0);
+}
+
+#[test]
+fn native_demand_reproduces_recorded_live_shortfall_when_packets_stop_after_prime() {
+    // A 480-frame native callback is segmented into 256 + 224 engine frames.
+    // Five initial packets provide 2400 frames; trimming retains 2048. The
+    // second trace delivers three more packets before publication pauses.
+    for (extra_packets, output_at_shortfall) in [(0, 2048), (3, 3488)] {
+        let (mut input, mut source, observer) =
+            capture_bridge(ClockBridgeConfig::default()).unwrap();
+        let payload = bytes(&[0.25; 960]);
+        let mut position = 0;
+        for _ in 0..5 {
+            input
+                .push_packet(&payload, packet(480, position, 0))
+                .unwrap();
+            position += 480;
+        }
+        let mut out = [0.0; 512];
+        for callback in 0..(5 + extra_packets) {
+            for frames in [256, 224] {
+                source.read_interleaved(&mut out[..frames * 2]).unwrap();
+            }
+            if callback < extra_packets {
+                input
+                    .push_packet(&payload, packet(480, position, 0))
+                    .unwrap();
+                position += 480;
+            }
+        }
+        let snapshot = observer.snapshot();
+        assert_eq!(snapshot.prime_discarded_frames, 352);
+        assert_eq!(snapshot.last_underrun_at_output_frame, output_at_shortfall);
+        assert_eq!(snapshot.underrun_frames, 128);
+        assert_eq!(snapshot.live_underrun_frames, 128);
+        assert_eq!(snapshot.first_underrun_captured_frames, position);
+        assert_eq!(snapshot.first_underrun_packets, 5 + extra_packets as u64);
+        assert!(!snapshot.last_underrun_producer_finished);
+    }
+}
+
+#[test]
 fn discontinuities_do_not_interpolate_across_generations() {
     let (mut input, mut source, observer) = capture_bridge(config()).unwrap();
     input
@@ -367,6 +466,8 @@ fn ingress_resampling_underrun_and_reset_allocate_and_free_nothing() {
     input
         .push_packet(&payload, packet(32, 32, DISCONTINUITY))
         .unwrap();
+    input.finish();
+    input.finish();
     source.read_interleaved(&mut out).unwrap();
     let snapshot = observer.snapshot();
     TRACK.with(|t| t.set(false));

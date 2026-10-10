@@ -1,12 +1,10 @@
 use super::*;
 use moiren_engine::boundary::{AudioWriter, audio_bridge};
-use moiren_windows_audio::clock_bridge::{ClockBridgeConfig, capture_bridge};
+use moiren_windows_audio::clock_bridge::{CaptureIngress, ClockBridgeConfig, capture_bridge};
 
-fn fixture() -> (
-    HostSession,
-    DemandRenderer,
-    Vec<(SourceId, AudioWriter<f32>)>,
-) {
+type FixtureInput = (SourceId, AudioWriter<f32>, CaptureIngress);
+
+fn fixture() -> (HostSession, DemandRenderer, Vec<FixtureInput>) {
     let (host, renderer) = AudioHost::prepare(HostConfig::default()).unwrap();
     let mut session = HostSession {
         host: Some(host),
@@ -37,7 +35,7 @@ fn fixture() -> (
             )
             .unwrap();
         let gate = session.host().unwrap().source_gate(id).unwrap();
-        let (_, _, observer) = capture_bridge(ClockBridgeConfig::default()).unwrap();
+        let (ingress, _, observer) = capture_bridge(ClockBridgeConfig::default()).unwrap();
         // The fixture replaces device workers with owned software sources;
         // it still executes the real compiled graph and backend DemandRenderer.
         session.sources.insert(
@@ -56,7 +54,7 @@ fn fixture() -> (
                 last_start_failure: None,
             },
         );
-        inputs.push((id, writer));
+        inputs.push((id, writer, ingress));
     }
     session.publish().unwrap();
     let (engine, reader) = renderer.into_parts();
@@ -64,13 +62,33 @@ fn fixture() -> (
     renderer.set_observer(session.observer.clone()).unwrap();
     (session, renderer, inputs)
 }
-fn render(renderer: &mut DemandRenderer, inputs: &mut [(SourceId, AudioWriter<f32>)]) -> [f32; 2] {
-    for (_, writer) in inputs {
+fn render(renderer: &mut DemandRenderer, inputs: &mut [FixtureInput]) -> [f32; 2] {
+    for (_, writer, _) in inputs {
         writer.write_interleaved(&[0.5, 0.5]).unwrap();
     }
     let mut out = [0.0; 2];
     renderer.render_interleaved(&mut out).unwrap();
     out
+}
+#[test]
+fn producer_retirement_gates_audio_before_cleanup_has_a_terminal_report() {
+    let (mut session, mut renderer, mut inputs) = fixture();
+    render(&mut renderer, &mut inputs);
+    session.poll();
+    let (id, mut writer, ingress) = inputs.remove(0);
+    drop(ingress);
+    assert!(session.sources[&id].observer.producer_finished());
+    assert!(session.sources[&id].report.is_none());
+    session.poll();
+    assert!(!session.sources[&id].gate.is_available());
+    session.enable_source(id, true).unwrap();
+    assert!(!session.sources[&id].gate.is_available());
+    assert!(session.sources[&inputs[0].0].gate.is_available());
+    assert!(session.sources[&id].report.is_none());
+    // Buffered capture audio stays inaudible during owner-local cleanup.
+    writer.write_interleaved(&[0.5, 0.5]).unwrap();
+    assert_eq!(render(&mut renderer, &mut inputs), [0.025, 0.025]);
+    finish(session, renderer);
 }
 fn finish(mut session: HostSession, renderer: DemandRenderer) -> Vec<HostEvent> {
     session.finish_renderer(renderer);

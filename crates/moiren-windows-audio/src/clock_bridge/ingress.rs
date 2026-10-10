@@ -2,7 +2,11 @@
 use super::{ClockBridgeConfig, ClockBridgeError, Frame, telemetry::Counters};
 use crate::stats::{DISCONTINUITY, SILENT, TIMESTAMP_ERROR};
 use rtrb::Producer;
-use std::sync::{Arc, atomic::Ordering::Relaxed};
+use std::sync::{
+    Arc,
+    atomic::Ordering::{Relaxed, Release},
+};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy)]
 pub struct CapturePacket {
@@ -17,6 +21,7 @@ pub struct CaptureIngress {
     generation: u64,
     next_position: Option<u64>,
     counters: Arc<Counters>,
+    last_packet_at: Option<Instant>,
 }
 impl CaptureIngress {
     pub(super) fn new(
@@ -30,10 +35,17 @@ impl CaptureIngress {
             generation: 1,
             next_position: None,
             counters,
+            last_packet_at: None,
         }
     }
     pub fn input_channels(&self) -> usize {
         self.config.input_channels
+    }
+
+    /// Retire publication before blocking native Stop/COM cleanup. The ring
+    /// stays alive for finite consumers, but no new packets may follow finish.
+    pub fn finish(&mut self) {
+        self.counters.producer_finished.store(true, Release);
     }
 
     /// SILENT packets may have no readable data. Overflow accepts a whole-frame
@@ -43,6 +55,9 @@ impl CaptureIngress {
         bytes: &[u8],
         packet: CapturePacket,
     ) -> Result<usize, ClockBridgeError> {
+        if self.counters.producer_finished.load(Relaxed) {
+            return Err(ClockBridgeError::ProducerFinished);
+        }
         let silent = packet.flags & SILENT != 0;
         let width = self.config.input_channels * 4;
         let expected = packet
@@ -55,6 +70,56 @@ impl CaptureIngress {
         if packet.frames == 0 {
             return Ok(0);
         }
+        // Scalar diagnostics stay on the capture owner. Normal render demand
+        // uses no clock reads; only its first shortfall samples publication age.
+        let now = Instant::now();
+        self.counters.last_packet_elapsed_us.store(
+            now.duration_since(self.counters.prepared_at)
+                .as_micros()
+                .min(u64::MAX as u128) as u64,
+            Relaxed,
+        );
+        let index = self.counters.packets.fetch_add(1, Relaxed);
+        if index == 0 {
+            self.counters
+                .first_packet_frames
+                .store(packet.frames, Relaxed);
+        }
+        self.counters
+            .max_packet_frames
+            .fetch_max(packet.frames, Relaxed);
+        if let Some(previous) = self.last_packet_at {
+            let interval = now
+                .duration_since(previous)
+                .as_micros()
+                .min(u64::MAX as u128) as u64;
+            self.counters
+                .max_packet_interval_us
+                .fetch_max(interval, Relaxed);
+            // Keep cold startup separate from later scheduling stalls/pauses.
+            if index < 16 {
+                let previous_max = self
+                    .counters
+                    .max_startup_packet_interval_us
+                    .fetch_max(interval, Relaxed);
+                if interval > previous_max {
+                    self.counters
+                        .max_startup_gap_after_packet
+                        .store(index, Relaxed);
+                    self.counters
+                        .max_startup_gap_at_output_frame
+                        .store(self.counters.output_frames.load(Relaxed), Relaxed);
+                    self.counters.max_startup_gap_qpc_interval_us.store(
+                        packet
+                            .qpc_100ns
+                            .saturating_sub(self.counters.last_qpc_100ns.load(Relaxed))
+                            / 10,
+                        Relaxed,
+                    );
+                }
+            }
+        }
+        self.last_packet_at = Some(now);
         let invalid_time = packet.flags & TIMESTAMP_ERROR != 0 || packet.qpc_100ns == 0;
         let gap = self.config.detect_position_gaps
             && !invalid_time
@@ -146,6 +211,6 @@ impl CaptureIngress {
 }
 impl Drop for CaptureIngress {
     fn drop(&mut self) {
-        self.counters.producer_finished.store(true, Relaxed);
+        self.finish();
     }
 }

@@ -56,6 +56,8 @@ pub enum ClockBridgeError {
     BudgetExceeded,
     #[error("capture packet length does not match complete native f32 frames")]
     InvalidPacket,
+    #[error("capture producer has already finished publishing packets")]
+    ProducerFinished,
     #[error("clock source output must contain complete stereo frames")]
     InvalidOutput,
 }

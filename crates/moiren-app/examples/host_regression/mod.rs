@@ -72,10 +72,12 @@ pub fn run() -> Result<()> {
     let mut application = graph.sources[1].id;
     let mut accepted = BTreeSet::new();
     let mut applied = BTreeSet::new();
+    let mut applied_late = BTreeSet::new();
     let mut terminal = BTreeSet::new();
     let mut racing = BTreeSet::new();
     let mut plans = BTreeSet::new();
     let mut checkpoints = Vec::new();
+    let mut bridge_health = evidence::BridgeHealth::default();
     let mut events = Vec::new();
     let started = Instant::now();
     let mut action = 0;
@@ -87,9 +89,8 @@ pub fn run() -> Result<()> {
         for event in session.poll() {
             match &event {
                 HostEvent::Parameter(reply) => {
-                    terminal.insert(reply.request_id);
-                    if reply.code == ReplyCode::Applied {
-                        applied.insert(reply.request_id);
+                    if reply.code != ReplyCode::Accepted {
+                        terminal.insert(reply.request_id);
                     }
                 }
                 HostEvent::PlanApplied { revision, .. } => {
@@ -97,9 +98,19 @@ pub fn run() -> Result<()> {
                 }
                 _ => {}
             }
-            events.extend(evidence::events(vec![event]));
+            let emitted = evidence::events(vec![event]);
+            for receipt in &emitted {
+                if let Some((id, late)) = evidence::applied_receipt(receipt) {
+                    applied.insert(id);
+                    if late {
+                        applied_late.insert(id);
+                    }
+                }
+            }
+            events.extend(emitted);
         }
         let snapshot = session.snapshot();
+        bridge_health.observe(&snapshot);
         ensure!(
             snapshot.status == SessionStatus::Running,
             "host failed: {:?}",
@@ -223,10 +234,12 @@ pub fn run() -> Result<()> {
                 }
                 _ => unreachable!(),
             }
+            let after_action = session.snapshot();
+            bridge_health.observe(&after_action);
             checkpoints.push(evidence::snapshot(
                 &format!("action_{action}"),
                 elapsed.as_secs_f64(),
-                &session.snapshot(),
+                &after_action,
             ));
             action += 1;
         }
@@ -241,22 +254,31 @@ pub fn run() -> Result<()> {
         std::thread::sleep(Duration::from_millis(5));
     }
     let report = session.stop();
+    bridge_health.observe(&report.snapshot);
     for event in &report.events {
         if event["type"] == "parameter"
+            && event["reply"]["code"] != "Accepted"
             && let Some(id) = event["reply"]["request_id"].as_u64()
         {
             terminal.insert(id);
-            if event["reply"]["code"] == "Applied" {
+            if let Some((id, late)) = evidence::applied_receipt(event) {
                 applied.insert(id);
+                if late {
+                    applied_late.insert(id);
+                }
             }
         }
     }
     let result = json!({"schema_version":1,"requested_seconds":seconds,"elapsed_seconds":started.elapsed().as_secs_f64(),
         "scenario":"cold physical capture plus owned process, live gain/pan, compressor swap, target exit/replacement, stop/restart/remove/add",
-        "parameter_accepted":accepted,"parameter_applied":applied,"parameter_terminal":terminal,"parameter_racing_publication":racing,"plan_revisions_applied":plans,"target_exit_observed":exited,
-        "checkpoints":checkpoints,"events":events,"final":evidence::report(&report)});
+        "parameter_accepted":accepted,"parameter_applied":applied,"parameter_applied_late":applied_late,"parameter_terminal":terminal,"parameter_racing_publication":racing,"plan_revisions_applied":plans,"target_exit_observed":exited,
+        "bridge_health":bridge_health,"checkpoints":checkpoints,"events":events,"final":evidence::report(&report)});
     serde_json::to_writer_pretty(std::io::stdout().lock(), &result)?;
     println!();
+    ensure!(
+        bridge_health.max_live_underrun_frames == 0,
+        "capture shortfall occurred while its producer was still active; see bridge_health and checkpoints"
+    );
     ensure!(
         action == 12 && exited && audible,
         "scenario did not complete or no output signal was observed"
@@ -264,7 +286,7 @@ pub fn run() -> Result<()> {
     ensure!(
         accepted.is_subset(&terminal)
             && accepted.difference(&racing).all(|id| applied.contains(id)),
-        "provisional parameters lack terminal receipts or normal parameters lack Applied receipts"
+        "provisional parameters lack terminal receipts or normal parameters lack Applied/AppliedLate receipts"
     );
     ensure!(
         plans.len() >= 6,
@@ -281,6 +303,10 @@ pub fn run() -> Result<()> {
     ensure!(
         render.stats.processed_frames > seconds.saturating_mul(48_000) * 9 / 10,
         "continuous timeline did not advance for the requested duration"
+    );
+    ensure!(
+        render.stats.bridge_shortfall_frames == 0 && render.stats.empty_padding_wakes == 0,
+        "native render shortfall or empty padding observed; see final.render.stats"
     );
     Ok(())
 }
