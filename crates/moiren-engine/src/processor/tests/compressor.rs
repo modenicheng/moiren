@@ -164,6 +164,17 @@ fn close(actual: f64, expected: f64) {
     assert!((actual - expected).abs() < 2e-6, "{actual} != {expected}");
 }
 
+/// Miri can vary the last bits of transcendental results between calls, so
+/// chunkings use the finite-checked numerical comparison there. Native builds
+/// retain exact sample equality to detect even a one-ULP chunking difference.
+fn assert_chunkings_match(whole: &[Vec<f64>], split: &[Vec<f64>]) {
+    if cfg!(miri) {
+        same_samples(whole, split);
+    } else {
+        assert_eq!(whole, split);
+    }
+}
+
 fn same_samples(actual: &[Vec<f64>], expected: &[Vec<f64>]) {
     assert_eq!(actual.len(), expected.len());
     for (actual, expected) in actual.iter().zip(expected) {
@@ -283,7 +294,7 @@ fn compressor_hold_delays_release_but_never_attack_and_persists_between_windows(
     let input = vec![vec![1.0, 0.01, 0.01, 0.01, 1.0, 2.0, 0.01]];
     let whole = render::<f64>(settings, &input, &[7], false, 1000.0);
     let split = render::<f64>(settings, &input, &[1, 2, 1, 1, 2], true, 1000.0);
-    same_samples(&whole, &split);
+    assert_chunkings_match(&whole, &split);
     for (actual, expected) in whole[0].iter().zip([
         db(-9.0),
         0.01 * db(-9.0),
@@ -349,7 +360,7 @@ fn compressor_silence_remains_finite_and_matches_variable_blocks() {
     for in_place in [false, true] {
         let whole = render::<f64>(settings, &input, &[7], in_place, 1000.0);
         let split = render::<f64>(settings, &input, &[1, 3, 1, 2], in_place, 1000.0);
-        same_samples(&whole, &split);
+        assert_chunkings_match(&whole, &split);
         assert!(whole[0].iter().all(|sample| sample.is_finite()));
         assert_eq!(whole[0][0], 0.0);
     }
