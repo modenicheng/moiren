@@ -1,11 +1,12 @@
 //! Application ownership and offline IO orchestration.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 pub mod monitor;
 pub mod monitor_cli;
 pub mod render_cli;
 pub mod service;
 pub mod tone;
+pub mod ui;
 
 use moiren_core::protocol::{
     ApplyAt, ControlReply, ParamValue, ParameterKey, ParameterRequest, ProcessorId, ReplyCode,

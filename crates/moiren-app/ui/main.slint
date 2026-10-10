@@ -1,62 +1,34 @@
 // Moiren — application shell.
 //
-// Frameless window with a custom title bar, a sidebar for navigation, and a
-// routed content area. Pages are plain UI with mock data; theme switching is
-// live via the Theme global.
+// A frameless window built from our own parts: title bar (brand, page context,
+// engine state, window controls), navigation rail, routed content area and a
+// status bar. The shell is also the single place that publishes the window
+// geometry to `Theme.viewport-*`, which is what lets every page pick the
+// windowed (1180x760) or full-screen (1600x956) layout without knowing that
+// `MainWindow` exists.
+//
+// The `Backend` global is re-exported here (and in tray.slint) so the Rust side
+// can address `ui::Backend`; each window owns its own instance of the global.
 
+export { AppTray } from "tray.slint";
+export { Backend, BackendPhase, AudioEndpoint, ProcessSource } from "backend.slint";
+import { Backend, BackendPhase } from "backend.slint";
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "theme.slint";
-import { IconButton } from "components.slint";
+import { Badge, IconButton, NavItem, SectionLabel } from "components.slint";
 import { MonitorPage } from "pages/monitor.slint";
 import { RenderPage } from "pages/render.slint";
 import { DevicesPage } from "pages/devices.slint";
 import { SettingsPage } from "pages/settings.slint";
 
-component NavItem inherits Rectangle {
-    in property <string> label;
-    in property <image> icon;
-    in property <bool> active: false;
-    callback clicked();
-    height: 46px;
-    border-radius: Theme.radius-md;
-    background: active ? Theme.primary-soft : (ta.has-hover ? Theme.surface-3 : transparent);
-    animate background { duration: Theme.fast; }
-
-    // Active accent bar
-    Rectangle {
-        x: 0;
-        width: 3px;
-        height: root.active ? 22px : 0px;
-        y: (parent.height - self.height) / 2;
-        border-radius: 2px;
-        background: Theme.primary;
-        animate height { duration: Theme.fast; easing: ease-out; }
-    }
-
-    HorizontalLayout {
-        padding-left: Theme.space-4;
-        padding-right: Theme.space-3;
-        spacing: Theme.space-3;
-        Image {
-            source: root.icon;
-            colorize: root.active ? Theme.primary : Theme.text-muted;
-            width: 20px;
-            height: 20px;
-            y: (parent.height - self.height) / 2;
-        }
-        Text {
-            text: root.label;
-            color: root.active ? Theme.text : Theme.text-muted;
-            font-size: Theme.text-sm;
-            font-weight: root.active ? Theme.weight-semibold : Theme.weight-medium;
-            vertical-alignment: center;
-        }
-        Rectangle { }
-    }
-    ta := TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
+// A rail group heading ("工作区" / "系统").
+component RailLabel inherits HorizontalLayout {
+    in property <string> text;
+    padding-left: Theme.space-2;
+    padding-right: Theme.space-2;
+    padding-top: Theme.space-3;
+    padding-bottom: Theme.space-2;
+    SectionLabel { text: root.text; }
 }
 
 export component MainWindow inherits Window {
@@ -64,102 +36,163 @@ export component MainWindow inherits Window {
     no-frame: true;
     background: transparent;
     min-width: 940px;
-    min-height: 640px;
+    min-height: 620px;
     preferred-width: 1180px;
     preferred-height: 760px;
 
-    // Window control callbacks for the backend to wire; UI-only for now.
+    // Publish geometry to the theme, so pages can branch on `Theme.compact`
+    // and every chrome token can pick its size-class value. A global's property
+    // cannot take a binding from a component's own geometry, so this mirrors
+    // the window size into component properties and pushes them on change.
+    in-out property <length> shell-width: self.width;
+    in-out property <length> shell-height: self.height;
+    changed shell-width => { Theme.viewport-width = self.shell-width; }
+    changed shell-height => { Theme.viewport-height = self.shell-height; }
+    init => {
+        Theme.viewport-width = self.width;
+        Theme.viewport-height = self.height;
+    }
+
+    // Window control callbacks for the backend to wire; UI-only here.
     callback minimize();
     callback toggle-maximize();
     callback close-window();
+    callback exit-app();
 
     in-out property <int> page: 0;
 
-    // Outer frame: rounded, bordered, themed window surface.
+    out property <string> page-title: page == 0 ? "监控路由"
+        : page == 1 ? "测试音"
+        : page == 2 ? "音频设备"
+        : "设置";
+
+    property <bool> running: Backend.active;
+    property <bool> failed: Backend.phase == BackendPhase.failed;
+    // One line for whatever the service most recently wanted to say.
+    property <string> diagnostics:
+        Backend.error-text != "" ? Backend.error-text
+        : Backend.catalog-error != "" ? "目录刷新失败：" + Backend.catalog-error
+        : "";
+    property <bool> has-diagnostics: root.diagnostics != "";
+
+    // Outer frame: rounded and outlined as a window, edge-to-edge once we are at
+    // the full-screen size class.
     Rectangle {
         background: Theme.window-bg;
-        border-radius: Theme.radius-lg;
-        border-width: 1px;
+        border-radius: Theme.compact ? Theme.radius-lg : 0px;
+        border-width: Theme.compact ? 1px : 0px;
         border-color: Theme.border-strong;
         clip: true;
 
         VerticalLayout {
-            // ---------- Title bar ----------
+            // ---------------- Title bar ----------------
             Rectangle {
-                height: 52px;
+                height: Theme.titlebar-height;
                 background: Theme.titlebar;
+                Rectangle {
+                    x: 0;
+                    y: parent.height - 1px;
+                    width: 100%;
+                    height: 1px;
+                    background: Theme.hairline;
+                }
                 HorizontalLayout {
                     padding-left: Theme.space-4;
                     padding-right: Theme.space-2;
                     spacing: Theme.space-3;
 
-                    // Brand
-                    Rectangle {
-                        width: 30px;
-                        height: 30px;
+                    // Brand mark and wordmark come from the supplied Figma
+                    // export; each scheme uses its own variant, so neither is
+                    // colorized here.
+                    Image {
+                        source: Theme.dark
+                            ? @image-url("../../../assets/logos/moiren-2c-mark-dark.svg")
+                            : @image-url("../../../assets/logos/moiren-2c-mark-light.svg");
+                        width: 22px;
+                        height: 22px;
+                        image-fit: contain;
                         y: (parent.height - self.height) / 2;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.brand-gradient;
-                        Image {
-                            source: @image-url("icons/logo.svg");
-                            colorize: #ffffff;
-                            width: 20px;
-                            height: 20px;
-                        }
+                    }
+                    Image {
+                        source: Theme.dark
+                            ? @image-url("../../../assets/logos/moiren-2c-wordmark-dark.svg")
+                            : @image-url("../../../assets/logos/moiren-2c-wordmark-light.svg");
+                        width: 86px;
+                        height: 22px;
+                        image-fit: contain;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Rectangle {
+                        width: 1px;
+                        height: 18px;
+                        background: Theme.border;
+                        y: (parent.height - self.height) / 2;
                     }
                     Text {
-                        text: "Moiren";
-                        color: Theme.text;
-                        font-size: Theme.text-md;
-                        font-weight: Theme.weight-bold;
+                        text: "Moiren · " + root.page-title;
+                        color: Theme.text-muted;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.text-sm;
                         vertical-alignment: center;
+                        visible: !Theme.compact;
                     }
 
-                    // Draggable region
-                    WindowMoveArea {
-                        horizontal-stretch: 1;
+                    // Drag region.
+                    WindowMoveArea { horizontal-stretch: 1; }
+
+                    // Engine state is always visible, in every phase.
+                    Badge {
+                        text: Backend.phase-text;
+                        dot: true;
+                        dot-color: root.running ? Theme.signal-device
+                            : root.failed ? Theme.danger
+                            : Theme.text-faint;
+                        fg: root.running ? Theme.signal-device
+                            : root.failed ? Theme.danger
+                            : Theme.text-muted;
+                        bg: root.running ? Theme.signal-device-soft
+                            : root.failed ? Theme.danger-soft
+                            : Theme.surface-3;
+                        y: (parent.height - self.height) / 2;
                     }
 
-                    // Window controls
                     IconButton {
                         icon: @image-url("icons/win-min.svg");
-                        size: 36px;
                         y: (parent.height - self.height) / 2;
                         clicked => { root.minimize(); }
                     }
                     IconButton {
                         icon: @image-url("icons/win-max.svg");
-                        size: 36px;
                         y: (parent.height - self.height) / 2;
                         clicked => { root.toggle-maximize(); }
                     }
                     IconButton {
                         icon: @image-url("icons/win-close.svg");
-                        size: 36px;
-                        hover-bg: Theme.danger;
                         tint: Theme.text-muted;
+                        hover-bg: Theme.danger;
                         y: (parent.height - self.height) / 2;
                         clicked => { root.close-window(); }
                     }
                 }
             }
 
-            // ---------- Body ----------
+            // ---------------- Body ----------------
             HorizontalLayout {
-                // Sidebar
+                // Navigation rail.
                 Rectangle {
-                    width: 236px;
+                    width: Theme.rail-width;
                     background: Theme.sidebar;
                     Rectangle {
                         x: parent.width - 1px;
                         width: 1px;
+                        height: 100%;
                         background: Theme.border;
                     }
                     VerticalLayout {
                         padding: Theme.space-3;
-                        padding-top: Theme.space-4;
-                        spacing: Theme.space-1;
+                        spacing: 2px;
 
+                        RailLabel { text: "工作区"; }
                         NavItem {
                             label: "监控路由";
                             icon: @image-url("icons/route.svg");
@@ -181,6 +214,7 @@ export component MainWindow inherits Window {
 
                         Rectangle { vertical-stretch: 1; }
 
+                        RailLabel { text: "系统"; }
                         NavItem {
                             label: "设置";
                             icon: @image-url("icons/settings.svg");
@@ -190,19 +224,94 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // Content (scrolls when a page is taller than the viewport)
+                // Routed content. The page scrolls only when it is genuinely
+                // taller than the viewport (very small window or long lists).
                 Rectangle {
-                    background: Theme.window-bg;
                     horizontal-stretch: 1;
-                    sv := ScrollView {
+                    background: Theme.window-bg;
+                    content-scroll := ScrollView {
                         VerticalLayout {
-                            width: sv.visible-width;
-                            padding: Theme.space-6;
+                            width: content-scroll.visible-width;
+                            padding: Theme.gutter;
                             if root.page == 0: MonitorPage { }
                             if root.page == 1: RenderPage { }
                             if root.page == 2: DevicesPage { }
-                            if root.page == 3: SettingsPage { }
+                            if root.page == 3: SettingsPage { exit-app => { root.exit-app(); } }
                         }
+                    }
+                }
+            }
+
+            // ---------------- Status bar ----------------
+            Rectangle {
+                height: Theme.statusbar-height;
+                background: Theme.titlebar;
+                Rectangle {
+                    x: 0;
+                    y: 0;
+                    width: 100%;
+                    height: 1px;
+                    background: Theme.hairline;
+                }
+                HorizontalLayout {
+                    padding-left: Theme.space-4;
+                    padding-right: Theme.space-4;
+                    spacing: Theme.space-3;
+
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        border-radius: 4px;
+                        y: (parent.height - self.height) / 2;
+                        background: root.running ? Theme.signal-device
+                            : root.failed ? Theme.danger
+                            : Theme.text-faint;
+                    }
+                    Text {
+                        text: "引擎 " + Backend.phase-text;
+                        color: Theme.text-muted;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.text-sm;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 1px;
+                        height: 14px;
+                        background: Theme.border;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Text {
+                        text: "已运行";
+                        color: Theme.text-faint;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.text-sm;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: Backend.elapsed;
+                        color: Theme.text;
+                        font-family: Theme.font-mono;
+                        font-size: Theme.text-sm;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle { horizontal-stretch: 1; }
+
+                    if root.has-diagnostics: Text {
+                        text: root.diagnostics;
+                        color: root.failed || Backend.error-text != "" ? Theme.danger : Theme.warning;
+                        font-family: Theme.font-ui;
+                        font-size: Theme.text-sm;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 2;
+                    }
+                    Text {
+                        text: "Moiren v0.1.0";
+                        color: Theme.text-faint;
+                        font-family: Theme.font-mono;
+                        font-size: Theme.text-xs;
+                        vertical-alignment: center;
                     }
                 }
             }

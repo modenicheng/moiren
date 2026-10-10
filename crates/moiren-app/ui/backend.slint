@@ -1,0 +1,39 @@
+import { SelectOption } from "components.slint";
+export struct AudioEndpoint {
+    id: string, name: string, kind: string, sample-rate: int, channels: int,
+    format-supported: bool, is-default: bool, note: string,
+}
+export struct ProcessSource { key: string, name: string, detail: string }
+export enum BackendPhase { idle, starting, running, stopping, failed, exiting, exited }
+export global Backend {
+    in property <[AudioEndpoint]> inputs;
+    in property <[AudioEndpoint]> outputs;
+    in property <[ProcessSource]> processes;
+    in property <[SelectOption]> input-options;
+    in property <[SelectOption]> output-options;
+    in property <[SelectOption]> process-options;
+    in property <BackendPhase> phase: BackendPhase.idle;
+    in property <string> error-text;
+    in property <string> catalog-error;
+    in property <string> elapsed: "—";
+    in-out property <int> input-index: -1;
+    in-out property <int> output-index: -1;
+    in-out property <int> process-index: -1;
+    in-out property <int> source-mode: 0;
+    in-out property <float> gain: 0.3;
+    in-out property <float> pan: 0;
+    in property <bool> monitor-valid;
+    in property <bool> tone-valid;
+    in property <bool> request-pending;
+    out property <bool> active: phase == BackendPhase.running;
+    out property <bool> transport-ready: !request-pending && (phase == BackendPhase.idle || phase == BackendPhase.running || phase == BackendPhase.failed);
+    out property <string> phase-text: phase == BackendPhase.idle ? "空闲" : phase == BackendPhase.starting ? "启动中" : phase == BackendPhase.running ? "运行中" : phase == BackendPhase.stopping ? "停止中" : phase == BackendPhase.failed ? "失败" : phase == BackendPhase.exiting ? "退出中" : "已退出";
+    callback select-input(int);
+    callback select-output(int);
+    callback select-process(int);
+    callback start-monitor(bool, int);
+    callback start-tone(float, int);
+    callback stop();
+    callback refresh-catalog();
+    callback set-gain-pan(float, float);
+}

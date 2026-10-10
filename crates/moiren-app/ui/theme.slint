@@ -1,74 +1,124 @@
-// Moiren design tokens.
+// Moiren design tokens — the "Graph" deep theme.
 //
-// Every color, spacing, radius and type size the UI uses lives here as an
-// `out property` on the `Theme` global, selected by a single `dark` boolean.
-// To add a new theme later, extend the ternaries (or add a `ThemePreference`
-// case) — no component needs to change, because components only read
-// `Theme.<token>`.
+// This one global holds every color, size, radius and motion value the UI
+// uses, so a component only ever reads `Theme.<token>` and never a raw
+// literal. Two inputs drive the tokens:
+//
+//   * `preference` picks the color scheme: follow the OS by default, with an
+//     explicit user override from the Settings page.
+//   * `viewport-width` picks the size class. The *windowed* 1180x760 design is
+//     `compact`; the *full-screen* 1600x956 design has room for a third
+//     column, larger page titles and a wider navigation rail.
+//
+// Pages therefore branch on `Theme.compact` only for *structure* (how many
+// columns), while spacing and type tokens below already carry the per-class
+// value. That keeps each page a single description of the design instead of a
+// duplicated "small" and "large" variant.
+//
+// Palette provenance: the neutral near-black surfaces (#111518 canvas,
+// #14191d chrome, #191e22 cards, #21282d controls), the violet accent
+// #b1a0df, and the two signal hues — device blue #86b9ec for capture and
+// recorder gold #e7bc79 for render/record — are the approved Figma "Graph"
+// design values. There is deliberately **no green**: a running or healthy
+// session reads as the device blue, and caution/recording reads as gold.
 
 import { Palette } from "std-widgets.slint";
 
 export enum ThemePreference { system, light, dark }
 
 export global Theme {
-    // --- Scheme selection ------------------------------------------------
-    // Defaults to following the OS; a user override wins (see Settings page).
+    // --- Scheme & size class --------------------------------------------
+    // The product is designed dark first (it is the "Graph" deep theme), so
+    // dark is the default; the Settings page can switch to the OS scheme or to
+    // light at any time.
     in-out property <ThemePreference> preference: ThemePreference.dark;
+
+    // Written once by MainWindow from its own geometry, then only read. Kept on
+    // the global so every page and component can size itself without threading
+    // a width through every call site.
+    in-out property <length> viewport-width: 1180px;
+    in-out property <length> viewport-height: 760px;
 
     out property <bool> dark:
         preference == ThemePreference.dark ? true
         : preference == ThemePreference.light ? false
         : Palette.color-scheme == ColorScheme.dark;
 
-    // --- Brand -----------------------------------------------------------
-    // Primary is a professional violet. All brand variations derive from it,
-    // so a rebrand only touches these three lines.
-    out property <color> primary:          dark ? #8b5cf6 : #7c3aed;
-    out property <color> primary-hover:    dark ? #9d74f8 : #8b5cf6;
-    out property <color> primary-pressed:  dark ? #7c4ddb : #6d28d9;
-    out property <color> primary-soft:     dark ? #8b5cf6.with-alpha(0.16) : #7c3aed.with-alpha(0.12);
-    out property <color> on-primary:       #ffffff;
+    // 1180x760 windowed layout vs. 1600x956 full-screen layout.
+    out property <bool> compact: viewport-width < 1360px;
 
-    out property <brush> brand-gradient: @linear-gradient(135deg,
-        (dark ? #a855f7 : #8b5cf6) 0%,
-        (dark ? #6d28d9 : #7c3aed) 55%,
-        (dark ? #4f46e5 : #6366f1) 100%);
+    // --- Accents ---------------------------------------------------------
+    // Primary is the design's violet. Every brand variation derives from it,
+    // so a rebrand only touches these four lines.
+    out property <color> primary:         dark ? #b1a0df : #7a63b8;
+    out property <color> primary-hover:   dark ? #c4b5e8 : #6b55a8;
+    out property <color> primary-pressed: dark ? #9e8dd6 : #5d4a95;
+    out property <color> primary-soft:    primary.with-alpha(0.16);
+
+    // Ink that sits *on* an accent fill. The dark-scheme accents are light, so
+    // this is near-black there and white in the light scheme.
+    out property <color> on-primary: dark ? #14181c : #ffffff;
+
+    // Capture side: input devices, application sources, live signal.
+    out property <color> signal-device:      dark ? #86b9ec : #2f74ab;
+    out property <color> signal-device-soft: signal-device.with-alpha(0.16);
+    // Render side: output devices, test tone, recording.
+    out property <color> signal-recorder:      dark ? #e7bc79 : #96691c;
+    out property <color> signal-recorder-soft: signal-recorder.with-alpha(0.16);
+
+    // Violet -> blue: never green, so it stays inside the approved accent set.
+    out property <brush> brand-gradient: @linear-gradient(120deg,
+        (dark ? #c4b5e8 : #b1a0df) 0%,
+        (dark ? #b1a0df : #7a63b8) 48%,
+        (dark ? #86b9ec : #2f74ab) 100%);
 
     // --- Surfaces --------------------------------------------------------
-    out property <color> window-bg:   dark ? #141019 : #f5f3fb;
-    out property <color> surface:     dark ? #1c1826 : #ffffff;
-    out property <color> surface-2:   dark ? #231d31 : #faf9fe;
-    out property <color> surface-3:   dark ? #2a2340 : #f0edf8;
-    out property <color> titlebar:    dark ? #18131f : #efecf6;
-    out property <color> sidebar:     dark ? #171320 : #ffffff;
+    out property <color> window-bg:  dark ? #111518 : #eef0f2;  // canvas behind cards
+    out property <color> surface:    dark ? #14191d : #f4f5f7;  // chrome: title bar, rail
+    out property <color> surface-2:  dark ? #191e22 : #ffffff;  // cards, graph nodes
+    out property <color> surface-3:  dark ? #21282d : #e9ecef;  // controls, inputs, tracks
+    out property <color> surface-4:  dark ? #2a3238 : #dde1e5;  // hover / pressed control
+    out property <color> titlebar:   dark ? #14191d : #f4f5f7;
+    out property <color> sidebar:    dark ? #14191d : #f4f5f7;
+    // Scrim behind modal layers (drop-down overlays).
+    out property <color> overlay-scrim: #000000.with-alpha(dark ? 0.58 : 0.32);
 
-    // --- Lines & focus ---------------------------------------------------
-    out property <color> border:       dark ? #322b45 : #e6e1f1;
-    out property <color> border-strong: dark ? #433a5c : #d4ccea;
-    out property <color> focus-ring:    primary.with-alpha(0.55);
-    out property <color> overlay-scrim: #000000.with-alpha(dark ? 0.55 : 0.35);
+    // --- Lines -----------------------------------------------------------
+    // Neutral grey-greens, not tinted with the accent: the design keeps colour
+    // for signal, not for structure.
+    out property <color> border:        dark ? #232b30 : #e2e6ea;
+    out property <color> border-strong: dark ? #303a40 : #cbd2d8;
+    out property <color> hairline:      dark ? #1b2226 : #eaedf0;
+    // Barely-there graph paper for the routing canvas.
+    out property <color> grid-line: dark ? #ffffff.with-alpha(0.03) : #000000.with-alpha(0.04);
+    out property <color> focus-ring: primary.with-alpha(0.55);
 
     // --- Text ------------------------------------------------------------
-    out property <color> text:        dark ? #ecebf4 : #1b1626;
-    out property <color> text-muted:  dark ? #a39fb6 : #5f596f;
-    out property <color> text-faint:  dark ? #6f6986 : #938da6;
+    out property <color> text:        dark ? #e5ecef : #14181c;
+    out property <color> text-muted:  dark ? #a5b2ba : #52606a;
+    out property <color> text-faint:  dark ? #6f818d : #7b8894;
     out property <color> text-on-soft: primary;
 
     // --- Semantic status -------------------------------------------------
-    out property <color> success:   dark ? #34d399 : #10b981;
-    out property <color> warning:   dark ? #fbbf24 : #d97706;
-    out property <color> danger:    dark ? #f87171 : #dc2626;
-    out property <color> info:      dark ? #60a5fa : #2563eb;
+    // No green by design. `success` is kept as the name older components use,
+    // but it resolves to the device blue — a running session is not "green",
+    // it is "carrying signal".
+    out property <color> success:   signal-device;
+    out property <color> warning:   signal-recorder;
+    out property <color> danger:    dark ? #e0837a : #b3492f;
+    out property <color> info:      signal-device;
     out property <color> success-soft: success.with-alpha(0.16);
     out property <color> warning-soft: warning.with-alpha(0.16);
     out property <color> danger-soft:  danger.with-alpha(0.16);
 
-    // Audio level meter stops.
-    out property <color> meter-low:  success;
-    out property <color> meter-mid:  warning;
-    out property <color> meter-high: danger;
+    // --- Level meters ----------------------------------------------------
+    // Blue -> violet -> gold ramp, so a hot signal is obvious without
+    // borrowing green/red from outside the palette.
+    out property <color> meter-low:  signal-device;
+    out property <color> meter-mid:  primary;
+    out property <color> meter-high: signal-recorder;
 
-    // --- Spacing scale (4pt based) --------------------------------------
+    // --- Spacing scale (4pt based) ---------------------------------------
     out property <length> space-1: 4px;
     out property <length> space-2: 8px;
     out property <length> space-3: 12px;
@@ -76,34 +126,74 @@ export global Theme {
     out property <length> space-5: 24px;
     out property <length> space-6: 32px;
     out property <length> space-7: 48px;
+    out property <length> space-8: 64px;
+
+    // --- Size class: chrome, insets, control geometry ---------------------
+    out property <length> gutter:           compact ? 20px : 28px;
+    out property <length> block-gap:        compact ? 16px : 20px;
+    out property <length> card-pad:         compact ? 16px : 20px;
+    out property <length> rail-width:       compact ? 208px : 232px;
+    out property <length> titlebar-height:  compact ? 52px : 60px;
+    out property <length> statusbar-height: 32px;
+    out property <length> control-height:   compact ? 40px : 44px;
+    out property <length> list-row-height:  compact ? 64px : 74px;
+    out property <length> panel-width:      compact ? 320px : 360px;
+    // Page-specific geometry that repeats across a page's structure. Keeping
+    // the Figma measurements here preserves the "no raw values in pages" rule
+    // while still allowing the windowed and full-screen variants to differ.
+    out property <length> render-card-width:   compact ? 744px : 820px;
+    out property <length> settings-control-width: compact ? 168px : 200px;
+    out property <length> settings-column-max: compact ? 720px : 748px;
+    out property <length> settings-card-gap:   compact ? 24px : 32px;
+    out property <length> route-rail-width:    compact ? 176px : 188px;
+    out property <length> route-node-width:    compact ? 144px : 160px;
+    out property <length> route-node-height:   compact ? 62px : 70px;
+    out property <length> device-detail-width: compact ? 440px : 480px;
+    out property <length> device-row-height:   compact ? 46px : 52px;
+    out property <length> device-row-gap:      compact ? 14px : 16px;
+    // Each list's cap, derived from the shell viewport and the fixed detail
+    // panel. GridLayout rows do not expose their solved width to children, so
+    // the page uses the same viewport contract as the shell.
+    out property <length> device-list-max: viewport-width - rail-width
+        - 2 * gutter - device-detail-width - 2 * block-gap;
 
     // --- Radii -----------------------------------------------------------
-    out property <length> radius-sm: 8px;
-    out property <length> radius-md: 12px;
-    out property <length> radius-lg: 16px;
-    out property <length> radius-xl: 22px;
+    out property <length> radius-sm: 6px;
+    out property <length> radius-md: 10px;
+    out property <length> radius-lg: 14px;
+    out property <length> radius-xl: 18px;
     out property <length> radius-pill: 999px;
 
     // --- Typography ------------------------------------------------------
-    out property <length> text-xs:  11px;
-    out property <length> text-sm:  13px;
-    out property <length> text-md:  15px;
-    out property <length> text-lg:  18px;
-    out property <length> text-xl:  22px;
-    out property <length> text-2xl: 30px;
+    out property <string> font-ui: "Segoe UI";
+    // Numeric read-outs only (dB, Hz, sample counts): monospaced digits stop
+    // live values from jittering sideways as they change.
+    out property <string> font-mono: "Cascadia Mono";
+
+    out property <length> text-xs: 10px;
+    out property <length> text-sm: 12px;
+    out property <length> text-md: 13px;
+    out property <length> text-lg: 15px;
+    out property <length> text-xl: 18px;
+    out property <length> text-2xl: compact ? 20px : 24px;
+    out property <length> text-3xl: compact ? 26px : 32px;
 
     out property <int> weight-regular:  400;
     out property <int> weight-medium:   500;
     out property <int> weight-semibold: 600;
     out property <int> weight-bold:     700;
 
+    // Wide tracking on the small-caps section labels is what reads as
+    // "instrument panel" rather than "web app".
+    out property <length> tracking-label: 0.8px;
+
     // --- Motion ----------------------------------------------------------
     out property <duration> fast: 120ms;
-    out property <duration> normal: 200ms;
-    out property <duration> slow: 320ms;
+    out property <duration> normal: 180ms;
+    out property <duration> slow: 280ms;
 
-    // --- Elevation (soft shadow for cards/popovers) ----------------------
-    out property <color> shadow: #000000.with-alpha(dark ? 0.45 : 0.12);
+    // --- Elevation -------------------------------------------------------
+    out property <color> shadow: #000000.with-alpha(dark ? 0.5 : 0.12);
     out property <length> shadow-blur: 24px;
     out property <length> shadow-blur-sm: 12px;
 }

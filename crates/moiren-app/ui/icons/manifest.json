@@ -1,0 +1,176 @@
+{
+  "provider": "Iconify",
+  "collection": "Tabler Icons",
+  "prefix": "tabler",
+  "collection_version": "3.49.0",
+  "downloaded_at_utc": "2026-10-10T16:54:18.4706534Z",
+  "metadata_url": "https://api.iconify.design/collection?prefix=tabler&info=true",
+  "license_url": "https://raw.githubusercontent.com/tabler/tabler-icons/v3.49.0/LICENSE",
+  "author": {
+    "name": "Paweł Kuna",
+    "url": "https://github.com/tabler/tabler-icons"
+  },
+  "icons": [
+    {
+      "file": "app.svg",
+      "icon": "tabler:app-window",
+      "url": "https://api.iconify.design/tabler/app-window.svg",
+      "license": "MIT",
+      "sha256": "c62634b3e1cd1fc4641b3ad06ea7fa97e15938009014827f643cf05e9d321832"
+    },
+    {
+      "file": "check.svg",
+      "icon": "tabler:check",
+      "url": "https://api.iconify.design/tabler/check.svg",
+      "license": "MIT",
+      "sha256": "fd00a239d0dddd75ffdbb5b86a4dff1bfbdf6d78452950e6cfa76b1baa029b93"
+    },
+    {
+      "file": "chevron.svg",
+      "icon": "tabler:chevron-down",
+      "url": "https://api.iconify.design/tabler/chevron-down.svg",
+      "license": "MIT",
+      "sha256": "8b8ec2576e349a4bd35ded2e279a6eff396cc55adf353bc58bbe52c1338a2ba6"
+    },
+    {
+      "file": "clock.svg",
+      "icon": "tabler:clock",
+      "url": "https://api.iconify.design/tabler/clock.svg",
+      "license": "MIT",
+      "sha256": "92b3359f4c7857889dce5386b1bda59d88aa359e4d3e5fe11e75a7a0918aec8b"
+    },
+    {
+      "file": "devices.svg",
+      "icon": "tabler:devices",
+      "url": "https://api.iconify.design/tabler/devices.svg",
+      "license": "MIT",
+      "sha256": "d6c1e3bb9798cbb8b7eda267750dbabb37558bc0a22ea803154992ce7e0f46ff"
+    },
+    {
+      "file": "info.svg",
+      "icon": "tabler:info-circle",
+      "url": "https://api.iconify.design/tabler/info-circle.svg",
+      "license": "MIT",
+      "sha256": "b5c990a8def934ca5fd88e7a48ce412bda2953447ff8b95ee058dd5f60e0c5c3"
+    },
+    {
+      "file": "mic.svg",
+      "icon": "tabler:microphone",
+      "url": "https://api.iconify.design/tabler/microphone.svg",
+      "license": "MIT",
+      "sha256": "fefcf0af6f4f0d4e8b6776340fa9e8ee2416978a93e47b456a9731ed4dcc74b6"
+    },
+    {
+      "file": "moon.svg",
+      "icon": "tabler:moon",
+      "url": "https://api.iconify.design/tabler/moon.svg",
+      "license": "MIT",
+      "sha256": "23eabddcf1f3d8754704044acb99c245e9a6c2b14a4a3bd9adaf5e5720eb1b99"
+    },
+    {
+      "file": "play.svg",
+      "icon": "tabler:player-play",
+      "url": "https://api.iconify.design/tabler/player-play.svg",
+      "license": "MIT",
+      "sha256": "39f0b020dd966d0dd39018297dc676eb4d63028f576b0eac8b620817463ad42a"
+    },
+    {
+      "file": "plus.svg",
+      "icon": "tabler:plus",
+      "url": "https://api.iconify.design/tabler/plus.svg",
+      "license": "MIT",
+      "sha256": "879da7bf121ee1604d312eb0fd8dfcfe29dbba9d71a7b810c7539f8b14952883"
+    },
+    {
+      "file": "refresh.svg",
+      "icon": "tabler:refresh",
+      "url": "https://api.iconify.design/tabler/refresh.svg",
+      "license": "MIT",
+      "sha256": "2b67427760fde26c39700672edc5338a340acd9993688b23114ea0af666ddb25"
+    },
+    {
+      "file": "route.svg",
+      "icon": "tabler:route",
+      "url": "https://api.iconify.design/tabler/route.svg",
+      "license": "MIT",
+      "sha256": "5bbf570aee21cd11ed36061083b36cb66fbc697133d1fe2c8ca39d19fafa71d7"
+    },
+    {
+      "file": "search.svg",
+      "icon": "tabler:search",
+      "url": "https://api.iconify.design/tabler/search.svg",
+      "license": "MIT",
+      "sha256": "26977896e2914de2ce63275e363631a3b3e7d2349c094346beda5e4f749be5ec"
+    },
+    {
+      "file": "settings.svg",
+      "icon": "tabler:settings",
+      "url": "https://api.iconify.design/tabler/settings.svg",
+      "license": "MIT",
+      "sha256": "e1611611934154e006abd4490ec03c4603e0a42fbe7d067710716819de0f4ee2"
+    },
+    {
+      "file": "sliders.svg",
+      "icon": "tabler:adjustments-horizontal",
+      "url": "https://api.iconify.design/tabler/adjustments-horizontal.svg",
+      "license": "MIT",
+      "sha256": "6871c5a5b782b4d307dd5ca95b23f9b5e8ee38dcc98ec40cd91e65d39985a53b"
+    },
+    {
+      "file": "speaker.svg",
+      "icon": "tabler:volume",
+      "url": "https://api.iconify.design/tabler/volume.svg",
+      "license": "MIT",
+      "sha256": "6802c3f779cfbe0fae617c13b851e09d69450fe6df849d47c328419578248412"
+    },
+    {
+      "file": "stop.svg",
+      "icon": "tabler:player-stop",
+      "url": "https://api.iconify.design/tabler/player-stop.svg",
+      "license": "MIT",
+      "sha256": "68e98f84d20a3c289c397cf29825cee07a6f6a176abefea77b1b4b291253bdad"
+    },
+    {
+      "file": "sun.svg",
+      "icon": "tabler:sun",
+      "url": "https://api.iconify.design/tabler/sun.svg",
+      "license": "MIT",
+      "sha256": "9916e90ddbeba09708a9524039fed41fe88d95855456069fa7eb5863eb1c78c8"
+    },
+    {
+      "file": "system.svg",
+      "icon": "tabler:device-desktop",
+      "url": "https://api.iconify.design/tabler/device-desktop.svg",
+      "license": "MIT",
+      "sha256": "b51d4dc1c347f12b199cd0720aed435850c1b9fc02ff4bc88d3deff6dc2d729c"
+    },
+    {
+      "file": "wave.svg",
+      "icon": "tabler:wave-sine",
+      "url": "https://api.iconify.design/tabler/wave-sine.svg",
+      "license": "MIT",
+      "sha256": "0bd4f40b4dd7b9fe8ce32ac478fc0d5089242e445feea78437b965aeac55dfbc"
+    },
+    {
+      "file": "win-close.svg",
+      "icon": "tabler:x",
+      "url": "https://api.iconify.design/tabler/x.svg",
+      "license": "MIT",
+      "sha256": "895b97b88dbb40445f230d25fed5f150fd54bd76f5022c324ee585b456d141b7"
+    },
+    {
+      "file": "win-max.svg",
+      "icon": "tabler:maximize",
+      "url": "https://api.iconify.design/tabler/maximize.svg",
+      "license": "MIT",
+      "sha256": "2b95c1b026ada70075c491ff2fbe61f1935f029868be2ca19ec134126b112729"
+    },
+    {
+      "file": "win-min.svg",
+      "icon": "tabler:minus",
+      "url": "https://api.iconify.design/tabler/minus.svg",
+      "license": "MIT",
+      "sha256": "bc58412a29619dbe4ac736b2eae0e7ddc3de4f54a2fb65ae9fcf36e688702e2f"
+    }
+  ]
+}

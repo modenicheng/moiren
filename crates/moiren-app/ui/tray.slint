@@ -1,0 +1,16 @@
+import { Backend, BackendPhase } from "backend.slint";
+export component AppTray inherits SystemTrayIcon {
+    icon: @image-url("../../../assets/logos/moiren-2c-icon-64.svg");
+    tooltip: "Moiren · " + Backend.phase-text;
+    in property <bool> session-active;
+    callback show-window();
+    callback stop-session();
+    callback exit-app();
+    clicked => { root.show-window(); }
+    Menu {
+        MenuItem { title: "打开 Moiren"; activated => { root.show-window(); } }
+        MenuItem { title: "停止音频"; enabled: root.session-active; activated => { root.stop-session(); } }
+        MenuSeparator { }
+        MenuItem { title: "退出"; activated => { root.exit-app(); } }
+    }
+}
