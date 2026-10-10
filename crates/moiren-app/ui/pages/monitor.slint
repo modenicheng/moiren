@@ -1,0 +1,444 @@
+// Monitor / routing page — the app's primary workflow:
+//   pick an input (a physical device OR a running app) -> apply gain/pan ->
+//   send it to an output device, with a live status panel.
+//
+// All interactive values are local `in-out` state fed by mock defaults; a
+// backend would two-way bind these instead.
+
+import { Theme } from "../theme.slint";
+import { Mock, AudioEndpoint, ProcessSource, SessionState } from "../mock.slint";
+import {
+    Card, SectionLabel, Divider, Badge, AppButton, AppSelect, SelectOption,
+    ControlRow, StereoMeter, StatTile, AppToggle,
+} from "../components.slint";
+
+component Segmented inherits Rectangle {
+    in property <string> label-a;
+    in property <string> label-b;
+    in property <image> icon-a;
+    in property <image> icon-b;
+    in-out property <int> current: 0;
+    callback changed(int);
+
+    height: 44px;
+    border-radius: Theme.radius-md;
+    background: Theme.surface-3;
+
+    HorizontalLayout {
+        padding: 4px;
+        spacing: 4px;
+        for seg[i] in [
+            { t: root.label-a, ic: root.icon-a },
+            { t: root.label-b, ic: root.icon-b },
+        ]: Rectangle {
+            horizontal-stretch: 1;
+            border-radius: Theme.radius-sm;
+            background: i == root.current ? Theme.surface : transparent;
+            drop-shadow-color: i == root.current ? Theme.shadow : transparent;
+            drop-shadow-blur: Theme.shadow-blur-sm;
+            drop-shadow-offset-y: 2px;
+            animate background { duration: Theme.fast; }
+            HorizontalLayout {
+                alignment: center;
+                spacing: Theme.space-2;
+                Image {
+                    source: seg.ic;
+                    colorize: i == root.current ? Theme.primary : Theme.text-muted;
+                    width: 16px;
+                    height: 16px;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: seg.t;
+                    color: i == root.current ? Theme.text : Theme.text-muted;
+                    font-size: Theme.text-sm;
+                    font-weight: Theme.weight-semibold;
+                    vertical-alignment: center;
+                }
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.current = i; root.changed(i); }
+            }
+        }
+    }
+}
+
+// A compact chip showing one end of the signal route.
+component RouteNode inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <string> sub;
+    width: 150px;
+    height: 92px;
+    border-radius: Theme.radius-md;
+    background: Theme.surface-2;
+    border-width: 1px;
+    border-color: Theme.border;
+    VerticalLayout {
+        padding: Theme.space-3;
+        spacing: Theme.space-2;
+        alignment: center;
+        Image {
+            source: root.icon;
+            colorize: Theme.primary;
+            width: 24px;
+            height: 24px;
+        }
+        Text {
+            text: root.label;
+            color: Theme.text;
+            font-size: Theme.text-sm;
+            font-weight: Theme.weight-semibold;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        Text {
+            text: root.sub;
+            color: Theme.text-faint;
+            font-size: Theme.text-xs;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+export component MonitorPage inherits VerticalLayout {
+    spacing: Theme.space-5;
+
+    // --- Local UI state --------------------------------------------------
+    in-out property <int> source-mode: 0;      // 0 device, 1 process
+    in-out property <int> input-index: 0;
+    in-out property <int> process-index: 0;
+    in-out property <int> output-index: 0;
+    in-out property <float> gain: 0.75;
+    in-out property <float> pan: 0.0;
+    in-out property <float> duration: 60;      // seconds
+    in-out property <bool> running: false;
+    in-out property <bool> loop-forever: true;
+
+    property <AudioEndpoint> out-ep: Mock.outputs[output-index];
+    property <string> src-name: source-mode == 0
+        ? Mock.inputs[input-index].name
+        : Mock.processes[process-index].name;
+
+    function pan-text(p: float) -> string {
+        p < -0.02 ? "L \{Math.round(-p * 100)}"
+        : p > 0.02 ? "R \{Math.round(p * 100)}"
+        : "居中";
+    }
+
+    // --- Page header -----------------------------------------------------
+    HorizontalLayout {
+        vertical-stretch: 0;
+        VerticalLayout {
+            spacing: 4px;
+            Text {
+                text: "监控路由";
+                color: Theme.text;
+                font-size: Theme.text-2xl;
+                font-weight: Theme.weight-bold;
+            }
+            Text {
+                text: "把任意输入实时送到选定的输出设备";
+                color: Theme.text-muted;
+                font-size: Theme.text-sm;
+            }
+        }
+        Rectangle { }
+        Badge {
+            text: root.running ? "监控中" : "空闲";
+            dot: true;
+            dot-color: root.running ? Theme.success : Theme.text-faint;
+            fg: root.running ? Theme.success : Theme.text-muted;
+            bg: root.running ? Theme.success-soft : Theme.surface-3;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+
+    // --- Body ------------------------------------------------------------
+    HorizontalLayout {
+        spacing: Theme.space-5;
+
+        // ---- Left: configuration ----
+        VerticalLayout {
+            horizontal-stretch: 3;
+            spacing: Theme.space-5;
+
+            // Source + routing card
+            Card {
+                vertical-stretch: 0;
+                VerticalLayout {
+                    padding: Theme.space-5;
+                    spacing: Theme.space-4;
+
+                    SectionLabel { text: "信号来源"; }
+
+                    Segmented {
+                        label-a: "物理设备";
+                        label-b: "应用程序";
+                        icon-a: @image-url("../icons/mic.svg");
+                        icon-b: @image-url("../icons/app.svg");
+                        current <=> root.source-mode;
+                    }
+
+                    if root.source-mode == 0: AppSelect {
+                        icon: @image-url("../icons/mic.svg");
+                        current <=> root.input-index;
+                        placeholder: "选择输入设备";
+                        options: [
+                            { text: Mock.inputs[0].name, detail: Mock.inputs[0].note },
+                            { text: Mock.inputs[1].name, detail: Mock.inputs[1].note },
+                            { text: Mock.inputs[2].name, detail: Mock.inputs[2].note },
+                            { text: Mock.inputs[3].name, detail: Mock.inputs[3].note },
+                        ];
+                    }
+
+                    if root.source-mode == 1: AppSelect {
+                        icon: @image-url("../icons/app.svg");
+                        current <=> root.process-index;
+                        placeholder: "选择应用程序";
+                        options: [
+                            { text: Mock.processes[0].name, detail: Mock.processes[0].detail },
+                            { text: Mock.processes[1].name, detail: Mock.processes[1].detail },
+                            { text: Mock.processes[2].name, detail: Mock.processes[2].detail },
+                            { text: Mock.processes[3].name, detail: Mock.processes[3].detail },
+                            { text: Mock.processes[4].name, detail: Mock.processes[4].detail },
+                        ];
+                    }
+
+                    Divider { }
+
+                    SectionLabel { text: "目标输出"; }
+                    AppSelect {
+                        icon: @image-url("../icons/speaker.svg");
+                        current <=> root.output-index;
+                        placeholder: "选择输出设备";
+                        options: [
+                            { text: Mock.outputs[0].name, detail: Mock.outputs[0].note },
+                            { text: Mock.outputs[1].name, detail: Mock.outputs[1].note },
+                            { text: Mock.outputs[2].name, detail: Mock.outputs[2].note },
+                            { text: Mock.outputs[3].name, detail: Mock.outputs[3].note },
+                        ];
+                    }
+
+                    // Routing preview
+                    Rectangle {
+                        height: 108px;
+                        border-radius: Theme.radius-md;
+                        background: Theme.surface-2;
+                        HorizontalLayout {
+                            padding: Theme.space-4;
+                            spacing: Theme.space-3;
+                            alignment: center;
+                            RouteNode {
+                                icon: root.source-mode == 0
+                                    ? @image-url("../icons/mic.svg")
+                                    : @image-url("../icons/app.svg");
+                                label: root.src-name;
+                                sub: root.source-mode == 0 ? "输入" : "应用捕获";
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 4px;
+                                Image {
+                                    source: @image-url("../icons/route.svg");
+                                    colorize: Theme.primary;
+                                    width: 26px;
+                                    height: 26px;
+                                }
+                                Text {
+                                    text: "增益 · 声像";
+                                    color: Theme.text-faint;
+                                    font-size: Theme.text-xs;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                            RouteNode {
+                                icon: @image-url("../icons/speaker.svg");
+                                label: root.out-ep.name;
+                                sub: "输出";
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Controls card
+            Card {
+                vertical-stretch: 0;
+                VerticalLayout {
+                    padding: Theme.space-5;
+                    spacing: Theme.space-5;
+
+                    HorizontalLayout {
+                        SectionLabel {
+                            text: "处理与会话";
+                            vertical-alignment: center;
+                        }
+                        Rectangle { }
+                        Image {
+                            source: @image-url("../icons/sliders.svg");
+                            colorize: Theme.text-faint;
+                            width: 16px;
+                            height: 16px;
+                        }
+                    }
+
+                    ControlRow {
+                        title: "增益";
+                        icon: @image-url("../icons/sliders.svg");
+                        readout: "\{Math.round(root.gain * 100)}%";
+                        minimum: 0;
+                        maximum: 1;
+                        value <=> root.gain;
+                    }
+                    ControlRow {
+                        title: "声像";
+                        icon: @image-url("../icons/sliders.svg");
+                        readout: root.pan-text(root.pan);
+                        minimum: -1;
+                        maximum: 1;
+                        bipolar: true;
+                        value <=> root.pan;
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.space-3;
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text {
+                                text: "持续时长";
+                                color: Theme.text-muted;
+                                font-size: Theme.text-sm;
+                                font-weight: Theme.weight-medium;
+                            }
+                            Text {
+                                text: root.loop-forever ? "持续监控直到手动停止" : "\{Math.round(root.duration)} 秒后自动停止";
+                                color: Theme.text-faint;
+                                font-size: Theme.text-xs;
+                            }
+                        }
+                        Rectangle { }
+                        AppToggle {
+                            checked <=> root.loop-forever;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                    if !root.loop-forever: ControlRow {
+                        title: "秒";
+                        icon: @image-url("../icons/clock.svg");
+                        readout: "\{Math.round(root.duration)}s";
+                        minimum: 1;
+                        maximum: 600;
+                        value <=> root.duration;
+                    }
+                }
+            }
+        }
+
+        // ---- Right: live status ----
+        Card {
+            raised: true;
+            horizontal-stretch: 2;
+            VerticalLayout {
+                padding: Theme.space-5;
+                spacing: Theme.space-5;
+
+                HorizontalLayout {
+                    VerticalLayout {
+                        spacing: 2px;
+                        Text {
+                            text: "实时监视";
+                            color: Theme.text;
+                            font-size: Theme.text-lg;
+                            font-weight: Theme.weight-bold;
+                        }
+                        Text {
+                            text: root.running ? "正在传输音频" : "尚未开始";
+                            color: Theme.text-muted;
+                            font-size: Theme.text-xs;
+                        }
+                    }
+                    Rectangle { }
+                    Rectangle {
+                        width: 44px;
+                        height: 44px;
+                        border-radius: Theme.radius-md;
+                        background: root.running ? Theme.success-soft : Theme.surface-3;
+                        Image {
+                            source: root.running
+                                ? @image-url("../icons/wave.svg")
+                                : @image-url("../icons/speaker.svg");
+                            colorize: root.running ? Theme.success : Theme.text-faint;
+                            width: 22px;
+                            height: 22px;
+                        }
+                    }
+                }
+
+                // Meter block
+                Rectangle {
+                    height: 96px;
+                    border-radius: Theme.radius-md;
+                    background: Theme.surface-2;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    VerticalLayout {
+                        padding: Theme.space-4;
+                        spacing: Theme.space-3;
+                        SectionLabel { text: "输出电平"; }
+                        StereoMeter {
+                            left: root.running ? Mock.meter-left : 0;
+                            right: root.running ? Mock.meter-right : 0;
+                            peak-left: root.running ? Mock.meter-peak-left : 0;
+                            peak-right: root.running ? Mock.meter-peak-right : 0;
+                        }
+                    }
+                }
+
+                // Stats grid
+                HorizontalLayout {
+                    spacing: Theme.space-3;
+                    StatTile {
+                        label: "已运行";
+                        value: root.running ? "01:24" : "—";
+                        horizontal-stretch: 1;
+                    }
+                    StatTile {
+                        label: "延迟";
+                        value: root.running ? "\{Mock.latency-ms}ms" : "—";
+                        horizontal-stretch: 1;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: Theme.space-3;
+                    StatTile {
+                        label: "欠载 (xrun)";
+                        value: "\{Mock.xruns}";
+                        accent: Mock.xruns == 0 ? Theme.success : Theme.warning;
+                        horizontal-stretch: 1;
+                    }
+                    StatTile {
+                        label: "时钟漂移";
+                        value: root.running ? "\{Mock.clock-drift-ppm}ppm" : "—";
+                        horizontal-stretch: 1;
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                // Primary action
+                AppButton {
+                    text: root.running ? "停止监控" : "开始监控";
+                    icon: root.running ? @image-url("../icons/stop.svg") : @image-url("../icons/play.svg");
+                    primary: !root.running;
+                    danger: root.running;
+                    height: 52px;
+                    clicked => { root.running = !root.running; }
+                }
+            }
+        }
+    }
+
+    Rectangle { vertical-stretch: 1; }
+}

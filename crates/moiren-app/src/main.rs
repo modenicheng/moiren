@@ -1,7 +1,10 @@
-use anyhow::{Context, bail};
+use anyhow::{Context, Ok, bail};
 use moiren_app::monitor_cli::{MONITOR_HELP, MonitorCommand, parse_monitor_args};
 use moiren_app::render_cli::{RENDER_HELP, RenderCommand, parse_render_args};
 use moiren_app::{AppConfig, OfflineApp};
+use slint;
+
+slint::include_modules!();
 
 fn monitor(command: MonitorCommand) -> anyhow::Result<()> {
     if matches!(command, MonitorCommand::Help) {
@@ -180,17 +183,20 @@ fn main() -> anyhow::Result<()> {
             _ => bail!("unknown argument: {arg}; use --help"),
         }
     }
-    let mut app = OfflineApp::new(config).context("preparing the offline application")?;
-    let input = [0.25, -0.5, 0.5, -0.25, 1.0, -1.0, 0.0, 0.0];
-    let mut output = [0.0; 8];
-    let report = app
-        .process_interleaved(&input, &mut output)
-        .context("processing the IO chain")?;
-    println!("InputNode -> Gain({}) -> OutputNode", config.initial_gain);
-    println!("input:  {input:?}\noutput: {output:?}");
-    println!("processed: {report:?}");
-    println!("input status:  {:?}", app.input_status());
-    println!("output status: {:?}", app.output_status());
-    app.stop();
+    // let mut app = OfflineApp::new(config).context("preparing the offline application")?;
+    // let input = [0.25, -0.5, 0.5, -0.25, 1.0, -1.0, 0.0, 0.0];
+    // let mut output = [0.0; 8];
+    // let report = app
+    //     .process_interleaved(&input, &mut output)
+    //     .context("processing the IO chain")?;
+    // println!("InputNode -> Gain({}) -> OutputNode", config.initial_gain);
+    // println!("input:  {input:?}\noutput: {output:?}");
+    // println!("processed: {report:?}");
+    // println!("input status:  {:?}", app.input_status());
+    // println!("output status: {:?}", app.output_status());
+    // app.stop();
+
+    let _ = MainWindow::new()?.run();
+
     Ok(())
 }

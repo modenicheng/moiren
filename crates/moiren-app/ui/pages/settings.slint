@@ -1,0 +1,197 @@
+// Settings page — theme preference (wired to the live Theme global) plus
+// mock appearance/behavior options and an about card.
+
+import { Theme, ThemePreference } from "../theme.slint";
+import { Card, SectionLabel, Divider, Badge, AppToggle } from "../components.slint";
+
+component ThemeOption inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> active: false;
+    callback clicked();
+    height: 96px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-md;
+    background: active ? Theme.primary-soft : Theme.surface-2;
+    border-width: active ? 2px : 1px;
+    border-color: active ? Theme.primary : Theme.border;
+    animate background, border-color { duration: Theme.fast; }
+    VerticalLayout {
+        padding: Theme.space-3;
+        spacing: Theme.space-2;
+        alignment: center;
+        Image {
+            source: root.icon;
+            colorize: root.active ? Theme.primary : Theme.text-muted;
+            width: 26px;
+            height: 26px;
+        }
+        Text {
+            text: root.label;
+            color: root.active ? Theme.primary : Theme.text;
+            font-size: Theme.text-sm;
+            font-weight: Theme.weight-semibold;
+            horizontal-alignment: center;
+        }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component SettingRow inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> subtitle;
+    spacing: Theme.space-3;
+    VerticalLayout {
+        alignment: center;
+        spacing: 2px;
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: Theme.text-sm;
+            font-weight: Theme.weight-semibold;
+        }
+        Text {
+            text: root.subtitle;
+            color: Theme.text-faint;
+            font-size: Theme.text-xs;
+        }
+    }
+    Rectangle { }
+    @children
+}
+
+export component SettingsPage inherits VerticalLayout {
+    spacing: Theme.space-5;
+
+    HorizontalLayout {
+        vertical-stretch: 0;
+        VerticalLayout {
+            spacing: 4px;
+            Text {
+                text: "设置";
+                color: Theme.text;
+                font-size: Theme.text-2xl;
+                font-weight: Theme.weight-bold;
+            }
+            Text {
+                text: "外观与应用偏好";
+                color: Theme.text-muted;
+                font-size: Theme.text-sm;
+            }
+        }
+    }
+
+    // Appearance
+    Card {
+        vertical-stretch: 0;
+        VerticalLayout {
+            padding: Theme.space-5;
+            spacing: Theme.space-4;
+            SectionLabel { text: "主题"; }
+            HorizontalLayout {
+                spacing: Theme.space-3;
+                ThemeOption {
+                    label: "跟随系统";
+                    icon: @image-url("../icons/system.svg");
+                    active: Theme.preference == ThemePreference.system;
+                    clicked => { Theme.preference = ThemePreference.system; }
+                }
+                ThemeOption {
+                    label: "浅色";
+                    icon: @image-url("../icons/sun.svg");
+                    active: Theme.preference == ThemePreference.light;
+                    clicked => { Theme.preference = ThemePreference.light; }
+                }
+                ThemeOption {
+                    label: "深色";
+                    icon: @image-url("../icons/moon.svg");
+                    active: Theme.preference == ThemePreference.dark;
+                    clicked => { Theme.preference = ThemePreference.dark; }
+                }
+            }
+            Text {
+                text: "主色为紫色，整套配色由主题令牌驱动，可随时扩展更多主题。";
+                color: Theme.text-faint;
+                font-size: Theme.text-xs;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    // Behavior (mock)
+    Card {
+        vertical-stretch: 0;
+        VerticalLayout {
+            padding: Theme.space-5;
+            spacing: Theme.space-4;
+            SectionLabel { text: "行为"; }
+            SettingRow {
+                title: "开机自启动";
+                subtitle: "随 Windows 登录启动 Moiren";
+                AppToggle { y: (parent.height - self.height) / 2; }
+            }
+            Divider { }
+            SettingRow {
+                title: "最小化到托盘";
+                subtitle: "关闭窗口时继续在后台监控";
+                AppToggle { checked: true; y: (parent.height - self.height) / 2; }
+            }
+            Divider { }
+            SettingRow {
+                title: "低延迟模式";
+                subtitle: "更小的处理块，降低延迟但更吃 CPU";
+                AppToggle { y: (parent.height - self.height) / 2; }
+            }
+        }
+    }
+
+    // About
+    Card {
+        vertical-stretch: 0;
+        VerticalLayout {
+            padding: Theme.space-5;
+            spacing: Theme.space-4;
+            HorizontalLayout {
+                spacing: Theme.space-3;
+                Rectangle {
+                    width: 52px;
+                    height: 52px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: Theme.radius-md;
+                    background: Theme.brand-gradient;
+                    Image {
+                        source: @image-url("../icons/logo.svg");
+                        colorize: #ffffff;
+                        width: 30px;
+                        height: 30px;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: "Moiren";
+                        color: Theme.text;
+                        font-size: Theme.text-lg;
+                        font-weight: Theme.weight-bold;
+                    }
+                    Text {
+                        text: "Windows 实时音频路由";
+                        color: Theme.text-muted;
+                        font-size: Theme.text-xs;
+                    }
+                }
+                Rectangle { }
+                Badge {
+                    text: "v0.1.0";
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+    }
+
+    Rectangle { vertical-stretch: 1; }
+}

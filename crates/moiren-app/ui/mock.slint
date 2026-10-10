@@ -1,0 +1,98 @@
+// Mock data + shared view structs.
+//
+// The UI is designed data-first: every list and status value flows from this
+// global, so wiring a real backend later means replacing these defaults with
+// values pushed from Rust (the structs are already `export`ed for that).
+
+export struct AudioEndpoint {
+    id: string,
+    name: string,
+    // "mic" | "speaker" — chooses the row icon.
+    kind: string,
+    sample-rate: int,      // Hz
+    channels: int,
+    format-supported: bool,
+    is-default: bool,
+    note: string,          // short status line, e.g. a format warning
+}
+
+export struct ProcessSource {
+    pid: int,
+    name: string,
+    detail: string,        // e.g. window title / description
+    active: bool,          // currently emitting audio
+}
+
+export enum SessionState { idle, running, stopping, error }
+
+export global Mock {
+    // --- Capture (input) devices ----------------------------------------
+    out property <[AudioEndpoint]> inputs: [
+        {
+            id: "cap-0", name: "Line In (FreeDSP USB)", kind: "mic",
+            sample-rate: 48000, channels: 2, format-supported: true,
+            is-default: true, note: "原生 48 kHz 立体声 f32",
+        },
+        {
+            id: "cap-1", name: "Microphone (Realtek Audio)", kind: "mic",
+            sample-rate: 44100, channels: 1, format-supported: true,
+            is-default: false, note: "单声道，捕获时上混为立体声",
+        },
+        {
+            id: "cap-2", name: "Stereo Mix (Realtek)", kind: "mic",
+            sample-rate: 48000, channels: 2, format-supported: true,
+            is-default: false, note: "系统混音回采",
+        },
+        {
+            id: "cap-3", name: "USB Audio CODEC", kind: "mic",
+            sample-rate: 96000, channels: 2, format-supported: false,
+            is-default: false, note: "96 kHz 暂不支持，需重采样",
+        },
+    ];
+
+    // --- Render (output) devices ----------------------------------------
+    out property <[AudioEndpoint]> outputs: [
+        {
+            id: "ren-0", name: "Speakers (FreeDSP USB)", kind: "speaker",
+            sample-rate: 48000, channels: 2, format-supported: true,
+            is-default: true, note: "共享模式，不改设备音量",
+        },
+        {
+            id: "ren-1", name: "Headphones (Realtek Audio)", kind: "speaker",
+            sample-rate: 48000, channels: 2, format-supported: true,
+            is-default: false, note: "原生 48 kHz 立体声 f32",
+        },
+        {
+            id: "ren-2", name: "SONY TV (NVIDIA HDMI)", kind: "speaker",
+            sample-rate: 48000, channels: 2, format-supported: true,
+            is-default: false, note: "HDMI 输出",
+        },
+        {
+            id: "ren-3", name: "Digital Output (S/PDIF)", kind: "speaker",
+            sample-rate: 44100, channels: 2, format-supported: false,
+            is-default: false, note: "44.1 kHz 格式不匹配",
+        },
+    ];
+
+    // --- Capturable applications ----------------------------------------
+    out property <[ProcessSource]> processes: [
+        { pid: 7420, name: "Spotify.exe", detail: "Spotify — 正在播放", active: true },
+        { pid: 10288, name: "chrome.exe", detail: "Google Chrome — YouTube", active: true },
+        { pid: 3344, name: "Discord.exe", detail: "Discord — 语音频道", active: true },
+        { pid: 15012, name: "vlc.exe", detail: "VLC media player", active: false },
+        { pid: 2208, name: "Game.exe", detail: "Elden Ring", active: false },
+    ];
+
+    // --- Live meter mock (0..1 per channel) -----------------------------
+    out property <float> meter-left: 0.62;
+    out property <float> meter-right: 0.48;
+    out property <float> meter-peak-left: 0.81;
+    out property <float> meter-peak-right: 0.7;
+
+    // --- Running session facts (mock) -----------------------------------
+    out property <SessionState> session: SessionState.idle;
+    out property <string> elapsed: "00:00";
+    out property <int> xruns: 0;
+    out property <float> clock-drift-ppm: 3.2;
+    out property <float> latency-ms: 11.6;
+}

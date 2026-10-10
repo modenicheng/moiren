@@ -1,0 +1,169 @@
+// Devices page — read-only catalog of capture (input) and render (output)
+// endpoints with their format details, mirroring `monitor --list` /
+// `render --list`.
+
+import { Theme } from "../theme.slint";
+import { Mock, AudioEndpoint } from "../mock.slint";
+import { Card, SectionLabel, Badge, IconButton } from "../components.slint";
+
+component DeviceRow inherits Rectangle {
+    in property <AudioEndpoint> ep;
+    height: 76px;
+    border-radius: Theme.radius-md;
+    background: ta.has-hover ? Theme.surface-2 : transparent;
+    animate background { duration: Theme.fast; }
+
+    HorizontalLayout {
+        padding: Theme.space-3;
+        spacing: Theme.space-3;
+
+        // Icon tile
+        Rectangle {
+            width: 48px;
+            height: 48px;
+            y: (parent.height - self.height) / 2;
+            border-radius: Theme.radius-sm;
+            background: root.ep.format-supported ? Theme.primary-soft : Theme.surface-3;
+            Image {
+                source: root.ep.kind == "mic"
+                    ? @image-url("../icons/mic.svg")
+                    : @image-url("../icons/speaker.svg");
+                colorize: root.ep.format-supported ? Theme.primary : Theme.text-faint;
+                width: 24px;
+                height: 24px;
+            }
+        }
+
+        // Name + note
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            HorizontalLayout {
+                spacing: Theme.space-2;
+                Text {
+                    text: root.ep.name;
+                    color: Theme.text;
+                    font-size: Theme.text-md;
+                    font-weight: Theme.weight-semibold;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.ep.is-default: Badge {
+                    text: "默认";
+                    fg: Theme.primary;
+                    bg: Theme.primary-soft;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+            Text {
+                text: root.ep.note;
+                color: Theme.text-faint;
+                font-size: Theme.text-xs;
+                overflow: elide;
+            }
+        }
+
+        Rectangle { }
+
+        // Meta
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            horizontal-stretch: 0;
+            Text {
+                text: "\{root.ep.sample-rate / 1000} kHz · \{root.ep.channels == 1 ? "单声道" : "立体声"}";
+                color: Theme.text-muted;
+                font-size: Theme.text-xs;
+                font-weight: Theme.weight-medium;
+                horizontal-alignment: right;
+            }
+            Badge {
+                text: root.ep.format-supported ? "格式受支持" : "需转换";
+                dot: true;
+                dot-color: root.ep.format-supported ? Theme.success : Theme.warning;
+                fg: root.ep.format-supported ? Theme.success : Theme.warning;
+                bg: root.ep.format-supported ? Theme.success-soft : Theme.warning-soft;
+            }
+        }
+    }
+    ta := TouchArea { }
+}
+
+component DeviceGroup inherits Card {
+    in property <string> title;
+    in property <image> icon;
+    in property <[AudioEndpoint]> items;
+    vertical-stretch: 0;
+    VerticalLayout {
+        padding: Theme.space-4;
+        spacing: Theme.space-2;
+        HorizontalLayout {
+            padding-left: Theme.space-2;
+            padding-right: Theme.space-2;
+            padding-bottom: Theme.space-2;
+            spacing: Theme.space-2;
+            Image {
+                source: root.icon;
+                colorize: Theme.primary;
+                width: 18px;
+                height: 18px;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: root.title;
+                color: Theme.text;
+                font-size: Theme.text-md;
+                font-weight: Theme.weight-bold;
+                vertical-alignment: center;
+            }
+            Rectangle { }
+            Badge {
+                text: "\{root.items.length}";
+                y: (parent.height - self.height) / 2;
+            }
+        }
+        for ep in root.items: DeviceRow { ep: ep; }
+    }
+}
+
+export component DevicesPage inherits VerticalLayout {
+    spacing: Theme.space-5;
+
+    HorizontalLayout {
+        vertical-stretch: 0;
+        VerticalLayout {
+            spacing: 4px;
+            Text {
+                text: "音频设备";
+                color: Theme.text;
+                font-size: Theme.text-2xl;
+                font-weight: Theme.weight-bold;
+            }
+            Text {
+                text: "系统可用的输入与输出端点";
+                color: Theme.text-muted;
+                font-size: Theme.text-sm;
+            }
+        }
+        Rectangle { }
+        IconButton {
+            icon: @image-url("../icons/refresh.svg");
+            size: 44px;
+            hover-bg: Theme.surface-3;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+
+    DeviceGroup {
+        title: "输入设备";
+        icon: @image-url("../icons/mic.svg");
+        items: Mock.inputs;
+    }
+    DeviceGroup {
+        title: "输出设备";
+        icon: @image-url("../icons/speaker.svg");
+        items: Mock.outputs;
+    }
+
+    Rectangle { vertical-stretch: 1; }
+}

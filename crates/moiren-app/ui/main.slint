@@ -1,0 +1,211 @@
+// Moiren — application shell.
+//
+// Frameless window with a custom title bar, a sidebar for navigation, and a
+// routed content area. Pages are plain UI with mock data; theme switching is
+// live via the Theme global.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { IconButton } from "components.slint";
+import { MonitorPage } from "pages/monitor.slint";
+import { RenderPage } from "pages/render.slint";
+import { DevicesPage } from "pages/devices.slint";
+import { SettingsPage } from "pages/settings.slint";
+
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> active: false;
+    callback clicked();
+    height: 46px;
+    border-radius: Theme.radius-md;
+    background: active ? Theme.primary-soft : (ta.has-hover ? Theme.surface-3 : transparent);
+    animate background { duration: Theme.fast; }
+
+    // Active accent bar
+    Rectangle {
+        x: 0;
+        width: 3px;
+        height: root.active ? 22px : 0px;
+        y: (parent.height - self.height) / 2;
+        border-radius: 2px;
+        background: Theme.primary;
+        animate height { duration: Theme.fast; easing: ease-out; }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-4;
+        padding-right: Theme.space-3;
+        spacing: Theme.space-3;
+        Image {
+            source: root.icon;
+            colorize: root.active ? Theme.primary : Theme.text-muted;
+            width: 20px;
+            height: 20px;
+            y: (parent.height - self.height) / 2;
+        }
+        Text {
+            text: root.label;
+            color: root.active ? Theme.text : Theme.text-muted;
+            font-size: Theme.text-sm;
+            font-weight: root.active ? Theme.weight-semibold : Theme.weight-medium;
+            vertical-alignment: center;
+        }
+        Rectangle { }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Moiren";
+    no-frame: true;
+    background: transparent;
+    min-width: 940px;
+    min-height: 640px;
+    preferred-width: 1180px;
+    preferred-height: 760px;
+
+    // Window control callbacks for the backend to wire; UI-only for now.
+    callback minimize();
+    callback toggle-maximize();
+    callback close-window();
+
+    in-out property <int> page: 0;
+
+    // Outer frame: rounded, bordered, themed window surface.
+    Rectangle {
+        background: Theme.window-bg;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        clip: true;
+
+        VerticalLayout {
+            // ---------- Title bar ----------
+            Rectangle {
+                height: 52px;
+                background: Theme.titlebar;
+                HorizontalLayout {
+                    padding-left: Theme.space-4;
+                    padding-right: Theme.space-2;
+                    spacing: Theme.space-3;
+
+                    // Brand
+                    Rectangle {
+                        width: 30px;
+                        height: 30px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.brand-gradient;
+                        Image {
+                            source: @image-url("icons/logo.svg");
+                            colorize: #ffffff;
+                            width: 20px;
+                            height: 20px;
+                        }
+                    }
+                    Text {
+                        text: "Moiren";
+                        color: Theme.text;
+                        font-size: Theme.text-md;
+                        font-weight: Theme.weight-bold;
+                        vertical-alignment: center;
+                    }
+
+                    // Draggable region
+                    WindowMoveArea {
+                        horizontal-stretch: 1;
+                    }
+
+                    // Window controls
+                    IconButton {
+                        icon: @image-url("icons/win-min.svg");
+                        size: 36px;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.minimize(); }
+                    }
+                    IconButton {
+                        icon: @image-url("icons/win-max.svg");
+                        size: 36px;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.toggle-maximize(); }
+                    }
+                    IconButton {
+                        icon: @image-url("icons/win-close.svg");
+                        size: 36px;
+                        hover-bg: Theme.danger;
+                        tint: Theme.text-muted;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.close-window(); }
+                    }
+                }
+            }
+
+            // ---------- Body ----------
+            HorizontalLayout {
+                // Sidebar
+                Rectangle {
+                    width: 236px;
+                    background: Theme.sidebar;
+                    Rectangle {
+                        x: parent.width - 1px;
+                        width: 1px;
+                        background: Theme.border;
+                    }
+                    VerticalLayout {
+                        padding: Theme.space-3;
+                        padding-top: Theme.space-4;
+                        spacing: Theme.space-1;
+
+                        NavItem {
+                            label: "监控路由";
+                            icon: @image-url("icons/route.svg");
+                            active: root.page == 0;
+                            clicked => { root.page = 0; }
+                        }
+                        NavItem {
+                            label: "测试音";
+                            icon: @image-url("icons/wave.svg");
+                            active: root.page == 1;
+                            clicked => { root.page = 1; }
+                        }
+                        NavItem {
+                            label: "音频设备";
+                            icon: @image-url("icons/devices.svg");
+                            active: root.page == 2;
+                            clicked => { root.page = 2; }
+                        }
+
+                        Rectangle { vertical-stretch: 1; }
+
+                        NavItem {
+                            label: "设置";
+                            icon: @image-url("icons/settings.svg");
+                            active: root.page == 3;
+                            clicked => { root.page = 3; }
+                        }
+                    }
+                }
+
+                // Content (scrolls when a page is taller than the viewport)
+                Rectangle {
+                    background: Theme.window-bg;
+                    horizontal-stretch: 1;
+                    sv := ScrollView {
+                        VerticalLayout {
+                            width: sv.visible-width;
+                            padding: Theme.space-6;
+                            if root.page == 0: MonitorPage { }
+                            if root.page == 1: RenderPage { }
+                            if root.page == 2: DevicesPage { }
+                            if root.page == 3: SettingsPage { }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

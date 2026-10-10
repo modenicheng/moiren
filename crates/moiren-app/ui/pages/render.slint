@@ -1,0 +1,253 @@
+// Render page — generate a test tone to a chosen output device.
+//   output device + frequency / gain / pan / duration -> play / stop.
+
+import { Theme } from "../theme.slint";
+import { Mock } from "../mock.slint";
+import {
+    Card, SectionLabel, Divider, Badge, AppButton, AppSelect,
+    ControlRow, StereoMeter, StatTile,
+} from "../components.slint";
+
+component FreqChip inherits Rectangle {
+    in property <string> text;
+    in property <bool> active: false;
+    callback clicked();
+    height: 32px;
+    min-width: 58px;
+    border-radius: Theme.radius-pill;
+    background: active ? Theme.primary-soft : Theme.surface-2;
+    border-width: 1px;
+    border-color: active ? Theme.primary : Theme.border;
+    animate background, border-color { duration: Theme.fast; }
+    HorizontalLayout {
+        padding-left: Theme.space-3;
+        padding-right: Theme.space-3;
+        alignment: center;
+        Text {
+            text: root.text;
+            color: root.active ? Theme.primary : Theme.text-muted;
+            font-size: Theme.text-xs;
+            font-weight: Theme.weight-semibold;
+            vertical-alignment: center;
+        }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component RenderPage inherits VerticalLayout {
+    spacing: Theme.space-5;
+
+    in-out property <int> output-index: 0;
+    in-out property <float> frequency: 440;
+    in-out property <float> gain: 0.3;
+    in-out property <float> pan: 0.0;
+    in-out property <float> duration: 10;
+    in-out property <bool> playing: false;
+
+    function pan-text(p: float) -> string {
+        p < -0.02 ? "L \{Math.round(-p * 100)}"
+        : p > 0.02 ? "R \{Math.round(p * 100)}"
+        : "居中";
+    }
+
+    // Header
+    HorizontalLayout {
+        vertical-stretch: 0;
+        VerticalLayout {
+            spacing: 4px;
+            Text {
+                text: "测试音";
+                color: Theme.text;
+                font-size: Theme.text-2xl;
+                font-weight: Theme.weight-bold;
+            }
+            Text {
+                text: "在选定输出上播放正弦测试信号，用于校准和排查";
+                color: Theme.text-muted;
+                font-size: Theme.text-sm;
+            }
+        }
+        Rectangle { }
+        Badge {
+            text: root.playing ? "播放中" : "就绪";
+            dot: true;
+            dot-color: root.playing ? Theme.primary : Theme.text-faint;
+            fg: root.playing ? Theme.primary : Theme.text-muted;
+            bg: root.playing ? Theme.primary-soft : Theme.surface-3;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+
+    HorizontalLayout {
+        spacing: Theme.space-5;
+
+        // Left: config
+        VerticalLayout {
+            horizontal-stretch: 3;
+            spacing: Theme.space-5;
+
+            Card {
+                vertical-stretch: 0;
+                VerticalLayout {
+                    padding: Theme.space-5;
+                    spacing: Theme.space-4;
+                    SectionLabel { text: "目标输出"; }
+                    AppSelect {
+                        icon: @image-url("../icons/speaker.svg");
+                        current <=> root.output-index;
+                        placeholder: "选择输出设备";
+                        options: [
+                            { text: Mock.outputs[0].name, detail: Mock.outputs[0].note },
+                            { text: Mock.outputs[1].name, detail: Mock.outputs[1].note },
+                            { text: Mock.outputs[2].name, detail: Mock.outputs[2].note },
+                            { text: Mock.outputs[3].name, detail: Mock.outputs[3].note },
+                        ];
+                    }
+                }
+            }
+
+            Card {
+                vertical-stretch: 0;
+                VerticalLayout {
+                    padding: Theme.space-5;
+                    spacing: Theme.space-5;
+
+                    SectionLabel { text: "频率"; }
+                    HorizontalLayout {
+                        spacing: Theme.space-2;
+                        FreqChip { text: "100 Hz"; active: Math.round(root.frequency) == 100; clicked => { root.frequency = 100; } }
+                        FreqChip { text: "440 Hz"; active: Math.round(root.frequency) == 440; clicked => { root.frequency = 440; } }
+                        FreqChip { text: "1 kHz"; active: Math.round(root.frequency) == 1000; clicked => { root.frequency = 1000; } }
+                        FreqChip { text: "2 kHz"; active: Math.round(root.frequency) == 2000; clicked => { root.frequency = 2000; } }
+                    }
+                    ControlRow {
+                        title: "微调";
+                        icon: @image-url("../icons/wave.svg");
+                        readout: "\{Math.round(root.frequency)} Hz";
+                        minimum: 20;
+                        maximum: 2000;
+                        value <=> root.frequency;
+                    }
+
+                    Divider { }
+
+                    ControlRow {
+                        title: "增益";
+                        icon: @image-url("../icons/sliders.svg");
+                        readout: "\{Math.round(root.gain * 100)}%";
+                        minimum: 0;
+                        maximum: 1;
+                        value <=> root.gain;
+                    }
+                    ControlRow {
+                        title: "声像";
+                        icon: @image-url("../icons/sliders.svg");
+                        readout: root.pan-text(root.pan);
+                        minimum: -1;
+                        maximum: 1;
+                        bipolar: true;
+                        value <=> root.pan;
+                    }
+                    ControlRow {
+                        title: "持续时长";
+                        icon: @image-url("../icons/clock.svg");
+                        readout: "\{Math.round(root.duration)}s";
+                        minimum: 1;
+                        maximum: 600;
+                        value <=> root.duration;
+                    }
+                }
+            }
+        }
+
+        // Right: preview + action
+        Card {
+            raised: true;
+            horizontal-stretch: 2;
+            VerticalLayout {
+                padding: Theme.space-5;
+                spacing: Theme.space-5;
+
+                // Hero wave preview
+                Rectangle {
+                    height: 150px;
+                    border-radius: Theme.radius-md;
+                    background: Theme.brand-gradient;
+                    clip: true;
+                    Image {
+                        source: @image-url("../icons/wave.svg");
+                        colorize: #ffffff;
+                        opacity: 0.9;
+                        width: 72px;
+                        height: 72px;
+                    }
+                    Rectangle {
+                        x: 0;
+                        y: parent.height - self.height;
+                        height: 56px;
+                        background: @linear-gradient(180deg, transparent 0%, #00000030 100%);
+                    }
+                    VerticalLayout {
+                        padding: Theme.space-4;
+                        alignment: end;
+                        Text {
+                            text: "\{Math.round(root.frequency)} Hz 正弦波";
+                            color: #ffffff;
+                            font-size: Theme.text-md;
+                            font-weight: Theme.weight-bold;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    height: 96px;
+                    border-radius: Theme.radius-md;
+                    background: Theme.surface-2;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    VerticalLayout {
+                        padding: Theme.space-4;
+                        spacing: Theme.space-3;
+                        SectionLabel { text: "输出电平"; }
+                        StereoMeter {
+                            left: root.playing ? root.gain * (1 - max(0, root.pan)) : 0;
+                            right: root.playing ? root.gain * (1 + min(0, root.pan)) : 0;
+                            peak-left: root.playing ? root.gain : 0;
+                            peak-right: root.playing ? root.gain : 0;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: Theme.space-3;
+                    StatTile {
+                        label: "采样率";
+                        value: "48 kHz";
+                        horizontal-stretch: 1;
+                    }
+                    StatTile {
+                        label: "声道";
+                        value: "立体声";
+                        horizontal-stretch: 1;
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                AppButton {
+                    text: root.playing ? "停止" : "播放测试音";
+                    icon: root.playing ? @image-url("../icons/stop.svg") : @image-url("../icons/play.svg");
+                    primary: !root.playing;
+                    danger: root.playing;
+                    height: 52px;
+                    clicked => { root.playing = !root.playing; }
+                }
+            }
+        }
+    }
+
+    Rectangle { vertical-stretch: 1; }
+}
