@@ -11,7 +11,7 @@ fn options(pid: u32, creation_time_100ns: u64) -> ProcessLoopbackOptions {
             creation_time_100ns,
             executable_name: "tone.exe".into(),
         },
-        duration: Duration::from_secs(10),
+        duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(10)),
     }
 }
 #[test]
@@ -27,7 +27,7 @@ fn selection_requires_pid_and_creation_time_and_rejects_self() {
     );
     let mut valid = options(123, 1);
     assert!(valid.validate().is_ok());
-    valid.duration = Duration::from_secs(601);
+    valid.duration = moiren_windows_audio::SessionDuration::For(Duration::from_secs(601));
     assert_eq!(valid.validate(), Err(CaptureError::InvalidDuration));
 }
 #[test]

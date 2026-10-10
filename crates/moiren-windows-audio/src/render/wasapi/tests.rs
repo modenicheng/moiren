@@ -9,6 +9,25 @@ use windows::Win32::Media::Audio::*;
 use windows::core::{Result as WinResult, implement};
 
 #[test]
+fn render_preparation_rejects_foreign_gate_stop_before_spawning() {
+    use crate::{ActivationGate, GateError, SessionDuration};
+    let (tx, rx) = std::sync::mpsc::channel();
+    let result = start_render_prepared_with_gate(
+        RenderOptions {
+            endpoint_id: "unopened".into(),
+            duration: SessionDuration::UntilStopped,
+        },
+        probe_renderer(tx),
+        StopSignal::new().unwrap(),
+        ActivationGate::new(StopSignal::new().unwrap()).unwrap(),
+    );
+    assert!(matches!(result, Err(RenderError::Gate(GateError::Api {
+        stage: "ActivationGate stop identity", hresult,
+    })) if hresult == 0x80070057u32 as i32));
+    assert_eq!(rx.recv().unwrap(), std::thread::current().id());
+}
+
+#[test]
 fn usable_render_choices_survive_missing_capture_and_local_errors() {
     let mut mix_format = catalog::FormatSnapshot::from_base(WAVEFORMATEX {
         wFormatTag: 3,
@@ -170,4 +189,251 @@ fn render_leases_copy_full_pcm_or_cancel_without_submitting_stale_data() {
             }
         );
     }
+}
+
+#[test]
+fn gate_cancel_is_terminal_and_stop_has_priority() {
+    use crate::{Activation, ActivationGate, GateError, StopSignal};
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop).unwrap();
+    gate.cancel().unwrap();
+    assert_eq!(gate.activate(), Err(GateError::AlreadyResolved));
+    assert_eq!(gate.wait().unwrap(), Activation::Cancelled);
+
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop).unwrap();
+    gate.activate().unwrap();
+    assert_eq!(gate.cancel(), Err(GateError::AlreadyResolved));
+    assert_eq!(gate.wait().unwrap(), Activation::Cancelled);
+}
+
+#[test]
+fn shared_gate_releases_both_owners_only_after_activation() {
+    use crate::{Activation, ActivationGate, StopSignal};
+    let gate = ActivationGate::new(StopSignal::new().unwrap()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let workers: Vec<_> = (0..2)
+        .map(|_| {
+            let gate = gate.clone();
+            let tx = tx.clone();
+            std::thread::spawn(move || tx.send(gate.wait().unwrap()).unwrap())
+        })
+        .collect();
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(20))
+            .is_err()
+    );
+    gate.activate().unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap(),
+            Activation::Start
+        );
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
+}
+
+fn probe_renderer(dropped: std::sync::mpsc::Sender<std::thread::ThreadId>) -> DemandRenderer {
+    use moiren_core::graph::*;
+    use moiren_engine::{boundary::*, compiler::*, runtime::*};
+    struct DropProbe(std::sync::mpsc::Sender<std::thread::ThreadId>);
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.send(std::thread::current().id()).unwrap();
+        }
+    }
+    impl RtAudioSource<f32> for DropProbe {
+        fn channel_count(&self) -> usize {
+            2
+        }
+        fn read(
+            &mut self,
+            ctx: &moiren_engine::processor::ProcessContext,
+            mut output: moiren_engine::buffer::AudioBlockMut<'_, f32>,
+        ) -> BoundaryReport {
+            for channel in output.channels_mut() {
+                channel.fill(0.25);
+            }
+            BoundaryReport {
+                transferred_frames: ctx.frames,
+                ..BoundaryReport::default()
+            }
+        }
+    }
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 2).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
+    graph
+        .connect(
+            graph.get_node(source).unwrap().outputs()[0].id(),
+            graph.get_node(sink).unwrap().inputs()[0].id(),
+            SendParams::default(),
+        )
+        .unwrap();
+    let (writer, reader) = audio_bridge(2, 8, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_source(source, DropProbe(dropped)).unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    let compiled = compile(
+        &graph,
+        bindings,
+        CompileConfig {
+            engine: EngineConfig {
+                processing_sr: 48000.0,
+                max_block_frames: 8,
+                max_events_per_block: 8,
+            },
+            audio_byte_budget: 4096,
+            plan_revision: 1,
+            timeline_epoch: 1,
+            control_capacity: 8,
+            control_horizon_frames: 48000,
+        },
+    )
+    .unwrap();
+    DemandRenderer::new(compiled.engine, reader).unwrap()
+}
+
+#[test]
+fn prepared_render_waits_before_dsp_and_returns_renderer_to_joiner() {
+    use crate::{Activation, ActivationGate, SessionDuration};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+    for cancel in [false, true] {
+        let (tx, rx) = mpsc::channel();
+        let renderer = probe_renderer(tx);
+        let stop = StopSignal::new().unwrap();
+        let gate = ActivationGate::new(stop.clone()).unwrap();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let ran = runs.clone();
+        let prepared = start_owner(
+            renderer,
+            stop,
+            gate,
+            move |renderer, stop, gate, ready, started| {
+                stream::run_owner_with(
+                    RenderOptions {
+                        endpoint_id: "fake".into(),
+                        duration: SessionDuration::UntilStopped,
+                    },
+                    renderer,
+                    stop,
+                    gate,
+                    ready,
+                    started,
+                    move |_, renderer, _, report, gate, ready, started| {
+                        if ready_and_wait(ready, gate)? == Activation::Cancelled {
+                            return Ok(super::super::RenderStatus::Stopped);
+                        }
+                        renderer.render_interleaved(&mut [0.0; 2])?;
+                        ran.fetch_add(1, Ordering::SeqCst);
+                        started.store(true, Ordering::Release);
+                        report.stream_started = true;
+                        Ok(super::super::RenderStatus::Completed)
+                    },
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+        assert!(!prepared.has_started());
+        assert!(rx.try_recv().is_err());
+        if cancel {
+            prepared.request_stop().unwrap();
+        } else {
+            prepared.activate().unwrap();
+        }
+        let exit = prepared.into_session().join_with_renderer().unwrap();
+        assert_eq!(exit.renderer.timeline(), u64::from(!cancel));
+        assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
+        let json = serde_json::to_value(&exit.report).unwrap();
+        assert_eq!(json["schema_version"], 2);
+        assert!(json["requested_seconds"].is_null());
+        assert!(rx.try_recv().is_err());
+        drop(exit.renderer);
+        assert_eq!(rx.recv().unwrap(), std::thread::current().id());
+    }
+}
+
+#[test]
+fn post_ready_failure_returns_unstarted_renderer_and_finite_report() {
+    use crate::{Activation, ActivationGate, SessionDuration};
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let prepared = start_owner(
+        probe_renderer(tx),
+        stop,
+        gate,
+        |renderer, stop, gate, ready, started| {
+            stream::run_owner_with(
+                RenderOptions {
+                    endpoint_id: "fake".into(),
+                    duration: SessionDuration::For(std::time::Duration::from_secs(10)),
+                },
+                renderer,
+                stop,
+                gate,
+                ready,
+                started,
+                |_, _, _, _, gate, ready, _| {
+                    assert_eq!(ready_and_wait(ready, gate)?, Activation::Start);
+                    Err(RenderError::Api {
+                        stage: "Start",
+                        hresult: -1,
+                    })
+                },
+            )
+        },
+    )
+    .unwrap();
+    prepared.activate().unwrap();
+    let session = prepared.into_session();
+    while !session.is_finished() {
+        std::thread::yield_now();
+    }
+    assert!(!session.has_started());
+    let exit = session.join_with_renderer().unwrap();
+    assert_eq!(exit.report.status, super::super::RenderStatus::Failed);
+    assert!(!exit.report.stream_started);
+    assert_eq!(exit.renderer.timeline(), 0);
+    let json = serde_json::to_value(&exit.report).unwrap();
+    assert_eq!(json["schema_version"], 2);
+    assert_eq!(json["requested_seconds"], 10.0);
+    assert!(rx.try_recv().is_err());
+    drop(exit.renderer);
+    assert_eq!(rx.recv().unwrap(), std::thread::current().id());
+}
+
+#[test]
+fn render_prepare_failure_joins_and_drops_renderer_on_preparing_thread() {
+    use crate::{ActivationGate, SessionDuration};
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let result = start_owner(
+        probe_renderer(tx),
+        stop,
+        gate,
+        |renderer, stop, gate, ready, started| {
+            stream::run_owner_with(
+                RenderOptions {
+                    endpoint_id: "fake".into(),
+                    duration: SessionDuration::UntilStopped,
+                },
+                renderer,
+                stop,
+                gate,
+                ready,
+                started,
+                |_, _, _, _, _, _, _| Err(RenderError::UnsupportedFormat),
+            )
+        },
+    );
+    assert!(matches!(result, Err(RenderError::UnsupportedFormat)));
+    assert_eq!(rx.recv().unwrap(), std::thread::current().id());
 }

@@ -11,8 +11,10 @@ use thiserror::Error;
 mod windows;
 #[cfg(windows)]
 pub use windows::{
-    MonitorOptions, MonitorReport, MonitorSession, MonitorStatus, ProcessMonitorOptions,
-    start_monitor, start_process_monitor, start_process_monitor_with_stop,
+    MonitorOptions, MonitorOwnerExit, MonitorReport, MonitorSession, MonitorStatus,
+    PreparedMonitorSession, ProcessMonitorOptions, prepare_monitor_with_stop,
+    prepare_process_monitor_with_stop, start_monitor, start_process_monitor,
+    start_process_monitor_with_stop,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -45,6 +47,9 @@ impl MonitorConfig {
 }
 #[derive(Debug, Error)]
 pub enum MonitorError {
+    #[cfg(windows)]
+    #[error(transparent)]
+    Gate(#[from] moiren_windows_audio::GateError),
     #[error(
         "monitor requires finite gain in [0,1], pan in [-1,1], a 1..4096 frame block and a stereo source"
     )]

@@ -7,7 +7,7 @@ fn capture_requires_pinned_id_and_bounded_duration_before_spawning() {
         assert_eq!(
             CaptureOptions {
                 endpoint_id: id.into(),
-                duration: Duration::from_secs(10)
+                duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(10))
             }
             .validate(),
             Err(CaptureError::InvalidEndpoint)
@@ -17,7 +17,7 @@ fn capture_requires_pinned_id_and_bounded_duration_before_spawning() {
         assert_eq!(
             CaptureOptions {
                 endpoint_id: "id".into(),
-                duration: Duration::from_secs(seconds)
+                duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(seconds))
             }
             .validate(),
             Err(CaptureError::InvalidDuration)
@@ -26,7 +26,7 @@ fn capture_requires_pinned_id_and_bounded_duration_before_spawning() {
     assert!(
         CaptureOptions {
             endpoint_id: "opaque".into(),
-            duration: Duration::from_secs(1)
+            duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(1))
         }
         .validate()
         .is_ok()

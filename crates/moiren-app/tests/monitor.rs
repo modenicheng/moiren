@@ -163,3 +163,27 @@ fn physical_packet_bridge_reaches_demand_renderer_through_real_graph() {
     assert_eq!(observer.snapshot().output_frames, 10);
     assert_eq!(renderer.timeline(), 10);
 }
+
+#[cfg(windows)]
+#[test]
+fn cancelled_monitor_preparation_never_opens_physical_devices() {
+    use moiren_app::monitor::{MonitorConfig, MonitorOptions, prepare_monitor_with_stop};
+    use moiren_windows_audio::{SessionDuration, StopSignal, capture::CaptureError};
+    let stop = StopSignal::new().unwrap();
+    stop.request_stop().unwrap();
+    let result = prepare_monitor_with_stop(
+        MonitorOptions {
+            input_endpoint_id: "unopened input".into(),
+            output_endpoint_id: "unopened output".into(),
+            duration: SessionDuration::UntilStopped,
+            config: MonitorConfig::default(),
+        },
+        stop,
+    );
+    assert!(matches!(
+        result,
+        Err(moiren_app::monitor::MonitorError::Capture(
+            CaptureError::Cancelled
+        ))
+    ));
+}

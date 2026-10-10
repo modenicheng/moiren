@@ -1,8 +1,8 @@
 //! Process-tree capture selection. Identity is resolved before owner startup and
 //! checked again by the owner; a recycled PID never silently changes the source.
+use crate::SessionDuration;
 use crate::capture::CaptureError;
 use serde::Serialize;
-use std::time::Duration;
 
 #[cfg(windows)]
 pub(crate) mod activation;
@@ -15,7 +15,9 @@ pub use identity::inspect_process;
 #[cfg(windows)]
 pub(crate) use stream::capture_format;
 #[cfg(windows)]
-pub use stream::{start_process_capture, start_process_capture_with_stop};
+pub use stream::{
+    prepare_process_capture_with_gate, start_process_capture, start_process_capture_with_stop,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ProcessIdentity {
@@ -32,7 +34,7 @@ impl ProcessIdentity {
 #[derive(Debug, Clone)]
 pub struct ProcessLoopbackOptions {
     pub target: ProcessIdentity,
-    pub duration: Duration,
+    pub duration: SessionDuration,
 }
 impl ProcessLoopbackOptions {
     pub fn validate(&self) -> Result<(), CaptureError> {

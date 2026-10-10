@@ -254,7 +254,7 @@ fn padding_and_explicit_render_options_are_checked() {
         assert_eq!(
             RenderOptions {
                 endpoint_id: endpoint.into(),
-                duration: Duration::from_secs(10)
+                duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(10))
             }
             .validate(),
             Err(RenderError::InvalidEndpoint)
@@ -264,7 +264,7 @@ fn padding_and_explicit_render_options_are_checked() {
         assert_eq!(
             RenderOptions {
                 endpoint_id: "id".into(),
-                duration
+                duration: moiren_windows_audio::SessionDuration::For(duration)
             }
             .validate(),
             Err(RenderError::InvalidDuration)
@@ -273,7 +273,7 @@ fn padding_and_explicit_render_options_are_checked() {
     assert!(
         RenderOptions {
             endpoint_id: "id".into(),
-            duration: Duration::from_secs(10)
+            duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(10))
         }
         .validate()
         .is_ok()

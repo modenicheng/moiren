@@ -38,7 +38,9 @@ session processed frames exclude any earlier Engine processing.
 
 `RenderSession::request_stop` wakes independently of audio events. `join` returns
 after stop/release, and dropping an unjoined session requests stop and joins.
-Waits are bounded to 100 ms and duration is 1–600 seconds. The successful loop
+`SessionDuration::For` accepts 1–600 seconds; `UntilStopped` has no artificial
+deadline and waits with native `INFINITE`, with the stop event always present.
+Finite waits use the remaining duration. The successful loop
 uses prepared storage and scalar counters, with no Rust allocation, log
 formatting or file writes. JSON is serialized after cleanup; optional period,
 ducking and MMCSS failures retain HRESULTs. Own-session ducking opt-out affects
@@ -84,8 +86,29 @@ linked Render before native cleanup. No automatic rebinding occurs. Virtual
 clients observed on this machine return zero device position for every packet;
 process sources disable inferred position gaps while retaining native
 DATA_DISCONTINUITY and timestamp diagnostics. Physical sources retain frame-gap
-detection. Capture JSON schema 2 identifies source kind and process identity;
+detection. Capture JSON schema 3 identifies source kind and process identity;
 `endpoint_id` is null for a virtual process source, and Windows conversion is explicit.
+
+Capture schema 3 and render schema 2 serialize `requested_seconds` as a number
+for finite runs and `null` for `UntilStopped`; monitor schema 2 embeds these
+reports. Existing CLI `--seconds` options explicitly select finite runs.
+
+Worker-side `prepare_capture_with_gate`, `prepare_process_capture_with_gate`
+and `start_render_prepared_with_gate` negotiate native streams before one shared
+`ActivationGate` releases their owners. Ready does not mean Running: no capture
+Start, render DSP, or render Start occurs before activation. Duration starts
+after native Start; `has_started` acknowledges only successful native Start.
+The immediate-start helpers preserve CLI behavior. Cancellation wakes both
+prepared and running owners, including continuous runs.
+
+`RenderSession::join_with_renderer` returns a `RenderOwnerExit` after native COM
+cleanup on its owner thread; the pure Rust renderer is released by the joiner.
+Monitor preparation shares this gate, and `join_with_renderer` also returns its
+`ControlPort`. Cleanup workers must drain existing replies, call
+`retire_controls`, then drain and retry until it returns zero before dropping
+either endpoint. Accepted future requests terminate with `StaleRevision`, even
+when the reply queue was full at stop. Session drop requests stop and joins, so
+sessions must be transferred to cleanup workers before disposal by GUI code.
 
 Implementation and acceptance: [Process Loopback plan](../../docs/superpowers/plans/2026-10-09-process-loopback.md).
 

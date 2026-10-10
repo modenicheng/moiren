@@ -1,18 +1,19 @@
 //! Single-master render data path. Same-owner bridge copying at 48 kHz stereo;
 //! this is not a cross-clock bridge or a sample-rate converter.
+use crate::SessionDuration;
 use moiren_engine::{
     boundary::{AudioReader, BridgeError},
     runtime::{Engine, RuntimeError},
 };
 use serde::Serialize;
-use std::time::Duration;
 use thiserror::Error;
 
 #[cfg(windows)]
 mod wasapi;
 #[cfg(windows)]
 pub use wasapi::{
-    RenderEndpoint, RenderSession, list_render_endpoints, start_render, start_render_with_stop,
+    PreparedRenderSession, RenderEndpoint, RenderOwnerExit, RenderSession, list_render_endpoints,
+    start_render, start_render_prepared, start_render_prepared_with_gate, start_render_with_stop,
 };
 
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -20,6 +21,11 @@ pub const CHANNELS: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RenderError {
+    #[cfg(windows)]
+    #[error(transparent)]
+    Gate(#[from] crate::GateError),
+    #[error("render startup channel closed before preparation completed")]
+    StartupLost,
     #[error("only native 48 kHz stereo 32-bit float is supported by this render slice")]
     UnsupportedFormat,
     #[error("render requires an explicit nonempty endpoint ID without embedded NUL")]
@@ -51,14 +57,14 @@ pub enum RenderError {
 #[derive(Debug, Clone)]
 pub struct RenderOptions {
     pub endpoint_id: String,
-    pub duration: Duration,
+    pub duration: SessionDuration,
 }
 impl RenderOptions {
     pub fn validate(&self) -> Result<(), RenderError> {
         if self.endpoint_id.trim().is_empty() || self.endpoint_id.contains('\0') {
             return Err(RenderError::InvalidEndpoint);
         }
-        if self.duration < Duration::from_secs(1) || self.duration > Duration::from_secs(600) {
+        if self.duration.validate().is_err() {
             return Err(RenderError::InvalidDuration);
         }
         Ok(())
@@ -118,6 +124,11 @@ impl DemandRenderer {
     }
     pub fn counters(&self) -> DemandCounters {
         self.counters
+    }
+    /// After the owner has joined, poll ControlPort replies and retry until
+    /// zero before dropping either endpoint. This never renders another block.
+    pub fn retire_controls(&mut self) -> usize {
+        self.engine.retire_controls()
     }
 
     /// Successful processing performs no allocation or destruction. Empty
@@ -184,7 +195,7 @@ pub struct RenderReport {
     pub schema_version: u32,
     pub endpoint_id: String,
     pub status: RenderStatus,
-    pub requested_seconds: f64,
+    pub requested_seconds: Option<f64>,
     pub elapsed_seconds: f64,
     pub sample_rate: u32,
     pub channels: usize,

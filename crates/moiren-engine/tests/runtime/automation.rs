@@ -11,6 +11,59 @@ use moiren_engine::{
 };
 
 #[test]
+fn stopped_controls_preserve_every_terminal_reply_under_backpressure() {
+    let (mut engine, mut control, _, _) = pipeline(true, 4, 2);
+    for id in 1..=2 {
+        assert_eq!(
+            control
+                .submit(request(id, ApplyAt::Frame(0), 1.0, 0), 0)
+                .code,
+            ReplyCode::Accepted
+        );
+    }
+    engine.render(4).unwrap();
+    for id in 3..=4 {
+        assert_eq!(
+            control
+                .submit(request(id, ApplyAt::Frame(100), 1.0, 0), 4)
+                .code,
+            ReplyCode::Accepted
+        );
+    }
+    assert_eq!(engine.retire_controls(), 2);
+    assert_eq!(
+        control
+            .submit(request(5, ApplyAt::Frame(100), 1.0, 0), 4)
+            .code,
+        ReplyCode::StaleRevision
+    );
+    let mut replies = Vec::new();
+    loop {
+        while let Some(reply) = control.poll_applied() {
+            replies.push((reply.request_id, reply.code));
+        }
+        if engine.retire_controls() == 0 {
+            break;
+        }
+    }
+    while let Some(reply) = control.poll_applied() {
+        replies.push((reply.request_id, reply.code));
+    }
+    assert_eq!(
+        replies,
+        [
+            (1, ReplyCode::Applied),
+            (2, ReplyCode::Applied),
+            (3, ReplyCode::StaleRevision),
+            (4, ReplyCode::StaleRevision)
+        ]
+    );
+    assert_eq!(engine.retire_controls(), 0);
+    assert!(control.poll_applied().is_none());
+    assert_eq!(engine.timeline(), 4);
+}
+
+#[test]
 fn event_at_end_waits_until_next_block_and_ramps_cross_blocks() {
     for in_place in [false, true] {
         let (mut engine, mut control, mut meter, samples) = pipeline(in_place, 16, 16);

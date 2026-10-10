@@ -1,4 +1,6 @@
 //! Share cancellation without sharing any apartment-bound audio interface.
+mod gate;
+pub use gate::{Activation, ActivationGate, GateError};
 use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     sync::Arc,

@@ -198,6 +198,13 @@ impl<S: ProcessingSample> Engine<S> {
     pub fn timeline(&self) -> u64 {
         self.timeline
     }
+    /// Non-RT only, after the output owner has joined. Poll existing replies,
+    /// then retire and retry after draining replies until this returns zero.
+    /// Keep both this engine and its ControlPort alive throughout reclamation.
+    pub fn retire_controls(&mut self) -> usize {
+        self.parameters.retire();
+        self.parameters.reject_pending()
+    }
     /// Prepared processing configuration; does not query devices or allocate.
     pub fn config(&self) -> EngineConfig {
         self.plan.config

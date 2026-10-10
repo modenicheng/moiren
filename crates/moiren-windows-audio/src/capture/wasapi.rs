@@ -1,10 +1,14 @@
 //! Only kernel handles, prepared ring endpoints and scalars cross owner threads.
 use super::{CaptureError, CaptureOptions, CaptureReport};
-use crate::StopSignal;
 use crate::clock_bridge::{BridgeObserver, ClockSource};
+use crate::{ActivationGate, StopSignal};
 use std::{
     os::windows::io::{AsRawHandle, OwnedHandle as StdHandle},
-    sync::{Arc, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread::{self, JoinHandle},
 };
 use windows::Win32::{
@@ -70,10 +74,15 @@ fn wait_target(
 }
 
 pub struct CaptureSession {
+    started: Arc<AtomicBool>,
     stop: Arc<StdHandle>,
     worker: Option<JoinHandle<CaptureReport>>,
 }
 impl CaptureSession {
+    /// True only after the native client successfully starts.
+    pub fn has_started(&self) -> bool {
+        self.started.load(Ordering::Acquire)
+    }
     /// Link a render owner to this stream before starting output. Both observe
     /// cancellation immediately, independently of final COM cleanup/join.
     pub fn stop_signal(&self) -> StopSignal {
@@ -124,27 +133,53 @@ pub(crate) struct Startup {
 pub fn start_capture(options: CaptureOptions) -> Result<PreparedCapture, CaptureError> {
     options.validate()?;
     let stop = api("CreateEvent(capture stop)", StopSignal::new())?;
-    start_owner(stop, move |stop, sender| {
-        physical::run_owner(options, stop, sender)
+    start_capture_with_stop(options, stop)
+}
+pub fn start_capture_with_stop(
+    options: CaptureOptions,
+    stop: StopSignal,
+) -> Result<PreparedCapture, CaptureError> {
+    let gate = ActivationGate::new(stop.clone())?;
+    let prepared = prepare_capture_with_gate(options, stop, gate.clone())?;
+    gate.activate()?;
+    Ok(prepared)
+}
+/// Blocking worker-side negotiation; no audio starts until the shared gate opens.
+pub fn prepare_capture_with_gate(
+    options: CaptureOptions,
+    stop: StopSignal,
+    gate: ActivationGate,
+) -> Result<PreparedCapture, CaptureError> {
+    options.validate()?;
+    gate.validate_stop(&stop)?;
+    start_owner(stop, move |stop, sender, started| {
+        physical::run_owner(options, stop, sender, gate, started)
     })
 }
 pub(crate) fn start_owner(
     signal: StopSignal,
-    owner: impl FnOnce(Arc<StdHandle>, mpsc::SyncSender<Result<Startup, CaptureError>>) -> CaptureReport
+    owner: impl FnOnce(
+        Arc<StdHandle>,
+        mpsc::SyncSender<Result<Startup, CaptureError>>,
+        Arc<AtomicBool>,
+    ) -> CaptureReport
     + Send
     + 'static,
 ) -> Result<PreparedCapture, CaptureError> {
     let stop = signal.event;
     let worker_stop = Arc::clone(&stop);
+    let started = Arc::new(AtomicBool::new(false));
+    let worker_started = started.clone();
     let (tx, rx) = mpsc::sync_channel(1);
     let worker = thread::Builder::new()
         .name("moiren-shared-capture".into())
-        .spawn(move || owner(worker_stop, tx))
+        .spawn(move || owner(worker_stop, tx, worker_started))
         .map_err(|error| CaptureError::WorkerSpawn {
             code: error.raw_os_error(),
         })?;
     let session = CaptureSession {
         stop,
+        started,
         worker: Some(worker),
     };
     match rx.recv() {

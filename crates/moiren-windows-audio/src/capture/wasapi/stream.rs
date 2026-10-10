@@ -1,13 +1,17 @@
 //! Native service/bridge lifecycle shared by physical and virtual capture.
 use super::{Startup, Wake, api, handle, packet::transfer_packet, wait_target};
 use crate::{
+    Activation, ActivationGate, SessionDuration,
     capture::{CaptureError, CaptureReport, CaptureSource, CaptureStatus},
     clock_bridge::{ClockBridgeConfig, capture_bridge},
     owner::{Mmcss, Streaming},
 };
 use std::{
     os::windows::io::OwnedHandle,
-    sync::mpsc::SyncSender,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::SyncSender,
+    },
     time::{Duration, Instant},
 };
 use windows::Win32::{
@@ -21,7 +25,9 @@ pub(crate) struct StreamInput<'a> {
     pub audio: HANDLE,
     pub target: Option<HANDLE>,
     pub stop: &'a OwnedHandle,
-    pub duration: Duration,
+    pub duration: SessionDuration,
+    pub gate: &'a ActivationGate,
+    pub started: &'a AtomicBool,
     pub sample_rate: u32,
     pub channels: usize,
 }
@@ -53,6 +59,28 @@ pub(crate) fn run(
         Wake::TargetExited => return Err(CaptureError::TargetExited),
         Wake::Audio | Wake::Timeout => {}
     }
+    // Publish format and bridge before waiting: the peer graph/render owner
+    // can now prepare against them without capture having started.
+    let activation = ready_and_wait(
+        sender,
+        Startup {
+            source,
+            observer,
+            sample_rate: input.sample_rate,
+            channels: input.channels,
+        },
+        input.gate,
+        input.target,
+    )?;
+    // A process can exit during preparation. Stop still wins over that exit.
+    match wait_target(handle(input.stop), input.audio, input.target, 0)? {
+        Wake::Stop => return Ok(CaptureStatus::Stopped),
+        Wake::TargetExited => return Ok(CaptureStatus::TargetExited),
+        Wake::Audio | Wake::Timeout => {}
+    }
+    if activation == Activation::Cancelled {
+        return Ok(CaptureStatus::Stopped);
+    }
     let mut index = 0;
     let _mmcss =
         match unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Audio"), &mut index) } {
@@ -67,23 +95,15 @@ pub(crate) fn run(
         };
     let mut streaming = api("Start(capture)", Streaming::start(input.client))?;
     report.stream_started = true;
+    input.started.store(true, Ordering::Release);
     let started = Instant::now();
     let result = (|| {
-        sender
-            .send(Ok(Startup {
-                source,
-                observer,
-                sample_rate: input.sample_rate,
-                channels: input.channels,
-            }))
-            .map_err(|_| CaptureError::StartupLost)?;
-        while started.elapsed() < input.duration {
-            let remaining = input.duration.saturating_sub(started.elapsed());
+        while input.duration.remaining(started.elapsed()) != Some(Duration::ZERO) {
             match wait_target(
                 handle(input.stop),
                 input.audio,
                 input.target,
-                remaining.as_millis().clamp(1, 100) as u32,
+                input.duration.timeout_ms(started.elapsed()),
             )? {
                 Wake::Stop => return Ok(CaptureStatus::Stopped),
                 Wake::TargetExited => return Ok(CaptureStatus::TargetExited),
@@ -94,7 +114,7 @@ pub(crate) fn run(
                 Wake::Audio => report.audio_wakes += 1,
             }
             // Stop and process-exit checks also bound a continuously busy producer.
-            while started.elapsed() < input.duration {
+            while input.duration.remaining(started.elapsed()) != Some(Duration::ZERO) {
                 match wait_target(handle(input.stop), input.audio, input.target, 0)? {
                     Wake::Stop => return Ok(CaptureStatus::Stopped),
                     Wake::TargetExited => return Ok(CaptureStatus::TargetExited),
@@ -147,4 +167,17 @@ pub(crate) fn finish(
         }
     }
     report
+}
+
+/// Shared by native preparation and hardware-free owner lifecycle tests.
+pub(super) fn ready_and_wait(
+    sender: &SyncSender<Result<Startup, CaptureError>>,
+    startup: Startup,
+    gate: &ActivationGate,
+    target: Option<HANDLE>,
+) -> Result<Activation, CaptureError> {
+    sender
+        .send(Ok(startup))
+        .map_err(|_| CaptureError::StartupLost)?;
+    Ok(gate.wait_with_target(target)?)
 }

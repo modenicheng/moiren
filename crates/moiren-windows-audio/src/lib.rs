@@ -3,14 +3,16 @@
 pub mod capture;
 pub mod clock;
 pub mod clock_bridge;
+mod duration;
 pub mod process_loopback;
 pub mod render;
 pub mod stats;
+pub use duration::{DurationError, SessionDuration};
 
 #[cfg(windows)]
 mod session;
 #[cfg(windows)]
-pub use session::StopSignal;
+pub use session::{Activation, ActivationGate, GateError, StopSignal};
 
 #[cfg(windows)]
 pub mod probe;

@@ -1,12 +1,13 @@
 //! Native preparation, streaming and destruction run on one COM owner thread.
-use super::{Startup, api, format::mix_format, stream};
+use super::{Startup, Wake, api, format::mix_format, handle, stream, wait_target};
+use crate::ActivationGate;
 use crate::{
     capture::{CaptureError, CaptureOptions, CaptureReport, CaptureSource, CaptureStatus},
     owner::{Apartment, OwnedHandle},
 };
 use std::{
     os::windows::io::OwnedHandle as StdHandle,
-    sync::{Arc, mpsc::SyncSender},
+    sync::{Arc, atomic::AtomicBool, mpsc::SyncSender},
 };
 use windows::{
     Win32::{
@@ -26,7 +27,12 @@ fn owner(
     stop: &StdHandle,
     sender: &SyncSender<Result<Startup, CaptureError>>,
     report: &mut CaptureReport,
+    gate: &ActivationGate,
+    started: &AtomicBool,
 ) -> Result<CaptureStatus, CaptureError> {
+    if wait_target(handle(stop), handle(stop), None, 0)? == Wake::Stop {
+        return Err(CaptureError::Cancelled);
+    }
     // Reverse declaration order releases stream/services/client before apartment.
     let _apartment = api("CoInitializeEx(capture)", Apartment::new())?;
     let enumerator: IMMDeviceEnumerator = api("CoCreateInstance(capture)", unsafe {
@@ -73,6 +79,8 @@ fn owner(
     stream::run(
         stream::StreamInput {
             client: &client,
+            gate,
+            started,
             audio: event.0,
             target: None,
             stop,
@@ -88,9 +96,11 @@ pub(super) fn run_owner(
     options: CaptureOptions,
     stop: Arc<StdHandle>,
     sender: SyncSender<Result<Startup, CaptureError>>,
+    gate: ActivationGate,
+    started: Arc<AtomicBool>,
 ) -> CaptureReport {
     let mut report = CaptureReport::new(CaptureSource::Physical, options.duration);
     report.endpoint_id = Some(options.endpoint_id.clone());
-    let result = owner(&options, &stop, &sender, &mut report);
+    let result = owner(&options, &stop, &sender, &mut report, &gate, &started);
     stream::finish(result, &stop, &sender, report)
 }

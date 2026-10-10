@@ -1,5 +1,8 @@
 //! All COM objects stay on the worker; preparation precedes the event loop.
-use super::{Wake, api, format::mix_format, handle, packet::submit, wait};
+use super::{
+    RenderOwnerExit, Wake, api, format::mix_format, handle, packet::submit, ready_and_wait, wait,
+};
+use crate::{Activation, ActivationGate};
 use crate::{
     owner::{Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory},
     render::{
@@ -7,7 +10,15 @@ use crate::{
         RenderStatus, SAMPLE_RATE, writable_frames,
     },
 };
-use std::{os::windows::io::OwnedHandle as StdHandle, sync::Arc, time::Instant};
+use std::{
+    os::windows::io::OwnedHandle as StdHandle,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::SyncSender,
+    },
+    time::{Duration, Instant},
+};
 use windows::{
     Win32::{
         Media::Audio::{
@@ -77,11 +88,14 @@ fn record_submit(samples: &[f32], stats: &mut RenderStats) {
     }
 }
 
-fn owner(
+pub(super) fn owner(
     options: &RenderOptions,
     renderer: &mut DemandRenderer,
     stop: &StdHandle,
     report: &mut RenderReport,
+    gate: &ActivationGate,
+    ready: &SyncSender<Result<(), RenderError>>,
+    acknowledged: &AtomicBool,
 ) -> Result<RenderStatus, RenderError> {
     // Declaration order keeps all COM services/client and event handles alive
     // through Stop, then releases them before CoUninitialize on this thread.
@@ -138,7 +152,7 @@ fn owner(
         .filter(|&n| n <= 8 * 1024 * 1024 / size_of::<f32>())
         .ok_or(RenderError::StagingBudget)?;
     let mut staging = vec![0.0f32; sample_count];
-    if wait(handle(stop), event.0, 0)? == Wake::Stop {
+    if ready_and_wait(ready, gate)? == Activation::Cancelled {
         return Ok(RenderStatus::Stopped);
     }
     produce(renderer, &mut staging, &mut report.stats)?;
@@ -160,11 +174,11 @@ fn owner(
         };
     let mut streaming = api("Start", Streaming::start(&client))?;
     report.stream_started = true;
+    acknowledged.store(true, Ordering::Release);
     let started = Instant::now();
     let result = (|| {
-        while started.elapsed() < options.duration {
-            let remaining = options.duration.saturating_sub(started.elapsed());
-            let timeout_ms = remaining.as_millis().clamp(1, 100) as u32;
+        while options.duration.remaining(started.elapsed()) != Some(Duration::ZERO) {
+            let timeout_ms = options.duration.timeout_ms(started.elapsed());
             match wait(handle(stop), event.0, timeout_ms)? {
                 Wake::Stop => return Ok(RenderStatus::Stopped),
                 Wake::Timeout => {
@@ -216,17 +230,29 @@ fn owner(
     }
 }
 
-pub(super) fn run_owner(
+pub(super) fn run_owner_with(
     options: RenderOptions,
     mut renderer: DemandRenderer,
     stop: Arc<StdHandle>,
-) -> RenderReport {
+    gate: ActivationGate,
+    ready: SyncSender<Result<(), RenderError>>,
+    acknowledged: Arc<AtomicBool>,
+    run: impl FnOnce(
+        &RenderOptions,
+        &mut DemandRenderer,
+        &StdHandle,
+        &mut RenderReport,
+        &ActivationGate,
+        &SyncSender<Result<(), RenderError>>,
+        &AtomicBool,
+    ) -> Result<RenderStatus, RenderError>,
+) -> RenderOwnerExit {
     let initial_frame = renderer.timeline();
     let mut report = RenderReport {
-        schema_version: 1,
+        schema_version: 2,
         endpoint_id: options.endpoint_id.clone(),
         status: RenderStatus::Failed,
-        requested_seconds: options.duration.as_secs_f64(),
+        requested_seconds: options.duration.requested_seconds(),
         elapsed_seconds: 0.0,
         sample_rate: SAMPLE_RATE,
         channels: CHANNELS,
@@ -249,13 +275,24 @@ pub(super) fn run_owner(
         failure: None,
     };
     // owner() has stopped and released services/client/apartment before any
-    // formatting. Engine/ring ownership is dropped here outside streaming.
-    let result = owner(&options, &mut renderer, &stop, &mut report);
+    // formatting. Engine/ring ownership returns to the joining cleanup worker.
+    let result = run(
+        &options,
+        &mut renderer,
+        &stop,
+        &mut report,
+        &gate,
+        &ready,
+        &acknowledged,
+    );
     let _ = unsafe { SetEvent(handle(&stop)) };
     match result {
         Ok(status) => report.status = status,
-        Err(error) => report.failure = Some(error.to_string()),
+        Err(error) => {
+            report.failure = Some(error.to_string());
+            let _ = ready.try_send(Err(error));
+        }
     }
     report.stats.processed_frames = renderer.timeline().saturating_sub(initial_frame);
-    report
+    RenderOwnerExit { report, renderer }
 }

@@ -1,14 +1,18 @@
 //! Owner-local virtual-client activation and Shared format preparation.
 use super::{ProcessLoopbackOptions, activation, identity};
 use crate::{
-    StopSignal,
+    ActivationGate, StopSignal,
     capture::{
         CaptureError, CaptureReport, CaptureSource, CaptureStatus, PreparedCapture,
         wasapi::{Startup, api, handle, start_owner, stream},
     },
     owner::{Apartment, OwnedHandle},
 };
-use std::{os::windows::io::OwnedHandle as StdHandle, sync::mpsc::SyncSender, time::Instant};
+use std::{
+    os::windows::io::OwnedHandle as StdHandle,
+    sync::{atomic::AtomicBool, mpsc::SyncSender},
+    time::Instant,
+};
 use windows::Win32::{
     Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
     Media::{
@@ -34,10 +38,22 @@ pub fn start_process_capture_with_stop(
     stop: StopSignal,
 ) -> Result<PreparedCapture, CaptureError> {
     options.validate()?;
-    start_owner(stop, move |stop, sender| {
+    let gate = ActivationGate::new(stop.clone())?;
+    let prepared = prepare_process_capture_with_gate(options, stop, gate.clone())?;
+    gate.activate()?;
+    Ok(prepared)
+}
+pub fn prepare_process_capture_with_gate(
+    options: ProcessLoopbackOptions,
+    stop: StopSignal,
+    gate: ActivationGate,
+) -> Result<PreparedCapture, CaptureError> {
+    options.validate()?;
+    gate.validate_stop(&stop)?;
+    start_owner(stop, move |stop, sender, started| {
         let mut report = CaptureReport::new(CaptureSource::ProcessLoopback, options.duration);
         report.process = Some(options.target.clone());
-        let result = owner(&options, &stop, &sender, &mut report);
+        let result = owner(&options, &stop, &sender, &mut report, &gate, &started);
         stream::finish(result, &stop, &sender, report)
     })
 }
@@ -56,6 +72,8 @@ fn owner(
     stop: &StdHandle,
     sender: &SyncSender<Result<Startup, CaptureError>>,
     report: &mut CaptureReport,
+    gate: &ActivationGate,
+    started: &AtomicBool,
 ) -> Result<CaptureStatus, CaptureError> {
     cancelled(stop)?;
     let _apartment = api("CoInitializeEx(process capture)", Apartment::new())?;
@@ -69,9 +87,9 @@ fn owner(
         Ok(())
     };
     check()?;
-    let started = Instant::now();
+    let activation_started = Instant::now();
     let activation = activation::activate(options.target.pid, check);
-    report.activation_seconds = Some(started.elapsed().as_secs_f64());
+    report.activation_seconds = Some(activation_started.elapsed().as_secs_f64());
     let client = activation?;
     check()?;
     let event = api("CreateEvent(process audio)", OwnedHandle::event())?;
@@ -97,6 +115,8 @@ fn owner(
     stream::run(
         stream::StreamInput {
             client: &client,
+            gate,
+            started,
             audio: event.0,
             target: Some(process.handle.0),
             stop,
@@ -132,7 +152,7 @@ mod tests {
                 creation_time_100ns: 1,
                 executable_name: "missing.exe".into(),
             },
-            duration: std::time::Duration::from_secs(10),
+            duration: crate::SessionDuration::For(std::time::Duration::from_secs(10)),
         };
         assert!(matches!(
             start_process_capture_with_stop(options, stop),

@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn capture_and_process_preparation_reject_foreign_gate_stop_before_spawning() {
+    use crate::{ActivationGate, GateError, SessionDuration};
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(StopSignal::new().unwrap()).unwrap();
+    let expected = CaptureError::Gate(GateError::Api {
+        stage: "ActivationGate stop identity",
+        hresult: 0x80070057u32 as i32,
+    });
+    let physical = prepare_capture_with_gate(
+        CaptureOptions {
+            endpoint_id: "unopened".into(),
+            duration: SessionDuration::UntilStopped,
+        },
+        stop.clone(),
+        gate.clone(),
+    );
+    assert!(matches!(physical, Err(error) if error == expected));
+    let process = crate::process_loopback::prepare_process_capture_with_gate(
+        crate::process_loopback::ProcessLoopbackOptions {
+            target: crate::process_loopback::ProcessIdentity {
+                pid: u32::MAX,
+                creation_time_100ns: 1,
+                executable_name: "unopened.exe".into(),
+            },
+            duration: SessionDuration::UntilStopped,
+        },
+        stop,
+        gate,
+    );
+    assert!(matches!(process, Err(error) if error == expected));
+}
+
+#[test]
 fn target_exit_wakes_without_audio_and_stop_wins_all_signals() {
     let stop = crate::StopSignal::new().unwrap();
     let target = crate::owner::OwnedHandle::event().unwrap();
@@ -57,6 +90,7 @@ fn capture_stop_is_responsive_without_audio_and_has_priority() {
 #[test]
 fn linked_render_and_capture_stop_without_waiting_for_worker_cleanup() {
     let session = CaptureSession {
+        started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         stop: StopSignal::new().unwrap().event,
         worker: None,
     };
@@ -188,4 +222,83 @@ fn capture_lease_releases_complete_packet_on_success_silence_and_validation_fail
             if fails { 0 } else { frames as u64 }
         );
     }
+}
+
+#[test]
+fn prepared_capture_publishes_bridge_before_gate_and_cancel_never_runs() {
+    use crate::{Activation, ActivationGate, SessionDuration};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for cancel in [false, true] {
+        let stop = StopSignal::new().unwrap();
+        let gate = ActivationGate::new(stop.clone()).unwrap();
+        let worker_gate = gate.clone();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let ran = runs.clone();
+        let prepared = start_owner(stop, move |stop, sender, started| {
+            let (_, source, observer) = capture_bridge(ClockBridgeConfig::default()).unwrap();
+            let mut report = crate::capture::CaptureReport::new(
+                crate::capture::CaptureSource::Physical,
+                SessionDuration::UntilStopped,
+            );
+            let result = stream::ready_and_wait(
+                &sender,
+                Startup {
+                    source,
+                    observer,
+                    sample_rate: 48000,
+                    channels: 2,
+                },
+                &worker_gate,
+                None,
+            )
+            .map(|activation| {
+                if activation == Activation::Start {
+                    ran.fetch_add(1, Ordering::SeqCst);
+                    started.store(true, Ordering::Release);
+                    report.stream_started = true;
+                    crate::capture::CaptureStatus::Completed
+                } else {
+                    crate::capture::CaptureStatus::Stopped
+                }
+            });
+            stream::finish(result, &stop, &sender, report)
+        })
+        .unwrap();
+        assert_eq!(prepared.sample_rate, 48000);
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+        assert!(!prepared.session.has_started());
+        if cancel {
+            gate.cancel().unwrap();
+        } else {
+            gate.activate().unwrap();
+        }
+        let report = prepared.session.join().unwrap();
+        assert_eq!(report.stream_started, !cancel);
+        assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
+        assert_eq!(report.schema_version, 3);
+        assert_eq!(report.requested_seconds, None);
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["schema_version"], 3);
+        assert!(json["requested_seconds"].is_null());
+    }
+}
+
+#[test]
+fn capture_preparation_failure_joins_owner_before_returning() {
+    let exited = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let owner_exited = exited.clone();
+    let result = start_owner(StopSignal::new().unwrap(), move |stop, sender, _| {
+        let report = crate::capture::CaptureReport::new(
+            crate::capture::CaptureSource::Physical,
+            crate::SessionDuration::For(std::time::Duration::from_secs(10)),
+        );
+        let report = stream::finish(Err(CaptureError::UnsupportedFormat), &stop, &sender, report);
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["schema_version"], 3);
+        assert_eq!(json["requested_seconds"], 10.0);
+        owner_exited.store(true, std::sync::atomic::Ordering::Release);
+        report
+    });
+    assert!(matches!(result, Err(CaptureError::UnsupportedFormat)));
+    assert!(exited.load(std::sync::atomic::Ordering::Acquire));
 }

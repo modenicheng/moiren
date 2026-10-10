@@ -1,19 +1,23 @@
 //! Shared capture lifecycle, with backend clock adaptation before the graph.
+use crate::SessionDuration;
 use crate::clock_bridge::ClockBridgeError;
 use crate::process_loopback::ProcessIdentity;
 use serde::Serialize;
-use std::time::Duration;
 use thiserror::Error;
 
 #[cfg(windows)]
 pub(crate) mod wasapi;
 #[cfg(windows)]
 pub use wasapi::{
-    CaptureEndpoint, CaptureSession, PreparedCapture, list_capture_endpoints, start_capture,
+    CaptureEndpoint, CaptureSession, PreparedCapture, list_capture_endpoints,
+    prepare_capture_with_gate, start_capture, start_capture_with_stop,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum CaptureError {
+    #[cfg(windows)]
+    #[error(transparent)]
+    Gate(#[from] crate::GateError),
     #[error("capture requires an explicit nonempty endpoint ID without embedded NUL")]
     InvalidEndpoint,
     #[error("capture duration must be between 1 and 600 seconds")]
@@ -50,7 +54,7 @@ pub enum CaptureError {
 #[derive(Debug, Clone)]
 pub struct CaptureOptions {
     pub endpoint_id: String,
-    pub duration: Duration,
+    pub duration: SessionDuration,
 }
 impl CaptureOptions {
     pub fn validate(&self) -> Result<(), CaptureError> {
@@ -60,8 +64,8 @@ impl CaptureOptions {
         validate_duration(self.duration)
     }
 }
-pub(crate) fn validate_duration(duration: Duration) -> Result<(), CaptureError> {
-    if duration < Duration::from_secs(1) || duration > Duration::from_secs(600) {
+pub(crate) fn validate_duration(duration: SessionDuration) -> Result<(), CaptureError> {
+    if duration.validate().is_err() {
         return Err(CaptureError::InvalidDuration);
     }
     Ok(())
@@ -89,7 +93,7 @@ pub struct CaptureReport {
     pub windows_auto_conversion: bool,
     pub activation_seconds: Option<f64>,
     pub status: CaptureStatus,
-    pub requested_seconds: f64,
+    pub requested_seconds: Option<f64>,
     pub elapsed_seconds: f64,
     pub sample_rate: Option<u32>,
     pub channels: Option<usize>,
@@ -106,16 +110,16 @@ pub struct CaptureReport {
 }
 #[cfg(windows)]
 impl CaptureReport {
-    pub(crate) fn new(source: CaptureSource, duration: Duration) -> Self {
+    pub(crate) fn new(source: CaptureSource, duration: SessionDuration) -> Self {
         Self {
-            schema_version: 2,
+            schema_version: 3,
             source,
             endpoint_id: None,
             process: None,
             windows_auto_conversion: source == CaptureSource::ProcessLoopback,
             activation_seconds: None,
             status: CaptureStatus::Failed,
-            requested_seconds: duration.as_secs_f64(),
+            requested_seconds: duration.requested_seconds(),
             elapsed_seconds: 0.0,
             sample_rate: None,
             channels: None,

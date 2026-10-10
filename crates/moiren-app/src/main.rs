@@ -37,7 +37,9 @@ fn monitor(command: MonitorCommand) -> anyhow::Result<()> {
                 let session = start_monitor(MonitorOptions {
                     input_endpoint_id,
                     output_endpoint_id,
-                    duration: std::time::Duration::from_secs(u64::from(seconds)),
+                    duration: moiren_windows_audio::SessionDuration::For(
+                        std::time::Duration::from_secs(u64::from(seconds)),
+                    ),
                     config,
                 })?;
                 print_monitor_report(session)?;
@@ -62,7 +64,9 @@ fn monitor(command: MonitorCommand) -> anyhow::Result<()> {
                 let session = start_process_monitor(ProcessMonitorOptions {
                     target,
                     output_endpoint_id,
-                    duration: std::time::Duration::from_secs(u64::from(seconds)),
+                    duration: moiren_windows_audio::SessionDuration::For(
+                        std::time::Duration::from_secs(u64::from(seconds)),
+                    ),
                     config,
                 })?;
                 print_monitor_report(session)?;
@@ -128,7 +132,9 @@ fn render(command: RenderCommand) -> anyhow::Result<()> {
                 let session = start_render(
                     RenderOptions {
                         endpoint_id,
-                        duration: std::time::Duration::from_secs(u64::from(seconds)),
+                        duration: moiren_windows_audio::SessionDuration::For(
+                            std::time::Duration::from_secs(u64::from(seconds)),
+                        ),
                     },
                     renderer,
                 )?;
