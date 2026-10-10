@@ -489,3 +489,61 @@ fn exit_during_request_revokes_activation_before_first_poll() {
     assert_ne!(drop_thread, thread::current().id());
     assert_eq!(h.try_snapshot().unwrap().phase, SessionPhase::Exited);
 }
+struct ExitBeforeRoundDriver {
+    gate: Arc<Barrier>,
+    entered: Option<mpsc::Sender<()>>,
+    next_poll: mpsc::Sender<SessionPhase>,
+    requests: Arc<std::sync::atomic::AtomicUsize>,
+    exit_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+impl ServiceDriver for ExitBeforeRoundDriver {
+    fn request(&mut self, _: &mut ServiceContext, _: &mut JobPool, _: AppRequest) {
+        self.requests
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn poll(&mut self, c: &mut ServiceContext, _: &mut JobPool, _: RoundBudget) {
+        if let Some(entered) = self.entered.take() {
+            entered.send(()).unwrap();
+            self.gate.wait();
+        } else {
+            self.next_poll.send(c.core.phase()).unwrap();
+        }
+    }
+    fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
+        assert_eq!(c.core.phase(), SessionPhase::Exiting);
+        self.exit_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn is_drained(&self) -> bool {
+        true
+    }
+}
+#[test]
+fn exit_set_before_next_round_prevents_queued_request_dispatch() {
+    let gate = Arc::new(Barrier::new(2));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (poll_tx, poll_rx) = mpsc::channel();
+    let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let exit_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let runtime = ServiceRuntime::spawn_with_driver(ExitBeforeRoundDriver {
+        gate: gate.clone(),
+        entered: Some(entered_tx),
+        next_poll: poll_tx,
+        requests: requests.clone(),
+        exit_count: exit_count.clone(),
+    })
+    .unwrap();
+    let h = runtime.handle();
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    h.try_request(AppRequest::Start(spec())).unwrap();
+    h.request_exit();
+    gate.wait();
+    assert_eq!(
+        poll_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        SessionPhase::Exiting
+    );
+    runtime.join().unwrap();
+    assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(exit_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(h.try_snapshot().unwrap().phase, SessionPhase::Exited);
+}

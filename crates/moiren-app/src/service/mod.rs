@@ -180,11 +180,6 @@ impl ServiceRuntime {
                 let mut c = ServiceContext::default();
                 let mut exiting = false;
                 loop {
-                    if mailbox.exit_requested() && !exiting {
-                        exiting = true;
-                        c.core.begin_exit();
-                        driver.begin_exit(&mut c, &mut pool);
-                    }
                     let mut handled = 0;
                     if !exiting {
                         for _ in 0..16 {
