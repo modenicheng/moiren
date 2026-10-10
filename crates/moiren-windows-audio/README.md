@@ -23,8 +23,9 @@ cannot be selected. No volumes, mute settings or default endpoints are changed.
 
 `render::DemandRenderer` owns exactly one Engine and its matching, initially
 drained output reader. The WASAPI owner prepares COM/services, audio and separate
-stop events, bounded staging and optional MMCSS. It primes PCM before Start and
-renders `capacity - padding` frames on each audio wake, splitting processing into
+stop events, bounded staging and optional MMCSS. It submits initialized silence
+before Start without consuming live capture reserves, then renders
+`capacity - padding` frames on each audio wake, splitting processing into
 Engine maximum blocks. Zero demand skips DSP and buffer acquisition. DSP and
 bridge draining finish before acquiring the driver lease; only a bounded byte
 copy occurs during it. Every lease is paired on its acquiring thread; an
@@ -118,6 +119,12 @@ To link both streams, pass `CaptureSession::stop_signal()` to
 event before retiring their bridge or releasing native objects. A finished
 producer must not leave Render running while control waits for COM cleanup;
 this shutdown race was reproduced and fixed during hardware validation.
+Independent multi-source hosts instead use separate stop events. Capture calls
+`CaptureIngress::finish` before native Stop/COM cleanup; host polling closes only
+that source's gate as soon as its observer reports producer completion, without
+waiting for the worker join or stopping peer sources/render. Explicit finish is
+idempotent, rejects later packet publication and leaves queued samples owned for
+finite consumers to drain. Drop remains the completion fallback.
 
 `clock_bridge::capture_bridge` prepares a fixed-capacity SPSC frame ring, a
 `CaptureIngress`, stereo `ClockSource: RtAudioSource<f32>`, and cloneable scalar
@@ -139,10 +146,15 @@ Snapshots are approximate independent atomic scalars; final snapshots after
 joining both owners are stable. Capture/render failures, packet discontinuity,
 dropped/silent/nonfinite samples, startup trim, priming silence, underrun,
 resets, fill and correction remain separately observable. No PCM is saved.
-The last underrun's output position and producer-finished flag distinguish a
-running starvation from a teardown race; diagnostics never clear xrun counters.
-Stop/rebind must prepare a fresh bridge; Process Loopback, multiple devices,
-quality SRC and automatic recovery remain separate slices.
+`live_underrun_frames` retains cumulative running starvation even when the last
+underrun later belongs to an ended producer. The last-underrun position and
+producer-finished flag describe that last event; neither resets XRUN counters.
+Bounded packet-size/arrival diagnostics and first-underrun packet count/age help
+investigate publication gaps without storing audio. At 48 kHz the default target
+covers about 42.7 ms; longer input gaps can still starve it and trigger re-prime.
+Stop/rebind prepares a fresh bridge. Process Loopback and independent multi-source
+ownership are integrated by the [app Host](../moiren-app/README.md); quality SRC
+and automatic device recovery remain separate work.
 
 The [implementation plan](../../docs/superpowers/plans/2026-10-09-audio-backend.md)
 and [validation record](../../docs/experiments/windows/2026-10-09-capture-clock-bridge.md)

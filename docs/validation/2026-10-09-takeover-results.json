@@ -4,37 +4,37 @@
       {
         "name": "baseline",
         "endpoint": {
-          "count": 192960,
-          "nonzero": 192760,
+          "count": 191040,
+          "nonzero": 190840,
           "peak": 0.020008087158203125,
           "invalid": 0,
-          "rms": 0.014146574696300382
+          "rms": 0.014146473588451124
         },
         "capture_a": {
-          "count": 192842,
-          "nonzero": 192842,
-          "peak": 0.01999981328845024,
+          "count": 192500,
+          "nonzero": 192500,
+          "peak": 0.019999928772449493,
           "invalid": 0,
-          "rms": 0.014138545353428473
+          "rms": 0.014138214821249113
         },
         "capture_b": {
-          "count": 192842,
-          "nonzero": 192842,
-          "peak": 0.019999951124191284,
+          "count": 192500,
+          "nonzero": 192500,
+          "peak": 0.019999917596578598,
           "invalid": 0,
-          "rms": 0.014138836650803111
+          "rms": 0.014138824415719873
         },
         "capture_a_transfer": {
-          "requested_frames": 96421,
-          "transferred_frames": 96421,
+          "requested_frames": 96250,
+          "transferred_frames": 96250,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
           "worker_finished": false
         },
         "capture_b_transfer": {
-          "requested_frames": 96421,
-          "transferred_frames": 96421,
+          "requested_frames": 96250,
+          "transferred_frames": 96250,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
@@ -51,30 +51,30 @@
           "rms": 0.0
         },
         "capture_a": {
-          "count": 192498,
+          "count": 192648,
           "nonzero": 0,
           "peak": 0.0,
           "invalid": 0,
           "rms": 0.0
         },
         "capture_b": {
-          "count": 192498,
+          "count": 192648,
           "nonzero": 0,
           "peak": 0.0,
           "invalid": 0,
           "rms": 0.0
         },
         "capture_a_transfer": {
-          "requested_frames": 96249,
-          "transferred_frames": 96249,
+          "requested_frames": 96324,
+          "transferred_frames": 96324,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
           "worker_finished": false
         },
         "capture_b_transfer": {
-          "requested_frames": 96249,
-          "transferred_frames": 96249,
+          "requested_frames": 96324,
+          "transferred_frames": 96324,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
@@ -84,37 +84,37 @@
       {
         "name": "restored_after_mute",
         "endpoint": {
-          "count": 190464,
-          "nonzero": 190266,
+          "count": 191040,
+          "nonzero": 190840,
           "peak": 0.020008087158203125,
           "invalid": 0,
-          "rms": 0.014146093706742921
+          "rms": 0.014146411021974606
         },
         "capture_a": {
-          "count": 192438,
-          "nonzero": 192438,
-          "peak": 0.019999893382191658,
+          "count": 192622,
+          "nonzero": 192622,
+          "peak": 0.019999952986836433,
           "invalid": 0,
-          "rms": 0.014138144600265988
+          "rms": 0.014137984185269346
         },
         "capture_b": {
-          "count": 192438,
-          "nonzero": 192438,
-          "peak": 0.019999971613287926,
+          "count": 192622,
+          "nonzero": 192622,
+          "peak": 0.019999856129288673,
           "invalid": 0,
-          "rms": 0.014137283795674433
+          "rms": 0.014138177335219385
         },
         "capture_a_transfer": {
-          "requested_frames": 96219,
-          "transferred_frames": 96219,
+          "requested_frames": 96311,
+          "transferred_frames": 96311,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
           "worker_finished": false
         },
         "capture_b_transfer": {
-          "requested_frames": 96219,
-          "transferred_frames": 96219,
+          "requested_frames": 96311,
+          "transferred_frames": 96311,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
@@ -124,37 +124,37 @@
       {
         "name": "quarter_volume",
         "endpoint": {
-          "count": 192960,
-          "nonzero": 192760,
+          "count": 193920,
+          "nonzero": 193720,
           "peak": 0.0050048828125,
           "invalid": 0,
-          "rms": 0.003536341536934922
+          "rms": 0.003536401340643402
         },
         "capture_a": {
-          "count": 192498,
-          "nonzero": 192498,
-          "peak": 0.004999998491257429,
+          "count": 192692,
+          "nonzero": 192692,
+          "peak": 0.004999988712370396,
           "invalid": 0,
-          "rms": 0.0035342993525052267
+          "rms": 0.003534815862756934
         },
         "capture_b": {
-          "count": 192498,
-          "nonzero": 192498,
-          "peak": 0.004999979864805937,
+          "count": 192692,
+          "nonzero": 192692,
+          "peak": 0.004999932367354631,
           "invalid": 0,
-          "rms": 0.0035347169417034785
+          "rms": 0.003534353508846794
         },
         "capture_a_transfer": {
-          "requested_frames": 96249,
-          "transferred_frames": 96249,
+          "requested_frames": 96346,
+          "transferred_frames": 96346,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
           "worker_finished": false
         },
         "capture_b_transfer": {
-          "requested_frames": 96249,
-          "transferred_frames": 96249,
+          "requested_frames": 96346,
+          "transferred_frames": 96346,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
@@ -164,37 +164,37 @@
       {
         "name": "zero_volume",
         "endpoint": {
-          "count": 192960,
+          "count": 191040,
           "nonzero": 0,
           "peak": 0.0,
           "invalid": 0,
           "rms": 0.0
         },
         "capture_a": {
-          "count": 192550,
+          "count": 192460,
           "nonzero": 0,
           "peak": 0.0,
           "invalid": 0,
           "rms": 0.0
         },
         "capture_b": {
-          "count": 192550,
+          "count": 192460,
           "nonzero": 0,
           "peak": 0.0,
           "invalid": 0,
           "rms": 0.0
         },
         "capture_a_transfer": {
-          "requested_frames": 96275,
-          "transferred_frames": 96275,
+          "requested_frames": 96230,
+          "transferred_frames": 96230,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
           "worker_finished": false
         },
         "capture_b_transfer": {
-          "requested_frames": 96275,
-          "transferred_frames": 96275,
+          "requested_frames": 96230,
+          "transferred_frames": 96230,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
@@ -204,37 +204,37 @@
       {
         "name": "restored_after_volume",
         "endpoint": {
-          "count": 192960,
-          "nonzero": 192760,
+          "count": 191040,
+          "nonzero": 190840,
           "peak": 0.020008087158203125,
           "invalid": 0,
-          "rms": 0.014145301251416201
+          "rms": 0.01414554934613217
         },
         "capture_a": {
-          "count": 192682,
-          "nonzero": 192682,
-          "peak": 0.01999991200864315,
+          "count": 192366,
+          "nonzero": 192366,
+          "peak": 0.019999995827674866,
           "invalid": 0,
-          "rms": 0.01413836944875869
+          "rms": 0.01413926120199329
         },
         "capture_b": {
-          "count": 192682,
-          "nonzero": 192682,
-          "peak": 0.01999988779425621,
+          "count": 192366,
+          "nonzero": 192366,
+          "peak": 0.019999999552965164,
           "invalid": 0,
-          "rms": 0.01413880412832352
+          "rms": 0.014139144856514473
         },
         "capture_a_transfer": {
-          "requested_frames": 96341,
-          "transferred_frames": 96341,
+          "requested_frames": 96183,
+          "transferred_frames": 96183,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
           "worker_finished": false
         },
         "capture_b_transfer": {
-          "requested_frames": 96341,
-          "transferred_frames": 96341,
+          "requested_frames": 96183,
+          "transferred_frames": 96183,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
@@ -254,37 +254,37 @@
       {
         "name": "baseline",
         "endpoint": {
-          "count": 192960,
-          "nonzero": 192760,
+          "count": 192000,
+          "nonzero": 191800,
           "peak": 0.020008087158203125,
           "invalid": 0,
-          "rms": 0.014145966970631044
+          "rms": 0.014145832031536455
         },
         "capture_a": {
-          "count": 192884,
-          "nonzero": 192884,
-          "peak": 0.019999878481030464,
+          "count": 192380,
+          "nonzero": 192380,
+          "peak": 0.019999908283352852,
           "invalid": 0,
-          "rms": 0.01413715130360828
+          "rms": 0.014137518170679606
         },
         "capture_b": {
-          "count": 192884,
-          "nonzero": 192884,
-          "peak": 0.019999831914901733,
+          "count": 192380,
+          "nonzero": 192380,
+          "peak": 0.01999989151954651,
           "invalid": 0,
-          "rms": 0.014137377156848695
+          "rms": 0.014137744040171155
         },
         "capture_a_transfer": {
-          "requested_frames": 96442,
-          "transferred_frames": 96442,
+          "requested_frames": 96190,
+          "transferred_frames": 96190,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
           "worker_finished": false
         },
         "capture_b_transfer": {
-          "requested_frames": 96442,
-          "transferred_frames": 96442,
+          "requested_frames": 96190,
+          "transferred_frames": 96190,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
@@ -294,37 +294,37 @@
       {
         "name": "muted",
         "endpoint": {
-          "count": 192000,
+          "count": 192960,
           "nonzero": 0,
           "peak": 0.0,
           "invalid": 0,
           "rms": 0.0
         },
         "capture_a": {
-          "count": 192650,
+          "count": 192850,
           "nonzero": 0,
           "peak": 0.0,
           "invalid": 0,
           "rms": 0.0
         },
         "capture_b": {
-          "count": 192650,
+          "count": 192850,
           "nonzero": 0,
           "peak": 0.0,
           "invalid": 0,
           "rms": 0.0
         },
         "capture_a_transfer": {
-          "requested_frames": 96325,
-          "transferred_frames": 96325,
+          "requested_frames": 96425,
+          "transferred_frames": 96425,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
           "worker_finished": false
         },
         "capture_b_transfer": {
-          "requested_frames": 96325,
-          "transferred_frames": 96325,
+          "requested_frames": 96425,
+          "transferred_frames": 96425,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
@@ -334,37 +334,37 @@
       {
         "name": "restored_after_mute",
         "endpoint": {
-          "count": 192960,
-          "nonzero": 192758,
+          "count": 192000,
+          "nonzero": 191800,
           "peak": 0.020008087158203125,
           "invalid": 0,
-          "rms": 0.0141451739506286
+          "rms": 0.014145832031536455
         },
         "capture_a": {
-          "count": 192720,
-          "nonzero": 192720,
-          "peak": 0.019999947398900986,
+          "count": 192344,
+          "nonzero": 192344,
+          "peak": 0.019999880343675613,
           "invalid": 0,
-          "rms": 0.014137841435031011
+          "rms": 0.014137900566773293
         },
         "capture_b": {
-          "count": 192720,
-          "nonzero": 192720,
-          "peak": 0.019999805837869644,
+          "count": 192344,
+          "nonzero": 192344,
+          "peak": 0.01999993622303009,
           "invalid": 0,
-          "rms": 0.014139163621612053
+          "rms": 0.014139218726594224
         },
         "capture_a_transfer": {
-          "requested_frames": 96360,
-          "transferred_frames": 96360,
+          "requested_frames": 96172,
+          "transferred_frames": 96172,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
           "worker_finished": false
         },
         "capture_b_transfer": {
-          "requested_frames": 96360,
-          "transferred_frames": 96360,
+          "requested_frames": 96172,
+          "transferred_frames": 96172,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
@@ -374,37 +374,37 @@
       {
         "name": "quarter_volume",
         "endpoint": {
-          "count": 192960,
-          "nonzero": 192758,
+          "count": 191040,
+          "nonzero": 190840,
           "peak": 0.0050048828125,
           "invalid": 0,
-          "rms": 0.0035363383893364238
+          "rms": 0.003536422346836816
         },
         "capture_a": {
-          "count": 192146,
-          "nonzero": 192146,
-          "peak": 0.00499998964369297,
+          "count": 192402,
+          "nonzero": 192402,
+          "peak": 0.004999928642064333,
           "invalid": 0,
-          "rms": 0.0035343964675015175
+          "rms": 0.0035346453020430766
         },
         "capture_b": {
-          "count": 192146,
-          "nonzero": 192146,
-          "peak": 0.004999994765967131,
+          "count": 192402,
+          "nonzero": 192402,
+          "peak": 0.0049999672919511795,
           "invalid": 0,
-          "rms": 0.0035343340338482867
+          "rms": 0.0035344743239332705
         },
         "capture_a_transfer": {
-          "requested_frames": 96073,
-          "transferred_frames": 96073,
+          "requested_frames": 96201,
+          "transferred_frames": 96201,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
           "worker_finished": false
         },
         "capture_b_transfer": {
-          "requested_frames": 96073,
-          "transferred_frames": 96073,
+          "requested_frames": 96201,
+          "transferred_frames": 96201,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
@@ -414,37 +414,37 @@
       {
         "name": "zero_volume",
         "endpoint": {
-          "count": 193920,
+          "count": 192960,
           "nonzero": 0,
           "peak": 0.0,
           "invalid": 0,
           "rms": 0.0
         },
         "capture_a": {
-          "count": 192482,
+          "count": 192446,
           "nonzero": 0,
           "peak": 0.0,
           "invalid": 0,
           "rms": 0.0
         },
         "capture_b": {
-          "count": 192482,
+          "count": 192446,
           "nonzero": 0,
           "peak": 0.0,
           "invalid": 0,
           "rms": 0.0
         },
         "capture_a_transfer": {
-          "requested_frames": 96241,
-          "transferred_frames": 96241,
+          "requested_frames": 96223,
+          "transferred_frames": 96223,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
           "worker_finished": false
         },
         "capture_b_transfer": {
-          "requested_frames": 96241,
-          "transferred_frames": 96241,
+          "requested_frames": 96223,
+          "transferred_frames": 96223,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
@@ -454,37 +454,37 @@
       {
         "name": "restored_after_volume",
         "endpoint": {
-          "count": 188928,
-          "nonzero": 188734,
+          "count": 192000,
+          "nonzero": 191800,
           "peak": 0.020008087158203125,
           "invalid": 0,
-          "rms": 0.014146031348963336
+          "rms": 0.014145832031536455
         },
         "capture_a": {
-          "count": 192306,
-          "nonzero": 192306,
-          "peak": 0.019999990239739418,
+          "count": 192446,
+          "nonzero": 192446,
+          "peak": 0.01999966986477375,
           "invalid": 0,
-          "rms": 0.014138321283913877
+          "rms": 0.014139314029258486
         },
         "capture_b": {
-          "count": 192306,
-          "nonzero": 192306,
-          "peak": 0.01999986730515957,
+          "count": 192446,
+          "nonzero": 192446,
+          "peak": 0.019999923184514046,
           "invalid": 0,
-          "rms": 0.014138659935280164
+          "rms": 0.014138410239115256
         },
         "capture_a_transfer": {
-          "requested_frames": 96153,
-          "transferred_frames": 96153,
+          "requested_frames": 96223,
+          "transferred_frames": 96223,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
           "worker_finished": false
         },
         "capture_b_transfer": {
-          "requested_frames": 96153,
-          "transferred_frames": 96153,
+          "requested_frames": 96223,
+          "transferred_frames": 96223,
           "shortfall_frames": 0,
           "xruns": 0,
           "discontinuities": 0,
