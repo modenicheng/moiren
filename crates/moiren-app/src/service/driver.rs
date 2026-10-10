@@ -296,8 +296,12 @@ impl ServiceDriver for BackendDriver {
                 }
                 Completion::Catalog(result) => {
                     self.catalog_running = false;
-                    if let Ok(catalog) = result {
-                        c.catalog = Arc::new(catalog);
+                    match result {
+                        Ok(catalog) => {
+                            c.catalog = Arc::new(catalog);
+                            c.catalog_error = None;
+                        }
+                        Err(error) => c.catalog_error = Some(error.to_string()),
                     }
                 }
             }
@@ -318,6 +322,14 @@ impl ServiceDriver for BackendDriver {
                     ),
                 );
             } else {
+                // The completed owner's unaccepted sliders have no remaining
+                // target. A replacement generation may already have newer
+                // intent, which must survive this older owner's finalization.
+                if c.core.generation() == reaping.generation
+                    && c.core.owner_generation() == Some(reaping.generation)
+                {
+                    self.parameters.clear_intent(&mut c.control);
+                }
                 c.core.owner_completed(reaping.generation);
             }
             c.core.owner_reaped(reaping.generation);

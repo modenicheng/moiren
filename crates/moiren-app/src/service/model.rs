@@ -116,6 +116,9 @@ pub struct AppSnapshot {
     pub desired: Option<SessionSpec>,
     pub error: Option<String>,
     pub catalog: Arc<DeviceCatalog>,
+    /// Refresh failure retains the last successful rows without changing the
+    /// session phase/error. A successful refresh clears this owned diagnostic.
+    pub catalog_error: Option<String>,
     pub control: ControlSummary,
     pub elapsed: Duration,
 }

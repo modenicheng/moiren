@@ -11,6 +11,7 @@ use std::{
 
 #[derive(Default)]
 struct State {
+    catalog_failure: AtomicBool,
     join_error: AtomicBool,
     finish_during_poll: AtomicBool,
     next_session: AtomicUsize,
@@ -132,6 +133,9 @@ impl BackendAdapter for Fake {
         )))
     }
     fn catalog(&self) -> Result<DeviceCatalog, BackendError> {
+        if self.0.catalog_failure.load(Ordering::Acquire) {
+            return Err(BackendError::new("catalog", "fake enumeration failure"));
+        }
         Ok(DeviceCatalog {
             inputs: vec![DeviceRow {
                 endpoint_id: "input-id".into(),
@@ -764,5 +768,120 @@ fn unrecoverable_join_terminalizes_accepted_ledger_only_after_worker_join() {
             .iter()
             .any(|(e, _)| *e == "join")
     );
+    exit(rt);
+}
+
+#[test]
+fn finite_completion_clears_only_current_unaccepted_slider_intent() {
+    let state = Arc::new(State::default());
+    state.controls.store(true, Ordering::Release);
+    state.started.store(true, Ordering::Release);
+    state.mismatch_timeline.store(true, Ordering::Release);
+    let rt = runtime(&state);
+    let h = rt.handle();
+    let mut finite = spec();
+    finite.limit = RunLimit::Seconds(1);
+    h.try_request(AppRequest::Start(finite)).unwrap();
+    phase(&h, SessionPhase::Running);
+    h.try_request(AppRequest::SetGainPan {
+        gain: 0.2,
+        pan: 0.3,
+    })
+    .unwrap();
+    wait_until(|| {
+        h.try_snapshot()
+            .is_some_and(|s| s.control.pending_gain_pan == Some((0.2, 0.3)))
+    });
+    assert_eq!(h.try_snapshot().unwrap().control.accepted_pending, 0);
+    state.completed.store(true, Ordering::Release);
+    phase(&h, SessionPhase::Idle);
+    let pending = h.try_snapshot().unwrap().control.pending_gain_pan;
+    exit(rt);
+    assert_eq!(pending, None);
+}
+
+#[test]
+fn older_completion_preserves_new_generation_unaccepted_slider_intent() {
+    let state = Arc::new(State::default());
+    state.controls.store(true, Ordering::Release);
+    state.started.store(true, Ordering::Release);
+    state.mismatch_timeline.store(true, Ordering::Release);
+    let saturation = Arc::new(Saturation::default());
+    *saturation.blocked.lock().unwrap() = true;
+    let rt = ServiceRuntime::spawn_with_driver(HarnessDriver {
+        inner: BackendDriver::new(Arc::new(Fake(state.clone()))),
+        state: state.clone(),
+        saturation: Some(saturation.clone()),
+        filled: false,
+    })
+    .unwrap();
+    let h = rt.handle();
+    h.try_request(AppRequest::Start(spec())).unwrap();
+    phase(&h, SessionPhase::Running);
+    wait_until(|| {
+        state
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(event, _)| *event == "saturated")
+    });
+    state.completed.store(true, Ordering::Release);
+    phase(&h, SessionPhase::Stopping);
+    h.try_request(AppRequest::Start(spec())).unwrap();
+    h.try_request(AppRequest::SetGainPan {
+        gain: 0.4,
+        pan: -0.6,
+    })
+    .unwrap();
+    wait_until(|| {
+        h.try_snapshot().is_some_and(|s| {
+            s.generation == SessionGeneration(2) && s.control.pending_gain_pan == Some((0.4, -0.6))
+        })
+    });
+    state.completed.store(false, Ordering::Release);
+    saturation.unblock();
+    phase(&h, SessionPhase::Running);
+    let pending = h.try_snapshot().unwrap().control.pending_gain_pan;
+    exit(rt);
+    assert_eq!(pending, Some((0.4, -0.6)));
+}
+
+#[test]
+fn catalog_failure_is_visible_and_refresh_preserves_running_session_and_last_rows() {
+    let state = Arc::new(State::default());
+    state.catalog_failure.store(true, Ordering::Release);
+    state.started.store(true, Ordering::Release);
+    let rt = runtime(&state);
+    let h = rt.handle();
+    wait_until(|| {
+        h.try_snapshot().is_some_and(|s| {
+            s.catalog_error.as_deref() == Some("catalog: fake enumeration failure")
+        })
+    });
+    let initial = h.try_snapshot().unwrap();
+    assert_eq!(initial.phase, SessionPhase::Idle);
+    assert!(initial.catalog.outputs.is_empty());
+    assert!(initial.error.is_none());
+    state.catalog_failure.store(false, Ordering::Release);
+    h.try_request(AppRequest::RefreshCatalog).unwrap();
+    wait_until(|| {
+        h.try_snapshot()
+            .is_some_and(|s| s.catalog_error.is_none() && !s.catalog.outputs.is_empty())
+    });
+    let catalog = h.try_snapshot().unwrap().catalog.clone();
+    h.try_request(AppRequest::Start(spec())).unwrap();
+    phase(&h, SessionPhase::Running);
+    state.catalog_failure.store(true, Ordering::Release);
+    h.try_request(AppRequest::RefreshCatalog).unwrap();
+    wait_until(|| h.try_snapshot().is_some_and(|s| s.catalog_error.is_some()));
+    let failed = h.try_snapshot().unwrap();
+    assert!(Arc::ptr_eq(&catalog, &failed.catalog));
+    assert_eq!(failed.phase, SessionPhase::Running);
+    assert!(failed.error.is_none());
+    state.catalog_failure.store(false, Ordering::Release);
+    h.try_request(AppRequest::RefreshCatalog).unwrap();
+    wait_until(|| h.try_snapshot().is_some_and(|s| s.catalog_error.is_none()));
+    assert_eq!(h.try_snapshot().unwrap().phase, SessionPhase::Running);
     exit(rt);
 }

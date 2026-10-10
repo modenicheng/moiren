@@ -72,6 +72,7 @@ impl Default for RoundBudget {
 pub struct ServiceContext {
     pub core: ServiceCore,
     pub catalog: Arc<DeviceCatalog>,
+    pub catalog_error: Option<String>,
     pub control: ControlSummary,
     pending: VecDeque<(JobPriority, Job, DeferredPermit)>,
     slots: Arc<AtomicUsize>,
@@ -81,6 +82,7 @@ impl Default for ServiceContext {
         Self {
             core: ServiceCore::default(),
             catalog: Arc::new(DeviceCatalog::default()),
+            catalog_error: None,
             control: ControlSummary::default(),
             pending: VecDeque::with_capacity(MAX_PENDING_JOBS),
             slots: Arc::new(AtomicUsize::new(MAX_PENDING_JOBS)),
@@ -181,6 +183,7 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         desired: c.core.desired().cloned(),
         error: c.core.error().map(str::to_owned),
         catalog: c.catalog.clone(),
+        catalog_error: c.catalog_error.clone(),
         control: c.control.clone(),
         elapsed: c.core.elapsed(),
     }
