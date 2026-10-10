@@ -92,10 +92,20 @@ pub struct DeviceCatalog {
     pub inputs: Vec<DeviceRow>,
     pub outputs: Vec<DeviceRow>,
     pub processes: Vec<ProcessRow>,
+    pub default_input_endpoint_id: Option<String>,
+    pub default_output_endpoint_id: Option<String>,
+    pub default_roles: Vec<DefaultEndpointRow>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultEndpointRow {
+    pub flow: &'static str,
+    pub role: &'static str,
+    pub endpoint_id: Option<String>,
 }
 /// The UI keeps only the latest pending pair and latest reply, never a reply history.
 #[derive(Debug, Clone, Default)]
 pub struct ControlSummary {
+    pub accepted_pending: usize,
     pub pending_gain_pan: Option<(f64, f64)>,
     pub last_result: Option<ControlReply>,
 }

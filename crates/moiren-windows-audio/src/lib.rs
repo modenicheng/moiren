@@ -26,4 +26,8 @@ pub mod swdevice;
 #[cfg(windows)]
 mod catalog;
 #[cfg(windows)]
+pub use catalog::{
+    CatalogSnapshot, DefaultEndpoint, EndpointSnapshot, owned_snapshot as catalog_snapshot,
+};
+#[cfg(windows)]
 mod owner;

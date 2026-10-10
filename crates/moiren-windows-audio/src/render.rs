@@ -6,6 +6,10 @@ use moiren_engine::{
     runtime::{Engine, RuntimeError},
 };
 use serde::Serialize;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use thiserror::Error;
 
 #[cfg(windows)]
@@ -18,6 +22,30 @@ pub use wasapi::{
 
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: usize = 2;
+
+/// Epoch/revision stay immutable for one prepared renderer. A single atomic
+/// frame observation needs no RT lock, allocation, or telemetry subscription.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimelineSnapshot {
+    pub frame: u64,
+    pub epoch: u64,
+    pub revision: u64,
+}
+#[derive(Clone)]
+pub struct TimelineObserver {
+    frame: Arc<AtomicU64>,
+    epoch: u64,
+    revision: u64,
+}
+impl TimelineObserver {
+    pub fn snapshot(&self) -> TimelineSnapshot {
+        TimelineSnapshot {
+            frame: self.frame.load(Ordering::Acquire),
+            epoch: self.epoch,
+            revision: self.revision,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RenderError {
@@ -100,6 +128,7 @@ pub struct DemandRenderer {
     engine: Engine<f32>,
     output: AudioReader<f32>,
     counters: DemandCounters,
+    timeline: TimelineObserver,
 }
 impl DemandRenderer {
     /// Non-RT preparation. The reader must be the matching, initially drained
@@ -113,14 +142,23 @@ impl DemandRenderer {
         if output.capacity_frames() < engine.config().max_block_frames {
             return Err(RenderError::BridgeCapacity);
         }
+        let timeline = TimelineObserver {
+            frame: Arc::new(AtomicU64::new(engine.timeline())),
+            epoch: engine.epoch(),
+            revision: engine.revision(),
+        };
         Ok(Self {
             engine,
             output,
             counters: DemandCounters::default(),
+            timeline,
         })
     }
     pub fn timeline(&self) -> u64 {
         self.engine.timeline()
+    }
+    pub fn timeline_observer(&self) -> TimelineObserver {
+        self.timeline.clone()
     }
     pub fn counters(&self) -> DemandCounters {
         self.counters
@@ -146,6 +184,9 @@ impl DemandRenderer {
         for samples in output.chunks_mut(block_samples) {
             let frames = samples.len() / CHANNELS;
             let rendered = self.engine.render(frames)?;
+            self.timeline
+                .frame
+                .store(self.engine.timeline(), Ordering::Release);
             self.counters.frames += frames as u64;
             self.counters.blocks += 1;
             self.counters.segments += rendered.segments as u64;

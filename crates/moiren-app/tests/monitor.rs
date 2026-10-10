@@ -1,6 +1,29 @@
 use moiren_app::monitor::{MonitorConfig, prepare_monitor};
 use moiren_engine::boundary::{ConstantSource, RtAudioSource};
 
+#[cfg(windows)]
+#[test]
+fn cleanup_outcomes_preserve_renderer_when_capture_join_failed() {
+    use moiren_app::monitor::{MonitorCleanupExit, MonitorError};
+    use moiren_windows_audio::{capture::CaptureError, render::DemandRenderer};
+    let graph = prepare_monitor(
+        ConstantSource {
+            channels: 2,
+            value: 0.1,
+        },
+        MonitorConfig::default(),
+    )
+    .unwrap();
+    let renderer = DemandRenderer::new(graph.compiled.engine, graph.output).unwrap();
+    let outcomes = MonitorCleanupExit::from_join_results(
+        Err(MonitorError::Capture(CaptureError::WorkerPanicked)),
+        Ok(renderer),
+        graph.compiled.control,
+    );
+    assert!(outcomes.error.is_some());
+    assert!(outcomes.renderer.is_some());
+}
+
 #[test]
 fn monitor_uses_compiler_graph_and_preserves_gain_pan_bindings() {
     let session = prepare_monitor(

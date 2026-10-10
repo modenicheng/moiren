@@ -3,6 +3,23 @@ use moiren_core::protocol::*;
 use moiren_engine::processor::Gain;
 
 #[test]
+fn renderer_scalar_timeline_observes_real_blocks_without_telemetry() {
+    let tone = prepare_tone(ToneConfig::default()).unwrap();
+    let mut renderer =
+        moiren_windows_audio::render::DemandRenderer::new(tone.compiled.engine, tone.output)
+            .unwrap();
+    let observer = renderer.timeline_observer();
+    assert_eq!(observer.snapshot().frame, 0);
+    renderer.render_interleaved(&mut [0.; 14]).unwrap();
+    let snapshot = observer.snapshot();
+    assert_eq!(snapshot.frame, 7);
+    assert_eq!(snapshot.epoch, 1);
+    assert_eq!(snapshot.revision, 1);
+    renderer.render_interleaved(&mut []).unwrap();
+    assert_eq!(observer.snapshot().frame, 7);
+}
+
+#[test]
 fn tone_graph_is_continuous_across_variable_blocks_and_pan_balances_stereo() {
     let mut tone = prepare_tone(ToneConfig {
         gain: 0.05,

@@ -1,10 +1,40 @@
-//! Platform-neutral application intent, bounded work admission and UI mailbox.
-//! Native session and ControlPort driving are supplied by `ServiceDriver`.
+//! Application intent and bounded workers; the service owns the active control
+//! endpoint and native session driver, while the UI receives owned snapshots.
 
+mod backend;
 mod core;
+mod driver;
 mod jobs;
 mod mailbox;
 mod model;
+mod parameters;
+#[cfg(windows)]
+mod windows;
+pub use backend::*;
+pub use driver::BackendDriver;
+#[cfg(windows)]
+pub use windows::WindowsBackend;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ServiceStartError {
+    #[error("service or worker spawn failed: {0}")]
+    WorkerSpawn(std::io::Error),
+    #[error("native application service is only supported on Windows")]
+    UnsupportedPlatform,
+}
+pub fn start_service() -> Result<ServiceRuntime, ServiceStartError> {
+    #[cfg(windows)]
+    {
+        ServiceRuntime::spawn_with_driver(BackendDriver::new(std::sync::Arc::new(
+            WindowsBackend::default(),
+        )))
+        .map_err(ServiceStartError::WorkerSpawn)
+    }
+    #[cfg(not(windows))]
+    {
+        Err(ServiceStartError::UnsupportedPlatform)
+    }
+}
 pub use core::*;
 pub use jobs::*;
 pub use mailbox::*;

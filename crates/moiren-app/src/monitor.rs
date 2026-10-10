@@ -11,8 +11,8 @@ use thiserror::Error;
 mod windows;
 #[cfg(windows)]
 pub use windows::{
-    MonitorOptions, MonitorOwnerExit, MonitorReport, MonitorSession, MonitorStatus,
-    PreparedMonitorSession, ProcessMonitorOptions, prepare_monitor_with_stop,
+    MonitorCleanupExit, MonitorOptions, MonitorOwnerExit, MonitorReport, MonitorSession,
+    MonitorStatus, PreparedMonitorSession, ProcessMonitorOptions, prepare_monitor_with_stop,
     prepare_process_monitor_with_stop, start_monitor, start_process_monitor,
     start_process_monitor_with_stop,
 };

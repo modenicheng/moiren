@@ -106,6 +106,11 @@ pub struct CatalogSnapshot {
     pub endpoints: Vec<EndpointSnapshot>,
     pub errors: Vec<ApiFailure>,
 }
+/// Worker-side COM apartment is released before this owned DTO returns.
+pub fn owned_snapshot() -> Result<CatalogSnapshot> {
+    let _apartment = crate::owner::Apartment::new()?;
+    snapshot()
+}
 
 fn friendly_name(device: &IMMDevice) -> Result<String> {
     unsafe {

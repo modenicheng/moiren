@@ -69,6 +69,10 @@ pub fn parameter_channel(
 }
 
 impl ControlPort {
+    /// Immutable identity of this prepared parameter endpoint.
+    pub fn identity(&self) -> (u64, u64) {
+        (self.revision, self.epoch)
+    }
     /// `observed_frame` is the worker's latest epoch-matched RT timeline snapshot.
     /// FIFO is strictly time ordered; rejected submissions consume no queue slot.
     /// Long automation must remain in the control scheduler until within horizon.

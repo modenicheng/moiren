@@ -13,7 +13,7 @@ use moiren_windows_audio::{
         ProcessIdentity, ProcessLoopbackOptions, prepare_process_capture_with_gate,
     },
     render::{
-        DemandRenderer, RenderOptions, RenderReport, RenderSession, RenderStatus,
+        DemandRenderer, RenderOptions, RenderReport, RenderSession, RenderStatus, TimelineObserver,
         start_render_prepared_with_gate,
     },
 };
@@ -58,12 +58,44 @@ pub struct MonitorSession {
     pub bindings: CompiledBindings,
     pub gain_node: NodeId,
     pub pan_node: NodeId,
+    pub timeline: TimelineObserver,
 }
 /// Blocking cleanup returns both parameter endpoints before either is dropped.
 pub struct MonitorOwnerExit {
     pub report: MonitorReport,
     pub renderer: DemandRenderer,
     pub control: ControlPort,
+}
+/// Unlike the CLI convenience result, failure preserves every available pure
+/// Rust endpoint for retirement by the cleanup worker. A panicked render owner
+/// is the only case where its renderer cannot be recovered.
+pub struct MonitorCleanupExit {
+    pub report: Option<MonitorReport>,
+    pub partial_capture: Option<CaptureReport>,
+    pub partial_render: Option<RenderReport>,
+    pub renderer: Option<DemandRenderer>,
+    pub control: ControlPort,
+    pub error: Option<MonitorError>,
+}
+impl MonitorCleanupExit {
+    pub fn from_join_results(
+        capture: Result<(), MonitorError>,
+        render: Result<DemandRenderer, MonitorError>,
+        control: ControlPort,
+    ) -> Self {
+        let (renderer, render_error) = match render {
+            Ok(renderer) => (Some(renderer), None),
+            Err(error) => (None, Some(error)),
+        };
+        Self {
+            report: None,
+            partial_capture: None,
+            partial_render: None,
+            renderer,
+            control,
+            error: capture.err().or(render_error),
+        }
+    }
 }
 pub struct PreparedMonitorSession {
     session: MonitorSession,
@@ -106,6 +138,17 @@ impl MonitorSession {
     /// Run on a cleanup worker. Drain control replies and retire the returned
     /// renderer before releasing it or the returned ControlPort.
     pub fn join_with_renderer(self) -> Result<MonitorOwnerExit, MonitorError> {
+        let exit = self.join_for_cleanup();
+        if let Some(error) = exit.error {
+            return Err(error);
+        }
+        Ok(MonitorOwnerExit {
+            report: exit.report.expect("both native reports"),
+            renderer: exit.renderer.expect("successful render join"),
+            control: exit.control,
+        })
+    }
+    pub fn join_for_cleanup(self) -> MonitorCleanupExit {
         while !self.is_finished() {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -113,21 +156,33 @@ impl MonitorSession {
         let capture = self.capture.join();
         let render = self.render.join_with_renderer();
         // Always join both workers before propagating a panic or stop failure.
-        let capture = capture?;
-        let render = render?;
-        signals?;
-        let status = report_status(capture.status, render.report.status);
-        Ok(MonitorOwnerExit {
-            renderer: render.renderer,
-            control: self.control,
-            report: MonitorReport {
-                schema_version: 2,
-                status,
-                capture,
-                render: render.report,
-                bridge: self.observer.snapshot(),
-            },
-        })
+        let (capture_report, capture_result) = match capture {
+            Ok(report) => (Some(report), Ok(())),
+            Err(error) => (None, Err(error.into())),
+        };
+        let (render_report, renderer_result) = match render {
+            Ok(exit) => (Some(exit.report), Ok(exit.renderer)),
+            Err(error) => (None, Err(error.into())),
+        };
+        let mut exit =
+            MonitorCleanupExit::from_join_results(capture_result, renderer_result, self.control);
+        exit.error = exit.error.or(signals.err());
+        match (capture_report, render_report) {
+            (Some(capture), Some(render)) => {
+                exit.report = Some(MonitorReport {
+                    schema_version: 2,
+                    status: report_status(capture.status, render.status),
+                    capture,
+                    render,
+                    bridge: self.observer.snapshot(),
+                })
+            }
+            (capture, render) => {
+                exit.partial_capture = capture;
+                exit.partial_render = render;
+            }
+        }
+        exit
     }
 }
 fn report_status(capture: CaptureStatus, render: RenderStatus) -> MonitorStatus {
@@ -219,6 +274,7 @@ fn attach_monitor(
     let graph = prepare_monitor(capture.source, config)?;
     let compiled = graph.compiled;
     let renderer = DemandRenderer::new(compiled.engine, graph.output)?;
+    let timeline = renderer.timeline_observer();
     // All fallible later preparation is protected by CaptureSession's stop/join
     // Drop. There is no live capture leak if compile or render startup fails.
     let render = start_render_prepared_with_gate(
@@ -237,6 +293,7 @@ fn attach_monitor(
             bindings: compiled.bindings,
             gain_node: graph.gain_node,
             pan_node: graph.pan_node,
+            timeline,
         },
     })
 }
