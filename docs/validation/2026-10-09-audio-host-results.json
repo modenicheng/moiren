@@ -774,6 +774,14 @@
     "capture_retirement_windows_linux": "Locked workspace tests, strict all-target Clippy and fmt passed again at e1568ec.",
     "capture_retirement_miri_both_modes": "14 clock bridge tests passed in both default and Tree Borrows; long drift test separately exercised natively.",
     "capture_retirement_independent_review": "Spec compliant and code quality approved, no Critical/Important findings; minor enable-guard isolation coverage suggestion retained.",
+    "main_test_integration": {
+      "merge_revision": "599e108",
+      "main_revision": "21cba63",
+      "production_code_diff_from_measured_backend": "empty; only Compressor test assertions changed",
+      "native": "17 covering processor/integration tests passed; native chunk comparisons retain exact equality",
+      "miri_default_and_tree_borrows": "13 Compressor tests passed in each mode; finite checked scaled32EPS tolerance under Miri",
+      "other_checks": "strict engine all-target Clippy, fmt and diff checks passed"
+    },
     "interrupted_old_size_app_runs": "not passes; repeated with bounded Miri-only graph fixtures"
   },
   "instrumented_pressure_diagnostics": [
