@@ -198,6 +198,14 @@ impl ServiceRuntime {
                             handled += 1;
                         }
                     }
+                    // A request hook may have yielded while UI exit was set.
+                    // Revoke activation before the next backend poll, including
+                    // when the draining loop already observed the exit flag.
+                    if mailbox.exit_requested() && !exiting {
+                        exiting = true;
+                        c.core.begin_exit();
+                        driver.begin_exit(&mut c, &mut pool);
+                    }
                     driver.poll(&mut c, &mut pool, RoundBudget::default());
                     c.dispatch(&mut pool);
                     pool.reap_finished();

@@ -398,3 +398,94 @@ fn exit_waits_for_blocked_prepare_result_and_cleanup() {
     runtime.join().unwrap();
     assert_eq!(h.try_snapshot().unwrap().phase, SessionPhase::Exited);
 }
+struct ExitDuringStartDriver {
+    gate: Arc<Barrier>,
+    entered: mpsc::Sender<SessionGeneration>,
+    first_poll: Option<mpsc::Sender<(SessionPhase, bool, usize)>>,
+    generation: Option<SessionGeneration>,
+    exit_count: Arc<std::sync::atomic::AtomicUsize>,
+    resource: Option<DropProbe>,
+    cleaned_tx: mpsc::Sender<()>,
+    cleaned_rx: mpsc::Receiver<()>,
+    drained: bool,
+}
+impl ServiceDriver for ExitDuringStartDriver {
+    fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
+        if let AppRequest::Start(spec) = request {
+            let generation = c.core.start(spec).unwrap();
+            self.generation = Some(generation);
+            self.entered.send(generation).unwrap();
+            self.gate.wait();
+        }
+    }
+    fn begin_exit(&mut self, c: &mut ServiceContext, pool: &mut JobPool) {
+        assert_eq!(c.core.phase(), SessionPhase::Exiting);
+        self.exit_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let resource = self.resource.take().unwrap();
+        let cleaned = self.cleaned_tx.clone();
+        pool.try_submit_owned(
+            JobPriority::Cleanup,
+            Box::new(move || {
+                drop(resource);
+                cleaned.send(()).unwrap();
+            }),
+        )
+        .unwrap_or_else(|_| panic!("cleanup admitted"));
+    }
+    fn poll(&mut self, c: &mut ServiceContext, _: &mut JobPool, _: RoundBudget) {
+        if let Some(generation) = self.generation
+            && let Some(first_poll) = self.first_poll.take()
+        {
+            first_poll
+                .send((
+                    c.core.phase(),
+                    c.core.may_activate(generation),
+                    self.exit_count.load(std::sync::atomic::Ordering::SeqCst),
+                ))
+                .unwrap();
+        }
+        if self.cleaned_rx.try_recv().is_ok() {
+            self.drained = true;
+        }
+    }
+    fn is_drained(&self) -> bool {
+        self.drained
+    }
+}
+#[test]
+fn exit_during_request_revokes_activation_before_first_poll() {
+    let gate = Arc::new(Barrier::new(2));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (poll_tx, poll_rx) = mpsc::channel();
+    let (drop_tx, drop_rx) = mpsc::channel();
+    let (cleaned_tx, cleaned_rx) = mpsc::channel();
+    let exit_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let runtime = ServiceRuntime::spawn_with_driver(ExitDuringStartDriver {
+        gate: gate.clone(),
+        entered: entered_tx,
+        first_poll: Some(poll_tx),
+        generation: None,
+        exit_count: exit_count.clone(),
+        resource: Some(DropProbe(drop_tx)),
+        cleaned_tx,
+        cleaned_rx,
+        drained: false,
+    })
+    .unwrap();
+    let h = runtime.handle();
+    h.try_request(AppRequest::Start(spec())).unwrap();
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        SessionGeneration(1)
+    );
+    h.request_exit();
+    gate.wait();
+    let first_poll = poll_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let drop_thread = drop_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    runtime.join().unwrap();
+    assert_eq!(first_poll, (SessionPhase::Exiting, false, 1));
+    assert_eq!(exit_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_ne!(drop_thread, thread::current().id());
+    assert_eq!(h.try_snapshot().unwrap().phase, SessionPhase::Exited);
+}
