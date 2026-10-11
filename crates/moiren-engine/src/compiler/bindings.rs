@@ -1,7 +1,7 @@
 //! Control-side backend ownership is kept apart from graph-to-plan construction.
 use std::collections::{BTreeMap, btree_map::Entry};
 
-use moiren_core::graph::{LogicalGraph, NodeId, NodeKind};
+use moiren_core::graph::{LogicalGraph, NodeId, NodeKind, PortId, PortRole};
 
 use super::CompileError;
 use crate::{
@@ -23,6 +23,7 @@ pub(super) enum Binding<S: ProcessingSample> {
 /// topology. All methods and all destruction are control-side operations.
 pub struct NodeBindings<S: ProcessingSample> {
     nodes: BTreeMap<NodeId, Binding<S>>,
+    observers: BTreeMap<PortId, Vec<Box<dyn crate::processor::RtObserver<S>>>>,
 }
 impl<S: ProcessingSample> Default for NodeBindings<S> {
     fn default() -> Self {
@@ -33,11 +34,19 @@ impl<S: ProcessingSample> NodeBindings<S> {
     pub fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
+            observers: BTreeMap::new(),
         }
     }
 
     pub(super) fn take(&mut self, node: NodeId) -> Option<Binding<S>> {
         self.nodes.remove(&node)
+    }
+
+    pub(super) fn take_observers(
+        &mut self,
+        port: PortId,
+    ) -> Option<Vec<Box<dyn crate::processor::RtObserver<S>>>> {
+        self.observers.remove(&port)
     }
 
     pub(super) fn validate(&self, graph: &LogicalGraph) -> Result<(), CompileError> {
@@ -52,6 +61,14 @@ impl<S: ProcessingSample> NodeBindings<S> {
             };
             if !valid {
                 return Err(CompileError::BindingKind { node: id });
+            }
+        }
+        for &port in self.observers.keys() {
+            let graph_port = graph
+                .get_port(port)
+                .map_err(|_| CompileError::ObserverPortNotFound { port })?;
+            if graph_port.role() != PortRole::Output {
+                return Err(CompileError::ObserverInputPort { port });
             }
         }
         Ok(())
@@ -102,6 +119,18 @@ impl<S: ProcessingSample> NodeBindings<S> {
     ) -> Result<(), CompileError> {
         self.insert(node, Binding::Compressor(settings))
     }
+
+    pub fn observe_output(
+        &mut self,
+        port: PortId,
+        observer: impl crate::processor::RtObserver<S> + 'static,
+    ) -> Result<(), CompileError> {
+        self.observers
+            .entry(port)
+            .or_default()
+            .push(Box::new(observer));
+        Ok(())
+    }
 }
 
 // Forwarding a boxed user processor preserves its role and validation hooks.
@@ -128,8 +157,12 @@ impl<S: ProcessingSample> RtProcessor<S> for BoundIo<S> {
         ctx: &ProcessContext,
         io: ProcessIo<'_, S>,
         params: ProcessParameters<'_>,
+        signals: crate::signal::ProcessSignals<'_>,
     ) {
-        self.0.process(ctx, io, params);
+        self.0.process(ctx, io, params, signals);
+    }
+    fn signal_bindings(&self) -> &[moiren_signal::ErasedBinding] {
+        self.0.signal_bindings()
     }
 }
 

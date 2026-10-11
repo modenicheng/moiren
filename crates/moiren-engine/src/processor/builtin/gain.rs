@@ -45,6 +45,7 @@ impl<S: ProcessingSample> RtProcessor<S> for Gain {
         _ctx: &ProcessContext,
         io: ProcessIo<'_, S>,
         params: ProcessParameters<'_>,
+        _signals: crate::signal::ProcessSignals<'_>,
     ) {
         let gain = params.float(Self::LEVEL).expect("validated gain parameter");
         match io {

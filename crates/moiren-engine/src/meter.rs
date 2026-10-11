@@ -75,7 +75,12 @@ impl<S: ProcessingSample> RtObserver<S> for LevelMeter {
             Err(ProcessorError::InvalidIo)
         }
     }
-    fn observe(&mut self, ctx: &ProcessContext, inputs: ReadPorts<'_, S>) {
+    fn observe(
+        &mut self,
+        ctx: &ProcessContext,
+        inputs: ReadPorts<'_, S>,
+        _signals: crate::signal::ProcessSignals<'_>,
+    ) {
         let input = inputs.get(0).expect("validated observer input");
         for channel in input.channels() {
             for sample in channel {

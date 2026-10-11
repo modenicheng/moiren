@@ -208,6 +208,13 @@ pub struct ErasedBinding {
     pub(crate) owner: Owner<BindingOwner>,
 }
 
+impl ErasedBinding {
+    /// Returns the preparation key without exposing the erased payload pointer.
+    pub fn key(&self) -> BindingKey {
+        self.owner.key
+    }
+}
+
 /// Prevalidated per-operation table. Creating or dropping it is non-RT.
 pub struct OpSignalBindings {
     pub(crate) table: u64,
@@ -216,4 +223,38 @@ pub struct OpSignalBindings {
     pub(crate) bindings: Box<[ErasedBinding]>,
     pub(crate) _root: Owner<super::HostRoot>,
     pub(crate) _charge: Charge,
+}
+
+impl OpSignalBindings {
+    /// Build a smaller operation view from this already validated table.
+    /// Preparation remains non-RT; the returned view retains the same host and
+    /// table identity and rechecks every selected binding against the source.
+    pub fn for_operation(&self, bindings: &[ErasedBinding]) -> Result<Self, crate::HostError> {
+        if bindings.is_empty()
+            || bindings.iter().any(|binding| {
+                binding.owner.host != self.host
+                    || binding.owner.key != self.key
+                    || !self.bindings.iter().any(|candidate| {
+                        candidate.owner.identity == binding.owner.identity
+                            && candidate.owner.topic == binding.owner.topic
+                            && candidate.owner.pointer == binding.owner.pointer
+                    })
+            })
+        {
+            return Err(crate::HostError::UnknownBinding);
+        }
+        let charge = crate::host::table_charge(
+            &self._root.budget,
+            bindings.len(),
+            std::mem::size_of::<Self>(),
+        )?;
+        Ok(Self {
+            table: self.table,
+            host: self.host,
+            key: self.key,
+            bindings: bindings.to_vec().into_boxed_slice(),
+            _root: self._root.clone(),
+            _charge: charge,
+        })
+    }
 }

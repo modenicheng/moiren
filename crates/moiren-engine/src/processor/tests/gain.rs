@@ -40,7 +40,14 @@ fn gain_modes<S: ProcessingSample>() {
             ..CONTEXT
         };
         arena
-            .with_io(&io, 1..4, |io| gain.process(&ctx, io, params))
+            .with_io(&io, 1..4, |io| {
+                gain.process(
+                    &ctx,
+                    io,
+                    params,
+                    crate::signal::ProcessSignals::empty(&mut ()),
+                )
+            })
             .unwrap();
         if in_place {
             assert_samples(

@@ -19,9 +19,9 @@ use crate::{
 };
 
 pub(super) struct DraftOp {
-    processor: ProcessorId,
-    reads: Vec<(u16, usize)>,
-    output: Option<usize>,
+    pub(super) processor: ProcessorId,
+    pub(super) reads: Vec<(u16, usize)>,
+    pub(super) output: Option<usize>,
 }
 pub(super) struct Builder<S: ProcessingSample> {
     frames: usize,
@@ -39,7 +39,7 @@ impl<S: ProcessingSample> Builder<S> {
         });
         slot
     }
-    fn processor(
+    pub(super) fn processor(
         &mut self,
         processor: impl RtProcessor<S> + 'static,
     ) -> Result<ProcessorId, CompileError> {
@@ -155,6 +155,15 @@ pub(super) fn build<S: ProcessingSample>(
             reads,
             output,
         });
+        for port in node.outputs() {
+            let Some(observers) = bindings.take_observers(port.id()) else {
+                continue;
+            };
+            let slot = outputs[&port.id()];
+            for observer in observers {
+                super::observers::push(&mut builder, observer, slot)?;
+            }
+        }
     }
     Ok((builder, mapping))
 }

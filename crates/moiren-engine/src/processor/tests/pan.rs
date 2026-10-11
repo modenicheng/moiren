@@ -50,6 +50,7 @@ fn pan_modes<S: ProcessingSample>() {
                         },
                         io,
                         params,
+                        crate::signal::ProcessSignals::empty(&mut ()),
                     )
                 })
                 .unwrap();

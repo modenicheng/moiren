@@ -64,6 +64,7 @@ impl<S: ProcessingSample> RtProcessor<S> for Pan {
         _ctx: &ProcessContext,
         io: ProcessIo<'_, S>,
         params: ProcessParameters<'_>,
+        _signals: crate::signal::ProcessSignals<'_>,
     ) {
         let position = params
             .float(Self::POSITION)

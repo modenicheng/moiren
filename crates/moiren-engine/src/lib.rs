@@ -9,3 +9,4 @@ pub mod node;
 pub mod processor;
 pub mod runtime;
 pub mod sample;
+pub mod signal;

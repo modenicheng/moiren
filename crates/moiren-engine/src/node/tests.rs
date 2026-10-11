@@ -48,7 +48,12 @@ fn process<S: ProcessingSample>(
     node.validate_io(io).unwrap();
     arena
         .with_io(io, 0..ctx.frames, |io| {
-            node.process(&ctx, io, params.view(&bindings))
+            node.process(
+                &ctx,
+                io,
+                params.view(&bindings),
+                crate::signal::ProcessSignals::empty(&mut ()),
+            )
         })
         .unwrap();
 }

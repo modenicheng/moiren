@@ -190,6 +190,7 @@ impl<S: ProcessingSample> RtProcessor<S> for Compressor {
         ctx: &ProcessContext,
         io: ProcessIo<'_, S>,
         params: ProcessParameters<'_>,
+        _signals: crate::signal::ProcessSignals<'_>,
     ) {
         let ramps: [_; 10] = std::array::from_fn(|index| {
             params

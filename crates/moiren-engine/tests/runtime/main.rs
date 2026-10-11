@@ -4,5 +4,6 @@ mod allocation;
 mod automation;
 mod graph;
 mod io;
+mod signals;
 mod support;
 mod swap;

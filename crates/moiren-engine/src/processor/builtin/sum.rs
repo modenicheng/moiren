@@ -24,6 +24,7 @@ impl<S: ProcessingSample> RtProcessor<S> for Sum {
         _ctx: &ProcessContext,
         io: ProcessIo<'_, S>,
         _params: ProcessParameters<'_>,
+        _signals: crate::signal::ProcessSignals<'_>,
     ) {
         if let ProcessIo::Separate {
             inputs,

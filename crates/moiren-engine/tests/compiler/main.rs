@@ -7,6 +7,7 @@ use moiren_engine::{
 #[path = "../runtime/allocation.rs"]
 mod allocation;
 mod compressor;
+mod observers;
 mod reference;
 mod rendering;
 mod sends;

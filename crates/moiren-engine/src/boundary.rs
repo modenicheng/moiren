@@ -56,6 +56,7 @@ impl<S: ProcessingSample, T: RtAudioSource<S>> RtProcessor<S> for SourceAdapter<
         ctx: &ProcessContext,
         io: ProcessIo<'_, S>,
         _params: ProcessParameters<'_>,
+        _signals: crate::signal::ProcessSignals<'_>,
     ) {
         if let ProcessIo::Separate { mut outputs, .. } = io {
             let _report = read_source(&mut self.0, ctx, &mut outputs);
@@ -74,6 +75,7 @@ impl<S: ProcessingSample, T: RtAudioSink<S>> RtProcessor<S> for SinkAdapter<T> {
         ctx: &ProcessContext,
         io: ProcessIo<'_, S>,
         _params: ProcessParameters<'_>,
+        _signals: crate::signal::ProcessSignals<'_>,
     ) {
         if let ProcessIo::ReadOnly { inputs } = io {
             let input = inputs.get(0).expect("validated sink input");

@@ -85,7 +85,13 @@ impl<S: ProcessingSample> RtProcessor<S> for Send {
         }
         Ok(())
     }
-    fn process(&mut self, _: &ProcessContext, io: ProcessIo<'_, S>, params: ProcessParameters<'_>) {
+    fn process(
+        &mut self,
+        _: &ProcessContext,
+        io: ProcessIo<'_, S>,
+        params: ProcessParameters<'_>,
+        _signals: crate::signal::ProcessSignals<'_>,
+    ) {
         if let ProcessIo::Separate {
             inputs,
             mut outputs,

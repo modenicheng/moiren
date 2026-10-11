@@ -89,7 +89,12 @@ fn observer_requires_read_only_io_and_delegates_input_validation_and_audio() {
     let bindings = parameters.bindings(METER);
     arena
         .with_io(&io, 0..4, |io| {
-            observer.process(&CONTEXT, io, parameters.view(&bindings))
+            observer.process(
+                &CONTEXT,
+                io,
+                parameters.view(&bindings),
+                crate::signal::ProcessSignals::empty(&mut ()),
+            )
         })
         .unwrap();
     let snapshot = reader.latest().unwrap();

@@ -320,7 +320,11 @@ impl HostControl {
     }
 }
 
-fn table_charge(budget: &Budget, count: usize, metadata: usize) -> Result<Charge, HostError> {
+pub(crate) fn table_charge(
+    budget: &Budget,
+    count: usize,
+    metadata: usize,
+) -> Result<Charge, HostError> {
     let bytes = budget::array::<ErasedBinding>(count)
         .and_then(|layout| budget::add(layout.size(), metadata))
         .and_then(|bytes| budget::add(bytes, budget::reservation_bytes()?))

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 moiren-core = { path = "../moiren-core" }
+moiren-signal = { path = "../moiren-signal" }
 rtrb = "=0.4.0"
 thiserror = { workspace = true }
 

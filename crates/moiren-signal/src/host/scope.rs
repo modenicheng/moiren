@@ -81,6 +81,13 @@ impl SignalScope<'_> {
     > {
         P::typed_write_access(self.access(handle)?, max_len)
     }
+    pub fn try_write_uniform<'borrow, P: BlockShape>(
+        &'borrow mut self,
+        handle: &PublisherHandle<P>,
+        max_len: usize,
+    ) -> Result<SignalBlockWriteGuard<'borrow, P::Header, P::Element>, WriteError> {
+        P::write_access(self.access(handle)?, max_len)
+    }
     pub fn publish_slice<P: BlockShape>(
         &mut self,
         handle: &PublisherHandle<P>,

@@ -2651,6 +2651,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "moiren-core",
+ "moiren-signal",
  "rtrb",
  "thiserror 2.0.21",
 ]

@@ -13,9 +13,11 @@ use crate::{
     control::{ControlError, ControlPort, parameter_channel},
     runtime::{Engine, EngineConfig, ExecutionPlan, RtResources, RuntimeError},
     sample::ProcessingSample,
+    signal::SignalPlanError,
 };
 
 mod bindings;
+mod observers;
 mod plan;
 mod send;
 
@@ -56,6 +58,14 @@ pub enum CompileError {
     UnsupportedPan { edge: EdgeId, channels: usize },
     #[error("compiled processor identifier capacity exhausted")]
     TooManyProcessors,
+    #[error("signal bindings require compile_with_signals and a host control")]
+    SignalsRequireHost,
+    #[error("observer target port {port:?} does not exist")]
+    ObserverPortNotFound { port: moiren_core::graph::PortId },
+    #[error("observer target port {port:?} is an input port")]
+    ObserverInputPort { port: moiren_core::graph::PortId },
+    #[error(transparent)]
+    Signal(#[from] SignalPlanError),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -98,8 +108,26 @@ pub struct CompiledGraph<S: ProcessingSample> {
 /// semantics are diagnosed before consuming any backend into an engine.
 pub fn compile<S: ProcessingSample>(
     graph: &LogicalGraph,
+    bindings: NodeBindings<S>,
+    config: CompileConfig,
+) -> Result<CompiledGraph<S>, CompileError> {
+    compile_inner(graph, bindings, config, None)
+}
+
+pub fn compile_with_signals<S: ProcessingSample>(
+    graph: &LogicalGraph,
+    bindings: NodeBindings<S>,
+    config: CompileConfig,
+    host: &moiren_signal::HostControl,
+) -> Result<CompiledGraph<S>, CompileError> {
+    compile_inner(graph, bindings, config, Some(host))
+}
+
+fn compile_inner<S: ProcessingSample>(
+    graph: &LogicalGraph,
     mut bindings: NodeBindings<S>,
     config: CompileConfig,
+    host: Option<&moiren_signal::HostControl>,
 ) -> Result<CompiledGraph<S>, CompileError> {
     let cfg = config.engine;
     if !cfg.processing_sr.is_finite()
@@ -141,6 +169,7 @@ pub fn compile<S: ProcessingSample>(
         audio_bytes,
     };
     let arena = BufferArena::new(&builder.layouts, config.audio_byte_budget)?;
+    let specs = plan::prepare_operations(builder.ops, &arena)?;
     let resources = RtResources::new(builder.instances)?;
     let (control, parameters) = parameter_channel(
         builder.params,
@@ -149,8 +178,12 @@ pub fn compile<S: ProcessingSample>(
         config.control_capacity,
         config.control_horizon_frames,
     )?;
-    let specs = plan::prepare_operations(builder.ops, &arena)?;
-    let plan = ExecutionPlan::prepare(arena, specs, &resources, &parameters, cfg)?;
+    let plan = ExecutionPlan::prepare_inner(arena, specs, &resources, &parameters, cfg, host)
+        .map_err(|error| match error {
+            RuntimeError::SignalsRequireHost => CompileError::SignalsRequireHost,
+            RuntimeError::Signal(error) => CompileError::Signal(error),
+            error => CompileError::Runtime(error),
+        })?;
     let engine = Engine::new(plan, resources, parameters)?;
     Ok(CompiledGraph {
         engine,

@@ -54,7 +54,12 @@ fn sum_inputs<S: ProcessingSample>() {
     let bindings = parameters.bindings(PROCESSOR);
     arena
         .with_io(&io, 0..4, |io| {
-            Sum.process(&CONTEXT, io, parameters.view(&bindings))
+            Sum.process(
+                &CONTEXT,
+                io,
+                parameters.view(&bindings),
+                crate::signal::ProcessSignals::empty(&mut ()),
+            )
         })
         .unwrap();
     assert_samples(

@@ -4,6 +4,7 @@ use crate::{
     control::ProcessParameters,
     sample::ProcessingSample,
 };
+use moiren_signal::ErasedBinding;
 use thiserror::Error;
 
 pub mod builtin;
@@ -63,14 +64,44 @@ pub trait RtProcessor<S: ProcessingSample>: Send {
         ctx: &ProcessContext,
         io: ProcessIo<'_, S>,
         params: ProcessParameters<'_>,
+        signals: crate::signal::ProcessSignals<'_>,
     );
+    fn signal_bindings(&self) -> &[ErasedBinding] {
+        &[]
+    }
 }
 
 /// An observer has no writable audio capability, not even an unused output.
 pub trait RtObserver<S: ProcessingSample>: Send {
     fn validate_inputs(&self, io: &PreparedIo) -> Result<(), ProcessorError>;
-    fn observe(&mut self, ctx: &ProcessContext, inputs: ReadPorts<'_, S>);
+    fn observe(
+        &mut self,
+        ctx: &ProcessContext,
+        inputs: ReadPorts<'_, S>,
+        signals: crate::signal::ProcessSignals<'_>,
+    );
+    fn signal_bindings(&self) -> &[ErasedBinding] {
+        &[]
+    }
 }
+
+impl<S: ProcessingSample, O: RtObserver<S> + ?Sized> RtObserver<S> for Box<O> {
+    fn validate_inputs(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
+        (**self).validate_inputs(io)
+    }
+    fn observe(
+        &mut self,
+        ctx: &ProcessContext,
+        inputs: ReadPorts<'_, S>,
+        signals: crate::signal::ProcessSignals<'_>,
+    ) {
+        (**self).observe(ctx, inputs, signals)
+    }
+    fn signal_bindings(&self) -> &[ErasedBinding] {
+        (**self).signal_bindings()
+    }
+}
+
 pub struct Observer<O>(pub O);
 impl<S: ProcessingSample, O: RtObserver<S>> RtProcessor<S> for Observer<O> {
     fn role(&self) -> ProcessorRole {
@@ -87,9 +118,13 @@ impl<S: ProcessingSample, O: RtObserver<S>> RtProcessor<S> for Observer<O> {
         ctx: &ProcessContext,
         io: ProcessIo<'_, S>,
         _params: ProcessParameters<'_>,
+        signals: crate::signal::ProcessSignals<'_>,
     ) {
         if let ProcessIo::ReadOnly { inputs } = io {
-            self.0.observe(ctx, inputs);
+            self.0.observe(ctx, inputs, signals);
         }
+    }
+    fn signal_bindings(&self) -> &[ErasedBinding] {
+        self.0.signal_bindings()
     }
 }

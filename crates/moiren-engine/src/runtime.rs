@@ -4,6 +4,7 @@ use crate::{
     control::{ParameterBindings, ParameterRuntime},
     processor::{ProcessContext, ProcessorError, ProcessorRole, RtProcessor},
     sample::ProcessingSample,
+    signal::{PreparedSignalPlan, ProcessSignals},
 };
 use moiren_core::protocol::ProcessorId;
 use std::{any::TypeId, sync::Arc};
@@ -37,6 +38,12 @@ pub enum RuntimeError {
     ForeignResources,
     #[error("plan was prepared against a different parameter table")]
     ForeignParameters,
+    #[error("signal bindings require a host control during preparation")]
+    SignalsRequireHost,
+    #[error("a prepared signal plan requires its host before rendering")]
+    MissingSignalHost,
+    #[error(transparent)]
+    Signal(#[from] crate::signal::SignalPlanError),
     #[error(transparent)]
     Buffer(#[from] BufferError),
     #[error(transparent)]
@@ -87,6 +94,7 @@ struct PreparedOp {
     runtime: usize,
     io: PreparedIo,
     params: ParameterBindings,
+    signals: Option<moiren_signal::OpSignalBindings>,
 }
 pub struct ExecutionPlan<S: ProcessingSample> {
     arena: BufferArena<S>,
@@ -95,6 +103,7 @@ pub struct ExecutionPlan<S: ProcessingSample> {
     config: EngineConfig,
     revision: u64,
     epoch: u64,
+    signal_update: Option<moiren_signal::PreparedHostUpdate>,
 }
 impl<S: ProcessingSample> ExecutionPlan<S> {
     /// Non-RT only. Validates access, schema and table identity, NOT whole-graph
@@ -106,6 +115,28 @@ impl<S: ProcessingSample> ExecutionPlan<S> {
         parameters: &ParameterRuntime,
         config: EngineConfig,
     ) -> Result<Self, RuntimeError> {
+        Self::prepare_inner(arena, specs, resources, parameters, config, None)
+    }
+
+    pub fn prepare_with_signals(
+        arena: BufferArena<S>,
+        specs: Vec<OpSpec>,
+        resources: &RtResources<S>,
+        parameters: &ParameterRuntime,
+        config: EngineConfig,
+        host: &moiren_signal::HostControl,
+    ) -> Result<Self, RuntimeError> {
+        Self::prepare_inner(arena, specs, resources, parameters, config, Some(host))
+    }
+
+    pub(crate) fn prepare_inner(
+        arena: BufferArena<S>,
+        specs: Vec<OpSpec>,
+        resources: &RtResources<S>,
+        parameters: &ParameterRuntime,
+        config: EngineConfig,
+        host: Option<&moiren_signal::HostControl>,
+    ) -> Result<Self, RuntimeError> {
         if !config.processing_sr.is_finite()
             || config.processing_sr <= 0.0
             || config.max_block_frames == 0
@@ -115,6 +146,7 @@ impl<S: ProcessingSample> ExecutionPlan<S> {
             return Err(RuntimeError::InvalidConfig);
         }
         let mut ops = Vec::<PreparedOp>::with_capacity(specs.len());
+        let mut signal_bindings = Vec::with_capacity(specs.len());
         for spec in specs {
             if !arena.owns(&spec.io) {
                 return Err(RuntimeError::Buffer(BufferError::ForeignAccess));
@@ -137,12 +169,28 @@ impl<S: ProcessingSample> ExecutionPlan<S> {
             processor.validate_io(&spec.io)?;
             let bindings = parameters.bindings(spec.processor);
             processor.validate_parameters(parameters.view(&bindings))?;
+            signal_bindings.push(processor.signal_bindings().to_vec().into_boxed_slice());
             ops.push(PreparedOp {
                 runtime: index,
                 io: spec.io,
                 params: bindings,
+                signals: None,
             });
         }
+        let signal_update = match host {
+            Some(host) => {
+                let prepared = PreparedSignalPlan::prepare(host, &signal_bindings)?;
+                let (update, operations) = prepared.into_parts();
+                for (op, signals) in ops.iter_mut().zip(operations) {
+                    op.signals = signals;
+                }
+                Some(update)
+            }
+            None if signal_bindings.iter().any(|bindings| !bindings.is_empty()) => {
+                return Err(RuntimeError::SignalsRequireHost);
+            }
+            None => None,
+        };
         Ok(Self {
             arena,
             ops: ops.into_boxed_slice(),
@@ -150,6 +198,7 @@ impl<S: ProcessingSample> ExecutionPlan<S> {
             config,
             revision: parameters.revision(),
             epoch: parameters.epoch(),
+            signal_update,
         })
     }
 }
@@ -161,6 +210,33 @@ pub struct Engine<S: ProcessingSample> {
     timeline: u64,
     snapshot: PlanSnapshot,
     swaps: Option<swap::RtPlanPort<S>>,
+    signal_host: Option<moiren_signal::RtHost>,
+}
+
+pub struct SignalAttachFailure {
+    pub host: moiren_signal::RtHost,
+    pub error: SignalAttachError,
+}
+
+impl std::fmt::Debug for SignalAttachFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SignalAttachFailure")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum SignalAttachError {
+    #[error("a signal host is already attached")]
+    AlreadyAttached,
+    #[error("the engine has no prepared signal plan")]
+    NoSignalPlan,
+    #[error("the engine has already rendered")]
+    AlreadyRendered,
+    #[error(transparent)]
+    Activate(#[from] moiren_signal::ActivateError),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderReport {
@@ -193,10 +269,49 @@ impl<S: ProcessingSample> Engine<S> {
             timeline: 0,
             snapshot,
             swaps: None,
+            signal_host: None,
         })
     }
     pub fn timeline(&self) -> u64 {
         self.timeline
+    }
+    /// Attaches the stable signal host before rendering, on a non-RT thread.
+    /// Successful activation releases the host's previous prepared ownership.
+    pub fn attach_signal_host(
+        &mut self,
+        mut host: moiren_signal::RtHost,
+    ) -> Result<(), SignalAttachFailure> {
+        if self.signal_host.is_some() {
+            return Err(SignalAttachFailure {
+                host,
+                error: SignalAttachError::AlreadyAttached,
+            });
+        }
+        if self.timeline != 0 {
+            return Err(SignalAttachFailure {
+                host,
+                error: SignalAttachError::AlreadyRendered,
+            });
+        }
+        let Some(update) = self.plan.signal_update.take() else {
+            return Err(SignalAttachFailure {
+                host,
+                error: SignalAttachError::NoSignalPlan,
+            });
+        };
+        match host.activate(update) {
+            Ok(_retired) => {
+                self.signal_host = Some(host);
+                Ok(())
+            }
+            Err(failure) => {
+                self.plan.signal_update = Some(failure.update);
+                Err(SignalAttachFailure {
+                    host,
+                    error: failure.error.into(),
+                })
+            }
+        }
     }
     /// Non-RT only, after the output owner has joined. Poll existing replies,
     /// then retire and retry after draining replies until this returns zero.
@@ -223,7 +338,13 @@ impl<S: ProcessingSample> Engine<S> {
         let end = start
             .checked_add(frames as u64)
             .ok_or(RuntimeError::TimelineOverflow)?;
+        if self.plan.signal_update.is_some() && self.signal_host.is_none() {
+            return Err(RuntimeError::MissingSignalHost);
+        }
         self.apply_pending_plan();
+        if let Some(host) = &mut self.signal_host {
+            host.begin_block();
+        }
         // Snapshot availability once: concurrent producer traffic cannot make
         // callback work unbounded or sneak new events into the current batch.
         let budget = self
@@ -248,11 +369,18 @@ impl<S: ProcessingSample> Engine<S> {
             for op in &self.plan.ops {
                 let processor = &mut self.resources.instances[op.runtime].processor;
                 let params = self.parameters.view(&op.params);
+                let mut empty = ();
+                let signals = match (&mut self.signal_host, &op.signals) {
+                    (Some(host), Some(bindings)) => {
+                        ProcessSignals::from_scope(host.scope(bindings))
+                    }
+                    _ => ProcessSignals::empty(&mut empty),
+                };
                 self.plan.arena.with_io(&op.io, window.clone(), |mut io| {
                     // All samples were initialized at allocation. This clear also
                     // prevents stale output when a safe processor only writes a prefix.
                     io.clear_outputs();
-                    processor.process(&ctx, io, params);
+                    processor.process(&ctx, io, params, signals);
                 })?;
             }
             self.parameters.advance(count);

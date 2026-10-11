@@ -133,7 +133,12 @@ fn render_ramped<S: ProcessingSample>(
         );
         arena
             .with_io(&io, start..start + frames, |io| {
-                processor.process(&ctx, io, parameters.view(&bindings))
+                processor.process(
+                    &ctx,
+                    io,
+                    parameters.view(&bindings),
+                    crate::signal::ProcessSignals::empty(&mut ()),
+                )
             })
             .unwrap();
         parameters.advance(frames);
@@ -453,6 +458,7 @@ fn compressor_leaves_samples_outside_active_window_untouched() {
                         },
                         io,
                         parameters.view(&bindings),
+                        crate::signal::ProcessSignals::empty(&mut ()),
                     )
                 })
                 .unwrap();

@@ -163,7 +163,13 @@ impl<S: ProcessingSample, T: RtAudioSource<S>> RtProcessor<S> for InputNode<S, T
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
         validate_source_io(io, self.config.channels)
     }
-    fn process(&mut self, ctx: &ProcessContext, io: ProcessIo<'_, S>, _: ProcessParameters<'_>) {
+    fn process(
+        &mut self,
+        ctx: &ProcessContext,
+        io: ProcessIo<'_, S>,
+        _: ProcessParameters<'_>,
+        _signals: crate::signal::ProcessSignals<'_>,
+    ) {
         if let ProcessIo::Separate { mut outputs, .. } = io {
             let (report, invalid) = read_source(&mut self.source, ctx, &mut outputs);
             self.telemetry.publish(ctx, report, invalid);
@@ -210,7 +216,13 @@ impl<S: ProcessingSample, T: RtAudioSink<S>> RtProcessor<S> for OutputNode<S, T>
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
         validate_sink_io(io, self.config.channels)
     }
-    fn process(&mut self, ctx: &ProcessContext, io: ProcessIo<'_, S>, _: ProcessParameters<'_>) {
+    fn process(
+        &mut self,
+        ctx: &ProcessContext,
+        io: ProcessIo<'_, S>,
+        _: ProcessParameters<'_>,
+        _signals: crate::signal::ProcessSignals<'_>,
+    ) {
         if let ProcessIo::ReadOnly { inputs } = io {
             let input = inputs.get(0).expect("validated output node input");
             let frames = input.frames();
