@@ -83,12 +83,14 @@ impl<S: ProcessingSample> Builder<S> {
                 processor
             }
             NodeKind::Compressor => {
-                let settings = if let Some(Binding::Compressor(settings)) = binding {
-                    settings
-                } else {
-                    Default::default()
-                };
-                let processor = self.processor(Compressor::new())?;
+                let (settings, publisher) =
+                    if let Some(Binding::Compressor(settings, publisher)) = binding {
+                        (settings, publisher)
+                    } else {
+                        (Default::default(), None)
+                    };
+                let compressor = publisher.map_or_else(Compressor::new, Compressor::with_signal);
+                let processor = self.processor(compressor)?;
                 self.params
                     .extend(Compressor::parameters(processor, settings));
                 processor

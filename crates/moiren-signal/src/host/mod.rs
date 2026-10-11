@@ -264,6 +264,7 @@ impl HostControl {
                         key,
                         identity,
                         topic: topic.id,
+                        capacity: slot.cell.capacity(),
                         pointer,
                         refresh,
                         slot,

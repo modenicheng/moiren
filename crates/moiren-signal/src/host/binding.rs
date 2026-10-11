@@ -24,6 +24,7 @@ pub(crate) struct BindingOwner {
     pub(crate) key: BindingKey,
     pub(crate) identity: u64,
     pub(crate) topic: TopicId,
+    pub(crate) capacity: usize,
     pub(crate) pointer: Pointer,
     pub(crate) refresh: fn(Pointer, crate::DemandSnapshot),
     pub(crate) slot: Owner<SlotRoot>,
@@ -187,6 +188,10 @@ pub struct PreparedPublisher<P: Shape> {
     pub(crate) marker: PhantomData<fn(P) -> P>,
 }
 impl<P: Shape> PreparedPublisher<P> {
+    /// Immutable element capacity from preparation; value topics report zero.
+    pub fn capacity(&self) -> usize {
+        self.binding.owner.capacity
+    }
     pub fn handle(&self) -> PublisherHandle<P> {
         let owner = &self.binding.owner;
         PublisherHandle {
@@ -256,5 +261,41 @@ impl OpSignalBindings {
             _root: self._root.clone(),
             _charge: charge,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{BlockInit, Bus};
+
+    #[test]
+    fn prepared_capacity_is_immutable_metadata_while_the_host_writes() {
+        let mut bus = Bus::new(Default::default()).unwrap();
+        let topic = bus
+            .register_latest_block(
+                "capacity",
+                BlockInit {
+                    header: 0_u64,
+                    element: 0.0_f32,
+                    capacity: 2,
+                },
+            )
+            .unwrap();
+        let _subscriber = bus.subscribe(&topic, Default::default()).unwrap();
+        let (control, mut host) = bus.create_host(2).unwrap();
+        let publisher = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        assert_eq!(publisher.capacity(), 2);
+        let update = control.prepare_update(&[publisher.erase()]).unwrap();
+        let op = update.op_bindings(publisher.erase().key()).unwrap();
+        drop(host.activate(update).unwrap());
+        host.begin_block();
+        let mut scope = host.scope(&op);
+        let mut write = scope.try_write(&publisher.handle(), 2).unwrap();
+        write.elements_mut().fill(3.0);
+        assert_eq!(publisher.capacity(), 2);
+        write.commit(2).unwrap();
+        assert_eq!(publisher.capacity(), 2);
     }
 }

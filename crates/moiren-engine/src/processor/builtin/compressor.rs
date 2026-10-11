@@ -5,6 +5,7 @@ use crate::{
     sample::ProcessingSample,
 };
 use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
+use moiren_signal::{ErasedBinding, LatestValue, PreparedPublisher, PublisherHandle};
 
 /// Initial control-side values. Gains, threshold and knee are dB; times are ms.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -44,6 +45,20 @@ impl Default for CompressorSettings {
 pub struct Compressor {
     reduction_db: f64,
     hold_elapsed_frames: u64,
+    signal: Option<CompressorSignal>,
+}
+
+struct CompressorSignal {
+    publisher: PublisherHandle<LatestValue<f32>>,
+    bindings: [ErasedBinding; 1],
+}
+
+impl std::fmt::Debug for CompressorSignal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CompressorSignal")
+            .finish_non_exhaustive()
+    }
 }
 
 impl Compressor {
@@ -74,6 +89,17 @@ impl Compressor {
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Prepares optional publication of the detector's positive dB attenuation.
+    pub fn with_signal(publisher: PreparedPublisher<LatestValue<f32>>) -> Self {
+        Self {
+            signal: Some(CompressorSignal {
+                publisher: publisher.handle(),
+                bindings: [publisher.erase()],
+            }),
+            ..Self::default()
+        }
     }
 
     /// All ten values have bounded float domains; invalid initial settings are
@@ -153,6 +179,9 @@ impl Compressor {
 }
 
 impl<S: ProcessingSample> RtProcessor<S> for Compressor {
+    fn signal_bindings(&self) -> &[ErasedBinding] {
+        self.signal.as_ref().map_or(&[], |signal| &signal.bindings)
+    }
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
         if io.input_count() != 1
             || io.output_count() != 1
@@ -190,7 +219,7 @@ impl<S: ProcessingSample> RtProcessor<S> for Compressor {
         ctx: &ProcessContext,
         io: ProcessIo<'_, S>,
         params: ProcessParameters<'_>,
-        _signals: crate::signal::ProcessSignals<'_>,
+        mut signals: crate::signal::ProcessSignals<'_>,
     ) {
         let ramps: [_; 10] = std::array::from_fn(|index| {
             params
@@ -231,6 +260,176 @@ impl<S: ProcessingSample> RtProcessor<S> for Compressor {
                 }
             }
             ProcessIo::ReadOnly { .. } => unreachable!("compressor requires an output"),
+        }
+        if let Some(signal) = &self.signal
+            && signals
+                .demand(&signal.publisher)
+                .is_ok_and(|demand| demand.active)
+        {
+            let _ = signals.publish(&signal.publisher, self.reduction_db as f32);
+        }
+    }
+}
+
+#[cfg(test)]
+mod signal_tests {
+    use super::*;
+    use crate::{
+        buffer::{BufferArena, BufferSlotLayout, PortAccess},
+        control::parameter_channel,
+    };
+    use moiren_signal::{Bus, PumpBudget};
+
+    #[test]
+    fn signal_publishes_private_reduction_field_and_demand_never_resets_dsp() {
+        fn check<S: ProcessingSample>(in_place: bool) {
+            let mut bus = Bus::new(Default::default()).unwrap();
+            let topic = bus
+                .register_latest_value("compressor/private", 0.0_f32)
+                .unwrap();
+            let (control, mut host) = bus.create_host(2).unwrap();
+            let key = control.new_binding().unwrap();
+            let publisher = control.prepare(&topic, key).unwrap();
+            let update = control.prepare_update(&[publisher.erase()]).unwrap();
+            let op = update.op_bindings(key).unwrap();
+            drop(host.activate(update).unwrap());
+            let mut compressor = Compressor::with_signal(publisher);
+            let mut baseline = Compressor::new();
+            let settings = CompressorSettings {
+                threshold_db: -12.0,
+                knee_db: 0.0,
+                attack_ms: 2.0,
+                input_gain_db: 6.0,
+                makeup_gain_db: 3.0,
+                output_gain_db: -2.0,
+                mix: 0.0,
+                ..Default::default()
+            };
+            let (_, parameters) = parameter_channel(
+                Compressor::parameters(ProcessorId(1), settings).to_vec(),
+                1,
+                1,
+                4,
+                64,
+            )
+            .unwrap();
+            let params = parameters.bindings(ProcessorId(1));
+            let mut arena = BufferArena::<S>::new(
+                &[BufferSlotLayout {
+                    channels: 2,
+                    capacity_frames: 4,
+                }; 2],
+                4096,
+            )
+            .unwrap();
+            let input = arena.slot(0).unwrap();
+            let output = if in_place {
+                input
+            } else {
+                arena.slot(1).unwrap()
+            };
+            let write = arena
+                .prepare_io(&[PortAccess::Write {
+                    port: 0,
+                    slot: input,
+                }])
+                .unwrap();
+            let ports = if in_place {
+                vec![PortAccess::InPlace {
+                    input: 0,
+                    output: 0,
+                    slot: input,
+                }]
+            } else {
+                vec![
+                    PortAccess::Read {
+                        port: 0,
+                        slot: input,
+                    },
+                    PortAccess::Write {
+                        port: 0,
+                        slot: output,
+                    },
+                ]
+            };
+            let io = arena.prepare_io(&ports).unwrap();
+            let mut subscriber = None;
+            let mut last_reduction = 0.0;
+            for block in 0..4 {
+                if block == 1 || block == 3 {
+                    subscriber = Some(bus.subscribe(&topic, Default::default()).unwrap());
+                }
+                if block == 2 {
+                    subscriber = None;
+                }
+                host.begin_block();
+                let ctx = ProcessContext {
+                    timeline_epoch: 1,
+                    timeline_start: block * 4,
+                    frames: 4,
+                    processing_sr: 1000.0,
+                };
+                for enabled in [false, true] {
+                    arena
+                        .with_io(&write, 0..4, |io| {
+                            let ProcessIo::Separate { mut outputs, .. } = io else {
+                                panic!()
+                            };
+                            for channel in outputs.get_mut(0).unwrap().channels_mut() {
+                                channel.fill(S::from_f64(1.0));
+                            }
+                        })
+                        .unwrap();
+                    arena
+                        .with_io(&io, 0..4, |io| {
+                            if enabled {
+                                compressor.process(
+                                    &ctx,
+                                    io,
+                                    parameters.view(&params),
+                                    host.scope(&op).into(),
+                                );
+                            } else {
+                                baseline.process(
+                                    &ctx,
+                                    io,
+                                    parameters.view(&params),
+                                    crate::signal::ProcessSignals::empty(&mut ()),
+                                );
+                            }
+                        })
+                        .unwrap();
+                }
+                assert_eq!(compressor.reduction_db, baseline.reduction_db);
+                assert_eq!(compressor.hold_elapsed_frames, baseline.hold_elapsed_frames);
+                assert!(compressor.reduction_db > last_reduction);
+                last_reduction = compressor.reduction_db;
+                bus.pump(PumpBudget {
+                    topic_checks: 1024,
+                    deliveries: 128,
+                    copy_bytes: 65536,
+                });
+                if let Some(reader) = &mut subscriber {
+                    assert_eq!(
+                        reader.read_latest().unwrap().value,
+                        compressor.reduction_db as f32
+                    );
+                }
+                assert_eq!(
+                    topic.stats().attempts,
+                    if block < 1 {
+                        0
+                    } else if block < 3 {
+                        1
+                    } else {
+                        2
+                    }
+                );
+            }
+        }
+        for in_place in [false, true] {
+            check::<f32>(in_place);
+            check::<f64>(in_place);
         }
     }
 }

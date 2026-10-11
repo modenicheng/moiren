@@ -71,6 +71,7 @@ impl<S: Clone + Send + 'static> ErasedCell for Cell<S> {
 
 pub(crate) struct RootInner {
     owner: Box<dyn ErasedCell>,
+    capacity: usize,
     charge: Option<Charge>,
 }
 
@@ -80,6 +81,7 @@ pub(crate) struct CellRoot(Option<Arc<RootInner>>);
 impl CellRoot {
     pub(crate) fn new<S: Clone + Send + 'static>(producer: Producer<S>, capacity: usize) -> Self {
         Self(Some(Arc::new(RootInner {
+            capacity,
             owner: Box::new(Cell {
                 writer: UnsafeCell::new(Writer {
                     producer,
@@ -93,6 +95,9 @@ impl CellRoot {
             }),
             charge: None,
         })))
+    }
+    pub(crate) fn capacity(&self) -> usize {
+        self.0.as_ref().expect("live cell").capacity
     }
     pub(crate) fn attach_charge(&mut self, charge: Charge) {
         Arc::get_mut(self.0.as_mut().expect("live cell"))

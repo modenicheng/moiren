@@ -11,6 +11,7 @@ mod observers;
 mod reference;
 mod rendering;
 mod sends;
+mod signal_measurement;
 mod validation;
 
 fn config() -> CompileConfig {

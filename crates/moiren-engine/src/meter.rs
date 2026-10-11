@@ -7,6 +7,8 @@ use crate::{
 };
 use rtrb::{Consumer, Producer, RingBuffer};
 
+pub mod signal;
+
 #[derive(Debug, Clone, Copy)]
 pub struct LevelSnapshot {
     pub timeline_epoch: u64,

@@ -16,7 +16,10 @@ pub(super) enum Binding<S: ProcessingSample> {
     Io(Box<dyn RtProcessor<S>>),
     Gain(f64),
     Pan(f64),
-    Compressor(CompressorSettings),
+    Compressor(
+        CompressorSettings,
+        Option<moiren_signal::PreparedPublisher<moiren_signal::LatestValue<f32>>>,
+    ),
 }
 
 /// Prepared backend ownership and initial DSP values, separate from editable
@@ -56,7 +59,7 @@ impl<S: ProcessingSample> NodeBindings<S> {
                 (NodeKind::Source, Binding::Io(p)) => p.role() == ProcessorRole::Source,
                 (NodeKind::Sink, Binding::Io(p)) => p.role() == ProcessorRole::Sink,
                 (NodeKind::Gain, Binding::Gain(_)) | (NodeKind::Pan, Binding::Pan(_)) => true,
-                (NodeKind::Compressor, Binding::Compressor(_)) => true,
+                (NodeKind::Compressor, Binding::Compressor(_, _)) => true,
                 _ => false,
             };
             if !valid {
@@ -117,7 +120,16 @@ impl<S: ProcessingSample> NodeBindings<S> {
         node: NodeId,
         settings: CompressorSettings,
     ) -> Result<(), CompileError> {
-        self.insert(node, Binding::Compressor(settings))
+        self.insert(node, Binding::Compressor(settings, None))
+    }
+
+    pub fn bind_compressor_with_signal(
+        &mut self,
+        node: NodeId,
+        settings: CompressorSettings,
+        publisher: moiren_signal::PreparedPublisher<moiren_signal::LatestValue<f32>>,
+    ) -> Result<(), CompileError> {
+        self.insert(node, Binding::Compressor(settings, Some(publisher)))
     }
 
     pub fn observe_output(

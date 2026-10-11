@@ -99,13 +99,17 @@ pub(crate) struct LatestStorage<S: Clone + Send> {
     pub(crate) fanout: Fanout,
 }
 
-impl<S: Clone + Send + 'static> LatestStorage<S> {
+impl<S: Payload> LatestStorage<S> {
     pub(crate) fn new(template: S) -> Self {
+        let capacity = template.element_count();
         let (input, output) = triple_buffer::TripleBuffer::new(&template).split();
         Self {
             dispatch: template.clone(),
             template,
-            cell: crate::host::slot::CellRoot::new(crate::host::slot::Producer::Latest(input), 0),
+            cell: crate::host::slot::CellRoot::new(
+                crate::host::slot::Producer::Latest(input),
+                capacity,
+            ),
             output,
             state: StateHandle::new(),
             senders: std::array::from_fn(|_| None),

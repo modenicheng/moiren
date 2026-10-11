@@ -11,6 +11,41 @@ fn immediate() -> CompressorSettings {
     }
 }
 
+#[test]
+fn compressor_signal_preparation_preserves_parameter_validation_and_legacy_bindings() {
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let topic = bus
+        .register_latest_value("processor/reduction", 0.0_f32)
+        .unwrap();
+    let (control, _host) = bus.create_host(2).unwrap();
+    let compressor = Compressor::with_signal(
+        control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap(),
+    );
+    assert!(RtProcessor::<f64>::signal_bindings(&Compressor::new()).is_empty());
+    assert_eq!(RtProcessor::<f64>::signal_bindings(&compressor).len(), 1);
+    let (_, params) = parameter_channel(
+        Compressor::parameters(PROCESSOR, immediate()).to_vec(),
+        1,
+        1,
+        4,
+        16,
+    )
+    .unwrap();
+    let bindings = params.bindings(PROCESSOR);
+    assert_eq!(
+        RtProcessor::<f64>::validate_parameters(&compressor, params.view(&bindings)),
+        Ok(())
+    );
+    let (_, params) = parameter_channel(vec![], 1, 1, 4, 16).unwrap();
+    let bindings = params.bindings(PROCESSOR);
+    assert_eq!(
+        RtProcessor::<f64>::validate_parameters(&compressor, params.view(&bindings)),
+        Err(ProcessorError::MissingParameter)
+    );
+}
+
 fn db(value: f64) -> f64 {
     10.0_f64.powf(value / 20.0)
 }

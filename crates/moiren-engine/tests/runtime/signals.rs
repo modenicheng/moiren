@@ -274,3 +274,141 @@ fn independent_observers_with_one_key_are_scoped_and_empty_permissions_are_inact
         .render(4)
         .unwrap();
 }
+
+#[test]
+fn meter_and_compressor_demand_transitions_keep_full_dsp_and_zero_heap_work() {
+    use moiren_engine::{
+        meter::signal::{AudioWindow, ChannelLevel, SignalLevelMeter},
+        processor::CompressorSettings,
+    };
+    use moiren_signal::BlockInit;
+
+    let mut bus = Bus::new(Default::default()).unwrap();
+    let reduction = bus
+        .register_latest_value("runtime/compressor", 0.0_f32)
+        .unwrap();
+    let levels = bus
+        .register_latest_block(
+            "runtime/levels",
+            BlockInit {
+                header: AudioWindow {
+                    timeline_epoch: 0,
+                    frame_start: 0,
+                    frame_end: 0,
+                    sample_rate: 0.0,
+                },
+                element: ChannelLevel {
+                    peak: 0.0,
+                    rms: 0.0,
+                },
+                capacity: 2,
+            },
+        )
+        .unwrap();
+    let (control, host) = bus.create_host(2).unwrap();
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 2).unwrap();
+    let compressor = graph.create_node(NodeKind::Compressor, 2).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
+    for (from, to) in [(source, compressor), (compressor, sink)] {
+        graph
+            .connect(
+                graph.get_node(from).unwrap().outputs()[0].id(),
+                graph.get_node(to).unwrap().inputs()[0].id(),
+                SendParams::default(),
+            )
+            .unwrap();
+    }
+    let mut bindings = NodeBindings::new();
+    bindings
+        .bind_source(
+            source,
+            ConstantSource {
+                channels: 2,
+                value: 1.0,
+            },
+        )
+        .unwrap();
+    bindings
+        .bind_compressor_with_signal(
+            compressor,
+            CompressorSettings {
+                threshold_db: -12.0,
+                attack_ms: 0.0,
+                knee_db: 0.0,
+                ..Default::default()
+            },
+            control
+                .prepare(&reduction, control.new_binding().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+    bindings
+        .observe_output(
+            graph.get_node(compressor).unwrap().outputs()[0].id(),
+            SignalLevelMeter::new(
+                2,
+                4,
+                control
+                    .prepare(&levels, control.new_binding().unwrap())
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let (writer, mut audio) = audio_bridge::<f64>(2, 32, 4096).unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    let mut compiled = compile_with_signals(&graph, bindings, config(1), &control).unwrap();
+    compiled.engine.attach_signal_host(host).unwrap();
+    for frames in [2, 4] {
+        let (_, counts) = track_allocations(|| compiled.engine.render(frames).unwrap());
+        assert_eq!(counts, (0, 0));
+    }
+    assert_eq!(levels.stats().attempts, 0);
+    assert_eq!(reduction.stats().attempts, 0);
+    let level_reader = bus.subscribe(&levels, Default::default()).unwrap();
+    let mut reduction_reader = bus.subscribe(&reduction, Default::default()).unwrap();
+    let (_, counts) = track_allocations(|| compiled.engine.render(2).unwrap());
+    assert_eq!(counts, (0, 0));
+    pump(&mut bus);
+    assert_eq!(reduction_reader.read_latest().unwrap().value, 9.0);
+    assert_eq!(levels.stats().attempts, 0);
+    drop((level_reader, reduction_reader));
+    let (_, counts) = track_allocations(|| compiled.engine.render(4).unwrap());
+    assert_eq!(counts, (0, 0));
+    assert_eq!(levels.stats().attempts, 0);
+    assert_eq!(reduction.stats().attempts, 1);
+    let mut level_reader = bus.subscribe(&levels, Default::default()).unwrap();
+    let mut reduction_reader = bus.subscribe(&reduction, Default::default()).unwrap();
+    let (_, counts) = track_allocations(|| compiled.engine.render(2).unwrap());
+    assert_eq!(counts, (0, 0));
+    pump(&mut bus);
+    assert!(level_reader.read_latest().is_none());
+    assert_eq!(reduction_reader.read_latest().unwrap().value, 9.0);
+    let (_, counts) = track_allocations(|| compiled.engine.render(2).unwrap());
+    assert_eq!(counts, (0, 0));
+    pump(&mut bus);
+    let read = level_reader.read_latest().unwrap();
+    assert_eq!(
+        *read.header(),
+        AudioWindow {
+            timeline_epoch: 3,
+            frame_start: 12,
+            frame_end: 16,
+            sample_rate: 48_000.0
+        }
+    );
+    let expected = 10.0_f64.powf(-9.0 / 20.0);
+    assert_eq!(
+        read.elements(),
+        &[ChannelLevel {
+            peak: expected as f32,
+            rms: expected as f32
+        }; 2]
+    );
+    assert_eq!(levels.stats().attempts, 1);
+    assert_eq!(reduction.stats().attempts, 3);
+    let mut samples = [0.0; 32];
+    audio.read_interleaved(&mut samples).unwrap();
+    assert_eq!(samples, [expected; 32]);
+}
