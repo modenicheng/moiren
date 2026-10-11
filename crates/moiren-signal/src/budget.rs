@@ -1,7 +1,10 @@
 use std::{
     alloc::Layout,
     cell::UnsafeCell,
-    sync::atomic::{AtomicU8, AtomicUsize},
+    sync::{
+        Arc,
+        atomic::{AtomicU8, AtomicUsize, Ordering},
+    },
 };
 
 use crossbeam_utils::CachePadded;
@@ -13,7 +16,7 @@ use crate::{
 
 #[derive(Debug)]
 pub(crate) struct Budget {
-    pub(crate) used: usize,
+    used: Arc<AtomicUsize>,
     limit: usize,
 }
 
@@ -23,18 +26,58 @@ impl Budget {
             return Err(RegisterError::BudgetExceeded);
         }
         Ok(Self {
-            used: baseline,
+            used: Arc::new(AtomicUsize::new(baseline)),
             limit,
         })
     }
 
     pub(crate) fn check(&self, additional: usize) -> Result<usize, RegisterError> {
-        let next = add(self.used, additional)?;
+        let next = add(self.used(), additional)?;
         if next > self.limit {
             return Err(RegisterError::BudgetExceeded);
         }
         Ok(next)
     }
+    pub(crate) fn used(&self) -> usize {
+        self.used.load(Ordering::Acquire)
+    }
+    pub(crate) fn reserve(&self, bytes: usize) -> Charge {
+        let charge = Charge(Some(Arc::new(Reservation {
+            ledger: Arc::clone(&self.used),
+            bytes,
+        })));
+        self.used.fetch_add(bytes, Ordering::AcqRel);
+        charge
+    }
+}
+
+struct Reservation {
+    ledger: Arc<AtomicUsize>,
+    bytes: usize,
+}
+
+#[derive(Clone)]
+/// Shared credit is released after resource owners and this Arc allocation.
+/// Every handle uses into_inner, so concurrent final drops elect one refund.
+pub(crate) struct Charge(Option<Arc<Reservation>>);
+impl Drop for Charge {
+    fn drop(&mut self) {
+        if let Some(reservation) = Arc::into_inner(self.0.take().expect("live reservation")) {
+            reservation
+                .ledger
+                .fetch_sub(reservation.bytes, Ordering::AcqRel);
+        }
+    }
+}
+
+pub(crate) fn reservation_bytes() -> Result<usize, RegisterError> {
+    Ok(arc_layout::<Reservation>()?.size())
+}
+pub(crate) fn state_bytes() -> Result<usize, RegisterError> {
+    add(
+        arc_layout::<crate::subscriber::TopicState>()?.size(),
+        reservation_bytes()?,
+    )
 }
 
 pub(crate) fn add(a: usize, b: usize) -> Result<usize, RegisterError> {
@@ -66,9 +109,12 @@ pub(crate) fn latest_subscriber<S: Clone + Send>(
             )?,
             arc_layout::<crate::subscriber::SubscriptionLease>()?.size(),
         )?,
-        element_bytes
-            .checked_mul(3)
-            .ok_or(RegisterError::SizeOverflow)?,
+        add(
+            element_bytes
+                .checked_mul(3)
+                .ok_or(RegisterError::SizeOverflow)?,
+            reservation_bytes()?,
+        )?,
     )
 }
 
@@ -100,12 +146,9 @@ pub(crate) fn latest<S: Clone + Send>(element_bytes: usize) -> Result<usize, Reg
     add(
         add(
             Layout::new::<LatestStorage<S>>().size(),
-            add(
-                latest_shared::<S>()?.size(),
-                arc_layout::<crate::subscriber::TopicState>()?.size(),
-            )?,
+            add(latest_shared::<S>()?.size(), state_bytes()?)?,
         )?,
-        element_bytes,
+        add(element_bytes, reservation_bytes()?)?,
     )
 }
 
@@ -115,11 +158,11 @@ pub(crate) fn stream<S: Clone + Send>(
 ) -> Result<usize, RegisterError> {
     let slots = add(depth, 1)?;
     let queues = add(owner_ring::<S>(slots)?, owner_ring::<S>(depth)?)?;
-    let base = add(
-        Layout::new::<StreamStorage<S>>().size(),
-        arc_layout::<crate::subscriber::TopicState>()?.size(),
-    )?;
-    add(add(base, queues)?, element_bytes)
+    let base = add(Layout::new::<StreamStorage<S>>().size(), state_bytes()?)?;
+    add(
+        add(base, queues)?,
+        add(element_bytes, reservation_bytes()?)?,
+    )
 }
 
 pub(crate) fn stream_subscriber<S>(
@@ -133,11 +176,17 @@ pub(crate) fn stream_subscriber<S>(
                 Layout::new::<crate::subscriber::StreamReceiver<S>>().size(),
                 arc_layout::<crate::subscriber::SubscriptionLease>()?.size(),
             )?,
-            add(owner_ring::<S>(slots)?, owner_ring::<S>(depth)?)?,
+            add(
+                add(owner_ring::<S>(slots)?, owner_ring::<S>(depth)?)?,
+                arc_layout::<std::sync::Mutex<Option<crate::storage::PoolReader<S>>>>()?.size(),
+            )?,
         )?,
-        element_bytes
-            .checked_mul(slots)
-            .ok_or(RegisterError::SizeOverflow)?,
+        add(
+            element_bytes
+                .checked_mul(slots)
+                .ok_or(RegisterError::SizeOverflow)?,
+            reservation_bytes()?,
+        )?,
     )
 }
 
@@ -177,7 +226,5 @@ pub(crate) fn stream_block<H: Copy + Send, E: Copy + Send>(
     capacity: usize,
     depth: usize,
 ) -> Result<usize, RegisterError> {
-    // Immutable template plus depth queued owners plus the writer spare.
-    // Dispatch temporarily owns one of these slots rather than cloning it.
-    stream::<BlockSlot<H, E>>(depth, block_elements::<E>(capacity, add(depth, 2)?)?)
+    stream::<BlockSlot<H, E>>(depth, block_elements::<E>(capacity, add(depth, 3)?)?)
 }

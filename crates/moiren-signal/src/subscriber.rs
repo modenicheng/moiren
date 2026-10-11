@@ -1,7 +1,9 @@
 use crate::{
     LatestBlock, LatestValue, PublicationMeta, PublisherStatus, ReadError, Shape, StreamBlock,
-    StreamValue, TopicLifecycle, TopicStatus,
+    StreamValue, SubscriberStats, TopicLifecycle, TopicStatus,
+    budget::Charge,
     demand::Demand,
+    lifecycle::StateHandle,
     storage::Payload,
     storage::{BlockSlot, PoolReader, ValueSlot},
 };
@@ -9,7 +11,7 @@ use std::{
     any::Any,
     marker::PhantomData,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -23,6 +25,8 @@ pub(crate) struct TopicState {
     // This bitmap lives in the still-charged topic allocation, not the lease
     // whose final Arc drop can still be running when strong_count reaches zero.
     pub(crate) retired_receivers: AtomicU64,
+    pub(crate) gate: Mutex<usize>,
+    pub(crate) charge: Option<Charge>,
 }
 impl TopicState {
     pub(crate) fn new() -> Self {
@@ -32,14 +36,32 @@ impl TopicState {
             ingress_drops: AtomicU64::new(0),
             publisher_bound: AtomicBool::new(false),
             retired_receivers: AtomicU64::new(0),
+            gate: Mutex::new(0),
+            charge: None,
+        }
+    }
+    pub(crate) fn status(&self) -> TopicStatus {
+        TopicStatus {
+            lifecycle: if self.demand.is_closed() {
+                TopicLifecycle::Closed
+            } else {
+                TopicLifecycle::Registered
+            },
+            publisher: if self.publisher_bound.load(Ordering::Acquire) {
+                PublisherStatus::Bound
+            } else {
+                PublisherStatus::NoPublisher
+            },
         }
     }
 }
 
 pub(crate) struct SubscriptionLease {
-    pub(crate) state: Arc<TopicState>,
+    pub(crate) state: StateHandle,
     pub(crate) counted: bool,
     pub(crate) sender_slot: usize,
+    pub(crate) delivered: AtomicU64,
+    pub(crate) overflow_drops: AtomicU64,
 }
 impl Drop for SubscriptionLease {
     fn drop(&mut self) {
@@ -49,21 +71,34 @@ impl Drop for SubscriptionLease {
     }
 }
 
+impl SubscriptionLease {
+    fn stats(&self) -> SubscriberStats {
+        SubscriberStats {
+            delivered: self.delivered.load(Ordering::Relaxed),
+            overflow_drops: self.overflow_drops.load(Ordering::Relaxed),
+        }
+    }
+}
+
 /// Independently owned receiver. Reading and dropping are non-RT operations.
 pub struct Subscriber<P: Shape> {
     receiver: Option<Box<dyn Receiver>>,
     marker: PhantomData<fn() -> P>,
+    _charge: Charge,
 }
 
 pub(crate) trait Receiver: Any + Send {
-    fn retirement(&self) -> (Arc<TopicState>, usize);
+    fn retirement(&self) -> (StateHandle, usize);
     fn state(&self) -> &TopicState;
+    fn stats(&self) -> SubscriberStats;
+    fn relinquish(&mut self) {}
 }
 
 impl<P: Shape> Drop for Subscriber<P> {
     fn drop(&mut self) {
-        if let Some(receiver) = self.receiver.take() {
+        if let Some(mut receiver) = self.receiver.take() {
             let (state, slot) = receiver.retirement();
+            receiver.relinquish();
             // Field Drop releases transport handles, loan and lease; the
             // receiver box is also budgeted. Signal completion after its free.
             drop(receiver);
@@ -92,37 +127,48 @@ impl<S: Clone + Send> LatestReceiver<S> {
 }
 
 impl<S: Clone + Send + 'static> Receiver for LatestReceiver<S> {
-    fn retirement(&self) -> (Arc<TopicState>, usize) {
-        (Arc::clone(&self.lease.state), self.lease.sender_slot)
+    fn retirement(&self) -> (StateHandle, usize) {
+        (self.lease.state.clone(), self.lease.sender_slot)
     }
     fn state(&self) -> &TopicState {
         &self.lease.state
     }
+    fn stats(&self) -> SubscriberStats {
+        self.lease.stats()
+    }
 }
 
 pub(crate) struct StreamReceiver<S> {
-    pub(crate) reader: PoolReader<S>,
+    pub(crate) reader: Option<PoolReader<S>>,
     // Always resident: swapping a dequeued owner with this loan returns the old
     // owner to free without allocating. A read guard borrows only this slot.
     pub(crate) loan: S,
     pub(crate) lease: Arc<SubscriptionLease>,
     pub(crate) fence: u64,
     pub(crate) generation: u64,
+    pub(crate) retirement: Arc<Mutex<Option<PoolReader<S>>>>,
 }
 impl<S: Send + 'static> Receiver for StreamReceiver<S> {
-    fn retirement(&self) -> (Arc<TopicState>, usize) {
-        (Arc::clone(&self.lease.state), self.lease.sender_slot)
+    fn retirement(&self) -> (StateHandle, usize) {
+        (self.lease.state.clone(), self.lease.sender_slot)
     }
     fn state(&self) -> &TopicState {
         &self.lease.state
     }
+    fn stats(&self) -> SubscriberStats {
+        self.lease.stats()
+    }
+    fn relinquish(&mut self) {
+        *self.retirement.lock().expect("retirement handoff poisoned") = self.reader.take();
+    }
 }
 
 impl<P: Shape> Subscriber<P> {
-    pub(crate) fn new(receiver: Box<dyn Receiver>) -> Self {
+    pub(crate) fn new(receiver: Box<dyn Receiver>, charge: Charge) -> Self {
         Self {
             receiver: Some(receiver),
             marker: PhantomData,
+            _charge: charge,
         }
     }
     pub fn status(&self) -> TopicStatus {
@@ -131,18 +177,13 @@ impl<P: Shape> Subscriber<P> {
             .as_ref()
             .expect("live subscriber receiver")
             .state();
-        TopicStatus {
-            lifecycle: if state.demand.is_closed() {
-                TopicLifecycle::Closed
-            } else {
-                TopicLifecycle::Registered
-            },
-            publisher: if state.publisher_bound.load(Ordering::Acquire) {
-                PublisherStatus::Bound
-            } else {
-                PublisherStatus::NoPublisher
-            },
-        }
+        state.status()
+    }
+    pub fn stats(&self) -> SubscriberStats {
+        self.receiver
+            .as_ref()
+            .expect("live subscriber receiver")
+            .stats()
     }
     fn latest<S: Clone + Send + 'static>(
         &mut self,
@@ -198,7 +239,8 @@ impl<P: Shape> Subscriber<P> {
         if !demand.active {
             return Ok(None);
         }
-        let Ok(slot) = receiver.reader.ready.peek() else {
+        let reader = receiver.reader.as_mut().expect("live receiver reader");
+        let Ok(slot) = reader.ready.peek() else {
             return Ok(None);
         };
         let meta = slot.meta();
@@ -207,14 +249,14 @@ impl<P: Shape> Subscriber<P> {
             || meta.activation_generation != demand.generation
         {
             // One cleanup step only; do not scan a configured depth in a read.
-            let stale = receiver.reader.ready.pop().expect("peeked ready slot");
-            receiver.reader.recycle(stale);
+            let stale = reader.ready.pop().expect("peeked ready slot");
+            reader.recycle(stale);
             return Ok(None);
         }
         check_destination(meta, capacity)?;
-        let slot = receiver.reader.ready.pop().expect("peeked ready slot");
+        let slot = reader.ready.pop().expect("peeked ready slot");
         let previous = std::mem::replace(&mut receiver.loan, slot);
-        receiver.reader.recycle(previous);
+        reader.recycle(previous);
         Ok(Some(&receiver.loan))
     }
 }

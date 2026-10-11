@@ -259,7 +259,7 @@ fn closed_loan_remains_readable_and_storage_stays_charged() {
         .unwrap();
     storage.endpoint().publish_slice(7, &[8, 9]).unwrap();
     storage.deliver_next();
-    let state = std::sync::Arc::clone(&storage.state);
+    let state = storage.state.clone();
     let before = bus.budget_used();
     let guard = subscriber.next().unwrap();
     state.demand.close();
@@ -285,7 +285,7 @@ fn barriers_order_subscription_fence_against_commit_allocation_before_enqueue() 
         let (standin, _standin_reader) = crate::storage::pool(&storage.template, 2);
         let mut writer = std::mem::replace(&mut storage.writer, standin);
         let mut sequence = std::mem::take(&mut storage.sequence);
-        let state = Arc::clone(&storage.state);
+        let state = storage.state.clone();
         let demand = state.demand.snapshot();
         let gate = Arc::new(crate::sequence::CommitGate::new());
         sequence.pause_after_allocate(Arc::clone(&gate));
@@ -464,7 +464,7 @@ fn no_demand_closed_and_sequence_exhaustion_abort_without_payload_free() {
         allocator::Counts::default()
     );
     storage.sequence = Default::default();
-    let state = std::sync::Arc::clone(&storage.state);
+    let state = storage.state.clone();
     assert_eq!(
         allocator::measure(|| {
             let mut endpoint = storage.endpoint();

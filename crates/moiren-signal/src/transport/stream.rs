@@ -7,7 +7,6 @@ use crate::{
     storage::{BlockSlot, PoolWriter, StreamStorage, ValueSlot},
     subscriber::TopicState,
 };
-use std::sync::atomic::Ordering;
 
 /// B5 supplies this typed borrow only after host/scope authority validation.
 pub(crate) struct StreamEndpoint<'a, S> {
@@ -41,7 +40,7 @@ impl<S> StreamEndpoint<'_, S> {
     }
     fn dropped(&mut self) -> Result<u64, PublishError> {
         let sequence = self.sequence.allocate(&self.state.attempt_sequence)?;
-        self.state.ingress_drops.fetch_add(1, Ordering::Relaxed);
+        crate::lifecycle::increment(&self.state.ingress_drops);
         Ok(sequence)
     }
     fn acquire(&mut self) -> Result<StreamWrite<'_, S>, WriteError> {
@@ -101,10 +100,7 @@ impl<S: Payload> StreamWrite<'_, S> {
         } else {
             // Single producer means capacity cannot shrink after acquire. Still
             // retain the owner if enqueue fails, never destructing it on RT.
-            self.endpoint
-                .state
-                .ingress_drops
-                .fetch_add(1, Ordering::Relaxed);
+            crate::lifecycle::increment(&self.endpoint.state.ingress_drops);
             Ok(PublishOutcome::DroppedFull { sequence })
         }
     }
@@ -190,7 +186,7 @@ pub(crate) enum DispatchStep {
     Ready,
 }
 
-// B4 can charge dequeue/cleanup, each receiver copy, and owner return separately.
+// Dispatcher charges dequeue/cleanup and each independent receiver copy.
 // No operation scans a configured Stream depth, including a depth of ZST slots.
 #[cfg_attr(not(test), allow(dead_code))]
 impl<S: Payload> StreamStorage<S> {
@@ -204,7 +200,10 @@ impl<S: Payload> StreamStorage<S> {
             self.reader.recycle(slot);
             return DispatchStep::Discarded;
         }
-        self.dispatch = Some(slot);
+        let mut staging = self.staging.take().expect("prepared dispatch staging");
+        staging.copy_from(&slot);
+        self.reader.recycle(slot);
+        self.dispatch = Some(staging);
         DispatchStep::Ready
     }
     pub(crate) fn deliver_to(&mut self, index: usize) {
@@ -216,7 +215,10 @@ impl<S: Payload> StreamStorage<S> {
         };
         let demand = self.state.demand.snapshot();
         let meta = source.meta();
-        if sender.lease.strong_count() == 0
+        let Some(lease) = sender.lease.upgrade() else {
+            return;
+        };
+        if !lease.counted
             || !demand.active
             || meta.activation_generation != demand.generation
             || meta.activation_generation != sender.generation
@@ -226,16 +228,20 @@ impl<S: Payload> StreamStorage<S> {
         }
         let Some(mut destination) = sender.writer.acquire() else {
             sender.drops = sender.drops.saturating_add(1);
+            crate::lifecycle::increment(&lease.overflow_drops);
             return;
         };
         destination.copy_from(source);
         if !sender.writer.enqueue(destination) {
             sender.drops = sender.drops.saturating_add(1);
+            crate::lifecycle::increment(&lease.overflow_drops);
+        } else {
+            crate::lifecycle::increment(&lease.delivered);
         }
     }
     pub(crate) fn finish_dispatch(&mut self) {
         if let Some(slot) = self.dispatch.take() {
-            self.reader.recycle(slot);
+            self.staging = Some(slot);
         }
     }
     #[cfg(test)]

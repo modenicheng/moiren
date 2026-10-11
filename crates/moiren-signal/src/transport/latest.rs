@@ -3,13 +3,12 @@ use crate::{
     storage::{BlockSlot, LatestStorage, Payload, ValueSlot},
     subscriber::TopicState,
 };
-use std::sync::Arc;
 
 /// Private typed writer borrow. B5 will obtain this only after scope validation.
 pub(crate) struct LatestEndpoint<'a, S: Clone + Send> {
     input: &'a mut triple_buffer::Input<S>,
     sequence: &'a mut crate::sequence::Sequence,
-    state: &'a Arc<TopicState>,
+    state: &'a TopicState,
     demand: DemandSnapshot,
 }
 impl<S: Clone + Send> LatestStorage<S> {
@@ -125,8 +124,8 @@ impl<H: Copy + Send, E: Copy + Send> LatestEndpoint<'_, BlockSlot<H, E>> {
 }
 
 impl<S: Payload> LatestStorage<S> {
-    /// One bounded transport delivery step; the public budgeted pump is B4.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Complete delivery probe for private transport tests only.
+    #[cfg(test)]
     pub(crate) fn deliver_latest(&mut self) {
         self.output.update();
         // A late subscriber may already have updated the consumer-owned slot.
@@ -423,7 +422,7 @@ mod tests {
         let topic = bus.register_latest_value("latest", 99_u32).unwrap();
         let mut subscriber = bus.subscribe(&topic, Default::default()).unwrap();
         let storage = bus.latest_storage_mut::<_, ValueSlot<u32>>(&topic).unwrap();
-        let state = Arc::clone(&storage.state);
+        let state = storage.state.clone();
         {
             let mut endpoint = storage.endpoint();
             let cached = endpoint.demand();
@@ -511,7 +510,7 @@ mod tests {
         let storage = bus
             .latest_storage_mut::<_, BlockSlot<u32, u32>>(&topic)
             .unwrap();
-        let state = Arc::clone(&storage.state);
+        let state = storage.state.clone();
         {
             let mut endpoint = storage.endpoint();
             let mut write = endpoint.try_write(2).unwrap();

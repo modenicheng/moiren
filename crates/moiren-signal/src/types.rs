@@ -1,6 +1,6 @@
 use std::{any::TypeId, marker::PhantomData};
 
-use crate::lifecycle::DirectoryId;
+use crate::lifecycle::{DirectoryId, StateHandle};
 
 /// Resource limits, fixed for a bus's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,9 +89,11 @@ pub struct TopicId {
 }
 
 /// A typed reference to a directory entry, without publication authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Clone and final release are non-RT operations; status/statistics survive closure.
+#[derive(Debug)]
 pub struct Topic<P: Shape> {
     pub(crate) id: TopicId,
+    pub(crate) state: StateHandle,
     pub(crate) marker: PhantomData<fn() -> P>,
 }
 
@@ -99,6 +101,69 @@ impl<P: Shape> Topic<P> {
     pub fn id(&self) -> TopicId {
         self.id
     }
+    pub fn status(&self) -> TopicStatus {
+        self.state.status()
+    }
+    pub fn stats(&self) -> TopicStats {
+        TopicStats {
+            attempts: self
+                .state
+                .attempt_sequence
+                .load(std::sync::atomic::Ordering::Acquire),
+            ingress_drops: self
+                .state
+                .ingress_drops
+                .load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+impl<P: Shape> PartialEq for Topic<P> {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl<P: Shape> Eq for Topic<P> {}
+impl<P: Shape> Clone for Topic<P> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            state: self.state.clone(),
+            marker: PhantomData,
+        }
+    }
+}
+
+/// Maximum paid work for one non-RT pump call. A delivery also covers a
+/// source copy, one discarded ingress owner, or one recipient inspection.
+#[derive(Debug, Clone, Copy)]
+pub struct PumpBudget {
+    pub topic_checks: usize,
+    pub deliveries: usize,
+    pub copy_bytes: usize,
+}
+
+/// `has_pending` conservatively includes unexamined directory slots when
+/// checks run out. `required_copy_bytes` is the largest blocked atomic copy.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PumpReport {
+    pub topic_checks: usize,
+    pub deliveries: usize,
+    pub copy_bytes: usize,
+    pub has_pending: bool,
+    pub required_copy_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TopicStats {
+    pub attempts: u64,
+    pub ingress_drops: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SubscriberStats {
+    pub delivered: u64,
+    pub overflow_drops: u64,
 }
 
 /// The four supported signal shapes. External implementations are sealed out.

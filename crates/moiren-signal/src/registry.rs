@@ -1,14 +1,16 @@
 use std::{
     alloc::Layout,
-    any::Any,
     marker::PhantomData,
     sync::{Arc, atomic::Ordering},
 };
 
 use crate::{
-    BlockInit, BusConfig, LatestBlock, LatestValue, LookupError, RegisterError, Shape, StreamBlock,
-    StreamValue, SubscribeError, SubscriptionOptions, Topic, TopicId,
+    BlockInit, BusConfig, LatestBlock, LatestValue, LookupError, PumpBudget, PumpReport,
+    RegisterError, Shape, StreamBlock, StreamValue, SubscribeError, SubscriptionOptions, Topic,
+    TopicId, UnregisterError,
+    budget::Charge,
     budget::{self, Budget},
+    dispatcher::Dispatch,
     lifecycle::DirectoryId,
     storage::Payload,
     storage::{
@@ -25,7 +27,8 @@ struct Entry {
     mode: Mode,
     // Erasure and name lookup occur only on the non-RT preparation side.
     // No publisher/host bypass is exposed by this directory.
-    storage: Box<dyn Any + Send>,
+    storage: Box<dyn Dispatch>,
+    _charge: Charge,
 }
 
 /// Non-real-time directory and owner of prepared topic resources.
@@ -36,6 +39,7 @@ pub struct Bus {
     count: usize,
     next_generation: u64,
     budget: Budget,
+    pump_cursor: usize,
 }
 
 impl Bus {
@@ -54,7 +58,10 @@ impl Bus {
         let directory_layout = budget::array::<Option<Entry>>(config.max_topics)?;
         // Count the bus's own inline metadata and every fixed directory slot,
         // including vacant entries. No directory growth is possible later.
-        let baseline = budget::add(Layout::new::<Self>().size(), directory_layout.size())?;
+        let baseline = budget::add(
+            budget::add(Layout::new::<Self>().size(), directory_layout.size())?,
+            budget::arc_layout::<std::sync::atomic::AtomicUsize>()?.size(),
+        )?;
         let budget = Budget::new(config.byte_budget, baseline)?;
         let mut entries = Vec::with_capacity(config.max_topics);
         entries.resize_with(config.max_topics, || None);
@@ -68,16 +75,17 @@ impl Bus {
             count: 0,
             next_generation: 1,
             budget,
+            pump_cursor: 0,
         })
     }
 
     /// Bytes owned by the bus: inline metadata, reserved directory slots and
     /// every registered name, transport, template, queue, dispatch and receiver.
     /// Sizes describe allocation layouts, excluding allocator bookkeeping.
-    /// Dropped receiver charges remain reserved until a successful subscription
-    /// reclaims its retired sender; failed preparation never changes the budget.
+    /// Closed topics, retired pools and loans stay charged through their actual
+    /// final release; failed preparation never changes the budget.
     pub fn budget_used(&self) -> usize {
-        self.budget.used
+        self.budget.used()
     }
 
     /// Prepares independent receiver storage before committing business demand.
@@ -88,7 +96,69 @@ impl Bus {
         topic: &Topic<P>,
         options: SubscriptionOptions,
     ) -> Result<Subscriber<P>, SubscribeError> {
+        if topic.id.directory != self.directory {
+            return Err(SubscribeError::ForeignTopic);
+        }
+        let state = topic.state.clone();
+        let _gate = state.gate.lock().expect("lifecycle gate poisoned");
+        if state.demand.is_closed() {
+            return Err(SubscribeError::Closed);
+        }
         P::subscribe(self, topic, options)
+    }
+
+    pub fn has_business_demand(&self) -> bool {
+        self.entries
+            .iter()
+            .flatten()
+            .any(|entry| entry.storage.state().demand.snapshot().active)
+    }
+
+    /// Closes under the preparation/lease gate. Busy changes nothing; successful
+    /// closure frees the directory slot while old subscribers keep their loans.
+    pub fn unregister<P: Shape>(&mut self, topic: &Topic<P>) -> Result<(), UnregisterError> {
+        if topic.id.directory != self.directory {
+            return Err(UnregisterError::ForeignTopic);
+        }
+        let entry = self
+            .entries
+            .get(topic.id.slot)
+            .and_then(Option::as_ref)
+            .filter(|entry| entry.id == topic.id)
+            .ok_or(UnregisterError::Closed)?;
+        entry.storage.state().close()?;
+        let removed = self.entries[topic.id.slot].take();
+        self.count -= 1;
+        drop(removed);
+        Ok(())
+    }
+
+    /// Checks one directory slot and performs at most one charged operation
+    /// per round-robin visit. This method and reclamation are non-RT.
+    pub fn pump(&mut self, budget: PumpBudget) -> PumpReport {
+        let mut report = PumpReport::default();
+        let mut idle = 0;
+        let mut quiet_checks = 0;
+        while report.topic_checks < budget.topic_checks && idle < self.entries.len() {
+            let slot = self.pump_cursor;
+            self.pump_cursor = (slot + 1) % self.entries.len();
+            report.topic_checks += 1;
+            let progressed = if let Some(entry) = &mut self.entries[slot] {
+                let progressed = entry.storage.step(&mut report, budget);
+                quiet_checks = if entry.storage.pending() {
+                    0
+                } else {
+                    quiet_checks + 1
+                };
+                progressed
+            } else {
+                quiet_checks += 1;
+                false
+            };
+            idle = if progressed { 0 } else { idle + 1 };
+        }
+        report.has_pending |= quiet_checks < self.entries.len() && self.count != 0;
+        report
     }
 
     pub(crate) fn latest_storage_mut<P: Shape, S: Payload>(
@@ -106,6 +176,7 @@ impl Bus {
             .ok_or(SubscribeError::Closed)?;
         entry
             .storage
+            .as_any_mut()
             .downcast_mut::<LatestStorage<S>>()
             .ok_or(SubscribeError::ForeignTopic)
     }
@@ -136,18 +207,6 @@ impl Bus {
             .enumerate()
             .position(|(index, sender)| sender.is_none() || retired_slots[index])
             .ok_or(SubscribeError::SubscriberLimit)?;
-        let retired: usize = storage
-            .senders
-            .iter()
-            .zip(retired_slots)
-            .filter_map(|(sender, retire)| {
-                if retire {
-                    sender.as_ref().map(|sender| sender.charged_bytes)
-                } else {
-                    None
-                }
-            })
-            .sum();
         let bytes = budget::latest_subscriber::<S>(storage.template.element_bytes())
             .map_err(|_| SubscribeError::BudgetExceeded)?;
         // The replacement is allocated while retired senders are still staged.
@@ -157,14 +216,15 @@ impl Bus {
             .map_err(|_| SubscribeError::BudgetExceeded)?;
         // Retired resources are only reclaimed after all fallible preparation;
         // failed subscriptions preserve both demand and the charged budget.
-        let base = self.budget.used - retired;
-        let next_budget = budget::add(base, bytes).map_err(|_| SubscribeError::BudgetExceeded)?;
+        let charge = self.budget.reserve(bytes);
         let storage = self.latest_storage_mut::<P, S>(topic)?;
         let (mut input, output) = triple_buffer::TripleBuffer::new(&storage.template).split();
         let lease = Arc::new(SubscriptionLease {
-            state: Arc::clone(&storage.state),
+            state: storage.state.clone(),
             counted: false,
             sender_slot,
+            delivered: std::sync::atomic::AtomicU64::new(0),
+            overflow_drops: std::sync::atomic::AtomicU64::new(0),
         });
         let mut receiver = Box::new(LatestReceiver::new(output, lease));
         let demand = storage.state.demand.add(limit)?;
@@ -173,16 +233,21 @@ impl Bus {
             .counted = true;
         storage.output.update();
         let current = storage.output.output_buffer();
+        let mut seeded_sequence = 0;
         if current.meta().sequence != 0 && current.meta().activation_generation == demand.generation
         {
             input.input_buffer_mut().copy_from(current);
             input.publish();
+            seeded_sequence = current.meta().sequence;
+            crate::lifecycle::increment(&receiver.lease.delivered);
         }
-        for (slot, retire) in storage.senders.iter_mut().zip(retired_slots) {
+        for (index, (slot, retire)) in storage.senders.iter_mut().zip(retired_slots).enumerate() {
             // Drop may race preparation on another subscriber thread. Reclaim
             // exactly the slots whose credit was included in staged accounting.
             if retire {
                 *slot = None;
+                storage.occupied &= !(1 << index);
+                storage.fanout.recipients &= !(1 << index);
             }
         }
         // Only the Bus reuses slots, after observing the old completion. Clear
@@ -194,10 +259,11 @@ impl Bus {
         storage.senders[sender_slot] = Some(LatestSender {
             input,
             lease: Arc::downgrade(&receiver.lease),
-            charged_bytes: bytes,
+            last_sequence: seeded_sequence,
+            _charge: charge.clone(),
         });
-        self.budget.used = next_budget;
-        Ok(Subscriber::new(receiver))
+        storage.occupied |= 1 << sender_slot;
+        Ok(Subscriber::new(receiver, charge))
     }
 
     pub(crate) fn stream_storage_mut<P: Shape, S: Payload>(
@@ -215,6 +281,7 @@ impl Bus {
             .ok_or(SubscribeError::Closed)?;
         entry
             .storage
+            .as_any_mut()
             .downcast_mut::<StreamStorage<S>>()
             .ok_or(SubscribeError::ForeignTopic)
     }
@@ -253,18 +320,6 @@ impl Bus {
             .enumerate()
             .position(|(index, sender)| sender.is_none() || retired_slots[index])
             .ok_or(SubscribeError::SubscriberLimit)?;
-        let retired: usize = storage
-            .senders
-            .iter()
-            .zip(retired_slots)
-            .filter_map(|(sender, retire)| {
-                if retire {
-                    sender.as_ref().map(|sender| sender.charged_bytes)
-                } else {
-                    None
-                }
-            })
-            .sum();
         let bytes = budget::stream_subscriber::<S>(depth, storage.template.element_bytes())
             .map_err(|_| SubscribeError::BudgetExceeded)?;
         // Bound preparation's peak; retained sender/ring/payload owners cannot
@@ -272,21 +327,24 @@ impl Bus {
         self.budget
             .check(bytes)
             .map_err(|_| SubscribeError::BudgetExceeded)?;
-        let next_budget = budget::add(self.budget.used - retired, bytes)
-            .map_err(|_| SubscribeError::BudgetExceeded)?;
+        let charge = self.budget.reserve(bytes);
         let storage = self.stream_storage_mut::<P, S>(topic)?;
         let (writer, reader) = pool(&storage.template, depth);
+        let retirement = Arc::new(std::sync::Mutex::new(None));
         let lease = Arc::new(SubscriptionLease {
-            state: Arc::clone(&storage.state),
+            state: storage.state.clone(),
             counted: false,
             sender_slot,
+            delivered: std::sync::atomic::AtomicU64::new(0),
+            overflow_drops: std::sync::atomic::AtomicU64::new(0),
         });
         let mut receiver = Box::new(StreamReceiver {
-            reader,
+            reader: Some(reader),
             loan: storage.template.clone(),
             lease,
             fence: 0,
             generation: 0,
+            retirement: Arc::clone(&retirement),
         });
         // The commit boundary is sequence allocation, not pump dequeue time.
         receiver.fence = crate::sequence::subscription_fence(&storage.state.attempt_sequence);
@@ -295,9 +353,11 @@ impl Bus {
         Arc::get_mut(&mut receiver.lease)
             .expect("staged sole lease owner")
             .counted = true;
-        for (slot, retire) in storage.senders.iter_mut().zip(retired_slots) {
+        for (index, (slot, retire)) in storage.senders.iter_mut().zip(retired_slots).enumerate() {
             if retire {
                 *slot = None;
+                storage.occupied &= !(1 << index);
+                storage.fanout.recipients &= !(1 << index);
             }
         }
         storage
@@ -310,10 +370,11 @@ impl Bus {
             fence: receiver.fence,
             generation: receiver.generation,
             drops: 0,
-            charged_bytes: bytes,
+            retirement,
+            _charge: charge.clone(),
         });
-        self.budget.used = next_budget;
-        Ok(Subscriber::new(receiver))
+        storage.occupied |= 1 << sender_slot;
+        Ok(Subscriber::new(receiver, charge))
     }
 
     pub fn resolve<P: Shape>(&self, name: &str) -> Result<Topic<P>, LookupError> {
@@ -331,6 +392,7 @@ impl Bus {
         }
         Ok(Topic {
             id: entry.id,
+            state: entry.storage.state().clone(),
             marker: PhantomData,
         })
     }
@@ -489,21 +551,27 @@ impl Bus {
             .checked_add(1)
             .ok_or(RegisterError::GenerationExhausted)?;
         let bytes = budget::add(bytes, budget::array::<u8>(name.len())?.size())?;
-        let next_budget = self.budget.check(bytes)?;
+        self.budget.check(bytes)?;
         Ok(Staged {
             next_generation,
-            next_budget,
+            bytes,
         })
     }
 
-    fn commit<P: Shape, S: Any + Send>(
+    fn commit<P: Shape, S: Dispatch>(
         &mut self,
         name: &str,
         staged: Staged,
-        storage: S,
+        mut storage: S,
     ) -> Result<Topic<P>, RegisterError> {
         // Storage and name ownership remain staged through the last allocation.
         // A panicking factory or allocation never commits a name/slot/generation.
+        let state_bytes = budget::state_bytes()?;
+        storage
+            .state_mut()
+            .attach_charge(self.budget.reserve(state_bytes));
+        let charge = self.budget.reserve(staged.bytes - state_bytes);
+        let state = storage.state().clone();
         let storage = Box::new(storage);
         let name = Box::<str>::from(name);
         let slot = self
@@ -522,12 +590,13 @@ impl Bus {
             payload_type: P::payload_type(),
             mode: Mode::of::<P>(),
             storage,
+            _charge: charge,
         });
         self.next_generation = staged.next_generation;
-        self.budget.used = staged.next_budget;
         self.count += 1;
         Ok(Topic {
             id,
+            state,
             marker: PhantomData,
         })
     }
@@ -535,7 +604,7 @@ impl Bus {
 
 struct Staged {
     next_generation: u64,
-    next_budget: usize,
+    bytes: usize,
 }
 
 #[cfg(test)]

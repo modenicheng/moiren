@@ -66,8 +66,7 @@ impl Demand {
     pub(crate) fn is_closed(&self) -> bool {
         self.0.load(Ordering::Acquire) & CLOSED_MASK != 0
     }
-    // B6 wires this primitive into explicit topic lifecycle transitions.
-    #[cfg_attr(not(test), allow(dead_code))]
+    // Closure preserves the real count so existing lease drops cannot underflow.
     pub(crate) fn close(&self) {
         self.0.fetch_or(CLOSED_MASK, Ordering::AcqRel);
     }

@@ -81,3 +81,13 @@ pub enum ReadError {
     #[error("destination requires at least {required} elements")]
     DestinationTooSmall { required: usize },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum UnregisterError {
+    #[error("topic has a publisher binding or outstanding lifecycle leases")]
+    Busy,
+    #[error("topic is closed")]
+    Closed,
+    #[error("topic does not belong to this bus")]
+    ForeignTopic,
+}

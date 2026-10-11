@@ -273,6 +273,248 @@ fn concurrent_value_receiver_drop_keeps_live_allocations_charged() {
 }
 
 #[test]
+fn bounded_pump_retires_at_most_one_stream_payload_owner_per_paid_step() {
+    use moiren_signal::{PumpBudget, SubscriptionOptions};
+    let mut bus = Bus::new(BusConfig {
+        max_topics: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    let topic = bus
+        .register_stream_block(
+            "retire",
+            BlockInit {
+                header: 7_u32,
+                element: 9_u64,
+                capacity: 2,
+            },
+            2,
+        )
+        .unwrap();
+    let subscriber = bus
+        .subscribe(
+            &topic,
+            SubscriptionOptions {
+                stream_depth: Some(1000),
+            },
+        )
+        .unwrap();
+    drop(subscriber);
+    let before = bus.budget_used();
+    let (report, probe) = allocations::measure(|| {
+        bus.pump(PumpBudget {
+            topic_checks: 1,
+            deliveries: 1,
+            copy_bytes: 0,
+        })
+    });
+    assert_eq!(report.deliveries, 1);
+    let freed = probe.events[..probe.count.min(probe.events.len())]
+        .iter()
+        .filter(|event| !event.allocated)
+        .count();
+    assert!(
+        freed <= 1,
+        "one paid retirement step freed {freed} allocations ({} events)",
+        probe.count
+    );
+    assert!(report.has_pending);
+    assert_eq!(
+        bus.budget_used(),
+        before,
+        "partially retired pool remains reserved"
+    );
+}
+
+#[test]
+fn unregister_and_final_topic_release_refund_only_actual_released_allocations() {
+    fn check<P: moiren_signal::Shape>(register: impl Fn(&mut Bus) -> moiren_signal::Topic<P>) {
+        let mut bus = Bus::new(Default::default()).unwrap();
+        let baseline = bus.budget_used();
+        let (topic, registration) = allocations::measure(|| register(&mut bus));
+        let (subscriber, subscription) =
+            allocations::measure(|| bus.subscribe(&topic, Default::default()).unwrap());
+        let total = bus.budget_used() - baseline;
+        assert_eq!(total as isize, registration.bytes + subscription.bytes);
+        let (_, closure) = allocations::measure(|| bus.unregister(&topic).unwrap());
+        let still_live = total as isize + closure.bytes;
+        assert!(bus.budget_used() as isize - baseline as isize >= still_live);
+        assert!(bus.budget_used() > baseline);
+        let (_, receiver_drop) = allocations::measure(|| drop(subscriber));
+        assert!(
+            bus.budget_used() > baseline,
+            "old Topic retains charged state"
+        );
+        let (_, topic_drop) = allocations::measure(|| drop(topic));
+        assert_eq!(bus.budget_used(), baseline);
+        assert_eq!(
+            registration.bytes
+                + subscription.bytes
+                + closure.bytes
+                + receiver_drop.bytes
+                + topic_drop.bytes,
+            0
+        );
+    }
+    check(|bus| bus.register_latest_value("value", Aligned(7)).unwrap());
+    check(|bus| bus.register_stream_value("value", (), 20).unwrap());
+    check(|bus| {
+        bus.register_latest_block(
+            "block",
+            BlockInit {
+                header: Aligned(7),
+                element: Aligned(8),
+                capacity: 3,
+            },
+        )
+        .unwrap()
+    });
+    check(|bus| {
+        bus.register_stream_block(
+            "block",
+            BlockInit {
+                header: (),
+                element: (),
+                capacity: 3,
+            },
+            20,
+        )
+        .unwrap()
+    });
+    check(|bus| {
+        bus.register_stream_block(
+            "block",
+            BlockInit {
+                header: 7_u32,
+                element: 8_u64,
+                capacity: 3,
+            },
+            20,
+        )
+        .unwrap()
+    });
+}
+
+#[test]
+fn final_state_and_reservation_deallocation_stay_charged_until_allocator_returns() {
+    use std::{
+        sync::{Arc, atomic::Ordering},
+        time::{Duration, Instant},
+    };
+    for reservation in [false, true] {
+        let mut bus = Bus::new(Default::default()).unwrap();
+        let baseline = bus.budget_used();
+        let (topic, prepared) =
+            allocations::measure(|| bus.register_latest_value("final", 7_u32).unwrap());
+        let (_, removed) = allocations::measure(|| bus.unregister(&topic).unwrap());
+        let survivors: Vec<_> = prepared.events[..prepared.count]
+            .iter()
+            .filter(|event| {
+                event.allocated
+                    && !removed.events[..removed.count]
+                        .iter()
+                        .any(|freed| !freed.allocated && freed.pointer == event.pointer)
+            })
+            .collect();
+        assert_eq!(
+            survivors.len(),
+            2,
+            "only Topic state and its reservation remain"
+        );
+        let target = survivors[usize::from(reservation)].pointer;
+        let gate = Arc::new(allocations::DeallocationGate::new(target));
+        let before = bus.budget_used();
+        std::thread::scope(|scope| {
+            struct Resume(Arc<allocations::DeallocationGate>);
+            impl Drop for Resume {
+                fn drop(&mut self) {
+                    self.0.resume.store(true, Ordering::Release);
+                }
+            }
+            let _resume = Resume(Arc::clone(&gate));
+            let worker_gate = Arc::clone(&gate);
+            let worker =
+                scope.spawn(move || allocations::pause_deallocation(worker_gate, || drop(topic)));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !gate.reached.load(Ordering::Acquire) {
+                assert!(
+                    Instant::now() < deadline,
+                    "final deallocation never reached allocator"
+                );
+                std::thread::yield_now();
+            }
+            assert_eq!(
+                bus.budget_used(),
+                before,
+                "no refund before actual final allocation release"
+            );
+            gate.resume.store(true, Ordering::Release);
+            worker.join().unwrap();
+        });
+        assert_eq!(bus.budget_used(), baseline);
+    }
+}
+
+#[test]
+fn closed_receiver_box_deallocation_does_not_refund_its_live_reservation() {
+    use std::{
+        sync::{Arc, atomic::Ordering},
+        time::{Duration, Instant},
+    };
+    let mut bus = Bus::new(Default::default()).unwrap();
+    let baseline = bus.budget_used();
+    let topic = bus
+        .register_stream_block(
+            "closed",
+            BlockInit {
+                header: 7_u32,
+                element: 8_u64,
+                capacity: 5,
+            },
+            2,
+        )
+        .unwrap();
+    let (subscriber, prepared) =
+        allocations::measure(|| bus.subscribe(&topic, Default::default()).unwrap());
+    let receiver = prepared.events[..prepared.count]
+        .iter()
+        .rfind(|event| event.allocated)
+        .unwrap();
+    let gate = Arc::new(allocations::DeallocationGate::new(receiver.pointer));
+    bus.unregister(&topic).unwrap();
+    drop(topic);
+    let before = bus.budget_used();
+    std::thread::scope(|scope| {
+        struct Resume(Arc<allocations::DeallocationGate>);
+        impl Drop for Resume {
+            fn drop(&mut self) {
+                self.0.resume.store(true, Ordering::Release);
+            }
+        }
+        let _resume = Resume(Arc::clone(&gate));
+        let worker_gate = Arc::clone(&gate);
+        let worker =
+            scope.spawn(move || allocations::pause_deallocation(worker_gate, || drop(subscriber)));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !gate.reached.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "closed receiver never reached dealloc"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            bus.budget_used(),
+            before,
+            "receiver reservation survives its box deallocator"
+        );
+        gate.resume.store(true, Ordering::Release);
+        worker.join().unwrap();
+    });
+    assert_eq!(bus.budget_used(), baseline);
+}
+
+#[test]
 fn concurrent_block_receiver_drop_keeps_live_allocations_charged() {
     assert_concurrent_receiver_drop_stays_budgeted(|bus| {
         bus.register_latest_block(

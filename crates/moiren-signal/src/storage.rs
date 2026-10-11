@@ -4,18 +4,16 @@
 //! must clone this template rather than copying any concurrently modified slot.
 
 use crate::{
-    PublicationMeta,
-    sequence::Sequence,
-    subscriber::{SubscriptionLease, TopicState},
+    PublicationMeta, budget::Charge, dispatcher::Fanout, lifecycle::StateHandle,
+    sequence::Sequence, subscriber::SubscriptionLease,
 };
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 pub(crate) struct LatestSender<S: Clone + Send> {
-    // Used by the private delivery probe now; the budgeted public pump is B4.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) input: triple_buffer::Input<S>,
     pub(crate) lease: Weak<SubscriptionLease>,
-    pub(crate) charged_bytes: usize,
+    pub(crate) last_sequence: u64,
+    pub(crate) _charge: Charge,
 }
 
 #[repr(C)]
@@ -39,6 +37,7 @@ pub(crate) trait Payload: Clone + Send + 'static {
     fn copy_from(&mut self, source: &Self);
     fn element_bytes(&self) -> usize;
     fn element_count(&self) -> usize;
+    fn copy_bytes(&self) -> usize;
 }
 impl<T: Copy + Send + 'static> Payload for ValueSlot<T> {
     fn meta(&self) -> PublicationMeta {
@@ -55,6 +54,9 @@ impl<T: Copy + Send + 'static> Payload for ValueSlot<T> {
     }
     fn element_count(&self) -> usize {
         0
+    }
+    fn copy_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
     }
 }
 impl<H: Copy + Send + 'static, E: Copy + Send + 'static> Payload for BlockSlot<H, E> {
@@ -76,6 +78,11 @@ impl<H: Copy + Send + 'static, E: Copy + Send + 'static> Payload for BlockSlot<H
     fn element_count(&self) -> usize {
         self.elements.len()
     }
+    fn copy_bytes(&self) -> usize {
+        crate::budget::block_copy::<H, E>(self.meta.len)
+            .expect("validated payload layout")
+            .size()
+    }
 }
 
 // These owned fields are consumed by the later transport/dispatcher tasks.
@@ -85,10 +92,12 @@ pub(crate) struct LatestStorage<S: Clone + Send> {
     pub(crate) dispatch: S,
     pub(crate) input: triple_buffer::Input<S>,
     pub(crate) output: triple_buffer::Output<S>,
-    pub(crate) state: Arc<TopicState>,
+    pub(crate) state: StateHandle,
     pub(crate) sequence: Sequence,
     // Fixed business sender directory, allocated as part of the storage box.
     pub(crate) senders: [Option<LatestSender<S>>; 64],
+    pub(crate) occupied: u64,
+    pub(crate) fanout: Fanout,
 }
 
 impl<S: Clone + Send> LatestStorage<S> {
@@ -99,9 +108,11 @@ impl<S: Clone + Send> LatestStorage<S> {
             template,
             input,
             output,
-            state: Arc::new(TopicState::new()),
+            state: StateHandle::new(),
             sequence: Sequence::default(),
             senders: std::array::from_fn(|_| None),
+            occupied: 0,
+            fanout: Fanout::default(),
         }
     }
 }
@@ -112,9 +123,12 @@ pub(crate) struct StreamStorage<S: Clone + Send> {
     pub(crate) writer: PoolWriter<S>,
     pub(crate) reader: PoolReader<S>,
     pub(crate) dispatch: Option<S>,
-    pub(crate) state: Arc<TopicState>,
+    pub(crate) staging: Option<S>,
+    pub(crate) state: StateHandle,
     pub(crate) sequence: Sequence,
     pub(crate) senders: [Option<StreamSender<S>>; 64],
+    pub(crate) occupied: u64,
+    pub(crate) fanout: Fanout,
 }
 
 impl<S: Clone + Send> StreamStorage<S> {
@@ -122,19 +136,23 @@ impl<S: Clone + Send> StreamStorage<S> {
         let (mut writer, reader) = pool(&template, depth);
         writer.spare = Some(template.clone());
         Self {
+            staging: Some(template.clone()),
             template,
             writer,
             reader,
             dispatch: None,
-            state: Arc::new(TopicState::new()),
+            state: StateHandle::new(),
             sequence: Sequence::default(),
             senders: std::array::from_fn(|_| None),
+            occupied: 0,
+            fanout: Fanout::default(),
         }
     }
 }
 
 /// A slot has exactly one owner: free ring, writer spare/acquired guard, ready
-/// ring, or reader-held dispatch/loan. No indices or mutable pool aliases exist.
+/// ring, or reader loan. Dispatch copies into separate prepared staging and
+/// immediately returns ingress ownership. No mutable pool aliases exist.
 /// The ingress owns depth+1 slots; each receiver separately owns depth+1 slots.
 pub(crate) struct PoolWriter<S> {
     pub(crate) free: rtrb::Consumer<S>,
@@ -152,7 +170,30 @@ pub(crate) struct StreamSender<S> {
     pub(crate) fence: u64,
     pub(crate) generation: u64,
     pub(crate) drops: u64,
-    pub(crate) charged_bytes: usize,
+    pub(crate) retirement: Arc<Mutex<Option<PoolReader<S>>>>,
+    pub(crate) _charge: Charge,
+}
+
+impl<S> StreamSender<S> {
+    /// Queue endpoints are handed back after the receiver box releases its
+    /// loan, so each step frees one owner and final destructors see empty rings.
+    pub(crate) fn retire_one(&mut self) -> bool {
+        let mut retired = self.retirement.lock().expect("retirement handoff poisoned");
+        let reader = retired.as_mut().expect("completed receiver handoff");
+        if let Ok(slot) = reader.ready.pop() {
+            drop(slot);
+            return false;
+        }
+        if let Ok(slot) = self.writer.free.pop() {
+            drop(slot);
+            return false;
+        }
+        if let Some(slot) = self.writer.spare.take() {
+            drop(slot);
+            return false;
+        }
+        true
+    }
 }
 
 /// Preparation only. The remaining slot is placed in the ingress writer spare

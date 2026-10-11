@@ -5,6 +5,7 @@
 
 mod budget;
 mod demand;
+mod dispatcher;
 mod error;
 mod lifecycle;
 mod registry;
@@ -18,8 +19,8 @@ mod types;
 
 pub use demand::DemandSnapshot;
 pub use error::{
-    LookupError, PublishError, ReadError, RegisterError, SubscribeError, WriteError,
-    WriteUnavailable,
+    LookupError, PublishError, ReadError, RegisterError, SubscribeError, UnregisterError,
+    WriteError, WriteUnavailable,
 };
 pub use registry::Bus;
 pub use subscriber::{BlockMessage, BlockReadGuard, Subscriber, ValueMessage};
@@ -27,6 +28,6 @@ pub use transport::latest::BlockWriteGuard;
 pub use transport::stream::StreamBlockWriteGuard;
 pub use types::{
     BlockInit, BlockShape, BusConfig, LatestBlock, LatestValue, PublicationMeta, PublishOutcome,
-    PublisherStatus, Shape, StreamBlock, StreamValue, SubscriptionOptions, Topic, TopicId,
-    TopicLifecycle, TopicStatus, ValueShape,
+    PublisherStatus, PumpBudget, PumpReport, Shape, StreamBlock, StreamValue, SubscriberStats,
+    SubscriptionOptions, Topic, TopicId, TopicLifecycle, TopicStats, TopicStatus, ValueShape,
 };
