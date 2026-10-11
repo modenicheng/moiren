@@ -6,18 +6,26 @@ use crate::{
 use std::{
     any::Any,
     marker::PhantomData,
-    sync::{Arc, atomic::AtomicU64},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 pub(crate) struct TopicState {
     pub(crate) demand: Demand,
     pub(crate) attempt_sequence: AtomicU64,
+    // Sender slots may be refunded only after their receiver box is freed.
+    // This bitmap lives in the still-charged topic allocation, not the lease
+    // whose final Arc drop can still be running when strong_count reaches zero.
+    pub(crate) retired_receivers: AtomicU64,
 }
 impl TopicState {
     pub(crate) fn new() -> Self {
         Self {
             demand: Demand::new(),
             attempt_sequence: AtomicU64::new(0),
+            retired_receivers: AtomicU64::new(0),
         }
     }
 }
@@ -25,6 +33,7 @@ impl TopicState {
 pub(crate) struct SubscriptionLease {
     pub(crate) state: Arc<TopicState>,
     pub(crate) counted: bool,
+    pub(crate) sender_slot: usize,
 }
 impl Drop for SubscriptionLease {
     fn drop(&mut self) {
@@ -36,8 +45,26 @@ impl Drop for SubscriptionLease {
 
 /// Independently owned receiver. Reading and dropping are non-RT operations.
 pub struct Subscriber<P: Shape> {
-    receiver: Box<dyn Any + Send>,
+    receiver: Option<Box<dyn Receiver>>,
     marker: PhantomData<fn() -> P>,
+}
+
+pub(crate) trait Receiver: Any + Send {
+    fn retirement(&self) -> (Arc<TopicState>, usize);
+}
+
+impl<P: Shape> Drop for Subscriber<P> {
+    fn drop(&mut self) {
+        if let Some(receiver) = self.receiver.take() {
+            let (state, slot) = receiver.retirement();
+            // Field Drop only releases the output/lease; the receiver's own box
+            // is also budgeted. Signal completion after that deallocation too.
+            drop(receiver);
+            state
+                .retired_receivers
+                .fetch_or(1 << slot, Ordering::Release);
+        }
+    }
 }
 
 // The complete receiver metadata lives in the budgeted allocation, rather than
@@ -57,10 +84,16 @@ impl<S: Clone + Send> LatestReceiver<S> {
     }
 }
 
+impl<S: Clone + Send + 'static> Receiver for LatestReceiver<S> {
+    fn retirement(&self) -> (Arc<TopicState>, usize) {
+        (Arc::clone(&self.lease.state), self.lease.sender_slot)
+    }
+}
+
 impl<P: Shape> Subscriber<P> {
-    pub(crate) fn new(receiver: Box<dyn Any + Send>) -> Self {
+    pub(crate) fn new(receiver: Box<dyn Receiver>) -> Self {
         Self {
-            receiver,
+            receiver: Some(receiver),
             marker: PhantomData,
         }
     }
@@ -68,8 +101,12 @@ impl<P: Shape> Subscriber<P> {
         &mut self,
         metadata: impl Fn(&S) -> PublicationMeta,
     ) -> Option<&S> {
-        let receiver = self
+        let receiver: &mut dyn Any = self
             .receiver
+            .as_mut()
+            .expect("live subscriber receiver")
+            .as_mut();
+        let receiver = receiver
             .downcast_mut::<LatestReceiver<S>>()
             .expect("sealed subscriber shape");
         let demand = receiver.lease.state.demand.snapshot();

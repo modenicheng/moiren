@@ -7,11 +7,16 @@ use std::num::NonZeroU32;
 mod allocations {
     use std::{
         alloc::{GlobalAlloc, Layout, System},
-        cell::Cell,
+        cell::{Cell, RefCell},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
     };
 
     #[derive(Clone, Copy, Debug)]
     pub struct Event {
+        pub pointer: usize,
         pub size: usize,
         pub align: usize,
         pub allocated: bool,
@@ -31,6 +36,7 @@ mod allocations {
             bytes: 0,
             count: 0,
             events: [Event {
+                pointer: 0,
                 size: 0,
                 align: 0,
                 allocated: false,
@@ -39,9 +45,45 @@ mod allocations {
     }
 
     thread_local! { static PROBE: Cell<Probe> = const { Cell::new(Probe::EMPTY) }; }
+    thread_local! { static PAUSE: RefCell<Option<Arc<DeallocationGate>>> = const { RefCell::new(None) }; }
+
+    pub struct DeallocationGate {
+        target: usize,
+        pub reached: AtomicBool,
+        pub resume: AtomicBool,
+        pub freed_bytes: AtomicUsize,
+    }
+
+    impl DeallocationGate {
+        pub fn new(target: usize) -> Self {
+            Self {
+                target,
+                reached: AtomicBool::new(false),
+                resume: AtomicBool::new(false),
+                freed_bytes: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    pub fn pause_deallocation<T>(gate: Arc<DeallocationGate>, operation: impl FnOnce() -> T) -> T {
+        struct Stop;
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                // Drop the gate outside the TLS borrow: its own deallocation
+                // also passes through this allocator.
+                let gate = PAUSE.with(|state| state.borrow_mut().take());
+                drop(gate);
+            }
+        }
+        PAUSE.with(|state| *state.borrow_mut() = Some(gate));
+        let stop = Stop;
+        let result = operation();
+        drop(stop);
+        result
+    }
 
     pub struct Allocator;
-    fn record(layout: Layout, allocated: bool) {
+    fn record(pointer: *mut u8, layout: Layout, allocated: bool) {
         let _ = PROBE.try_with(|state| {
             let mut probe = state.get();
             if probe.active {
@@ -52,6 +94,7 @@ mod allocations {
                 };
                 if probe.count < probe.events.len() {
                     probe.events[probe.count] = Event {
+                        pointer: pointer as usize,
                         size: layout.size(),
                         align: layout.align(),
                         allocated,
@@ -64,20 +107,35 @@ mod allocations {
     }
 
     // SAFETY: Every allocation is delegated unchanged to System; bookkeeping
-    // uses only preinitialized thread-local Cells and never allocates itself.
+    // uses preinitialized TLS cells/atomics and never allocates itself.
     unsafe impl GlobalAlloc for Allocator {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             // SAFETY: The caller supplies the allocator's valid Layout.
             let pointer = unsafe { System.alloc(layout) };
             if !pointer.is_null() {
-                record(layout, true);
+                record(pointer, layout, true);
             }
             pointer
         }
         unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-            record(layout, false);
+            let _ = PAUSE.try_with(|state| {
+                if let Some(gate) = state.borrow().as_ref()
+                    && pointer as usize == gate.target
+                {
+                    gate.reached.store(true, Ordering::Release);
+                    while !gate.resume.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
+                }
+            });
             // SAFETY: Pointer/layout are passed through to their allocator.
             unsafe { System.dealloc(pointer, layout) };
+            record(pointer, layout, false);
+            let _ = PAUSE.try_with(|state| {
+                if let Some(gate) = state.borrow().as_ref() {
+                    gate.freed_bytes.fetch_add(layout.size(), Ordering::Relaxed);
+                }
+            });
         }
     }
 
@@ -107,6 +165,204 @@ mod allocations {
 
 #[global_allocator]
 static ALLOCATOR: allocations::Allocator = allocations::Allocator;
+
+fn assert_concurrent_receiver_drop_stays_budgeted<P: moiren_signal::Shape>(
+    register: impl Fn(&mut Bus) -> moiren_signal::Topic<P>,
+) {
+    use std::{
+        sync::{Arc, atomic::Ordering},
+        time::{Duration, Instant},
+    };
+
+    let mut measure = Bus::new(BusConfig::default()).unwrap();
+    let topic = register(&mut measure);
+    let baseline = measure.budget_used();
+    let subscriber = measure.subscribe(&topic, Default::default()).unwrap();
+    let charge = measure.budget_used() - baseline;
+    drop(subscriber);
+    drop(measure);
+
+    let limit = baseline + 2 * charge;
+    let mut bus = Bus::new(BusConfig {
+        byte_budget: limit,
+        ..Default::default()
+    })
+    .unwrap();
+    let topic = register(&mut bus);
+    let (subscriber, probe) =
+        allocations::measure(|| bus.subscribe(&topic, Default::default()).unwrap());
+    assert_eq!(probe.bytes, charge as isize);
+    let before = bus.budget_used();
+    // The receiver box is the final preparation allocation. Pause its actual
+    // deallocation after all fields (including the final strong lease) dropped.
+    let receiver = probe.events[..probe.count]
+        .iter()
+        .rfind(|event| event.allocated)
+        .unwrap();
+    let gate = Arc::new(allocations::DeallocationGate::new(receiver.pointer));
+
+    let replacement = std::thread::scope(|scope| {
+        struct Resume(Arc<allocations::DeallocationGate>);
+        impl Drop for Resume {
+            fn drop(&mut self) {
+                self.0.resume.store(true, Ordering::Release);
+            }
+        }
+        // Unblock the Drop thread even if a regression assertion panics.
+        let _resume = Resume(Arc::clone(&gate));
+        let worker_gate = Arc::clone(&gate);
+        let worker = scope.spawn(move || {
+            allocations::pause_deallocation(worker_gate, || {
+                allocations::measure(|| drop(subscriber)).1
+            })
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !gate.reached.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "receiver Drop never reached dealloc"
+            );
+            std::thread::yield_now();
+        }
+
+        let (replacement, probe) =
+            allocations::measure(|| bus.subscribe(&topic, Default::default()).unwrap());
+        let live =
+            before as isize + probe.bytes - gate.freed_bytes.load(Ordering::Acquire) as isize;
+        let charged = bus.budget_used();
+        let (attempt, rejected) =
+            allocations::measure(|| bus.subscribe(&topic, Default::default()));
+        assert!(
+            live + rejected.bytes <= limit as isize,
+            "reusing an in-progress Drop's budget exceeds the configured limit: {} live, {limit} allowed",
+            live + rejected.bytes
+        );
+        assert!(
+            live <= charged as isize,
+            "in-progress receiver Drop is still live: {live} bytes, only {} charged",
+            charged
+        );
+        assert_eq!(bus.budget_used(), limit);
+        assert!(matches!(
+            attempt,
+            Err(moiren_signal::SubscribeError::BudgetExceeded)
+        ));
+        assert_eq!(
+            rejected.count, 0,
+            "occupied budget must reject before allocation"
+        );
+        assert!(live <= limit as isize);
+
+        gate.resume.store(true, Ordering::Release);
+        let dropped = worker.join().unwrap();
+        assert_eq!(dropped.bytes, -(receiver.size as isize));
+        replacement
+    });
+    drop(replacement);
+}
+
+#[test]
+fn concurrent_value_receiver_drop_keeps_live_allocations_charged() {
+    assert_concurrent_receiver_drop_stays_budgeted(|bus| {
+        bus.register_latest_value("latest", 99_u32).unwrap()
+    });
+}
+
+#[test]
+fn concurrent_block_receiver_drop_keeps_live_allocations_charged() {
+    assert_concurrent_receiver_drop_stays_budgeted(|bus| {
+        bus.register_latest_block(
+            "block",
+            BlockInit {
+                header: 99_u32,
+                element: 7_u64,
+                capacity: 128,
+            },
+        )
+        .unwrap()
+    });
+}
+
+#[test]
+fn retiring_receiver_keeps_its_sender_slot_until_drop_completes() {
+    use std::{
+        sync::{Arc, atomic::Ordering},
+        time::{Duration, Instant},
+    };
+    let mut bus = Bus::new(BusConfig::default()).unwrap();
+    let topic = bus.register_latest_value("latest", 99_u32).unwrap();
+    let subscribers: Vec<_> = (0..63)
+        .map(|_| bus.subscribe(&topic, Default::default()).unwrap())
+        .collect();
+    let (subscriber, probe) =
+        allocations::measure(|| bus.subscribe(&topic, Default::default()).unwrap());
+    let receiver = probe.events[..probe.count]
+        .iter()
+        .rfind(|event| event.allocated)
+        .unwrap();
+    let gate = Arc::new(allocations::DeallocationGate::new(receiver.pointer));
+    let before = bus.budget_used();
+    std::thread::scope(|scope| {
+        struct Resume(Arc<allocations::DeallocationGate>);
+        impl Drop for Resume {
+            fn drop(&mut self) {
+                self.0.resume.store(true, Ordering::Release);
+            }
+        }
+        let _resume = Resume(Arc::clone(&gate));
+        let worker_gate = Arc::clone(&gate);
+        let worker = scope.spawn(move || {
+            allocations::pause_deallocation(worker_gate, || drop(subscriber));
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !gate.reached.load(Ordering::Acquire) {
+            assert!(
+                Instant::now() < deadline,
+                "receiver Drop never reached dealloc"
+            );
+            std::thread::yield_now();
+        }
+        let (attempt, probe) = allocations::measure(|| bus.subscribe(&topic, Default::default()));
+        assert!(matches!(
+            attempt,
+            Err(moiren_signal::SubscribeError::SubscriberLimit)
+        ));
+        assert_eq!(probe.count, 0);
+        assert_eq!(bus.budget_used(), before);
+        gate.resume.store(true, Ordering::Release);
+        worker.join().unwrap();
+    });
+    // Once deallocation completes, the same fixed slot and full old credit may
+    // be reused. No in-progress Drop may set a stale flag for this replacement.
+    let replacement = bus.subscribe(&topic, Default::default()).unwrap();
+    assert_eq!(bus.budget_used(), before);
+    assert!(matches!(
+        bus.subscribe(&topic, Default::default()),
+        Err(moiren_signal::SubscribeError::SubscriberLimit)
+    ));
+    drop(replacement);
+    drop(subscribers);
+}
+
+#[test]
+fn completed_receiver_drop_refunds_only_after_sender_reclamation() {
+    let mut bus = Bus::new(BusConfig::default()).unwrap();
+    let topic = bus.register_latest_value("latest", 99_u32).unwrap();
+    let baseline = bus.budget_used();
+    let (subscriber, prepared) =
+        allocations::measure(|| bus.subscribe(&topic, Default::default()).unwrap());
+    let charged = bus.budget_used();
+    let (_, dropped) = allocations::measure(|| drop(subscriber));
+    assert_eq!(bus.budget_used(), charged);
+    let (_replacement, reclaimed) =
+        allocations::measure(|| bus.subscribe(&topic, Default::default()).unwrap());
+    assert_eq!(bus.budget_used(), charged);
+    assert_eq!(
+        prepared.bytes + dropped.bytes + reclaimed.bytes,
+        (charged - baseline) as isize,
+        "completed retirement must release every old allocation before its refund"
+    );
+}
 
 #[test]
 fn valid_nonzero_payload_can_register_without_default() {

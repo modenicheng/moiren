@@ -1,4 +1,9 @@
-use std::{alloc::Layout, any::Any, marker::PhantomData, sync::Arc};
+use std::{
+    alloc::Layout,
+    any::Any,
+    marker::PhantomData,
+    sync::{Arc, atomic::Ordering},
+};
 
 use crate::{
     BlockInit, BusConfig, LatestBlock, LatestValue, LookupError, RegisterError, Shape, StreamBlock,
@@ -112,11 +117,21 @@ impl Bus {
         let limit = self.config.max_subscribers_per_topic;
         let storage = self.latest_storage_mut::<P, S>(topic)?;
         storage.state.demand.check_add(limit)?;
+        // Arc strong_count == 0 means destruction has begun, not that the
+        // lease fields and receiver box have finished releasing allocations.
+        // Acquire pairs with Subscriber's post-deallocation completion signal.
+        let completed = storage.state.retired_receivers.load(Ordering::Acquire);
         let retired_slots: [bool; 64] = std::array::from_fn(|index| {
-            storage.senders[index]
-                .as_ref()
-                .is_some_and(|sender| sender.lease.strong_count() == 0)
+            storage.senders[index].is_some() && completed & (1 << index) != 0
         });
+        // Demand can decrease before a concurrent receiver's deallocation
+        // completes. Its sender still occupies one of the fixed physical slots.
+        let sender_slot = storage
+            .senders
+            .iter()
+            .enumerate()
+            .position(|(index, sender)| sender.is_none() || retired_slots[index])
+            .ok_or(SubscribeError::SubscriberLimit)?;
         let retired: usize = storage
             .senders
             .iter()
@@ -145,6 +160,7 @@ impl Bus {
         let lease = Arc::new(SubscriptionLease {
             state: Arc::clone(&storage.state),
             counted: false,
+            sender_slot,
         });
         let mut receiver = Box::new(LatestReceiver::new(output, lease));
         let demand = storage.state.demand.add(limit)?;
@@ -165,12 +181,13 @@ impl Bus {
                 *slot = None;
             }
         }
-        let slot = storage
-            .senders
-            .iter_mut()
-            .find(|slot| slot.is_none())
-            .expect("checked business subscriber limit");
-        *slot = Some(LatestSender {
+        // Only the Bus reuses slots, after observing the old completion. Clear
+        // that bit before handing its identity to the replacement receiver.
+        storage
+            .state
+            .retired_receivers
+            .fetch_and(!(1 << sender_slot), Ordering::Relaxed);
+        storage.senders[sender_slot] = Some(LatestSender {
             input,
             lease: Arc::downgrade(&receiver.lease),
             charged_bytes: bytes,
