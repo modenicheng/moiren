@@ -148,8 +148,8 @@ export component SettingsPage inherits VerticalLayout {
 
                     SectionLabel { text: "Application"; }
                     Rectangle { vertical-stretch: 1; }
-                    SettingRow { label: "Show Grid"; value: root.show-grid ? "On" : "Off"; }
-                    SettingRow { label: "Auto-save Project"; value: root.auto-save ? "On" : "Off"; }
+                    SettingRow { label: "Show Grid"; value: "—"; }
+                    SettingRow { label: "Auto-save Project"; value: "—"; }
                     SettingRow { label: "Level Meter Scale"; value: "dBFS"; }
                 }
             }
@@ -163,10 +163,10 @@ export component SettingsPage inherits VerticalLayout {
 
                     SectionLabel { text: "Audio Preferences"; }
                     Rectangle { vertical-stretch: 1; }
-                    SettingRow { label: "Sample Rate"; value: "48000 Hz"; }
-                    SettingRow { label: "Buffer Size"; value: "256 samples"; }
-                    SettingRow { label: "Bit Depth"; value: "24-bit"; }
-                    SettingRow { label: "Auto-start Engine"; value: "Enabled"; }
+                    SettingRow { label: "Sample Rate"; value: "—"; }
+                    SettingRow { label: "Buffer Size"; value: "—"; }
+                    SettingRow { label: "Bit Depth"; value: "—"; }
+                    SettingRow { label: "Auto-start Engine"; value: "—"; }
                     Rectangle { vertical-stretch: 1; }
                 }
             }
@@ -176,12 +176,12 @@ export component SettingsPage inherits VerticalLayout {
                     spacing: Theme.space-4;
 
                     SectionLabel { text: "About"; }
-                    Text {
-                        text: "Moiren";
-                        color: Theme.primary;
-                        font-family: Theme.font-ui;
-                        font-size: Theme.text-2xl;
-                        font-weight: Theme.weight-semibold;
+                    Image {
+                        source: Theme.dark
+                            ? @image-url("../../../../assets/logos/moiren-2c-wordmark-dark.svg")
+                            : @image-url("../../../../assets/logos/moiren-2c-wordmark-light.svg");
+                        width: 120px; height: 30px; image-fit: contain;
+                        horizontal-stretch: 0;
                     }
                     Text {
                         text: "Version 0.1.0";
@@ -197,7 +197,7 @@ export component SettingsPage inherits VerticalLayout {
                         wrap: word-wrap;
                     }
                     Rectangle { vertical-stretch: 1; }
-                    AppButton {
+                    quit-app := AppButton {
                         text: "Quit Moiren";
                         tone: ButtonTone.danger;
                         horizontal-stretch: 0;

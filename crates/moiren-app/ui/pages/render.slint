@@ -7,7 +7,7 @@
 import { Theme } from "../theme.slint";
 import { Backend } from "../backend.slint";
 import {
-    AppButton, AppSlider, Badge, ButtonTone, Card, PageHeader, SectionLabel,
+    AppButton, AppSlider, AppSelect, Badge, ButtonTone, Card, PageHeader, SectionLabel,
 } from "../components.slint";
 
 // A page-local label + slider group. It keeps the three generator rows aligned
@@ -45,7 +45,7 @@ component SliderRow inherits VerticalLayout {
         }
     }
 
-    AppSlider {
+    value-slider := AppSlider {
         minimum: root.minimum;
         maximum: root.maximum;
         bipolar: root.bipolar;
@@ -59,6 +59,7 @@ export component RenderPage inherits VerticalLayout {
 
     in-out property <float> gain <=> Backend.gain;
     in-out property <float> pan <=> Backend.pan;
+    in-out property <float> duration: 10;
     in-out property <float> frequency-t: 0.4475;
 
     property <float> frequency: 20 * pow(1000, root.frequency-t);
@@ -102,6 +103,10 @@ export component RenderPage inherits VerticalLayout {
                 spacing: Theme.space-5;
 
                 SectionLabel { text: "Render Controls"; }
+                tone-output := AppSelect {
+                    options: Backend.output-options; current <=> Backend.output-index;
+                    placeholder: "No Output"; selected(i) => { Backend.select-output(i); }
+                }
 
                 SliderRow {
                     title: "Frequency";
@@ -110,7 +115,7 @@ export component RenderPage inherits VerticalLayout {
                     maximum: 1;
                     value <=> root.frequency-t;
                 }
-                SliderRow {
+                tone-gain := SliderRow {
                     title: "Gain";
                     readout: root.gain-text(root.gain);
                     minimum: 0;
@@ -128,16 +133,22 @@ export component RenderPage inherits VerticalLayout {
                     changed(value) => { Backend.set-gain-pan(root.gain, value); }
                 }
 
+                tone-duration := SliderRow {
+                    title: "Duration";
+                    readout: "\{Math.round(root.duration)} s";
+                    minimum: 1; maximum: 600;
+                    value <=> root.duration;
+                }
                 HorizontalLayout {
                     alignment: center;
                     spacing: Theme.space-5;
-                    AppButton {
+                    play-tone := AppButton {
                         text: "Play";
                         tone: ButtonTone.primary;
                         enabled: Backend.transport-ready && !root.playing && Backend.tone-valid;
-                        clicked => { Backend.start-tone(root.frequency, 8); }
+                        clicked => { Backend.start-tone(root.frequency, Math.round(root.duration)); }
                     }
-                    AppButton {
+                    stop-tone := AppButton {
                         text: "Stop";
                         enabled: root.playing && Backend.transport-ready;
                         clicked => { Backend.stop(); }
@@ -160,14 +171,14 @@ export component RenderPage inherits VerticalLayout {
 
                         Rectangle {
                             x: 0;
-                            width: parent.width * 0.28;
+                            width: parent.width * Backend.tone-progress;
                             height: 100%;
                             border-radius: parent.height / 2;
                             background: Theme.signal-recorder;
                         }
                     }
                     Text {
-                        text: "00:02.4 / 00:08.0";
+                        text: Backend.elapsed + " / \{Math.round(root.duration)} s";
                         color: Theme.text-muted;
                         font-family: Theme.font-mono;
                         font-size: Theme.text-md;

@@ -1,12 +1,11 @@
 // Monitor page — the simplified Figma routing canvas.
 //
-// The source rail selects which source is highlighted on the canvas; the real
-// Backend properties remain authoritative for service state. This page avoids
-// transport controls because the reference is a read-only topology preview.
+// The source rail uses stable service selections. The route canvas preserves
+// the Figma composition while transport and diagnostics use real service state.
 
 import { Theme } from "../theme.slint";
 import { Backend } from "../backend.slint";
-import { SectionLabel } from "../components.slint";
+import { SectionLabel, AppSelect, AppButton, ButtonTone } from "../components.slint";
 
 // Canvas node. The compact node geometry is deliberately smaller than the
 // generic graph widget because this page previews one linear chain.
@@ -62,51 +61,18 @@ component Arrow inherits Rectangle {
     }
 }
 
-// A source in the narrow left rail.
-component SourceItem inherits Rectangle {
-    in property <string> text;
-    in property <bool> active: false;
-    callback clicked();
-
-    height: Theme.control-height - 4px;
-    border-radius: Theme.radius-sm;
-    background: active ? Theme.surface-3 : Theme.surface-4;
-    animate background { duration: Theme.fast; }
-
-    HorizontalLayout {
-        padding-left: Theme.space-3;
-        padding-right: Theme.space-3;
-        Text {
-            text: root.text;
-            color: Theme.text;
-            font-family: Theme.font-ui;
-            font-size: Theme.text-md;
-            vertical-alignment: center;
-            overflow: elide;
-        }
-        Rectangle { horizontal-stretch: 1; }
-    }
-    TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
-    }
-}
-
 export component MonitorPage inherits Rectangle {
     background: Theme.window-bg;
     clip: true;
 
-    // Static route facts until the service exposes a graph snapshot.
-    in-out property <int> source-index: 0;
-    in-out property <float> source-level: -12.3;
-    in-out property <float> gain-level: 6.0;
-    in-out property <float> output-level: -6.5;
-
-    property <[string]> sources: [
-        "Line In · 1-2", "Microphone · 1", "Broadcast", "System Audio",
-    ];
-    property <bool> has-source: source-index >= 0 && source-index < sources.length;
-    property <string> source-name: root.has-source ? sources[source-index] : "Source";
+    property <bool> has-source: Backend.source-mode == 0
+        ? Backend.input-index >= 0 && Backend.input-index < Backend.inputs.length
+        : Backend.process-index >= 0 && Backend.process-index < Backend.processes.length;
+    property <string> source-name: !root.has-source ? "No Source"
+        : Backend.source-mode == 0 ? Backend.inputs[Backend.input-index].name
+        : Backend.processes[Backend.process-index].name;
+    property <string> output-name: Backend.output-index >= 0 && Backend.output-index < Backend.outputs.length
+        ? Backend.outputs[Backend.output-index].name : "No Output";
 
     HorizontalLayout {
         spacing: 0px;
@@ -122,11 +88,33 @@ export component MonitorPage inherits Rectangle {
                 spacing: Theme.space-2;
 
                 SectionLabel { text: "Sources"; }
-                for source[i] in root.sources: SourceItem {
-                    text: source;
-                    active: i == root.source-index;
-                    clicked => { root.source-index = i; }
+                physical-mode := AppButton { text: "Input"; clicked => { Backend.source-mode = 0; } }
+                process-mode := AppButton { text: "Process"; clicked => { Backend.source-mode = 1; } }
+                input-selector := AppSelect {
+                    visible: Backend.source-mode == 0;
+                    options: Backend.input-options; current <=> Backend.input-index;
+                    placeholder: "No Input"; selected(i) => { Backend.select-input(i); }
                 }
+                process-selector := AppSelect {
+                    visible: Backend.source-mode == 1;
+                    options: Backend.process-options; current <=> Backend.process-index;
+                    placeholder: "No Process"; selected(i) => { Backend.select-process(i); }
+                }
+                SectionLabel { text: "Output"; }
+                output-selector := AppSelect {
+                    options: Backend.output-options; current <=> Backend.output-index;
+                    placeholder: "No Output"; selected(i) => { Backend.select-output(i); }
+                }
+                start-monitor := AppButton {
+                    text: "Start"; tone: ButtonTone.primary;
+                    enabled: Backend.transport-ready && !Backend.active && Backend.monitor-valid;
+                    clicked => { Backend.start-monitor(true, 0); }
+                }
+                stop-monitor := AppButton {
+                    text: "Stop"; enabled: Backend.transport-ready && Backend.active;
+                    clicked => { Backend.stop(); }
+                }
+                refresh-catalog := AppButton { text: "Refresh"; clicked => { Backend.refresh-catalog(); } }
                 Rectangle { vertical-stretch: 1; }
             }
         }
@@ -153,22 +141,22 @@ export component MonitorPage inherits Rectangle {
                     spacing: Theme.space-3;
                     RouteNode {
                         title: root.source-name;
-                        meta: "\{root.source-level} dB";
+                        meta: "— · NoData";
                         tint: Theme.signal-device;
                         selected: true;
                     }
-                    Arrow { live: true; }
+                    Arrow { live: Backend.active; }
                     Rectangle { min-width: Theme.space-7; }
                     RouteNode {
                         title: "Gain";
-                        meta: "+\{root.gain-level} dB";
+                        meta: "Gain / Pan";
                         tint: Theme.primary;
                         selected: true;
                     }
-                    Arrow { live: true; }
+                    Arrow { live: Backend.active; }
                     RouteNode {
-                        title: "Main Out";
-                        meta: "\{root.output-level} dB";
+                        title: root.output-name;
+                        meta: "— · NoData";
                         tint: Theme.signal-recorder;
                         selected: true;
                     }
@@ -176,7 +164,7 @@ export component MonitorPage inherits Rectangle {
 
                 Rectangle { vertical-stretch: 1; }
                 Text {
-                    text: "48 kHz · 256 samples · Running";
+                    text: Backend.phase-text + " · " + Backend.elapsed;
                     color: Theme.text-muted;
                     font-family: Theme.font-ui;
                     font-size: Theme.text-sm;

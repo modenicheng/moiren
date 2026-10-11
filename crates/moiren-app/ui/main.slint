@@ -166,7 +166,7 @@ export component MainWindow inherits Window {
                         y: (parent.height - self.height) / 2;
                         clicked => { root.toggle-maximize(); }
                     }
-                    IconButton {
+                    hide-window := IconButton {
                         icon: @image-url("icons/win-close.svg");
                         tint: Theme.text-muted;
                         hover-bg: Theme.danger;
@@ -193,19 +193,19 @@ export component MainWindow inherits Window {
                         spacing: 2px;
 
                         RailLabel { text: "工作区"; }
-                        NavItem {
+                        nav-monitor := NavItem {
                             label: "监控路由";
                             icon: @image-url("icons/route.svg");
                             active: root.page == 0;
                             clicked => { root.page = 0; }
                         }
-                        NavItem {
+                        nav-render := NavItem {
                             label: "测试音";
                             icon: @image-url("icons/wave.svg");
                             active: root.page == 1;
                             clicked => { root.page = 1; }
                         }
-                        NavItem {
+                        nav-devices := NavItem {
                             label: "音频设备";
                             icon: @image-url("icons/devices.svg");
                             active: root.page == 2;
@@ -215,7 +215,7 @@ export component MainWindow inherits Window {
                         Rectangle { vertical-stretch: 1; }
 
                         RailLabel { text: "系统"; }
-                        NavItem {
+                        nav-settings := NavItem {
                             label: "设置";
                             icon: @image-url("icons/settings.svg");
                             active: root.page == 3;
