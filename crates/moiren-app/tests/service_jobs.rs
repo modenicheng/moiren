@@ -213,10 +213,16 @@ fn bounded_rounds_continue_until_backlog_is_empty() {
     })
     .unwrap();
     let h = runtime.handle();
-    h.try_request(AppRequest::RefreshCatalog).unwrap();
+    let refresh = h.try_request_tracked(AppRequest::RefreshCatalog).unwrap();
     erx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        h.try_snapshot().unwrap().consumed_request_id,
+        RequestId(0),
+        "a dequeued request blocked inside its hook is not published as consumed"
+    );
+    let mut last = refresh;
     for _ in 0..64 {
-        h.try_request(AppRequest::Start(spec())).unwrap();
+        last = h.try_request_tracked(AppRequest::Start(spec())).unwrap();
     }
     gate.wait();
     let mut observed = 0;
@@ -229,6 +235,9 @@ fn bounded_rounds_continue_until_backlog_is_empty() {
     h.request_exit();
     runtime.join().unwrap();
     assert_eq!(observed, 64);
+    let exited = h.try_snapshot().unwrap();
+    assert_eq!(exited.phase, SessionPhase::Exited);
+    assert_eq!(exited.consumed_request_id, last);
 }
 struct OwnedPrepared {
     probe: DropProbe,
@@ -546,4 +555,40 @@ fn exit_set_before_next_round_prevents_queued_request_dispatch() {
     assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(exit_count.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(h.try_snapshot().unwrap().phase, SessionPhase::Exited);
+}
+
+struct FailedStartDriver;
+impl ServiceDriver for FailedStartDriver {
+    fn is_drained(&self) -> bool {
+        true
+    }
+    fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, r: AppRequest) {
+        if let AppRequest::Start(spec) = r {
+            let generation = c.core.start(spec).unwrap();
+            assert!(c.core.failed(generation, "test prepare failure".into()));
+        }
+    }
+}
+#[test]
+fn failed_start_receipt_is_published_with_failed_phase_and_retained_through_exit() {
+    let runtime = ServiceRuntime::spawn_with_driver(FailedStartDriver).unwrap();
+    let handle = runtime.handle();
+    let id = handle
+        .try_request_tracked(AppRequest::Start(spec()))
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let failed = loop {
+        if let Some(snapshot) = handle.try_snapshot()
+            && snapshot.phase == SessionPhase::Failed
+        {
+            break snapshot;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        thread::yield_now();
+    };
+    handle.request_exit();
+    runtime.join().unwrap();
+    assert_eq!(failed.consumed_request_id, id);
+    assert_eq!(failed.error.as_deref(), Some("test prepare failure"));
+    assert_eq!(handle.try_snapshot().unwrap().consumed_request_id, id);
 }

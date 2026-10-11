@@ -178,6 +178,7 @@ impl ServiceDriver for CoreDriver {
 }
 pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
     AppSnapshot {
+        consumed_request_id: RequestId::default(),
         generation: c.core.generation(),
         phase: c.core.phase(),
         desired: c.core.desired().cloned(),

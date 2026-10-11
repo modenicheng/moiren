@@ -1,10 +1,10 @@
 use moiren_app::{
     service::*,
-    ui::{SelectionState, WindowPresentation},
+    ui::{DetailSelection, SelectionState, WindowPresentation},
 };
 
 #[test]
-fn hidden_and_recreated_presentation_does_not_change_service() {
+fn pure_presentation_hide_and_recreate_leaves_idle_service_untouched() {
     let runtime = ServiceRuntime::spawn().unwrap();
     let handle = runtime.handle();
     let mut presentation = WindowPresentation::default();
@@ -94,4 +94,24 @@ fn full_ordinary_mailbox_cannot_hide_exit() {
         handle.try_request(AppRequest::Stop),
         Err(DispatchError::Exiting)
     );
+}
+
+#[test]
+fn inspector_follows_last_clicked_category_and_identity_without_mixing_endpoints() {
+    let mut catalog = catalog(&["out-a", "out-b"], "out-a");
+    catalog.inputs = vec![DeviceRow {
+        endpoint_id: "in-a".into(),
+        name: "Microphone".into(),
+    }];
+    let mut detail = DetailSelection::default();
+    detail.select(false, "out-b".into());
+    assert_eq!(detail.endpoint(&catalog).unwrap().endpoint_id, "out-b");
+    detail.select(true, "in-a".into());
+    assert_eq!(detail.endpoint(&catalog).unwrap().name, "Microphone");
+    catalog.outputs.swap(0, 1);
+    assert_eq!(detail.endpoint(&catalog).unwrap().endpoint_id, "in-a");
+    catalog.inputs.clear();
+    assert_eq!(detail.endpoint(&catalog), None);
+    detail.select(false, "out-a".into());
+    assert_eq!(detail.endpoint(&catalog).unwrap().endpoint_id, "out-a");
 }

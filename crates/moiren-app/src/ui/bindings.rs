@@ -52,6 +52,36 @@ impl SelectionState {
         })
     }
 }
+/// Inspector identity is separate from transport routing and row positions.
+#[derive(Default, Debug)]
+pub struct DetailSelection {
+    capture: bool,
+    endpoint_id: Option<String>,
+}
+impl DetailSelection {
+    pub fn select(&mut self, capture: bool, endpoint_id: String) {
+        self.capture = capture;
+        self.endpoint_id = Some(endpoint_id);
+    }
+    pub fn endpoint<'a>(&self, catalog: &'a DeviceCatalog) -> Option<&'a DeviceRow> {
+        let rows = if self.capture {
+            &catalog.inputs
+        } else {
+            &catalog.outputs
+        };
+        rows.iter()
+            .find(|row| Some(&row.endpoint_id) == self.endpoint_id.as_ref())
+    }
+    fn initialize(&mut self, selection: &SelectionState) {
+        if self.endpoint_id.is_none() {
+            if let Some(id) = selection.output_id.as_ref() {
+                self.select(false, id.clone());
+            } else if let Some(id) = selection.input_id.as_ref() {
+                self.select(true, id.clone());
+            }
+        }
+    }
+}
 fn index(rows: &[DeviceRow], id: Option<&str>) -> i32 {
     rows.iter()
         .position(|row| Some(row.endpoint_id.as_str()) == id)
@@ -67,10 +97,22 @@ fn endpoint_at(rows: &[DeviceRow], row: i32) -> Option<String> {
 #[derive(Default)]
 pub(super) struct BindingState {
     selection: SelectionState,
+    detail: DetailSelection,
     catalog: Arc<DeviceCatalog>,
-    pending_snapshot: Option<Arc<AppSnapshot>>,
+    pending_request_id: Option<RequestId>,
     transport_pending: bool,
     dispatch_error: Option<String>,
+}
+impl BindingState {
+    fn observe_snapshot(&mut self, snapshot: &Arc<AppSnapshot>) {
+        if self
+            .pending_request_id
+            .is_some_and(|id| snapshot.consumed_request_id >= id)
+        {
+            self.pending_request_id = None;
+            self.transport_pending = false;
+        }
+    }
 }
 pub(super) type SharedState = Rc<RefCell<BindingState>>;
 
@@ -82,27 +124,43 @@ pub(super) fn update(
     window: &MainWindow,
     tray: &super::AppTray,
 ) {
-    let (catalog_changed, catalog, input, output, process, pending, error) = {
+    let (catalog_changed, catalog, input, output, process, detail, detail_capture, pending, error) = {
         let mut state = state.borrow_mut();
         let changed = !Arc::ptr_eq(&state.catalog, &snapshot.catalog);
         if changed {
             state.selection.refresh(&snapshot.catalog);
             state.catalog = snapshot.catalog.clone();
+            let BindingState {
+                detail, selection, ..
+            } = &mut *state;
+            detail.initialize(selection);
         }
-        if state
-            .pending_snapshot
-            .as_ref()
-            .is_some_and(|old| !Arc::ptr_eq(old, snapshot))
-        {
-            state.pending_snapshot = None;
-            state.transport_pending = false;
-        }
+        state.observe_snapshot(snapshot);
         (
             changed,
             state.catalog.clone(),
             state.selection.input_index(&state.catalog),
             state.selection.output_index(&state.catalog),
             state.selection.process_index(&state.catalog),
+            state
+                .detail
+                .endpoint(&state.catalog)
+                .map(|row| {
+                    endpoint(
+                        row,
+                        if state.detail.capture {
+                            "mic"
+                        } else {
+                            "speaker"
+                        },
+                        None,
+                    )
+                })
+                .unwrap_or_else(|| AudioEndpoint {
+                    name: "No Device".into(),
+                    ..Default::default()
+                }),
+            state.detail.capture,
             state.transport_pending,
             state.dispatch_error.clone(),
         )
@@ -143,6 +201,8 @@ pub(super) fn update(
                     .collect::<Vec<_>>(),
             )));
         }
+        backend.set_detail_endpoint(detail.clone());
+        backend.set_detail_capture(detail_capture);
         backend.set_input_index(input);
         backend.set_output_index(output);
         backend.set_process_index(process);
@@ -173,6 +233,14 @@ pub(super) fn update(
                 .into(),
         );
         backend.set_catalog_error(snapshot.catalog_error.as_deref().unwrap_or("").into());
+        backend.set_tone_duration(match snapshot.desired.as_ref() {
+            Some(SessionSpec {
+                source: InputSelection::Tone { .. },
+                limit: RunLimit::Seconds(limit),
+                ..
+            }) => i32::from(*limit),
+            _ => 0,
+        });
         backend.set_tone_progress(match snapshot.desired.as_ref() {
             Some(SessionSpec {
                 source: InputSelection::Tone { .. },
@@ -195,16 +263,19 @@ pub(super) fn update(
 fn endpoint_model(rows: &[DeviceRow], kind: &str, default: Option<&str>) -> ModelRc<AudioEndpoint> {
     ModelRc::new(VecModel::from(
         rows.iter()
-            .map(|row| AudioEndpoint {
-                id: row.endpoint_id.clone().into(),
-                name: row.name.clone().into(),
-                kind: kind.into(),
-                is_default: Some(row.endpoint_id.as_str()) == default,
-                note: "格式在启动时检测".into(),
-                ..Default::default()
-            })
+            .map(|row| endpoint(row, kind, default))
             .collect::<Vec<_>>(),
     ))
+}
+fn endpoint(row: &DeviceRow, kind: &str, default: Option<&str>) -> AudioEndpoint {
+    AudioEndpoint {
+        id: row.endpoint_id.clone().into(),
+        name: row.name.clone().into(),
+        kind: kind.into(),
+        is_default: Some(row.endpoint_id.as_str()) == default,
+        note: "格式在启动时检测".into(),
+        ..Default::default()
+    }
 }
 fn options(rows: &[DeviceRow]) -> ModelRc<SelectOption> {
     ModelRc::new(VecModel::from(
@@ -221,21 +292,13 @@ pub(super) fn dispatch(state: &SharedState, handle: &AppHandle, request: AppRequ
     if transport && state.borrow().transport_pending {
         return;
     }
-    let before = handle.try_snapshot();
-    // Without a snapshot credit we cannot distinguish a later service round
-    // from this intent. Refuse non-blockingly, instead of losing the duplicate
-    // transport guard during snapshot lock contention.
-    if transport && before.is_none() {
-        state.borrow_mut().dispatch_error = Some("请求未接受：Busy".into());
-        return;
-    }
-    let result = handle.try_request(request);
+    let result = handle.try_request_tracked(request);
     let mut state = state.borrow_mut();
     match result {
-        Ok(()) => {
+        Ok(id) => {
             state.dispatch_error = None;
             if transport {
-                state.pending_snapshot = before;
+                state.pending_request_id = Some(id);
                 state.transport_pending = true;
             }
         }
@@ -244,6 +307,9 @@ pub(super) fn dispatch(state: &SharedState, handle: &AppHandle, request: AppRequ
 }
 pub(super) fn wire(window: &MainWindow, handle: AppHandle, state: SharedState) {
     let backend = window.global::<Backend>();
+    let s = state.clone();
+    backend
+        .on_select_detail(move |capture, id| s.borrow_mut().detail.select(capture, id.to_string()));
     for kind in 0..3 {
         let state = state.clone();
         let callback = move |row| {
@@ -340,7 +406,50 @@ pub(super) fn wire(window: &MainWindow, handle: AppHandle, state: SharedState) {
 mod tests {
     use super::*;
     #[test]
-    fn repeated_transport_is_coalesced_until_service_snapshot_advances() {
+    fn unrelated_publication_cannot_acknowledge_transport_behind_round_budget() {
+        let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
+        for _ in 0..20 {
+            handle.try_request(AppRequest::RefreshCatalog).unwrap();
+        }
+        let state = Rc::new(RefCell::new(BindingState::default()));
+        dispatch(&state, &handle, AppRequest::Stop);
+        for _ in 0..16 {
+            assert_eq!(mailbox.try_request(), Some(AppRequest::RefreshCatalog));
+        }
+        mailbox.publish((*handle.try_snapshot().unwrap()).clone());
+        state
+            .borrow_mut()
+            .observe_snapshot(&handle.try_snapshot().unwrap());
+        assert!(
+            state.borrow().transport_pending,
+            "unrelated publication must not acknowledge queued Stop"
+        );
+        dispatch(&state, &handle, AppRequest::Stop);
+        let mut stops = 0;
+        while let Some(request) = mailbox.try_request() {
+            stops += usize::from(request == AppRequest::Stop);
+        }
+        assert_eq!(stops, 1);
+    }
+    #[test]
+    fn old_phase_and_older_receipt_cannot_release_a_new_pending_transport() {
+        let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
+        let state = Rc::new(RefCell::new(BindingState::default()));
+        let old_phase = handle.try_snapshot().unwrap();
+        dispatch(&state, &handle, AppRequest::Stop);
+        assert_eq!(mailbox.try_request(), Some(AppRequest::Stop));
+        mailbox.publish((*old_phase).clone());
+        let acknowledged = handle.try_snapshot().unwrap();
+        state.borrow_mut().observe_snapshot(&old_phase);
+        assert!(state.borrow().transport_pending);
+        state.borrow_mut().observe_snapshot(&acknowledged);
+        assert!(!state.borrow().transport_pending);
+        dispatch(&state, &handle, AppRequest::Stop);
+        state.borrow_mut().observe_snapshot(&acknowledged);
+        assert!(state.borrow().transport_pending);
+    }
+    #[test]
+    fn repeated_transport_is_coalesced_while_request_is_unacknowledged() {
         let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
         let state = Rc::new(RefCell::new(BindingState::default()));
         dispatch(&state, &handle, AppRequest::Stop);

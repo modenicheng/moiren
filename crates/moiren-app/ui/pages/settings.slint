@@ -91,7 +91,6 @@ export component SettingsPage inherits VerticalLayout {
 
     // Session-local placeholders. The Rust service does not own these
     // preferences yet, so they deliberately stay in the page.
-    in-out property <int> theme-choice: 2;
     in-out property <bool> show-grid: true;
     in-out property <bool> auto-save: true;
 
@@ -116,25 +115,22 @@ export component SettingsPage inherits VerticalLayout {
                         spacing: Theme.space-5;
                         ChoiceTile {
                             text: "Dark";
-                            active: root.theme-choice == 0;
+                            active: Theme.preference == ThemePreference.dark;
                             clicked => {
-                                root.theme-choice = 0;
                                 Theme.preference = ThemePreference.dark;
                             }
                         }
                         ChoiceTile {
                             text: "Light";
-                            active: root.theme-choice == 1;
+                            active: Theme.preference == ThemePreference.light;
                             clicked => {
-                                root.theme-choice = 1;
                                 Theme.preference = ThemePreference.light;
                             }
                         }
                         ChoiceTile {
                             text: "Auto";
-                            active: root.theme-choice == 2;
+                            active: Theme.preference == ThemePreference.system;
                             clicked => {
-                                root.theme-choice = 2;
                                 Theme.preference = ThemePreference.system;
                             }
                         }

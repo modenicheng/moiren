@@ -68,6 +68,7 @@ pub enum DispatchError {
     Disconnected,
     InvalidConfig,
     GenerationExhausted,
+    RequestIdExhausted,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppRequest {
@@ -109,8 +110,13 @@ pub struct ControlSummary {
     pub pending_gain_pan: Option<(f64, f64)>,
     pub last_result: Option<ControlReply>,
 }
+/// Successful mailbox enqueue order; zero means no ordinary request consumed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RequestId(pub u64);
 #[derive(Debug, Clone)]
 pub struct AppSnapshot {
+    /// Consumption is published with the phase produced by those requests.
+    pub consumed_request_id: RequestId,
     pub generation: SessionGeneration,
     pub phase: SessionPhase,
     pub desired: Option<SessionSpec>,

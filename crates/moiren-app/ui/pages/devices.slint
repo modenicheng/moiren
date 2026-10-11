@@ -15,8 +15,7 @@ component DeviceRow inherits Rectangle {
     in property <AudioEndpoint> ep;
     in property <bool> capture: true;
     in property <bool> selected: false;
-    in property <int> ep-index: -1;
-    callback row-clicked(int);
+    callback row-clicked(string);
 
     height: Theme.device-row-height;
     horizontal-stretch: 1;
@@ -58,7 +57,7 @@ component DeviceRow inherits Rectangle {
 
     row-ta := TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.row-clicked(root.ep-index); }
+        clicked => { root.row-clicked(root.ep.id); }
     }
 }
 
@@ -68,7 +67,8 @@ component DeviceGroup inherits Card {
     in property <string> title;
     in property <[AudioEndpoint]> items;
     in property <bool> capture: true;
-    in-out property <int> selected-index: -1;
+    in property <string> selected-id;
+    callback selected(string);
 
     vertical-stretch: 1;
 
@@ -78,12 +78,11 @@ component DeviceGroup inherits Card {
 
         SectionLabel { text: root.title; }
 
-        for ep[i] in root.items: DeviceRow {
+        for ep in root.items: DeviceRow {
             ep: ep;
-            ep-index: i;
             capture: root.capture;
-            selected: i == root.selected-index;
-            row-clicked(i) => { root.selected-index = i; }
+            selected: ep.id == root.selected-id;
+            row-clicked(id) => { root.selected(id); }
         }
 
         Rectangle { vertical-stretch: 1; }
@@ -93,31 +92,13 @@ component DeviceGroup inherits Card {
 export component DevicesPage inherits VerticalLayout {
     spacing: Theme.block-gap;
 
-    // The lists start with the service's routing selection when it exists;
-    // clicking a row still changes the local reference detail independently.
-    in-out property <int> input-detail: Backend.input-index >= 0 ? Backend.input-index : 0;
-    in-out property <int> output-detail: Backend.output-index >= 0 ? Backend.output-index : 0;
-
-    property <bool> input-ok: input-detail >= 0 && input-detail < Backend.inputs.length;
-    property <bool> output-ok: output-detail >= 0 && output-detail < Backend.outputs.length;
-    property <AudioEndpoint> detail: root.output-ok
-        ? Backend.outputs[root.output-detail]
-        : (root.input-ok ? Backend.inputs[root.input-detail]
-            : { id: "", name: "No Device", kind: "speaker", sample-rate: 0,
-                channels: 0, format-supported: false, is-default: false, note: "" });
-    property <string> channel-text:
-        root.input-ok && Backend.inputs[root.input-detail].channels > 0
-            ? "\{Backend.inputs[root.input-detail].channels} in"
-            : (root.output-ok && Backend.outputs[root.output-detail].channels > 0
-                ? "\{Backend.outputs[root.output-detail].channels} out" : "—");
+    property <AudioEndpoint> detail: Backend.detail-endpoint;
+    property <string> channel-text: root.detail.channels > 0
+        ? "\{root.detail.channels} " + (Backend.detail-capture ? "in" : "out") : "—";
 
     function rate-text(rate: int) -> string {
         return rate > 0 ? "\{rate / 1000.0} kHz" : "—";
     }
-    function format-text(supported: bool, rate: int) -> string {
-        return supported ? "\{rate / 1000.0} kHz" : "—";
-    }
-
     PageHeader {
         title: "Devices";
         subtitle: "Select an input or output to inspect its endpoint details.";
@@ -132,14 +113,16 @@ export component DevicesPage inherits VerticalLayout {
                 title: "Input Devices";
                 items: Backend.inputs;
                 capture: true;
-                selected-index <=> root.input-detail;
+                selected-id: Backend.detail-capture ? root.detail.id : "";
+                selected(id) => { Backend.select-detail(true, id); }
             }
             DeviceGroup {
                 max-width: Theme.device-list-max;
                 title: "Output Devices";
                 items: Backend.outputs;
                 capture: false;
-                selected-index <=> root.output-detail;
+                selected-id: !Backend.detail-capture ? root.detail.id : "";
+                selected(id) => { Backend.select-detail(false, id); }
             }
             Card {
                 max-width: Theme.device-detail-width;
@@ -196,7 +179,7 @@ export component DevicesPage inherits VerticalLayout {
                             }
                             Rectangle { horizontal-stretch: 1; }
                             Text {
-                                text: root.detail.format-supported ? "24-bit" : "—";
+                                text: "—";
                                 color: Theme.text;
                                 font-family: Theme.font-mono;
                                 font-size: Theme.text-md;

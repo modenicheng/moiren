@@ -16,6 +16,10 @@ export global Backend {
     in property <string> error-text;
     in property <string> catalog-error;
     in property <float> tone-progress;
+    in property <int> tone-duration;
+    in property <AudioEndpoint> detail-endpoint;
+    in property <bool> detail-capture;
+    callback select-detail(bool, string);
     in property <string> elapsed: "—";
     in-out property <int> input-index: -1;
     in-out property <int> output-index: -1;

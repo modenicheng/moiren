@@ -19,6 +19,7 @@ component SliderRow inherits VerticalLayout {
     in property <float> minimum: 0;
     in property <float> maximum: 1;
     in property <bool> bipolar: false;
+    in property <bool> enabled: true;
     in-out property <float> value;
     callback changed(float);
 
@@ -49,6 +50,7 @@ component SliderRow inherits VerticalLayout {
         minimum: root.minimum;
         maximum: root.maximum;
         bipolar: root.bipolar;
+        enabled: root.enabled;
         value <=> root.value;
         changed(value) => { root.changed(value); }
     }
@@ -135,9 +137,11 @@ export component RenderPage inherits VerticalLayout {
 
                 tone-duration := SliderRow {
                     title: "Duration";
-                    readout: "\{Math.round(root.duration)} s";
+                    readout: "\{Backend.tone-duration > 0 ? Backend.tone-duration : Math.round(root.duration)} s";
                     minimum: 1; maximum: 600;
-                    value <=> root.duration;
+                    enabled: Backend.transport-ready && !Backend.active;
+                    value: Backend.tone-duration > 0 ? Backend.tone-duration : root.duration;
+                    changed(value) => { root.duration = value; }
                 }
                 HorizontalLayout {
                     alignment: center;
@@ -178,7 +182,7 @@ export component RenderPage inherits VerticalLayout {
                         }
                     }
                     Text {
-                        text: Backend.elapsed + " / \{Math.round(root.duration)} s";
+                        text: (Backend.tone-duration > 0 ? Backend.elapsed : "—") + " / \{Backend.tone-duration > 0 ? Backend.tone-duration : Math.round(root.duration)} s";
                         color: Theme.text-muted;
                         font-family: Theme.font-mono;
                         font-size: Theme.text-md;
