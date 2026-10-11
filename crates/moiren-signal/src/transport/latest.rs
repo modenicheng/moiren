@@ -1,40 +1,9 @@
 use crate::{
     DemandSnapshot, PublicationMeta, PublishError, PublishOutcome, WriteError, WriteUnavailable,
-    storage::{BlockSlot, LatestStorage, ValueSlot},
+    storage::{BlockSlot, LatestStorage, Payload, ValueSlot},
     subscriber::TopicState,
 };
 use std::sync::Arc;
-
-pub(crate) trait LatestPayload: Clone + Send + 'static {
-    fn meta(&self) -> PublicationMeta;
-    fn copy_from(&mut self, source: &Self);
-    fn element_bytes(&self) -> usize;
-}
-impl<T: Copy + Send + 'static> LatestPayload for ValueSlot<T> {
-    fn meta(&self) -> PublicationMeta {
-        self.meta
-    }
-    fn copy_from(&mut self, source: &Self) {
-        *self = *source;
-    }
-    fn element_bytes(&self) -> usize {
-        0
-    }
-}
-impl<H: Copy + Send + 'static, E: Copy + Send + 'static> LatestPayload for BlockSlot<H, E> {
-    fn meta(&self) -> PublicationMeta {
-        self.meta
-    }
-    fn copy_from(&mut self, source: &Self) {
-        self.meta = source.meta;
-        self.header = source.header;
-        // Box ownership never changes: fan-out copies into prepared regions.
-        self.elements.copy_from_slice(&source.elements);
-    }
-    fn element_bytes(&self) -> usize {
-        std::mem::size_of_val(&*self.elements)
-    }
-}
 
 /// Private typed writer borrow. B5 will obtain this only after scope validation.
 pub(crate) struct LatestEndpoint<'a, S: Clone + Send> {
@@ -155,7 +124,7 @@ impl<H: Copy + Send, E: Copy + Send> LatestEndpoint<'_, BlockSlot<H, E>> {
     }
 }
 
-impl<S: LatestPayload> LatestStorage<S> {
+impl<S: Payload> LatestStorage<S> {
     /// One bounded transport delivery step; the public budgeted pump is B4.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn deliver_latest(&mut self) {
@@ -185,68 +154,48 @@ mod tests {
     use super::*;
     use crate::{Bus, BusConfig};
 
-    mod allocator {
-        use std::{
-            alloc::{GlobalAlloc, Layout, System},
-            cell::Cell,
-        };
-        #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
-        pub(super) struct Counts {
-            alloc: usize,
-            realloc: usize,
-            free: usize,
-        }
-        thread_local! { static PROBE: Cell<Option<Counts>> = const { Cell::new(None) }; }
-        pub(super) struct Allocator;
-        fn record(kind: usize) {
-            let _ = PROBE.try_with(|state| {
-                if let Some(mut counts) = state.get() {
-                    match kind {
-                        0 => counts.alloc += 1,
-                        1 => counts.realloc += 1,
-                        _ => counts.free += 1,
-                    }
-                    state.set(Some(counts));
-                }
-            });
-        }
-        // SAFETY: All operations delegate the original pointer/layout unchanged
-        // to System. Preinitialized TLS counters do not allocate recursively.
-        unsafe impl GlobalAlloc for Allocator {
-            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-                record(0);
-                // SAFETY: Forward the caller's valid allocation layout.
-                unsafe { System.alloc(layout) }
-            }
-            unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-                record(1);
-                // SAFETY: Forward the original allocation and requested size.
-                unsafe { System.realloc(pointer, layout, size) }
-            }
-            unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-                record(2);
-                // SAFETY: Forward the original allocation and layout.
-                unsafe { System.dealloc(pointer, layout) };
-            }
-        }
-        pub(super) fn measure(operation: impl FnOnce()) -> Counts {
-            struct Stop;
-            impl Drop for Stop {
-                fn drop(&mut self) {
-                    PROBE.with(|state| state.set(None));
-                }
-            }
-            PROBE.with(|state| state.set(Some(Counts::default())));
-            let stop = Stop;
-            operation();
-            let counts = PROBE.with(|state| state.get().unwrap());
-            drop(stop);
-            counts
-        }
-    }
+    use crate::test_alloc as allocator;
 
-    #[global_allocator]
-    static ALLOCATOR: allocator::Allocator = allocator::Allocator;
+    #[test]
+    fn copy_latest_too_small_preserves_the_pending_publication() {
+        let mut bus = Bus::new(Default::default()).unwrap();
+        let topic = bus
+            .register_latest_block(
+                "copy",
+                crate::BlockInit {
+                    header: 7_u32,
+                    element: 8_u32,
+                    capacity: 3,
+                },
+            )
+            .unwrap();
+        let mut subscriber = bus.subscribe(&topic, Default::default()).unwrap();
+        let storage = bus
+            .latest_storage_mut::<_, BlockSlot<u32, u32>>(&topic)
+            .unwrap();
+        let mut endpoint = storage.endpoint();
+        let mut write = endpoint.try_write(3).unwrap();
+        *write.header_mut() = 10;
+        write.elements_mut().copy_from_slice(&[11, 12, 13]);
+        write.commit(3).unwrap();
+        storage.deliver_latest();
+        assert_eq!(
+            subscriber.copy_latest(&mut [0; 2]),
+            Err(crate::ReadError::DestinationTooSmall { required: 3 })
+        );
+        assert_eq!(
+            subscriber.copy_latest(&mut []),
+            Err(crate::ReadError::DestinationTooSmall { required: 3 })
+        );
+        let mut output = [0; 4];
+        let copied = subscriber.copy_latest(&mut output).unwrap().unwrap();
+        assert_eq!(
+            (copied.header, copied.len, copied.meta.sequence),
+            (10, 3, 1)
+        );
+        assert_eq!(output, [11, 12, 13, 0]);
+        assert_eq!(subscriber.copy_latest(&mut output), Ok(None));
+    }
 
     #[test]
     fn value_supersession_and_independent_receivers() {

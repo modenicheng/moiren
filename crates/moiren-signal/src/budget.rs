@@ -87,12 +87,12 @@ pub(crate) fn latest_shared<S: Send>() -> Result<Layout, RegisterError> {
     Ok(extend(array::<AtomicUsize>(2)?, shared)?.pad_to_align())
 }
 
-fn index_ring(depth: usize) -> Result<usize, RegisterError> {
+fn owner_ring<S>(depth: usize) -> Result<usize, RegisterError> {
     // rtrb uses indices in 0..2*capacity, even for zero-sized queue items.
     depth.checked_mul(2).ok_or(RegisterError::SizeOverflow)?;
     add(
-        Layout::new::<rtrb::RingBuffer<usize>>().size(),
-        array::<usize>(depth)?.size(),
+        Layout::new::<rtrb::RingBuffer<S>>().size(),
+        array::<S>(depth)?.size(),
     )
 }
 
@@ -114,14 +114,31 @@ pub(crate) fn stream<S: Clone + Send>(
     element_bytes: usize,
 ) -> Result<usize, RegisterError> {
     let slots = add(depth, 1)?;
-    let queues = index_ring(depth)?
-        .checked_mul(2)
-        .ok_or(RegisterError::SizeOverflow)?;
+    let queues = add(owner_ring::<S>(slots)?, owner_ring::<S>(depth)?)?;
     let base = add(
         Layout::new::<StreamStorage<S>>().size(),
-        array::<S>(slots)?.size(),
+        arc_layout::<crate::subscriber::TopicState>()?.size(),
     )?;
     add(add(base, queues)?, element_bytes)
+}
+
+pub(crate) fn stream_subscriber<S>(
+    depth: usize,
+    element_bytes: usize,
+) -> Result<usize, RegisterError> {
+    let slots = add(depth, 1)?;
+    add(
+        add(
+            add(
+                Layout::new::<crate::subscriber::StreamReceiver<S>>().size(),
+                arc_layout::<crate::subscriber::SubscriptionLease>()?.size(),
+            )?,
+            add(owner_ring::<S>(slots)?, owner_ring::<S>(depth)?)?,
+        )?,
+        element_bytes
+            .checked_mul(slots)
+            .ok_or(RegisterError::SizeOverflow)?,
+    )
 }
 
 pub(crate) fn value_copy<T>() -> Layout {
@@ -160,5 +177,7 @@ pub(crate) fn stream_block<H: Copy + Send, E: Copy + Send>(
     capacity: usize,
     depth: usize,
 ) -> Result<usize, RegisterError> {
-    stream::<BlockSlot<H, E>>(depth, block_elements::<E>(capacity, add(depth, 3)?)?)
+    // Immutable template plus depth queued owners plus the writer spare.
+    // Dispatch temporarily owns one of these slots rather than cloning it.
+    stream::<BlockSlot<H, E>>(depth, block_elements::<E>(capacity, add(depth, 2)?)?)
 }

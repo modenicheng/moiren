@@ -75,3 +75,9 @@ pub enum WriteError {
     #[error(transparent)]
     Invalid(#[from] PublishError),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ReadError {
+    #[error("destination requires at least {required} elements")]
+    DestinationTooSmall { required: usize },
+}

@@ -33,6 +33,51 @@ pub(crate) struct BlockSlot<H, E> {
     pub(crate) elements: Box<[E]>,
 }
 
+pub(crate) trait Payload: Clone + Send + 'static {
+    fn meta(&self) -> PublicationMeta;
+    fn set_meta(&mut self, meta: PublicationMeta);
+    fn copy_from(&mut self, source: &Self);
+    fn element_bytes(&self) -> usize;
+    fn element_count(&self) -> usize;
+}
+impl<T: Copy + Send + 'static> Payload for ValueSlot<T> {
+    fn meta(&self) -> PublicationMeta {
+        self.meta
+    }
+    fn set_meta(&mut self, meta: PublicationMeta) {
+        self.meta = meta;
+    }
+    fn copy_from(&mut self, source: &Self) {
+        *self = *source;
+    }
+    fn element_bytes(&self) -> usize {
+        0
+    }
+    fn element_count(&self) -> usize {
+        0
+    }
+}
+impl<H: Copy + Send + 'static, E: Copy + Send + 'static> Payload for BlockSlot<H, E> {
+    fn meta(&self) -> PublicationMeta {
+        self.meta
+    }
+    fn set_meta(&mut self, meta: PublicationMeta) {
+        self.meta = meta;
+    }
+    fn copy_from(&mut self, source: &Self) {
+        self.meta = source.meta;
+        self.header = source.header;
+        // Box ownership never changes: fan-out copies into prepared regions.
+        self.elements[..source.meta.len].copy_from_slice(&source.elements[..source.meta.len]);
+    }
+    fn element_bytes(&self) -> usize {
+        std::mem::size_of_val(&*self.elements)
+    }
+    fn element_count(&self) -> usize {
+        self.elements.len()
+    }
+}
+
 // These owned fields are consumed by the later transport/dispatcher tasks.
 #[allow(dead_code)]
 pub(crate) struct LatestStorage<S: Clone + Send> {
@@ -64,43 +109,105 @@ impl<S: Clone + Send> LatestStorage<S> {
 #[allow(dead_code)]
 pub(crate) struct StreamStorage<S: Clone + Send> {
     pub(crate) template: S,
-    pub(crate) dispatch: S,
-    pub(crate) slots: Box<[S]>,
-    // SPSC roles: only the dispatcher returns slots to free_producer;
-    // only RT consumes free slots and pushes completed ready indices.
-    pub(crate) free_producer: rtrb::Producer<usize>,
-    pub(crate) free_consumer: rtrb::Consumer<usize>,
-    pub(crate) ready_producer: rtrb::Producer<usize>,
-    pub(crate) ready_consumer: rtrb::Consumer<usize>,
-    // RT restores this exclusive spare after abort/Full, never pushing to the
-    // dispatcher's free_producer. Together, the pool owns depth+1 slots.
-    pub(crate) writer_spare: usize,
+    pub(crate) writer: PoolWriter<S>,
+    pub(crate) reader: PoolReader<S>,
+    pub(crate) dispatch: Option<S>,
+    pub(crate) state: Arc<TopicState>,
+    pub(crate) sequence: Sequence,
+    pub(crate) senders: [Option<StreamSender<S>>; 64],
 }
 
 impl<S: Clone + Send> StreamStorage<S> {
     pub(crate) fn new(template: S, depth: usize) -> Self {
-        let mut slots = Vec::with_capacity(depth + 1);
-        for _ in 0..=depth {
-            slots.push(template.clone());
-        }
-        let slots = slots.into_boxed_slice();
-        let (mut free_producer, free_consumer) = rtrb::RingBuffer::new(depth);
-        let (ready_producer, ready_consumer) = rtrb::RingBuffer::new(depth);
-        for index in 1..=depth {
-            free_producer
-                .push(index)
-                .expect("checked free queue capacity");
-        }
+        let (mut writer, reader) = pool(&template, depth);
+        writer.spare = Some(template.clone());
         Self {
-            dispatch: template.clone(),
             template,
-            slots,
-            free_producer,
-            free_consumer,
-            ready_producer,
-            ready_consumer,
-            writer_spare: 0,
+            writer,
+            reader,
+            dispatch: None,
+            state: Arc::new(TopicState::new()),
+            sequence: Sequence::default(),
+            senders: std::array::from_fn(|_| None),
         }
+    }
+}
+
+/// A slot has exactly one owner: free ring, writer spare/acquired guard, ready
+/// ring, or reader-held dispatch/loan. No indices or mutable pool aliases exist.
+/// The ingress owns depth+1 slots; each receiver separately owns depth+1 slots.
+pub(crate) struct PoolWriter<S> {
+    pub(crate) free: rtrb::Consumer<S>,
+    pub(crate) ready: rtrb::Producer<S>,
+    pub(crate) spare: Option<S>,
+}
+pub(crate) struct PoolReader<S> {
+    pub(crate) free: rtrb::Producer<S>,
+    pub(crate) ready: rtrb::Consumer<S>,
+}
+#[allow(dead_code)]
+pub(crate) struct StreamSender<S> {
+    pub(crate) writer: PoolWriter<S>,
+    pub(crate) lease: Weak<SubscriptionLease>,
+    pub(crate) fence: u64,
+    pub(crate) generation: u64,
+    pub(crate) drops: u64,
+    pub(crate) charged_bytes: usize,
+}
+
+/// Preparation only. The remaining slot is placed in the ingress writer spare
+/// or the subscriber loan by the caller. The free ring needs depth+1 capacity:
+/// a dispatcher can return every owner before RT acquires its next spare.
+pub(crate) fn pool<S: Clone>(template: &S, depth: usize) -> (PoolWriter<S>, PoolReader<S>) {
+    let (mut free, free_consumer) = rtrb::RingBuffer::new(depth + 1);
+    let (ready, ready_consumer) = rtrb::RingBuffer::new(depth);
+    for _ in 0..depth {
+        assert!(
+            free.push(template.clone()).is_ok(),
+            "prepared free capacity"
+        );
+    }
+    (
+        PoolWriter {
+            free: free_consumer,
+            ready,
+            spare: None,
+        },
+        PoolReader {
+            free,
+            ready: ready_consumer,
+        },
+    )
+}
+
+impl<S> PoolWriter<S> {
+    pub(crate) fn acquire(&mut self) -> Option<S> {
+        if self.ready.is_full() {
+            return None;
+        }
+        self.spare.take().or_else(|| self.free.pop().ok())
+    }
+    pub(crate) fn restore(&mut self, slot: S) {
+        // Abort never uses the other thread's producer and cannot fail into a
+        // payload destructor on RT. Acquire emptied this exclusive local spare.
+        debug_assert!(self.spare.is_none());
+        self.spare = Some(slot);
+    }
+    pub(crate) fn enqueue(&mut self, slot: S) -> bool {
+        match self.ready.push(slot) {
+            Ok(()) => true,
+            Err(rtrb::PushError::Full(slot)) => {
+                self.restore(slot);
+                false
+            }
+        }
+    }
+}
+impl<S> PoolReader<S> {
+    pub(crate) fn recycle(&mut self, slot: S) {
+        // A reader can return only a slot removed from the ready ring or its
+        // own loan. At most depth+1 owners exist, so this ring always has room.
+        assert!(self.free.push(slot).is_ok(), "conserved free slot capacity");
     }
 }
 
@@ -173,21 +280,19 @@ mod tests {
             || NonZeroU32::new(9).unwrap(),
         );
         let mut storage = StreamStorage::new(template, 8);
-        assert!(storage.ready_consumer.pop().is_err());
-        assert_eq!(storage.writer_spare, 0);
-        assert_eq!(storage.slots.len(), 9);
-        for slot in storage
-            .slots
-            .iter()
-            .chain([&storage.template, &storage.dispatch])
-        {
+        assert!(storage.reader.ready.pop().is_err());
+        assert_eq!(storage.writer.free.slots(), 8);
+        for slot in [&storage.template, storage.writer.spare.as_ref().unwrap()] {
             assert_eq!(slot.meta, PublicationMeta::INITIAL);
             assert_eq!(slot.header.get(), 5);
             assert!(slot.elements.iter().all(|element| element.get() == 9));
         }
-        for index in 1..=8 {
-            assert_eq!(storage.free_consumer.pop().unwrap(), index);
+        for _ in 1..=8 {
+            let slot = storage.writer.free.pop().unwrap();
+            assert_eq!(slot.meta, PublicationMeta::INITIAL);
+            assert_eq!(slot.header.get(), 5);
+            assert!(slot.elements.iter().all(|element| element.get() == 9));
         }
-        assert!(storage.free_consumer.pop().is_err());
+        assert!(storage.writer.free.pop().is_err());
     }
 }

@@ -255,7 +255,11 @@ fn assert_concurrent_receiver_drop_stays_budgeted<P: moiren_signal::Shape>(
 
         gate.resume.store(true, Ordering::Release);
         let dropped = worker.join().unwrap();
-        assert_eq!(dropped.bytes, -(receiver.size as isize));
+        assert!(dropped.bytes <= -(receiver.size as isize));
+        assert_eq!(
+            dropped.bytes,
+            -(gate.freed_bytes.load(Ordering::Acquire) as isize)
+        );
         replacement
     });
     drop(replacement);
@@ -281,6 +285,207 @@ fn concurrent_block_receiver_drop_keeps_live_allocations_charged() {
         )
         .unwrap()
     });
+}
+
+#[test]
+fn concurrent_stream_receiver_drop_keeps_live_allocations_charged() {
+    assert_concurrent_receiver_drop_stays_budgeted(|bus| {
+        bus.register_stream_value("stream", 99_u32, 2).unwrap()
+    });
+    assert_concurrent_receiver_drop_stays_budgeted(|bus| {
+        bus.register_stream_block(
+            "stream-block",
+            BlockInit {
+                header: 99_u32,
+                element: 7_u64,
+                capacity: 128,
+            },
+            2,
+        )
+        .unwrap()
+    });
+}
+
+#[test]
+fn stream_subscriber_budget_matches_owner_rings_loan_and_retained_storage() {
+    fn check<P: moiren_signal::Shape>(bus: &mut Bus, topic: &moiren_signal::Topic<P>) {
+        let mut replacements = Vec::new();
+        for depth in [1, 2, 8] {
+            let before = bus.budget_used();
+            let (subscriber, prepared) = allocations::measure(|| {
+                bus.subscribe(
+                    topic,
+                    moiren_signal::SubscriptionOptions {
+                        stream_depth: Some(depth),
+                    },
+                )
+                .unwrap()
+            });
+            assert!(prepared.count < prepared.events.len());
+            assert_eq!(
+                bus.budget_used() as isize - before as isize,
+                prepared.bytes,
+                "all receiver/ring/loan payload layouts must be charged"
+            );
+            let charged = bus.budget_used();
+            let (_, dropped) = allocations::measure(|| drop(subscriber));
+            assert_eq!(
+                bus.budget_used(),
+                charged,
+                "retained dispatcher owners cannot be refunded yet"
+            );
+            let (replacement, reclaimed) = allocations::measure(|| {
+                bus.subscribe(
+                    topic,
+                    moiren_signal::SubscriptionOptions {
+                        stream_depth: Some(depth),
+                    },
+                )
+                .unwrap()
+            });
+            assert_eq!(bus.budget_used(), charged);
+            assert_eq!(
+                prepared.bytes + dropped.bytes + reclaimed.bytes,
+                charged as isize - before as isize
+            );
+            replacements.push(replacement);
+        }
+    }
+    let mut bus = Bus::new(Default::default()).unwrap();
+    let value = bus.register_stream_value("value", 7_u64, 2).unwrap();
+    check(&mut bus, &value);
+    let zst = bus.register_stream_value("zst", (), 2).unwrap();
+    check(&mut bus, &zst);
+    let aligned = bus.register_stream_value("aligned", Aligned(7), 2).unwrap();
+    check(&mut bus, &aligned);
+    let block = bus
+        .register_stream_block(
+            "block",
+            BlockInit {
+                header: 7_u32,
+                element: 8_u64,
+                capacity: 3,
+            },
+            2,
+        )
+        .unwrap();
+    check(&mut bus, &block);
+    let block = bus
+        .register_stream_block(
+            "zst-block",
+            BlockInit {
+                header: (),
+                element: (),
+                capacity: 3,
+            },
+            2,
+        )
+        .unwrap();
+    check(&mut bus, &block);
+    let block = bus
+        .register_stream_block(
+            "aligned-block",
+            BlockInit {
+                header: Aligned(7),
+                element: Aligned(8),
+                capacity: 3,
+            },
+            2,
+        )
+        .unwrap();
+    check(&mut bus, &block);
+}
+
+#[test]
+fn stream_subscription_budget_boundary_and_rejections_allocate_nothing() {
+    use moiren_signal::{SubscribeError, SubscriptionOptions};
+    let mut measure = Bus::new(Default::default()).unwrap();
+    let topic = measure
+        .register_stream_block(
+            "block",
+            BlockInit {
+                header: 7_u32,
+                element: 8_u64,
+                capacity: 3,
+            },
+            2,
+        )
+        .unwrap();
+    let base = measure.budget_used();
+    let _subscriber = measure
+        .subscribe(
+            &topic,
+            SubscriptionOptions {
+                stream_depth: Some(2),
+            },
+        )
+        .unwrap();
+    let limit = measure.budget_used();
+    for (budget, success) in [(limit, true), (limit - 1, false)] {
+        let mut bus = Bus::new(BusConfig {
+            byte_budget: budget,
+            ..Default::default()
+        })
+        .unwrap();
+        let topic = bus
+            .register_stream_block(
+                "block",
+                BlockInit {
+                    header: 7_u32,
+                    element: 8_u64,
+                    capacity: 3,
+                },
+                2,
+            )
+            .unwrap();
+        assert_eq!(bus.budget_used(), base);
+        let (result, probe) = allocations::measure(|| {
+            bus.subscribe(
+                &topic,
+                SubscriptionOptions {
+                    stream_depth: Some(2),
+                },
+            )
+        });
+        if success {
+            assert!(result.is_ok());
+            assert_eq!(bus.budget_used(), limit);
+        } else {
+            assert!(matches!(result, Err(SubscribeError::BudgetExceeded)));
+            assert_eq!(probe.count, 0);
+            assert_eq!(bus.budget_used(), base);
+        }
+    }
+    let mut bus = Bus::new(BusConfig {
+        max_subscribers_per_topic: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    let topic = bus.register_stream_value("value", 7_u32, 2).unwrap();
+    let before = bus.budget_used();
+    let (_, probe) = allocations::measure(|| {
+        assert!(matches!(
+            bus.subscribe(
+                &topic,
+                SubscriptionOptions {
+                    stream_depth: Some(0)
+                }
+            ),
+            Err(SubscribeError::InvalidCapacity)
+        ));
+    });
+    assert_eq!(probe.count, 0);
+    assert_eq!(bus.budget_used(), before);
+    let _subscriber = bus.subscribe(&topic, Default::default()).unwrap();
+    let before = bus.budget_used();
+    let (_, probe) = allocations::measure(|| {
+        assert!(matches!(
+            bus.subscribe(&topic, Default::default()),
+            Err(SubscribeError::SubscriberLimit)
+        ));
+    });
+    assert_eq!(probe.count, 0);
+    assert_eq!(bus.budget_used(), before);
 }
 
 #[test]

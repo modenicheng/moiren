@@ -10,9 +10,11 @@ use crate::{
     StreamValue, SubscribeError, SubscriptionOptions, Topic, TopicId,
     budget::{self, Budget},
     lifecycle::DirectoryId,
-    storage::{LatestSender, LatestStorage, StreamStorage, ValueSlot, block_template},
-    subscriber::{LatestReceiver, Subscriber, SubscriptionLease},
-    transport::latest::LatestPayload,
+    storage::Payload,
+    storage::{
+        LatestSender, LatestStorage, StreamSender, StreamStorage, ValueSlot, block_template, pool,
+    },
+    subscriber::{LatestReceiver, StreamReceiver, Subscriber, SubscriptionLease},
     types::{Mode, PayloadType},
 };
 
@@ -46,7 +48,8 @@ impl Bus {
         }
         config
             .default_stream_depth
-            .checked_mul(2)
+            .checked_add(1)
+            .and_then(|free_depth| free_depth.checked_mul(2))
             .ok_or(RegisterError::SizeOverflow)?;
         let directory_layout = budget::array::<Option<Entry>>(config.max_topics)?;
         // Count the bus's own inline metadata and every fixed directory slot,
@@ -78,7 +81,8 @@ impl Bus {
     }
 
     /// Prepares independent receiver storage before committing business demand.
-    /// Latest subscriptions reject `stream_depth`; Stream support follows in B3.
+    /// Latest rejects `stream_depth`; Stream depth counts queued messages and
+    /// reserves one additional initialized receiver loan.
     pub fn subscribe<P: Shape>(
         &mut self,
         topic: &Topic<P>,
@@ -87,7 +91,7 @@ impl Bus {
         P::subscribe(self, topic, options)
     }
 
-    pub(crate) fn latest_storage_mut<P: Shape, S: LatestPayload>(
+    pub(crate) fn latest_storage_mut<P: Shape, S: Payload>(
         &mut self,
         topic: &Topic<P>,
     ) -> Result<&mut LatestStorage<S>, SubscribeError> {
@@ -106,7 +110,7 @@ impl Bus {
             .ok_or(SubscribeError::ForeignTopic)
     }
 
-    pub(crate) fn subscribe_latest<P: Shape, S: LatestPayload>(
+    pub(crate) fn subscribe_latest<P: Shape, S: Payload>(
         &mut self,
         topic: &Topic<P>,
         options: SubscriptionOptions,
@@ -190,6 +194,122 @@ impl Bus {
         storage.senders[sender_slot] = Some(LatestSender {
             input,
             lease: Arc::downgrade(&receiver.lease),
+            charged_bytes: bytes,
+        });
+        self.budget.used = next_budget;
+        Ok(Subscriber::new(receiver))
+    }
+
+    pub(crate) fn stream_storage_mut<P: Shape, S: Payload>(
+        &mut self,
+        topic: &Topic<P>,
+    ) -> Result<&mut StreamStorage<S>, SubscribeError> {
+        if topic.id.directory != self.directory {
+            return Err(SubscribeError::ForeignTopic);
+        }
+        let entry = self
+            .entries
+            .get_mut(topic.id.slot)
+            .and_then(Option::as_mut)
+            .filter(|entry| entry.id == topic.id)
+            .ok_or(SubscribeError::Closed)?;
+        entry
+            .storage
+            .downcast_mut::<StreamStorage<S>>()
+            .ok_or(SubscribeError::ForeignTopic)
+    }
+
+    pub(crate) fn subscribe_stream<P: Shape, S: Payload>(
+        &mut self,
+        topic: &Topic<P>,
+        options: SubscriptionOptions,
+    ) -> Result<Subscriber<P>, SubscribeError> {
+        let depth = options
+            .stream_depth
+            .unwrap_or(self.config.default_stream_depth);
+        if depth == 0
+            || depth
+                .checked_add(1)
+                .and_then(|slots| slots.checked_mul(2))
+                .is_none()
+        {
+            return Err(SubscribeError::InvalidCapacity);
+        }
+        let limit = self.config.max_subscribers_per_topic;
+        let storage = self.stream_storage_mut::<P, S>(topic)?;
+        storage.state.demand.check_add(limit)?;
+        storage
+            .template
+            .element_count()
+            .checked_mul(depth + 1)
+            .ok_or(SubscribeError::InvalidCapacity)?;
+        let completed = storage.state.retired_receivers.load(Ordering::Acquire);
+        let retired_slots: [bool; 64] = std::array::from_fn(|index| {
+            storage.senders[index].is_some() && completed & (1 << index) != 0
+        });
+        let sender_slot = storage
+            .senders
+            .iter()
+            .enumerate()
+            .position(|(index, sender)| sender.is_none() || retired_slots[index])
+            .ok_or(SubscribeError::SubscriberLimit)?;
+        let retired: usize = storage
+            .senders
+            .iter()
+            .zip(retired_slots)
+            .filter_map(|(sender, retire)| {
+                if retire {
+                    sender.as_ref().map(|sender| sender.charged_bytes)
+                } else {
+                    None
+                }
+            })
+            .sum();
+        let bytes = budget::stream_subscriber::<S>(depth, storage.template.element_bytes())
+            .map_err(|_| SubscribeError::BudgetExceeded)?;
+        // Bound preparation's peak; retained sender/ring/payload owners cannot
+        // lend their charge to a replacement until actual non-RT destruction.
+        self.budget
+            .check(bytes)
+            .map_err(|_| SubscribeError::BudgetExceeded)?;
+        let next_budget = budget::add(self.budget.used - retired, bytes)
+            .map_err(|_| SubscribeError::BudgetExceeded)?;
+        let storage = self.stream_storage_mut::<P, S>(topic)?;
+        let (writer, reader) = pool(&storage.template, depth);
+        let lease = Arc::new(SubscriptionLease {
+            state: Arc::clone(&storage.state),
+            counted: false,
+            sender_slot,
+        });
+        let mut receiver = Box::new(StreamReceiver {
+            reader,
+            loan: storage.template.clone(),
+            lease,
+            fence: 0,
+            generation: 0,
+        });
+        // The commit boundary is sequence allocation, not pump dequeue time.
+        receiver.fence = crate::sequence::subscription_fence(&storage.state.attempt_sequence);
+        let demand = storage.state.demand.add(limit)?;
+        receiver.generation = demand.generation;
+        Arc::get_mut(&mut receiver.lease)
+            .expect("staged sole lease owner")
+            .counted = true;
+        for (slot, retire) in storage.senders.iter_mut().zip(retired_slots) {
+            if retire {
+                *slot = None;
+            }
+        }
+        storage
+            .state
+            .retired_receivers
+            .fetch_and(!(1 << sender_slot), Ordering::Relaxed);
+        storage.senders[sender_slot] = Some(StreamSender {
+            writer,
+            lease: Arc::downgrade(&receiver.lease),
+            fence: receiver.fence,
+            generation: receiver.generation,
+            drops: 0,
             charged_bytes: bytes,
         });
         self.budget.used = next_budget;
@@ -333,7 +453,11 @@ impl Bus {
 
     fn check_depth(depth: usize) -> Result<(), RegisterError> {
         Self::check_capacity(depth)?;
-        depth.checked_mul(2).ok_or(RegisterError::SizeOverflow)?;
+        // The free owner ring has depth+1 slots and rtrb doubles its indices.
+        depth
+            .checked_add(1)
+            .and_then(|free_depth| free_depth.checked_mul(2))
+            .ok_or(RegisterError::SizeOverflow)?;
         Ok(())
     }
 

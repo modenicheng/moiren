@@ -11,17 +11,22 @@ mod registry;
 mod sequence;
 mod storage;
 mod subscriber;
+#[cfg(test)]
+mod test_alloc;
 mod transport;
 mod types;
 
 pub use demand::DemandSnapshot;
 pub use error::{
-    LookupError, PublishError, RegisterError, SubscribeError, WriteError, WriteUnavailable,
+    LookupError, PublishError, ReadError, RegisterError, SubscribeError, WriteError,
+    WriteUnavailable,
 };
 pub use registry::Bus;
-pub use subscriber::{BlockReadGuard, Subscriber, ValueMessage};
+pub use subscriber::{BlockMessage, BlockReadGuard, Subscriber, ValueMessage};
 pub use transport::latest::BlockWriteGuard;
+pub use transport::stream::StreamBlockWriteGuard;
 pub use types::{
     BlockInit, BlockShape, BusConfig, LatestBlock, LatestValue, PublicationMeta, PublishOutcome,
-    Shape, StreamBlock, StreamValue, SubscriptionOptions, Topic, TopicId, ValueShape,
+    PublisherStatus, Shape, StreamBlock, StreamValue, SubscriptionOptions, Topic, TopicId,
+    TopicLifecycle, TopicStatus, ValueShape,
 };

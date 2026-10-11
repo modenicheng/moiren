@@ -34,12 +34,30 @@ pub struct BlockInit<H, E> {
 
 /// Transport metadata; business headers remain in the typed payload.
 ///
-/// Sequence zero and length zero describe initialized storage, not a message.
+/// Sequence zero denotes initialized storage, not a message. Published blocks
+/// may have length zero; their nonzero sequence still identifies a publication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublicationMeta {
     pub sequence: u64,
     pub activation_generation: u64,
     pub len: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopicLifecycle {
+    Registered,
+    Closed,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublisherStatus {
+    Bound,
+    NoPublisher,
+}
+/// Lifecycle and binding availability are independent of an empty read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopicStatus {
+    pub lifecycle: TopicLifecycle,
+    pub publisher: PublisherStatus,
 }
 
 impl PublicationMeta {
@@ -159,7 +177,8 @@ macro_rules! value_shape {
                 options: crate::SubscriptionOptions,
             ) -> Result<crate::Subscriber<Self>, crate::SubscribeError> {
                 if Self::STREAM {
-                    return Err(crate::SubscribeError::InvalidOptions);
+                    return bus
+                        .subscribe_stream::<Self, crate::storage::ValueSlot<T>>(topic, options);
                 }
                 bus.subscribe_latest::<Self, crate::storage::ValueSlot<T>>(topic, options)
             }
@@ -185,7 +204,8 @@ macro_rules! block_shape {
                 options: crate::SubscriptionOptions,
             ) -> Result<crate::Subscriber<Self>, crate::SubscribeError> {
                 if Self::STREAM {
-                    return Err(crate::SubscribeError::InvalidOptions);
+                    return bus
+                        .subscribe_stream::<Self, crate::storage::BlockSlot<H, E>>(topic, options);
                 }
                 bus.subscribe_latest::<Self, crate::storage::BlockSlot<H, E>>(topic, options)
             }
