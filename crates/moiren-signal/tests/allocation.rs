@@ -117,7 +117,7 @@ fn rt_publication_and_activation_paths_do_not_allocate() {
             },
         )
         .unwrap();
-    let (control, mut host) = bus.create_host(4).unwrap();
+    let (control, mut host) = bus.create_host(5).unwrap();
     let key = control.new_binding().unwrap();
     let value_publisher = control.prepare(&latest_value, key).unwrap();
     let block_publisher = control.prepare(&latest_block, key).unwrap();
@@ -197,8 +197,16 @@ fn rt_publication_and_activation_paths_do_not_allocate() {
     assert_eq!(block_reader.read_latest().unwrap().elements(), &[9, 9]);
     assert_eq!(stream_reader.next().unwrap().elements(), &[17]);
 
+    let rejected_topic = bus
+        .register_latest_value("activation/rejected-new-topic", 0_u32)
+        .unwrap();
+    let rejected_publisher = control.prepare(&rejected_topic, key).unwrap();
     let stale = control
-        .prepare_update(&[value_publisher.erase(), block_publisher.erase()])
+        .prepare_update(&[
+            value_publisher.erase(),
+            block_publisher.erase(),
+            rejected_publisher.erase(),
+        ])
         .unwrap();
     let replacement = control
         .prepare_update(&[value_publisher.erase(), block_publisher.erase()])
@@ -219,6 +227,11 @@ fn rt_publication_and_activation_paths_do_not_allocate() {
         }),
         Counts::default()
     );
+    assert_eq!(
+        failed.as_ref().unwrap().error,
+        moiren_signal::ActivateError::StaleBasis
+    );
+    assert_eq!(rejected_topic.stats().attempts, 0);
     drop(failed);
 
     drop(latest_reader);

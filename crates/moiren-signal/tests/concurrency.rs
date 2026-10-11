@@ -15,6 +15,25 @@ struct Frame {
     inverse_echo: u64,
 }
 
+fn assert_frame(guard: &moiren_signal::BlockReadGuard<'_, Frame, u64>, expected: u64) {
+    assert_eq!(
+        *guard.header(),
+        Frame {
+            sequence_echo: expected,
+            inverse_echo: u64::MAX - expected,
+        }
+    );
+    assert_eq!(guard.elements(), &[expected]);
+    assert_eq!(guard.meta().sequence, expected);
+}
+
+struct Completion(Arc<AtomicBool>);
+impl Drop for Completion {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 fn pump_budget() -> PumpBudget {
     PumpBudget {
         topic_checks: 256,
@@ -75,6 +94,8 @@ fn producer_pump_and_independent_subscribers_preserve_pairs_with_held_guard() {
     let (producer_tx, producer_rx) = mpsc::sync_channel(1);
     let (done_tx, done_rx) = mpsc::sync_channel(1);
     let (pump_tx, pump_rx) = mpsc::sync_channel(1);
+    let (published_tx, published_rx) = mpsc::sync_channel(1);
+    let (drained_tx, drained_rx) = mpsc::sync_channel(1);
     let producer_start = start.clone();
     let producer = thread::spawn(move || {
         producer_start.wait();
@@ -93,6 +114,8 @@ fn producer_pump_and_independent_subscribers_preserve_pairs_with_held_guard() {
             *write.header_mut() = frame;
             write.elements_mut()[0] = sequence;
             assert!(matches!(write.commit(1), Ok(PublishOutcome::Published(_))));
+            published_tx.send(sequence).unwrap();
+            assert_eq!(drained_rx.recv().unwrap(), sequence);
         }
         done_tx.send(()).unwrap();
         producer_tx.send((host, op)).unwrap();
@@ -101,42 +124,49 @@ fn producer_pump_and_independent_subscribers_preserve_pairs_with_held_guard() {
     let pump_done = done.clone();
     let pump = thread::spawn(move || {
         let mut bus = bus;
+        let _completion = Completion(pump_done);
         pump_start.wait();
-        let mut complete = false;
-        for _ in 0..256 {
-            complete |= done_rx.try_recv().is_ok();
-            let report = bus.pump(pump_budget());
-            if complete && !report.has_pending {
-                break;
+        for expected in 1..=MESSAGES {
+            assert_eq!(published_rx.recv().unwrap(), expected);
+            let mut drained = false;
+            for _ in 0..8 {
+                if !bus.pump(pump_budget()).has_pending {
+                    drained = true;
+                    break;
+                }
             }
-            thread::yield_now();
+            assert!(drained, "finite ingress did not drain within its budget");
+            drained_tx.send(expected).unwrap();
         }
-        pump_done.store(true, Ordering::Release);
+        done_rx.recv().unwrap();
         let returned = producer_rx.recv().unwrap();
         pump_tx.send((bus, returned)).unwrap();
     });
-    let hold_gate = Arc::new(Barrier::new(2));
-    let release_gate = Arc::new(Barrier::new(2));
+    let (hold_tx, hold_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
     let first_done = done.clone();
     let first_start = start.clone();
-    let first_hold = hold_gate.clone();
-    let first_release = release_gate.clone();
     let first_reader = thread::spawn(move || {
         first_start.wait();
         let mut first = first;
         let mut seen = Vec::new();
         let mut held = false;
         loop {
+            let complete = first_done.load(Ordering::Acquire);
             if let Some(guard) = first.next() {
                 let frame = *guard.header();
-                assert_eq!(frame.sequence_echo ^ frame.inverse_echo, u64::MAX);
+                let expected = seen.len() as u64 + 1;
+                assert_frame(&guard, expected);
                 if !held {
                     held = true;
-                    first_hold.wait();
-                    first_release.wait();
+                    let meta = guard.meta();
+                    hold_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    assert_frame(&guard, expected);
+                    assert_eq!(guard.meta(), meta);
                 }
                 seen.push(frame.sequence_echo);
-            } else if first_done.load(Ordering::Acquire) {
+            } else if complete {
                 break;
             } else {
                 thread::yield_now();
@@ -146,25 +176,24 @@ fn producer_pump_and_independent_subscribers_preserve_pairs_with_held_guard() {
     });
     let second_done = done.clone();
     let second_start = start.clone();
-    let second_hold = hold_gate.clone();
-    let second_release = release_gate.clone();
     let second_reader = thread::spawn(move || {
         second_start.wait();
         let mut second = second;
-        second_hold.wait();
+        hold_rx.recv().unwrap();
         let mut seen = Vec::new();
         loop {
+            let complete = second_done.load(Ordering::Acquire);
             if let Some(guard) = second.next() {
                 let frame = *guard.header();
-                assert_eq!(frame.sequence_echo ^ frame.inverse_echo, u64::MAX);
+                assert_frame(&guard, seen.len() as u64 + 1);
                 seen.push(frame.sequence_echo);
-            } else if second_done.load(Ordering::Acquire) {
+            } else if complete {
                 break;
             } else {
                 thread::yield_now();
             }
         }
-        second_release.wait();
+        release_tx.send(()).unwrap();
         (seen, second.stats())
     });
     producer.join().unwrap();
