@@ -90,11 +90,79 @@ pub struct TopicId {
 
 /// A typed reference to a directory entry, without publication authority.
 /// Clone and final release are non-RT operations; status/statistics survive closure.
+///
+/// Latest value function-pointer payloads cannot be retyped:
+///
+/// ```compile_fail
+/// use moiren_signal::{LatestValue, Topic};
+/// fn coerce_latest_value(original: Topic<LatestValue<fn(&u32)>>)
+///     -> Topic<LatestValue<fn(&'static u32)>>
+/// {
+///     original
+/// }
+/// ```
+///
+/// Stream value function-pointer payloads cannot be retyped:
+///
+/// ```compile_fail
+/// use moiren_signal::{StreamValue, Topic};
+/// fn coerce_stream_value(original: Topic<StreamValue<fn(&u32)>>)
+///     -> Topic<StreamValue<fn(&'static u32)>>
+/// {
+///     original
+/// }
+/// ```
+///
+/// Latest block header function-pointer payloads cannot be retyped:
+///
+/// ```compile_fail
+/// use moiren_signal::{LatestBlock, Topic};
+/// fn coerce_latest_block_header(original: Topic<LatestBlock<fn(&u32), u32>>)
+///     -> Topic<LatestBlock<fn(&'static u32), u32>>
+/// {
+///     original
+/// }
+/// ```
+///
+/// Latest block element function-pointer payloads cannot be retyped:
+///
+/// ```compile_fail
+/// use moiren_signal::{LatestBlock, Topic};
+/// fn coerce_latest_block_element(original: Topic<LatestBlock<u32, fn(&u32)>>)
+///     -> Topic<LatestBlock<u32, fn(&'static u32)>>
+/// {
+///     original
+/// }
+/// ```
+///
+/// Stream block header function-pointer payloads cannot be retyped:
+///
+/// ```compile_fail
+/// use moiren_signal::{StreamBlock, Topic};
+/// fn coerce_stream_block_header(original: Topic<StreamBlock<fn(&u32), u32>>)
+///     -> Topic<StreamBlock<fn(&'static u32), u32>>
+/// {
+///     original
+/// }
+/// ```
+///
+/// Stream block element function-pointer payloads cannot be retyped:
+///
+/// ```compile_fail
+/// use moiren_signal::{StreamBlock, Topic};
+/// fn coerce_stream_block_element(original: Topic<StreamBlock<u32, fn(&u32)>>)
+///     -> Topic<StreamBlock<u32, fn(&'static u32)>>
+/// {
+///     original
+/// }
+/// ```
 #[derive(Debug)]
 pub struct Topic<P: Shape> {
     pub(crate) id: TopicId,
     pub(crate) state: StateHandle,
-    pub(crate) marker: PhantomData<fn() -> P>,
+    // Topic methods interpret the erased directory entry through P; keep the
+    // public token invariant so lifetime variance cannot change that type.
+    pub(crate) marker: PhantomData<fn(P) -> P>,
 }
 
 impl<P: Shape> Topic<P> {

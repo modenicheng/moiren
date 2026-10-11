@@ -318,6 +318,91 @@ fn capacity_and_foreign_topic_preparation_are_atomic() {
 }
 
 #[test]
+fn function_pointer_payloads_keep_exact_public_publication_types() {
+    type Callback = fn(&u32) -> u32;
+    fn read(value: &u32) -> u32 {
+        *value
+    }
+    fn copy_handle<P: moiren_signal::Shape>(
+        handle: moiren_signal::PublisherHandle<P>,
+    ) -> moiren_signal::PublisherHandle<P> {
+        fn require_traits<Handle: Copy + Clone + Send + Sync>() {}
+        require_traits::<moiren_signal::PublisherHandle<P>>();
+        handle
+    }
+
+    let callback: Callback = read;
+    let mut bus = Bus::new(Default::default()).unwrap();
+    let latest_value = bus.register_latest_value("latest/value", callback).unwrap();
+    let stream_value = bus
+        .register_stream_value("stream/value", callback, 2)
+        .unwrap();
+    let init = BlockInit {
+        header: callback,
+        element: callback,
+        capacity: 1,
+    };
+    let latest_block = bus.register_latest_block("latest/block", init).unwrap();
+    let stream_block = bus.register_stream_block("stream/block", init, 2).unwrap();
+    let mut latest_value_reader = bus.subscribe(&latest_value, Default::default()).unwrap();
+    let mut stream_value_reader = bus.subscribe(&stream_value, Default::default()).unwrap();
+    let mut latest_block_reader = bus.subscribe(&latest_block, Default::default()).unwrap();
+    let mut stream_block_reader = bus.subscribe(&stream_block, Default::default()).unwrap();
+    let (control, mut host) = bus.create_host(4).unwrap();
+    let key = control.new_binding().unwrap();
+    let latest_value_publisher = control.prepare(&latest_value.clone(), key).unwrap();
+    let stream_value_publisher = control.prepare(&stream_value.clone(), key).unwrap();
+    let latest_block_publisher = control.prepare(&latest_block.clone(), key).unwrap();
+    let stream_block_publisher = control.prepare(&stream_block.clone(), key).unwrap();
+    let update = control
+        .prepare_update(&[
+            latest_value_publisher.erase(),
+            stream_value_publisher.erase(),
+            latest_block_publisher.erase(),
+            stream_block_publisher.erase(),
+        ])
+        .unwrap();
+    let op = update.op_bindings(key).unwrap();
+    drop(host.activate(update).unwrap());
+    host.begin_block();
+    {
+        let mut scope = host.scope(&op);
+        scope
+            .publish(&copy_handle(latest_value_publisher.handle()), callback)
+            .unwrap();
+        scope
+            .publish(&copy_handle(stream_value_publisher.handle()), callback)
+            .unwrap();
+        let mut write: moiren_signal::BlockWriteGuard<'_, Callback, Callback> = scope
+            .try_write(&copy_handle(latest_block_publisher.handle()), 1)
+            .unwrap();
+        *write.header_mut() = callback;
+        write.elements_mut()[0] = callback;
+        write.commit(1).unwrap();
+        scope
+            .publish_slice(
+                &copy_handle(stream_block_publisher.handle()),
+                callback,
+                &[callback],
+            )
+            .unwrap();
+    }
+    pump(&mut bus);
+    let value = 42;
+    assert_eq!(
+        (latest_value_reader.read_latest().unwrap().value)(&value),
+        value
+    );
+    assert_eq!((stream_value_reader.next().unwrap().value)(&value), value);
+    let latest_read = latest_block_reader.read_latest().unwrap();
+    assert_eq!((latest_read.header())(&value), value);
+    assert_eq!((latest_read.elements()[0])(&value), value);
+    let stream_read = stream_block_reader.next().unwrap();
+    assert_eq!((stream_read.header())(&value), value);
+    assert_eq!((stream_read.elements()[0])(&value), value);
+}
+
+#[test]
 fn compatible_activation_preserves_cached_demand_until_the_next_block() {
     let mut bus = Bus::new(Default::default()).unwrap();
     let topic = bus.register_latest_value("epoch", 0_u32).unwrap();

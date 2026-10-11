@@ -87,7 +87,8 @@ impl SubscriptionLease {
 /// Independently owned receiver. Reading and dropping are non-RT operations.
 pub struct Subscriber<P: Shape> {
     receiver: Option<Box<dyn Receiver>>,
-    marker: PhantomData<fn() -> P>,
+    // The receiver's erased transport must not be retyped through variance.
+    marker: PhantomData<fn(P) -> P>,
     _charge: Charge,
 }
 
