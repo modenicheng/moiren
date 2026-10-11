@@ -78,3 +78,11 @@ remain charged until their owners actually release every allocation on non-RT.
 Pump retirement frees at most one queued payload owner per charged step and
 alternates with live Stream work; the final empty rings have constant cleanup.
 Explicit unregister, preparation and final non-RT Drop are not pump-budgeted.
+
+## Finite custom block example
+
+Run cargo run --locked -p moiren-signal --example custom_block to see one producer thread publish four StreamBlock<FrameHeader, f32> messages alongside a LatestValue<f32>. The producer returns the movable RtHost and operation table after joining; the caller pumps at most eight bounded rounds, reads both independent subscribers, and then drops all returned owners on the non-RT caller thread.
+
+## Verification boundaries
+
+RT publication, scoped block writes, activation, rejection, abort, and generation refresh use preallocated storage and are covered by TLS allocator tests. The allocator is enabled only around those calls; registration, subscription, pumping, thread joins, and final owner cleanup are intentionally outside those measurements. The concurrency test uses finite producer work, channel acknowledgements, and barriers instead of sleeps. Miri is run with its default alias checks; a platform-specific interpreter limitation is recorded in the task evidence rather than hidden with flags.
