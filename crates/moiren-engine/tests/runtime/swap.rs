@@ -760,7 +760,7 @@ fn reusing_a_registry_in_a_new_engine_does_not_make_an_old_snapshot_current() {
     };
     let original = gain_engine(config, 7, 3, 0.0);
     let obsolete = original.plan_snapshot();
-    let (_, resources, _) = original.into_parts();
+    let resources = original.into_parts().resources;
     // The same registry now runs against a different parameter table/order.
     let (_, parameters) = parameter_channel(
         vec![

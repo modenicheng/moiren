@@ -16,6 +16,12 @@ pub(crate) struct PreparedSignalPlan {
 }
 
 impl PreparedSignalPlan {
+    pub(crate) fn compatible_bindings(left: &[ErasedBinding], right: &[ErasedBinding]) -> bool {
+        left.len() == right.len()
+            && left
+                .iter()
+                .all(|binding| right.iter().any(|other| binding.schema() == other.schema()))
+    }
     pub(crate) fn into_parts(self) -> (PreparedHostUpdate, Box<[Option<OpSignalBindings>]>) {
         (self.update, self.operations)
     }

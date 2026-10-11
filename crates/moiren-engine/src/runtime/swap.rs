@@ -37,6 +37,377 @@ pub enum PlanSwapError {
     StaleBasis,
     #[error("control cancelled the pending candidate")]
     Cancelled,
+    #[error("reused processor signal topic, shape or capacity differs")]
+    IncompatibleSignals,
+    #[error("candidate requires a stable attached signal host")]
+    MissingSignalHost,
+    #[error("an attached host requires a prepared candidate signal update")]
+    MissingSignalPlan,
+    #[error(transparent)]
+    SignalPreparation(#[from] crate::signal::SignalPlanError),
+    #[error(transparent)]
+    SignalActivation(#[from] moiren_signal::ActivateError),
+}
+
+#[cfg(test)]
+mod signal_tests {
+    use super::*;
+    use crate::{
+        buffer::{BufferSlotLayout, PortAccess, ProcessIo},
+        control::{ProcessParameters, parameter_channel},
+    };
+    use moiren_signal::{
+        BlockInit, Bus, ErasedBinding, HostControl, LatestValue, PreparedPublisher, PublishError,
+    };
+
+    struct ManifestSource(Box<[ErasedBinding]>);
+    impl RtProcessor<f64> for ManifestSource {
+        fn role(&self) -> ProcessorRole {
+            ProcessorRole::Source
+        }
+        fn validate_io(&self, _: &PreparedIo) -> Result<(), ProcessorError> {
+            Ok(())
+        }
+        fn signal_bindings(&self) -> &[ErasedBinding] {
+            &self.0
+        }
+        fn process(
+            &mut self,
+            _: &ProcessContext,
+            _: ProcessIo<'_, f64>,
+            _: ProcessParameters<'_>,
+            _: ProcessSignals<'_>,
+        ) {
+        }
+    }
+
+    fn engine(
+        host: &HostControl,
+        bindings: Vec<ErasedBinding>,
+        revision: u64,
+        id: u64,
+    ) -> Engine<f64> {
+        let resources = RtResources::new(vec![ProcessorInstance::new(
+            ProcessorId(id),
+            ManifestSource(bindings.into_boxed_slice()),
+        )])
+        .unwrap();
+        let (_, parameters) = parameter_channel(vec![], revision, 3, 4, 1024).unwrap();
+        let arena = BufferArena::new(
+            &[BufferSlotLayout {
+                channels: 1,
+                capacity_frames: 8,
+            }],
+            4096,
+        )
+        .unwrap();
+        let io = arena
+            .prepare_io(&[PortAccess::Write {
+                port: 0,
+                slot: arena.slot(0).unwrap(),
+            }])
+            .unwrap();
+        let plan = ExecutionPlan::prepare_with_signals(
+            arena,
+            vec![OpSpec {
+                processor: ProcessorId(id),
+                io,
+            }],
+            &resources,
+            &parameters,
+            EngineConfig {
+                processing_sr: 48000.0,
+                max_block_frames: 8,
+                max_events_per_block: 8,
+            },
+            host,
+        )
+        .unwrap();
+        Engine::new(plan, resources, parameters).unwrap()
+    }
+
+    #[test]
+    fn c3_rejected_update_moves_out_of_candidate_into_retirement() {
+        let mut bus = Bus::new(Default::default()).unwrap();
+        let topic = bus.register_latest_value("retired-update", 0_u64).unwrap();
+        let (control, host) = bus.create_host(1).unwrap();
+        let publisher = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        let mut active = engine(&control, vec![publisher.erase()], 1, 10);
+        active.attach_signal_host(host).unwrap();
+        let mut plans = active.enable_plan_switching(1).unwrap();
+        let candidate =
+            PreparedPlan::new(engine(&control, vec![publisher.erase()], 2, 20)).unwrap();
+        plans.publish(candidate).unwrap();
+        plans.cancel_pending();
+        active.render(1).unwrap();
+        let retired = plans.poll_retired().unwrap();
+        assert_eq!(
+            retired.outcome(),
+            RetireOutcome::Rejected(PlanSwapError::Cancelled)
+        );
+        assert!(retired.plan.engine.plan.signal_update.is_none());
+        assert!(retired._prepared_signals.is_some());
+        drop(retired);
+        let basis = active.plan_snapshot();
+        let stale = PreparedPlan::new(engine(&control, vec![publisher.erase()], 4, 40)).unwrap();
+        plans
+            .publish(PreparedPlan::new(engine(&control, vec![publisher.erase()], 3, 30)).unwrap())
+            .unwrap();
+        active.render(1).unwrap();
+        drop(plans.poll_retired().unwrap());
+        let check = |retired: RetiredPlan<f64>, reason| {
+            assert_eq!(retired.outcome(), RetireOutcome::Rejected(reason));
+            assert!(retired.plan.engine.plan.signal_update.is_none());
+            assert!(retired._prepared_signals.is_some());
+        };
+        plans.publish(stale).unwrap();
+        active.render(1).unwrap();
+        check(
+            plans.poll_retired().unwrap(),
+            PlanSwapError::SignalActivation(moiren_signal::ActivateError::StaleBasis),
+        );
+        let stale = PreparedPlan::new(engine(&control, vec![publisher.erase()], 5, 50))
+            .unwrap()
+            .with_reuse(
+                &basis,
+                &[ProcessorReuse {
+                    old: ProcessorId(10),
+                    new: ProcessorId(50),
+                }],
+            )
+            .unwrap();
+        plans.publish(stale).unwrap();
+        active.render(1).unwrap();
+        check(plans.poll_retired().unwrap(), PlanSwapError::StaleBasis);
+        let other = bus
+            .register_latest_value("retired-update/foreign", 0_u64)
+            .unwrap();
+        let (foreign_control, _foreign_host) = bus.create_host(1).unwrap();
+        let foreign = foreign_control
+            .prepare(&other, foreign_control.new_binding().unwrap())
+            .unwrap();
+        plans
+            .publish(
+                PreparedPlan::new(engine(&foreign_control, vec![foreign.erase()], 6, 60)).unwrap(),
+            )
+            .unwrap();
+        active.render(1).unwrap();
+        check(
+            plans.poll_retired().unwrap(),
+            PlanSwapError::SignalActivation(moiren_signal::ActivateError::ForeignHost),
+        );
+        assert_eq!(active.revision(), 3);
+    }
+
+    #[test]
+    fn c3_old_operation_table_is_inactive_but_retained_handle_has_actual_new_authority() {
+        let mut bus = Bus::new(Default::default()).unwrap();
+        let topic = bus.register_latest_value("authority", 0_u64).unwrap();
+        let _reader = bus.subscribe(&topic, Default::default()).unwrap();
+        let (control, host) = bus.create_host(2).unwrap();
+        let original: PreparedPublisher<LatestValue<u64>> = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        let mut active = engine(&control, vec![original.erase()], 1, 10);
+        active.attach_signal_host(host).unwrap();
+        let old = active.plan.ops[0]
+            .signals
+            .as_ref()
+            .unwrap()
+            .for_operation(&[original.erase()])
+            .unwrap();
+        let basis = active.plan_snapshot();
+        let disposable = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        let mut plans = active.enable_plan_switching(1).unwrap();
+        let candidate = PreparedPlan::new(engine(&control, vec![disposable.erase()], 2, 20))
+            .unwrap()
+            .with_reuse(
+                &basis,
+                &[ProcessorReuse {
+                    old: ProcessorId(10),
+                    new: ProcessorId(20),
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            candidate.snapshot().0.processors[0].signals[0].key(),
+            original.erase().key()
+        );
+        assert_ne!(
+            candidate.snapshot().0.processors[0].signals[0].key(),
+            disposable.erase().key()
+        );
+        let handle = original.handle();
+        active.render(1).unwrap();
+        let generation = active
+            .signal_host
+            .as_mut()
+            .unwrap()
+            .scope(&old)
+            .demand(&handle)
+            .unwrap()
+            .generation;
+        plans.publish(candidate).unwrap();
+        active.render(1).unwrap();
+        let host = active.signal_host.as_mut().unwrap();
+        assert_eq!(
+            host.scope(&old).publish(&handle, 11),
+            Err(PublishError::InactiveBinding)
+        );
+        let mut scope = host.scope(active.plan.ops[0].signals.as_ref().unwrap());
+        assert_eq!(scope.demand(&handle).unwrap().generation, generation);
+        assert!(matches!(
+            scope.publish(&handle, 12),
+            Ok(moiren_signal::PublishOutcome::Published(_))
+        ));
+        assert_eq!(
+            scope.publish(&disposable.handle(), 13),
+            Err(PublishError::InactiveBinding)
+        );
+    }
+
+    #[test]
+    fn c3_reuse_checks_actual_topic_type_mode_capacity_and_binding_count() {
+        let mut bus = Bus::new(Default::default()).unwrap();
+        let topic = bus
+            .register_latest_block(
+                "schema/original",
+                BlockInit {
+                    header: 0_u64,
+                    element: 0_f32,
+                    capacity: 2,
+                },
+            )
+            .unwrap();
+        let other_topic = bus
+            .register_latest_block(
+                "schema/other",
+                BlockInit {
+                    header: 0_u64,
+                    element: 0_f32,
+                    capacity: 2,
+                },
+            )
+            .unwrap();
+        let other_type = bus
+            .register_latest_block(
+                "schema/type",
+                BlockInit {
+                    header: 0_u64,
+                    element: 0_f64,
+                    capacity: 2,
+                },
+            )
+            .unwrap();
+        let other_mode = bus
+            .register_stream_block(
+                "schema/mode",
+                BlockInit {
+                    header: 0_u64,
+                    element: 0_f32,
+                    capacity: 2,
+                },
+                4,
+            )
+            .unwrap();
+        let other_capacity = bus
+            .register_latest_block(
+                "schema/capacity",
+                BlockInit {
+                    header: 0_u64,
+                    element: 0_f32,
+                    capacity: 3,
+                },
+            )
+            .unwrap();
+        let (control, _host) = bus.create_host(8).unwrap();
+        let original = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        let active = engine(&control, vec![original.erase()], 1, 10);
+        let basis = active.plan_snapshot();
+        let different = [
+            control
+                .prepare(&other_topic, control.new_binding().unwrap())
+                .unwrap()
+                .erase(),
+            control
+                .prepare(&other_type, control.new_binding().unwrap())
+                .unwrap()
+                .erase(),
+            control
+                .prepare(&other_mode, control.new_binding().unwrap())
+                .unwrap()
+                .erase(),
+            control
+                .prepare(&other_capacity, control.new_binding().unwrap())
+                .unwrap()
+                .erase(),
+        ];
+        for binding in different {
+            let candidate = PreparedPlan::new(engine(&control, vec![binding], 2, 20)).unwrap();
+            assert!(matches!(
+                candidate.with_reuse(
+                    &basis,
+                    &[ProcessorReuse {
+                        old: ProcessorId(10),
+                        new: ProcessorId(20)
+                    }]
+                ),
+                Err(PlanSwapError::IncompatibleSignals)
+            ));
+        }
+        let candidate = PreparedPlan::new(engine(&control, vec![], 2, 20)).unwrap();
+        assert!(matches!(
+            candidate.with_reuse(
+                &basis,
+                &[ProcessorReuse {
+                    old: ProcessorId(10),
+                    new: ProcessorId(20)
+                }]
+            ),
+            Err(PlanSwapError::IncompatibleSignals)
+        ));
+    }
+
+    #[test]
+    fn c3_empty_update_clears_permissions_and_leases_retire_off_rt() {
+        let mut bus = Bus::new(Default::default()).unwrap();
+        let topic = bus.register_latest_value("empty-update", 0_u64).unwrap();
+        let (control, host) = bus.create_host(2).unwrap();
+        let publisher = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        let mut active = engine(&control, vec![publisher.erase()], 1, 10);
+        active.attach_signal_host(host).unwrap();
+        let basis = active.plan_snapshot();
+        let mut plans = active.enable_plan_switching(1).unwrap();
+        plans
+            .publish(PreparedPlan::new(engine(&control, vec![], 2, 20)).unwrap())
+            .unwrap();
+        active.render(1).unwrap();
+        assert_eq!(
+            topic.status().publisher,
+            moiren_signal::PublisherStatus::NoPublisher
+        );
+        assert_eq!(
+            bus.unregister(&topic),
+            Err(moiren_signal::UnregisterError::Busy)
+        );
+        let retired = plans.poll_retired().unwrap();
+        drop(publisher);
+        drop(retired);
+        assert_eq!(
+            bus.unregister(&topic),
+            Err(moiren_signal::UnregisterError::Busy)
+        );
+        drop(basis);
+        bus.unregister(&topic).unwrap();
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -45,19 +416,23 @@ struct IoSchema {
     inputs: Box<[(u16, usize)]>,
     outputs: Box<[(u16, usize)]>,
 }
+#[derive(Clone)]
 struct ProcessorSchema {
     id: ProcessorId,
     state_type: TypeId,
     role: ProcessorRole,
     latency: u32,
     io: Option<IoSchema>,
+    signals: Box<[moiren_signal::ErasedBinding]>,
 }
+#[derive(Clone)]
 struct Snapshot {
     processors: Box<[ProcessorSchema]>,
     parameters: Arc<[ParamSpec]>,
     config: EngineConfig,
     revision: u64,
     epoch: u64,
+    signal_host: Option<moiren_signal::HostId>,
 }
 
 /// Immutable control-side metadata. Cloning this snapshot is non-RT; it never
@@ -101,6 +476,18 @@ impl PlanSnapshot {
                     role: instance.processor.role(),
                     latency: instance.processor.latency_frames(),
                     io,
+                    signals: plan
+                        .ops
+                        .iter()
+                        .position(|op| op.runtime == index)
+                        .map(|op| plan.signal_bindings[op].clone())
+                        .unwrap_or_else(|| {
+                            instance
+                                .processor
+                                .signal_bindings()
+                                .to_vec()
+                                .into_boxed_slice()
+                        }),
                 }
             })
             .collect::<Vec<_>>()
@@ -111,6 +498,10 @@ impl PlanSnapshot {
             config: plan.config,
             revision: plan.revision,
             epoch: plan.epoch,
+            signal_host: plan
+                .signal_control
+                .as_ref()
+                .map(moiren_signal::HostControl::id),
         }))
     }
 }
@@ -131,15 +522,22 @@ struct Transfer {
 pub struct PreparedPlan<S: ProcessingSample> {
     engine: Box<Engine<S>>,
     transfer: Option<Transfer>,
+    original_snapshot: PlanSnapshot,
 }
 impl<S: ProcessingSample> PreparedPlan<S> {
     pub fn new(engine: Engine<S>) -> Result<Self, PlanSwapError> {
-        if engine.timeline != 0 || engine.swaps.is_some() || engine.parameters.is_retired() {
+        if engine.timeline != 0
+            || engine.swaps.is_some()
+            || engine.parameters.is_retired()
+            || engine.signal_host.is_some()
+        {
             return Err(PlanSwapError::InvalidCandidate);
         }
+        let original_snapshot = engine.plan_snapshot();
         Ok(Self {
             engine: Box::new(engine),
             transfer: None,
+            original_snapshot,
         })
     }
     pub fn revision(&self) -> u64 {
@@ -158,12 +556,15 @@ impl<S: ProcessingSample> PreparedPlan<S> {
         basis: &PlanSnapshot,
         mappings: &[ProcessorReuse],
     ) -> Result<Self, PlanSwapError> {
-        let target = &self.engine.snapshot.0;
+        let target = &self.original_snapshot.0;
         if basis.config() != target.config {
             return Err(PlanSwapError::IncompatibleConfig);
         }
         if basis.epoch() != target.epoch {
             return Err(PlanSwapError::StaleEpoch);
+        }
+        if basis.0.signal_host != target.signal_host {
+            return Err(PlanSwapError::IncompatibleSignals);
         }
         let mut processors = Vec::with_capacity(mappings.len());
         let mut parameters = Vec::new();
@@ -190,6 +591,9 @@ impl<S: ProcessingSample> PreparedPlan<S> {
                 || a.io != b.io
             {
                 return Err(PlanSwapError::IncompatibleProcessor);
+            }
+            if !PreparedSignalPlan::compatible_bindings(&a.signals, &b.signals) {
+                return Err(PlanSwapError::IncompatibleSignals);
             }
             let old_specs: Vec<_> = basis
                 .0
@@ -218,6 +622,29 @@ impl<S: ProcessingSample> PreparedPlan<S> {
                 parameters.push((old_slot, new_slot));
             }
             processors.push((old, new));
+        }
+        {
+            let mut snapshot = (**target).clone();
+            for &(old, new) in &processors {
+                snapshot.processors[new].signals = basis.0.processors[old].signals.clone();
+            }
+            if let Some(host) = &self.engine.plan.signal_control {
+                let bindings: Box<[_]> = self
+                    .engine
+                    .plan
+                    .ops
+                    .iter()
+                    .map(|op| snapshot.processors[op.runtime].signals.clone())
+                    .collect();
+                let prepared = PreparedSignalPlan::prepare(host, &bindings)?;
+                let (update, operations) = prepared.into_parts();
+                self.engine.plan.signal_update = Some(update);
+                self.engine.plan.signal_bindings = bindings;
+                for (op, signals) in self.engine.plan.ops.iter_mut().zip(operations) {
+                    op.signals = signals;
+                }
+            }
+            self.engine.snapshot = PlanSnapshot(Arc::new(snapshot));
         }
         self.transfer = if processors.is_empty() {
             None
@@ -255,6 +682,8 @@ pub enum RetireOutcome {
 pub struct RetiredPlan<S: ProcessingSample> {
     plan: PreparedPlan<S>,
     outcome: RetireOutcome,
+    _signals: Option<moiren_signal::RetiredHostUpdate>,
+    _prepared_signals: Option<moiren_signal::PreparedHostUpdate>,
 }
 impl<S: ProcessingSample> RetiredPlan<S> {
     pub fn revision(&self) -> u64 {
@@ -378,6 +807,12 @@ impl<S: ProcessingSample> Engine<S> {
         };
         let rejection = if port.status.cancel.load(Ordering::Acquire) == candidate.revision() {
             Some(PlanSwapError::Cancelled)
+        } else if candidate.engine.config() != self.plan.config {
+            Some(PlanSwapError::IncompatibleConfig)
+        } else if candidate.engine.epoch() != self.plan.epoch {
+            Some(PlanSwapError::StaleEpoch)
+        } else if candidate.revision() <= self.plan.revision {
+            Some(PlanSwapError::StaleRevision)
         } else if candidate
             .transfer
             .as_ref()
@@ -387,39 +822,64 @@ impl<S: ProcessingSample> Engine<S> {
         } else {
             None
         };
-        let outcome = if let Some(reason) = rejection {
-            RetireOutcome::Rejected(reason)
+        let activation = if let Some(reason) = rejection {
+            Err(reason)
         } else {
-            if let Some(transfer) = &candidate.transfer {
-                for &(old, new) in &transfer.processors {
-                    mem::swap(
-                        &mut self.resources.instances[old].processor,
-                        &mut candidate.engine.resources.instances[new].processor,
-                    );
-                }
-                candidate
-                    .engine
-                    .parameters
-                    .copy_states_from(&self.parameters, &transfer.parameters);
+            match (
+                &mut self.signal_host,
+                &mut candidate.engine.plan.signal_update,
+            ) {
+                (Some(host), Some(update)) => host
+                    .activation(update)
+                    .map(Some)
+                    .map_err(PlanSwapError::SignalActivation),
+                (Some(_), None) => Err(PlanSwapError::MissingSignalPlan),
+                (None, Some(_)) => Err(PlanSwapError::MissingSignalHost),
+                (None, None) => Ok(None),
             }
-            mem::swap(&mut self.plan, &mut candidate.engine.plan);
-            mem::swap(&mut self.resources, &mut candidate.engine.resources);
-            mem::swap(&mut self.parameters, &mut candidate.engine.parameters);
-            mem::swap(&mut self.snapshot, &mut candidate.engine.snapshot);
-            candidate.engine.timeline = self.timeline;
-            port.status
-                .revision
-                .store(self.plan.revision, Ordering::Release);
-            RetireOutcome::Replaced {
-                active_revision: self.plan.revision,
-                frame: self.timeline,
+        };
+        let (outcome, retired_signals) = match activation
+            .map(|transaction| transaction.map(moiren_signal::ActivationTransaction::commit))
+        {
+            Err(reason) => (RetireOutcome::Rejected(reason), None),
+            Ok(retired_signals) => {
+                if let Some(transfer) = &candidate.transfer {
+                    for &(old, new) in &transfer.processors {
+                        mem::swap(
+                            &mut self.resources.instances[old].processor,
+                            &mut candidate.engine.resources.instances[new].processor,
+                        );
+                    }
+                    candidate
+                        .engine
+                        .parameters
+                        .copy_states_from(&self.parameters, &transfer.parameters);
+                }
+                mem::swap(&mut self.plan, &mut candidate.engine.plan);
+                mem::swap(&mut self.resources, &mut candidate.engine.resources);
+                mem::swap(&mut self.parameters, &mut candidate.engine.parameters);
+                mem::swap(&mut self.snapshot, &mut candidate.engine.snapshot);
+                candidate.engine.timeline = self.timeline;
+                port.status
+                    .revision
+                    .store(self.plan.revision, Ordering::Release);
+                (
+                    RetireOutcome::Replaced {
+                        active_revision: self.plan.revision,
+                        frame: self.timeline,
+                    },
+                    retired_signals,
+                )
             }
         };
         candidate.engine.parameters.retire();
+        let prepared_signals = candidate.engine.plan.signal_update.take();
         port.retired
             .push(RetiredPlan {
                 plan: candidate,
                 outcome,
+                _signals: retired_signals,
+                _prepared_signals: prepared_signals,
             })
             .unwrap_or_else(|_| unreachable!("single producer reserved retire slot"));
     }

@@ -73,6 +73,8 @@ pub(crate) struct RootInner {
     owner: Box<dyn ErasedCell>,
     capacity: usize,
     charge: Option<Charge>,
+    #[cfg(test)]
+    drop_probe: std::sync::Mutex<Option<super::DropProbe>>,
 }
 
 #[derive(Clone)]
@@ -94,10 +96,22 @@ impl CellRoot {
                 }),
             }),
             charge: None,
+            #[cfg(test)]
+            drop_probe: std::sync::Mutex::new(None),
         })))
     }
     pub(crate) fn capacity(&self) -> usize {
         self.0.as_ref().expect("live cell").capacity
+    }
+    #[cfg(test)]
+    pub(crate) fn set_drop_probe(&self, probe: super::DropProbe) {
+        *self
+            .0
+            .as_ref()
+            .expect("live cell")
+            .drop_probe
+            .lock()
+            .unwrap() = Some(probe);
     }
     pub(crate) fn attach_charge(&mut self, charge: Charge) {
         Arc::get_mut(self.0.as_mut().expect("live cell"))

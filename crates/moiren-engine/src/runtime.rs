@@ -104,6 +104,8 @@ pub struct ExecutionPlan<S: ProcessingSample> {
     revision: u64,
     epoch: u64,
     signal_update: Option<moiren_signal::PreparedHostUpdate>,
+    signal_control: Option<moiren_signal::HostControl>,
+    signal_bindings: Box<[Box<[moiren_signal::ErasedBinding]>]>,
 }
 impl<S: ProcessingSample> ExecutionPlan<S> {
     /// Non-RT only. Validates access, schema and table identity, NOT whole-graph
@@ -199,6 +201,8 @@ impl<S: ProcessingSample> ExecutionPlan<S> {
             revision: parameters.revision(),
             epoch: parameters.epoch(),
             signal_update,
+            signal_control: host.cloned(),
+            signal_bindings: signal_bindings.into_boxed_slice(),
         })
     }
 }
@@ -211,6 +215,14 @@ pub struct Engine<S: ProcessingSample> {
     snapshot: PlanSnapshot,
     swaps: Option<swap::RtPlanPort<S>>,
     signal_host: Option<moiren_signal::RtHost>,
+}
+
+/// Stopped runtime ownership returned together for non-RT reclamation.
+pub struct EngineParts<S: ProcessingSample> {
+    pub plan: ExecutionPlan<S>,
+    pub resources: RtResources<S>,
+    pub parameters: ParameterRuntime,
+    pub signals: Option<moiren_signal::RtHost>,
 }
 
 pub struct SignalAttachFailure {
@@ -397,7 +409,12 @@ impl<S: ProcessingSample> Engine<S> {
     }
     /// Call after the render loop stops; transfer these owned objects back to
     /// control for destruction. No live device callback may retain the engine.
-    pub fn into_parts(self) -> (ExecutionPlan<S>, RtResources<S>, ParameterRuntime) {
-        (self.plan, self.resources, self.parameters)
+    pub fn into_parts(self) -> EngineParts<S> {
+        EngineParts {
+            plan: self.plan,
+            resources: self.resources,
+            parameters: self.parameters,
+            signals: self.signal_host,
+        }
     }
 }

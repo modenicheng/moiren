@@ -4,7 +4,7 @@ use crate::{
     budget::Charge,
     lifecycle::{StateHandle, TopicLease},
 };
-use std::marker::PhantomData;
+use std::{any::TypeId, marker::PhantomData};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HostId(pub(crate) u64);
@@ -25,6 +25,7 @@ pub(crate) struct BindingOwner {
     pub(crate) identity: u64,
     pub(crate) topic: TopicId,
     pub(crate) capacity: usize,
+    pub(crate) shape: TypeId,
     pub(crate) pointer: Pointer,
     pub(crate) refresh: fn(Pointer, crate::DemandSnapshot),
     pub(crate) slot: Owner<SlotRoot>,
@@ -214,6 +215,10 @@ pub struct ErasedBinding {
 }
 
 impl ErasedBinding {
+    /// Immutable topic, complete typed transport shape and element capacity.
+    pub fn schema(&self) -> (TopicId, TypeId, usize) {
+        (self.owner.topic, self.owner.shape, self.owner.capacity)
+    }
     /// Returns the preparation key without exposing the erased payload pointer.
     pub fn key(&self) -> BindingKey {
         self.owner.key
@@ -267,6 +272,134 @@ impl OpSignalBindings {
 #[cfg(test)]
 mod tests {
     use crate::{BlockInit, Bus};
+
+    #[test]
+    fn latest_block_cell_header_length_and_sequence_survive_activation() {
+        let mut bus = Bus::new(Default::default()).unwrap();
+        let topic = bus
+            .register_latest_block(
+                "block-activation",
+                BlockInit {
+                    header: (0_u64, 0_u64),
+                    element: 0_f32,
+                    capacity: 4,
+                },
+            )
+            .unwrap();
+        let mut reader = bus.subscribe(&topic, Default::default()).unwrap();
+        let (control, mut host) = bus.create_host(1).unwrap();
+        let original = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        let pointer = original.handle().pointer;
+        let update = control.prepare_update(&[original.erase()]).unwrap();
+        let old = update.op_bindings(original.erase().key()).unwrap();
+        drop(host.activate(update).unwrap());
+        host.begin_block();
+        host.scope(&old)
+            .publish_slice(&original.handle(), (100, 103), &[0.25, 0.5, 0.75])
+            .unwrap();
+        let replacement = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        let mut update = control.prepare_update(&[replacement.erase()]).unwrap();
+        let next = update.op_bindings(replacement.erase().key()).unwrap();
+        let retired = host.activation(&mut update).unwrap().commit();
+        assert_eq!(
+            host.active.as_ref().unwrap().bindings[0]
+                .owner
+                .pointer
+                .address(),
+            pointer.address()
+        );
+        assert_eq!(replacement.handle().pointer.address(), pointer.address());
+        bus.pump(crate::PumpBudget {
+            topic_checks: 1024,
+            deliveries: 128,
+            copy_bytes: 65536,
+        });
+        let block = reader.read_latest().unwrap();
+        assert_eq!(*block.header(), (100, 103));
+        assert_eq!(block.elements(), &[0.25, 0.5, 0.75]);
+        assert_eq!((block.meta().len, block.meta().sequence), (3, 1));
+        let generation = block.meta().activation_generation;
+        drop(block);
+        host.begin_block();
+        host.scope(&next)
+            .publish_slice(&replacement.handle(), (103, 104), &[0.9])
+            .unwrap();
+        bus.pump(crate::PumpBudget {
+            topic_checks: 1024,
+            deliveries: 128,
+            copy_bytes: 65536,
+        });
+        let block = reader.read_latest().unwrap();
+        assert_eq!(*block.header(), (103, 104));
+        assert_eq!(block.elements(), &[0.9]);
+        assert_eq!((block.meta().len, block.meta().sequence), (1, 2));
+        assert_eq!(block.meta().activation_generation, generation);
+        assert_eq!(
+            host.active.as_ref().unwrap().bindings[0]
+                .owner
+                .pointer
+                .address(),
+            pointer.address()
+        );
+        drop(retired);
+    }
+
+    #[test]
+    fn erased_schema_retains_actual_topic_shape_capacity_and_cell() {
+        use std::any::TypeId;
+        let mut bus = Bus::new(Default::default()).unwrap();
+        let topic = bus
+            .register_latest_block(
+                "schema",
+                BlockInit {
+                    header: 0_u64,
+                    element: 0_f32,
+                    capacity: 2,
+                },
+            )
+            .unwrap();
+        let (control, _host) = bus.create_host(2).unwrap();
+        let publisher = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        let retained = publisher.erase();
+        assert_eq!(
+            retained.schema(),
+            (topic.id(), TypeId::of::<crate::LatestBlock<u64, f32>>(), 2)
+        );
+        let replacement = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        assert_eq!(
+            retained.owner.pointer.address(),
+            replacement.handle().pointer.address()
+        );
+        assert_ne!(retained.owner.identity, replacement.handle().identity);
+        drop(publisher);
+        assert_eq!(retained.schema(), replacement.erase().schema());
+        let stream = bus
+            .register_stream_value("schema-stream", 0_u64, 4)
+            .unwrap();
+        let original = control
+            .prepare(&stream, control.new_binding().unwrap())
+            .unwrap();
+        let replacement = control
+            .prepare(&stream, control.new_binding().unwrap())
+            .unwrap();
+        assert_eq!(
+            original.handle().pointer.address(),
+            replacement.handle().pointer.address()
+        );
+        assert_ne!(original.handle().identity, replacement.handle().identity);
+        assert_eq!(
+            original.erase().schema(),
+            (stream.id(), TypeId::of::<crate::StreamValue<u64>>(), 0)
+        );
+    }
 
     #[test]
     fn prepared_capacity_is_immutable_metadata_while_the_host_writes() {

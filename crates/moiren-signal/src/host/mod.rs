@@ -58,6 +58,25 @@ pub(crate) struct Table {
     pub(crate) bindings: Box<[ErasedBinding]>,
     root: Owner<HostRoot>,
     _charge: Charge,
+    #[cfg(test)]
+    _drop_probe: Option<DropProbe>,
+}
+
+#[cfg(test)]
+pub(crate) struct DropProbe {
+    owner: std::thread::ThreadId,
+    drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    wrong_thread: std::sync::Arc<AtomicBool>,
+}
+
+#[cfg(test)]
+impl Drop for DropProbe {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::Relaxed);
+        if std::thread::current().id() != self.owner {
+            self.wrong_thread.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Owning candidate. Prepare/drop on non-RT; activation may move it on RT.
@@ -109,6 +128,10 @@ pub struct RtHost {
 }
 
 impl HostControl {
+    /// Stable preparation identity, independent of the currently active table.
+    pub fn id(&self) -> HostId {
+        self.root.id
+    }
     pub(crate) fn create(
         directory: DirectoryId,
         budget: &Budget,
@@ -265,6 +288,7 @@ impl HostControl {
                         identity,
                         topic: topic.id,
                         capacity: slot.cell.capacity(),
+                        shape: std::any::TypeId::of::<P>(),
                         pointer,
                         refresh,
                         slot,
@@ -316,6 +340,8 @@ impl HostControl {
             bindings: bindings.to_vec().into_boxed_slice(),
             root: self.root.clone(),
             _charge: charge,
+            #[cfg(test)]
+            _drop_probe: None,
         };
         Ok(PreparedHostUpdate { table: Some(table) })
     }
@@ -482,6 +508,90 @@ impl Drop for RtHost {
 mod tests {
     use super::*;
     use crate::{Bus, BusConfig, PublishOutcome, UnregisterError, test_alloc as allocator};
+
+    #[test]
+    fn c3_actual_tables_and_endpoint_drop_probes_are_destroyed_on_control() {
+        use std::{
+            sync::{Arc, atomic::AtomicUsize},
+            thread,
+        };
+        let mut bus = Bus::new(Default::default()).unwrap();
+        let topic = bus.register_latest_value("drop-probe", 0_u64).unwrap();
+        let (control, mut host) = bus.create_host(1).unwrap();
+        let drops = Arc::new(AtomicUsize::new(0));
+        let wrong_thread = Arc::new(AtomicBool::new(false));
+        let probe = || DropProbe {
+            owner: thread::current().id(),
+            drops: Arc::clone(&drops),
+            wrong_thread: Arc::clone(&wrong_thread),
+        };
+        topic
+            .state
+            .cell
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .set_drop_probe(probe());
+        let original = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        let mut first = control.prepare_update(&[original.erase()]).unwrap();
+        first.table.as_mut().unwrap()._drop_probe = Some(probe());
+        drop(host.activate(first).unwrap());
+        let candidate = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        let mut update = control.prepare_update(&[candidate.erase()]).unwrap();
+        update.table.as_mut().unwrap()._drop_probe = Some(probe());
+        let mut cancelled = control.prepare_update(&[original.erase()]).unwrap();
+        cancelled.table.as_mut().unwrap()._drop_probe = Some(probe());
+        let mut stale = control.prepare_update(&[original.erase()]).unwrap();
+        stale.table.as_mut().unwrap()._drop_probe = Some(probe());
+        let foreign_topic = bus
+            .register_latest_value("drop-probe/foreign", 0_u64)
+            .unwrap();
+        let (foreign_control, foreign_host) = bus.create_host(1).unwrap();
+        let foreign_publisher = foreign_control
+            .prepare(&foreign_topic, foreign_control.new_binding().unwrap())
+            .unwrap();
+        let mut foreign = foreign_control
+            .prepare_update(&[foreign_publisher.erase()])
+            .unwrap();
+        foreign.table.as_mut().unwrap()._drop_probe = Some(probe());
+        let worker = thread::spawn(move || {
+            let mut retired = None;
+            assert_eq!(
+                allocator::measure(|| {
+                    retired = Some(host.activation(&mut update).unwrap().commit());
+                    assert_eq!(
+                        host.activation(&mut stale).err(),
+                        Some(ActivateError::StaleBasis)
+                    );
+                    assert_eq!(
+                        host.activation(&mut foreign).err(),
+                        Some(ActivateError::ForeignHost)
+                    );
+                }),
+                allocator::Counts::default()
+            );
+            (host, update, retired.unwrap(), [cancelled, stale, foreign])
+        });
+        let (host, update, retired, rejected) = worker.join().unwrap();
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(rejected);
+        assert_eq!(drops.load(Ordering::Relaxed), 3);
+        drop(retired);
+        assert_eq!(drops.load(Ordering::Relaxed), 4);
+        drop((host, update));
+        assert_eq!(drops.load(Ordering::Relaxed), 5);
+        drop((original, candidate, control));
+        bus.unregister(&topic).unwrap();
+        assert_eq!(drops.load(Ordering::Relaxed), 6);
+        drop((foreign_publisher, foreign_host, foreign_control));
+        bus.unregister(&foreign_topic).unwrap();
+        assert!(!wrong_thread.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn failed_new_slot_preparation_allocates_nothing_and_keeps_all_ownership() {
