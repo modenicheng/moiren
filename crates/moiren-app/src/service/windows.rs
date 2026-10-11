@@ -11,7 +11,7 @@ use moiren_windows_audio::{
     process_loopback::inspect_process,
     render::{
         DemandRenderer, PreparedRenderSession, RenderOptions, RenderReport, RenderSession,
-        RenderStatus, TimelineObserver, TimelineSnapshot, start_render_prepared,
+        RenderStatus, TimelineObserver, start_render_prepared,
     },
 };
 use std::{
@@ -299,9 +299,14 @@ impl ActiveSession for ActiveAppSession {
         })
     }
     fn timeline(&self) -> Option<TimelineSnapshot> {
-        Some(match self {
+        let snapshot = match self {
             Self::Monitor { session, .. } => session.timeline.snapshot(),
             Self::Tone(tone) => tone.timeline.snapshot(),
+        };
+        Some(TimelineSnapshot {
+            frame: snapshot.frame,
+            epoch: snapshot.epoch,
+            revision: snapshot.revision,
         })
     }
     fn gain_pan_nodes(&self) -> Option<(NodeId, NodeId)> {

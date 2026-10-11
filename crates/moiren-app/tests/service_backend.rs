@@ -206,13 +206,17 @@ impl ActiveSession for Session {
         }
         Some((&mut tone.control, &tone.bindings))
     }
-    fn timeline(&self) -> Option<moiren_windows_audio::render::TimelineSnapshot> {
+    fn timeline(&self) -> Option<TimelineSnapshot> {
         self.1.as_ref().map(|t| {
             let mut snapshot = t.renderer.timeline_observer().snapshot();
             if self.0.mismatch_timeline.load(Ordering::Acquire) {
                 snapshot.epoch += 1;
             }
-            snapshot
+            TimelineSnapshot {
+                frame: snapshot.frame,
+                epoch: snapshot.epoch,
+                revision: snapshot.revision,
+            }
         })
     }
     fn gain_pan_nodes(&self) -> Option<(moiren_core::graph::NodeId, moiren_core::graph::NodeId)> {

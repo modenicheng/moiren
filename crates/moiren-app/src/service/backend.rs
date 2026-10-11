@@ -2,7 +2,6 @@
 use super::{DeviceCatalog, SessionSpec};
 use moiren_core::{graph::NodeId, protocol::ControlReply};
 use moiren_engine::{compiler::CompiledBindings, control::ControlPort};
-use moiren_windows_audio::render::TimelineSnapshot;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -74,6 +73,14 @@ pub enum StartedState {
     Starting,
     Running,
     Failed,
+}
+/// Adapter observation used to correlate application controls with the active
+/// frame, timeline epoch and plan revision, independent of the native backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimelineSnapshot {
+    pub frame: u64,
+    pub epoch: u64,
+    pub revision: u64,
 }
 pub trait ActiveSession: Send {
     fn request_stop(&self) -> Result<(), BackendError>;
