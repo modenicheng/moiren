@@ -51,6 +51,27 @@ fn extend(a: Layout, b: Layout) -> Result<Layout, RegisterError> {
         .map_err(|_| RegisterError::SizeOverflow)
 }
 
+pub(crate) fn arc_layout<T>() -> Result<Layout, RegisterError> {
+    Ok(extend(array::<AtomicUsize>(2)?, Layout::new::<T>())?.pad_to_align())
+}
+
+pub(crate) fn latest_subscriber<S: Clone + Send>(
+    element_bytes: usize,
+) -> Result<usize, RegisterError> {
+    add(
+        add(
+            add(
+                Layout::new::<crate::subscriber::LatestReceiver<S>>().size(),
+                latest_shared::<S>()?.size(),
+            )?,
+            arc_layout::<crate::subscriber::SubscriptionLease>()?.size(),
+        )?,
+        element_bytes
+            .checked_mul(3)
+            .ok_or(RegisterError::SizeOverflow)?,
+    )
+}
+
 /// Allocation layout model for the *pinned* triple_buffer 9.0.0 shared state.
 ///
 /// Upstream's private SharedState is three CachePadded<UnsafeCell<S>> followed
@@ -79,7 +100,10 @@ pub(crate) fn latest<S: Clone + Send>(element_bytes: usize) -> Result<usize, Reg
     add(
         add(
             Layout::new::<LatestStorage<S>>().size(),
-            latest_shared::<S>()?.size(),
+            add(
+                latest_shared::<S>()?.size(),
+                arc_layout::<crate::subscriber::TopicState>()?.size(),
+            )?,
         )?,
         element_bytes,
     )

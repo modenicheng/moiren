@@ -412,8 +412,13 @@ fn zst_still_owns_metadata_and_stream_depth_costs_resources() {
     latest.register_latest_value("topic", ()).unwrap();
     assert!(latest.budget_used() > base);
     let mut stream = Bus::new(BusConfig::default()).unwrap();
-    stream.register_stream_value("topic", (), 8).unwrap();
-    assert!(stream.budget_used() > latest.budget_used());
+    stream.register_stream_value("topic", (), 1).unwrap();
+    let mut deeper = Bus::new(BusConfig::default()).unwrap();
+    deeper.register_stream_value("topic", (), 8).unwrap();
+    // Latest now reserves its business sender directory, so cross-mode totals
+    // differ in metadata too. Compare Stream depths to isolate queue costs.
+    assert!(stream.budget_used() > base);
+    assert!(deeper.budget_used() > stream.budget_used());
 }
 
 #[test]
@@ -605,6 +610,119 @@ fn actual_allocator_layouts_match_directory_and_all_transport_budgets() {
     // Read fields once to ensure these over-aligned test values remain ordinary
     // Copy payloads and never rely on Default or invalid bit patterns.
     assert_eq!(Aligned(5).0, 5);
+}
+
+fn assert_subscription_allocations<P: moiren_signal::Shape>(
+    bus: &mut Bus,
+    topic: &moiren_signal::Topic<P>,
+    shared: std::alloc::Layout,
+) {
+    let before = bus.budget_used();
+    let (subscriber, probe) =
+        allocations::measure(|| bus.subscribe(topic, Default::default()).unwrap());
+    assert_eq!(
+        bus.budget_used() - before,
+        usize::try_from(probe.bytes).unwrap(),
+        "receiver metadata, lease, three slots and element regions must all be charged"
+    );
+    assert!(probe.count < probe.events.len());
+    assert!(
+        probe.events[..probe.count]
+            .iter()
+            .any(|event| event.allocated
+                && event.size == shared.size()
+                && event.align == shared.align())
+    );
+    drop(subscriber);
+}
+
+#[test]
+fn actual_subscriber_allocator_layouts_match_budget_deltas() {
+    let mut bus = Bus::new(BusConfig::default()).unwrap();
+    let value = bus.register_latest_value("value", 1_u64).unwrap();
+    assert_subscription_allocations(&mut bus, &value, shared_layout::<ValueSlotMirror<u64>>());
+    let zst = bus.register_latest_value("zst", ()).unwrap();
+    assert_subscription_allocations(&mut bus, &zst, shared_layout::<ValueSlotMirror<()>>());
+    let aligned = bus.register_latest_value("aligned", Aligned(5)).unwrap();
+    assert_subscription_allocations(
+        &mut bus,
+        &aligned,
+        shared_layout::<ValueSlotMirror<Aligned>>(),
+    );
+    let block = bus
+        .register_latest_block(
+            "block",
+            BlockInit {
+                header: 1_u32,
+                element: 2_u64,
+                capacity: 3,
+            },
+        )
+        .unwrap();
+    assert_subscription_allocations(
+        &mut bus,
+        &block,
+        shared_layout::<BlockSlotMirror<u32, u64>>(),
+    );
+    let zst_block = bus
+        .register_latest_block(
+            "zst-block",
+            BlockInit {
+                header: (),
+                element: (),
+                capacity: 3,
+            },
+        )
+        .unwrap();
+    assert_subscription_allocations(
+        &mut bus,
+        &zst_block,
+        shared_layout::<BlockSlotMirror<(), ()>>(),
+    );
+    let aligned_block = bus
+        .register_latest_block(
+            "aligned-block",
+            BlockInit {
+                header: Aligned(7),
+                element: Aligned(9),
+                capacity: 3,
+            },
+        )
+        .unwrap();
+    assert_subscription_allocations(
+        &mut bus,
+        &aligned_block,
+        shared_layout::<BlockSlotMirror<Aligned, Aligned>>(),
+    );
+}
+
+#[test]
+fn rejected_subscriptions_allocate_nothing() {
+    let mut bus = Bus::new(BusConfig {
+        max_subscribers_per_topic: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    let topic = bus.register_latest_value("latest", 99_u32).unwrap();
+    let _subscriber = bus.subscribe(&topic, Default::default()).unwrap();
+    let before = bus.budget_used();
+    let (_, probe) = allocations::measure(|| {
+        assert!(matches!(
+            bus.subscribe(&topic, Default::default()),
+            Err(moiren_signal::SubscribeError::SubscriberLimit)
+        ));
+        assert!(matches!(
+            bus.subscribe(
+                &topic,
+                moiren_signal::SubscriptionOptions {
+                    stream_depth: Some(8)
+                }
+            ),
+            Err(moiren_signal::SubscribeError::InvalidOptions)
+        ));
+    });
+    assert_eq!(probe.count, 0);
+    assert_eq!(bus.budget_used(), before);
 }
 
 #[test]

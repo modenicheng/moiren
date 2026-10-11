@@ -29,3 +29,49 @@ pub enum LookupError {
     #[error("topic transport mode differs")]
     ModeMismatch,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SubscribeError {
+    #[error("topic is closed")]
+    Closed,
+    #[error("topic does not belong to this bus")]
+    ForeignTopic,
+    #[error("subscription options do not match the topic mode")]
+    InvalidOptions,
+    #[error("invalid subscription capacity")]
+    InvalidCapacity,
+    #[error("bus byte budget exceeded")]
+    BudgetExceeded,
+    #[error("business subscriber limit reached")]
+    SubscriberLimit,
+    #[error("activation generation exhausted")]
+    DemandExhausted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PublishError {
+    #[error("topic is closed")]
+    Closed,
+    #[error("invalid publication length")]
+    InvalidLength,
+    #[error("publication sequence exhausted")]
+    SequenceExhausted,
+    #[error("publisher belongs to another host")]
+    ForeignHost,
+    #[error("publisher binding is inactive")]
+    InactiveBinding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteUnavailable {
+    NoDemand,
+    Full { sequence: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum WriteError {
+    #[error("write unavailable: {0:?}")]
+    Unavailable(WriteUnavailable),
+    #[error(transparent)]
+    Invalid(#[from] PublishError),
+}

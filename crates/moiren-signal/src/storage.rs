@@ -3,7 +3,20 @@
 //! Templates are immutable and separate from transport slots. Future subscribers
 //! must clone this template rather than copying any concurrently modified slot.
 
-use crate::PublicationMeta;
+use crate::{
+    PublicationMeta,
+    sequence::Sequence,
+    subscriber::{SubscriptionLease, TopicState},
+};
+use std::sync::{Arc, Weak};
+
+pub(crate) struct LatestSender<S: Clone + Send> {
+    // Used by the private delivery probe now; the budgeted public pump is B4.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) input: triple_buffer::Input<S>,
+    pub(crate) lease: Weak<SubscriptionLease>,
+    pub(crate) charged_bytes: usize,
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -27,6 +40,10 @@ pub(crate) struct LatestStorage<S: Clone + Send> {
     pub(crate) dispatch: S,
     pub(crate) input: triple_buffer::Input<S>,
     pub(crate) output: triple_buffer::Output<S>,
+    pub(crate) state: Arc<TopicState>,
+    pub(crate) sequence: Sequence,
+    // Fixed business sender directory, allocated as part of the storage box.
+    pub(crate) senders: [Option<LatestSender<S>>; 64],
 }
 
 impl<S: Clone + Send> LatestStorage<S> {
@@ -37,6 +54,9 @@ impl<S: Clone + Send> LatestStorage<S> {
             template,
             input,
             output,
+            state: Arc::new(TopicState::new()),
+            sequence: Sequence::default(),
+            senders: std::array::from_fn(|_| None),
         }
     }
 }

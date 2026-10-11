@@ -1,11 +1,13 @@
-use std::{alloc::Layout, any::Any, marker::PhantomData};
+use std::{alloc::Layout, any::Any, marker::PhantomData, sync::Arc};
 
 use crate::{
     BlockInit, BusConfig, LatestBlock, LatestValue, LookupError, RegisterError, Shape, StreamBlock,
-    StreamValue, Topic, TopicId,
+    StreamValue, SubscribeError, SubscriptionOptions, Topic, TopicId,
     budget::{self, Budget},
     lifecycle::DirectoryId,
-    storage::{LatestStorage, StreamStorage, ValueSlot, block_template},
+    storage::{LatestSender, LatestStorage, StreamStorage, ValueSlot, block_template},
+    subscriber::{LatestReceiver, Subscriber, SubscriptionLease},
+    transport::latest::LatestPayload,
     types::{Mode, PayloadType},
 };
 
@@ -16,7 +18,6 @@ struct Entry {
     mode: Mode,
     // Erasure and name lookup occur only on the non-RT preparation side.
     // No publisher/host bypass is exposed by this directory.
-    #[allow(dead_code)]
     storage: Box<dyn Any + Send>,
 }
 
@@ -63,10 +64,119 @@ impl Bus {
     }
 
     /// Bytes owned by the bus: inline metadata, reserved directory slots and
-    /// every registered name, transport, template, queue and dispatch slot.
+    /// every registered name, transport, template, queue, dispatch and receiver.
     /// Sizes describe allocation layouts, excluding allocator bookkeeping.
+    /// Dropped receiver charges remain reserved until a successful subscription
+    /// reclaims its retired sender; failed preparation never changes the budget.
     pub fn budget_used(&self) -> usize {
         self.budget.used
+    }
+
+    /// Prepares independent receiver storage before committing business demand.
+    /// Latest subscriptions reject `stream_depth`; Stream support follows in B3.
+    pub fn subscribe<P: Shape>(
+        &mut self,
+        topic: &Topic<P>,
+        options: SubscriptionOptions,
+    ) -> Result<Subscriber<P>, SubscribeError> {
+        P::subscribe(self, topic, options)
+    }
+
+    pub(crate) fn latest_storage_mut<P: Shape, S: LatestPayload>(
+        &mut self,
+        topic: &Topic<P>,
+    ) -> Result<&mut LatestStorage<S>, SubscribeError> {
+        if topic.id.directory != self.directory {
+            return Err(SubscribeError::ForeignTopic);
+        }
+        let entry = self
+            .entries
+            .get_mut(topic.id.slot)
+            .and_then(Option::as_mut)
+            .filter(|entry| entry.id == topic.id)
+            .ok_or(SubscribeError::Closed)?;
+        entry
+            .storage
+            .downcast_mut::<LatestStorage<S>>()
+            .ok_or(SubscribeError::ForeignTopic)
+    }
+
+    pub(crate) fn subscribe_latest<P: Shape, S: LatestPayload>(
+        &mut self,
+        topic: &Topic<P>,
+        options: SubscriptionOptions,
+    ) -> Result<Subscriber<P>, SubscribeError> {
+        if options.stream_depth.is_some() {
+            return Err(SubscribeError::InvalidOptions);
+        }
+        let limit = self.config.max_subscribers_per_topic;
+        let storage = self.latest_storage_mut::<P, S>(topic)?;
+        storage.state.demand.check_add(limit)?;
+        let retired_slots: [bool; 64] = std::array::from_fn(|index| {
+            storage.senders[index]
+                .as_ref()
+                .is_some_and(|sender| sender.lease.strong_count() == 0)
+        });
+        let retired: usize = storage
+            .senders
+            .iter()
+            .zip(retired_slots)
+            .filter_map(|(sender, retire)| {
+                if retire {
+                    sender.as_ref().map(|sender| sender.charged_bytes)
+                } else {
+                    None
+                }
+            })
+            .sum();
+        let bytes = budget::latest_subscriber::<S>(storage.template.element_bytes())
+            .map_err(|_| SubscribeError::BudgetExceeded)?;
+        // The replacement is allocated while retired senders are still staged.
+        // Bound this peak too, rather than lending their credit before release.
+        self.budget
+            .check(bytes)
+            .map_err(|_| SubscribeError::BudgetExceeded)?;
+        // Retired resources are only reclaimed after all fallible preparation;
+        // failed subscriptions preserve both demand and the charged budget.
+        let base = self.budget.used - retired;
+        let next_budget = budget::add(base, bytes).map_err(|_| SubscribeError::BudgetExceeded)?;
+        let storage = self.latest_storage_mut::<P, S>(topic)?;
+        let (mut input, output) = triple_buffer::TripleBuffer::new(&storage.template).split();
+        let lease = Arc::new(SubscriptionLease {
+            state: Arc::clone(&storage.state),
+            counted: false,
+        });
+        let mut receiver = Box::new(LatestReceiver::new(output, lease));
+        let demand = storage.state.demand.add(limit)?;
+        Arc::get_mut(&mut receiver.lease)
+            .expect("staged sole lease owner")
+            .counted = true;
+        storage.output.update();
+        let current = storage.output.output_buffer();
+        if current.meta().sequence != 0 && current.meta().activation_generation == demand.generation
+        {
+            input.input_buffer_mut().copy_from(current);
+            input.publish();
+        }
+        for (slot, retire) in storage.senders.iter_mut().zip(retired_slots) {
+            // Drop may race preparation on another subscriber thread. Reclaim
+            // exactly the slots whose credit was included in staged accounting.
+            if retire {
+                *slot = None;
+            }
+        }
+        let slot = storage
+            .senders
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .expect("checked business subscriber limit");
+        *slot = Some(LatestSender {
+            input,
+            lease: Arc::downgrade(&receiver.lease),
+            charged_bytes: bytes,
+        });
+        self.budget.used = next_budget;
+        Ok(Subscriber::new(receiver))
     }
 
     pub fn resolve<P: Shape>(&self, name: &str) -> Result<Topic<P>, LookupError> {

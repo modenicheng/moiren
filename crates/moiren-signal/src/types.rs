@@ -50,6 +50,18 @@ impl PublicationMeta {
     };
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishOutcome {
+    Published(PublicationMeta),
+    NoDemand,
+    DroppedFull { sequence: u64 },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SubscriptionOptions {
+    pub stream_depth: Option<usize>,
+}
+
 /// Directory identity, slot and registration generation; never a write capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TopicId {
@@ -124,6 +136,13 @@ pub(crate) mod sealed {
     pub trait Sealed {
         const STREAM: bool;
         fn payload_type() -> (TypeId, Option<TypeId>);
+        fn subscribe(
+            bus: &mut crate::Bus,
+            topic: &crate::Topic<Self>,
+            options: crate::SubscriptionOptions,
+        ) -> Result<crate::Subscriber<Self>, crate::SubscribeError>
+        where
+            Self: crate::Shape + Sized;
     }
 }
 
@@ -133,6 +152,16 @@ macro_rules! value_shape {
             const STREAM: bool = matches!(Mode::$mode, Mode::Stream);
             fn payload_type() -> (TypeId, Option<TypeId>) {
                 (TypeId::of::<T>(), None)
+            }
+            fn subscribe(
+                bus: &mut crate::Bus,
+                topic: &crate::Topic<Self>,
+                options: crate::SubscriptionOptions,
+            ) -> Result<crate::Subscriber<Self>, crate::SubscribeError> {
+                if Self::STREAM {
+                    return Err(crate::SubscribeError::InvalidOptions);
+                }
+                bus.subscribe_latest::<Self, crate::storage::ValueSlot<T>>(topic, options)
             }
         }
         impl<T: Copy + Send + Sync + 'static> Shape for $shape<T> {}
@@ -149,6 +178,16 @@ macro_rules! block_shape {
             const STREAM: bool = matches!(Mode::$mode, Mode::Stream);
             fn payload_type() -> (TypeId, Option<TypeId>) {
                 (TypeId::of::<H>(), Some(TypeId::of::<E>()))
+            }
+            fn subscribe(
+                bus: &mut crate::Bus,
+                topic: &crate::Topic<Self>,
+                options: crate::SubscriptionOptions,
+            ) -> Result<crate::Subscriber<Self>, crate::SubscribeError> {
+                if Self::STREAM {
+                    return Err(crate::SubscribeError::InvalidOptions);
+                }
+                bus.subscribe_latest::<Self, crate::storage::BlockSlot<H, E>>(topic, options)
             }
         }
         impl<H: Copy + Send + Sync + 'static, E: Copy + Send + Sync + 'static> Shape
