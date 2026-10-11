@@ -122,6 +122,20 @@ fn zero_and_variable_demand_preserve_complete_frames_and_timeline() {
 }
 
 #[test]
+fn timeline_observer_rejects_plan_switching_engines() {
+    let (mut engine, reader) = graph(48000.0);
+    engine.enable_plan_switching(1).unwrap();
+
+    match DemandRenderer::new(engine, reader) {
+        Err(error) => assert_eq!(
+            error.to_string(),
+            "demand renderer does not support plan switching"
+        ),
+        Ok(_) => panic!("demand renderer accepted a switchable engine"),
+    }
+}
+
+#[test]
 fn malformed_requests_and_wrong_bridge_or_rate_do_not_render() {
     let (engine, reader) = graph(44100.0);
     assert!(matches!(

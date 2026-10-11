@@ -58,6 +58,8 @@ pub enum RenderError {
     UnsupportedFormat,
     #[error("render requires an explicit nonempty endpoint ID without embedded NUL")]
     InvalidEndpoint,
+    #[error("demand renderer does not support plan switching")]
+    PlanSwitchingUnsupported,
     #[error("render duration must be between 1 and 600 seconds")]
     InvalidDuration,
     #[error("render samples must contain complete stereo frames")]
@@ -141,6 +143,9 @@ impl DemandRenderer {
         }
         if output.capacity_frames() < engine.config().max_block_frames {
             return Err(RenderError::BridgeCapacity);
+        }
+        if engine.plan_switching_enabled() {
+            return Err(RenderError::PlanSwitchingUnsupported);
         }
         let timeline = TimelineObserver {
             frame: Arc::new(AtomicU64::new(engine.timeline())),

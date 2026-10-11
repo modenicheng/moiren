@@ -342,6 +342,9 @@ impl<S: ProcessingSample> Engine<S> {
     pub fn revision(&self) -> u64 {
         self.plan.revision
     }
+    pub fn plan_switching_enabled(&self) -> bool {
+        self.swaps.is_some()
+    }
     pub fn render(&mut self, frames: usize) -> Result<RenderReport, RuntimeError> {
         if frames == 0 || frames > self.plan.config.max_block_frames {
             return Err(RuntimeError::InvalidFrames);
