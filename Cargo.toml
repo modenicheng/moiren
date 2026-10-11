@@ -5,6 +5,7 @@ members = [
     "crates/moiren-engine",
     "crates/moiren-app",
     "crates/moiren-windows-audio",
+    "crates/moiren-signal",
 ]
 
 [workspace.dependencies]

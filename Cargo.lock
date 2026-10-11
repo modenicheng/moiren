@@ -2656,6 +2656,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "moiren-signal"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-utils",
+ "rtrb",
+ "thiserror 2.0.21",
+ "triple_buffer",
+]
+
+[[package]]
 name = "moiren-windows-audio"
 version = "0.1.0"
 dependencies = [
@@ -4579,6 +4589,15 @@ dependencies = [
  "memchr",
  "nom 8.0.0",
  "petgraph",
+]
+
+[[package]]
+name = "triple_buffer"
+version = "9.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e875ab7068a75b74f419da453927e05527c36f0001b3c7aad3ce443640683487"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]

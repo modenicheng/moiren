@@ -1,0 +1,11 @@
+[package]
+name = "moiren-signal"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+thiserror = { workspace = true }
+rtrb = "=0.4.0"
+triple_buffer = "=9.0.0"
+# The budget model must use the same cache padding as the pinned triple buffer.
+crossbeam-utils = "=0.8.23"
