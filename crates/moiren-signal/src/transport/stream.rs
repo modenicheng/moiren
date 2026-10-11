@@ -17,15 +17,32 @@ pub(crate) struct StreamEndpoint<'a, S> {
     capacity: usize,
 }
 
+#[cfg(test)]
 impl<S: Payload> StreamStorage<S> {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn endpoint(&mut self) -> StreamEndpoint<'_, S> {
-        StreamEndpoint {
-            writer: &mut self.writer,
-            sequence: &mut self.sequence,
-            state: &self.state,
-            demand: self.state.demand.snapshot(),
-            capacity: self.template.element_count(),
+        assert_eq!(
+            self.state
+                .host_owner
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        let writer = self.cell.test_writer::<S>();
+        writer.demand = self.state.demand.snapshot();
+        StreamEndpoint::new(writer, &self.state)
+    }
+}
+impl<'a, S: Clone + Send> StreamEndpoint<'a, S> {
+    pub(crate) fn new(writer: &'a mut crate::host::slot::Writer<S>, state: &'a TopicState) -> Self {
+        let crate::host::slot::Producer::Stream(producer) = &mut writer.producer else {
+            unreachable!("validated Stream shape")
+        };
+        Self {
+            writer: producer,
+            sequence: &mut writer.sequence,
+            state,
+            demand: writer.demand,
+            capacity: writer.capacity,
         }
     }
 }
@@ -129,6 +146,7 @@ impl<T: Copy + Send + 'static> StreamEndpoint<'_, ValueSlot<T>> {
 pub struct StreamBlockWriteGuard<'a, H: Copy + Send + 'static, E: Copy + Send + 'static> {
     write: StreamWrite<'a, BlockSlot<H, E>>,
     max_len: usize,
+    marker: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl<H: Copy + Send + 'static, E: Copy + Send + 'static> StreamBlockWriteGuard<'_, H, E> {
     pub fn header_mut(&mut self) -> &mut H {
@@ -155,7 +173,11 @@ impl<H: Copy + Send + 'static, E: Copy + Send + 'static> StreamEndpoint<'_, Bloc
             return Err(PublishError::InvalidLength.into());
         }
         let write = self.acquire()?;
-        Ok(StreamBlockWriteGuard { write, max_len })
+        Ok(StreamBlockWriteGuard {
+            write,
+            max_len,
+            marker: std::marker::PhantomData,
+        })
     }
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish_slice(
@@ -176,6 +198,32 @@ impl<H: Copy + Send + 'static, E: Copy + Send + 'static> StreamEndpoint<'_, Bloc
         *write.header_mut() = header;
         write.elements_mut().copy_from_slice(elements);
         write.commit(elements.len())
+    }
+}
+impl<'a, H: Copy + Send + 'static, E: Copy + Send + 'static> StreamEndpoint<'a, BlockSlot<H, E>> {
+    pub(crate) fn try_write_owned(
+        mut self,
+        max_len: usize,
+    ) -> Result<StreamBlockWriteGuard<'a, H, E>, WriteError> {
+        self.check_open()?;
+        if max_len > self.capacity {
+            return Err(PublishError::InvalidLength.into());
+        }
+        if !self.demand.active {
+            return Err(WriteError::Unavailable(WriteUnavailable::NoDemand));
+        }
+        let Some(slot) = self.writer.acquire() else {
+            let sequence = self.dropped()?;
+            return Err(WriteError::Unavailable(WriteUnavailable::Full { sequence }));
+        };
+        Ok(StreamBlockWriteGuard {
+            write: StreamWrite {
+                endpoint: self,
+                slot: Some(slot),
+            },
+            max_len,
+            marker: std::marker::PhantomData,
+        })
     }
 }
 

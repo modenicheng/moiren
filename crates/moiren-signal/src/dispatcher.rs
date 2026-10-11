@@ -36,6 +36,7 @@ pub(crate) trait Dispatch: Any + Send {
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn state(&self) -> &StateHandle;
     fn state_mut(&mut self) -> &mut StateHandle;
+    fn cell_mut(&mut self) -> &mut crate::host::slot::CellRoot;
     fn pending(&self) -> bool;
     fn step(&mut self, report: &mut PumpReport, budget: PumpBudget) -> bool;
 }
@@ -54,6 +55,9 @@ fn charge(report: &mut PumpReport, budget: PumpBudget, bytes: usize) -> bool {
 }
 
 impl<S: Payload> Dispatch for LatestStorage<S> {
+    fn cell_mut(&mut self) -> &mut crate::host::slot::CellRoot {
+        &mut self.cell
+    }
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
@@ -144,6 +148,9 @@ impl<S: Payload> Dispatch for LatestStorage<S> {
 }
 
 impl<S: Payload> Dispatch for StreamStorage<S> {
+    fn cell_mut(&mut self) -> &mut crate::host::slot::CellRoot {
+        &mut self.cell
+    }
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }

@@ -280,33 +280,32 @@ fn barriers_order_subscription_fence_against_commit_allocation_before_enqueue() 
         let topic = bus.register_stream_value("fence", 99_u32, 2).unwrap();
         let mut existing = bus.subscribe(&topic, depth(4)).unwrap();
         let storage = bus.stream_storage_mut::<_, ValueSlot<u32>>(&topic).unwrap();
-        // Transfer the safe owner roles to RT without sharing Bus or payload
-        // references. B5 will establish host ownership; authority stays private.
-        let (standin, _standin_reader) = crate::storage::pool(&storage.template, 2);
-        let mut writer = std::mem::replace(&mut storage.writer, standin);
-        let mut sequence = std::mem::take(&mut storage.sequence);
         let state = storage.state.clone();
-        let demand = state.demand.snapshot();
         let gate = Arc::new(crate::sequence::CommitGate::new());
-        sequence.pause_after_allocate(Arc::clone(&gate));
+        storage
+            .cell
+            .test_writer::<ValueSlot<u32>>()
+            .sequence
+            .pause_after_allocate(Arc::clone(&gate));
+        let (control, mut host) = bus.create_host(1).unwrap();
+        let key = control.new_binding().unwrap();
+        let publisher = control.prepare(&topic, key).unwrap();
+        let update = control.prepare_update(&[publisher.erase()]).unwrap();
+        let op = update.op_bindings(key).unwrap();
+        let handle = publisher.handle();
+        drop(host.activate(update).unwrap());
         let start = Barrier::new(2);
-        let (mut late, writer, sequence) = std::thread::scope(|scope| {
+        let (mut late, _host) = std::thread::scope(|scope| {
             let start_ref = &start;
-            let state_ref = &state;
+            let op_ref = &op;
             let worker = scope.spawn(move || {
                 start_ref.wait();
-                let mut endpoint = super::StreamEndpoint {
-                    writer: &mut writer,
-                    sequence: &mut sequence,
-                    state: state_ref,
-                    demand,
-                    capacity: 0,
-                };
+                host.begin_block();
                 assert!(matches!(
-                    endpoint.publish(7),
+                    host.scope(op_ref).publish(&handle, 7),
                     Ok(PublishOutcome::Published(_))
                 ));
-                (writer, sequence)
+                host
             });
             let late = if subscribe_before_commit {
                 let late = bus.subscribe(&topic, depth(4)).unwrap();
@@ -321,12 +320,9 @@ fn barriers_order_subscription_fence_against_commit_allocation_before_enqueue() 
                 bus.subscribe(&topic, depth(4)).unwrap()
             };
             gate.resume.wait();
-            let (writer, sequence) = worker.join().unwrap();
-            (late, writer, sequence)
+            (late, worker.join().unwrap())
         });
         let storage = bus.stream_storage_mut::<_, ValueSlot<u32>>(&topic).unwrap();
-        storage.writer = writer;
-        storage.sequence = sequence;
         assert!(storage.deliver_next());
         assert_eq!(existing.next().unwrap().value, 7);
         assert_eq!(
@@ -453,7 +449,8 @@ fn no_demand_closed_and_sequence_exhaustion_abort_without_payload_free() {
     let storage = bus
         .stream_storage_mut::<_, BlockSlot<u32, u32>>(&topic)
         .unwrap();
-    storage.sequence = crate::sequence::Sequence::at(u64::MAX);
+    storage.cell.test_writer::<BlockSlot<u32, u32>>().sequence =
+        crate::sequence::Sequence::at(u64::MAX);
     assert_eq!(
         allocator::measure(|| {
             assert_eq!(
@@ -463,7 +460,7 @@ fn no_demand_closed_and_sequence_exhaustion_abort_without_payload_free() {
         }),
         allocator::Counts::default()
     );
-    storage.sequence = Default::default();
+    storage.cell.test_writer::<BlockSlot<u32, u32>>().sequence = Default::default();
     let state = storage.state.clone();
     assert_eq!(
         allocator::measure(|| {

@@ -40,7 +40,16 @@ impl StateHandle {
             return Err(UnregisterError::Busy);
         }
         self.demand.close();
+        self.cell.lock().expect("publisher root poisoned").take();
         Ok(())
+    }
+    pub(crate) fn set_bound_leased(&self, bound: bool) {
+        // Preparation acquires the complete plan lease under gate, and every
+        // active/retired/table owner retains it. close() tests that lease under
+        // the same gate, so an RT Bound transition cannot race successful close.
+        // No RT mutex is needed: only the unique host writes Bound, and final
+        // lease release and stopped-host ownership changes occur under gate.
+        self.publisher_bound.store(bound, Ordering::Release);
     }
 }
 impl Deref for StateHandle {
@@ -67,6 +76,12 @@ impl TopicLease {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn acquire(state: &StateHandle) -> Result<Self, UnregisterError> {
         let mut leases = state.gate.lock().expect("lifecycle gate poisoned");
+        Self::acquire_locked(state, &mut leases)
+    }
+    pub(crate) fn acquire_locked(
+        state: &StateHandle,
+        leases: &mut usize,
+    ) -> Result<Self, UnregisterError> {
         if state.demand.is_closed() {
             return Err(UnregisterError::Closed);
         }

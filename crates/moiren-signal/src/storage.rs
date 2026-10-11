@@ -5,7 +5,7 @@
 
 use crate::{
     PublicationMeta, budget::Charge, dispatcher::Fanout, lifecycle::StateHandle,
-    sequence::Sequence, subscriber::SubscriptionLease,
+    subscriber::SubscriptionLease,
 };
 use std::sync::{Arc, Mutex, Weak};
 
@@ -90,26 +90,24 @@ impl<H: Copy + Send + 'static, E: Copy + Send + 'static> Payload for BlockSlot<H
 pub(crate) struct LatestStorage<S: Clone + Send> {
     pub(crate) template: S,
     pub(crate) dispatch: S,
-    pub(crate) input: triple_buffer::Input<S>,
+    pub(crate) cell: crate::host::slot::CellRoot,
     pub(crate) output: triple_buffer::Output<S>,
     pub(crate) state: StateHandle,
-    pub(crate) sequence: Sequence,
     // Fixed business sender directory, allocated as part of the storage box.
     pub(crate) senders: [Option<LatestSender<S>>; 64],
     pub(crate) occupied: u64,
     pub(crate) fanout: Fanout,
 }
 
-impl<S: Clone + Send> LatestStorage<S> {
+impl<S: Clone + Send + 'static> LatestStorage<S> {
     pub(crate) fn new(template: S) -> Self {
         let (input, output) = triple_buffer::TripleBuffer::new(&template).split();
         Self {
             dispatch: template.clone(),
             template,
-            input,
+            cell: crate::host::slot::CellRoot::new(crate::host::slot::Producer::Latest(input), 0),
             output,
             state: StateHandle::new(),
-            sequence: Sequence::default(),
             senders: std::array::from_fn(|_| None),
             occupied: 0,
             fanout: Fanout::default(),
@@ -120,29 +118,31 @@ impl<S: Clone + Send> LatestStorage<S> {
 #[allow(dead_code)]
 pub(crate) struct StreamStorage<S: Clone + Send> {
     pub(crate) template: S,
-    pub(crate) writer: PoolWriter<S>,
+    pub(crate) cell: crate::host::slot::CellRoot,
     pub(crate) reader: PoolReader<S>,
     pub(crate) dispatch: Option<S>,
     pub(crate) staging: Option<S>,
     pub(crate) state: StateHandle,
-    pub(crate) sequence: Sequence,
     pub(crate) senders: [Option<StreamSender<S>>; 64],
     pub(crate) occupied: u64,
     pub(crate) fanout: Fanout,
 }
 
-impl<S: Clone + Send> StreamStorage<S> {
+impl<S: Payload> StreamStorage<S> {
     pub(crate) fn new(template: S, depth: usize) -> Self {
+        let capacity = template.element_count();
         let (mut writer, reader) = pool(&template, depth);
         writer.spare = Some(template.clone());
         Self {
             staging: Some(template.clone()),
             template,
-            writer,
+            cell: crate::host::slot::CellRoot::new(
+                crate::host::slot::Producer::Stream(writer),
+                capacity,
+            ),
             reader,
             dispatch: None,
             state: StateHandle::new(),
-            sequence: Sequence::default(),
             senders: std::array::from_fn(|_| None),
             occupied: 0,
             fanout: Fanout::default(),
@@ -287,10 +287,17 @@ mod tests {
             },
         );
         let mut storage = LatestStorage::new(template);
+        let crate::host::slot::Producer::Latest(input) = &mut storage
+            .cell
+            .test_writer::<BlockSlot<NonZeroU32, NonZeroU32>>()
+            .producer
+        else {
+            unreachable!()
+        };
         for slot in [
             &storage.template,
             &storage.dispatch,
-            storage.input.input_buffer_mut(),
+            input.input_buffer_mut(),
             storage.output.output_buffer(),
         ] {
             assert_eq!(slot.meta, PublicationMeta::INITIAL);
@@ -306,10 +313,10 @@ mod tests {
         // Exchange through all three initialized slots; there was no initial publish.
         assert!(!storage.output.update());
         for _ in 0..3 {
-            storage.input.publish();
+            input.publish();
             assert!(storage.output.update());
             assert_eq!(storage.output.output_buffer().meta.sequence, 0);
-            assert_eq!(storage.input.input_buffer_mut().elements[3].get(), 4);
+            assert_eq!(input.input_buffer_mut().elements[3].get(), 4);
         }
     }
 
@@ -321,19 +328,26 @@ mod tests {
             || NonZeroU32::new(9).unwrap(),
         );
         let mut storage = StreamStorage::new(template, 8);
+        let crate::host::slot::Producer::Stream(writer) = &mut storage
+            .cell
+            .test_writer::<BlockSlot<NonZeroU32, NonZeroU32>>()
+            .producer
+        else {
+            unreachable!()
+        };
         assert!(storage.reader.ready.pop().is_err());
-        assert_eq!(storage.writer.free.slots(), 8);
-        for slot in [&storage.template, storage.writer.spare.as_ref().unwrap()] {
+        assert_eq!(writer.free.slots(), 8);
+        for slot in [&storage.template, writer.spare.as_ref().unwrap()] {
             assert_eq!(slot.meta, PublicationMeta::INITIAL);
             assert_eq!(slot.header.get(), 5);
             assert!(slot.elements.iter().all(|element| element.get() == 9));
         }
         for _ in 1..=8 {
-            let slot = storage.writer.free.pop().unwrap();
+            let slot = writer.free.pop().unwrap();
             assert_eq!(slot.meta, PublicationMeta::INITIAL);
             assert_eq!(slot.header.get(), 5);
             assert!(slot.elements.iter().all(|element| element.get() == 9));
         }
-        assert!(storage.writer.free.pop().is_err());
+        assert!(writer.free.pop().is_err());
     }
 }

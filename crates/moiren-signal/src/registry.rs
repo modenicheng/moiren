@@ -43,6 +43,12 @@ pub struct Bus {
 }
 
 impl Bus {
+    pub fn create_host(
+        &mut self,
+        max_bindings: usize,
+    ) -> Result<(crate::HostControl, crate::RtHost), crate::HostError> {
+        crate::host::HostControl::create(self.directory, &self.budget, max_bindings)
+    }
     pub fn new(config: BusConfig) -> Result<Self, RegisterError> {
         if config.max_topics == 0
             || !(1..=64).contains(&config.max_subscribers_per_topic)
@@ -216,7 +222,10 @@ impl Bus {
             .map_err(|_| SubscribeError::BudgetExceeded)?;
         // Retired resources are only reclaimed after all fallible preparation;
         // failed subscriptions preserve both demand and the charged budget.
-        let charge = self.budget.reserve(bytes);
+        let charge = self
+            .budget
+            .try_reserve(bytes)
+            .map_err(|_| SubscribeError::BudgetExceeded)?;
         let storage = self.latest_storage_mut::<P, S>(topic)?;
         let (mut input, output) = triple_buffer::TripleBuffer::new(&storage.template).split();
         let lease = Arc::new(SubscriptionLease {
@@ -327,7 +336,10 @@ impl Bus {
         self.budget
             .check(bytes)
             .map_err(|_| SubscribeError::BudgetExceeded)?;
-        let charge = self.budget.reserve(bytes);
+        let charge = self
+            .budget
+            .try_reserve(bytes)
+            .map_err(|_| SubscribeError::BudgetExceeded)?;
         let storage = self.stream_storage_mut::<P, S>(topic)?;
         let (writer, reader) = pool(&storage.template, depth);
         let retirement = Arc::new(std::sync::Mutex::new(None));
@@ -551,10 +563,14 @@ impl Bus {
             .checked_add(1)
             .ok_or(RegisterError::GenerationExhausted)?;
         let bytes = budget::add(bytes, budget::array::<u8>(name.len())?.size())?;
-        self.budget.check(bytes)?;
+        let state_bytes = budget::state_bytes()?;
+        let (state_charge, charge) = self
+            .budget
+            .try_reserve_pair(state_bytes, bytes - state_bytes)?;
         Ok(Staged {
             next_generation,
-            bytes,
+            state_charge,
+            charge,
         })
     }
 
@@ -566,11 +582,15 @@ impl Bus {
     ) -> Result<Topic<P>, RegisterError> {
         // Storage and name ownership remain staged through the last allocation.
         // A panicking factory or allocation never commits a name/slot/generation.
-        let state_bytes = budget::state_bytes()?;
-        storage
-            .state_mut()
-            .attach_charge(self.budget.reserve(state_bytes));
-        let charge = self.budget.reserve(staged.bytes - state_bytes);
+        storage.state_mut().attach_charge(staged.state_charge);
+        let charge = staged.charge;
+        storage.cell_mut().attach_charge(charge.clone());
+        let cell = storage.cell_mut().clone();
+        *storage
+            .state()
+            .cell
+            .lock()
+            .expect("publisher root poisoned") = Some(cell);
         let state = storage.state().clone();
         let storage = Box::new(storage);
         let name = Box::<str>::from(name);
@@ -604,7 +624,8 @@ impl Bus {
 
 struct Staged {
     next_generation: u64,
-    bytes: usize,
+    state_charge: Charge,
+    charge: Charge,
 }
 
 #[cfg(test)]

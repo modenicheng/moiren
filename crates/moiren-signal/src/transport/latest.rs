@@ -11,15 +11,32 @@ pub(crate) struct LatestEndpoint<'a, S: Clone + Send> {
     state: &'a TopicState,
     demand: DemandSnapshot,
 }
-impl<S: Clone + Send> LatestStorage<S> {
+#[cfg(test)]
+impl<S: Clone + Send + 'static> LatestStorage<S> {
     // B5 validates host/binding authority before acquiring this private borrow.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn endpoint(&mut self) -> LatestEndpoint<'_, S> {
-        LatestEndpoint {
-            input: &mut self.input,
-            sequence: &mut self.sequence,
-            state: &self.state,
-            demand: self.state.demand.snapshot(),
+        assert_eq!(
+            self.state
+                .host_owner
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        let writer = self.cell.test_writer::<S>();
+        writer.demand = self.state.demand.snapshot();
+        LatestEndpoint::new(writer, &self.state)
+    }
+}
+impl<'a, S: Clone + Send> LatestEndpoint<'a, S> {
+    pub(crate) fn new(writer: &'a mut crate::host::slot::Writer<S>, state: &'a TopicState) -> Self {
+        let crate::host::slot::Producer::Latest(input) = &mut writer.producer else {
+            unreachable!("validated Latest shape")
+        };
+        Self {
+            input,
+            sequence: &mut writer.sequence,
+            state,
+            demand: writer.demand,
         }
     }
 }
@@ -62,6 +79,7 @@ impl<T: Copy + Send> LatestEndpoint<'_, ValueSlot<T>> {
 pub struct BlockWriteGuard<'a, H: Copy + Send, E: Copy + Send> {
     endpoint: LatestEndpoint<'a, BlockSlot<H, E>>,
     max_len: usize,
+    marker: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl<H: Copy + Send, E: Copy + Send> Drop for BlockWriteGuard<'_, H, E> {
     fn drop(&mut self) {
@@ -119,6 +137,26 @@ impl<H: Copy + Send, E: Copy + Send> LatestEndpoint<'_, BlockSlot<H, E>> {
                 demand: self.demand,
             },
             max_len,
+            marker: std::marker::PhantomData,
+        })
+    }
+}
+impl<'a, H: Copy + Send, E: Copy + Send> LatestEndpoint<'a, BlockSlot<H, E>> {
+    pub(crate) fn try_write_owned(
+        self,
+        max_len: usize,
+    ) -> Result<BlockWriteGuard<'a, H, E>, WriteError> {
+        self.check_open()?;
+        if max_len > self.input.input_buffer_mut().elements.len() {
+            return Err(PublishError::InvalidLength.into());
+        }
+        if !self.demand.active {
+            return Err(WriteError::Unavailable(WriteUnavailable::NoDemand));
+        }
+        Ok(BlockWriteGuard {
+            endpoint: self,
+            max_len,
+            marker: std::marker::PhantomData,
         })
     }
 }

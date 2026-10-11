@@ -9,6 +9,12 @@ pub(crate) struct Counts {
     free: usize,
 }
 thread_local! { static PROBE: Cell<Option<Counts>> = const { Cell::new(None) }; }
+#[derive(Clone, Copy)]
+pub(crate) struct Frees {
+    pub(crate) events: [Option<(usize, std::thread::ThreadId)>; 256],
+    pub(crate) count: usize,
+}
+thread_local! { static FREES: Cell<Option<Frees>> = const { Cell::new(None) }; }
 pub(crate) struct Allocator;
 fn record(kind: usize) {
     let _ = PROBE.try_with(|state| {
@@ -39,7 +45,35 @@ unsafe impl GlobalAlloc for Allocator {
         record(2);
         // SAFETY: Forward the original allocation and layout.
         unsafe { System.dealloc(pointer, layout) };
+        let _ = FREES.try_with(|probe| {
+            if let Some(mut frees) = probe.get() {
+                assert!(frees.count < frees.events.len());
+                frees.events[frees.count] = Some((pointer as usize, std::thread::current().id()));
+                frees.count += 1;
+                probe.set(Some(frees));
+            }
+        });
     }
+}
+
+pub(crate) fn frees(operation: impl FnOnce()) -> Frees {
+    struct Stop;
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            FREES.with(|probe| probe.set(None));
+        }
+    }
+    FREES.with(|probe| {
+        probe.set(Some(Frees {
+            events: [None; 256],
+            count: 0,
+        }))
+    });
+    let stop = Stop;
+    operation();
+    let frees = FREES.with(|probe| probe.get().unwrap());
+    drop(stop);
+    frees
 }
 pub(crate) fn measure(operation: impl FnOnce()) -> Counts {
     struct Stop;

@@ -3,7 +3,47 @@
 Independent typed Latest/Stream signal storage. Values and block headers/elements
 must be `Copy + Send + Sync + 'static`. Registration, subscriptions, reads,
 cloning/dropping Topic handles, lifecycle leases and pumping are non-RT.
-Publication endpoints remain crate-private until scoped RT host authority is added.
+Publication uses one `RtHost` per owner thread and a typed handle authorized by
+a current operation table. Handles are Copy identities and cannot publish alone.
+
+Prepare on non-RT: `Bus::create_host`, `HostControl::new_binding`, `prepare`,
+`prepare_update`, then `PreparedHostUpdate::op_bindings`. One key can authorize
+multiple topics for one operation. Every update has a separate table identity;
+a superseded operation table fails even when its key/handle is reused.
+At a block boundary, `RtHost::activation` validates while exclusively borrowing
+both host and candidate; dropping the transaction leaves both unchanged.
+`commit` moves only preallocated owners and returns `RetiredHostUpdate`.
+The owned `activate` convenience API returns the complete candidate in
+`ActivateFailure` on error. Candidates prepared against an old basis are stale.
+
+Call `begin_block` to cache active endpoints' demand, then obtain a short
+`host.scope(&op)` for cached `demand`, `publish`, `try_write`, or `publish_slice`.
+`try_write` returns the existing concrete `BlockWriteGuard` for Latest blocks
+and `StreamBlockWriteGuard` for Stream blocks via sealed shape dispatch. Scopes and
+block guards borrow the actual exclusive host access and cannot be sent to
+another thread. All runtime pointer bindings are typed and checked off-RT.
+Stable cells contain the original transport producer and local checked sequence;
+updates preserve both and never reset the demand cache. New topic producers and
+host slot/table owners are fully initialized and charged before activation.
+
+Keep a cloned `HostControl` cleanup root on non-RT while RT owns the host.
+Transfer all returned retired updates, activation failures, and the stopped
+host back to non-RT before dropping them; destruction can free heap storage and
+final lifecycle leases. The bus and ordinary control-user handles may disappear
+while that cleanup root retains the producer resources. Dropping a unique host
+on RT violates this ownership contract. After the host is stopped and released
+on non-RT, a new host may rebind the same registered topic using the original
+producer, queued data, and sequence. Old control clones cannot revive authority.
+No concurrent host migration is supported.
+
+Preparation, claiming/reclaiming host ownership, and final lease release share
+the topic lifecycle gate. Active and retired tables keep real plan leases, so
+activation can change Bound using lock-free stores without allowing close.
+Inactive host slots can retain endpoints but grant no publication permission;
+once all plan leases are gone, unregister may close such a topic. Its retained
+storage stays charged until actual non-RT reclamation.
+Preparation can replace a retained Closed slot after checking its lifecycle
+gate; replacement peak storage is reserved before releasing the old owner.
 
 `Bus::pump(PumpBudget)` visits fixed directory slots round-robin. Every slot visit,
 including an empty slot, uses one `topic_checks`. Each source-to-staging copy,

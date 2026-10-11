@@ -179,10 +179,10 @@ pub trait Shape: sealed::Sealed + Send + Sync + 'static {}
 /// let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
 /// bus.register_latest_value("owned", String::from("heap payload"));
 /// ```
-pub trait ValueShape: Shape {
+pub trait ValueShape: Shape + sealed::ValueDispatch<Self::Value> {
     type Value: Copy + Send + Sync + 'static;
 }
-pub trait BlockShape: Shape {
+pub trait BlockShape: Shape + sealed::BlockDispatch<Self::Header, Self::Element> {
     type Header: Copy + Send + Sync + 'static;
     type Element: Copy + Send + Sync + 'static;
 }
@@ -214,9 +214,19 @@ impl Mode {
     }
 }
 
+#[allow(private_interfaces)]
 pub(crate) mod sealed {
     use std::any::TypeId;
     pub trait Sealed {
+        fn demand_access(
+            access: crate::host::slot::Access<'_>,
+        ) -> Result<crate::DemandSnapshot, crate::PublishError>;
+        fn bind_cell(
+            cell: &crate::host::slot::CellRoot,
+        ) -> (
+            crate::host::slot::Pointer,
+            fn(crate::host::slot::Pointer, crate::DemandSnapshot),
+        );
         const STREAM: bool;
         fn payload_type() -> (TypeId, Option<TypeId>);
         fn subscribe(
@@ -227,11 +237,45 @@ pub(crate) mod sealed {
         where
             Self: crate::Shape + Sized;
     }
+    pub trait ValueDispatch<Value> {
+        fn publish_access(
+            access: crate::host::slot::Access<'_>,
+            value: Value,
+        ) -> Result<crate::PublishOutcome, crate::PublishError>;
+    }
+    pub trait BlockDispatch<Header: Copy + Send + 'static, Element: Copy + Send + 'static> {
+        type Guard<'a>;
+        fn typed_write_access(
+            access: crate::host::slot::Access<'_>,
+            max_len: usize,
+        ) -> Result<Self::Guard<'_>, crate::WriteError>;
+        fn write_access(
+            access: crate::host::slot::Access<'_>,
+            max_len: usize,
+        ) -> Result<crate::SignalBlockWriteGuard<'_, Header, Element>, crate::WriteError>;
+    }
 }
 
 macro_rules! value_shape {
     ($shape:ident, $mode:ident) => {
+        #[allow(private_interfaces)]
         impl<T: Copy + Send + Sync + 'static> sealed::Sealed for $shape<T> {
+            fn demand_access(
+                access: crate::host::slot::Access<'_>,
+            ) -> Result<crate::DemandSnapshot, crate::PublishError> {
+                access.demand::<crate::storage::ValueSlot<T>>()
+            }
+            fn bind_cell(
+                cell: &crate::host::slot::CellRoot,
+            ) -> (
+                crate::host::slot::Pointer,
+                fn(crate::host::slot::Pointer, crate::DemandSnapshot),
+            ) {
+                (
+                    cell.pointer::<crate::storage::ValueSlot<T>>(),
+                    crate::host::slot::refresh_typed::<crate::storage::ValueSlot<T>>,
+                )
+            }
             const STREAM: bool = matches!(Mode::$mode, Mode::Stream);
             fn payload_type() -> (TypeId, Option<TypeId>) {
                 (TypeId::of::<T>(), None)
@@ -249,16 +293,47 @@ macro_rules! value_shape {
             }
         }
         impl<T: Copy + Send + Sync + 'static> Shape for $shape<T> {}
+        #[allow(private_interfaces)]
+        impl<T: Copy + Send + Sync + 'static> sealed::ValueDispatch<T> for $shape<T> {
+            fn publish_access(
+                access: crate::host::slot::Access<'_>,
+                value: T,
+            ) -> Result<PublishOutcome, crate::PublishError> {
+                let (writer, state) = access.writer::<crate::storage::ValueSlot<T>>();
+                if matches!(Mode::$mode, Mode::Stream) {
+                    crate::transport::stream::StreamEndpoint::new(writer, state).publish(value)
+                } else {
+                    crate::transport::latest::LatestEndpoint::new(writer, state).publish(value)
+                }
+            }
+        }
         impl<T: Copy + Send + Sync + 'static> ValueShape for $shape<T> {
             type Value = T;
         }
     };
 }
 macro_rules! block_shape {
-    ($shape:ident, $mode:ident) => {
+    ($shape:ident, $mode:ident, $module:ident, $endpoint:ident, $guard:ident) => {
+        #[allow(private_interfaces)]
         impl<H: Copy + Send + Sync + 'static, E: Copy + Send + Sync + 'static> sealed::Sealed
             for $shape<H, E>
         {
+            fn demand_access(
+                access: crate::host::slot::Access<'_>,
+            ) -> Result<crate::DemandSnapshot, crate::PublishError> {
+                access.demand::<crate::storage::BlockSlot<H, E>>()
+            }
+            fn bind_cell(
+                cell: &crate::host::slot::CellRoot,
+            ) -> (
+                crate::host::slot::Pointer,
+                fn(crate::host::slot::Pointer, crate::DemandSnapshot),
+            ) {
+                (
+                    cell.pointer::<crate::storage::BlockSlot<H, E>>(),
+                    crate::host::slot::refresh_typed::<crate::storage::BlockSlot<H, E>>,
+                )
+            }
             const STREAM: bool = matches!(Mode::$mode, Mode::Stream);
             fn payload_type() -> (TypeId, Option<TypeId>) {
                 (TypeId::of::<H>(), Some(TypeId::of::<E>()))
@@ -279,6 +354,25 @@ macro_rules! block_shape {
             for $shape<H, E>
         {
         }
+        #[allow(private_interfaces)]
+        impl<H: Copy + Send + Sync + 'static, E: Copy + Send + Sync + 'static>
+            sealed::BlockDispatch<H, E> for $shape<H, E>
+        {
+            type Guard<'a> = crate::$guard<'a, H, E>;
+            fn typed_write_access(
+                access: crate::host::slot::Access<'_>,
+                max_len: usize,
+            ) -> Result<Self::Guard<'_>, crate::WriteError> {
+                let (writer, state) = access.writer::<crate::storage::BlockSlot<H, E>>();
+                crate::transport::$module::$endpoint::new(writer, state).try_write_owned(max_len)
+            }
+            fn write_access(
+                access: crate::host::slot::Access<'_>,
+                max_len: usize,
+            ) -> Result<crate::SignalBlockWriteGuard<'_, H, E>, crate::WriteError> {
+                Self::typed_write_access(access, max_len).map(crate::SignalBlockWriteGuard::$mode)
+            }
+        }
         impl<H: Copy + Send + Sync + 'static, E: Copy + Send + Sync + 'static> BlockShape
             for $shape<H, E>
         {
@@ -289,5 +383,11 @@ macro_rules! block_shape {
 }
 value_shape!(LatestValue, Latest);
 value_shape!(StreamValue, Stream);
-block_shape!(LatestBlock, Latest);
-block_shape!(StreamBlock, Stream);
+block_shape!(LatestBlock, Latest, latest, LatestEndpoint, BlockWriteGuard);
+block_shape!(
+    StreamBlock,
+    Stream,
+    stream,
+    StreamEndpoint,
+    StreamBlockWriteGuard
+);

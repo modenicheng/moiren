@@ -91,3 +91,37 @@ pub enum UnregisterError {
     #[error("topic does not belong to this bus")]
     ForeignTopic,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum HostError {
+    #[error("invalid host capacity")]
+    InvalidCapacity,
+    #[error("bus byte budget exceeded")]
+    BudgetExceeded,
+    #[error("topic belongs to another live publisher host or is duplicated")]
+    PublisherConflict,
+    #[error("host or topic is closed")]
+    Closed,
+    #[error("topic belongs to another bus")]
+    ForeignTopic,
+    #[error("fixed host capacity exceeded")]
+    HostCapacity,
+    #[error("binding identity exhausted")]
+    BindingExhausted,
+    #[error("unknown operation binding")]
+    UnknownBinding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ActivateError {
+    #[error("update belongs to another host")]
+    ForeignHost,
+    #[error("host or topic is closed")]
+    Closed,
+    #[error("update was prepared against a superseded basis")]
+    StaleBasis,
+    #[error("fixed host capacity exceeded")]
+    HostCapacity,
+    #[error("publisher ownership changed")]
+    PublisherConflict,
+}

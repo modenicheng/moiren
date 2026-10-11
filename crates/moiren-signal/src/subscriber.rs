@@ -21,6 +21,8 @@ pub(crate) struct TopicState {
     pub(crate) attempt_sequence: AtomicU64,
     pub(crate) ingress_drops: AtomicU64,
     pub(crate) publisher_bound: AtomicBool,
+    pub(crate) host_owner: AtomicU64,
+    pub(crate) cell: Mutex<Option<crate::host::slot::CellRoot>>,
     // Sender slots may be refunded only after their receiver box is freed.
     // This bitmap lives in the still-charged topic allocation, not the lease
     // whose final Arc drop can still be running when strong_count reaches zero.
@@ -35,6 +37,8 @@ impl TopicState {
             attempt_sequence: AtomicU64::new(0),
             ingress_drops: AtomicU64::new(0),
             publisher_bound: AtomicBool::new(false),
+            host_owner: AtomicU64::new(0),
+            cell: Mutex::new(None),
             retired_receivers: AtomicU64::new(0),
             gate: Mutex::new(0),
             charge: None,

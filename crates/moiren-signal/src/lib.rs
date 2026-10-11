@@ -1,12 +1,13 @@
 //! Typed signal registration and bounded, fully initialized transport storage.
 //!
 //! Registration, subscription and name resolution are non-real-time operations.
-//! Publication endpoints remain crate-private until the scoped host owns access.
+//! Publication requires the unique host and a current operation scope.
 
 mod budget;
 mod demand;
 mod dispatcher;
 mod error;
+mod host;
 mod lifecycle;
 mod registry;
 mod sequence;
@@ -19,8 +20,13 @@ mod types;
 
 pub use demand::DemandSnapshot;
 pub use error::{
-    LookupError, PublishError, ReadError, RegisterError, SubscribeError, UnregisterError,
-    WriteError, WriteUnavailable,
+    ActivateError, HostError, LookupError, PublishError, ReadError, RegisterError, SubscribeError,
+    UnregisterError, WriteError, WriteUnavailable,
+};
+pub use host::{
+    ActivateFailure, ActivationTransaction, BindingKey, ErasedBinding, HostControl, HostId,
+    OpSignalBindings, PreparedHostUpdate, PreparedPublisher, PublisherHandle, RetiredHostUpdate,
+    RtHost, SignalBlockWriteGuard, SignalScope,
 };
 pub use registry::Bus;
 pub use subscriber::{BlockMessage, BlockReadGuard, Subscriber, ValueMessage};

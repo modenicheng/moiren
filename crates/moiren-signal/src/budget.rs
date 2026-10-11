@@ -14,13 +14,39 @@ use crate::{
     storage::{BlockSlot, LatestStorage, StreamStorage, ValueSlot},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Budget {
     used: Arc<AtomicUsize>,
     limit: usize,
 }
 
 impl Budget {
+    pub(crate) fn try_reserve(&self, bytes: usize) -> Result<Charge, RegisterError> {
+        self.claim(bytes)?;
+        Ok(self.reservation(bytes))
+    }
+    pub(crate) fn try_reserve_pair(
+        &self,
+        first: usize,
+        second: usize,
+    ) -> Result<(Charge, Charge), RegisterError> {
+        self.claim(add(first, second)?)?;
+        Ok((self.reservation(first), self.reservation(second)))
+    }
+    fn claim(&self, bytes: usize) -> Result<(), RegisterError> {
+        self.used
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(bytes).filter(|next| *next <= self.limit)
+            })
+            .map_err(|_| RegisterError::BudgetExceeded)?;
+        Ok(())
+    }
+    fn reservation(&self, bytes: usize) -> Charge {
+        Charge(Some(Arc::new(Reservation {
+            ledger: Arc::clone(&self.used),
+            bytes,
+        })))
+    }
     pub(crate) fn new(limit: usize, baseline: usize) -> Result<Self, RegisterError> {
         if baseline > limit {
             return Err(RegisterError::BudgetExceeded);
@@ -40,14 +66,6 @@ impl Budget {
     }
     pub(crate) fn used(&self) -> usize {
         self.used.load(Ordering::Acquire)
-    }
-    pub(crate) fn reserve(&self, bytes: usize) -> Charge {
-        let charge = Charge(Some(Arc::new(Reservation {
-            ledger: Arc::clone(&self.used),
-            bytes,
-        })));
-        self.used.fetch_add(bytes, Ordering::AcqRel);
-        charge
     }
 }
 
@@ -145,7 +163,7 @@ fn owner_ring<S>(depth: usize) -> Result<usize, RegisterError> {
 pub(crate) fn latest<S: Clone + Send>(element_bytes: usize) -> Result<usize, RegisterError> {
     add(
         add(
-            Layout::new::<LatestStorage<S>>().size(),
+            add(Layout::new::<LatestStorage<S>>().size(), cell_bytes::<S>()?)?,
             add(latest_shared::<S>()?.size(), state_bytes()?)?,
         )?,
         add(element_bytes, reservation_bytes()?)?,
@@ -158,10 +176,20 @@ pub(crate) fn stream<S: Clone + Send>(
 ) -> Result<usize, RegisterError> {
     let slots = add(depth, 1)?;
     let queues = add(owner_ring::<S>(slots)?, owner_ring::<S>(depth)?)?;
-    let base = add(Layout::new::<StreamStorage<S>>().size(), state_bytes()?)?;
+    let base = add(
+        add(Layout::new::<StreamStorage<S>>().size(), cell_bytes::<S>()?)?,
+        state_bytes()?,
+    )?;
     add(
         add(base, queues)?,
         add(element_bytes, reservation_bytes()?)?,
+    )
+}
+
+fn cell_bytes<S: Clone + Send>() -> Result<usize, RegisterError> {
+    add(
+        Layout::new::<crate::host::slot::Cell<S>>().size(),
+        arc_layout::<crate::host::slot::RootInner>()?.size(),
     )
 }
 
