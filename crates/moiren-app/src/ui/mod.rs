@@ -1,6 +1,8 @@
 //! Slint owns presentation only; backend sessions never cross this boundary.
 mod bindings;
+mod meters;
 pub mod signals;
+mod studio;
 mod window;
 pub use bindings::{DetailSelection, SelectionState};
 pub use window::{WindowPresentation, run};

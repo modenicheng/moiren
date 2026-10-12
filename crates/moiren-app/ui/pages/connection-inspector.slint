@@ -1,0 +1,207 @@
+import { ScrollView } from "std-widgets.slint";
+
+// Connection inspector panel — the right studio column. Renders the
+// selected wire/node readouts and route controls. Pure composition of
+// components/studio-controls pieces; scrolls when short.
+
+import { Theme } from "../theme.slint";
+import { Backend } from "../backend.slint";
+import { SectionHeading, ParamRow, FaderRail, ChannelMeter, StudioButton } from "../components/studio-controls.slint";
+import { AppSlider } from "../components/widgets.slint";
+import { SignalRect, MeterRegion, MeterDefaults, StereoLevelMeters } from "../components/signal-meter.slint";
+
+export component ConnectionInspector inherits Rectangle {
+    background: Theme.surface-2;
+    border-color: Theme.border;
+    border-width: 1px;
+    private property <bool> route-open: true;
+    private property <MeterRegion> output-region;
+    private property <MeterRegion> input-region;
+    out property <MeterRegion> active-output-region: root.route-open ? root.output-region : MeterDefaults.hidden;
+    out property <MeterRegion> active-input-region: root.route-open ? root.input-region : MeterDefaults.hidden;
+    callback regions-changed(MeterRegion, MeterRegion);
+    init => { root.regions-changed(root.active-output-region, root.active-input-region); }
+    changed active-output-region => { root.regions-changed(root.active-output-region, root.active-input-region); }
+    changed active-input-region => { root.regions-changed(root.active-output-region, root.active-input-region); }
+    private property <SignalRect> meter-viewport: {
+        left: inspector-content.absolute-position.x / 1px - scroll.content-x / 1px,
+        top: inspector-content.absolute-position.y / 1px - scroll.content-y / 1px,
+        width: scroll.visible-width / 1px,
+        height: scroll.visible-height / 1px,
+    };
+
+    scroll := ScrollView {
+        inspector-content := VerticalLayout {
+            padding: 0;
+            spacing: 0;
+            alignment: start;
+
+            // Panel header (48px).
+            HorizontalLayout {
+                padding-left: Theme.space-4;
+                height: 48px;
+                spacing: 8px;
+                Image {
+                    source: @image-url("../icons/sliders.svg");
+                    colorize: Theme.text-muted;
+                    width: 16px;
+                    height: 16px;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: "Inspector";
+                    color: Theme.text;
+                    font-family: Theme.font-ui;
+                    font-size: 12px;
+                    font-weight: Theme.weight-semibold;
+                    vertical-alignment: center;
+                }
+            }
+            Rectangle { height: 1px; background: Theme.border; }
+
+            // SIGNAL PATH.
+            property <bool> path-open: true;
+            SectionHeading {
+                padding-left: Theme.space-4;
+                padding-right: Theme.space-4;
+                title: "SIGNAL PATH";
+                open: path-open;
+                toggle => { path-open = !path-open; }
+            }
+            if path-open: VerticalLayout {
+                vertical-stretch: 0;
+                padding-left: Theme.space-4;
+                padding-right: Theme.space-4;
+                padding-bottom: Theme.space-3;
+                spacing: 12px;
+                ParamRow { key: "Source"; value: Backend.inspector-source; }
+                ParamRow { key: "Destination"; value: Backend.inspector-destination; }
+                ParamRow { key: "Channel mapping"; value: Backend.inspector-mapping; }
+                ParamRow { key: "Route state"; value: Backend.inspector-state; }
+            }
+            Rectangle { height: 1px; background: Theme.border; }
+
+            // ROUTE CONTROLS.
+            SectionHeading {
+                padding-left: Theme.space-4;
+                padding-right: Theme.space-4;
+                title: "SESSION CONTROLS";
+                open: route-open;
+                toggle => { route-open = !route-open; }
+            }
+            if route-open: VerticalLayout {
+                vertical-stretch: 0;
+                padding-left: Theme.space-4;
+                padding-right: Theme.space-4;
+                padding-bottom: Theme.space-4;
+                spacing: 12px;
+
+                Text {
+                    text: "SELECTION";
+                    height: 14px;
+                    color: Theme.primary;
+                    font-family: Theme.font-ui;
+                    font-size: 10px;
+                    font-weight: Theme.weight-semibold;
+                }
+                Text {
+                    text: Backend.inspector-title;
+                    height: 24px;
+                    color: Theme.text;
+                    font-family: Theme.font-ui;
+                    font-size: 19px;
+                    font-weight: Theme.weight-semibold;
+                    overflow: elide;
+                }
+                Text {
+                    text: Backend.inspector-subtitle;
+                    height: 16px;
+                    color: Theme.text-muted;
+                    font-family: Theme.font-ui;
+                    font-size: 11px;
+                    overflow: elide;
+                }
+
+                // Fader + stereo meters.
+                HorizontalLayout {
+                    height: 220px;
+                    spacing: 16px;
+                    FaderRail {
+                        enabled: Backend.transport-ready;
+                        value <=> Backend.route-gain;
+                        changed(g) => { Backend.set-route-gain(g); }
+                    }
+                    StereoLevelMeters {
+                        width: 38px;
+                        left-rms: Backend.route-meter-l; right-rms: Backend.route-meter-r;
+                        left-peak: Backend.route-peak-l; right-peak: Backend.route-peak-r;
+                        viewport: root.meter-viewport;
+                        region-changed(region) => { root.output-region = region; }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                ParamRow { key: "Gain"; value: Backend.gain-label; }
+                ParamRow { key: "Pan"; value: Backend.pan-label; }
+                AppSlider {
+                    minimum: -1; maximum: 1; bipolar: true;
+                    value <=> Backend.pan;
+                    enabled: Backend.transport-ready;
+                    changed(value) => { Backend.set-gain-pan(Backend.gain, value); }
+                }
+                Text { text: Backend.meter-status; color: Theme.text-faint; font-family: Theme.font-ui; font-size: 10px; wrap: word-wrap; }
+                Text { text: Backend.output-levels; color: Theme.text-muted; font-family: Theme.font-mono; font-size: 10px; wrap: word-wrap; }
+                Text { text: "INPUT · peak / RMS"; color: Theme.text-faint; font-family: Theme.font-ui; font-size: 10px; }
+                HorizontalLayout {
+                    height: 96px;
+                    spacing: 12px;
+                    StereoLevelMeters {
+                        width: 38px;
+                        left-rms: Backend.input-meter-l; right-rms: Backend.input-meter-r;
+                        left-peak: Backend.input-peak-l; right-peak: Backend.input-peak-r;
+                        viewport: root.meter-viewport;
+                        region-changed(region) => { root.input-region = region; }
+                    }
+                    VerticalLayout {
+                        min-width: 0px;
+                        horizontal-stretch: 1;
+                        alignment: start;
+                        spacing: 8px;
+                        Text { text: Backend.input-levels; color: Theme.text-muted; font-family: Theme.font-mono; font-size: 10px; wrap: word-wrap; }
+                        Text { text: Backend.input-meter-status; color: Theme.text-faint; font-family: Theme.font-ui; font-size: 10px; wrap: word-wrap; }
+                    }
+                }
+            }
+            Rectangle { height: 1px; background: Theme.border; }
+
+            // CONNECTION NOTES.
+            property <bool> notes-open: true;
+            SectionHeading {
+                padding-left: Theme.space-4;
+                padding-right: Theme.space-4;
+                title: "CONNECTION NOTES";
+                open: notes-open;
+                toggle => { notes-open = !notes-open; }
+            }
+            if notes-open: VerticalLayout {
+                vertical-stretch: 0;
+                padding-left: Theme.space-4;
+                padding-right: Theme.space-4;
+                padding-bottom: Theme.space-3;
+                spacing: 10px;
+                Text {
+                    text: Backend.inspector-notes;
+                    color: Theme.text-muted;
+                    font-family: Theme.font-ui;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+                StudioButton {
+                    text: "Locate selection";
+                    enabled: Backend.selected-node != "" || Backend.selected-wire != "";
+                    width: 142px;
+                    clicked => { Backend.locate-selection(); }
+                }
+            }
+        }
+    }
+}

@@ -1,6 +1,7 @@
+use super::studio::{StudioModels, StudioState};
 use super::{AudioEndpoint, Backend, BackendPhase, MainWindow, ProcessSource, SelectOption};
 use crate::service::*;
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 /// Selected identities outlive row positions. A vanished identity remains
@@ -102,6 +103,10 @@ pub(super) struct BindingState {
     pending_request_id: Option<RequestId>,
     transport_pending: bool,
     dispatch_error: Option<String>,
+    studio: StudioState,
+    studio_models: StudioModels,
+    snapshot: Option<Arc<AppSnapshot>>,
+    signals: super::meters::UiSignals,
 }
 impl BindingState {
     fn observe_snapshot(&mut self, snapshot: &Arc<AppSnapshot>) {
@@ -115,6 +120,23 @@ impl BindingState {
     }
 }
 pub(super) type SharedState = Rc<RefCell<BindingState>>;
+pub(super) fn hide_signals(state: &SharedState, window: &MainWindow) {
+    state.borrow_mut().signals.hide();
+    super::meters::clear_backend(window);
+}
+pub(super) fn update_signals(
+    state: &SharedState,
+    handle: &AppHandle,
+    snapshot: &AppSnapshot,
+    window: &MainWindow,
+    presentation: &super::WindowPresentation,
+) {
+    let display = state
+        .borrow_mut()
+        .signals
+        .update(handle, snapshot, window, presentation);
+    display.apply(window);
+}
 
 /// Create owned model data under a short borrow, then release it before any
 /// reactive Slint setter. Setters may synchronously reenter host callbacks.
@@ -136,6 +158,7 @@ pub(super) fn update(
             detail.initialize(selection);
         }
         state.observe_snapshot(snapshot);
+        state.snapshot = Some(snapshot.clone());
         (
             changed,
             state.catalog.clone(),
@@ -259,6 +282,233 @@ pub(super) fn update(
         });
     }
     tray.set_session_active(snapshot.phase == SessionPhase::Running && !pending);
+    publish_studio(state, window);
+}
+
+fn publish_studio(state: &SharedState, window: &MainWindow) {
+    let backend = window.global::<Backend>();
+    let mode = backend.get_source_mode();
+    let (models, projection, source, output, source_detail, gain, pan, snapshot) = {
+        let state = state.borrow();
+        let session = state
+            .snapshot
+            .as_ref()
+            .filter(|snapshot| {
+                matches!(
+                    snapshot.phase,
+                    SessionPhase::Starting | SessionPhase::Running
+                )
+            })
+            .and_then(|snapshot| snapshot.desired.as_ref());
+        let source = match session.map(|spec| &spec.source) {
+            Some(InputSelection::Physical { endpoint_id }) => {
+                endpoint_label(&state.catalog.inputs, endpoint_id, "input")
+            }
+            Some(InputSelection::Process {
+                pid,
+                creation_time_100ns,
+            }) => state
+                .catalog
+                .processes
+                .iter()
+                .find(|row| row.pid == *pid && row.creation_time_100ns == *creation_time_100ns)
+                .map_or_else(
+                    || format!("Unavailable application · PID {pid} · {creation_time_100ns}"),
+                    |row| row.name.clone(),
+                ),
+            Some(InputSelection::Tone { frequency_hz }) => format!("{frequency_hz:.0} Hz tone"),
+            None => match mode {
+                2 => "440 Hz test tone".to_owned(),
+                1 => state
+                    .selection
+                    .process_source(&state.catalog)
+                    .and_then(|source| {
+                        let InputSelection::Process {
+                            pid,
+                            creation_time_100ns,
+                        } = source
+                        else {
+                            return None;
+                        };
+                        state
+                            .catalog
+                            .processes
+                            .iter()
+                            .find(|row| {
+                                row.pid == pid && row.creation_time_100ns == creation_time_100ns
+                            })
+                            .map(|row| row.name.clone())
+                    })
+                    .unwrap_or_else(|| "Select an application".to_owned()),
+                _ => state
+                    .catalog
+                    .inputs
+                    .iter()
+                    .find(|row| Some(&row.endpoint_id) == state.selection.input_id.as_ref())
+                    .map_or_else(|| "Select an input".to_owned(), |row| row.name.clone()),
+            },
+        };
+        let output = session.map_or_else(
+            || {
+                state
+                    .catalog
+                    .outputs
+                    .iter()
+                    .find(|row| Some(&row.endpoint_id) == state.selection.output_id.as_ref())
+                    .map_or_else(|| "Select an output".to_owned(), |row| row.name.clone())
+            },
+            |spec| endpoint_label(&state.catalog.outputs, &spec.output_endpoint_id, "output"),
+        );
+        let displayed_mode = session.map_or(mode, |spec| match spec.source {
+            InputSelection::Physical { .. } => 0,
+            InputSelection::Process { .. } => 1,
+            InputSelection::Tone { .. } => 2,
+        });
+        let kind = match displayed_mode {
+            1 => "APPLICATION AUDIO",
+            2 => "TEST TONE",
+            _ => "PHYSICAL INPUT",
+        };
+        let source_detail = session.and_then(|spec| {
+            if let InputSelection::Tone { frequency_hz } = spec.source {
+                Some(match spec.limit {
+                    RunLimit::Seconds(seconds) => {
+                        format!("{frequency_hz:.0} Hz · {seconds} seconds")
+                    }
+                    RunLimit::UntilStopped => format!("{frequency_hz:.0} Hz · until stopped"),
+                })
+            } else {
+                None
+            }
+        });
+        (
+            state.studio_models.clone(),
+            state.studio.projection(&source, kind, &output),
+            source,
+            output,
+            source_detail,
+            state.studio.gain,
+            state.studio.pan,
+            state.snapshot.clone(),
+        )
+    };
+    models.publish(&backend, projection);
+    if let Some(detail) = source_detail {
+        let nodes = backend.get_graph_nodes();
+        if let Ok(index) = usize::try_from(backend.get_graph_input_index())
+            && let Some(mut node) = nodes.row_data(index)
+            && node.detail != detail
+        {
+            node.detail = detail.into();
+            nodes.set_row_data(index, node);
+        }
+    }
+    backend.set_source_label(source.clone().into());
+    backend.set_output_label(output.clone().into());
+    backend.set_gain(gain);
+    backend.set_pan(pan);
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+    if matches!(
+        snapshot.phase,
+        SessionPhase::Starting | SessionPhase::Running
+    ) && snapshot.desired.is_some()
+    {
+        backend.set_inspector_state(format!("{:?} · stereo", snapshot.phase).into());
+    }
+    backend.set_session_status(if snapshot.phase == SessionPhase::Running {
+        format!("Running · session {} · {source}", snapshot.generation.0).into()
+    } else {
+        backend.get_phase_text()
+    });
+    backend.set_control_status(if snapshot.control.accepted_pending > 0 {
+        format!(
+            "Accepted · {} pending engine application",
+            snapshot.control.accepted_pending
+        )
+        .into()
+    } else if let Some(reply) = snapshot.control.last_result {
+        format!(
+            "{:?} · request {} · revision {} · frame {}",
+            reply.code, reply.request_id, reply.plan_revision, reply.effective_frame
+        )
+        .into()
+    } else if snapshot.phase == SessionPhase::Running {
+        "Session parameters active".into()
+    } else {
+        "Candidate parameters · apply on Start".into()
+    });
+    backend.set_engine_format(if snapshot.phase == SessionPhase::Running {
+        "48 kHz · engine".into()
+    } else {
+        "—".into()
+    });
+    backend.set_engine_latency(if snapshot.phase == SessionPhase::Running {
+        snapshot
+            .desired
+            .as_ref()
+            .map(|spec| format!("{} frame blocks", spec.max_block_frames))
+            .unwrap_or_default()
+            .into()
+    } else {
+        "—".into()
+    });
+    backend.set_engine_clock(if snapshot.phase == SessionPhase::Running {
+        output.into()
+    } else {
+        "—".into()
+    });
+}
+
+fn endpoint_label(rows: &[DeviceRow], id: &str, direction: &str) -> String {
+    rows.iter().find(|row| row.endpoint_id == id).map_or_else(
+        || format!("Unavailable {direction} · {id}"),
+        |row| row.name.clone(),
+    )
+}
+
+fn set_parameters(
+    state: &SharedState,
+    handle: &AppHandle,
+    window: &MainWindow,
+    gain: f32,
+    pan: f32,
+) {
+    let running = {
+        let mut state = state.borrow_mut();
+        if !state.studio.set_parameters(gain, pan) {
+            return;
+        }
+        state
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.phase == SessionPhase::Running)
+    };
+    if running {
+        dispatch(
+            state,
+            handle,
+            AppRequest::SetGainPan {
+                gain: gain.into(),
+                pan: pan.into(),
+            },
+        );
+    }
+    publish_studio(state, window);
+}
+
+fn locate_selection(state: &SharedState, window: &MainWindow) {
+    let focus = {
+        let state = state.borrow();
+        state.studio.projection("", "", "").focus
+    };
+    if let Some((x, y)) = focus {
+        let backend = window.global::<Backend>();
+        backend.set_focus_x(x);
+        backend.set_focus_y(y);
+        backend.set_focus_generation(backend.get_focus_generation().wrapping_add(1));
+    }
 }
 fn endpoint_model(rows: &[DeviceRow], kind: &str, default: Option<&str>) -> ModelRc<AudioEndpoint> {
     ModelRc::new(VecModel::from(
@@ -289,6 +539,7 @@ fn options(rows: &[DeviceRow]) -> ModelRc<SelectOption> {
 }
 pub(super) fn dispatch(state: &SharedState, handle: &AppHandle, request: AppRequest) {
     let transport = matches!(request, AppRequest::Start(_) | AppRequest::Stop);
+    let stopping = matches!(request, AppRequest::Stop);
     if transport && state.borrow().transport_pending {
         return;
     }
@@ -296,6 +547,12 @@ pub(super) fn dispatch(state: &SharedState, handle: &AppHandle, request: AppRequ
     let mut state = state.borrow_mut();
     match result {
         Ok(id) => {
+            if stopping
+                && let Some(generation) =
+                    state.snapshot.as_ref().map(|snapshot| snapshot.generation)
+            {
+                state.signals.stop(generation);
+            }
             state.dispatch_error = None;
             if transport {
                 state.pending_request_id = Some(id);
@@ -307,6 +564,74 @@ pub(super) fn dispatch(state: &SharedState, handle: &AppHandle, request: AppRequ
 }
 pub(super) fn wire(window: &MainWindow, handle: AppHandle, state: SharedState) {
     let backend = window.global::<Backend>();
+    let models = state.borrow().studio_models.clone();
+    models.install(&backend);
+    publish_studio(&state, window);
+    let callback_state = state.clone();
+    let weak = window.as_weak();
+    backend.on_select_node(move |id| {
+        let selected = callback_state.borrow_mut().studio.select_node(&id);
+        if let Some(window) = weak.upgrade() {
+            publish_studio(&callback_state, &window);
+        }
+        selected
+    });
+    let callback_state = state.clone();
+    let weak = window.as_weak();
+    backend.on_select_wire(move |id| {
+        callback_state.borrow_mut().studio.select_wire(&id);
+        if let Some(window) = weak.upgrade() {
+            publish_studio(&callback_state, &window);
+        }
+    });
+    let callback_state = state.clone();
+    let weak = window.as_weak();
+    backend.on_clear_selection(move || {
+        callback_state.borrow_mut().studio.clear_selection();
+        if let Some(window) = weak.upgrade() {
+            publish_studio(&callback_state, &window);
+        }
+    });
+    let callback_state = state.clone();
+    let weak = window.as_weak();
+    backend.on_move_node(move |id, x, y| {
+        callback_state.borrow_mut().studio.move_node(&id, x, y);
+        if let Some(window) = weak.upgrade() {
+            publish_studio(&callback_state, &window);
+        }
+    });
+    let callback_state = state.clone();
+    let weak = window.as_weak();
+    backend.on_select_library_node(move |name| {
+        callback_state.borrow_mut().studio.select_library(&name);
+        if let Some(window) = weak.upgrade() {
+            let backend = window.global::<Backend>();
+            match name.as_str() {
+                "Physical input" => backend.set_source_mode(0),
+                "Application audio" => backend.set_source_mode(1),
+                "Test tone" => backend.set_source_mode(2),
+                _ => {}
+            }
+            publish_studio(&callback_state, &window);
+            locate_selection(&callback_state, &window);
+        }
+    });
+    let callback_state = state.clone();
+    let weak = window.as_weak();
+    backend.on_locate_selection(move || {
+        if let Some(window) = weak.upgrade() {
+            locate_selection(&callback_state, &window);
+        }
+    });
+    let callback_state = state.clone();
+    let app_handle = handle.clone();
+    let weak = window.as_weak();
+    backend.on_set_route_gain(move |gain| {
+        if let Some(window) = weak.upgrade() {
+            let pan = callback_state.borrow().studio.pan;
+            set_parameters(&callback_state, &app_handle, &window, gain, pan);
+        }
+    });
     let s = state.clone();
     backend
         .on_select_detail(move |capture, id| s.borrow_mut().detail.select(capture, id.to_string()));
@@ -335,15 +660,11 @@ pub(super) fn wire(window: &MainWindow, handle: AppHandle, state: SharedState) {
     backend.on_stop(move || dispatch(&s, &h, AppRequest::Stop));
     let s = state.clone();
     let h = handle.clone();
+    let weak = window.as_weak();
     backend.on_set_gain_pan(move |gain, pan| {
-        dispatch(
-            &s,
-            &h,
-            AppRequest::SetGainPan {
-                gain: gain.into(),
-                pan: pan.into(),
-            },
-        )
+        if let Some(window) = weak.upgrade() {
+            set_parameters(&s, &h, &window, gain, pan);
+        }
     });
     for tone in [false, true] {
         let s = state.clone();

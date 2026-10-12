@@ -1,0 +1,38 @@
+// Icon resolver — data-layer icon name strings map to embedded Tabler
+// icons. `@image-url` needs a literal path, so this component is the single
+// place that knows the mapping.
+
+import { Theme } from "../theme.slint";
+
+export component TablerIcon inherits Image {
+    in property <string> name;
+    in property <color> tint: Theme.text-muted;
+    width: 16px;
+    height: 16px;
+    colorize: root.tint;
+    source: name == "mic" ? @image-url("../icons/mic.svg")
+        : name == "app-window" ? @image-url("../icons/app.svg")
+        : name == "radio" ? @image-url("../icons/radio.svg")
+        : name == "sliders" ? @image-url("../icons/sliders.svg")
+        : name == "arrow-up-left" ? @image-url("../icons/arrow-up-left.svg")
+        : name == "hand-move" ? @image-url("../icons/hand-move.svg")
+        : name == "git-merge" ? @image-url("../icons/git-merge.svg")
+        : name == "headphones" ? @image-url("../icons/headphones.svg")
+        : name == "monitor" ? @image-url("../icons/monitor.svg")
+        : name == "circle-dot" ? @image-url("../icons/circle-dot.svg")
+        : name == "activity" ? @image-url("../icons/activity.svg")
+        : name == "search" ? @image-url("../icons/search.svg")
+        : name == "chevron-down" ? @image-url("../icons/chevron.svg")
+        : name == "folder-open" ? @image-url("../icons/folder-open.svg")
+        : name == "save" ? @image-url("../icons/save.svg")
+        : name == "stop" ? @image-url("../icons/stop.svg")
+        : name == "play" ? @image-url("../icons/play.svg")
+        : name == "settings" ? @image-url("../icons/settings.svg")
+        : name == "route" ? @image-url("../icons/route.svg")
+        : name == "wave" ? @image-url("../icons/wave.svg")
+        : name == "devices" ? @image-url("../icons/devices.svg")
+        : name == "refresh" ? @image-url("../icons/refresh.svg")
+        : name == "speaker" ? @image-url("../icons/speaker.svg")
+        : name == "info" ? @image-url("../icons/info.svg")
+        : @image-url("../icons/info.svg");
+}

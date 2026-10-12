@@ -1,0 +1,45 @@
+import { Theme } from "../theme.slint";
+import { ChannelMeter } from "studio-controls.slint";
+
+export struct SignalRect { left: float, top: float, width: float, height: float }
+export struct MeterRegion { enabled: bool, bounds: SignalRect, viewport: SignalRect }
+export global MeterDefaults { out property <MeterRegion> hidden; }
+
+export component StereoLevelMeters inherits Rectangle {
+    in property <float> left-rms;
+    in property <float> right-rms;
+    in property <float> left-peak;
+    in property <float> right-peak;
+    in property <SignalRect> viewport;
+    out property <MeterRegion> region: {
+        enabled: root.visible,
+        bounds: {
+            left: tracks.absolute-position.x / 1px,
+            top: tracks.absolute-position.y / 1px,
+            width: tracks.width / 1px,
+            height: tracks.height / 1px,
+        },
+        viewport: root.viewport,
+    };
+    callback region-changed(MeterRegion);
+    init => { root.region-changed(root.region); }
+    changed region => { root.region-changed(root.region); }
+    min-width: 38px;
+    VerticalLayout {
+        spacing: 5px;
+        tracks := HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 6px;
+            alignment: center;
+            ChannelMeter { level: root.left-rms; peak: root.left-peak; }
+            ChannelMeter { level: root.right-rms; peak: root.right-peak; }
+        }
+        HorizontalLayout {
+            height: 14px;
+            spacing: 6px;
+            alignment: center;
+            Text { text: "L"; color: Theme.text-faint; font-family: Theme.font-mono; font-size: 9px; }
+            Text { text: "R"; color: Theme.text-faint; font-family: Theme.font-mono; font-size: 9px; }
+        }
+    }
+}

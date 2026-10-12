@@ -57,26 +57,32 @@ fn run_event_loop(handle: crate::service::AppHandle) -> anyhow::Result<()> {
     bindings::wire(&window, handle.clone(), state.clone());
     let weak = window.as_weak();
     let p = presentation.clone();
+    let signal_state = state.clone();
     window.on_close_window(move || {
         if let Some(window) = weak.upgrade() {
             p.borrow_mut().hide_to_tray();
+            bindings::hide_signals(&signal_state, &window);
             let _ = window.hide();
         }
     });
     let weak = window.as_weak();
     let p = presentation.clone();
+    let signal_state = state.clone();
     window.window().on_close_requested(move || {
         if let Some(window) = weak.upgrade() {
             p.borrow_mut().hide_to_tray();
+            bindings::hide_signals(&signal_state, &window);
             let _ = window.hide();
         }
         slint::CloseRequestResponse::KeepWindowShown
     });
     let weak = window.as_weak();
     let p = presentation.clone();
+    let signal_state = state.clone();
     window.on_minimize(move || {
         if let Some(window) = weak.upgrade() {
             p.borrow_mut().minimized = true;
+            bindings::hide_signals(&signal_state, &window);
             window.window().set_minimized(true);
         }
     });
@@ -104,6 +110,31 @@ fn run_event_loop(handle: crate::service::AppHandle) -> anyhow::Result<()> {
     tray.on_stop_session(move || bindings::dispatch(&s, &h, AppRequest::Stop));
     let h = handle.clone();
     tray.on_exit_app(move || h.request_exit());
+    let weak_window = window.as_weak();
+    let window_presentation = presentation.clone();
+    let signal_state = state.clone();
+    let service_handle = handle.clone();
+    window
+        .global::<super::Backend>()
+        .on_presentation_changed(move || {
+            if let (Some(window), Some(snapshot)) =
+                (weak_window.upgrade(), service_handle.try_snapshot())
+            {
+                let presentation = {
+                    let mut presentation = window_presentation.borrow_mut();
+                    presentation.page = window.global::<super::Backend>().get_view();
+                    presentation.minimized = window.window().is_minimized();
+                    presentation.clone()
+                };
+                bindings::update_signals(
+                    &signal_state,
+                    &service_handle,
+                    &snapshot,
+                    &window,
+                    &presentation,
+                );
+            }
+        });
     // Weak component references avoid cycles; strong roots/timer remain owned
     // on this thread until explicit service Exited ends the event loop.
     bindings::dispatch(&state, &handle, AppRequest::RefreshCatalog);
@@ -121,10 +152,12 @@ fn run_event_loop(handle: crate::service::AppHandle) -> anyhow::Result<()> {
             {
                 {
                     let mut presentation = p.borrow_mut();
-                    presentation.page = window.get_page();
+                    presentation.page = window.global::<super::Backend>().get_view();
                     presentation.minimized = window.window().is_minimized();
                 }
                 bindings::update(&state, &snapshot, &window, &tray);
+                let presentation = p.borrow().clone();
+                bindings::update_signals(&state, &h, &snapshot, &window, &presentation);
                 if snapshot.phase == SessionPhase::Exited {
                     let _ = slint::quit_event_loop();
                 }

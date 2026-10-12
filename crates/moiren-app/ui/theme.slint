@@ -89,6 +89,8 @@ export global Theme {
     out property <color> border:        dark ? #232b30 : #e2e6ea;
     out property <color> border-strong: dark ? #303a40 : #cbd2d8;
     out property <color> hairline:      dark ? #1b2226 : #eaedf0;
+    // Resize grips and the status-bar divider (Figma #49525a).
+    out property <color> grip:          dark ? #49525a : #9aa4ac;
     // Barely-there graph paper for the routing canvas.
     out property <color> grid-line: dark ? #ffffff.with-alpha(0.03) : #000000.with-alpha(0.04);
     out property <color> focus-ring: primary.with-alpha(0.55);
@@ -134,7 +136,7 @@ export global Theme {
     out property <length> card-pad:         compact ? 16px : 20px;
     out property <length> rail-width:       compact ? 208px : 232px;
     out property <length> titlebar-height:  compact ? 52px : 60px;
-    out property <length> statusbar-height: 32px;
+    out property <length> statusbar-height: 28px;
     out property <length> control-height:   compact ? 40px : 44px;
     out property <length> list-row-height:  compact ? 64px : 74px;
     out property <length> panel-width:      compact ? 320px : 360px;
@@ -156,6 +158,20 @@ export global Theme {
     // the page uses the same viewport contract as the shell.
     out property <length> device-list-max: viewport-width - rail-width
         - 2 * gutter - device-detail-width - 2 * block-gap;
+
+    // --- Studio geometry (Figma v0.1.0 Graph measurements, from MCP) ----
+    out property <length> toolbar-height: 44px;
+    out property <length> library-width: 210px;
+    out property <length> inspector-width: 280px;
+    out property <bool> inspector-collapsed: viewport-width < 1280px;
+    out property <bool> library-collapsed: viewport-width < 1100px;
+    out property <length> node-width: 186px;
+    out property <length> node-wide-width: 226px;
+    out property <length> node-height: 105px;
+    out property <length> canvas-grid: 24px;
+    out property <length> canvas-gutter: 24px;
+    out property <length> canvas-chrome-top: 96px;
+    out property <length> canvas-chrome-bottom: 48px;
 
     // --- Radii -----------------------------------------------------------
     out property <length> radius-sm: 6px;

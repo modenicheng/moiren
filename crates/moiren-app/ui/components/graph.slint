@@ -1,0 +1,189 @@
+import { Theme } from "../theme.slint";
+import { Backend, GraphNodeData, GraphWireData } from "../backend.slint";
+import { TablerIcon } from "tabler-icon.slint";
+
+export global GraphCardMetrics {
+    out property <length> padding: 16px;
+    out property <length> gap: 10px;
+    out property <length> header-height: 32px;
+    out property <length> meter-height: 9px;
+    out property <length> routing-height: 12px;
+    out property <length> meter-y: padding + header-height + gap;
+    out property <length> port-y: meter-y + meter-height + gap + routing-height / 2;
+}
+
+export component GraphNodeCard inherits Rectangle {
+    in property <GraphNodeData> data;
+    in property <bool> selected: false;
+    in property <bool> interactive: true;
+    in property <bool> is-parameter: false;
+    in property <bool> level-live: false;
+    in property <float> left-rms: 0;
+    in property <float> right-rms: 0;
+    in property <float> left-peak: 0;
+    in property <float> right-peak: 0;
+    private property <length> socket-y: data.port-y > 0px ? data.port-y : GraphCardMetrics.port-y;
+    private property <color> tint: data.tint-color != #000000 ? data.tint-color : Theme.primary;
+    width: data.card-width > 0px ? data.card-width : (data.wide ? 226px : 186px);
+    height: data.card-height > 0px ? data.card-height : 105px;
+    border-radius: 6px;
+    background: node-ta.has-hover ? Theme.surface-3 : Theme.surface-2;
+    border-width: 1px;
+    border-color: selected ? self.tint : Theme.border-strong;
+
+    VerticalLayout {
+        padding: GraphCardMetrics.padding;
+        spacing: GraphCardMetrics.gap;
+        alignment: start;
+        HorizontalLayout {
+            height: GraphCardMetrics.header-height;
+            spacing: Theme.space-2;
+            Rectangle {
+                width: 26px; height: 26px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 4px;
+                background: Theme.surface-3;
+                TablerIcon {
+                    name: root.data.icon != "" ? root.data.icon : root.data.has-input && root.data.has-output ? "sliders" : root.data.has-input ? "headphones" : "mic";
+                    tint: root.tint;
+                }
+            }
+            VerticalLayout {
+                min-width: 0px;
+                horizontal-stretch: 1;
+                padding-top: 2px;
+                padding-bottom: 2px;
+                spacing: 0px;
+                Text { min-width: 0px; height: 16px; text: root.data.name; color: Theme.text; font-family: Theme.font-ui; font-size: 13px; font-weight: Theme.weight-semibold; overflow: elide; }
+                Text { min-width: 0px; height: 12px; text: root.is-parameter ? root.data.value : root.data.detail; color: root.is-parameter ? root.tint : Theme.text-faint; font-family: root.is-parameter ? Theme.font-mono : Theme.font-ui; font-size: 10px; overflow: elide; }
+            }
+        }
+        Rectangle {
+            min-width: 0px;
+            height: GraphCardMetrics.meter-height;
+            if !root.is-parameter: Rectangle {
+                border-radius: 2px;
+                background: Theme.surface;
+                clip: true;
+                if root.level-live: Rectangle { x: 0px; y: 0px; width: parent.width * root.left-rms.clamp(0, 1); height: 4px; background: root.tint; }
+                if root.level-live: Rectangle { x: 0px; y: 5px; width: parent.width * root.right-rms.clamp(0, 1); height: 4px; background: root.tint; }
+                if root.level-live && root.left-peak > 0: Rectangle { x: (parent.width - 1px) * root.left-peak.clamp(0, 1); y: 0px; width: 1px; height: 4px; background: Theme.text; }
+                if root.level-live && root.right-peak > 0: Rectangle { x: (parent.width - 1px) * root.right-peak.clamp(0, 1); y: 5px; width: 1px; height: 4px; background: Theme.text; }
+            }
+            if root.is-parameter: Rectangle {
+                y: 3px;
+                height: 3px;
+                border-radius: 2px;
+                background: Theme.border-strong;
+                Rectangle {
+                    x: root.data.type-label == "PAN" ? parent.width * min(0.5, root.data.level.clamp(0, 1)) : 0px;
+                    width: parent.width * (root.data.type-label == "PAN" ? abs(root.data.level.clamp(0, 1) - 0.5) : root.data.level.clamp(0, 1));
+                    background: root.tint;
+                    border-radius: 2px;
+                }
+                if root.data.type-label == "PAN": Rectangle { x: (parent.width - self.width) / 2; y: -2px; width: 1px; height: 7px; background: Theme.text-faint; }
+                Rectangle {
+                    x: (parent.width - self.width) * root.data.level.clamp(0, 1);
+                    y: -7px; width: 5px; height: 17px;
+                    border-radius: 2px;
+                    background: Theme.text;
+                }
+            }
+        }
+        HorizontalLayout {
+            height: GraphCardMetrics.routing-height;
+            spacing: 6px;
+            if root.data.has-input: Text { text: "→ " + root.data.input-label; color: Theme.text-muted; font-family: Theme.font-mono; font-size: 9px; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            if root.data.has-output: Text { text: root.data.output-label + " →"; color: Theme.text-muted; font-family: Theme.font-mono; font-size: 9px; vertical-alignment: center; }
+        }
+    }
+    if data.has-input: Rectangle {
+        x: -5px; y: root.socket-y - 5px; width: 10px; height: 10px;
+        border-radius: 5px; border-width: 2px;
+        border-color: root.tint; background: Theme.window-bg;
+    }
+    if data.has-output: Rectangle {
+        x: parent.width - 5px; y: root.socket-y - 5px; width: 10px; height: 10px;
+        border-radius: 5px; border-width: 2px;
+        border-color: Theme.surface-2; background: root.tint;
+    }
+    node-ta := TouchArea {
+        enabled: root.interactive;
+        mouse-cursor: pointer;
+        property <length> grab-x;
+        property <length> grab-y;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                self.grab-x = self.mouse-x;
+                self.grab-y = self.mouse-y;
+                Backend.select-node(root.data.id);
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                Backend.move-node(root.data.id,
+                    root.data.x + self.mouse-x - self.grab-x,
+                    root.data.y + self.mouse-y - self.grab-y);
+            }
+        }
+    }
+}
+
+// Bezier wire between two port endpoints. Path geometry uses the numeric
+// px space (viewbox); positions come as lengths and are converted.
+export component GraphWire inherits Path {
+    in property <GraphWireData> data;
+    in property <bool> selected: false;
+    in property <length> x1;
+    in property <length> y1;
+    in property <length> x2;
+    in property <length> y2;
+
+    property <float> ax1: x1 / 1px;
+    property <float> ay1: y1 / 1px;
+    property <float> ax2: x2 / 1px;
+    property <float> ay2: y2 / 1px;
+    property <float> dx: max(24, abs(ax2 - ax1) * 0.4);
+
+    property <color> tint: data.tint-color != #000000 ? data.tint-color : Theme.primary;
+
+    stroke: selected ? Theme.primary : root.tint;
+    stroke-width: selected ? 2px : 1.6px;
+    fill: transparent;
+    viewbox-x: 0;
+    viewbox-y: 0;
+    viewbox-width: max(ax1 + dx, ax2 + dx);
+    viewbox-height: max(ay1, ay2) + 4;
+    x: 0;
+    y: 0;
+    width: self.viewbox-width * 1px;
+    height: self.viewbox-height * 1px;
+    commands: "M " + ax1 + " " + ay1
+        + " C " + (ax1 + dx) + " " + ay1
+        + ", " + (ax2 - dx) + " " + ay2
+        + ", " + ax2 + " " + ay2;
+}
+
+// Mid-wire gain badge: "0.0 dB · POST" chip over the connection.
+export component WireBadge inherits Rectangle {
+    in property <string> text;
+    in property <length> cx;
+    in property <length> cy;
+    x: cx - self.width / 2;
+    y: cy - self.height / 2;
+    height: 20px;
+    width: label.preferred-width + 14px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: Theme.primary;
+    background: #2b1f4a;
+    label := Text {
+        text: root.text;
+        color: Theme.primary;
+        font-family: Theme.font-mono;
+        font-size: 9px;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+}

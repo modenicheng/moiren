@@ -1,0 +1,372 @@
+// Studio chrome — 44px toolbar and 28px status bar adapted from Figma.
+// The view switcher participates in horizontal layout; stretch spacers
+// preserve room for transport controls as the project and scene groups collapse.
+
+import { Theme } from "../theme.slint";
+import { Backend, BackendPhase } from "../backend.slint";
+
+// ---------------------------------------------------------------------------
+// Action field button (Figma "Action"): 30px, r4, bg surface-3, 1px
+// border-strong, icon + 12 Medium label, gap 7, pad 10, hug width.
+// ---------------------------------------------------------------------------
+
+component ActionButton inherits Rectangle {
+    in property <bool> enabled: true;
+    opacity: root.enabled ? 1 : 0.45;
+    in property <string> text;
+    in property <image> icon;
+    in property <length> icon-size: 16px;
+    callback clicked();
+
+    // The layout stretches this root to the band height (44px); the inner
+    // 30px button centers explicitly — layouts top-align fixed-height
+    // children, so the button itself must not be the layout child.
+    width: 10px + root.icon-size + 7px + label.preferred-width + 10px;
+    btn := Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 30px;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        background: ta.pressed ? Theme.surface-4 : ta.has-hover ? Theme.surface-4 : Theme.surface-3;
+        animate background { duration: Theme.fast; }
+
+        Image {
+            source: root.icon;
+            colorize: Theme.text-muted;
+            width: root.icon-size;
+            height: root.icon-size;
+            x: 10px;
+            y: (parent.height - self.height) / 2;
+        }
+        label := Text {
+            x: 10px + root.icon-size + 7px;
+            y: (parent.height - self.height) / 2;
+            text: root.text;
+            color: Theme.text-muted;
+            font-family: Theme.font-ui;
+            font-size: 12px;
+            font-weight: Theme.weight-medium;
+            vertical-alignment: center;
+        }
+        ta := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: pointer;
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
+// View-switch segment (Figma "Button/Selected|Default"): 76×30 (Matrix 72),
+// gap 6 in the switcher. Per-side strokes — selected: 2px bottom underline in
+// primary + primary 12 Medium label; default: no stroke, muted label.
+component SwitchSegment inherits Rectangle {
+    in property <bool> enabled: true;
+    opacity: root.enabled ? 1 : 0.4;
+    in property <string> text;
+    in property <bool> active: false;
+    callback clicked();
+
+    width: root.text == "Matrix" ? 72px : 76px;
+    height: 30px;
+    // Selected state = primary text + 2px bottom underline only
+    // (Figma per-side strokes: bottom 2, all other sides 0).
+    Rectangle {
+        x: 0; y: parent.height - 2px;
+        width: parent.width; height: 2px;
+        visible: root.active;
+        background: Theme.primary;
+    }
+    Text {
+        text: root.text;
+        color: root.active ? Theme.primary : Theme.text-muted;
+        font-family: Theme.font-ui;
+        font-size: 12px;
+        font-weight: Theme.weight-medium;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Tiny icon-only window button. Width tracks the icon so the 30px layout
+// spacing yields the Figma pitch (12+30 / 10+30).
+component WindowButton inherits Rectangle {
+    in property <image> icon;
+    in property <length> icon-size: 12px;
+    in property <bool> danger-hover: false;
+    callback clicked();
+
+    width: root.icon-size;
+    height: 44px;
+    background: ta.has-hover ? (root.danger-hover ? Theme.danger.with-alpha(0.18) : Theme.surface-3) : transparent;
+    animate background { duration: Theme.fast; }
+    Image {
+        source: root.icon;
+        colorize: ta.has-hover && root.danger-hover ? #ffffff : Theme.text-muted;
+        width: root.icon-size;
+        height: root.icon-size;
+        y: (parent.height - self.height) / 2;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Application toolbar (44px)
+// ---------------------------------------------------------------------------
+
+export component AppToolbar inherits Rectangle {
+    in-out property <int> view: 0;       // 0 graph · 1 mixer · 2 matrix
+    callback view-changed(int);
+    callback minimize();
+    callback toggle-maximize();
+    callback close-window();
+
+    height: Theme.toolbar-height;
+    background: Theme.surface;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        alignment: space-between;
+
+        // ---- Left: identity + project controls (hug) ----
+        HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: 9px;
+
+            Image {
+                source: @image-url("../../../../assets/logos/moiren-2c-mark-dark.svg");
+                width: 28px;
+                height: 28px;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: "Moiren";
+                color: Theme.text-muted;
+                font-family: Theme.font-ui;
+                font-size: 12px;
+                font-weight: Theme.weight-semibold;
+                vertical-alignment: center;
+            }
+            // Project group (visible when there is room): pl 12, gap 10.
+            if Theme.viewport-width >= 1500px: HorizontalLayout {
+                padding-left: 12px;
+                spacing: 10px;
+                Image {
+                    source: @image-url("../icons/folder-open.svg");
+                    colorize: Theme.text-muted;
+                    width: 16px; height: 16px;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: "Live studio";
+                    color: Theme.text-muted;
+                    font-family: Theme.font-ui;
+                    font-size: 13px;
+                    font-weight: Theme.weight-semibold;
+                    vertical-alignment: center;
+                }
+                Image {
+                    source: @image-url("../icons/chevron.svg");
+                    colorize: Theme.text-faint;
+                    width: 12px; height: 12px;
+                    y: (parent.height - self.height) / 2;
+                }
+                Image {
+                    source: @image-url("../icons/save.svg");
+                    colorize: Theme.text-muted;
+                    width: 15px; height: 15px;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+
+        Rectangle { horizontal-stretch: 1; }
+        HorizontalLayout {
+            spacing: 6px;
+            graph-tab := SwitchSegment {
+                text: "Graph"; active: root.view == 0;
+                clicked => { root.view = 0; root.view-changed(0); }
+            }
+            mix-tab := SwitchSegment {
+                text: "Mix"; active: root.view == 1;
+                clicked => { root.view = 1; root.view-changed(1); }
+            }
+            matrix-tab := SwitchSegment { text: "Matrix"; enabled: false; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+
+        // ---- Right: scene / engine / window controls (hug) ----
+        HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: 12px;
+            alignment: end;
+
+            // Scene selector (label + Action, gap 10).
+            if Theme.viewport-width >= 1500px: HorizontalLayout {
+                spacing: 10px;
+                Text {
+                    text: "SCENE";
+                    color: Theme.text-faint;
+                    font-family: Theme.font-ui;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                ActionButton {
+                    enabled: false;
+                    text: Backend.scene-name;
+                    icon: @image-url("../icons/chevron.svg");
+                    clicked => { Backend.select-scene(); }
+                }
+            }
+
+            // Engine transport: dot 6 + "Engine running" JBM 11 + Stop.
+            HorizontalLayout {
+                spacing: 12px;
+                Rectangle {
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: Backend.active ? Theme.primary
+                        : Backend.phase == BackendPhase.failed ? Theme.danger
+                        : Theme.text-faint;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: Backend.phase-text;
+                    color: Backend.active ? Theme.primary : Theme.text-faint;
+                    font-family: Theme.font-mono;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+                ActionButton {
+                    text: Backend.active ? "Stop" : "Start";
+                    enabled: Backend.transport-ready && (Backend.active || (Backend.source-mode == 2 ? Backend.tone-valid : Backend.monitor-valid));
+                    icon: Backend.active ? @image-url("../icons/stop.svg") : @image-url("../icons/play.svg");
+                    clicked => {
+                        if (Backend.active) { Backend.stop(); }
+                        else if (Backend.source-mode == 2) { Backend.start-tone(440, 10); }
+                        else { Backend.start-monitor(true, 0); }
+                    }
+                }
+            }
+
+            // Window controls: three bare icons, 30px gaps.
+            HorizontalLayout {
+                spacing: 30px;
+                WindowButton {
+                    icon: @image-url("../icons/win-min.svg");
+                    icon-size: 12px;
+                    clicked => { root.minimize(); }
+                }
+                WindowButton {
+                    icon: @image-url("../icons/square.svg");
+                    icon-size: 10px;
+                    clicked => { root.toggle-maximize(); }
+                }
+                WindowButton {
+                    icon: @image-url("../icons/win-close.svg");
+                    icon-size: 12px;
+                    danger-hover: true;
+                    clicked => { root.close-window(); }
+                }
+            }
+        }
+    }
+
+}
+
+// ---------------------------------------------------------------------------
+// Audio engine status bar (28px)
+// ---------------------------------------------------------------------------
+
+export component EngineStatusbar inherits Rectangle {
+    height: Theme.statusbar-height;
+    background: Theme.surface;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        alignment: space-between;
+
+        // Engine metrics: dot + label + format/latency/clock (gap 23).
+        HorizontalLayout {
+            spacing: 23px;
+            Rectangle {
+                width: 6px; height: 6px; border-radius: 3px;
+                background: Backend.active ? Theme.primary : Theme.text-faint;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: Backend.phase-text;
+                color: Backend.active ? Theme.primary : Theme.text-faint;
+                font-family: Theme.font-mono;
+                font-size: 10px;
+                vertical-alignment: center;
+            }
+            if !Theme.compact: Text {
+                text: Backend.engine-format;
+                color: Theme.text-muted;
+                font-family: Theme.font-mono;
+                font-size: 10px;
+                vertical-alignment: center;
+            }
+            if !Theme.compact: Text {
+                text: Backend.engine-latency;
+                color: Theme.text-muted;
+                font-family: Theme.font-mono;
+                font-size: 10px;
+                vertical-alignment: center;
+            }
+            if Theme.viewport-width >= 1500px: Text {
+                text: "Clock: " + Backend.engine-clock;
+                color: Theme.text-muted;
+                font-family: Theme.font-mono;
+                font-size: 10px;
+                vertical-alignment: center;
+            }
+        }
+
+        // Performance (gap 11 between groups: CPU/XRUN pair, divider, version).
+        HorizontalLayout {
+            spacing: 11px;
+            HorizontalLayout {
+                spacing: 24px;
+                Text {
+                    text: "CPU " + Backend.engine-cpu;
+                    color: Theme.text-muted;
+                    font-family: Theme.font-mono;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "XRUN " + Backend.engine-xrun;
+                    color: Theme.text-muted;
+                    font-family: Theme.font-mono;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+            }
+            Rectangle {
+                width: 1px; height: 15px;
+                background: Theme.grip;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: "v0.1.0";
+                color: Theme.primary;
+                font-family: Theme.font-mono;
+                font-size: 10px;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

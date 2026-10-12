@@ -171,6 +171,90 @@
       "url": "https://api.iconify.design/tabler/minus.svg",
       "license": "MIT",
       "sha256": "bc58412a29619dbe4ac736b2eae0e7ddc3de4f54a2fb65ae9fcf36e688702e2f"
+    },
+    {
+      "file": "folder-open.svg",
+      "icon": "tabler:folder-open",
+      "url": "https://api.iconify.design/tabler/folder-open.svg",
+      "license": "MIT",
+      "sha256": "138dbe7b7d0185a1408f654d5e42d03f2394f771cc0d995c343706ee597dadc8"
+    },
+    {
+      "file": "save.svg",
+      "icon": "tabler:device-floppy",
+      "url": "https://api.iconify.design/tabler/device-floppy.svg",
+      "license": "MIT",
+      "sha256": "6f7c1b4cd0acb1897ab4a912e0715672d33a21e139380a5a164bc4a159c700a2"
+    },
+    {
+      "file": "radio.svg",
+      "icon": "tabler:radio",
+      "url": "https://api.iconify.design/tabler/radio.svg",
+      "license": "MIT",
+      "sha256": "e714b779b5c5ce88b132a9652c9f1873674060f11b866ca5aff9b80656713733"
+    },
+    {
+      "file": "git-merge.svg",
+      "icon": "tabler:git-merge",
+      "url": "https://api.iconify.design/tabler/git-merge.svg",
+      "license": "MIT",
+      "sha256": "eb8b44f4c0ca8547a16712fc34cc7e6809e11f150e64b5ec83f968e77c403005"
+    },
+    {
+      "file": "headphones.svg",
+      "icon": "tabler:headphones",
+      "url": "https://api.iconify.design/tabler/headphones.svg",
+      "license": "MIT",
+      "sha256": "058e9c28cacab00765d3466b0ed7653d9cd274445d407329288a72e58e69196c"
+    },
+    {
+      "file": "monitor.svg",
+      "icon": "tabler:device-desktop-code",
+      "url": "https://api.iconify.design/tabler/device-desktop-code.svg",
+      "license": "MIT",
+      "sha256": "3380e45b551c64ebf5dd2b09af722f7fd77dafb114fff7ecd120825550ad2f75"
+    },
+    {
+      "file": "circle-dot.svg",
+      "icon": "tabler:circle-dot",
+      "url": "https://api.iconify.design/tabler/circle-dot.svg",
+      "license": "MIT",
+      "sha256": "172e42c37f26b659437e03ea75f8578a86835b97c7e71b5f00d5bdbbce456364"
+    },
+    {
+      "file": "activity.svg",
+      "icon": "tabler:activity",
+      "url": "https://api.iconify.design/tabler/activity.svg",
+      "license": "MIT",
+      "sha256": "83b82389702d7efa2386108713d62f2cb89906fdd2f163e52dbb0e14f32a8f0f"
+    },
+    {
+      "file": "arrow-up-left.svg",
+      "icon": "tabler:arrow-up-left",
+      "url": "https://api.iconify.design/tabler/arrow-up-left.svg",
+      "license": "MIT",
+      "sha256": "f8c2a3c6964861370d76cb972cc1981478a5a6f02f98cc52c834d08e76741858"
+    },
+    {
+      "file": "hand-move.svg",
+      "icon": "tabler:hand-move",
+      "url": "https://api.iconify.design/tabler/hand-move.svg",
+      "license": "MIT",
+      "sha256": "ce8ebf46b75613eb918839e12e68adaa613a25e33b1857be5c82c556c9a2af75"
+    },
+    {
+      "file": "zoom-scan.svg",
+      "icon": "tabler:zoom-scan",
+      "url": "https://api.iconify.design/tabler/zoom-scan.svg",
+      "license": "MIT",
+      "sha256": "0a000957209df98b122da21f82ab4d1e399424576ea3de5727338774100ea107"
+    },
+    {
+      "file": "square.svg",
+      "icon": "tabler:square",
+      "url": "https://api.iconify.design/tabler/square.svg",
+      "license": "MIT",
+      "sha256": "c202d0cf2be4746e2fcab2af239e146fd91ff711c150e09677de837fa19fd268"
     }
   ]
 }

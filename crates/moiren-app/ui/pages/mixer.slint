@@ -1,0 +1,127 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Backend } from "../backend.slint";
+import { AppSlider } from "../components/widgets.slint";
+import { ParamRow, FaderRail, StudioButton } from "../components/studio-controls.slint";
+import { SignalRect, MeterRegion, StereoLevelMeters } from "../components/signal-meter.slint";
+
+export component MixerPage inherits Rectangle {
+    background: Theme.window-bg;
+    out property <MeterRegion> output-region: output-meters.region;
+    out property <MeterRegion> input-region: input-meters.region;
+    private property <SignalRect> meter-viewport: {
+        left: mix-content.absolute-position.x / 1px - scroll.content-x / 1px,
+        top: mix-content.absolute-position.y / 1px - scroll.content-y / 1px,
+        width: scroll.visible-width / 1px,
+        height: scroll.visible-height / 1px,
+    };
+    VerticalLayout {
+        Rectangle {
+            height: 48px;
+            background: Theme.surface;
+            HorizontalLayout {
+                padding-left: Theme.library-collapsed ? 56px : 24px;
+                padding-right: Theme.inspector-collapsed ? 56px : 24px;
+                spacing: 16px;
+                Text { text: "Mix"; color: Theme.text; font-family: Theme.font-ui; font-size: 13px; vertical-alignment: center; }
+                Text { min-width: 0px; text: "Level / Balance"; color: Theme.text-muted; font-family: Theme.font-ui; font-size: 11px; vertical-alignment: center; overflow: elide; }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: "1 stereo channel"; color: Theme.text-faint; font-family: Theme.font-mono; font-size: 10px; vertical-alignment: center; }
+            }
+        }
+        scroll := ScrollView {
+            mix-content := VerticalLayout {
+                width: max(scroll.visible-width, 528px);
+                height: max(scroll.visible-height, channel-strip.height + 48px);
+                padding: 24px;
+                spacing: 16px;
+                alignment: start;
+                HorizontalLayout {
+                    height: channel-strip.height;
+                    spacing: 24px;
+                    alignment: start;
+                    channel-strip := Rectangle {
+                        width: 196px;
+                        height: max(580px, min(740px, root.height - 96px));
+                        border-radius: 6px;
+                        background: Theme.surface-2;
+                        border-width: 1px;
+                        border-color: Theme.border;
+                        Rectangle { x: 1px; y: 0px; width: parent.width - 2px; height: 3px; background: Theme.primary; }
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 10px;
+                            Text { height: 18px; text: "Session mix"; color: Theme.text; font-family: Theme.font-ui; font-size: 13px; font-weight: Theme.weight-semibold; }
+                            Text { height: 14px; text: Backend.source-label; color: Theme.text-muted; font-family: Theme.font-ui; font-size: 10px; overflow: elide; }
+                            ParamRow { key: "PAN"; value: Backend.pan-label; }
+                            pan-control := AppSlider {
+                                minimum: -1; maximum: 1; bipolar: true;
+                                value <=> Backend.pan;
+                                enabled: Backend.transport-ready;
+                                changed(value) => { Backend.set-gain-pan(Backend.gain, value); }
+                            }
+                            HorizontalLayout {
+                                min-height: 180px;
+                                vertical-stretch: 1;
+                                spacing: 8px;
+                                output-meters := StereoLevelMeters {
+                                    width: 38px;
+                                    left-rms: Backend.route-meter-l; right-rms: Backend.route-meter-r;
+                                    left-peak: Backend.route-peak-l; right-peak: Backend.route-peak-r;
+                                    viewport: root.meter-viewport;
+                                }
+                                gain-control := FaderRail {
+                                    value <=> Backend.gain;
+                                    enabled: Backend.transport-ready;
+                                    changed(value) => { Backend.set-gain-pan(value, Backend.pan); }
+                                }
+                                Text { text: Backend.gain-label; color: Theme.text; font-family: Theme.font-mono; font-size: 11px; vertical-alignment: center; }
+                            }
+                            Text { text: Backend.meter-status; color: Theme.text-faint; font-family: Theme.font-ui; font-size: 10px; wrap: word-wrap; }
+                            Text { text: Backend.output-levels; color: Theme.text-muted; font-family: Theme.font-mono; font-size: 10px; wrap: word-wrap; }
+                            Text { text: "OUTPUT"; color: Theme.text-faint; font-family: Theme.font-ui; font-size: 10px; }
+                            Text { height: 16px; text: Backend.output-label; color: Theme.text-muted; font-family: Theme.font-ui; font-size: 11px; overflow: elide; }
+                            center-pan := StudioButton {
+                                text: "Center pan";
+                                enabled: Backend.transport-ready;
+                                clicked => { Backend.set-gain-pan(Backend.gain, 0); }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        min-width: 260px;
+                        VerticalLayout {
+                            alignment: start;
+                            spacing: 14px;
+                            Text { text: "Session"; color: Theme.text; font-family: Theme.font-ui; font-size: 19px; font-weight: Theme.weight-semibold; }
+                            Text { text: Backend.session-status; color: Theme.text-muted; font-family: Theme.font-ui; font-size: 12px; wrap: word-wrap; }
+                            Text { text: Backend.control-status; color: Theme.primary; font-family: Theme.font-mono; font-size: 11px; wrap: word-wrap; }
+                            Text { text: "Adjust the output level with the fader and the stereo balance with Pan."; color: Theme.text-faint; font-family: Theme.font-ui; font-size: 11px; wrap: word-wrap; }
+                            Text { text: "INPUT · peak / RMS"; color: Theme.text-muted; font-family: Theme.font-ui; font-size: 11px; }
+                            HorizontalLayout {
+                                height: 120px;
+                                spacing: 16px;
+                                input-meters := StereoLevelMeters {
+                                    width: 38px;
+                                    left-rms: Backend.input-meter-l; right-rms: Backend.input-meter-r;
+                                    left-peak: Backend.input-peak-l; right-peak: Backend.input-peak-r;
+                                    viewport: root.meter-viewport;
+                                }
+                                VerticalLayout {
+                                    min-width: 0px;
+                                    horizontal-stretch: 1;
+                                    alignment: start;
+                                    spacing: 8px;
+                                    Text { min-width: 0px; text: Backend.source-label; color: Theme.text-muted; font-family: Theme.font-ui; font-size: 11px; overflow: elide; }
+                                    Text { text: Backend.input-levels; color: Theme.text-muted; font-family: Theme.font-mono; font-size: 10px; wrap: word-wrap; }
+                                    Text { text: Backend.input-meter-status; color: Theme.text-faint; font-family: Theme.font-ui; font-size: 10px; wrap: word-wrap; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

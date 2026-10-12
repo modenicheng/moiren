@@ -1,0 +1,65 @@
+// Development-only preview: renders the studio shell with the Figma sample
+// scene inline, so `slint-viewer ui/dev-preview.slint` shows the full graph
+// without the Rust backend. NOT compiled into the app (build.rs targets
+// main.slint). Sample data belongs only to this preview.
+
+import { Backend, BackendPhase, LibraryEntry, GraphNodeData, GraphWireData } from "backend.slint";
+import { MainWindow as Shell } from "main.slint";
+
+component Seed inherits Rectangle {
+    init => {
+        Backend.library-sources = [
+            { icon: "mic", name: "Physical input", subtitle: "RME · Analog 1", detail: "RME · Analog / digital" },
+            { icon: "app-window", name: "Application audio", subtitle: "Per-app capture", detail: "Per-app WASAPI capture" },
+            { icon: "radio", name: "Virtual input", subtitle: "Windows endpoint", detail: "Windows audio endpoint" },
+        ];
+        Backend.library-processing = [
+            { icon: "sliders", name: "Effect rack", subtitle: "Serial processors", detail: "Gate · EQ · dynamics · VST3" },
+            { icon: "git-merge", name: "Mix bus", subtitle: "Internal summing", detail: "Internal summing only" },
+        ];
+        Backend.library-destinations = [
+            { icon: "headphones", name: "Physical output", subtitle: "Hardware playback", detail: "ASIO / WASAPI playback" },
+            { icon: "monitor", name: "Virtual endpoint", subtitle: "Windows playback", detail: "Expose to Windows apps" },
+            { icon: "circle-dot", name: "Recorder", subtitle: "WAV / FLAC", detail: "WAV · FLAC · 24-bit" },
+            { icon: "activity", name: "Signal monitor", subtitle: "Spectrum · LUFS", detail: "Spectrum · loudness · peak" },
+        ];
+        Backend.graph-nodes = [
+            { id: "mic1", name: "Studio mic", type-label: "PHYSICAL INPUT", detail: "RME · Analog 1 · mono", input-label: "", output-label: "1 ch", value: "−18.4", rec-status: "", tint-color: #86b9ec, has-input: false, has-output: true, wide: false, level: 0.66, x: 24px, y: 130px },
+            { id: "rack1", name: "Voice Rack", type-label: "EFFECT RACK", detail: "Gate › EQ › Comp › Lim", input-label: "1 ch", output-label: "1 ch", value: "−12.3", rec-status: "", tint-color: #b1a0df, has-input: true, has-output: true, wide: false, level: 0.66, x: 230px, y: 130px },
+            { id: "bus-voice", name: "Voice", type-label: "INTERNAL BUS", detail: "Mono → stereo · 0.0 dB", input-label: "1 ch", output-label: "L / R", value: "−12.3", rec-status: "", tint-color: #b1a0df, has-input: true, has-output: true, wide: false, level: 0.66, x: 436px, y: 106px },
+            { id: "app-spotify", name: "Spotify", type-label: "APPLICATION", detail: "WASAPI · stereo", input-label: "", output-label: "L / R", value: "−22.1", rec-status: "", tint-color: #b1a0df, has-input: false, has-output: true, wide: false, level: 0.40, x: 24px, y: 386px },
+            { id: "bus-music", name: "Music", type-label: "INTERNAL BUS", detail: "Stereo · −8.0 dB", input-label: "L / R", output-label: "L / R", value: "−30.1", rec-status: "", tint-color: #b1a0df, has-input: true, has-output: true, wide: false, level: 0.33, x: 436px, y: 386px },
+            { id: "app-discord", name: "Discord", type-label: "APPLICATION", detail: "WASAPI · stereo", input-label: "", output-label: "L / R", value: "−26.8", rec-status: "", tint-color: #86b9ec, has-input: false, has-output: true, wide: false, level: 0.22, x: 24px, y: 622px },
+            { id: "bus-stream", name: "Stream", type-label: "INTERNAL BUS", detail: "Stereo sum · −1.0 dB", input-label: "Σ 2", output-label: "L / R", value: "−10.8", rec-status: "", tint-color: #b1a0df, has-input: true, has-output: true, wide: false, level: 0.87, x: 636px, y: 210px },
+            { id: "bus-monitor", name: "Monitor", type-label: "INTERNAL BUS", detail: "Stereo sum · −6.0 dB", input-label: "Σ 3", output-label: "L / R", value: "−16.8", rec-status: "", tint-color: #86b9ec, has-input: true, has-output: true, wide: false, level: 0.52, x: 636px, y: 550px },
+            { id: "vendpoint-obs", name: "OBS input", type-label: "VIRTUAL ENDPOINT", detail: "Moiren Stream · 2 ch", input-label: "L / R", output-label: "", value: "−10.8", rec-status: "", tint-color: #b1a0df, has-input: true, has-output: false, wide: true, level: 0.87, x: 866px, y: 130px },
+            { id: "recorder", name: "Recorder", type-label: "RECORDER", detail: "WAV · 24-bit · 48 kHz", input-label: "L / R", output-label: "", value: "−10.8", rec-status: "REC 00:12:48 · 211 MiB", tint-color: #e7bc79, has-input: true, has-output: false, wide: true, level: 0.87, x: 866px, y: 326px },
+            { id: "out-phones", name: "RME headphones", type-label: "PHYSICAL OUTPUT", detail: "Babyface Pro FS · 3/4", input-label: "L / R", output-label: "", value: "−16.8", rec-status: "", tint-color: #86b9ec, has-input: true, has-output: false, wide: true, level: 0.52, x: 866px, y: 532px },
+            { id: "monitor-an", name: "Monitor analysis", type-label: "SIGNAL MONITOR", detail: "FFT 2048 · LUFS-I", input-label: "L / R", output-label: "", value: "−16.8", rec-status: "", tint-color: #86b9ec, has-input: true, has-output: false, wide: true, level: 0.52, x: 866px, y: 704px },
+        ];
+        Backend.graph-wires = [
+            { id: "w1", tint-color: #86b9ec, x1: 180px, y1: 222px, x2: 226px, y2: 222px },
+            { id: "w2", tint-color: #b1a0df, x1: 386px, y1: 222px, x2: 432px, y2: 198px },
+            { id: "w3", tint-color: #b1a0df, x1: 180px, y1: 478px, x2: 432px, y2: 478px },
+            { id: "w4", tint-color: #86b9ec, x1: 180px, y1: 714px, x2: 432px, y2: 714px },
+            { id: "w5", tint-color: #b1a0df, x1: 592px, y1: 198px, x2: 632px, y2: 242px },
+            { id: "w6", tint-color: #b1a0df, x1: 592px, y1: 478px, x2: 632px, y2: 582px },
+            { id: "w7", tint-color: #b1a0df, x1: 792px, y1: 242px, x2: 862px, y2: 222px },
+            { id: "w8", tint-color: #e7bc79, x1: 792px, y1: 242px, x2: 862px, y2: 418px },
+            { id: "w9", tint-color: #86b9ec, x1: 792px, y1: 582px, x2: 862px, y2: 624px },
+            { id: "w10", tint-color: #86b9ec, x1: 792px, y1: 582px, x2: 862px, y2: 796px },
+        ];
+        Backend.inspector-source = "Voice · L / R";
+        Backend.inspector-destination = "Stream · Σ 2";
+        Backend.inspector-mapping = "1 → 1, 2 → 2";
+        Backend.inspector-state = "Connected";
+        Backend.inspector-title = "Voice → Stream";
+        Backend.inspector-subtitle = "Stereo route · 2 channels";
+        Backend.inspector-notes = "Feeds Stream after the Voice bus fader. Discord is routed to Monitor only.";
+        Backend.engine-cpu = "8.4%";
+    }
+}
+
+export component MainWindow inherits Shell {
+    Seed { }
+}

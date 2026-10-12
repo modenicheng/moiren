@@ -1,4 +1,46 @@
 import { SelectOption } from "components/widgets.slint";
+
+// --- Studio graph contract -------------------------------------------------
+// The Figma "Graph" workspace renders these models. Positions are
+// canvas-space lengths; ports are precomputed as x/y so the wire layer
+// stays a pure renderer.
+
+export struct LibraryEntry {
+    icon: string,        // icon file path under ui/icons/
+    name: string,
+    subtitle: string,
+    detail: string,
+}
+
+export struct GraphNodeData {
+    id: string,
+    name: string,
+    type-label: string,
+    icon: string,
+    detail: string,
+    input-label: string,
+    output-label: string,
+    value: string,
+    rec-status: string,
+    tint-color: color,   // type accent (blue / violet / gold)
+    has-input: bool,
+    has-output: bool,
+    wide: bool,          // destination nodes are 215px wide
+    level: float,
+    x: length,
+    y: length,
+    card-width: length,
+    card-height: length,
+    port-y: length,
+}
+
+export struct GraphWireData {
+    id: string,
+    tint-color: color,
+    x1: length, y1: length,   // source port, canvas space
+    x2: length, y2: length,   // destination port, canvas space
+}
+
 export struct AudioEndpoint {
     id: string, name: string, kind: string, sample-rate: int, channels: int,
     format-supported: bool, is-default: bool, note: string,
@@ -25,14 +67,14 @@ export global Backend {
     in-out property <int> output-index: -1;
     in-out property <int> process-index: -1;
     in-out property <int> source-mode: 0;
-    in-out property <float> gain: 0.3;
+    in-out property <float> gain: 0.01;
     in-out property <float> pan: 0;
     in property <bool> monitor-valid;
     in property <bool> tone-valid;
     in property <bool> request-pending;
     out property <bool> active: phase == BackendPhase.running;
     out property <bool> transport-ready: !request-pending && (phase == BackendPhase.idle || phase == BackendPhase.running || phase == BackendPhase.failed);
-    out property <string> phase-text: phase == BackendPhase.idle ? "空闲" : phase == BackendPhase.starting ? "启动中" : phase == BackendPhase.running ? "运行中" : phase == BackendPhase.stopping ? "停止中" : phase == BackendPhase.failed ? "失败" : phase == BackendPhase.exiting ? "退出中" : "已退出";
+    out property <string> phase-text: phase == BackendPhase.idle ? "Engine idle" : phase == BackendPhase.starting ? "Engine starting" : phase == BackendPhase.running ? "Engine running" : phase == BackendPhase.stopping ? "Engine stopping" : phase == BackendPhase.failed ? "Engine failed" : phase == BackendPhase.exiting ? "Exiting" : "Exited";
     callback select-input(int);
     callback select-output(int);
     callback select-process(int);
@@ -41,4 +83,71 @@ export global Backend {
     callback stop();
     callback refresh-catalog();
     callback set-gain-pan(float, float);
+
+    // --- Studio state -----------------------------------------------------
+    in property <[LibraryEntry]> library-sources;
+    in property <[LibraryEntry]> library-processing;
+    in property <[LibraryEntry]> library-destinations;
+    in property <[GraphNodeData]> graph-nodes;
+    in property <[GraphWireData]> graph-wires;
+    in property <int> graph-input-index: -1;
+    in property <int> graph-output-index: -1;
+    in-out property <string> selected-node: "";
+    in-out property <string> selected-wire: "";
+    out property <string> selection-label: "";
+    in property <string> scene-name: "Session";
+    in-out property <int> view: 0;
+    in property <string> source-label: "Select an input";
+    in property <string> output-label: "Select an output";
+    in property <string> gain-label: "−40.0 dB";
+    in property <string> pan-label: "Center";
+    in property <string> session-status: "No active session";
+    in property <string> control-status: "Parameters apply on Start";
+    in property <string> meter-status: "Start a session to read levels";
+    in property <string> output-levels: "L — / —   R — / — dB";
+    in property <string> input-levels: "L — / —   R — / — dB";
+    in property <string> input-meter-status: "No input publisher";
+    in property <bool> input-meter-live;
+    in property <bool> output-meter-live;
+    in property <float> input-meter-l;
+    in property <float> input-meter-r;
+    in property <float> input-peak-l;
+    in property <float> input-peak-r;
+    in property <string> signal-debug;
+    callback presentation-changed();
+    in-out property <length> focus-x;
+    in-out property <length> focus-y;
+    in-out property <int> focus-generation;
+    in property <length> graph-left;
+    in property <length> graph-top;
+    in property <length> graph-width;
+    in property <length> graph-height;
+    // Inspector readouts for the current selection.
+    in property <string> inspector-source: "—";
+    in property <string> inspector-destination: "—";
+    in property <string> inspector-mapping: "—";
+    in property <string> inspector-state: "—";
+    in property <string> inspector-title: "—";
+    in property <string> inspector-subtitle: "";
+    in property <string> inspector-notes: "";
+    in-out property <float> route-gain <=> gain;
+    in property <float> route-meter-l;
+    in property <float> route-meter-r;
+    in property <float> route-peak-l;
+    in property <float> route-peak-r;
+    // Engine status bar readouts.
+    in property <string> engine-format: "—";
+    in property <string> engine-latency: "—";
+    in property <string> engine-clock: "—";
+    in property <string> engine-cpu: "—";
+    in property <string> engine-xrun: "—";
+
+    callback select-node(string) -> bool;
+    callback select-wire(string);
+    callback clear-selection();
+    callback move-node(string, length, length);
+    callback select-library-node(string);
+    callback locate-selection();
+    callback select-scene();
+    callback set-route-gain(float);
 }
