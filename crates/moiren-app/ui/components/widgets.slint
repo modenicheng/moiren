@@ -9,7 +9,7 @@
 // Components never read `Backend`; pages own that wiring and pass plain values
 // down, which keeps every block previewable on its own.
 
-import { Theme } from "theme.slint";
+import { Theme } from "../theme.slint";
 
 // ---------------------------------------------------------------------------
 // Surfaces & labels
@@ -458,7 +458,7 @@ export component AppSelect inherits Rectangle {
         }
 
         Image {
-            source: @image-url("icons/chevron.svg");
+            source: @image-url("../icons/chevron.svg");
             colorize: Theme.text-muted;
             width: 16px;
             height: 16px;
@@ -522,7 +522,7 @@ export component AppSelect inherits Rectangle {
                             }
                             Rectangle { horizontal-stretch: 1; }
                             if i == root.current: Image {
-                                source: @image-url("icons/check.svg");
+                                source: @image-url("../icons/check.svg");
                                 colorize: Theme.primary;
                                 width: 15px;
                                 height: 15px;
@@ -946,9 +946,9 @@ export component SignalNode inherits Rectangle {
                 border-radius: Theme.radius-sm;
                 background: root.tint.with-alpha(0.16);
                 Image {
-                    source: root.kind == NodeKind.source ? @image-url("icons/mic.svg")
-                        : root.kind == NodeKind.processor ? @image-url("icons/sliders.svg")
-                        : @image-url("icons/speaker.svg");
+                    source: root.kind == NodeKind.source ? @image-url("../icons/mic.svg")
+                        : root.kind == NodeKind.processor ? @image-url("../icons/sliders.svg")
+                        : @image-url("../icons/speaker.svg");
                     colorize: root.tint;
                     width: 13px;
                     height: 13px;
@@ -1005,7 +1005,7 @@ export component FlowLink inherits Rectangle {
         background: root.tint.with-alpha(root.live ? 0.55 : 0.3);
     }
     for i in 3: Image {
-        source: @image-url("icons/chevron.svg");
+        source: @image-url("../icons/chevron.svg");
         colorize: root.tint;
         width: 13px;
         height: 13px;
