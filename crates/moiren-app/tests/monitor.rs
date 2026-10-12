@@ -121,7 +121,7 @@ fn monitor_gain_updates_use_the_existing_parameter_channel() {
         ParameterRequest {
             request_id: 1,
             plan_revision: 1,
-            timeline_epoch: 1,
+            timeline_epoch: session.compiled.engine.epoch(),
             target: ParameterKey {
                 processor: session.compiled.bindings.node(session.gain_node).unwrap(),
                 parameter: Gain::LEVEL,

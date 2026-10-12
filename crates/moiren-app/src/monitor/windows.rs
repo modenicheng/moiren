@@ -216,6 +216,20 @@ pub fn prepare_monitor_with_stop(
     options: MonitorOptions,
     stop: StopSignal,
 ) -> Result<PreparedMonitorSession, MonitorError> {
+    prepare_monitor_inner(options, stop, None)
+}
+pub(crate) fn prepare_monitor_with_signal_host(
+    options: MonitorOptions,
+    stop: StopSignal,
+    signals: &mut crate::service::SignalPreparation,
+) -> Result<PreparedMonitorSession, MonitorError> {
+    prepare_monitor_inner(options, stop, Some(signals))
+}
+fn prepare_monitor_inner(
+    options: MonitorOptions,
+    stop: StopSignal,
+    signals: Option<&mut crate::service::SignalPreparation>,
+) -> Result<PreparedMonitorSession, MonitorError> {
     options.config.validate()?;
     let capture_options = CaptureOptions {
         endpoint_id: options.input_endpoint_id,
@@ -229,7 +243,7 @@ pub fn prepare_monitor_with_stop(
     render_options.validate()?;
     let gate = ActivationGate::new(stop.clone())?;
     let capture = prepare_capture_with_gate(capture_options, stop, gate.clone())?;
-    attach_monitor(capture, render_options, options.config, gate)
+    attach_monitor(capture, render_options, options.config, gate, signals)
 }
 pub fn start_process_monitor(
     options: ProcessMonitorOptions,
@@ -248,6 +262,20 @@ pub fn prepare_process_monitor_with_stop(
     options: ProcessMonitorOptions,
     stop: StopSignal,
 ) -> Result<PreparedMonitorSession, MonitorError> {
+    prepare_process_monitor_inner(options, stop, None)
+}
+pub(crate) fn prepare_process_monitor_with_signal_host(
+    options: ProcessMonitorOptions,
+    stop: StopSignal,
+    signals: &mut crate::service::SignalPreparation,
+) -> Result<PreparedMonitorSession, MonitorError> {
+    prepare_process_monitor_inner(options, stop, Some(signals))
+}
+fn prepare_process_monitor_inner(
+    options: ProcessMonitorOptions,
+    stop: StopSignal,
+    signals: Option<&mut crate::service::SignalPreparation>,
+) -> Result<PreparedMonitorSession, MonitorError> {
     options.config.validate()?;
     let render_options = RenderOptions {
         endpoint_id: options.output_endpoint_id,
@@ -263,15 +291,20 @@ pub fn prepare_process_monitor_with_stop(
         stop,
         gate.clone(),
     )?;
-    attach_monitor(capture, render_options, options.config, gate)
+    attach_monitor(capture, render_options, options.config, gate, signals)
 }
 fn attach_monitor(
     capture: PreparedCapture,
     render_options: RenderOptions,
     config: MonitorConfig,
     gate: ActivationGate,
+    signals: Option<&mut crate::service::SignalPreparation>,
 ) -> Result<PreparedMonitorSession, MonitorError> {
-    let graph = prepare_monitor(capture.source, config)?;
+    let graph = if let Some(signals) = signals {
+        super::prepare_monitor_with_signals(capture.source, config, signals)?
+    } else {
+        prepare_monitor(capture.source, config)?
+    };
     let compiled = graph.compiled;
     let renderer = DemandRenderer::new(compiled.engine, graph.output)?;
     let timeline = renderer.timeline_observer();

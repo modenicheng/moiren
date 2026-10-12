@@ -5,6 +5,7 @@ use moiren_engine::processor::Gain;
 #[test]
 fn renderer_scalar_timeline_observes_real_blocks_without_telemetry() {
     let tone = prepare_tone(ToneConfig::default()).unwrap();
+    let epoch = tone.compiled.engine.epoch();
     let mut renderer =
         moiren_windows_audio::render::DemandRenderer::new(tone.compiled.engine, tone.output)
             .unwrap();
@@ -13,7 +14,7 @@ fn renderer_scalar_timeline_observes_real_blocks_without_telemetry() {
     renderer.render_interleaved(&mut [0.; 14]).unwrap();
     let snapshot = observer.snapshot();
     assert_eq!(snapshot.frame, 7);
-    assert_eq!(snapshot.epoch, 1);
+    assert_eq!(snapshot.epoch, epoch);
     assert_eq!(snapshot.revision, 1);
     renderer.render_interleaved(&mut []).unwrap();
     assert_eq!(observer.snapshot().frame, 7);
@@ -57,7 +58,7 @@ fn tone_gain_is_bound_to_the_existing_realtime_control_channel() {
                 ParameterRequest {
                     request_id: 1,
                     plan_revision: 1,
-                    timeline_epoch: 1,
+                    timeline_epoch: tone.compiled.engine.epoch(),
                     target: ParameterKey {
                         processor: tone.compiled.bindings.node(tone.gain_node).unwrap(),
                         parameter: Gain::LEVEL

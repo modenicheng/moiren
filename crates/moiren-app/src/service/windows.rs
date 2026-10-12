@@ -45,11 +45,34 @@ fn duration(limit: RunLimit) -> SessionDuration {
         RunLimit::Seconds(n) => SessionDuration::For(Duration::from_secs(u64::from(n))),
     }
 }
-impl BackendAdapter for WindowsBackend {
-    fn prepare(
+fn prepare_physical(
+    options: MonitorOptions,
+    stop: moiren_windows_audio::StopSignal,
+    signals: Option<&mut SignalPreparation>,
+) -> Result<PreparedMonitorSession, MonitorError> {
+    if let Some(signals) = signals {
+        prepare_monitor_with_signal_host(options, stop, signals)
+    } else {
+        prepare_monitor_with_stop(options, stop)
+    }
+}
+fn prepare_process(
+    options: ProcessMonitorOptions,
+    stop: moiren_windows_audio::StopSignal,
+    signals: Option<&mut SignalPreparation>,
+) -> Result<PreparedMonitorSession, MonitorError> {
+    if let Some(signals) = signals {
+        prepare_process_monitor_with_signal_host(options, stop, signals)
+    } else {
+        prepare_process_monitor_with_stop(options, stop)
+    }
+}
+impl WindowsBackend {
+    fn prepare_inner(
         &self,
         spec: SessionSpec,
         cancellation: Cancellation,
+        signals: Option<&mut SignalPreparation>,
     ) -> Result<Box<dyn PreparedSession>, BackendError> {
         spec.validate()
             .map_err(|e| BackendError::new("configuration", format!("{e:?}")))?;
@@ -64,7 +87,7 @@ impl BackendAdapter for WindowsBackend {
         let duration = duration(spec.limit);
         let session = match spec.source {
             InputSelection::Physical { endpoint_id } => PreparedAppSession::Monitor {
-                session: prepare_monitor_with_stop(
+                session: prepare_physical(
                     MonitorOptions {
                         input_endpoint_id: endpoint_id,
                         output_endpoint_id: spec.output_endpoint_id,
@@ -72,6 +95,7 @@ impl BackendAdapter for WindowsBackend {
                         config,
                     },
                     cancellation.stop_signal(),
+                    signals,
                 )
                 .map_err(|e| BackendError::new("monitor prepare", e))?,
                 diagnostics: self.diagnostics.clone(),
@@ -89,7 +113,7 @@ impl BackendAdapter for WindowsBackend {
                     ));
                 }
                 PreparedAppSession::Monitor {
-                    session: prepare_process_monitor_with_stop(
+                    session: prepare_process(
                         ProcessMonitorOptions {
                             target,
                             output_endpoint_id: spec.output_endpoint_id,
@@ -97,18 +121,24 @@ impl BackendAdapter for WindowsBackend {
                             config,
                         },
                         cancellation.stop_signal(),
+                        signals,
                     )
                     .map_err(|e| BackendError::new("process monitor prepare", e))?,
                     diagnostics: self.diagnostics.clone(),
                 }
             }
             InputSelection::Tone { frequency_hz } => {
-                let tone = prepare_tone(ToneConfig {
+                let config = ToneConfig {
                     frequency_hz,
                     gain: spec.gain,
                     pan: spec.pan,
                     max_block_frames: spec.max_block_frames,
-                })
+                };
+                let tone = if let Some(signals) = signals {
+                    crate::tone::prepare_tone_with_signals(config, signals)
+                } else {
+                    prepare_tone(config)
+                }
                 .map_err(|e| BackendError::new("tone graph", e))?;
                 let renderer = DemandRenderer::new(tone.compiled.engine, tone.output)
                     .map_err(|e| BackendError::new("tone renderer", e))?;
@@ -134,6 +164,23 @@ impl BackendAdapter for WindowsBackend {
             }
         };
         Ok(Box::new(session))
+    }
+}
+impl BackendAdapter for WindowsBackend {
+    fn prepare(
+        &self,
+        spec: SessionSpec,
+        cancellation: Cancellation,
+    ) -> Result<Box<dyn PreparedSession>, BackendError> {
+        self.prepare_inner(spec, cancellation, None)
+    }
+    fn prepare_with_signals(
+        &self,
+        spec: SessionSpec,
+        cancellation: Cancellation,
+        signals: &mut SignalPreparation,
+    ) -> Result<Box<dyn PreparedSession>, BackendError> {
+        self.prepare_inner(spec, cancellation, Some(signals))
     }
     fn catalog(&self) -> Result<DeviceCatalog, BackendError> {
         let native = catalog_snapshot().map_err(|e| BackendError::new("catalog", e))?;

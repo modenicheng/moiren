@@ -8,10 +8,14 @@ mod jobs;
 mod mailbox;
 mod model;
 mod parameters;
+mod signal_preparation;
+mod signals;
 #[cfg(windows)]
 mod windows;
 pub use backend::*;
 pub use driver::BackendDriver;
+pub use signal_preparation::{SignalPreparation, SignalPreparationError};
+pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
 #[cfg(windows)]
 pub use windows::WindowsBackend;
 
@@ -74,6 +78,7 @@ pub struct ServiceContext {
     pub catalog: Arc<DeviceCatalog>,
     pub catalog_error: Option<String>,
     pub control: ControlSummary,
+    pub(crate) signals: signals::SignalService,
     pending: VecDeque<(JobPriority, Job, DeferredPermit)>,
     slots: Arc<AtomicUsize>,
 }
@@ -84,6 +89,7 @@ impl Default for ServiceContext {
             catalog: Arc::new(DeviceCatalog::default()),
             catalog_error: None,
             control: ControlSummary::default(),
+            signals: signals::SignalService::new().expect("fixed application signal topics"),
             pending: VecDeque::with_capacity(MAX_PENDING_JOBS),
             slots: Arc::new(AtomicUsize::new(MAX_PENDING_JOBS)),
         }
@@ -186,6 +192,7 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         catalog: c.catalog.clone(),
         catalog_error: c.catalog_error.clone(),
         control: c.control.clone(),
+        signal_topics: c.signals.topics.clone(),
         elapsed: c.core.elapsed(),
     }
 }
@@ -207,11 +214,12 @@ impl ServiceRuntime {
         let thread = thread::Builder::new()
             .name("app-service".into())
             .spawn(move || {
-                let (handle, mailbox) = ServiceMailbox::new(thread::current());
+                let mut c = ServiceContext::default();
+                let (handle, mailbox) =
+                    ServiceMailbox::with_snapshot(thread::current(), snapshot(&c));
                 if hand_tx.send(handle).is_err() {
                     return;
                 }
-                let mut c = ServiceContext::default();
                 let mut exiting = false;
                 loop {
                     let mut handled = 0;
@@ -220,10 +228,12 @@ impl ServiceRuntime {
                             if mailbox.exit_requested() {
                                 break;
                             }
-                            let Some(request) = mailbox.try_request() else {
+                            let Some(request) = mailbox.try_dispatch(&mut c.signals) else {
                                 break;
                             };
-                            driver.request(&mut c, &mut pool, request);
+                            if let Some(request) = request {
+                                driver.request(&mut c, &mut pool, request);
+                            }
                             handled += 1;
                         }
                     }
@@ -246,6 +256,7 @@ impl ServiceRuntime {
                     {
                         pool.shutdown();
                     }
+                    c.signals.pump_if_due(std::time::Instant::now());
                     mailbox.publish(snapshot(&c));
                     if c.core.phase() == SessionPhase::Exited {
                         break;
@@ -253,13 +264,19 @@ impl ServiceRuntime {
                     if handled == 16 {
                         continue;
                     }
+                    let signal_wait = c.signals.wait_duration(std::time::Instant::now());
                     if !driver.is_drained()
                         || c.core.owner_generation().is_some()
                         || !pool.is_idle()
                         || !c.pending.is_empty()
                         || exiting
+                        || signal_wait.is_some()
                     {
-                        thread::park_timeout(Duration::from_millis(10));
+                        thread::park_timeout(
+                            signal_wait
+                                .unwrap_or(Duration::from_millis(10))
+                                .min(Duration::from_millis(10)),
+                        );
                     } else {
                         thread::park();
                     }

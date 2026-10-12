@@ -126,5 +126,6 @@ pub struct AppSnapshot {
     /// session phase/error. A successful refresh clears this owned diagnostic.
     pub catalog_error: Option<String>,
     pub control: ControlSummary,
+    pub signal_topics: super::SignalTopics,
     pub elapsed: Duration,
 }

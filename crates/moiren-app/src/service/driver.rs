@@ -5,6 +5,7 @@ use std::{sync::Arc, thread};
 struct SessionCredits {
     deferred: DeferredPermit,
     completion: CompletionPermit<Completion>,
+    signals: SignalPreparation,
 }
 enum Completion {
     Prepared {
@@ -33,12 +34,14 @@ struct Reaping {
 enum Cleanup {
     Prepared(Box<dyn PreparedSession>),
     Active(Box<dyn ActiveSession>),
+    SignalsOnly,
 }
 impl Cleanup {
     fn join(self) -> Result<SessionReport, BackendError> {
         match self {
             Self::Prepared(s) => s.join(),
             Self::Active(s) => s.join(),
+            Self::SignalsOnly => Ok(SessionReport::stopped()),
         }
     }
 }
@@ -46,6 +49,7 @@ pub struct BackendDriver {
     backend: Arc<dyn BackendAdapter>,
     completions: Option<CompletionQueue<Completion>>,
     preparing: Option<(SessionGeneration, Cancellation)>,
+    pending_prepare: Option<Job>,
     active: Option<Owner>,
     cleaning: usize,
     catalog_running: bool,
@@ -61,6 +65,7 @@ impl BackendDriver {
             backend,
             completions: None,
             preparing: None,
+            pending_prepare: None,
             active: None,
             cleaning: 0,
             catalog_running: false,
@@ -92,12 +97,18 @@ impl BackendDriver {
         credits: SessionCredits,
     ) {
         self.cleaning += 1;
+        let SessionCredits {
+            deferred,
+            completion,
+            signals,
+        } = credits;
         let job: Job = Box::new(move || {
             // If an adapter panics, captured ownership still unwinds on this
             // worker and the completion terminalizes its accepted ledger.
             let report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.join()))
                 .unwrap_or_else(|_| Err(BackendError::new("join", "session cleanup panicked")));
-            credits.completion.send_or_dispose(
+            drop(signals);
+            completion.send_or_dispose(
                 Completion::Reaped {
                     generation,
                     owner,
@@ -108,7 +119,7 @@ impl BackendDriver {
         });
         // The permit was reserved before preparation and belongs to this same
         // context. Refusal would violate that construction invariant.
-        if let Err((_, job)) = c.defer_reserved_cleanup(credits.deferred, job) {
+        if let Err((_, job)) = c.defer_reserved_cleanup(deferred, job) {
             // Even an invalid reservation must not destroy the owned closure
             // here. Keep it until ordinary deferred storage becomes available.
             assert!(self.refused_cleanup.is_none());
@@ -116,6 +127,12 @@ impl BackendDriver {
         }
     }
     fn prepare(&mut self, c: &mut ServiceContext, pool: &mut JobPool) {
+        if let Some(job) = self.pending_prepare.take() {
+            if let Err((_, job)) = pool.try_submit_owned(JobPriority::Prepare, job) {
+                self.pending_prepare = Some(job);
+            }
+            return;
+        }
         if self.exiting
             || self.preparing.is_some()
             || self.active.is_some()
@@ -150,9 +167,17 @@ impl BackendDriver {
         };
         let token = cancellation.clone();
         let backend = self.backend.clone();
+        let mut signals = match c.signals.prepare_session(&spec.source) {
+            Ok(signals) => signals,
+            Err(error) => {
+                c.core
+                    .start_failed(generation, BackendError::new("signal host", error));
+                return;
+            }
+        };
         let job: Job = Box::new(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                backend.prepare(spec, token)
+                backend.prepare_with_signals(spec, token, &mut signals)
             }))
             .unwrap_or_else(|_| Err(BackendError::new("prepare", "backend panicked")));
             completion.send_or_dispose(
@@ -162,23 +187,26 @@ impl BackendDriver {
                     credits: SessionCredits {
                         deferred,
                         completion: cleanup_completion,
+                        signals,
                     },
                 },
                 |result| {
                     if let Completion::Prepared {
-                        result: Ok(session),
-                        ..
+                        result, credits, ..
                     } = result
                     {
-                        let _ = session.cancel();
-                        let _ = session.join();
+                        if let Ok(session) = result {
+                            let _ = session.cancel();
+                            let _ = session.join();
+                        }
+                        drop(credits);
                     }
                 },
             );
         });
-        match pool.try_submit_owned(JobPriority::Prepare, job) {
-            Ok(()) => self.preparing = Some((generation, cancellation)),
-            Err((_, job)) => drop(job), // Contains only DTOs and credits, no session.
+        self.preparing = Some((generation, cancellation));
+        if let Err((_, job)) = pool.try_submit_owned(JobPriority::Prepare, job) {
+            self.pending_prepare = Some(job);
         }
     }
     fn catalog(&mut self, pool: &mut JobPool) {
@@ -246,6 +274,7 @@ impl ServiceDriver for BackendDriver {
                     match result {
                         Err(error) => {
                             c.core.start_failed(generation, error);
+                            self.cleanup(c, generation, false, Cleanup::SignalsOnly, credits);
                         }
                         Ok(session) if !c.core.may_activate(generation) => {
                             let _ = session.cancel();
@@ -384,6 +413,7 @@ impl ServiceDriver for BackendDriver {
         self.reaping.is_none()
             && self.parameters.is_drained()
             && self.preparing.is_none()
+            && self.pending_prepare.is_none()
             && self.active.is_none()
             && self.cleaning == 0
             && self.refused_cleanup.is_none()

@@ -1,5 +1,5 @@
 //! Non-RT contracts shared by native adapters and deterministic backend tests.
-use super::{DeviceCatalog, SessionSpec};
+use super::{DeviceCatalog, SessionSpec, SignalPreparation};
 use moiren_core::{graph::NodeId, protocol::ControlReply};
 use moiren_engine::{compiler::CompiledBindings, control::ControlPort};
 use std::sync::{
@@ -59,6 +59,14 @@ pub trait BackendAdapter: Send + Sync + 'static {
         spec: SessionSpec,
         cancellation: Cancellation,
     ) -> Result<Box<dyn PreparedSession>, BackendError>;
+    fn prepare_with_signals(
+        &self,
+        spec: SessionSpec,
+        cancellation: Cancellation,
+        _signals: &mut SignalPreparation,
+    ) -> Result<Box<dyn PreparedSession>, BackendError> {
+        self.prepare(spec, cancellation)
+    }
     fn catalog(&self) -> Result<DeviceCatalog, BackendError>;
 }
 pub trait PreparedSession: Send {

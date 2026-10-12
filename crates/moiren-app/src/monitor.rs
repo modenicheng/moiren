@@ -16,6 +16,10 @@ pub use windows::{
     prepare_process_monitor_with_stop, start_monitor, start_process_monitor,
     start_process_monitor_with_stop,
 };
+#[cfg(windows)]
+pub(crate) use windows::{
+    prepare_monitor_with_signal_host, prepare_process_monitor_with_signal_host,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct MonitorConfig {
@@ -54,12 +58,16 @@ pub enum MonitorError {
         "monitor requires finite gain in [0,1], pan in [-1,1], a 1..4096 frame block and a stereo source"
     )]
     InvalidConfig,
+    #[error("application timeline epoch space exhausted")]
+    TimelineEpochExhausted,
     #[error(transparent)]
     Graph(#[from] GraphError),
     #[error(transparent)]
     Compile(#[from] CompileError),
     #[error(transparent)]
     Bridge(#[from] BridgeError),
+    #[error(transparent)]
+    Signals(#[from] crate::service::SignalPreparationError),
     #[cfg(windows)]
     #[error(transparent)]
     Capture(#[from] moiren_windows_audio::capture::CaptureError),
@@ -77,44 +85,61 @@ pub fn prepare_monitor(
     source: impl RtAudioSource<f32> + 'static,
     config: MonitorConfig,
 ) -> Result<MonitorGraph, MonitorError> {
+    prepare_inner(source, config, None)
+}
+pub fn prepare_monitor_with_signals(
+    source: impl RtAudioSource<f32> + 'static,
+    config: MonitorConfig,
+    signals: &mut crate::service::SignalPreparation,
+) -> Result<MonitorGraph, MonitorError> {
+    prepare_inner(source, config, Some(signals))
+}
+fn prepare_inner(
+    source: impl RtAudioSource<f32> + 'static,
+    config: MonitorConfig,
+    signals: Option<&mut crate::service::SignalPreparation>,
+) -> Result<MonitorGraph, MonitorError> {
     config.validate()?;
     if source.channel_count() != 2 {
         return Err(MonitorError::InvalidConfig);
     }
-    let mut graph = LogicalGraph::new();
-    let input = graph.create_node(NodeKind::Source, 2)?;
-    let gain_node = graph.create_node(NodeKind::Gain, 2)?;
-    let pan_node = graph.create_node(NodeKind::Pan, 2)?;
-    let sink = graph.create_node(NodeKind::Sink, 2)?;
-    for (a, b) in [(input, gain_node), (gain_node, pan_node), (pan_node, sink)] {
-        graph.connect(
-            graph.get_node(a)?.outputs()[0].id(),
-            graph.get_node(b)?.inputs()[0].id(),
-            SendParams::default(),
-        )?;
-    }
+    let crate::session_graph::SessionGraph {
+        graph,
+        input,
+        gain: gain_node,
+        pan: pan_node,
+        output: sink,
+    } = crate::session_graph::SessionGraph::new()?;
     let (writer, output) = audio_bridge(2, config.max_block_frames, 8 * 1024 * 1024)?;
     let mut bindings = NodeBindings::new();
     bindings.bind_source(input, source)?;
     bindings.bind_gain(gain_node, config.gain)?;
     bindings.bind_pan(pan_node, config.pan)?;
     bindings.bind_sink(sink, writer)?;
-    let compiled = compile(
-        &graph,
-        bindings,
-        CompileConfig {
-            engine: EngineConfig {
-                processing_sr: 48_000.0,
-                max_block_frames: config.max_block_frames,
-                max_events_per_block: 64,
-            },
-            audio_byte_budget: 8 * 1024 * 1024,
-            plan_revision: 1,
-            timeline_epoch: 1,
-            control_capacity: 64,
-            control_horizon_frames: 48_000,
+    let compile_config = CompileConfig {
+        engine: EngineConfig {
+            processing_sr: 48_000.0,
+            max_block_frames: config.max_block_frames,
+            max_events_per_block: 64,
         },
-    )?;
+        audio_byte_budget: 8 * 1024 * 1024,
+        plan_revision: 1,
+        timeline_epoch: crate::timeline::next_epoch()
+            .ok_or(MonitorError::TimelineEpochExhausted)?,
+        control_capacity: 64,
+        control_horizon_frames: 48_000,
+    };
+    let compiled = if let Some(signals) = signals {
+        signals.compile(
+            &graph,
+            bindings,
+            compile_config,
+            graph.get_node(input)?.outputs()[0].id(),
+            graph.get_node(pan_node)?.outputs()[0].id(),
+        )?
+    } else {
+        compile(&graph, bindings, compile_config)?
+    };
     Ok(MonitorGraph {
         compiled,
         output,

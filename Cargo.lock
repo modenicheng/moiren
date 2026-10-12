@@ -2629,6 +2629,7 @@ dependencies = [
  "anyhow",
  "moiren-core",
  "moiren-engine",
+ "moiren-signal",
  "moiren-windows-audio",
  "serde",
  "serde_json",

@@ -5,6 +5,8 @@ pub mod monitor;
 pub mod monitor_cli;
 pub mod render_cli;
 pub mod service;
+mod session_graph;
+mod timeline;
 pub mod tone;
 pub mod ui;
 

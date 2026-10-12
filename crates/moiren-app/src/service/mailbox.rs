@@ -1,6 +1,7 @@
 use super::*;
 use std::{
     cell::Cell,
+    cell::RefCell,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -11,7 +12,11 @@ use std::{
 const REQUEST_CAPACITY: usize = 64;
 struct QueuedRequest {
     id: RequestId,
-    request: AppRequest,
+    payload: QueuedPayload,
+}
+enum QueuedPayload {
+    Application(AppRequest),
+    Subscription(signals::SubscriptionRequest),
 }
 #[derive(Clone)]
 pub struct AppHandle {
@@ -39,6 +44,21 @@ impl AppHandle {
             }
             _ => {}
         }
+        self.try_enqueue(QueuedPayload::Application(request))
+    }
+    pub fn subscribe_topic<P: moiren_signal::Shape>(
+        &self,
+        topic: moiren_signal::Topic<P>,
+        options: moiren_signal::SubscriptionOptions,
+    ) -> Result<SubscriptionTicket<P>, DispatchError> {
+        let (ticket, request) = signals::subscription_request(topic, options);
+        self.try_enqueue(QueuedPayload::Subscription(request))?;
+        Ok(ticket)
+    }
+    fn try_enqueue(&self, payload: QueuedPayload) -> Result<RequestId, DispatchError> {
+        if self.exit.load(Ordering::Acquire) {
+            return Err(DispatchError::Exiting);
+        }
         let mut sequence = self
             .enqueue_id
             .try_lock()
@@ -49,7 +69,7 @@ impl AppHandle {
                 .ok_or(DispatchError::RequestIdExhausted)?,
         );
         self.sender
-            .try_send(QueuedRequest { id, request })
+            .try_send(QueuedRequest { id, payload })
             .map_err(|e| match e {
                 TrySendError::Full(_) => DispatchError::Busy,
                 TrySendError::Disconnected(_) => DispatchError::Disconnected,
@@ -73,15 +93,19 @@ impl AppHandle {
 /// Requests and exit are independent so a full queue cannot suppress shutdown.
 pub struct ServiceMailbox {
     receiver: Receiver<QueuedRequest>,
+    pending: RefCell<Option<QueuedRequest>>,
     consumed_request_id: Cell<RequestId>,
     exit: Arc<AtomicBool>,
     snapshot: Arc<Mutex<Arc<AppSnapshot>>>,
 }
 impl ServiceMailbox {
     pub fn new(wake: Thread) -> (AppHandle, Self) {
+        Self::with_snapshot(wake, snapshot(&ServiceContext::default()))
+    }
+    pub(crate) fn with_snapshot(wake: Thread, initial: AppSnapshot) -> (AppHandle, Self) {
         let (sender, receiver) = mpsc::sync_channel(REQUEST_CAPACITY);
         let exit = Arc::new(AtomicBool::new(false));
-        let snapshot = Arc::new(Mutex::new(Arc::new(snapshot(&ServiceContext::default()))));
+        let snapshot = Arc::new(Mutex::new(Arc::new(initial)));
         (
             AppHandle {
                 sender,
@@ -92,6 +116,7 @@ impl ServiceMailbox {
             },
             Self {
                 receiver,
+                pending: RefCell::new(None),
                 consumed_request_id: Cell::new(RequestId::default()),
                 exit,
                 snapshot,
@@ -102,9 +127,40 @@ impl ServiceMailbox {
         self.exit.load(Ordering::Acquire)
     }
     pub fn try_request(&self) -> Option<AppRequest> {
-        let queued = self.receiver.try_recv().ok()?;
+        let queued = self.next_payload()?;
+        match queued.payload {
+            QueuedPayload::Application(request) => {
+                self.consumed_request_id.set(queued.id);
+                Some(request)
+            }
+            QueuedPayload::Subscription(payload) => {
+                *self.pending.borrow_mut() = Some(QueuedRequest {
+                    id: queued.id,
+                    payload: QueuedPayload::Subscription(payload),
+                });
+                None
+            }
+        }
+    }
+    pub(crate) fn try_dispatch(
+        &self,
+        signals: &mut signals::SignalService,
+    ) -> Option<Option<AppRequest>> {
+        let queued = self.next_payload()?;
         self.consumed_request_id.set(queued.id);
-        Some(queued.request)
+        match queued.payload {
+            QueuedPayload::Application(request) => Some(Some(request)),
+            QueuedPayload::Subscription(request) => {
+                signals.execute(request);
+                Some(None)
+            }
+        }
+    }
+    fn next_payload(&self) -> Option<QueuedRequest> {
+        self.pending
+            .borrow_mut()
+            .take()
+            .or_else(|| self.receiver.try_recv().ok())
     }
     pub(crate) fn publish(&self, mut value: AppSnapshot) {
         // The service publishes only after handling its drained round. A UI
@@ -179,5 +235,31 @@ mod tests {
         assert_eq!(mailbox.try_request(), None);
         handle.request_exit();
         assert!(mailbox.exit_requested());
+    }
+
+    #[test]
+    fn compatibility_reader_preserves_typed_subscription_for_dispatch() {
+        let mut context = ServiceContext::default();
+        let (handle, mailbox) =
+            ServiceMailbox::with_snapshot(std::thread::current(), snapshot(&context));
+        let topic = handle
+            .try_snapshot()
+            .unwrap()
+            .signal_topics
+            .tone_output
+            .clone();
+        let mut ticket = handle.subscribe_topic(topic, Default::default()).unwrap();
+        assert_eq!(mailbox.try_request(), None);
+        assert_eq!(
+            handle.try_snapshot().unwrap().consumed_request_id,
+            RequestId(0)
+        );
+        assert_eq!(mailbox.try_dispatch(&mut context.signals), Some(None));
+        assert!(ticket.try_take().unwrap().is_some());
+        mailbox.publish(snapshot(&context));
+        assert_eq!(
+            handle.try_snapshot().unwrap().consumed_request_id,
+            RequestId(1)
+        );
     }
 }
