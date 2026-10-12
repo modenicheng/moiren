@@ -92,7 +92,7 @@ impl BackendAdapter for Fake {
                                 ParameterRequest {
                                     request_id: id,
                                     plan_revision: 1,
-                                    timeline_epoch: 1,
+                                    timeline_epoch: tone.compiled.engine.epoch(),
                                     target: ParameterKey {
                                         processor: tone
                                             .compiled
