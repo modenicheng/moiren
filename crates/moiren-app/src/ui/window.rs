@@ -170,6 +170,10 @@ fn run_event_loop(handle: crate::service::AppHandle) -> anyhow::Result<()> {
     slint::run_event_loop_until_quit().context("running Slint event loop")
 }
 
+#[cfg(all(test, windows))]
+#[path = "native_acceptance.rs"]
+mod native_acceptance;
+
 #[cfg(test)]
 mod tests {
     use super::*;
