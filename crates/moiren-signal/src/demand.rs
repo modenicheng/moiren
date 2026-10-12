@@ -25,6 +25,9 @@ impl Demand {
             generation: word >> 8,
         }
     }
+    pub(crate) fn subscriber_count(&self) -> usize {
+        (self.0.load(Ordering::Acquire) & COUNT_MASK) as usize
+    }
     pub(crate) fn check_add(&self, limit: usize) -> Result<(), SubscribeError> {
         next_subscription_word(self.0.load(Ordering::Acquire), limit).map(|_| ())
     }

@@ -169,6 +169,12 @@ impl<P: Shape> Topic<P> {
     pub fn id(&self) -> TopicId {
         self.id
     }
+    pub fn demand_snapshot(&self) -> crate::DemandSnapshot {
+        self.state.demand.snapshot()
+    }
+    pub fn business_subscribers(&self) -> usize {
+        self.state.demand.subscriber_count()
+    }
     pub fn status(&self) -> TopicStatus {
         self.state.status()
     }
