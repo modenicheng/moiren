@@ -1,18 +1,29 @@
 import { Theme } from "../theme.slint";
 import { Backend } from "../backend.slint";
 import { AppSelect } from "../components/widgets.slint";
-import { StudioButton, SectionHeading } from "../components/studio-controls.slint";
+import {
+    StudioButton,
+    SectionHeading,
+} from "../components/studio-controls.slint";
 
 export component SessionSetup inherits VerticalLayout {
     vertical-stretch: 0;
     alignment: start;
     spacing: 8px;
-    SectionHeading { title: "SESSION I/O"; }
+    SectionHeading {
+        title: "SESSION I/O";
+    }
+
     source-mode := AppSelect {
         height: 30px;
-        options: [{ text: "Physical input", detail: "" }, { text: "Application audio", detail: "" }, { text: "Test tone", detail: "" }];
+        options: [
+            { text: "Physical input", detail: "" },
+            { text: "Application audio", detail: "" },
+            { text: "Test tone", detail: "" }
+        ];
         current <=> Backend.source-mode;
     }
+
     if Backend.source-mode == 0: AppSelect {
         height: 30px;
         options: Backend.input-options;
@@ -42,11 +53,13 @@ export component SessionSetup inherits VerticalLayout {
         placeholder: "No output selected";
         selected(index) => { Backend.select-output(index); }
     }
+
     StudioButton {
         text: "Refresh devices";
         enabled: Backend.transport-ready;
         clicked => { Backend.refresh-catalog(); }
     }
+
     Text {
         text: "Device changes apply on Start.";
         color: Theme.text-faint;
@@ -54,5 +67,9 @@ export component SessionSetup inherits VerticalLayout {
         font-size: 10px;
         wrap: word-wrap;
     }
-    Rectangle { height: 1px; background: Theme.border; }
+
+    Rectangle {
+        height: 1px;
+        background: Theme.border;
+    }
 }

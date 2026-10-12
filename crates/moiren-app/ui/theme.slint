@@ -67,10 +67,7 @@ export global Theme {
     out property <color> signal-recorder-soft: signal-recorder.with-alpha(0.16);
 
     // Violet -> blue: never green, so it stays inside the approved accent set.
-    out property <brush> brand-gradient: @linear-gradient(120deg,
-        (dark ? #c4b5e8 : #b1a0df) 0%,
-        (dark ? #b1a0df : #7a63b8) 48%,
-        (dark ? #86b9ec : #2f74ab) 100%);
+    out property <brush> brand-gradient: @linear-gradient(120deg, (dark ? #c4b5e8 : #b1a0df) 0%, (dark ? #b1a0df : #7a63b8) 48%, (dark ? #86b9ec : #2f74ab) 100%);
 
     // --- Surfaces --------------------------------------------------------
     out property <color> window-bg:  dark ? #111518 : #eef0f2;  // canvas behind cards
@@ -161,6 +158,10 @@ export global Theme {
 
     // --- Studio geometry (Figma v0.1.0 Graph measurements, from MCP) ----
     out property <length> toolbar-height: 44px;
+    out property <length> toolbar-control-height: 30px;
+    out property <length> toolbar-icon-button-width: 42px;
+    out property <length> toolbar-group-spacing: 16px;
+    out property <length> toolbar-content-spacing: 8px;
     out property <length> library-width: 210px;
     out property <length> inspector-width: 280px;
     out property <bool> inspector-collapsed: viewport-width < 1280px;

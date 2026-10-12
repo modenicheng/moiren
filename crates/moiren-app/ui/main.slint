@@ -21,8 +21,15 @@
 // Theme.viewport-*, so every token and panel branches on real size.
 
 export { AppTray } from "tray.slint";
-export { Backend, BackendPhase, AudioEndpoint, ProcessSource,
-         LibraryEntry, GraphNodeData, GraphWireData } from "backend.slint";
+export {
+    Backend,
+    BackendPhase,
+    AudioEndpoint,
+    ProcessSource,
+    LibraryEntry,
+    GraphNodeData,
+    GraphWireData,
+} from "backend.slint";
 import { Backend } from "backend.slint";
 import { Theme } from "theme.slint";
 import { AppToolbar, EngineStatusbar } from "pages/studio-chrome.slint";
@@ -31,7 +38,11 @@ import { GraphCanvas } from "pages/graph-canvas.slint";
 import { ConnectionInspector } from "pages/connection-inspector.slint";
 import { MixerPage } from "pages/mixer.slint";
 export { SignalRect, MeterRegion } from "components/signal-meter.slint";
-import { SignalRect, MeterRegion, MeterDefaults } from "components/signal-meter.slint";
+import {
+    SignalRect,
+    MeterRegion,
+    MeterDefaults,
+} from "components/signal-meter.slint";
 
 export component MainWindow inherits Window {
     title: "Moiren";
@@ -57,8 +68,10 @@ export component MainWindow inherits Window {
         Backend.view == 0 ? graph-view.input-region : MeterDefaults.hidden,
     ];
     out property <SignalRect> meter-body-clip: {
-        left: body.absolute-position.x / 1px, top: body.absolute-position.y / 1px,
-        width: body.width / 1px, height: body.height / 1px,
+        left: body.absolute-position.x / 1px,
+        top: body.absolute-position.y / 1px,
+        width: body.width / 1px,
+        height: body.height / 1px,
     };
     changed output-meter-regions => { Backend.presentation-changed(); }
     changed input-meter-regions => { Backend.presentation-changed(); }
@@ -80,7 +93,9 @@ export component MainWindow inherits Window {
     callback exit-app();
     if Backend.signal-debug != "": signal-debug-text := Text {
         text: Backend.signal-debug;
-        width: 0px; height: 0px; opacity: 0;
+        width: 0px;
+        height: 0px;
+        opacity: 0;
         accessible-role: text;
         accessible-label: Backend.signal-debug;
     }
@@ -163,7 +178,10 @@ export component MainWindow inherits Window {
                                         meters-visible: !(root.library-flyout-open && Theme.library-collapsed)
                                             && !(root.inspector-flyout-open && Theme.inspector-collapsed);
                                     }
-                                    mix-view := MixerPage { visible: Backend.view == 1; }
+
+                                    mix-view := MixerPage {
+                                        visible: Backend.view == 1;
+                                    }
                                 }
                             }
                         }
@@ -173,7 +191,8 @@ export component MainWindow inherits Window {
                             width: Theme.inspector-width;
                             horizontal-stretch: 0;
                             regions-changed(output, input) => {
-                                root.docked-output = output; root.docked-input = input;
+                                root.docked-output = output;
+                                root.docked-input = input;
                             }
                         }
                     }
@@ -184,14 +203,18 @@ export component MainWindow inherits Window {
                         y: 0;
                         width: Theme.library-width;
                         height: 100%;
-                        NodeLibrary { filter <=> root.library-filter; }
+                        NodeLibrary {
+                            filter <=> root.library-filter;
+                        }
 
                         Rectangle {
                             x: parent.width;
                             width: body.width - parent.width;
                             height: 100%;
                             background: Theme.overlay-scrim;
-                            TouchArea { clicked => { root.library-flyout-open = false; } }
+                            TouchArea {
+                                clicked => { root.library-flyout-open = false; }
+                            }
                         }
                     }
                     if root.inspector-flyout-open && Theme.inspector-collapsed: Rectangle {
@@ -201,7 +224,8 @@ export component MainWindow inherits Window {
                         height: 100%;
                         ConnectionInspector {
                             regions-changed(output, input) => {
-                                root.flyout-output = output; root.flyout-input = input;
+                                root.flyout-output = output;
+                                root.flyout-input = input;
                             }
                         }
 
@@ -210,7 +234,9 @@ export component MainWindow inherits Window {
                             width: body.width - Theme.inspector-width;
                             height: 100%;
                             background: Theme.overlay-scrim;
-                            TouchArea { clicked => { root.inspector-flyout-open = false; } }
+                            TouchArea {
+                                clicked => { root.inspector-flyout-open = false; }
+                            }
                         }
                     }
 
@@ -228,8 +254,10 @@ export component MainWindow inherits Window {
                         Image {
                             source: @image-url("icons/sliders.svg");
                             colorize: Theme.text-muted;
-                            width: 14px; height: 14px;
+                            width: 14px;
+                            height: 14px;
                         }
+
                         insp-toggle-ta := TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.inspector-flyout-open = !root.inspector-flyout-open; }
@@ -247,8 +275,10 @@ export component MainWindow inherits Window {
                         Image {
                             source: @image-url("icons/search.svg");
                             colorize: Theme.text-muted;
-                            width: 14px; height: 14px;
+                            width: 14px;
+                            height: 14px;
                         }
+
                         lib-toggle-ta := TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.library-flyout-open = !root.library-flyout-open; }
