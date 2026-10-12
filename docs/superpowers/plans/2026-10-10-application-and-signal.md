@@ -17,6 +17,10 @@
 - 不覆盖当前用户的 Slint/UI、Cargo 与 main.rs 改动；执行前重新检查 git status，按职责合并。
 - 用户已授权完成全部计划，并允许为接入调整前端；后端稳定、性能与职责边界优先。任务完成状态必须由当前代码和验证证据证明。
 
+2026-10-11 用户补充：正在按 Figma 重构 UI，暂缓 UI 及 C4 展示接入。继续 B4-B6 与 C1-C3 后端实现和验证，保留用户前端及暂存改动；全部交付与 UI 实机验收仍待后续恢复。
+
+2026-10-12 用户恢复 UI 接入，优先 Graph、Mix 与整体骨架，并允许重新设计 Figma 5:976 节点卡片和修正布局。上述暂缓指令已被本次指令替代；C4 和最终原生验收继续执行。
+
 ---
 
 ## 已确认设计与执行顺序
@@ -35,17 +39,17 @@ A 与 B 没有生产代码依赖，C 依赖两者。当前按 A → B → C 串�
 
 - [x] 执行 `git status --short`、`git diff --stat`，记录原有修改。当前原有修改包括 Cargo.lock、moiren-app/Cargo.toml、main.rs、build.rs、ui/、designs/ 与 .tmp/。现有前端与计划保存为功能分支基线；designs/ 与 .tmp/ 保持原样。
 - [x] 执行 `cargo test --locked -p moiren-engine --test runtime`（26 passed）和 `cargo check --locked -p moiren-app`（通过，有原型 build.rs/main.rs 警告），记录真实基线；不把历史测试当作新实现证据。
-- [ ] 依次完成各子计划的任务，每个任务只提交明确列出的变更；Cargo.lock 仅纳入本任务的依赖更新。
+- [x] 依次完成各子计划的任务，每个任务只提交明确列出的变更；Cargo.lock 仅纳入本任务的依赖更新。
 
 ## 全部交付的最终门槛
 
-- [ ] `cargo test --locked --workspace`。
-- [ ] `cargo clippy --locked --workspace --all-targets -- -D warnings`；区分原有警告与新增问题，不扩大本次产品修改来消除不相关警告。
-- [ ] `cargo fmt --all -- --check`、`git diff --check`。
-- [ ] 执行 signal 的自定义块示例与 engine 的 signal_internal_state 示例，记录输出与线程/分配证据。
-- [ ] Windows 实机执行有限音量的显式设备监听与测试音；验证停止、隐藏/恢复、进程退出与显式退出。不同设备结果不得用模拟测试代替。
-- [ ] 对 Slint 实际运行界面查看截图并操作；验收空目录、Starting/Stopping/Failed、真实电平、切页和滚动退订；截图存 `.tmp/`，不提交。
-- [ ] 更新三份计划的任务勾选和证据；列出未执行的实机项。未经实机验证，不宣称硬件交付通过。
+- [x] `cargo test --locked --workspace`。
+- [x] `cargo clippy --locked --workspace --all-targets -- -D warnings`；区分原有警告与新增问题，不扩大本次产品修改来消除不相关警告。
+- [x] `cargo fmt --all -- --check`、`git diff --check`。
+- [x] 执行 signal 的自定义块示例与 engine 的 signal_internal_state 示例，记录输出与线程/分配证据。
+- [x] Windows 实机执行有限音量的显式设备监听与测试音；验证停止、隐藏/恢复、进程退出与显式退出。不同设备结果不得用模拟测试代替。
+- [x] 对 Slint 实际运行界面查看截图并操作；验收空目录、Starting/Stopping/Failed、真实电平、切页和滚动退订；截图存 `.tmp/`，不提交。
+- [x] 更新三份计划的任务勾选和证据；列出未执行的实机项。未经实机验证，不宣称硬件交付通过。
 
 ## 已处理的接口与范围选择
 

@@ -42,8 +42,8 @@
 
 **Interfaces:** 保留公开 `control::{ParamDomain, ParamSpec, FloatRamp, ControlPort, ParameterRuntime, ProcessParameters, ControlError, parameter_channel}`；ParameterBindings 仍为 pub(crate)，不扩大公开面。`ControlPort::submit(&mut self, ParameterRequest, u64) -> ControlReply`、`poll_applied(&mut self) -> Option<ControlReply>` 及 RT/retire 方法签名保持现状。内部事件与状态的可见性限制为 `pub(super)`。
 
-- [ ] 运行 `cargo test --locked -p moiren-engine --test runtime`，保存分拆前基线。
-- [ ] 按表移动现有定义，不修改方法体；门面采用以下真实 Rust 布局：
+- [x] 运行 `cargo test --locked -p moiren-engine --test runtime`，保存分拆前基线。
+- [x] 按表移动现有定义，不修改方法体；门面采用以下真实 Rust 布局：
 
 ```rust
 mod channel;
@@ -62,8 +62,8 @@ pub(crate) use view::ParameterBindings;
 
 `ScheduledEvent`、参数状态与 reply ring 的内部定义由 runtime/channel 的实际消费者决定 `pub(super)`；不可为了模块移动把内部对象变成公开 API。注释只解释回复容量、块快照和旧队列退场等约束。
 
-- [ ] 每移动一个责任模块执行 `cargo check --locked -p moiren-engine`；完成后执行 runtime 测试与 `cargo test --locked -p moiren-engine --test compiler`，预期原有全部测试通过。
-- [ ] 显式暂存 control.rs 与新 control/ 文件，提交 `refactor: separate engine parameter responsibilities`。
+- [x] 每移动一个责任模块执行 `cargo check --locked -p moiren-engine`；完成后执行 runtime 测试与 `cargo test --locked -p moiren-engine --test compiler`，预期原有全部测试通过。
+- [x] 显式暂存 control.rs 与新 control/ 文件，提交 `refactor: separate engine parameter responsibilities`。
 
 ### Task A2: 持续运行、准备 gate 与非 RT 会话回收
 
@@ -87,7 +87,7 @@ pub(crate) use view::ParameterBindings;
 - owner 返回 `RenderOwnerExit { report: RenderReport, renderer: DemandRenderer }`；`RenderSession::join_with_renderer(self) -> Result<RenderOwnerExit, RenderError>` 供 GUI cleanup 使用，`join(self) -> Result<RenderReport, RenderError>` 保留 CLI 便利入口并在 join 调用方释放 renderer。native COM 仍在 owner 返回前释放。
 - `DemandRenderer::retire_controls(&mut self) -> usize` 转发停止后的 `Engine::retire_controls(&mut self) -> usize`，返回仍未终结的请求数；只在 owner 已 join 后调用。该入口继续用已有 StaleRevision 表示已退役 runtime 的未应用请求，不新增协议回复码。
 
-- [ ] 添加独立时长测试，预期新类型尚不存在而失败：
+- [x] 添加独立时长测试，预期新类型尚不存在而失败：
 
 ```rust
 use moiren_windows_audio::{DurationError, SessionDuration};
@@ -106,7 +106,7 @@ fn unlimited_run_has_no_artificial_deadline() {
 }
 ```
 
-- [ ] 实现时长值域和明确剩余时间：
+- [x] 实现时长值域和明确剩余时间：
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,9 +141,9 @@ impl SessionDuration {
 
 owner wait 超时采用 remaining 的有界转换，UntilStopped 使用原生 INFINITE 并同时等待 stop。限时在激活之后开始计时，不将 worker 准备时间算成运行时间。CaptureReport/RenderReport 的 requested_seconds 改为 Option；分别基于现有 schema_version 加 1，更新对应报告测试和 README。
 
-- [ ] Gate 原子状态限定 `Prepared=0, Activated=1, Cancelled=2`；activate/cancel 用 compare_exchange(Prepared, target)。成功后 SetEvent；失败明确返回 AlreadyResolved。owner wait 同时等 gate 与 stop，stop 索引优先；cancel 即使 gate 已 Activated 也必须 signal 共享 stop。原生初始化失败通过固定容量 Ready 结果返回，未启动音频前允许阻塞握手。Monitor 的两个 owner 等同一个 gate，各自在观察 Start 后开始计 duration；取消准备不能留下仍在捕获或播放的有限会话。
-- [ ] 在现有 Windows owner 测试中新增真实事件 gate 测试：Ready 后未 activate 不产生 render；cancel 先于 activate 时永不运行；失败/取消都 join；用 DropProbe 记录纯 Rust renderer 在调用 join 的线程析构。测试 owner 使用可注入的 prepare/run 函数，不要求音频硬件。
-- [ ] 停止后控制清理使用现有非 RT retire/reject_pending 逻辑，不丢已 Accepted 的未来事件：
+- [x] Gate 原子状态限定 `Prepared=0, Activated=1, Cancelled=2`；activate/cancel 用 compare_exchange(Prepared, target)。成功后 SetEvent；失败明确返回 AlreadyResolved。owner wait 同时等 gate 与 stop，stop 索引优先；cancel 即使 gate 已 Activated 也必须 signal 共享 stop。原生初始化失败通过固定容量 Ready 结果返回，未启动音频前允许阻塞握手。Monitor 的两个 owner 等同一个 gate，各自在观察 Start 后开始计 duration；取消准备不能留下仍在捕获或播放的有限会话。
+- [x] 在现有 Windows owner 测试中新增真实事件 gate 测试：Ready 后未 activate 不产生 render；cancel 先于 activate 时永不运行；失败/取消都 join；用 DropProbe 记录纯 Rust renderer 在调用 join 的线程析构。测试 owner 使用可注入的 prepare/run 函数，不要求音频硬件。
+- [x] 停止后控制清理使用现有非 RT retire/reject_pending 逻辑，不丢已 Accepted 的未来事件：
 
 ```rust
 pub fn retire_controls(&mut self) -> usize {
@@ -153,7 +153,7 @@ pub fn retire_controls(&mut self) -> usize {
 ```
 
 清理调用方先 poll 已有 Applied，再 retire/reject，若回复满则继续 poll 后重试，直到返回 0。renderer 及 ControlPort 在这之前不得析构。为停止时回复队列已满添加测试，断言每个已接受 request_id 有且只有一个最终 Applied/AppliedLate/StaleRevision。
-- [ ] `cargo test --locked -p moiren-windows-audio` 和 `cargo test --locked -p moiren-app`；预期 CLI 的范围校验与旧有限会话测试仍通过。提交 `feat: prepare cancellable continuous audio sessions`，只包含本任务明确文件及报告文档。
+- [x] `cargo test --locked -p moiren-windows-audio` 和 `cargo test --locked -p moiren-app`；预期 CLI 的范围校验与旧有限会话测试仍通过。提交 `feat: prepare cancellable continuous audio sessions`，只包含本任务明确文件及报告文档。
 
 ### Task A3: 平台无关 AppService 状态机与有界调度
 
@@ -202,7 +202,7 @@ pub enum AppRequest {
 - `JobPool::new() -> io::Result<Self>`、`try_submit(&mut self, JobPriority, Box<dyn FnOnce() + Send>) -> Result<(), DispatchError>`、`reap_finished(&mut self)`；priority 为 Prepare/Cleanup。结果通道由 service 提供，每个任务必须提交其 generation 和拥有的结果。
 - `ServiceRuntime` 持有 service JoinHandle；`handle(&self) -> AppHandle`、`join(self) -> Result<(), ServiceJoinError>`；ServiceJoinError 为 ThreadPanicked。UI 只在 Exited 后 join。
 
-- [ ] 添加不依赖 Slint 或硬件的状态测试：
+- [x] 添加不依赖 Slint 或硬件的状态测试：
 
 ```rust
 use moiren_app::service::{DispatchError, InputSelection, RunLimit,
@@ -230,11 +230,13 @@ fn stopped_or_superseded_start_never_gets_permission_to_play() {
 }
 ```
 
-- [ ] `cargo test --locked -p moiren-app --test service`，确认新模块缺失失败；实现 DTO 校验和状态转换。开始/停止 generation 使用 checked_add；保存 desired，Starting 不等同 Running；stop/cancel 会让旧任务失去许可。owner_started 只接受当前 generation 且 desired 仍为 Running 的确认。
-- [ ] 增加真实 owner 占用的状态测试：activated(first) 后 owner_started(first)，再 start(second) 必须进入 Stopping，may_activate(second)=false；只有 owner_reaped(first) 后进入 Starting 并允许 second。清理旧 session 的回调依据 owner generation 处理，不因 desired 已变成 second 而被误判为无用结果。旧准备结果的 orphan cleanup 不调用 owner_reaped。
-- [ ] 实现 mailbox 与 pool 的固定上限：请求 64、每 worker 队列 1、结果 8、service 暂存 16；最多一个 Prepare 占 worker，另一个保留 Cleanup。快照 `Arc<Mutex<Arc<AppSnapshot>>>` 只在 service 短临界区替换，UI 用 try_lock 复制 Arc 后立刻释放；退出独立 AtomicBool + 非 RT unpark。UI 不向 worker 发送任何业务请求。
-- [ ] 新增有界性测试：填满 64 请求后下一次 Busy，退出标记仍到达；用 barrier 卡住 Prepare，Cleanup 仍能完成；用线程 ID 验证陈旧/失败结果被 worker drop；UI 不读取快照时后台 generation 和完成结果仍推进。barrier/可控时钟用于确定顺序，不用长 sleep 猜测并发。
-- [ ] `cargo test --locked -p moiren-app --test service --test service_jobs`；预期状态、退出、清理公平性测试通过。提交 `feat: add bounded application service runtime`。
+- [x] `cargo test --locked -p moiren-app --test service`，确认新模块缺失失败；实现 DTO 校验和状态转换。开始/停止 generation 使用 checked_add；保存 desired，Starting 不等同 Running；stop/cancel 会让旧任务失去许可。owner_started 只接受当前 generation 且 desired 仍为 Running 的确认。
+- [x] 增加真实 owner 占用的状态测试：activated(first) 后 owner_started(first)，再 start(second) 必须进入 Stopping，may_activate(second)=false；只有 owner_reaped(first) 后进入 Starting 并允许 second。清理旧 session 的回调依据 owner generation 处理，不因 desired 已变成 second 而被误判为无用结果。旧准备结果的 orphan cleanup 不调用 owner_reaped。
+- [x] 实现 mailbox 与 pool 的固定上限：请求 64、每 worker 队列 1、结果 8、service 暂存 16；最多一个 Prepare 占 worker，另一个保留 Cleanup。快照 `Arc<Mutex<Arc<AppSnapshot>>>` 只在 service 短临界区替换，UI 用 try_lock 复制 Arc 后立刻释放；退出独立 AtomicBool + 非 RT unpark。UI 不向 worker 发送任何业务请求。
+- [x] 新增有界性测试：填满 64 请求后下一次 Busy，退出标记仍到达；用 barrier 卡住 Prepare，Cleanup 仍能完成；用线程 ID 验证陈旧/失败结果被 worker drop；UI 不读取快照时后台 generation 和完成结果仍推进。barrier/可控时钟用于确定顺序，不用长 sleep 猜测并发。
+- [x] `cargo test --locked -p moiren-app --test service --test service_jobs`；预期状态、退出、清理公平性测试通过。提交 `feat: add bounded application service runtime`。
+
+A3 证据：05e77cd、38db506、8732d45；状态/调度测试 19 passed，退出中途和轮次入口两个 barrier 回归通过；独立 spec/quality 审查通过。现有 build.rs/main.rs 警告留待 A5，真实后端和 UI 生命周期由 A4/A5 接续。
 
 ### Task A4: 服务接入现有 Windows 后端与参数
 
@@ -254,8 +256,8 @@ fn stopped_or_superseded_start_never_gets_permission_to_play() {
 - `PreparedSession::activate(&self) -> Result<(), BackendError>`、`into_active(self: Box<Self>) -> Box<dyn ActiveSession>`、`cancel(&self) -> Result<(), BackendError>`、`join(self: Box<Self>) -> Result<SessionReport, BackendError>`；ActiveSession 提供 request_stop/is_finished/control/poll_started/join，control 返回 `Option<(&mut ControlPort, &CompiledBindings)>`，poll_started 返回 Starting/Running/Failed 标量状态；join 的 self 也是 Box<Self>，返回 SessionReport。两 trait 都 Send，所有调用都在非 RT。
 - SessionReport 为 `{ status: SessionEnd, error: Option<String>, control_replies: Vec<ControlReply> }`，SessionEnd 为 Completed/Stopped/TargetExited/Failed；完整现有 Windows 报告另保留在非 RT 诊断适配中。control_replies 在 worker 预分配容量 64，对应 service 最多 64 个尚未终结 Accepted 请求，不运行无界积累。`ServiceCore::start_failed(&mut self, SessionGeneration, BackendError)` 只影响当前 generation。
 
-- [ ] 建 fake backend 测试：准备返回时无音频推进；当前 generation 才 activate；旧结果进入清理；任一 owner 失败会停止对端；Requested stop 的 join 在 worker；不更改真实设备音量/默认设备。
-- [ ] 按以下控制顺序实现真实适配，generation 判断与 join 所有权不可省略：
+- [x] 建 fake backend 测试：准备返回时无音频推进；当前 generation 才 activate；旧结果进入清理；任一 owner 失败会停止对端；Requested stop 的 join 在 worker；不更改真实设备音量/默认设备。
+- [x] 按以下控制顺序实现真实适配，generation 判断与 join 所有权不可省略：
 
 ```rust
 enum CompletionDecision {
@@ -288,13 +290,18 @@ fn accept_prepared(core: &mut ServiceCore, generation: SessionGeneration,
 
 Activated 仍保持 Starting，直到 poll_started 确认 Running。service 只在无旧 owner 时派发新会话 prepare；旧 owner 的 join 结果调用 owner_reaped 后再按最新 desired 派发。Cleanup 对象进入固定有界待清理槽，派发前为每个 prepare/active session 保留 cleanup credit；不能在队列满时直接 drop。完成结果不使用 `?` 提前释放 prepared。完整所有权分支由 fake 的 DropProbe 验证。
 
-- [ ] 目录任务复用 catalog::snapshot 与 inspect_process；传给 UI 的都是 owned DTO，不携带 COM。进程行保存 PID + creation time；输出/输入按 endpoint ID 选中，刷新不以旧行索引猜测身份。枚举与准备都占 Prepare 限额，不抢 Cleanup。
-- [ ] AppService 唯一持有活动 ControlPort。SetGainPan 校验有限值与范围后，对当前 CompiledBindings 的 Gain::LEVEL/Pan::POSITION 构造 ParameterRequest；revision/epoch 来自当前计划。尚未 Accepted 的期望滑杆值可合并；QueueFull 保持待提交状态；Accepted 请求保持有界 ledger，Applied/失败回复到达后才能结束。服务每轮至多 poll 32 个回复。
-- [ ] 停止时把 session 与其 ControlPort 一并交给 cleanup worker。worker join_with_renderer 后调用 A2 的 retire_controls，并交替 drain 控制回复，完整终结剩余 Accepted 请求；最终回复通过 SessionReport 回到 service 更新 ledger，然后才释放 renderer/图。退出仍检查 ledger 已终结，不能仅因音频 owner 已退出就宣称清理完成。
-- [ ] 频率沿用当前固定 SineSource：运行时变更 frequency 视为重新准备会话，经过同一停止/generation/gate 流程；gain/pan 通过参数通路。不偷偷增加 RtAudioSource 参数接口。
-- [ ] `cargo test --locked -p moiren-app --test service_backend --test monitor --test tone`；Windows 手工以显式 endpoint 启动、停止并观察 service Running/Failed，单独记录实机证据。提交 `feat: route audio sessions and parameters through app service`。
+- [x] 目录任务复用 catalog::snapshot 与 inspect_process；传给 UI 的都是 owned DTO，不携带 COM。进程行保存 PID + creation time；输出/输入按 endpoint ID 选中，刷新不以旧行索引猜测身份。枚举与准备都占 Prepare 限额，不抢 Cleanup。
+- [x] AppService 唯一持有活动 ControlPort。SetGainPan 校验有限值与范围后，对当前 CompiledBindings 的 Gain::LEVEL/Pan::POSITION 构造 ParameterRequest；revision/epoch 来自当前计划。尚未 Accepted 的期望滑杆值可合并；QueueFull 保持待提交状态；Accepted 请求保持有界 ledger，Applied/失败回复到达后才能结束。服务每轮至多 poll 32 个回复。
+- [x] 停止时把 session 与其 ControlPort 一并交给 cleanup worker。worker join_with_renderer 后调用 A2 的 retire_controls，并交替 drain 控制回复，完整终结剩余 Accepted 请求；最终回复通过 SessionReport 回到 service 更新 ledger，然后才释放 renderer/图。退出仍检查 ledger 已终结，不能仅因音频 owner 已退出就宣称清理完成。
+- [x] 频率沿用当前固定 SineSource：运行时变更 frequency 视为重新准备会话，经过同一停止/generation/gate 流程；gain/pan 通过参数通路。不偷偷增加 RtAudioSource 参数接口。
+- [x] `cargo test --locked -p moiren-app --test service_backend --test monitor --test tone`；提交 `feat: route audio sessions and parameters through app service`。
+- [x] Windows 以用户当前默认输入/输出对应的显式 endpoint 启动、停止并观察 service Running/Failed；真实默认输出测试音和进程监听通过，默认4声道物理输入因格式限制 Failed，未更换默认设备。
+
+A4 代码证据：62d91c9、7abf892；相关套件 209 passed，最后后端 gate 24 passed，两项 Minor 修复 RED/GREEN 及 focused 40 passed；独立 spec/quality 初审和修复复审通过。自然结束清除当前代未提交意图，目录错误独立暴露并保留旧目录和会话状态。实机 Running/Failed/停止/进程退出已在 A5 实测；默认4声道捕获为明确限制。P0（3cf76ec）已修正通用 service 的 TimelineSnapshot 平台边界，Linux app 全 targets 编译通过，Windows 21 项回归与严格 Clippy 通过，独立复审通过；后续集成完成后重复最终 portability gate。A5 已消除基线 UI 警告。
 
 ### Task A5: 接入 Slint model、主窗和同线程 tray
+
+新增用户要求（2026-10-11）：所有功能图标从 Iconify 下载，并按图标集的实际许可证处理。替换现有 23 个功能 SVG，保留完整版权与许可文本、逐文件 Iconify 来源和校验清单；使用本地 SVG，不新增运行时图标网络依赖。当前已核验 Tabler Icons 3.49.0 的 MIT 许可并准备下载。品牌 logo 使用用户提供的 assets/logos/ 内 5 个 Figma 2C「斜向穿梭 · 紫色」透明 SVG：窗口按主题用 light/dark mark 和字标，软件/tray 用 icon-64，保持原始矢量和宽高比，不将品牌文件标作 Tabler/MIT。接入需实际查看 Slint 渲染。
 
 **Files:**
 
@@ -309,9 +316,9 @@ Activated 仍保持 Starting，直到 poll_started 确认 Running。service 只�
 - root MainWindow 保留 page、minimize/toggle-maximize/close-window；`AppTray` callbacks show-window/stop-session/exit-app；root tray 使用自己实例的 Backend 状态。
 - `WindowPresentation` 纯 Rust 状态记录 visible/minimized/page；`hide_to_tray` 只改变展示，`request_exit` 调 service 退出。C4 在此基础接入真实订阅。
 
-- [ ] 修改 model/callback 前核对 Slint 1.18.1，使用 slint 技能；对当前页面逐个建立 Rust callback 映射，保留用户主题与布局。
-- [ ] backend.slint 新建 BackendPhase 为 idle/starting/running/stopping/failed/exiting/exited，避免沿用 mock 的四态 SessionState。输入/输出 ID 用原 endpoint String；进程选择用包含精确 PID/creation-time 的稳定字符串 key 或 Rust model 的原始 DTO，不能通过 Slint float 传递 u64 creation time。运行时间来自 elapsed，尚无真实 live 数据的统计显示“—”，删除硬编码 Mock 延迟、xrun、漂移和运行时间。
-- [ ] 新增 tray 组件，真实 Slint 内容如下；在 main.slint import 并 re-export AppTray，使现有一次 build.rs 编译生成两种 root：
+- [x] 修改 model/callback 前核对 Slint 1.18.1，使用 slint 技能；对当前页面逐个建立 Rust callback 映射，保留用户主题与布局。
+- [x] backend.slint 新建 BackendPhase 为 idle/starting/running/stopping/failed/exiting/exited，避免沿用 mock 的四态 SessionState。输入/输出 ID 用原 endpoint String；进程选择用包含精确 PID/creation-time 的稳定字符串 key 或 Rust model 的原始 DTO，不能通过 Slint float 传递 u64 creation time。运行时间来自 elapsed，尚无真实 live 数据的统计显示“—”，删除硬编码 Mock 延迟、xrun、漂移和运行时间。
+- [x] 新增 tray 组件，真实 Slint 内容如下；在 main.slint import 并 re-export AppTray，使现有一次 build.rs 编译生成两种 root：
 
 ```slint
 export component AppTray inherits SystemTrayIcon {
@@ -334,8 +341,8 @@ export component AppTray inherits SystemTrayIcon {
 }
 ```
 
-- [ ] 将按钮的本地 `running = !running`/`playing = !playing` 替换为 service 请求和 phase 展示；Starting/Stopping 禁止重复动作。设备控件改用实际 model，空目录与失效选择禁用启动。音频真实电平在 C4 接入前显示无数据，不把原 mock 值当运行读数。
-- [ ] 主窗与 tray 创建于主线程，隐藏保留 service，事件循环改为显式退出：
+- [x] 将按钮的本地 `running = !running`/`playing = !playing` 替换为 service 请求和 phase 展示；Starting/Stopping 禁止重复动作。设备控件改用实际 model，空目录与失效选择禁用启动。音频真实电平在 C4 接入前显示无数据，不把原 mock 值当运行读数。
+- [x] 主窗与 tray 创建于主线程，隐藏保留 service，事件循环改为显式退出：
 
 ```rust
 let window = MainWindow::new()?;
@@ -354,6 +361,10 @@ slint::run_event_loop_until_quit()?;
 
 在完整 run 中保存 service、tray、UI Timer 到 loop 结束；窗口系统 close 与自定义 close-window 都走 hide_to_tray。service Exited 后才 quit_event_loop 并 join 完成线程。UI 异常返回也先 request_exit，清理对象由 worker 路径承接；不能 detached 仍有音频的 service。
 
-- [ ] 33 ms UI Timer 用 AppHandle::try_snapshot 更新两实例；不逐 block invoke_from_event_loop。测试窗口隐藏/重建不改变后端状态，以及满普通请求时退出仍到达；不为纯属性转发写重复测试。
-- [ ] `cargo check --locked -p moiren-app`、`cargo test --locked -p moiren-app`。运行 GUI 查看截图并交互验证真实目录、空列表、Starting/Failed、关闭到 tray、恢复、退出；截图保存在 `.tmp/`。预期窗口隐藏后会话继续、显式退出后进程与 owner 全部结束。
-- [ ] 显式暂存上述 UI/适配文件，提交 `feat: connect Slint and tray to application service`；用户未要求的 UI 原稿和设计资产保持原状态。
+- [x] 33 ms UI Timer 用 AppHandle::try_snapshot 更新两实例；不逐 block invoke_from_event_loop。测试窗口隐藏/重建不改变后端状态，以及满普通请求时退出仍到达；不为纯属性转发写重复测试。
+- [x] `cargo check --locked -p moiren-app`、`cargo test --locked -p moiren-app`。运行 GUI 查看截图并交互验证真实目录、Starting/Failed、关闭到 tray、恢复、退出；截图保存在 `.tmp/`。预期窗口隐藏后会话继续、显式退出后进程与 owner 全部结束。
+- [x] 显式暂存上述 UI/适配文件，提交 `feat: connect Slint and tray to application service`；用户未要求的 UI 原稿和设计资产保持原状态。
+
+- [x] 最终集成时通过明确标识的 native UI fixture 验证空目录、目录错误与七阶段展示；2026-10-12 显式运行 controlled_native_catalog_and_seven_phases，通过 14 个原生状态快照、错误重试与 Start/Stop 连点检查，截图和 JSON 在 .tmp/native-acceptance/。该用例使用明确标识的合成目录，真实音频另由 native_audio_stop_and_quit_join_owners 验证。
+
+A5 证据：e4fe756、4823fb9（合并已知授权设计基线 c385c96）；70 app tests、严格 app all-target Clippy/check、fmt/diff/Slint check 通过；两个 Important 和四个 Minor 修复后独立复审 Approved。真实默认 Realtek 输出 gain0.01 测试音 Starting/Running/有限自然结束、Stop、隐藏与原生托盘通知恢复、运行中显式退出通过；真实默认4声道输入明确 Failed，不宣称监听音频通过。临时 exact-identity 进程退出后捕获与输出 owner 均成功停止。修复后的输入详情、浅色主题切页保持和运行中时长禁用已用新版 native UI 验证。原始品牌5SVG和23Iconify/TablerMIT图标来源/hash/许可单独保存；没有 RT/UI 新线程。

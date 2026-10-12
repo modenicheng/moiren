@@ -69,7 +69,7 @@ sealed 模块只向 crate 内四种 marker 开放；LatestValue/StreamValue 实�
 - `budget_used(&self) -> usize`；RegisterError 为 InvalidName/InvalidCapacity/SizeOverflow/BudgetExceeded/TopicLimit/DuplicateName/GenerationExhausted/PayloadTooLarge。注册 generation 与目录/host ID 用 checked 增长，耗尽不回绕；失败不提交新身份。
 - 名称必须非空、不含 NUL，最多 256 UTF-8 字节；不强制业务路径层级。ZST 合法，仍计入元数据和实际槽布局。header+元素+meta 的单消息最大复制布局超 max_payload_bytes 时返回 PayloadTooLarge；该错误纳入 RegisterError，在任何分配/注册提交前检查。
 
-- [ ] 添加无需 Default 的初始化与失败原子性测试：
+- [x] 添加无需 Default 的初始化与失败原子性测试：
 
 ```rust
 use moiren_signal::{BlockInit, Bus, BusConfig, LatestBlock, LookupError};
@@ -90,8 +90,8 @@ fn valid_nonzero_payload_can_register_without_default() {
 }
 ```
 
-- [ ] `cargo test -p moiren-signal --test registry`，预期新 crate/API 尚不存在；添加 workspace member 和上述 dependencies，更新 lock 后后续使用 --locked。
-- [ ] 实现 storage 布局预算，使用实际 slot struct 的 Layout，而不是仅 `len * size_of::<E>()`。所有乘法、加法和对齐均 checked；非 RT 分配结果保存在 staged allocation，全部成功后提交目录。值与块完整初始化，不使用 zeroed 创建任意 Copy 类型。
+- [x] `cargo test -p moiren-signal --test registry`，预期新 crate/API 尚不存在；添加 workspace member 和上述 dependencies，更新 lock 后后续使用 --locked。
+- [x] 实现 storage 布局预算，使用实际 slot struct 的 Layout，而不是仅 `len * size_of::<E>()`。所有乘法、加法和对齐均 checked；非 RT 分配结果保存在 staged allocation，全部成功后提交目录。值与块完整初始化，不使用 zeroed 创建任意 Copy 类型。
 
 ```rust
 fn checked_elements_bytes<E>(capacity: usize, slots: usize)
@@ -104,8 +104,8 @@ fn checked_elements_bytes<E>(capacity: usize, slots: usize)
 
 上面只计算元素区域；slot/header/queue/metadata 另用 Layout::array/extend/pad_to_align 计入。Latest 只准备其三槽与分发暂存，绝不能顺带建 Stream ring。注册失败不占名称、Topic slot、generation 或预算。
 
-- [ ] 加容量溢出、超预算、重复名、模式不匹配、未注册 NotFound 和初始化非消息测试；核对按 factory 逐槽初始化，而不是复制未初始化占位。
-- [ ] `cargo test --locked -p moiren-signal --test registry`；预期所有通过。显式暂存 workspace、lock 与新 crate 文件，提交 `feat: register typed signal topics with bounded storage`。
+- [x] 加容量溢出、超预算、重复名、模式不匹配、未注册 NotFound 和初始化非消息测试；核对按 factory 逐槽初始化，而不是复制未初始化占位。
+- [x] `cargo test --locked -p moiren-signal --test registry`；预期所有通过。显式暂存 workspace、lock 与新 crate 文件，提交 `feat: register typed signal topics with bounded storage`。
 
 ### Task B2: Latest 值/块、需求代次和显式提交
 
@@ -124,8 +124,8 @@ fn checked_elements_bytes<E>(capacity: usize, slots: usize)
 - 值订阅 `read_latest(&mut self) -> Option<ValueMessage<T>>`，ValueMessage `{ meta, value }`；块订阅 `read_latest(&mut self) -> Option<BlockReadGuard<'_,H,E>>`，guard `meta()`, `header() -> &H`, `elements() -> &[E]`。
 - 读取区分首次/新版本，反复 read_latest 未更新返回 None；新 Latest 订阅在已有业务需求时复制当前完整快照作为首次消息。
 
-- [ ] 在 private endpoint 单元测试里构造初始值 99，未发布时 read_latest 为 None；写值 1、2、3 后仅取得 3；块填 `[1,2]` 未 commit 后上一消息完整保留。非法 commit 长度不改变上一条消息或 sequence。
-- [ ] 实现需求的单一原子编码：低 7 bit 为业务 subscriber count、bit 7 为 Closed、高 56 bit 为 activation generation。新增业务订阅在非 RT CAS 中，count=0 时 checked 增 generation；取消/Drop 用非 RT CAS 减 count。关闭只设置 Closed bit，保留 count 供现存 subscriber Drop，active 为 !closed && count>0。内部 dispatcher 不占 count；RT 仅 load Acquire。最多 64 个 subscriber 的校验在 CAS 增数前完成，工厂/预算失败不改变 demand。
+- [x] 在 private endpoint 单元测试里构造初始值 99，未发布时 read_latest 为 None；写值 1、2、3 后仅取得 3；块填 `[1,2]` 未 commit 后上一消息完整保留。非法 commit 长度不改变上一条消息或 sequence。
+- [x] 实现需求的单一原子编码：低 7 bit 为业务 subscriber count、bit 7 为 Closed、高 56 bit 为 activation generation。新增业务订阅在非 RT CAS 中，count=0 时 checked 增 generation；取消/Drop 用非 RT CAS 减 count。关闭只设置 Closed bit，保留 count 供现存 subscriber Drop，active 为 !closed && count>0。内部 dispatcher 不占 count；RT 仅 load Acquire。最多 64 个 subscriber 的校验在 CAS 增数前完成，工厂/预算失败不改变 demand。
 
 ```rust
 const COUNT_MASK: u64 = 0x7f;
@@ -147,9 +147,9 @@ fn next_subscription_word(word: u64) -> Result<u64, SubscribeError> {
 
 取消可以发生在订阅线程，原子编码保证零需求再恢复即使发生在两个 RT 块之间也增加代次。计数 CAS 重试只发生非 RT。RT block scope 缓存 DemandSnapshot，分段发布沿用同一代次；dispatcher/subscriber 仅交付当前有效代次的数据。
 
-- [ ] Latest 使用 upstream `input_buffer_mut()` 和显式 `publish()`。总线 guard Drop 只结束借用，不调用 publish；块存储是固定 Box<[E]>，只修改既有 header/elements/len，不替换 Box。producer、dispatcher 与每个 subscriber 的 Latest 存储独立。
-- [ ] sequence 由唯一 RT writer 的 checked u64 本地计数产生，分配时 store Release 到 attempt_sequence；原子时刻在 commit 和 transport publish 之前。NoDemand、非法长度、主动 abort 不递增；满容量申请在 B3 递增。首次已发布标记与初始 payload 分开。
-- [ ] 追加两次 block 之间 subscribe→Drop→subscribe 测试，断言 generation 增加、旧缓存不可读，另一个订阅持续存在时 generation 不变。`cargo test --locked -p moiren-signal --test latest --test demand`；提交 `feat: add latest signals with demand generations`。
+- [x] Latest 使用 upstream `input_buffer_mut()` 和显式 `publish()`。总线 guard Drop 只结束借用，不调用 publish；块存储是固定 Box<[E]>，只修改既有 header/elements/len，不替换 Box。producer、dispatcher 与每个 subscriber 的 Latest 存储独立。
+- [x] sequence 由唯一 RT writer 的 checked u64 本地计数产生，分配时 store Release 到 attempt_sequence；原子时刻在 commit 和 transport publish 之前。NoDemand、非法长度、主动 abort 不递增；满容量申请在 B3 递增。首次已发布标记与初始 payload 分开。
+- [x] 追加两次 block 之间 subscribe→Drop→subscribe 测试，断言 generation 增加、旧缓存不可读，另一个订阅持续存在时 generation 不变。`cargo test --locked -p moiren-signal --test latest --test demand`；提交 `feat: add latest signals with demand generations`。B2 完成于 `b5cd5ea`，并经 `598dabb` 修复预算退账并发问题、独立复审 Approved。
 
 ### Task B3: Stream 固定池、独立借用与新订阅 fence
 
@@ -166,11 +166,11 @@ fn next_subscription_word(word: u64) -> Result<u64, SubscribeError> {
 - Subscriber 的 depth 指尚未消费消息上限，已借出的块额外占一个预分配 loan slot。该 slot 显式计入预算；同一个 &mut Subscriber 最多一个 guard，不提供 clone 读取端。
 - `Subscriber::status(&self) -> TopicStatus`；TopicStatus `{ lifecycle: Registered|Closed, publisher: Bound|NoPublisher }`，尚未发布由 read 返回 None 表达。
 
-- [ ] 为深度 2 的 private ingress 写测试：发布 10、20 成功，30 返回 DroppedFull 且前两条顺序不变；消费后发布 40，其 sequence 与 20 之间存在缺口，Topic drops=1。try_write 成功后放弃不产生缺口，满槽申请则产生一次 drop/sequence。
-- [ ] 实现安全的所有权循环：`free slot ring → RT writer guard → ready ring → dispatcher-owned slot → free ring`。ring 使用 rtrb；移动的是拥有有效初始化存储的 slot owner，不 clone/resize/free payload。abort 把 slot 放回 writer 本地 spare 或已准备 free ring，不能触发容量失败后析构 payload。
-- [ ] Subscriber 建独立 ready/free ring 及 loan slot；dispatcher 只复制有效 header/elements 并保留原 meta。不把 RT ingress slot 直接借给业务 subscriber；一个 subscriber 满时只增加自己的 drops，继续其他订阅。
-- [ ] 新 Stream 订阅在存储准备成功后 load Acquire attempt_sequence 为 fence，再正式增加需求；只交付 generation 匹配且 sequence > fence 的消息。fence 的订阅边界采用 B2 的 commit 分配时刻，不采用 pump 读取时刻。并发测试用 barrier 控制 commit 序号分配与 enqueue 两个阶段，验证边界的明确顺序。
-- [ ] 追加三个独立 subscriber 的不同深度测试；一个持有 guard，另两个仍能接收。小目标 slice 不消费、借用与复制内容一致、注销后的 guard 可读且不提前释放槽。`cargo test --locked -p moiren-signal --test stream`；提交 `feat: add bounded stream signals and independent read loans`。
+- [x] 为深度 2 的 private ingress 写测试：发布 10、20 成功，30 返回 DroppedFull 且前两条顺序不变；消费后发布 40，其 sequence 与 20 之间存在缺口，Topic drops=1。try_write 成功后放弃不产生缺口，满槽申请则产生一次 drop/sequence。
+- [x] 实现安全的所有权循环：`free slot ring → RT writer guard → ready ring → dispatcher-owned slot → free ring`。ring 使用 rtrb；移动的是拥有有效初始化存储的 slot owner，不 clone/resize/free payload。abort 把 slot 放回 writer 本地 spare 或已准备 free ring，不能触发容量失败后析构 payload。
+- [x] Subscriber 建独立 ready/free ring 及 loan slot；dispatcher 只复制有效 header/elements 并保留原 meta。不把 RT ingress slot 直接借给业务 subscriber；一个 subscriber 满时只增加自己的 drops，继续其他订阅。
+- [x] 新 Stream 订阅在存储准备成功后 load Acquire attempt_sequence 为 fence，再正式增加需求；只交付 generation 匹配且 sequence > fence 的消息。fence 的订阅边界采用 B2 的 commit 分配时刻，不采用 pump 读取时刻。并发测试用 barrier 控制 commit 序号分配与 enqueue 两个阶段，验证边界的明确顺序。
+- [x] 追加三个独立 subscriber 的不同深度测试；一个持有 guard，另两个仍能接收。小目标 slice 不消费、借用与复制内容一致、注销后的 guard 可读且不提前释放槽。`cargo test --locked -p moiren-signal --test stream`；提交 `feat: add bounded stream signals and independent read loans`。
 
 ### Task B4: 有界 pump、生命周期和分层统计
 
@@ -206,8 +206,8 @@ pub struct SubscriberStats { pub delivered: u64, pub overflow_drops: u64 }
 - `Bus::unregister<P>(&mut self, &Topic<P>) -> Result<(), UnregisterError>`；UnregisterError 为 Busy/Closed/ForeignTopic。
 - `Topic::stats()`/`Subscriber::stats()` 返回独立复制计数；Subscriber 状态可在无后续消息时查询。计数饱和不回绕，不将 Latest 跳版本计成 Stream ingress loss。
 
-- [ ] 构造 3 个 subscriber，预算只允许 ingress→暂存一次和一个 subscriber 复制；连续 pump 验证总 copy_bytes 不超限、fan-out 用保存游标逐轮完成；held guard 不占 RT pool。为超本轮 budget 的单消息检查 required_copy_bytes，调整到足额后能前进。
-- [ ] 用完整成本扣减函数实施每一步预算，禁止把“一个 ingress”当成全部 fan-out 成本：
+- [x] 构造 3 个 subscriber，预算只允许 ingress→暂存一次和一个 subscriber 复制；连续 pump 验证总 copy_bytes 不超限、fan-out 用保存游标逐轮完成；held guard 不占 RT pool。为超本轮 budget 的单消息检查 required_copy_bytes，调整到足额后能前进。
+- [x] 用完整成本扣减函数实施每一步预算，禁止把“一个 ingress”当成全部 fan-out 成本：
 
 ```rust
 fn charge(report: &mut PumpReport, budget: PumpBudget, bytes: usize) -> bool {
@@ -225,9 +225,9 @@ fn charge(report: &mut PumpReport, budget: PumpBudget, bytes: usize) -> bool {
 
 header+有效元素+transport meta 的实际复制布局都计入 bytes。metadata-only 的 Topic 检查也受 topic_checks 上限。按 Topic round-robin，不让一个长期活跃 Stream 吃掉全部循环；一轮 fan-out 只包含取出时存在且符合 fence/generation 的订阅，随后新订阅不补历史 Stream。
 
-- [ ] 非 RT unregister 与新 lease/订阅建立通过同一 registry lifecycle gate 串行协调。publisher Bound 或 graph prepared/active/retired lease 非零返回 Busy，失败无变化；成功去掉名称映射并设置 Closed bit，使 active 立即为 false，但保留实际 subscriber count 直到 Drop，避免取消下溢。老 subscriber/guard 保留可安全读的独立存储；可读状态为 Closed；新同名注册使用新 generation，旧 handle 永远不解析成新 Topic。
-- [ ] 所有注册、订阅与闭合后 loan 存储持续计入 budget，真实最后引用释放时才退账。仅退订不注销 Topic、不释放其 ingress。NoPublisher 保留旧 Latest/既有 Stream，重新 bind sequence 连续；若业务 demand 曾归零则新 generation 过滤优先。
-- [ ] 测试预算不足订阅不增加 demand、Busy 不关闭、注销旧 guard 安全、同名重注册隔离、无 publisher 不丢旧数据、最后一条 Full 的 stats 可读取。`cargo test --locked -p moiren-signal --test lifecycle --test latest --test stream`；提交 `feat: bound signal fanout and explicit topic lifecycle`。
+- [x] 非 RT unregister 与新 lease/订阅建立通过同一 registry lifecycle gate 串行协调。publisher Bound 或 graph prepared/active/retired lease 非零返回 Busy，失败无变化；成功去掉名称映射并设置 Closed bit，使 active 立即为 false，但保留实际 subscriber count 直到 Drop，避免取消下溢。老 subscriber/guard 保留可安全读的独立存储；可读状态为 Closed；新同名注册使用新 generation，旧 handle 永远不解析成新 Topic。
+- [x] 所有注册、订阅与闭合后 loan 存储持续计入 budget，真实最后引用释放时才退账。仅退订不注销 Topic、不释放其 ingress。NoPublisher 保留旧 Latest/既有 Stream，重新 bind sequence 连续；若业务 demand 曾归零则新 generation 过滤优先。
+- [x] 测试预算不足订阅不增加 demand、Busy 不关闭、注销旧 guard 安全、同名重注册隔离、无 publisher 不丢旧数据、最后一条 Full 的 stats 可读取。`cargo test --locked -p moiren-signal --test lifecycle --test latest --test stream`；提交 `feat: bound signal fanout and explicit topic lifecycle`。
 
 ### Task B5: 唯一 stable host、typed handle 与调用权限
 
@@ -247,12 +247,12 @@ header+有效元素+transport meta 的实际复制布局都计入 bytes。metada
 - `RtHost::begin_block(&mut self)` 缓存 active slots 的 demand 快照，不读取墙钟；`PublisherHandle<P>` 可 Copy，但无独立 publish 方法。
 - `SignalScope::publish` 按 shape 的 `ValueShape` trait 分派，`try_write`/publish_slice 按 `BlockShape`；trait 由 crate sealed，仅上述四 shape 实现，用户只提供 T/H/E。
 
-- [ ] 添加权限测试：第二个 host 绑定同 Topic 返回 PublisherConflict；candidate 的 handle 在旧 scope 返回 InactiveBinding；activate 后旧 handle 失效，新 handle 发布仍沿用原 sequence、generation、实际槽地址。两份 candidate 都存在时取消其中一份不修改当前 active binding。
-- [ ] 实施稳定 endpoint：目录/host 控制根共同保活预分配 publisher cell，唯一 RtHost 的 `&mut` scope 才能取出对应 typed writer。所有 Any/TypeId 解析和 erased→typed pointer 绑定在非 RT 完成；RT 只比较 host/binding 身份并访问已经验证的 slot。unsafe 限于 slot.rs，逐项注释唯一 mutable alias、地址稳定和 plan/host lease 的存活依据。
-- [ ] 已有 Topic update 只换权限表，不移动/重建 producer；新 Topic 的 cell 在非 RT 创建，包在 PreparedHostUpdate 中，激活只占用预分配的空 host slot。slot 回收随 RetiredHostUpdate 走 offRT；不能在 RT Vec::push、resize、克隆 producer 或 drop 替换出的 Box/Arc。
-- [ ] PublisherConflict 保护从 host 准备到解绑/退场；prepared/active/retired graph lease 都令注销 Busy。无活动 binding 的 host slot可以保留 endpoint，但它不能授予旧计划权限；注销 Closed 后该 slot 不可再次 prepare，实际存储在安全退场后回收并持续计费。
-- [ ] 引用释放和资源回收控制根必须保活直到所有 RT host 与 retired update 已移回非 RT。测试主动退出 Bus 控制用户、保留后台 cleanup 根，RT 继续完成 publish/activate，不出现最后 Arc 析构；随后 cleanup drop 记录线程 ID。host 完全停止并在非 RT 释放后允许新 host 重新绑定注册 Topic；这属于无并发 writer 的重新绑定，沿用原 writer 存储/sequence，不提供活动 host 之间的迁移。遗留 HostControl 无法在 host 已释放后重新授予权限。
-- [ ] 用公开接口建立基本 host 测试，确保上述 API 能组合使用：
+- [x] 添加权限测试：第二个 host 绑定同 Topic 返回 PublisherConflict；candidate 的 handle 在旧 scope 返回 InactiveBinding；activate 后旧 handle 失效，新 handle 发布仍沿用原 sequence、generation、实际槽地址。两份 candidate 都存在时取消其中一份不修改当前 active binding。
+- [x] 实施稳定 endpoint：目录/host 控制根共同保活预分配 publisher cell，唯一 RtHost 的 `&mut` scope 才能取出对应 typed writer。所有 Any/TypeId 解析和 erased→typed pointer 绑定在非 RT 完成；RT 只比较 host/binding 身份并访问已经验证的 slot。unsafe 限于 slot.rs，逐项注释唯一 mutable alias、地址稳定和 plan/host lease 的存活依据。
+- [x] 已有 Topic update 只换权限表，不移动/重建 producer；新 Topic 的 cell 在非 RT 创建，包在 PreparedHostUpdate 中，激活只占用预分配的空 host slot。slot 回收随 RetiredHostUpdate 走 offRT；不能在 RT Vec::push、resize、克隆 producer 或 drop 替换出的 Box/Arc。
+- [x] PublisherConflict 保护从 host 准备到解绑/退场；prepared/active/retired graph lease 都令注销 Busy。无活动 binding 的 host slot可以保留 endpoint，但它不能授予旧计划权限；注销 Closed 后该 slot 不可再次 prepare，实际存储在安全退场后回收并持续计费。
+- [x] 引用释放和资源回收控制根必须保活直到所有 RT host 与 retired update 已移回非 RT。测试主动退出 Bus 控制用户、保留后台 cleanup 根，RT 继续完成 publish/activate，不出现最后 Arc 析构；随后 cleanup drop 记录线程 ID。host 完全停止并在非 RT 释放后允许新 host 重新绑定注册 Topic；这属于无并发 writer 的重新绑定，沿用原 writer 存储/sequence，不提供活动 host 之间的迁移。遗留 HostControl 无法在 host 已释放后重新授予权限。
+- [x] 用公开接口建立基本 host 测试，确保上述 API 能组合使用：
 
 ```rust
 use moiren_signal::{Bus, BusConfig, PumpBudget, SubscriptionOptions};
@@ -277,7 +277,7 @@ fn typed_handle_requires_active_scope() {
     assert_eq!(subscriber.read_latest().unwrap().value, 0.75);
 }
 ```
-- [ ] 加 compile-fail doctest：SignalScope 不能 clone/发送至 thread、BlockWriteGuard 不能逃出作用域；分别执行 `cargo test --locked -p moiren-signal --test host` 和 `cargo test --locked -p moiren-signal --doc`。提交 `feat: authorize typed signal publication with stable RT hosts`。
+- [x] 加 compile-fail doctest：SignalScope 不能 clone/发送至 thread、BlockWriteGuard 不能逃出作用域；分别执行 `cargo test --locked -p moiren-signal --test host` 和 `cargo test --locked -p moiren-signal --doc`。提交 `feat: authorize typed signal publication with stable RT hosts`。
 
 ### Task B6: RT 分配、并发安全和独立示例
 
@@ -288,10 +288,10 @@ fn typed_handle_requires_active_scope() {
 
 **Interfaces:** 只消费 B1–B5 已定义公开 API；不添加音频/Slint 类型或不受约束的 byte payload 逃生口。
 
-- [ ] 用 TLS allocator 计数包围仅 RT 调用段：值/块 publish、Latest 覆盖、Stream Full、guard abort、generation 改变、activate 成功/拒绝、UI subscriber Drop 后的 RT。assert alloc=0、realloc=0、dealloc=0；准备、pump、subscription 和最终回收在计数段之外。new Topic activation 也必须纳入。
-- [ ] 压力测试一个生产线程 + pump 线程 + 两个独立订阅线程，自定义 `{ sequence_echo, inverse_echo }` 成对变化，逐条断言来自同一发布；一个读 guard 通过 barrier 保留时另一个 subscriber 继续。线程 join 后核对 ingress/各 subscriber 分层 loss 与原始 sequence，不用固定时间等待保证通过。
-- [ ] 为 safe 初始化/guard/pointer 访问跑 Miri：`cargo +nightly miri test -p moiren-signal --test host --test latest --test stream`。首次环境缺 nightly/Miri 时记录环境问题，先完成正常测试；不得把未执行说成已通过。并发 unsafe 内部若需要模型检查，以该 crate 的实际原子协议添加最小模型，不为整个软件引入新的 runtime。
-- [ ] 示例在独立 producer 线程发布 `StreamBlock<FrameHeader, f32>`，另注册一个 LatestValue<f32>；有限运行并把 host/绑定所有权返回给非 RT join 调用方。使用以下完整示例，不让 publisher/表在 producer 退出时析构：
+- [x] 用 TLS allocator 计数包围仅 RT 调用段：值/块 publish、Latest 覆盖、Stream Full、guard abort、generation 改变、activate 成功/拒绝、UI subscriber Drop 后的 RT。assert alloc=0、realloc=0、dealloc=0；准备、pump、subscription 和最终回收在计数段之外。new Topic activation 也必须纳入。
+- [x] 压力测试一个生产线程 + pump 线程 + 两个独立订阅线程，自定义 `{ sequence_echo, inverse_echo }` 成对变化，逐条断言来自同一发布；一个读 guard 通过 barrier 保留时另一个 subscriber 继续。线程 join 后核对 ingress/各 subscriber 分层 loss 与原始 sequence，不用固定时间等待保证通过。
+- [x] 为 safe 初始化/guard/pointer 访问跑 Miri：`cargo +nightly miri test -p moiren-signal --test host --test latest --test stream`。首次环境缺 nightly/Miri 时记录环境问题，先完成正常测试；不得把未执行说成已通过。并发 unsafe 内部若需要模型检查，以该 crate 的实际原子协议添加最小模型，不为整个软件引入新的 runtime。
+- [x] 示例在独立 producer 线程发布 `StreamBlock<FrameHeader, f32>`，另注册一个 LatestValue<f32>；有限运行并把 host/绑定所有权返回给非 RT join 调用方。使用以下完整示例，不让 publisher/表在 producer 退出时析构：
 
 ```rust
 use moiren_signal::{BlockInit, Bus, BusConfig, PumpBudget, SubscriptionOptions};
@@ -357,4 +357,4 @@ fn main() {
 ```
 
 示例按 PumpReport.has_pending 在固定最大 8 轮内推进，断言 4 条皆收到。producer 已 join，消费队列总量有界，不能把该有限示例改成追逐活动 producer 的无界 drain。
-- [ ] `cargo test --locked -p moiren-signal`、`cargo clippy --locked -p moiren-signal --all-targets -- -D warnings`、`cargo run --locked -p moiren-signal --example custom_block`；预期测试通过、示例正常退出。提交 `test: verify signal RT and concurrency contracts`。
+- [x] `cargo test --locked -p moiren-signal`、`cargo clippy --locked -p moiren-signal --all-targets -- -D warnings`、`cargo run --locked -p moiren-signal --example custom_block`；测试、Miri、格式和 diff 检查均通过，示例正常退出。提交 `test: verify signal RT and concurrency contracts`。
