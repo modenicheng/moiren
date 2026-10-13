@@ -15,7 +15,7 @@ pub struct ParamSpec {
     pub initial: ParamValue,
 }
 impl ParamSpec {
-    pub(super) fn accepts(&self, value: ParamValue, ramp: u32) -> bool {
+    pub(crate) fn accepts(&self, value: ParamValue, ramp: u32) -> bool {
         match (self.domain, value) {
             (ParamDomain::Float { min, max }, ParamValue::Float(v)) => {
                 min.is_finite()

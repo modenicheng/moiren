@@ -56,12 +56,22 @@ impl<S: ProcessingSample> Builder<S> {
         binding: Option<Binding<S>>,
     ) -> Result<ProcessorId, CompileError> {
         Ok(match kind {
-            NodeKind::Source | NodeKind::Sink => {
-                let Some(Binding::Io(processor)) = binding else {
-                    return Err(CompileError::MissingBinding { node });
-                };
-                self.processor(BoundIo(processor))?
-            }
+            NodeKind::Source | NodeKind::Sink => match binding {
+                Some(Binding::Io(processor)) => self.processor(BoundIo(processor))?,
+                Some(Binding::ReusedIo(basis, previous)) => {
+                    let id = ProcessorId(
+                        u64::try_from(self.instances.len())
+                            .map_err(|_| CompileError::TooManyProcessors)?,
+                    );
+                    let (instance, parameters) = basis
+                        .reserve_io(previous, id)
+                        .map_err(|_| CompileError::BindingKind { node })?;
+                    self.instances.push(instance);
+                    self.params.extend(parameters);
+                    id
+                }
+                _ => return Err(CompileError::MissingBinding { node }),
+            },
             NodeKind::Gain => {
                 let initial = if let Some(Binding::Gain(initial)) = binding {
                     initial

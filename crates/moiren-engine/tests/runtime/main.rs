@@ -7,3 +7,4 @@ mod io;
 mod signals;
 mod support;
 mod swap;
+mod update;

@@ -7,6 +7,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+mod reservation;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum PlanSwapError {
     #[error("retire queue capacity must be nonzero")]
@@ -27,6 +29,8 @@ pub enum PlanSwapError {
     Disconnected,
     #[error("reuse references a missing processor")]
     MissingProcessor,
+    #[error("a reserved or protected IO instance has no matching reuse transfer")]
+    MissingReuse,
     #[error("reuse maps an old or new processor more than once")]
     DuplicateReuse,
     #[error("reused processor type, role, latency or IO schema differs")]
@@ -556,6 +560,19 @@ impl<S: ProcessingSample> PreparedPlan<S> {
         basis: &PlanSnapshot,
         mappings: &[ProcessorReuse],
     ) -> Result<Self, PlanSwapError> {
+        for instance in &self.engine.resources.instances {
+            if let Some((reserved_basis, previous)) = &instance.reservation {
+                if !Arc::ptr_eq(&reserved_basis.0, &basis.0) {
+                    return Err(PlanSwapError::StaleBasis);
+                }
+                if !mappings
+                    .iter()
+                    .any(|mapping| mapping.old == *previous && mapping.new == instance.id)
+                {
+                    return Err(PlanSwapError::MissingReuse);
+                }
+            }
+        }
         let target = &self.original_snapshot.0;
         if basis.config() != target.config {
             return Err(PlanSwapError::IncompatibleConfig);
@@ -707,6 +724,7 @@ pub(super) struct RtPlanPort<S: ProcessingSample> {
     pending: Consumer<PreparedPlan<S>>,
     retired: Producer<RetiredPlan<S>>,
     status: Arc<Status>,
+    protected_sink: Option<usize>,
 }
 pub struct PlanControlPort<S: ProcessingSample> {
     pending: Producer<PreparedPlan<S>>,
@@ -730,6 +748,20 @@ impl<S: ProcessingSample> PlanControlPort<S> {
             Some(PlanSwapError::StaleEpoch)
         } else if plan.revision() <= self.last_revision {
             Some(PlanSwapError::StaleRevision)
+        } else if plan
+            .engine
+            .resources
+            .instances
+            .iter()
+            .enumerate()
+            .any(|(slot, instance)| {
+                instance.reservation.is_some()
+                    && !plan.transfer.as_ref().is_some_and(|transfer| {
+                        transfer.processors.iter().any(|&(_, new)| new == slot)
+                    })
+            })
+        {
+            Some(PlanSwapError::MissingReuse)
         } else if self.pending.is_full() {
             Some(PlanSwapError::PendingFull)
         } else {
@@ -773,6 +805,14 @@ impl<S: ProcessingSample> Engine<S> {
         if self.swaps.is_some() {
             return Err(PlanSwapError::AlreadyEnabled);
         }
+        if self
+            .resources
+            .instances
+            .iter()
+            .any(|instance| instance.reservation.is_some())
+        {
+            return Err(PlanSwapError::InvalidCandidate);
+        }
         let (tx, rx) = RingBuffer::new(1);
         let (retired_tx, retired_rx) = RingBuffer::new(retire_capacity);
         let status = Arc::new(Status {
@@ -783,6 +823,7 @@ impl<S: ProcessingSample> Engine<S> {
             pending: rx,
             retired: retired_tx,
             status: Arc::clone(&status),
+            protected_sink: None,
         });
         Ok(PlanControlPort {
             pending: tx,
@@ -792,6 +833,28 @@ impl<S: ProcessingSample> Engine<S> {
             epoch: self.epoch(),
             last_revision: self.revision(),
         })
+    }
+
+    /// Non-RT setup for a demand-driven renderer whose consumer stays fixed.
+    /// Every later activation must migrate this exact live sink instance.
+    pub fn require_sink_reuse(&mut self, sink: ProcessorId) -> Result<(), PlanSwapError> {
+        if self.timeline != 0 {
+            return Err(PlanSwapError::InvalidCandidate);
+        }
+        let slot = self
+            .resources
+            .instances
+            .iter()
+            .position(|instance| instance.id == sink)
+            .ok_or(PlanSwapError::MissingProcessor)?;
+        if self.resources.instances[slot].processor.role() != ProcessorRole::Sink {
+            return Err(PlanSwapError::IncompatibleProcessor);
+        }
+        self.swaps
+            .as_mut()
+            .ok_or(PlanSwapError::InvalidCandidate)?
+            .protected_sink = Some(slot);
+        Ok(())
     }
     pub(super) fn apply_pending_plan(&mut self) {
         let Some(port) = &mut self.swaps else {
@@ -819,6 +882,13 @@ impl<S: ProcessingSample> Engine<S> {
             .is_some_and(|transfer| !Arc::ptr_eq(&transfer.basis.0, &self.snapshot.0))
         {
             Some(PlanSwapError::StaleBasis)
+        } else if port.protected_sink.is_some_and(|sink| {
+            !candidate
+                .transfer
+                .as_ref()
+                .is_some_and(|transfer| transfer.processors.iter().any(|&(old, _)| old == sink))
+        }) {
+            Some(PlanSwapError::MissingReuse)
         } else {
             None
         };
@@ -844,10 +914,20 @@ impl<S: ProcessingSample> Engine<S> {
             Err(reason) => (RetireOutcome::Rejected(reason), None),
             Ok(retired_signals) => {
                 if let Some(transfer) = &candidate.transfer {
+                    if let Some(sink) = port.protected_sink {
+                        port.protected_sink = transfer
+                            .processors
+                            .iter()
+                            .find_map(|&(old, new)| (old == sink).then_some(new));
+                    }
                     for &(old, new) in &transfer.processors {
                         mem::swap(
                             &mut self.resources.instances[old].processor,
                             &mut candidate.engine.resources.instances[new].processor,
+                        );
+                        mem::swap(
+                            &mut self.resources.instances[old].reservation,
+                            &mut candidate.engine.resources.instances[new].reservation,
                         );
                     }
                     candidate

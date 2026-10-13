@@ -38,6 +38,8 @@ pub enum RuntimeError {
     ForeignResources,
     #[error("plan was prepared against a different parameter table")]
     ForeignParameters,
+    #[error("a reuse reservation must be activated before rendering")]
+    UnboundResources,
     #[error("signal bindings require a host control during preparation")]
     SignalsRequireHost,
     #[error("a prepared signal plan requires its host before rendering")]
@@ -54,6 +56,7 @@ pub struct ProcessorInstance<S: ProcessingSample> {
     id: ProcessorId,
     state_type: TypeId,
     processor: Box<dyn RtProcessor<S>>,
+    reservation: Option<(PlanSnapshot, ProcessorId)>,
 }
 impl<S: ProcessingSample> ProcessorInstance<S> {
     pub fn new(id: ProcessorId, processor: impl RtProcessor<S> + 'static) -> Self {
@@ -61,6 +64,7 @@ impl<S: ProcessingSample> ProcessorInstance<S> {
             id,
             state_type: processor.state_type_id(),
             processor: Box::new(processor),
+            reservation: None,
         }
     }
 }
@@ -346,6 +350,14 @@ impl<S: ProcessingSample> Engine<S> {
         self.swaps.is_some()
     }
     pub fn render(&mut self, frames: usize) -> Result<RenderReport, RuntimeError> {
+        if self
+            .resources
+            .instances
+            .iter()
+            .any(|instance| instance.reservation.is_some())
+        {
+            return Err(RuntimeError::UnboundResources);
+        }
         if frames == 0 || frames > self.plan.config.max_block_frames {
             return Err(RuntimeError::InvalidFrames);
         }

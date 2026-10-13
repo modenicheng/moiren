@@ -14,6 +14,10 @@ use crate::{
 
 pub(super) enum Binding<S: ProcessingSample> {
     Io(Box<dyn RtProcessor<S>>),
+    ReusedIo(
+        crate::runtime::PlanSnapshot,
+        moiren_core::protocol::ProcessorId,
+    ),
     Gain(f64),
     Pan(f64),
     Compressor(
@@ -41,6 +45,19 @@ impl<S: ProcessingSample> NodeBindings<S> {
         }
     }
 
+    pub fn contains_node(&self, node: NodeId) -> bool {
+        self.nodes.contains_key(&node)
+    }
+
+    pub(super) fn bind_reused_io(
+        &mut self,
+        node: NodeId,
+        basis: crate::runtime::PlanSnapshot,
+        processor: moiren_core::protocol::ProcessorId,
+    ) -> Result<(), CompileError> {
+        self.insert(node, Binding::ReusedIo(basis, processor))
+    }
+
     pub(super) fn take(&mut self, node: NodeId) -> Option<Binding<S>> {
         self.nodes.remove(&node)
     }
@@ -58,6 +75,12 @@ impl<S: ProcessingSample> NodeBindings<S> {
             let valid = match (kind, binding) {
                 (NodeKind::Source, Binding::Io(p)) => p.role() == ProcessorRole::Source,
                 (NodeKind::Sink, Binding::Io(p)) => p.role() == ProcessorRole::Sink,
+                (NodeKind::Source, Binding::ReusedIo(basis, processor)) => {
+                    basis.processor_role(*processor) == Some(ProcessorRole::Source)
+                }
+                (NodeKind::Sink, Binding::ReusedIo(basis, processor)) => {
+                    basis.processor_role(*processor) == Some(ProcessorRole::Sink)
+                }
                 (NodeKind::Gain, Binding::Gain(_)) | (NodeKind::Pan, Binding::Pan(_)) => true,
                 (NodeKind::Compressor, Binding::Compressor(_, _)) => true,
                 _ => false,

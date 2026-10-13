@@ -20,6 +20,11 @@ mod bindings;
 mod observers;
 mod plan;
 mod send;
+mod update;
+
+pub use update::{
+    CompiledUpdate, UpdateCompileError, UpdateReuse, compile_update, compile_update_with_reuse,
+};
 
 pub use bindings::NodeBindings;
 
