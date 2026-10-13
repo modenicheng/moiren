@@ -365,13 +365,13 @@ fn target_refill_does_not_fill_native_capacity() {
 **接口：** 输入 packet stamp 必须关联 generation、原生首帧位置、QPC 与已接收的连续帧区间；consumer 能知道最老实际待用帧的年龄。元数据使用预分配、有界结构，音频与 stamp 提交关系必须一致；满载时显式失效，不使用最新包时间冒充旧音频时间。
 
 - [x] `ClockSource::oldest_frame_age(now_qpc_100ns)` 基于最老待用帧的包锚点及原生 offset 提供有界整数年龄估算；边界和限制见 [帧年龄估算记录](2026-10-13-frame-age-estimation.md)。此项只交付年龄查询，不代表已启用运行中 discard 或实测。
-- [ ] 将本轮失败组合纳入 regression，另增加 44.1 kHz、render-first / capture-first、相位 sweep、连续迟包、startup 预填与恢复；新策略必须完整通过 ±1000 ppm，不能靠允许短读通过。
+- [x] 将本轮失败组合纳入 regression，另增加 44.1 kHz、render-first / capture-first、相位 sweep、连续迟包、startup 预填与恢复；新策略必须完整通过 ±1000 ppm，不能靠允许短读通过。90 个 120 / 7200 秒启动矩阵组合和原失败预算组合见 [低库存启动验证记录](2026-10-13-clock-startup-validation.md)；480 帧周期下 1024 帧目标不满足联合预算，不能作为已准入候选。
 - [ ] 对有可信位置的源估算 rate / QPC 斜率并筛掉异常，给 servo feed-forward。Process source 零位置 / timestamp error 回退到只用 FIFO 的模式。
 - [ ] 重新校准低目标的 fill reference / startup integral，使同一设备不同 Engine segment 切分下 drift 收敛相近，并对最低库存作有界保护；不能把零 drift 的 FIFO 锯齿解释成硬件漂移。
 - [x] 达到 high-water / 显式 age limit 时，consumer 在一次初始队列快照内丢弃有限数量旧帧，重置相位 / servo，进行短 fade；禁止 producer 越权移动 consumer。跨 generation 禁止插值，intentional skip 与 dropped / discontinuity 独立统计；默认 age limit 关闭，尚未进行硬件准入。
 - [x] 在相同写入计数的状态下不会不停 age reset；high-water recovery 优先。离线 `trim_on_prime=false` 场景保留完整录音，不启用 age-based discard。
 - [ ] 故障持续时通过 control 侧降档，避免在同一设备故障状态下反复依赖实时恢复。
-- [ ] 执行 Clock Bridge 与 RT allocation 测试；新增低目标矩阵每组合先模拟 120 秒，合格后扩展至 7200 秒。提交建议：`fix(audio): stabilize low-fill clock adaptation and bound backlog`。
+- [x] 执行 Clock Bridge 与 RT allocation 测试；新增低目标矩阵每组合先模拟 120 秒，合格后扩展至 7200 秒。Clock Bridge / RT allocation 既有回归与低库存启动矩阵均通过；完整 T4 仍因控制侧持续故障降档、硬件准入与物理测量未完成而保持未完成。验证记录见 [低库存启动验证记录](2026-10-13-clock-startup-validation.md)。提交建议：`fix(audio): stabilize low-fill clock adaptation and bound backlog`。
 
 **验收：** 新目标在全部矩阵下无稳定阶段 underrun；暂停 render 后恢复不会持续输出陈旧音频，追赶量和 fade 成本有界。
 
