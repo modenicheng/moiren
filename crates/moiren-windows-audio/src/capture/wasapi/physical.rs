@@ -1,5 +1,8 @@
 //! Native preparation, streaming and destruction run on one COM owner thread.
-use super::{Startup, Wake, api, format::mix_format, handle, stream, wait_target};
+use super::{
+    Startup, Wake, api, format::mix_format, handle, preparation::CapturePreparation, stream,
+    wait_target,
+};
 use crate::ActivationGate;
 use crate::{
     capture::{CaptureError, CaptureOptions, CaptureReport, CaptureSource, CaptureStatus},
@@ -25,7 +28,7 @@ use windows::{
 fn owner(
     options: &CaptureOptions,
     stop: &StdHandle,
-    sender: &SyncSender<Result<Startup, CaptureError>>,
+    preparation: &CapturePreparation,
     report: &mut CaptureReport,
     gate: &ActivationGate,
     started: &AtomicBool,
@@ -97,7 +100,7 @@ fn owner(
     api("SetEventHandle(capture)", unsafe {
         client.SetEventHandle(event.0)
     })?;
-    stream::run(
+    stream::run_prepared(
         stream::StreamInput {
             client: &client,
             gate,
@@ -110,7 +113,7 @@ fn owner(
             sample_rate: base.nSamplesPerSec,
             channels: usize::from(base.nChannels),
         },
-        sender,
+        preparation,
         report,
     )
 }
@@ -121,9 +124,24 @@ pub(super) fn run_owner(
     gate: ActivationGate,
     started: Arc<AtomicBool>,
 ) -> CaptureReport {
+    run_owner_prepared(
+        options,
+        stop,
+        CapturePreparation::Immediate(sender),
+        gate,
+        started,
+    )
+}
+pub(super) fn run_owner_prepared(
+    options: CaptureOptions,
+    stop: Arc<StdHandle>,
+    preparation: CapturePreparation,
+    gate: ActivationGate,
+    started: Arc<AtomicBool>,
+) -> CaptureReport {
     let mut report = CaptureReport::new(CaptureSource::Physical, options.duration);
     report.latency = crate::latency::LatencyRecorder::new(options.latency_telemetry).snapshot();
     report.endpoint_id = Some(options.endpoint_id.clone());
-    let result = owner(&options, &stop, &sender, &mut report, &gate, &started);
-    stream::finish(result, &stop, &sender, report)
+    let result = owner(&options, &stop, &preparation, &mut report, &gate, &started);
+    preparation.finish(result, &stop, report)
 }

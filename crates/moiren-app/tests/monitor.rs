@@ -196,6 +196,7 @@ fn cancelled_monitor_preparation_never_opens_physical_devices() {
     stop.request_stop().unwrap();
     let result = prepare_monitor_with_stop(
         MonitorOptions {
+            latency_budget: moiren_windows_audio::latency::LatencyBudgetPolicy::Compatible,
             input_endpoint_id: "unopened input".into(),
             output_endpoint_id: "unopened output".into(),
             duration: SessionDuration::UntilStopped,

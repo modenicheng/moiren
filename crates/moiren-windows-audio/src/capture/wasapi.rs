@@ -20,6 +20,8 @@ mod endpoint;
 mod format;
 mod packet;
 mod physical;
+mod preparation;
+pub use preparation::{NativeCaptureInfo, PreparedNativeCapture, prepare_capture_native_with_gate};
 pub(crate) mod stream;
 #[cfg(test)]
 mod tests;

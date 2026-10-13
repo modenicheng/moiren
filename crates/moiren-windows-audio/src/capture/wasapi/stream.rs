@@ -1,9 +1,11 @@
 //! Native service/bridge lifecycle shared by physical and virtual capture.
-use super::{Startup, Wake, api, handle, packet::transfer_packet, wait_target};
+use super::{
+    Startup, Wake, api, handle, packet::transfer_packet, preparation::CapturePreparation,
+    wait_target,
+};
 use crate::{
     Activation, ActivationGate, SessionDuration,
-    capture::{CaptureError, CaptureReport, CaptureSource, CaptureStatus},
-    clock_bridge::{ClockBridgeConfig, capture_bridge},
+    capture::{CaptureError, CaptureReport, CaptureStatus},
     latency::{CallbackObservation, LatencyRecorder, TelemetryMode, clock::QpcClock},
     owner::{Mmcss, Streaming},
 };
@@ -38,6 +40,17 @@ pub(crate) fn run(
     sender: &SyncSender<Result<Startup, CaptureError>>,
     report: &mut CaptureReport,
 ) -> Result<CaptureStatus, CaptureError> {
+    run_prepared(
+        input,
+        &CapturePreparation::Immediate(sender.clone()),
+        report,
+    )
+}
+pub(super) fn run_prepared(
+    input: StreamInput<'_>,
+    preparation: &CapturePreparation,
+    report: &mut CaptureReport,
+) -> Result<CaptureStatus, CaptureError> {
     let capacity = api("GetBufferSize(capture)", unsafe {
         input.client.GetBufferSize()
     })?;
@@ -52,31 +65,23 @@ pub(crate) fn run(
     report.channels = Some(input.channels);
     let capture: IAudioCaptureClient =
         api("GetService(capture)", unsafe { input.client.GetService() })?;
-    let (mut ingress, source, observer) = capture_bridge(ClockBridgeConfig {
-        input_sample_rate: input.sample_rate,
-        input_channels: input.channels,
-        detect_position_gaps: report.source == CaptureSource::Physical,
-        ..ClockBridgeConfig::default()
-    })?;
     // Check stop/target again after preparation, before Start or publishing source.
     match wait_target(handle(input.stop), input.audio, input.target, 0)? {
         Wake::Stop => return Err(CaptureError::Cancelled),
         Wake::TargetExited => return Err(CaptureError::TargetExited),
         Wake::Audio | Wake::Timeout => {}
     }
-    // Publish format and bridge before waiting: the peer graph/render owner
-    // can now prepare against them without capture having started.
-    let activation = ready_and_wait(
-        sender,
-        Startup {
-            source,
-            observer,
+    let mut ingress = preparation.prepare(
+        crate::latency::NativeStreamTiming {
             sample_rate: input.sample_rate,
-            channels: input.channels,
+            period_frames: report.shared_period.actual_period_frames,
+            capacity_frames: capacity,
         },
-        input.gate,
-        input.target,
+        input.channels,
+        input.stop,
+        report,
     )?;
+    let activation = input.gate.wait_with_target(input.target)?;
     // A process can exit during preparation. Stop still wins over that exit.
     match wait_target(handle(input.stop), input.audio, input.target, 0)? {
         Wake::Stop => return Ok(CaptureStatus::Stopped),
@@ -189,6 +194,7 @@ pub(crate) fn finish(
 }
 
 /// Shared by native preparation and hardware-free owner lifecycle tests.
+#[cfg(test)]
 pub(super) fn ready_and_wait(
     sender: &SyncSender<Result<Startup, CaptureError>>,
     startup: Startup,

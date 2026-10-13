@@ -1,6 +1,8 @@
 //! Thread-owned WASAPI objects. Only the stop kernel handle is shared.
 use super::{DemandRenderer, RenderError, RenderOptions, RenderReport};
-use crate::{Activation, ActivationGate, StopSignal};
+#[cfg(test)]
+use crate::Activation;
+use crate::{ActivationGate, StopSignal};
 #[cfg(test)]
 use std::os::windows::io::FromRawHandle;
 use std::{
@@ -22,7 +24,9 @@ use windows::Win32::{
 mod endpoint;
 mod format;
 mod packet;
+mod preparation;
 mod stream;
+pub use preparation::{NativeRenderInfo, PreparedNativeRender, prepare_render_native_with_gate};
 
 pub use endpoint::{RenderEndpoint, list_render_endpoints};
 
@@ -52,10 +56,14 @@ pub struct RenderOwnerExit {
     pub report: RenderReport,
     pub renderer: DemandRenderer,
 }
+struct NativeOwnerExit {
+    report: RenderReport,
+    renderer: Option<DemandRenderer>,
+}
 pub struct RenderSession {
     stop: Arc<StdHandle>,
     started: Arc<AtomicBool>,
-    worker: Option<JoinHandle<RenderOwnerExit>>,
+    worker: Option<JoinHandle<NativeOwnerExit>>,
 }
 impl RenderSession {
     /// A post-Start acknowledgement, independent of preparation readiness.
@@ -70,7 +78,14 @@ impl RenderSession {
     }
     /// Blocking cleanup-worker operation. The pure Rust renderer transfers to
     /// the joiner even when native preparation or streaming reported failure.
-    pub fn join_with_renderer(mut self) -> Result<RenderOwnerExit, RenderError> {
+    pub fn join_with_renderer(self) -> Result<RenderOwnerExit, RenderError> {
+        let exit = self.join_owner()?;
+        Ok(RenderOwnerExit {
+            report: exit.report,
+            renderer: exit.renderer.ok_or(RenderError::StartupLost)?,
+        })
+    }
+    fn join_owner(mut self) -> Result<NativeOwnerExit, RenderError> {
         self.worker
             .take()
             .expect("owned worker")
@@ -175,7 +190,13 @@ fn start_owner(
     let (tx, rx) = mpsc::sync_channel(1);
     let worker = thread::Builder::new()
         .name("moiren-shared-render".into())
-        .spawn(move || owner(renderer, worker_stop, worker_gate, tx, worker_started))
+        .spawn(move || {
+            let exit = owner(renderer, worker_stop, worker_gate, tx, worker_started);
+            NativeOwnerExit {
+                report: exit.report,
+                renderer: Some(exit.renderer),
+            }
+        })
         .map_err(|error| RenderError::WorkerSpawn {
             code: error.raw_os_error(),
         })?;
@@ -197,6 +218,7 @@ fn start_owner(
         }
     }
 }
+#[cfg(test)]
 fn ready_and_wait(
     ready: &mpsc::SyncSender<Result<(), RenderError>>,
     gate: &ActivationGate,

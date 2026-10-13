@@ -21,6 +21,7 @@ pub struct ClockBridgeConfig {
     pub capacity_frames: usize,
     /// Input frames held before starting/restarting interpolation.
     pub target_fill_frames: usize,
+    pub prepared_input: Option<crate::latency::PreparedInputQueue>,
     /// Discard older queued frames once at each prime to bound startup latency.
     /// Disable when consuming a finite offline recording from its first frame.
     pub trim_on_prime: bool,
@@ -39,11 +40,46 @@ impl Default for ClockBridgeConfig {
             input_channels: 2,
             capacity_frames: 8192,
             target_fill_frames: 2048,
+            prepared_input: None,
             trim_on_prime: true,
             detect_position_gaps: true,
             max_correction_ppm: 2000.0,
             byte_budget: 8 * 1024 * 1024,
         }
+    }
+}
+impl ClockBridgeConfig {
+    pub fn with_prepared_input(
+        input_sample_rate: u32,
+        input_channels: usize,
+        input: crate::latency::PreparedInputQueue,
+    ) -> Self {
+        Self {
+            input_sample_rate,
+            input_channels,
+            capacity_frames: input.capacity_frames as usize,
+            target_fill_frames: input.prime_frames as usize,
+            prepared_input: Some(input),
+            ..Self::default()
+        }
+    }
+    pub(super) fn servo_reference(self) -> usize {
+        self.prepared_input
+            .map_or(self.target_fill_frames, |input| {
+                input.servo_reference_frames as usize
+            })
+    }
+    fn prepared_input_valid(self) -> bool {
+        self.prepared_input.is_none_or(|input| {
+            input.capacity_frames as usize == self.capacity_frames
+                && input.prime_frames as usize == self.target_fill_frames
+                && input.low_water_frames >= 2
+                && input.low_water_frames <= input.prime_frames
+                && input.low_water_frames <= input.servo_reference_frames
+                && input.prime_frames < input.high_water_frames
+                && input.servo_reference_frames < input.high_water_frames
+                && input.high_water_frames <= input.capacity_frames
+        })
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -74,6 +110,7 @@ pub fn capture_bridge(
         || !(1..=2).contains(&config.input_channels)
         || config.target_fill_frames < 2
         || config.target_fill_frames >= config.capacity_frames
+        || !config.prepared_input_valid()
         || !config.max_correction_ppm.is_finite()
         || !(0.0..=2000.0).contains(&config.max_correction_ppm)
     {

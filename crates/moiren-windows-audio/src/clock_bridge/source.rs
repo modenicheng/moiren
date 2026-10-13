@@ -31,7 +31,7 @@ impl ClockSource {
             current: None,
             next: None,
             phase: 0.0,
-            filtered_fill: config.target_fill_frames as f64,
+            filtered_fill: config.servo_reference() as f64,
             integral: 0.0,
         }
     }
@@ -51,7 +51,7 @@ impl ClockSource {
         self.current = None;
         self.next = None;
         self.phase = 0.0;
-        self.filtered_fill = self.config.target_fill_frames as f64;
+        self.filtered_fill = self.config.servo_reference() as f64;
         self.integral = 0.0;
         self.counters
             .correction_bits
@@ -63,7 +63,7 @@ impl ClockSource {
         // parameter events can divide one Engine block into many segments.
         let dt = frames as f64 / f64::from(OUTPUT_SAMPLE_RATE);
         self.filtered_fill += dt / (0.25 + dt) * (fill as f64 - self.filtered_fill);
-        let error_seconds = (self.filtered_fill - self.config.target_fill_frames as f64)
+        let error_seconds = (self.filtered_fill - self.config.servo_reference() as f64)
             / f64::from(self.config.input_sample_rate);
         let limit = self.config.max_correction_ppm / 1_000_000.0;
         let candidate = (self.integral + 0.02 * error_seconds * dt).clamp(-limit, limit);

@@ -6,14 +6,15 @@ use moiren_windows_audio::{
     ActivationGate, SessionDuration, StopSignal,
     capture::{
         CaptureOptions, CaptureReport, CaptureSession, CaptureStatus, PreparedCapture,
-        prepare_capture_with_gate,
+        prepare_capture_native_with_gate,
     },
     clock_bridge::{BridgeObserver, BridgeSnapshot},
     process_loopback::{
         ProcessIdentity, ProcessLoopbackOptions, prepare_process_capture_with_gate,
     },
     render::{
-        DemandRenderer, RenderOptions, RenderReport, RenderSession, RenderStatus, TimelineObserver,
+        DemandRenderer, PreparedNativeRender, RenderOptions, RenderReport, RenderSession,
+        RenderStatus, TimelineObserver, prepare_render_native_with_gate,
         start_render_prepared_with_gate,
     },
 };
@@ -22,6 +23,7 @@ use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct MonitorOptions {
+    pub latency_budget: moiren_windows_audio::latency::LatencyBudgetPolicy,
     pub input_endpoint_id: String,
     pub output_endpoint_id: String,
     pub duration: SessionDuration,
@@ -238,7 +240,12 @@ fn prepare_monitor_inner(
         duration: options.duration,
     };
     let render_options = RenderOptions {
-        queue: moiren_windows_audio::latency::RenderQueuePolicy::default(),
+        queue: match options.latency_budget {
+            moiren_windows_audio::latency::LatencyBudgetPolicy::Compatible => {
+                moiren_windows_audio::latency::RenderQueuePolicy::FullCapacity
+            }
+            moiren_windows_audio::latency::LatencyBudgetPolicy::Custom { render, .. } => render,
+        },
         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
         shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
         endpoint_id: options.output_endpoint_id,
@@ -247,8 +254,22 @@ fn prepare_monitor_inner(
     capture_options.validate()?;
     render_options.validate()?;
     let gate = ActivationGate::new(stop.clone())?;
-    let capture = prepare_capture_with_gate(capture_options, stop, gate.clone())?;
-    attach_monitor(capture, render_options, options.config, gate, signals)
+    let capture = prepare_capture_native_with_gate(capture_options, stop.clone(), gate.clone())?;
+    let render = prepare_render_native_with_gate(render_options.clone(), stop, gate.clone())?;
+    let budget = moiren_windows_audio::latency::prepare_latency_budget(
+        capture.info.timing,
+        render.info.timing,
+        options.latency_budget,
+    )?;
+    let capture = capture.attach(budget.input)?;
+    attach_monitor(
+        capture,
+        render_options,
+        options.config,
+        gate,
+        signals,
+        Some(render),
+    )
 }
 pub fn start_process_monitor(
     options: ProcessMonitorOptions,
@@ -300,7 +321,7 @@ fn prepare_process_monitor_inner(
         stop,
         gate.clone(),
     )?;
-    attach_monitor(capture, render_options, options.config, gate, signals)
+    attach_monitor(capture, render_options, options.config, gate, signals, None)
 }
 fn attach_monitor(
     capture: PreparedCapture,
@@ -308,6 +329,7 @@ fn attach_monitor(
     config: MonitorConfig,
     gate: ActivationGate,
     signals: Option<&mut crate::service::SignalPreparation>,
+    native_render: Option<PreparedNativeRender>,
 ) -> Result<PreparedMonitorSession, MonitorError> {
     let graph = if let Some(signals) = signals {
         super::prepare_monitor_with_signals(capture.source, config, signals)?
@@ -319,12 +341,16 @@ fn attach_monitor(
     let timeline = renderer.timeline_observer();
     // All fallible later preparation is protected by CaptureSession's stop/join
     // Drop. There is no live capture leak if compile or render startup fails.
-    let render = start_render_prepared_with_gate(
-        render_options,
-        renderer,
-        capture.session.stop_signal(),
-        gate.clone(),
-    )?;
+    let render = if let Some(render) = native_render {
+        render.attach(renderer, render_options.queue)?
+    } else {
+        start_render_prepared_with_gate(
+            render_options,
+            renderer,
+            capture.session.stop_signal(),
+            gate.clone(),
+        )?
+    };
     Ok(PreparedMonitorSession {
         gate,
         session: MonitorSession {

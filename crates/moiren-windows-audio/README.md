@@ -442,7 +442,7 @@ each stream's native rate. A 5 ms desire can therefore produce a longer request.
 Client3 initialization uses `EVENTCALLBACK` and the stream's session GUID.
 Process Loopback retains its independent initialization path.
 
-Capture report schema 5 and Render schema 5 include `shared_period`: desired
+Capture report schema 6 and Render schema 5 include `shared_period`: desired
 time, capabilities, effective request, actual engine period, initialization
 API, and error details. The existing Render `engine_period_frames` mirrors the
 same actual-period observation. Capacity remains a separate `buffer_frames`
@@ -491,10 +491,13 @@ Compatible resolution preserves the 8192/2048 input settings and full output
 capacity, without claiming a modeled deadline. These calculations do not prove
 that actual device jitter fits the supplied assumptions.
 
-This first T3 slice integrates only the render queue. The joint input budget is
-not installed on the live Clock Bridge yet; two-phase native owner preparation
-and low-inventory servo/backlog enforcement remain separate follow-up work.
-Application entry points retain `FullCapacity` in this slice.
+The physical Monitor and latency probe now use two-phase native owner
+preparation: both owners report actual timing before the control side creates
+the bridge and graph, then each owner receives its prepared runtime object.
+Process Loopback retains its independent initialization path. Compatible mode
+preserves the legacy 8192/2048 input budget; custom mode installs the admitted
+input targets in the physical Clock Bridge. Low-inventory servo/backlog
+enforcement remains separate follow-up work.
 
 ```powershell
 cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --input '<capture-id>' --output '<render-id>' --seconds 30 --gain 0 --mode summary --period-ms 5 --render-target-frames 480 --wake-margin-frames 96 --callback-budget-frames 48

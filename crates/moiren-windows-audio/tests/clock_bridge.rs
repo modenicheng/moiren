@@ -86,6 +86,52 @@ fn config() -> ClockBridgeConfig {
         ..ClockBridgeConfig::default()
     }
 }
+
+#[test]
+fn prepared_bridge_keeps_independent_capacity_prime_servo_and_watermarks() {
+    let prepared = moiren_windows_audio::latency::PreparedInputQueue {
+        capacity_frames: 64,
+        prime_frames: 8,
+        servo_reference_frames: 16,
+        low_water_frames: 4,
+        high_water_frames: 48,
+        modeled_minimum_frames: Some(12),
+    };
+    let config = ClockBridgeConfig::with_prepared_input(48000, 2, prepared);
+    assert_eq!(config.capacity_frames, 64);
+    assert_eq!(config.target_fill_frames, 8);
+    let (mut ingress, mut source, observer) = capture_bridge(config).unwrap();
+    let packet = vec![0u8; 16 * 2 * 4];
+    ingress
+        .push_packet(
+            &packet,
+            CapturePacket {
+                frames: 16,
+                flags: 0,
+                device_position_frames: 0,
+                qpc_100ns: 1,
+            },
+        )
+        .unwrap();
+    source.read_interleaved(&mut [0.0; 2]).unwrap();
+    assert!(observer.snapshot().fill_frames <= 16);
+
+    for invalid in [
+        moiren_windows_audio::latency::PreparedInputQueue {
+            low_water_frames: 9,
+            ..prepared
+        },
+        moiren_windows_audio::latency::PreparedInputQueue {
+            high_water_frames: 16,
+            ..prepared
+        },
+    ] {
+        assert!(capture_bridge(ClockBridgeConfig::with_prepared_input(48000, 2, invalid)).is_err());
+    }
+    let mut mismatched = ClockBridgeConfig::with_prepared_input(48000, 2, prepared);
+    mismatched.capacity_frames += 1;
+    assert!(capture_bridge(mismatched).is_err());
+}
 fn packet(frames: usize, position: u64, flags: u32) -> CapturePacket {
     CapturePacket {
         frames,

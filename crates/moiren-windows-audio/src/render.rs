@@ -16,8 +16,9 @@ use thiserror::Error;
 mod wasapi;
 #[cfg(windows)]
 pub use wasapi::{
-    PreparedRenderSession, RenderEndpoint, RenderOwnerExit, RenderSession, list_render_endpoints,
-    start_render, start_render_prepared, start_render_prepared_with_gate, start_render_with_stop,
+    NativeRenderInfo, PreparedNativeRender, PreparedRenderSession, RenderEndpoint, RenderOwnerExit,
+    RenderSession, list_render_endpoints, prepare_render_native_with_gate, start_render,
+    start_render_prepared, start_render_prepared_with_gate, start_render_with_stop,
 };
 
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -82,6 +83,8 @@ pub enum RenderError {
     WorkerSpawn { code: Option<i32> },
     #[error("render worker panicked")]
     WorkerPanicked,
+    #[error("render preparation was cancelled")]
+    Cancelled,
     #[error(transparent)]
     SharedPeriod(#[from] crate::shared_stream::SharedPeriodError),
     #[error(transparent)]

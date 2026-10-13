@@ -53,6 +53,9 @@ impl MonitorConfig {
 pub enum MonitorError {
     #[cfg(windows)]
     #[error(transparent)]
+    LatencyBudget(#[from] moiren_windows_audio::latency::LatencyBudgetError),
+    #[cfg(windows)]
+    #[error(transparent)]
     Gate(#[from] moiren_windows_audio::GateError),
     #[error(
         "monitor requires finite gain in [0,1], pan in [-1,1], a 1..4096 frame block and a stereo source"

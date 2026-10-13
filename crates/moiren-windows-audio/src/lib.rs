@@ -33,3 +33,6 @@ pub use catalog::{
 };
 #[cfg(windows)]
 mod owner;
+
+#[cfg(windows)]
+mod preparation;

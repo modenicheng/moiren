@@ -103,9 +103,9 @@ mod native {
     };
     use moiren_windows_audio::{
         ActivationGate, SessionDuration, StopSignal,
-        capture::{CaptureOptions, list_capture_endpoints, prepare_capture_with_gate},
+        capture::{CaptureOptions, list_capture_endpoints, prepare_capture_native_with_gate},
         render::{
-            DemandRenderer, RenderOptions, list_render_endpoints, start_render_prepared_with_gate,
+            DemandRenderer, RenderOptions, list_render_endpoints, prepare_render_native_with_gate,
         },
     };
     use std::time::Duration;
@@ -208,7 +208,7 @@ mod native {
         queue.validate()?;
         let stop = StopSignal::new()?;
         let gate = ActivationGate::new(stop.clone())?;
-        let prepared = prepare_capture_with_gate(
+        let capture = prepare_capture_native_with_gate(
             CaptureOptions {
                 endpoint_id: input,
                 duration,
@@ -218,6 +218,29 @@ mod native {
             stop.clone(),
             gate.clone(),
         )?;
+        let render_options = RenderOptions {
+            queue,
+            endpoint_id: output,
+            duration,
+            latency_telemetry: mode,
+            shared_period,
+        };
+        let render = prepare_render_native_with_gate(render_options.clone(), stop, gate.clone())?;
+        let budget_policy = render_target.map_or(
+            moiren_windows_audio::latency::LatencyBudgetPolicy::Compatible,
+            |_| moiren_windows_audio::latency::LatencyBudgetPolicy::Custom {
+                input_capacity_frames: 8192,
+                input_target_frames: 1024,
+                input_jitter_frames: 96,
+                render: queue,
+            },
+        );
+        let budget = moiren_windows_audio::latency::prepare_latency_budget(
+            capture.info.timing,
+            render.info.timing,
+            budget_policy,
+        )?;
+        let prepared = capture.attach(budget.input)?;
         let observer = prepared.observer;
         let capture = prepared.session;
         let mut graph = LogicalGraph::new();
@@ -257,18 +280,7 @@ mod native {
         let renderer = DemandRenderer::new(compiled.engine, reader)?;
         let _control = compiled.control;
         let _bindings = compiled.bindings;
-        let render = start_render_prepared_with_gate(
-            RenderOptions {
-                queue,
-                endpoint_id: output,
-                duration,
-                latency_telemetry: mode,
-                shared_period,
-            },
-            renderer,
-            stop,
-            gate.clone(),
-        )?;
+        let render = render.attach(renderer, queue)?;
         gate.activate()?;
         let render = render.into_session();
         let capture_report = capture.join();
@@ -279,7 +291,7 @@ mod native {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "schema_version": 1, "measurement_method": "unknown", "gain": gain,
+                "schema_version": 2, "measurement_method": "unknown", "gain": gain,
                 "graph": "input_send_gain_send_pan_send_output", "capture": capture_report,
                 "render": render_report, "bridge": observer.snapshot(),
             }))?

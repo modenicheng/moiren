@@ -9,8 +9,9 @@ use thiserror::Error;
 pub(crate) mod wasapi;
 #[cfg(windows)]
 pub use wasapi::{
-    CaptureEndpoint, CaptureSession, PreparedCapture, list_capture_endpoints,
-    prepare_capture_with_gate, start_capture, start_capture_with_stop,
+    CaptureEndpoint, CaptureSession, NativeCaptureInfo, PreparedCapture, PreparedNativeCapture,
+    list_capture_endpoints, prepare_capture_native_with_gate, prepare_capture_with_gate,
+    start_capture, start_capture_with_stop,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -38,6 +39,8 @@ pub enum CaptureError {
     WorkerPanicked,
     #[error(transparent)]
     SharedPeriod(#[from] crate::shared_stream::SharedPeriodError),
+    #[error(transparent)]
+    LatencyBudget(#[from] crate::latency::LatencyBudgetError),
     #[error("capture startup channel closed before preparation completed")]
     StartupLost,
     #[error("process capture requires a nonzero PID and creation time")]
@@ -92,6 +95,7 @@ pub enum CaptureStatus {
 }
 #[derive(Debug, Serialize)]
 pub struct CaptureReport {
+    pub input_queue: Option<crate::latency::PreparedInputQueue>,
     pub schema_version: u32,
     pub latency: crate::latency::LatencySnapshot,
     pub shared_period: crate::shared_stream::SharedPeriodReport,
@@ -121,7 +125,8 @@ pub struct CaptureReport {
 impl CaptureReport {
     pub(crate) fn new(source: CaptureSource, duration: SessionDuration) -> Self {
         Self {
-            schema_version: 5,
+            schema_version: 6,
+            input_queue: None,
             latency: crate::latency::LatencyRecorder::new(crate::latency::TelemetryMode::Disabled)
                 .snapshot(),
             shared_period: crate::shared_stream::SharedPeriodReport::default(),

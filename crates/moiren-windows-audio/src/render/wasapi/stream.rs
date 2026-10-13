@@ -1,7 +1,5 @@
 //! All COM objects stay on the worker; preparation precedes the event loop.
-use super::{
-    RenderOwnerExit, Wake, api, format::mix_format, handle, packet::submit, ready_and_wait, wait,
-};
+use super::{RenderOwnerExit, Wake, api, format::mix_format, handle, packet::submit, wait};
 use crate::latency::{CallbackObservation, LatencyRecorder, clock::QpcClock};
 use crate::{Activation, ActivationGate};
 use crate::{
@@ -77,15 +75,30 @@ fn record_submit(samples: &[f32], stats: &mut RenderStats) {
     }
 }
 
-pub(super) fn owner(
+pub(super) struct NativeRender {
+    render: IAudioRenderClient,
+    client: IAudioClient,
+    event: OwnedHandle,
+    capacity: u32,
+}
+impl NativeRender {
+    pub(super) fn timing(&self, report: &RenderReport) -> crate::latency::NativeStreamTiming {
+        crate::latency::NativeStreamTiming {
+            sample_rate: SAMPLE_RATE,
+            period_frames: report.engine_period_frames,
+            capacity_frames: self.capacity,
+        }
+    }
+}
+pub(super) fn with_native<ResultValue>(
     options: &RenderOptions,
-    renderer: &mut DemandRenderer,
     stop: &StdHandle,
     report: &mut RenderReport,
-    gate: &ActivationGate,
-    ready: &SyncSender<Result<(), RenderError>>,
-    acknowledged: &AtomicBool,
-) -> Result<RenderStatus, RenderError> {
+    prepared: impl FnOnce(&NativeRender, &mut RenderReport) -> Result<ResultValue, RenderError>,
+) -> Result<ResultValue, RenderError> {
+    if wait(handle(stop), handle(stop), 0)? == Wake::Stop {
+        return Err(RenderError::Cancelled);
+    }
     // Declaration order keeps all COM services/client and event handles alive
     // through Stop, then releases them before CoUninitialize on this thread.
     let _apartment = api("CoInitializeEx(render)", Apartment::new())?;
@@ -152,18 +165,74 @@ pub(super) fn owner(
         client.GetStreamLatency()
     })?);
     record_optional_properties(&client, report);
-    let queue = crate::latency::prepare_render_queue(
-        crate::latency::NativeStreamTiming {
-            sample_rate: SAMPLE_RATE,
-            period_frames: report.engine_period_frames,
-            capacity_frames: capacity,
-        },
-        options.queue,
-    )?;
-    report.queue = Some(queue);
     let render: IAudioRenderClient = api("GetService(IAudioRenderClient)", unsafe {
         client.GetService()
     })?;
+    prepared(
+        &NativeRender {
+            render,
+            client,
+            event,
+            capacity,
+        },
+        report,
+    )
+}
+pub(super) struct StreamContext<'a> {
+    pub options: &'a RenderOptions,
+    pub stop: &'a StdHandle,
+    pub gate: &'a ActivationGate,
+    pub acknowledged: &'a AtomicBool,
+}
+pub(super) fn owner(
+    options: &RenderOptions,
+    renderer: &mut DemandRenderer,
+    stop: &StdHandle,
+    report: &mut RenderReport,
+    gate: &ActivationGate,
+    ready: &SyncSender<Result<(), RenderError>>,
+    acknowledged: &AtomicBool,
+) -> Result<RenderStatus, RenderError> {
+    with_native(options, stop, report, |native, report| {
+        report.queue = Some(crate::latency::prepare_render_queue(
+            native.timing(report),
+            options.queue,
+        )?);
+        run_stream(
+            native,
+            renderer,
+            report,
+            StreamContext {
+                options,
+                stop,
+                gate,
+                acknowledged,
+            },
+            || ready.send(Ok(())).map_err(|_| RenderError::StartupLost),
+        )
+    })
+}
+pub(super) fn run_stream(
+    native: &NativeRender,
+    renderer: &mut DemandRenderer,
+    report: &mut RenderReport,
+    context: StreamContext<'_>,
+    ready: impl FnOnce() -> Result<(), RenderError>,
+) -> Result<RenderStatus, RenderError> {
+    let StreamContext {
+        options,
+        stop,
+        gate,
+        acknowledged,
+    } = context;
+    let NativeRender {
+        client,
+        render,
+        event,
+        capacity,
+    } = native;
+    let capacity = *capacity;
+    let queue = report.queue.ok_or(RenderError::StartupLost)?;
     // Native capacity is driver supplied: cap staging to the explicit 8 MiB
     // preparation budget before allocating; failure never enters streaming.
     let sample_count = (capacity as usize)
@@ -173,12 +242,13 @@ pub(super) fn owner(
     let mut staging = vec![0.0f32; sample_count];
     let mut telemetry = LatencyRecorder::new(options.latency_telemetry);
     let clock = QpcClock::prepare(options.latency_telemetry);
-    if ready_and_wait(ready, gate)? == Activation::Cancelled {
+    ready()?;
+    if gate.wait()? == Activation::Cancelled {
         return Ok(RenderStatus::Stopped);
     }
     let prefill = &mut staging[..queue.target_frames as usize * CHANNELS];
     produce(renderer, prefill, &mut report.stats)?;
-    submit(&render, prefill)?;
+    submit(render, prefill)?;
     report.stats.primed_frames = queue.target_frames;
     record_submit(prefill, &mut report.stats);
     let mut task_index = 0;
@@ -194,7 +264,7 @@ pub(super) fn owner(
                 None
             }
         };
-    let mut streaming = api("Start", Streaming::start(&client))?;
+    let mut streaming = api("Start", Streaming::start(client))?;
     report.stream_started = true;
     acknowledged.store(true, Ordering::Release);
     let started = Instant::now();
@@ -238,7 +308,7 @@ pub(super) fn owner(
             }
             let samples = &mut staging[..demand as usize * CHANNELS];
             produce(renderer, samples, &mut report.stats)?;
-            submit(&render, samples)?;
+            submit(render, samples)?;
             record_submit(samples, &mut report.stats);
             telemetry.record(CallbackObservation {
                 wake_qpc_100ns,
@@ -289,7 +359,29 @@ pub(super) fn run_owner_with(
     ) -> Result<RenderStatus, RenderError>,
 ) -> RenderOwnerExit {
     let initial_frame = renderer.timeline();
-    let mut report = RenderReport {
+    let mut report = new_report(&options);
+    let result = run(
+        &options,
+        &mut renderer,
+        &stop,
+        &mut report,
+        &gate,
+        &ready,
+        &acknowledged,
+    );
+    let _ = unsafe { SetEvent(handle(&stop)) };
+    match result {
+        Ok(status) => report.status = status,
+        Err(error) => {
+            report.failure = Some(error.to_string());
+            let _ = ready.try_send(Err(error));
+        }
+    }
+    report.stats.processed_frames = renderer.timeline().saturating_sub(initial_frame);
+    RenderOwnerExit { report, renderer }
+}
+pub(super) fn new_report(options: &RenderOptions) -> RenderReport {
+    RenderReport {
         schema_version: 5,
         queue: None,
         latency: LatencyRecorder::new(options.latency_telemetry).snapshot(),
@@ -317,26 +409,5 @@ pub(super) fn run_owner_with(
         stop_hresult: None,
         stats: RenderStats::default(),
         failure: None,
-    };
-    // owner() has stopped and released services/client/apartment before any
-    // formatting. Engine/ring ownership returns to the joining cleanup worker.
-    let result = run(
-        &options,
-        &mut renderer,
-        &stop,
-        &mut report,
-        &gate,
-        &ready,
-        &acknowledged,
-    );
-    let _ = unsafe { SetEvent(handle(&stop)) };
-    match result {
-        Ok(status) => report.status = status,
-        Err(error) => {
-            report.failure = Some(error.to_string());
-            let _ = ready.try_send(Err(error));
-        }
     }
-    report.stats.processed_frames = renderer.timeline().saturating_sub(initial_frame);
-    RenderOwnerExit { report, renderer }
 }
