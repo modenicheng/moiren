@@ -19,6 +19,51 @@ pub struct QueuedFrameStamp {
     pub rate_correction_ppm: Option<i64>,
 }
 
+/// Owner-local age of a pending native frame at the supplied QPC observation.
+/// The packet offset is projected at its qualified Capture/QPC rate, or at the
+/// nominal input rate until qualification completes. Rounding is to the nearest
+/// 100 ns. Driver timestamp error and changes in local rate are not bounded by
+/// this estimate; it is not a presentation or physical end-to-end measurement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueuedFrameAge {
+    pub stamp: QueuedFrameStamp,
+    pub observed_qpc_100ns: u64,
+    pub input_sample_rate: u32,
+    pub estimated_frame_qpc_100ns: u64,
+    pub estimated_age_100ns: u64,
+}
+
+impl QueuedFrameStamp {
+    pub(super) fn estimate_age(
+        self,
+        input_sample_rate: u32,
+        observed_qpc_100ns: u64,
+    ) -> Option<QueuedFrameAge> {
+        if observed_qpc_100ns == 0 || self.packet_offset_frames >= self.packet_accepted_frames {
+            return None;
+        }
+        let ppm = self.rate_correction_ppm.unwrap_or(0);
+        if !(-2000..=2000).contains(&ppm) {
+            return None;
+        }
+        let denominator = u128::from(input_sample_rate) * (1_000_000 + ppm) as u128;
+        if denominator == 0 {
+            return None;
+        }
+        let numerator = u128::from(self.packet_offset_frames) * 10_000_000 * 1_000_000;
+        let offset_100ns = u64::try_from((numerator + denominator / 2) / denominator).ok()?;
+        let estimated_frame_qpc_100ns = self.packet_qpc_100ns.checked_add(offset_100ns)?;
+        let estimated_age_100ns = observed_qpc_100ns.checked_sub(estimated_frame_qpc_100ns)?;
+        Some(QueuedFrameAge {
+            stamp: self,
+            observed_qpc_100ns,
+            input_sample_rate,
+            estimated_frame_qpc_100ns,
+            estimated_age_100ns,
+        })
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct PacketStamp {
     pub position_frames: u64,

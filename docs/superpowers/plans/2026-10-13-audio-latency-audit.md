@@ -364,6 +364,7 @@ fn target_refill_does_not_fill_native_capacity() {
 
 **接口：** 输入 packet stamp 必须关联 generation、原生首帧位置、QPC 与已接收的连续帧区间；consumer 能知道最老实际待用帧的年龄。元数据使用预分配、有界结构，音频与 stamp 提交关系必须一致；满载时显式失效，不使用最新包时间冒充旧音频时间。
 
+- [x] `ClockSource::oldest_frame_age(now_qpc_100ns)` 基于最老待用帧的包锚点及原生 offset 提供有界整数年龄估算；边界和限制见 [帧年龄估算记录](2026-10-13-frame-age-estimation.md)。此项只交付年龄查询，不代表已启用运行中 discard 或实测。
 - [ ] 将本轮失败组合纳入 regression，另增加 44.1 kHz、render-first / capture-first、相位 sweep、连续迟包、startup 预填与恢复；新策略必须完整通过 ±1000 ppm，不能靠允许短读通过。
 - [ ] 对有可信位置的源估算 rate / QPC 斜率并筛掉异常，给 servo feed-forward。Process source 零位置 / timestamp error 回退到只用 FIFO 的模式。
 - [ ] 重新校准低目标的 fill reference / startup integral，使同一设备不同 Engine segment 切分下 drift 收敛相近，并对最低库存作有界保护；不能把零 drift 的 FIFO 锯齿解释成硬件漂移。

@@ -895,6 +895,8 @@ fn queued_packet_stamp_acceptance_and_query_allocate_and_free_nothing() {
         .unwrap();
     let report = source.read_interleaved(&mut output).unwrap();
     let stamp = source.oldest_frame_stamp().unwrap();
+    let age = source.oldest_frame_age(1_010_000).unwrap();
+    let unavailable_age = source.oldest_frame_age(0);
     let snapshot = observer.snapshot();
     TRACK.with(|track| track.set(false));
     assert_eq!(COUNTS.with(Cell::get), (0, 0));
@@ -903,6 +905,9 @@ fn queued_packet_stamp_acceptance_and_query_allocate_and_free_nothing() {
     assert_eq!(stamp.packet_position_frames, 8);
     assert_eq!(stamp.packet_qpc_100ns, 1_001_667);
     assert_eq!(stamp.packet_offset_frames, 0);
+    assert_eq!(age.stamp, stamp);
+    assert_eq!(age.estimated_age_100ns, 8_333);
+    assert_eq!(unavailable_age, None);
     assert_eq!(snapshot.dropped_frames, 0);
 }
 

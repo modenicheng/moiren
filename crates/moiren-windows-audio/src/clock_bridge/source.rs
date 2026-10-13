@@ -26,6 +26,15 @@ pub struct ClockSource {
     fade_remaining: usize,
 }
 impl ClockSource {
+    /// Estimate the age of the oldest pending native frame without advancing
+    /// interpolation or changing telemetry. The observation must use the same
+    /// QPC/100 ns domain as CapturePacket; callback arrival time is not a stamp.
+    /// Empty, unqualified, future or overflowing times return None.
+    pub fn oldest_frame_age(&self, now_qpc_100ns: u64) -> Option<super::QueuedFrameAge> {
+        self.oldest_frame_stamp()?
+            .estimate_age(self.config.input_sample_rate, now_qpc_100ns)
+    }
+
     /// Read a coherent owner-local correlation without consuming audio. None
     /// means empty/unvalidated timing, including virtual positionless sources.
     /// A returned stamp does not imply enough lookahead to render the frame.

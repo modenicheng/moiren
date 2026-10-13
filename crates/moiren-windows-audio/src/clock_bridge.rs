@@ -13,7 +13,7 @@ pub use ingress::{CaptureIngress, CapturePacket};
 pub use source::ClockSource;
 use telemetry::Counters;
 pub use telemetry::{BridgeObserver, BridgeSnapshot};
-pub use timing::QueuedFrameStamp;
+pub use timing::{QueuedFrameAge, QueuedFrameStamp};
 
 pub const OUTPUT_SAMPLE_RATE: u32 = 48_000;
 
