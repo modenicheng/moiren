@@ -1,52 +1,29 @@
 //! Single-master render data path. Same-owner bridge copying at 48 kHz stereo;
 //! this is not a cross-clock bridge or a sample-rate converter.
 use crate::SessionDuration;
+use moiren_core::protocol::ProcessorId;
 use moiren_engine::{
     boundary::{AudioReader, BridgeError},
-    runtime::{Engine, RuntimeError},
+    runtime::{Engine, PlanSwapError, RuntimeError},
 };
 use serde::Serialize;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
 use thiserror::Error;
 
 #[cfg(windows)]
-mod wasapi;
+pub(crate) mod wasapi;
 #[cfg(windows)]
 pub use wasapi::{
-    NativeRenderInfo, PreparedNativeRender, PreparedRenderSession, RenderEndpoint, RenderOwnerExit,
-    RenderSession, list_render_endpoints, prepare_render_native_with_gate, start_render,
-    start_render_prepared, start_render_prepared_with_gate, start_render_with_stop,
+    NativeRenderInfo, PreparedNativeRender, PreparedRenderSession, RenderAttachFailure,
+    RenderEndpoint, RenderOwnerExit, RenderSession, list_render_endpoints,
+    prepare_render_native_with_gate, start_render, start_render_prepared,
+    start_render_prepared_with_gate, start_render_with_stop,
 };
 
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: usize = 2;
 
-/// Epoch/revision stay immutable for one prepared renderer. A single atomic
-/// frame observation needs no RT lock, allocation, or telemetry subscription.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TimelineSnapshot {
-    pub frame: u64,
-    pub epoch: u64,
-    pub revision: u64,
-}
-#[derive(Clone)]
-pub struct TimelineObserver {
-    frame: Arc<AtomicU64>,
-    epoch: u64,
-    revision: u64,
-}
-impl TimelineObserver {
-    pub fn snapshot(&self) -> TimelineSnapshot {
-        TimelineSnapshot {
-            frame: self.frame.load(Ordering::Acquire),
-            epoch: self.epoch,
-            revision: self.revision,
-        }
-    }
-}
+mod timeline;
+pub use timeline::{ManagedTimelineSnapshot, TimelineObserver, TimelineSnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RenderError {
@@ -61,6 +38,8 @@ pub enum RenderError {
     InvalidEndpoint,
     #[error("demand renderer does not support plan switching")]
     PlanSwitchingUnsupported,
+    #[error(transparent)]
+    PlanSwap(#[from] PlanSwapError),
     #[error("render duration must be between 1 and 600 seconds")]
     InvalidDuration,
     #[error("render samples must contain complete stereo frames")]
@@ -144,10 +123,71 @@ pub struct DemandRenderer {
     counters: DemandCounters,
     timeline: TimelineObserver,
 }
+
+pub struct RendererPreparationFailure {
+    pub error: RenderError,
+    pub engine: Engine<f32>,
+    pub output: AudioReader<f32>,
+}
 impl DemandRenderer {
     /// Non-RT preparation. The reader must be the matching, initially drained
     /// graph output bridge; no other thread may consume it.
     pub fn new(engine: Engine<f32>, output: AudioReader<f32>) -> Result<Self, RenderError> {
+        if engine.plan_switching_enabled() {
+            return Err(RenderError::PlanSwitchingUnsupported);
+        }
+        Self::prepare(engine, output, 0)
+    }
+
+    /// The reader must match the initial sink, as for `new`. Every subsequent
+    /// activation must transfer that sink instance, including its sole writer.
+    pub fn new_managed(
+        engine: Engine<f32>,
+        output: AudioReader<f32>,
+        sink: ProcessorId,
+    ) -> Result<Self, RenderError> {
+        let generation = engine.epoch();
+        Self::new_managed_with_generation(engine, output, sink, generation)
+    }
+
+    pub fn new_managed_with_generation(
+        engine: Engine<f32>,
+        output: AudioReader<f32>,
+        sink: ProcessorId,
+        owner_generation: u64,
+    ) -> Result<Self, RenderError> {
+        Self::new_managed_returning(engine, output, sink, owner_generation)
+            .map_err(|failure| failure.error)
+    }
+
+    pub fn new_managed_returning(
+        mut engine: Engine<f32>,
+        output: AudioReader<f32>,
+        sink: ProcessorId,
+        owner_generation: u64,
+    ) -> Result<Self, Box<RendererPreparationFailure>> {
+        let validation = Self::validate(&engine, &output)
+            .and_then(|()| engine.require_sink_reuse(sink).map_err(Into::into));
+        if let Err(error) = validation {
+            return Err(Box::new(RendererPreparationFailure {
+                error,
+                engine,
+                output,
+            }));
+        }
+        Ok(Self::prepared(engine, output, owner_generation))
+    }
+
+    fn prepare(
+        engine: Engine<f32>,
+        output: AudioReader<f32>,
+        owner_generation: u64,
+    ) -> Result<Self, RenderError> {
+        Self::validate(&engine, &output)?;
+        Ok(Self::prepared(engine, output, owner_generation))
+    }
+
+    fn validate(engine: &Engine<f32>, output: &AudioReader<f32>) -> Result<(), RenderError> {
         if engine.config().processing_sr != f64::from(SAMPLE_RATE)
             || output.channel_count() != CHANNELS
         {
@@ -156,20 +196,17 @@ impl DemandRenderer {
         if output.capacity_frames() < engine.config().max_block_frames {
             return Err(RenderError::BridgeCapacity);
         }
-        if engine.plan_switching_enabled() {
-            return Err(RenderError::PlanSwitchingUnsupported);
-        }
-        let timeline = TimelineObserver {
-            frame: Arc::new(AtomicU64::new(engine.timeline())),
-            epoch: engine.epoch(),
-            revision: engine.revision(),
-        };
-        Ok(Self {
+        Ok(())
+    }
+
+    fn prepared(engine: Engine<f32>, output: AudioReader<f32>, owner_generation: u64) -> Self {
+        let timeline = TimelineObserver::new(owner_generation, &engine);
+        Self {
             engine,
             output,
             counters: DemandCounters::default(),
             timeline,
-        })
+        }
     }
     pub fn timeline(&self) -> u64 {
         self.engine.timeline()
@@ -179,6 +216,10 @@ impl DemandRenderer {
     }
     pub fn counters(&self) -> DemandCounters {
         self.counters
+    }
+    /// Call only after the native owner has stopped and returned this renderer.
+    pub fn into_parts(self) -> (Engine<f32>, AudioReader<f32>) {
+        (self.engine, self.output)
     }
     /// After the owner has joined, poll ControlPort replies and retry until
     /// zero before dropping either endpoint. This never renders another block.
@@ -200,10 +241,9 @@ impl DemandRenderer {
         let block_samples = self.engine.config().max_block_frames * CHANNELS;
         for samples in output.chunks_mut(block_samples) {
             let frames = samples.len() / CHANNELS;
-            let rendered = self.engine.render(frames)?;
-            self.timeline
-                .frame
-                .store(self.engine.timeline(), Ordering::Release);
+            let rendered = self.engine.render(frames);
+            self.timeline.publish(&self.engine);
+            let rendered = rendered?;
             self.counters.frames += frames as u64;
             self.counters.blocks += 1;
             self.counters.segments += rendered.segments as u64;

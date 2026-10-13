@@ -3,8 +3,9 @@ use crate::{Activation, SessionDuration, latency::LatencyBudgetError};
 use std::sync::atomic::Ordering;
 
 #[derive(Clone, Copy)]
-enum Outcome {
+pub(crate) enum Outcome {
     Run,
+    RunUntilStopped,
     FailBeforeMetadata,
     PanicBeforeMetadata,
     LostMetadata,
@@ -32,59 +33,73 @@ fn info() -> NativeRenderInfo {
         shared_period: crate::shared_stream::SharedPeriodReport::default(),
     }
 }
-fn fake_prepared(
+pub(crate) fn fake_prepared(
     stop: StopSignal,
     gate: ActivationGate,
     outcome: Outcome,
 ) -> Result<PreparedNativeRender, RenderError> {
-    start_native_owner(stop, gate, move |stop, gate, started, preparation| {
-        let options = options();
-        if matches!(outcome, Outcome::LostMetadata) {
-            return NativeOwnerExit {
-                report: stream::new_report(&options),
-                renderer: None,
-            };
-        }
-        run_owner_with(
-            &options,
-            stop,
-            gate,
-            started,
-            preparation,
-            |stop, gate, started, preparation, report| {
-                match outcome {
-                    Outcome::FailBeforeMetadata => return Err(RenderError::UnsupportedFormat),
-                    Outcome::PanicBeforeMetadata => panic!("native preparation panic"),
-                    _ => {}
-                }
-                preparation.receive(info(), stop, report)?;
-                match outcome {
-                    Outcome::FailAfterReceive => return Err(RenderError::StagingBudget),
-                    Outcome::PanicAfterReceive => panic!("native staging panic"),
-                    Outcome::LostAttachment => return Ok(RenderStatus::Completed),
-                    _ => {}
-                }
-                preparation
-                    .attached
-                    .send(Ok(()))
-                    .map_err(|_| RenderError::StartupLost)?;
-                if gate.wait()? == Activation::Cancelled {
-                    return Ok(RenderStatus::Stopped);
-                }
-                if matches!(outcome, Outcome::PanicAfterActivation) {
-                    panic!("stream callback panic");
-                }
-                preparation
-                    .renderer
-                    .as_mut()
-                    .unwrap()
-                    .render_interleaved(&mut [0.0; 2])?;
-                started.store(true, Ordering::Release);
-                report.stream_started = true;
-                Ok(RenderStatus::Completed)
-            },
-        )
-    })
+    start_native_owner(
+        stop,
+        gate,
+        stream::new_report(&options()),
+        move |stop, gate, started, preparation| {
+            let options = options();
+            if matches!(outcome, Outcome::LostMetadata) {
+                return NativeOwnerExit {
+                    report: stream::new_report(&options),
+                    renderer: None,
+                };
+            }
+            run_owner_with(
+                &options,
+                stop,
+                gate,
+                started,
+                preparation,
+                |stop, gate, started, preparation, report| {
+                    match outcome {
+                        Outcome::FailBeforeMetadata => return Err(RenderError::UnsupportedFormat),
+                        Outcome::PanicBeforeMetadata => panic!("native preparation panic"),
+                        _ => {}
+                    }
+                    preparation.receive(info(), stop, report)?;
+                    match outcome {
+                        Outcome::FailAfterReceive => return Err(RenderError::StagingBudget),
+                        Outcome::PanicAfterReceive => panic!("native staging panic"),
+                        Outcome::LostAttachment => return Ok(RenderStatus::Completed),
+                        _ => {}
+                    }
+                    preparation
+                        .attached
+                        .send(Ok(()))
+                        .map_err(|_| RenderError::StartupLost)?;
+                    if gate.wait()? == Activation::Cancelled {
+                        return Ok(RenderStatus::Stopped);
+                    }
+                    if matches!(outcome, Outcome::PanicAfterActivation) {
+                        panic!("stream callback panic");
+                    }
+                    preparation
+                        .renderer
+                        .as_mut()
+                        .unwrap()
+                        .render_interleaved(&mut [0.0; 2])?;
+                    started.store(true, Ordering::Release);
+                    report.stream_started = true;
+                    if matches!(outcome, Outcome::RunUntilStopped) {
+                        unsafe {
+                            windows::Win32::System::Threading::WaitForSingleObject(
+                                handle(stop),
+                                windows::Win32::System::Threading::INFINITE,
+                            )
+                        };
+                        return Ok(RenderStatus::Stopped);
+                    }
+                    Ok(RenderStatus::Completed)
+                },
+            )
+        },
+    )
 }
 fn assert_stopped(stop: &StopSignal) {
     assert_eq!(
@@ -241,8 +256,10 @@ fn cancelled_queued_renderer_returns_to_joiner_without_counting_its_prior_timeli
     let mut renderer = super::super::tests::probe_renderer(dropped);
     renderer.render_interleaved(&mut [0.0; 2]).unwrap();
     let queue = prepare_render_queue(info().timing, RenderQueuePolicy::FullCapacity).unwrap();
-    sender.send((renderer, queue)).unwrap();
+    let recovery = Arc::new(Mutex::new(Some(renderer)));
+    sender.send((recovery.clone(), queue)).unwrap();
     stop.request_stop().unwrap();
+    let worker_recovery = recovery.clone();
     let worker = thread::spawn(move || {
         run_owner_with(
             &options(),
@@ -255,6 +272,7 @@ fn cancelled_queued_renderer_returns_to_joiner_without_counting_its_prior_timeli
                 receiver,
                 renderer: None,
                 initial_frame: 0,
+                recovery: worker_recovery,
             },
             |stop, _, _, preparation, report| {
                 preparation.receive(info(), stop, report)?;
@@ -263,10 +281,11 @@ fn cancelled_queued_renderer_returns_to_joiner_without_counting_its_prior_timeli
         )
     });
     let exit = worker.join().unwrap();
-    assert_eq!(exit.renderer.as_ref().unwrap().timeline(), 1);
+    let renderer = recovery.lock().unwrap().take().unwrap();
+    assert_eq!(renderer.timeline(), 1);
     assert_eq!(exit.report.stats.processed_frames, 0);
     assert!(released.try_recv().is_err());
-    drop(exit.renderer);
+    drop(renderer);
     assert_eq!(
         released
             .recv_timeout(std::time::Duration::from_secs(2))

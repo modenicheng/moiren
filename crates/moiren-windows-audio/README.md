@@ -3,6 +3,56 @@
 This crate contains Engine-backed Shared capture/render paths and independent,
 opt-in W00 probes. It does not yet implement the complete W01–W17 backend contracts.
 
+## Managed EngineHost backend
+
+`engine_backend::WindowsBackend` implements `moiren_engine::host::EngineBackend<f32>`
+without an application dependency. Open an `EngineHost<f32>` with an `EngineProject`
+and the adapter to prepare and activate automatically; dropping the host stops
+and joins the native owners before engine/control reclamation completes.
+
+Use `physical_input(EndpointSelector)`, `physical_output(EndpointSelector)`,
+`tone_input(frequency_hz)` and `process_input(&ProcessIdentity)` for project IO
+configurations. The process helper preserves both PID and creation time. Plain
+executable selectors are ambiguous and return `Unsupported`; an exited/recycled
+process is never silently replaced. Explicit endpoints wait for their exact ID;
+`FollowDefault` retains its role and follows changes to the default identity.
+
+The supported transport has one 48 kHz stereo f32 Shared render output, which
+owns the master clock, and follower inputs. Physical capture supports existing
+44.1/48 kHz mono/stereo f32 negotiation and clock adaptation; process capture uses
+the existing 48 kHz process-tree path. Hardware rate/period requirements are
+checked, and custom input queue budgets require physical capture negotiation.
+Both sides share one cancellation signal and activation gate. `Running` requires
+every native stream to acknowledge Start; capture failure stops its render peer.
+
+Compatible updates retain the initial output consumer and transfer its sole
+writer at the block boundary. `DemandRenderer::new_managed` installs the engine's
+protected sink guard; arbitrary candidates that omit sink reuse are retired and
+the current output continues. Legacy `DemandRenderer::new` still rejects engines
+with plan switching. `try_snapshot`/`managed_snapshot` make one bounded coherent
+read; the legacy `snapshot` returns its coherent preparation value if publication
+is in flight. Successful swaps publish the current revision and continuous frame.
+
+Resource polling runs on one adapter-owned worker, with at most one outstanding
+probe per resource and coalesced bounded events. The configurable interval is
+100 ms–60 s (default 500 ms), with 1–256 resources (default 64). Identity or
+availability changes, and a recoverable preparation failure, generate a new
+resource generation. Static unsupported configurations do not arm retry probes.
+Closing cancels the probe wait and joins it. Endpoint probing supplies retry
+eligibility; actual stream preparation still establishes format and availability.
+
+Native attachment errors and caught audio/bookkeeping panics return the Engine
+to its non-RT joiner. `last_native_report` retains native render/capture failures
+along with owned-resource return. Deterministic tests use fake native owners.
+Separate muted hardware checks verify automatic Shared startup, same-owner hot
+updates, automatic output-selection replacement with a new epoch, and physical
+capture/render shutdown. Unplug/replug and occupation recovery remain covered by
+controlled resource-event/probe tests rather than a physical unplug experiment.
+
+```text
+cargo test --locked -p moiren-windows-audio --test engine_backend -- --ignored --nocapture --test-threads=1
+```
+
 The examples enumerate active endpoints and audio sessions, capture an explicitly
 selected process tree, or probe explicit physical endpoints. Physical capture
 reads microphone statistics; physical render submits SILENT frames. Neither

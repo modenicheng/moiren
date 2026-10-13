@@ -2674,6 +2674,7 @@ dependencies = [
  "anyhow",
  "moiren-core",
  "moiren-engine",
+ "moiren-signal",
  "rtrb",
  "serde",
  "serde_json",

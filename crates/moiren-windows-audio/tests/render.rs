@@ -135,6 +135,275 @@ fn timeline_observer_rejects_plan_switching_engines() {
     }
 }
 
+struct ConstantSource(f32);
+impl RtAudioSource<f32> for ConstantSource {
+    fn channel_count(&self) -> usize {
+        2
+    }
+    fn read(
+        &mut self,
+        context: &moiren_engine::processor::ProcessContext,
+        mut output: moiren_engine::buffer::AudioBlockMut<'_, f32>,
+    ) -> BoundaryReport {
+        for samples in output.channels_mut() {
+            samples.fill(self.0);
+        }
+        BoundaryReport {
+            transferred_frames: context.frames,
+            ..BoundaryReport::default()
+        }
+    }
+}
+
+fn managed_graph() -> (
+    LogicalGraph,
+    NodeId,
+    NodeId,
+    CompiledGraph<f32>,
+    AudioReader<f32>,
+) {
+    let (writer, reader) = audio_bridge::<f32>(2, 8, 4096).unwrap();
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 2).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
+    graph
+        .connect(
+            graph.get_node(source).unwrap().outputs()[0].id(),
+            graph.get_node(sink).unwrap().inputs()[0].id(),
+            SendParams::default(),
+        )
+        .unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_source(source, ConstantSource(0.25)).unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    let compiled = compile(&graph, bindings, managed_config(1)).unwrap();
+    (graph, source, sink, compiled, reader)
+}
+
+fn managed_config(revision: u64) -> CompileConfig {
+    CompileConfig {
+        engine: EngineConfig {
+            processing_sr: 48_000.0,
+            max_block_frames: 8,
+            max_events_per_block: 8,
+        },
+        audio_byte_budget: 4096,
+        plan_revision: revision,
+        timeline_epoch: 1,
+        control_capacity: 8,
+        control_horizon_frames: 48_000,
+    }
+}
+
+#[test]
+fn managed_swap_preserves_the_only_output_writer_and_coherent_timeline_without_rt_allocation() {
+    let (graph, source, sink, mut compiled, reader) = managed_graph();
+    let initial_sink = compiled.bindings.node(sink).unwrap();
+    let basis = compiled.engine.plan_snapshot();
+    let mut plans = compiled.engine.enable_plan_switching(1).unwrap();
+    let mut renderer =
+        DemandRenderer::new_managed_with_generation(compiled.engine, reader, initial_sink, 17)
+            .unwrap();
+    let timeline = renderer.timeline_observer();
+    renderer.render_interleaved(&mut [0.0; 6]).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_source(source, ConstantSource(0.75)).unwrap();
+    let update = compile_update(
+        &graph,
+        bindings,
+        managed_config(2),
+        &basis,
+        &[(sink, initial_sink)],
+        None,
+    )
+    .unwrap();
+    plans.publish(update.plan).unwrap();
+    let mut samples = [0.0; 38];
+    COUNTS.with(|counts| counts.set((0, 0)));
+    TRACK.with(|tracking| tracking.set(true));
+    let rendered = renderer.render_interleaved(&mut samples);
+    TRACK.with(|tracking| tracking.set(false));
+    assert!(rendered.is_ok());
+    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    assert_eq!(samples, [0.75; 38]);
+    assert_eq!(plans.active_revision(), 2);
+    assert_eq!(
+        timeline.managed_snapshot(),
+        Some(ManagedTimelineSnapshot {
+            owner_generation: 17,
+            epoch: 1,
+            revision: 2,
+            frame: 22,
+        })
+    );
+    assert_eq!(
+        plans.poll_retired().unwrap().outcome(),
+        RetireOutcome::Replaced {
+            active_revision: 2,
+            frame: 3,
+        }
+    );
+    let (engine, _) = renderer.into_parts();
+    assert_eq!(engine.revision(), 2);
+}
+
+#[test]
+fn managed_renderer_rejects_arbitrary_candidate_output_and_keeps_the_original_bridge() {
+    let (_, _, sink, mut compiled, reader) = managed_graph();
+    let sink = compiled.bindings.node(sink).unwrap();
+    let mut plans = compiled.engine.enable_plan_switching(1).unwrap();
+    let mut renderer = DemandRenderer::new_managed(compiled.engine, reader, sink).unwrap();
+    let (graph, source, sink_node, _, _) = managed_graph();
+    let (writer, mut candidate_reader) = audio_bridge::<f32>(2, 8, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_source(source, ConstantSource(0.75)).unwrap();
+    bindings.bind_sink(sink_node, writer).unwrap();
+    let candidate = compile(&graph, bindings, managed_config(2)).unwrap();
+    plans
+        .publish(PreparedPlan::new(candidate.engine).unwrap())
+        .unwrap();
+    let mut samples = [0.0; 16];
+    renderer.render_interleaved(&mut samples).unwrap();
+    assert_eq!(samples, [0.25; 16]);
+    assert_eq!(plans.active_revision(), 1);
+    assert_eq!(
+        plans.poll_retired().unwrap().outcome(),
+        RetireOutcome::Rejected(PlanSwapError::MissingReuse)
+    );
+    assert_eq!(
+        candidate_reader
+            .read_interleaved(&mut samples)
+            .unwrap()
+            .transferred_frames,
+        0
+    );
+}
+
+#[test]
+fn managed_cancel_and_full_retirement_keep_output_live_until_sink_migrates() {
+    let (graph, source, sink, mut compiled, reader) = managed_graph();
+    let mut basis = compiled.engine.plan_snapshot();
+    let mut sink_processor = compiled.bindings.node(sink).unwrap();
+    let mut plans = compiled.engine.enable_plan_switching(1).unwrap();
+    let mut renderer =
+        DemandRenderer::new_managed(compiled.engine, reader, sink_processor).unwrap();
+    let prepare = |revision, value, basis: &PlanSnapshot, sink_processor| {
+        let mut bindings = NodeBindings::new();
+        bindings.bind_source(source, ConstantSource(value)).unwrap();
+        compile_update(
+            &graph,
+            bindings,
+            managed_config(revision),
+            basis,
+            &[(sink, sink_processor)],
+            None,
+        )
+        .unwrap()
+    };
+    let cancelled = prepare(2, 0.5, &basis, sink_processor);
+    plans.publish(cancelled.plan).unwrap();
+    plans.cancel_pending();
+    let mut samples = [0.0; 2];
+    renderer.render_interleaved(&mut samples).unwrap();
+    assert_eq!(samples, [0.25; 2]);
+    let update = prepare(3, 0.75, &basis, sink_processor);
+    basis = update.plan.snapshot();
+    sink_processor = update.bindings.node(sink).unwrap();
+    plans.publish(update.plan).unwrap();
+    renderer.render_interleaved(&mut samples).unwrap();
+    assert_eq!(samples, [0.25; 2]);
+    assert_eq!(
+        plans.poll_retired().unwrap().outcome(),
+        RetireOutcome::Rejected(PlanSwapError::Cancelled)
+    );
+    renderer.render_interleaved(&mut samples).unwrap();
+    assert_eq!(samples, [0.75; 2]);
+    drop(plans.poll_retired().unwrap());
+    let update = prepare(4, 0.125, &basis, sink_processor);
+    plans.publish(update.plan).unwrap();
+    renderer.render_interleaved(&mut samples).unwrap();
+    assert_eq!(samples, [0.125; 2]);
+    assert_eq!(renderer.timeline_observer().snapshot().revision, 4);
+    drop(plans.poll_retired().unwrap());
+}
+
+#[test]
+fn managed_swap_returns_old_controls_for_explicit_request_termination() {
+    use moiren_core::protocol::{ApplyAt, ParamValue, ParameterRequest, ReplyCode};
+    let (graph, source, sink, mut compiled, reader) = managed_graph();
+    let target = compiled.bindings.edge(graph.edges()[0].id()).unwrap().gain;
+    assert_eq!(
+        compiled
+            .control
+            .submit(
+                ParameterRequest {
+                    request_id: 11,
+                    plan_revision: 1,
+                    timeline_epoch: 1,
+                    target,
+                    at: ApplyAt::Frame(128),
+                    value: ParamValue::Float(0.5),
+                    ramp_frames: 0,
+                },
+                0
+            )
+            .code,
+        ReplyCode::Accepted
+    );
+    let basis = compiled.engine.plan_snapshot();
+    let sink = compiled.bindings.node(sink).unwrap();
+    let mut plans = compiled.engine.enable_plan_switching(1).unwrap();
+    let mut renderer = DemandRenderer::new_managed(compiled.engine, reader, sink).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_source(source, ConstantSource(0.75)).unwrap();
+    let sink_node = graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Sink)
+        .unwrap()
+        .id();
+    let update = compile_update(
+        &graph,
+        bindings,
+        managed_config(2),
+        &basis,
+        &[(sink_node, sink)],
+        None,
+    )
+    .unwrap();
+    plans.publish(update.plan).unwrap();
+    renderer.render_interleaved(&mut [0.0; 2]).unwrap();
+    let mut retired = plans.poll_retired().unwrap();
+    assert_eq!(retired.reject_pending(), 0);
+    let reply = compiled.control.poll_applied().unwrap();
+    assert_eq!(reply.request_id, 11);
+    assert_eq!(reply.code, ReplyCode::StaleRevision);
+    assert!(compiled.control.poll_applied().is_none());
+}
+
+#[test]
+fn managed_preparation_error_returns_engine_to_caller() {
+    let (_, _, sink, mut compiled, reader) = managed_graph();
+    let sink = compiled.bindings.node(sink).unwrap();
+    compiled.engine.enable_plan_switching(1).unwrap();
+    let failure = match DemandRenderer::new_managed_returning(
+        compiled.engine,
+        reader,
+        moiren_core::protocol::ProcessorId(u64::MAX),
+        7,
+    ) {
+        Err(failure) => failure,
+        Ok(_) => panic!("missing sink accepted"),
+    };
+    assert_eq!(
+        failure.error,
+        RenderError::PlanSwap(PlanSwapError::MissingProcessor)
+    );
+    assert_eq!(failure.engine.revision(), 1);
+    assert_eq!(failure.output.capacity_frames(), 8);
+    assert_ne!(sink, moiren_core::protocol::ProcessorId(u64::MAX));
+}
+
 #[test]
 fn malformed_requests_and_wrong_bridge_or_rate_do_not_render() {
     let (engine, reader) = graph(44100.0);

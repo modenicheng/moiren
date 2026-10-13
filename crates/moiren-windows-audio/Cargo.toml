@@ -4,16 +4,17 @@ version = "0.1.0"
 edition = "2024"
 description = "Engine-backed WASAPI Shared capture/render, clock adaptation and opt-in probes"
 
-[dev-dependencies]
-moiren-core = { path = "../moiren-core" }
-
 [dependencies]
+moiren-core = { path = "../moiren-core" }
 moiren-engine = { path = "../moiren-engine" }
 rtrb = "=0.4.0"
 anyhow = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = { workspace = true }
+
+[dev-dependencies]
+moiren-signal = { path = "../moiren-signal" }
 
 [target.'cfg(windows)'.dependencies]
 windows-core = "=0.62.2"

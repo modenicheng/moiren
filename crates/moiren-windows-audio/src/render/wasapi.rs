@@ -8,7 +8,7 @@ use std::os::windows::io::FromRawHandle;
 use std::{
     os::windows::io::{AsRawHandle, OwnedHandle as StdHandle},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -26,7 +26,11 @@ mod format;
 mod packet;
 mod preparation;
 mod stream;
-pub use preparation::{NativeRenderInfo, PreparedNativeRender, prepare_render_native_with_gate};
+pub use preparation::{
+    NativeRenderInfo, PreparedNativeRender, RenderAttachFailure, prepare_render_native_with_gate,
+};
+#[cfg(test)]
+pub(crate) use preparation::{TestOutcome, prepare_test_native};
 
 pub use endpoint::{RenderEndpoint, list_render_endpoints};
 
@@ -64,6 +68,8 @@ pub struct RenderSession {
     stop: Arc<StdHandle>,
     started: Arc<AtomicBool>,
     worker: Option<JoinHandle<NativeOwnerExit>>,
+    recovery: Option<Arc<Mutex<Option<DemandRenderer>>>>,
+    fallback: Option<RenderReport>,
 }
 impl RenderSession {
     /// A post-Start acknowledgement, independent of preparation readiness.
@@ -86,11 +92,34 @@ impl RenderSession {
         })
     }
     fn join_owner(mut self) -> Result<NativeOwnerExit, RenderError> {
-        self.worker
+        let joined = self
+            .worker
             .take()
             .expect("owned worker")
             .join()
-            .map_err(|_| RenderError::WorkerPanicked)
+            .map_err(|_| RenderError::WorkerPanicked);
+        let recovered = self.recovery.as_ref().and_then(|recovery| {
+            recovery
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take()
+        });
+        match joined {
+            Ok(mut exit) => {
+                exit.renderer = exit.renderer.or(recovered);
+                Ok(exit)
+            }
+            Err(error) => match (recovered, self.fallback.take()) {
+                (Some(renderer), Some(mut report)) => {
+                    report.failure = Some(error.to_string());
+                    Ok(NativeOwnerExit {
+                        renderer: Some(renderer),
+                        report,
+                    })
+                }
+                _ => Err(error),
+            },
+        }
     }
     /// CLI convenience: releases the renderer on the calling thread.
     pub fn join(self) -> Result<RenderReport, RenderError> {
@@ -204,6 +233,8 @@ fn start_owner(
         stop,
         started,
         worker: Some(worker),
+        recovery: None,
+        fallback: None,
     };
     match rx.recv() {
         Ok(Ok(())) => Ok(PreparedRenderSession { session, gate }),

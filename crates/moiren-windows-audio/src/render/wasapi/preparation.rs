@@ -9,7 +9,7 @@ use crate::{
 use std::{
     os::windows::io::OwnedHandle,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, atomic::AtomicBool, mpsc},
+    sync::{Arc, Mutex, atomic::AtomicBool, mpsc},
     thread,
 };
 use windows::Win32::System::Threading::SetEvent;
@@ -23,26 +23,84 @@ pub struct PreparedNativeRender {
     info: NativeRenderInfo,
     session: RenderSession,
     gate: ActivationGate,
-    renderer: preparation::Sender<(DemandRenderer, PreparedRenderQueue)>,
+    renderer: preparation::Sender<(RendererHandoff, PreparedRenderQueue)>,
     attached: mpsc::Receiver<Result<(), RenderError>>,
 }
+type RendererHandoff = Arc<Mutex<Option<DemandRenderer>>>;
+
+pub struct RenderAttachFailure {
+    pub error: RenderError,
+    pub renderer: DemandRenderer,
+    pub report: Option<RenderReport>,
+}
+
 impl PreparedNativeRender {
     pub fn info(&self) -> NativeRenderInfo {
         self.info
+    }
+    pub fn cancel_with_report(self) -> Result<RenderReport, RenderError> {
+        let _ = self.session.request_stop();
+        self.session.join_owner().map(|exit| exit.report)
     }
     pub fn attach(
         self,
         renderer: DemandRenderer,
         queue: RenderQueuePolicy,
     ) -> Result<PreparedRenderSession, RenderError> {
-        let queue = prepare_render_queue(self.info.timing, queue)?;
-        api(
+        self.attach_returning(renderer, queue)
+            .map_err(|failure| failure.error)
+    }
+
+    /// A failed handoff joins the native owner before returning the renderer.
+    pub fn attach_returning(
+        self,
+        renderer: DemandRenderer,
+        queue: RenderQueuePolicy,
+    ) -> Result<PreparedRenderSession, Box<RenderAttachFailure>> {
+        let queue = match prepare_render_queue(self.info.timing, queue) {
+            Ok(queue) => queue,
+            Err(error) => {
+                return Err(Box::new(RenderAttachFailure {
+                    error: error.into(),
+                    renderer,
+                    report: None,
+                }));
+            }
+        };
+        let retained = self
+            .session
+            .recovery
+            .as_ref()
+            .expect("native recovery mailbox")
+            .clone();
+        *retained.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(renderer);
+        let sent = api(
             "Send prepared renderer",
-            self.renderer.send((renderer, queue)),
-        )?;
-        self.attached
-            .recv()
-            .map_err(|_| RenderError::StartupLost)??;
+            self.renderer.send((retained.clone(), queue)),
+        );
+        let result =
+            sent.and_then(|()| self.attached.recv().map_err(|_| RenderError::StartupLost)?);
+        if let Err(error) = result {
+            let _ = self.session.request_stop();
+            let exit = self.session.join_owner();
+            let (renderer, report) = match exit {
+                Ok(exit) => (exit.renderer, Some(exit.report)),
+                Err(_) => (None, None),
+            };
+            let renderer = renderer
+                .or_else(|| {
+                    retained
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .take()
+                })
+                .expect("native owner retains renderer outside its unwind scope");
+            return Err(Box::new(RenderAttachFailure {
+                error,
+                renderer,
+                report,
+            }));
+        }
         Ok(PreparedRenderSession {
             session: self.session,
             gate: self.gate,
@@ -56,13 +114,20 @@ pub fn prepare_render_native_with_gate(
 ) -> Result<PreparedNativeRender, RenderError> {
     options.validate()?;
     gate.validate_stop(&stop)?;
-    start_native_owner(stop, gate, move |stop, gate, started, preparation| {
-        run_owner(options, stop, gate, started, preparation)
-    })
+    let fallback = stream::new_report(&options);
+    start_native_owner(
+        stop,
+        gate,
+        fallback,
+        move |stop, gate, started, preparation| {
+            run_owner(options, stop, gate, started, preparation)
+        },
+    )
 }
 fn start_native_owner(
     stop: StopSignal,
     gate: ActivationGate,
+    fallback: RenderReport,
     owner: impl FnOnce(
         Arc<OwnedHandle>,
         ActivationGate,
@@ -79,6 +144,8 @@ fn start_native_owner(
     let worker_started = started.clone();
     let worker_stop = stop.event.clone();
     let worker_gate = gate.clone();
+    let recovery = Arc::new(Mutex::new(None));
+    let worker_recovery = recovery.clone();
     let worker = thread::Builder::new()
         .name("moiren-shared-render".into())
         .spawn(move || {
@@ -93,6 +160,7 @@ fn start_native_owner(
                     receiver,
                     renderer: None,
                     initial_frame: 0,
+                    recovery: worker_recovery,
                 },
             )
         })
@@ -103,6 +171,8 @@ fn start_native_owner(
         started,
         stop: stop.event,
         worker: Some(worker),
+        recovery: Some(recovery),
+        fallback: Some(fallback),
     };
     let info = match metadata.recv() {
         Ok(result) => result?,
@@ -123,9 +193,22 @@ fn start_native_owner(
 struct RenderPreparation {
     ready: mpsc::SyncSender<Result<NativeRenderInfo, RenderError>>,
     attached: mpsc::SyncSender<Result<(), RenderError>>,
-    receiver: preparation::Receiver<(DemandRenderer, PreparedRenderQueue)>,
+    receiver: preparation::Receiver<(RendererHandoff, PreparedRenderQueue)>,
     renderer: Option<DemandRenderer>,
     initial_frame: u64,
+    recovery: RendererHandoff,
+}
+impl Drop for RenderPreparation {
+    fn drop(&mut self) {
+        // Even an unexpected owner bookkeeping panic leaves the engine in the
+        // control-side recovery mailbox, after the borrowed native loop unwinds.
+        if let Some(renderer) = self.renderer.take() {
+            *self
+                .recovery
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner()) = Some(renderer);
+        }
+    }
 }
 impl RenderPreparation {
     fn receive(
@@ -137,8 +220,13 @@ impl RenderPreparation {
         self.ready
             .send(Ok(info))
             .map_err(|_| RenderError::StartupLost)?;
-        let (renderer, queue) =
+        let (handoff, queue) =
             api("Wait for renderer", self.receiver.receive(stop))?.ok_or(RenderError::Cancelled)?;
+        let renderer = handoff
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+            .ok_or(RenderError::StartupLost)?;
         self.initial_frame = renderer.timeline();
         self.renderer = Some(renderer);
         report.queue = Some(queue);
@@ -211,9 +299,15 @@ fn run_owner_with(
     }))
     .unwrap_or(Err(RenderError::WorkerPanicked));
     let pending = preparation.receiver.close_and_take();
-    if let Some((renderer, _)) = pending {
-        preparation.initial_frame = renderer.timeline();
-        preparation.renderer = Some(renderer);
+    if let Some((handoff, _)) = pending {
+        let renderer = handoff
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
+        if let Some(renderer) = renderer {
+            preparation.initial_frame = renderer.timeline();
+            preparation.renderer = Some(renderer);
+        }
     }
     let _ = unsafe { SetEvent(handle(&stop)) };
     match result {
@@ -231,9 +325,11 @@ fn run_owner_with(
     });
     NativeOwnerExit {
         report,
-        renderer: preparation.renderer,
+        renderer: None,
     }
 }
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::{Outcome as TestOutcome, fake_prepared as prepare_test_native};

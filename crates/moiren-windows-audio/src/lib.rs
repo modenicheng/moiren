@@ -4,6 +4,7 @@ pub mod capture;
 pub mod clock;
 pub mod clock_bridge;
 mod duration;
+pub mod engine_backend;
 pub mod latency;
 pub mod process_loopback;
 pub mod render;
