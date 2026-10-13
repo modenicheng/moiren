@@ -50,9 +50,29 @@ RED 接口壳树 `47f4769122cd344e16e5e0d1e328ac9ad9431a2f` 中四项初始速�
 
 短矩阵 CSV 为 [control-120.csv](2026-10-13-clock-rate/control-120.csv)、[rate-120.csv](2026-10-13-clock-rate/rate-120.csv)、[faults-120.csv](2026-10-13-clock-rate/faults-120.csv)。旧控制 / 故障 verifier 可用 `-Csv` 指向新的 CSV；新的 [rate verifier](2026-10-13-clock-rate/verify.ps1) 检查双端坐标、duration、零故障、前馈 / fallback 与相对误差。
 
-本提交只将 120 秒结果作为已完成证据；7200 秒扩展在相同最终实现上运行，完成后另行归档。此前 `0fc8b28` / `66a4a9a` 的长测记录不代表本次新运行实现。
+## 同一实现的 7200 秒扩展
 
-日志位于 `.tmp/audio-latency-audit/`：`clock-rate-{check,fmt,clippy,workspace-tests}.log`、`clock-rate-final-v2-120.log`、`clock-rate-red.log`、`clock-rate-offline-red.log`、`clock-rate-mutation-{feed,window}.log`。
+`df344d3` 提交的运行实现与上述最终树的 `src` / `tests` 字节一致。对该实现重新执行了 64 个控制 / 双端漂移组合和 144 个联合故障组合，每个组合模拟 7200 秒，全部通过。没有复用此前 `0fc8b28` / `66a4a9a` 的长测结论。
+
+| 矩阵 | 7200 秒结果 |
+| --- | --- |
+| 控制 48 组 | short / underrun / drop / backlog recovery 均为 0；最大均值误差 0.978078 ppm；guard 共 38592 frames |
+| 双端漂移 / fallback 16 组 | 同样零故障；最大相对均值误差 0.184261 ppm；有效源保持 Capture ±1000 ppm 的 queued estimate，无效源保持 None |
+| 联合故障 144 组 | 除 seconds 字段外，各坐标的全部字段与 120 秒 CSV 完全一致，包括 guard 计数；稳定阶段零 short / xrun，主动暂停的完整故障计数保留 |
+
+长矩阵为 [control-7200.csv](2026-10-13-clock-rate/control-7200.csv)、[rate-7200.csv](2026-10-13-clock-rate/rate-7200.csv)、[faults-7200.csv](2026-10-13-clock-rate/faults-7200.csv)。三个 verifier 用对应 CSV 和 `-Seconds 7200` 都通过。新 rate verifier 的缺行、重复坐标、非零故障、隐藏有效 rate、NaN 和错误相对修正六份破坏样本均被拒绝。
+
+长测命令从最终导出目录运行：
+
+```powershell
+$env:MOIREN_CONTROL_SIM_SECONDS = '7200'
+$env:MOIREN_FAULT_SIM_SECONDS = '7200'
+cargo test --locked --release -p moiren-windows-audio --test clock_control --test clock_faults -- --nocapture
+```
+
+完整日志 `clock-rate-final-v2-7200.log` 中 control 7 个测试耗时 226.19 秒，faults 2 个测试耗时 772.74 秒；这些是主机计算耗时，不是音频时延。模型仍采用瞬时 callback，不包含实机调度、系统负载或实际 DSP 耗时的认证。
+
+日志位于 `.tmp/audio-latency-audit/`：`clock-rate-{check,fmt,clippy,workspace-tests}.log`、`clock-rate-final-v2-{120,7200}.log`、`clock-rate-red.log`、`clock-rate-offline-red.log`、`clock-rate-mutation-{feed,window}.log`。
 
 本切片没有新的实机采集、播放、物理闭环或音频年龄测量，不声称已改善实测物理时延。T4 整体及 T5–T8 保持未完成状态。
 
