@@ -4,6 +4,7 @@ use crate::{
     Activation, ActivationGate, SessionDuration,
     capture::{CaptureError, CaptureReport, CaptureSource, CaptureStatus},
     clock_bridge::{ClockBridgeConfig, capture_bridge},
+    latency::{CallbackObservation, LatencyRecorder, TelemetryMode, clock::QpcClock},
     owner::{Mmcss, Streaming},
 };
 use std::{
@@ -26,6 +27,7 @@ pub(crate) struct StreamInput<'a> {
     pub target: Option<HANDLE>,
     pub stop: &'a OwnedHandle,
     pub duration: SessionDuration,
+    pub latency_telemetry: TelemetryMode,
     pub gate: &'a ActivationGate,
     pub started: &'a AtomicBool,
     pub sample_rate: u32,
@@ -43,6 +45,9 @@ pub(crate) fn run(
         return Err(CaptureError::BufferBudget);
     }
     report.buffer_frames = Some(capacity);
+    report.stream_latency_100ns = unsafe { input.client.GetStreamLatency() }.ok();
+    let mut telemetry = LatencyRecorder::new(input.latency_telemetry);
+    let clock = QpcClock::prepare(input.latency_telemetry);
     report.sample_rate = Some(input.sample_rate);
     report.channels = Some(input.channels);
     let capture: IAudioCaptureClient =
@@ -113,6 +118,9 @@ pub(crate) fn run(
                 }
                 Wake::Audio => report.audio_wakes += 1,
             }
+            let wake_qpc_100ns = clock.as_ref().and_then(QpcClock::now);
+            let mut native_frames = 0u64;
+            let mut accepted_frames = 0u64;
             // Stop and process-exit checks also bound a continuously busy producer.
             while input.duration.remaining(started.elapsed()) != Some(Duration::ZERO) {
                 match wait_target(handle(input.stop), input.audio, input.target, 0)? {
@@ -126,11 +134,21 @@ pub(crate) fn run(
                 {
                     break;
                 }
-                if transfer_packet(&capture, capacity, &mut ingress)? == 0 {
+                let transfer = transfer_packet(&capture, capacity, &mut ingress)?;
+                if transfer.native_frames == 0 {
                     break;
                 }
+                native_frames = native_frames.saturating_add(u64::from(transfer.native_frames));
+                accepted_frames = accepted_frames.saturating_add(transfer.accepted_frames as u64);
                 report.packets += 1;
             }
+            telemetry.record(CallbackObservation {
+                wake_qpc_100ns,
+                completed_qpc_100ns: clock.as_ref().and_then(QpcClock::now),
+                demand_frames: native_frames,
+                padding_before_frames: None,
+                submitted_frames: accepted_frames,
+            });
         }
         Ok(CaptureStatus::Completed)
     })();
@@ -140,6 +158,7 @@ pub(crate) fn run(
         SetEvent(handle(input.stop))
     });
     let stopped = streaming.stop();
+    report.latency = telemetry.snapshot();
     report.stop_succeeded = stopped.is_ok();
     report.stop_hresult = stopped.as_ref().err().map(|e| e.code().0);
     match result {

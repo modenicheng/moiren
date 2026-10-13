@@ -53,6 +53,7 @@ pub enum CaptureError {
 }
 #[derive(Debug, Clone)]
 pub struct CaptureOptions {
+    pub latency_telemetry: crate::latency::TelemetryMode,
     pub endpoint_id: String,
     pub duration: SessionDuration,
 }
@@ -87,6 +88,8 @@ pub enum CaptureStatus {
 #[derive(Debug, Serialize)]
 pub struct CaptureReport {
     pub schema_version: u32,
+    pub latency: crate::latency::LatencySnapshot,
+    pub stream_latency_100ns: Option<i64>,
     pub source: CaptureSource,
     pub endpoint_id: Option<String>,
     pub process: Option<ProcessIdentity>,
@@ -112,7 +115,10 @@ pub struct CaptureReport {
 impl CaptureReport {
     pub(crate) fn new(source: CaptureSource, duration: SessionDuration) -> Self {
         Self {
-            schema_version: 3,
+            schema_version: 4,
+            latency: crate::latency::LatencyRecorder::new(crate::latency::TelemetryMode::Disabled)
+                .snapshot(),
+            stream_latency_100ns: None,
             source,
             endpoint_id: None,
             process: None,

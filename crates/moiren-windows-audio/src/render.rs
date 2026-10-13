@@ -86,6 +86,7 @@ pub enum RenderError {
 
 #[derive(Debug, Clone)]
 pub struct RenderOptions {
+    pub latency_telemetry: crate::latency::TelemetryMode,
     pub endpoint_id: String,
     pub duration: SessionDuration,
 }
@@ -239,6 +240,7 @@ pub struct RenderStats {
 #[derive(Debug, Serialize)]
 pub struct RenderReport {
     pub schema_version: u32,
+    pub latency: crate::latency::LatencySnapshot,
     pub endpoint_id: String,
     pub status: RenderStatus,
     pub requested_seconds: Option<f64>,

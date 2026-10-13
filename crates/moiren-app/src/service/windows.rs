@@ -145,6 +145,7 @@ impl WindowsBackend {
                 let timeline = renderer.timeline_observer();
                 let render = start_render_prepared(
                     RenderOptions {
+                        latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
                         endpoint_id: spec.output_endpoint_id,
                         duration,
                     },

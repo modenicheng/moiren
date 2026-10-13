@@ -14,6 +14,7 @@ fn render_preparation_rejects_foreign_gate_stop_before_spawning() {
     let (tx, rx) = std::sync::mpsc::channel();
     let result = start_render_prepared_with_gate(
         RenderOptions {
+            latency_telemetry: crate::latency::TelemetryMode::Summary,
             endpoint_id: "unopened".into(),
             duration: SessionDuration::UntilStopped,
         },
@@ -317,6 +318,7 @@ fn prepared_render_waits_before_dsp_and_returns_renderer_to_joiner() {
             move |renderer, stop, gate, ready, started| {
                 stream::run_owner_with(
                     RenderOptions {
+                        latency_telemetry: crate::latency::TelemetryMode::Summary,
                         endpoint_id: "fake".into(),
                         duration: SessionDuration::UntilStopped,
                     },
@@ -351,7 +353,7 @@ fn prepared_render_waits_before_dsp_and_returns_renderer_to_joiner() {
         assert_eq!(exit.renderer.timeline(), u64::from(!cancel));
         assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
         let json = serde_json::to_value(&exit.report).unwrap();
-        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["schema_version"], 3);
         assert!(json["requested_seconds"].is_null());
         assert!(rx.try_recv().is_err());
         drop(exit.renderer);
@@ -372,6 +374,7 @@ fn post_ready_failure_returns_unstarted_renderer_and_finite_report() {
         |renderer, stop, gate, ready, started| {
             stream::run_owner_with(
                 RenderOptions {
+                    latency_telemetry: crate::latency::TelemetryMode::Summary,
                     endpoint_id: "fake".into(),
                     duration: SessionDuration::For(std::time::Duration::from_secs(10)),
                 },
@@ -402,7 +405,7 @@ fn post_ready_failure_returns_unstarted_renderer_and_finite_report() {
     assert!(!exit.report.stream_started);
     assert_eq!(exit.renderer.timeline(), 0);
     let json = serde_json::to_value(&exit.report).unwrap();
-    assert_eq!(json["schema_version"], 2);
+    assert_eq!(json["schema_version"], 3);
     assert_eq!(json["requested_seconds"], 10.0);
     assert!(rx.try_recv().is_err());
     drop(exit.renderer);
@@ -422,6 +425,7 @@ fn render_prepare_failure_joins_and_drops_renderer_on_preparing_thread() {
         |renderer, stop, gate, ready, started| {
             stream::run_owner_with(
                 RenderOptions {
+                    latency_telemetry: crate::latency::TelemetryMode::Summary,
                     endpoint_id: "fake".into(),
                     duration: SessionDuration::UntilStopped,
                 },

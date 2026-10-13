@@ -30,7 +30,7 @@
 1. **默认 Capture Bridge 目标偏保守。** 固定保留 2048 个原生输入帧，在 48 kHz 下约 42.67 ms，在 44.1 kHz 下约 46.44 ms。正式物理输入与 Process Loopback 共用这个默认值，应用无法选择较低目标。
 2. **Shared 低周期 API 尚未用于初始化。** Capture / Render 都调用旧 `IAudioClient::Initialize(..., 0, 0, ...)`。Render 查询 IAudioClient3 仅用于报告当前周期，没有请求较小周期。
 3. **Render 每次补满整个 endpoint buffer。** 启动预填 capacity，稳态提交 `capacity - padding`。历史 FreeDSP capacity 为 1056 帧，约 22 ms；降低软件 block 不会自行降低这段排队。
-4. **缺少端到端测量与运行中音频年龄上限。** 现有 last QPC 指向最近入队包，不能代表正在输出的老帧。只在 prime 时裁剪，运行中大积压由慢速漂移控制或后续 reset 消化。
+4. **缺少端到端测量与运行中音频年龄上限。** 现有 last QPC 指向最近收到的有效包时间戳，即使包因 overflow 完全丢弃也会更新，不能代表正在输出的老帧。只在 prime 时裁剪，运行中大积压由慢速漂移控制或后续 reset 消化。
 
 2048 帧目标与历史 1056 帧 capacity 的标称时间相加约 **64.67 ms**。这个数只是两项配置尺度的说明，**不是测得的输入到输出时延，也不是严格下限**：实际 FIFO 随包相位、需求分块和 servo 变化；设备、APO、ADC / DAC 等延迟也尚未计入。
 

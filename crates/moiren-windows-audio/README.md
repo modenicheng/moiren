@@ -398,3 +398,36 @@ References: [Microsoft Application Loopback Sample](https://learn.microsoft.com/
 [IAudioClock::GetPosition](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclock-getposition),
 [IAudioClock::GetFrequency](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclock-getfrequency),
 [IAudioClock2::GetDevicePosition](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudioclock2-getdeviceposition).
+
+## Bounded latency observations
+
+Capture and Render options accept `latency_telemetry`: `Disabled`, `Summary`, or
+`Trace`. The application enables Summary. The owner prepares fixed histograms
+and a 256-entry trace before activation. A full trace drops diagnostics while
+continuing audio; the report keeps cumulative histogram samples and drop counts.
+Disabled profiling performs no QPC reads. Quantile scans and JSON serialization
+happen after streaming, and snapshots own their data.
+
+All owner timestamps are normalized QPC in 100 ns units. Histogram p50/p95/p99
+values are upper bounds with four buckets per octave, capped by the exact
+observed maximum. Render padding is recorded before refill. Capture submitted
+frames count frames accepted by its bridge, and Capture has no render-padding
+samples. Callback duration covers successful wake processing through the native
+transfer and sample statistics, excluding the subsequent telemetry recording;
+the benchmark reports that instrumentation cost separately. Startup prefill,
+activation-gate waits, Stop, and failed transfers are outside these histograms.
+
+Use explicit endpoint IDs to collect a baseline; the probe defaults to gain 0:
+
+```powershell
+cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --list
+cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --input '<capture-id>' --output '<render-id>' --seconds 5 --gain 0 --mode trace
+cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --benchmark
+```
+
+The portable benchmark measures the recorder; Windows additionally measures
+two QPC reads plus conversion and recording. Both exclude audio work. The probe
+reports raw `GetStreamLatency` separately and keeps end-to-end measurement
+method `unknown`. Queue observations and callback timings cannot establish
+physical end-to-end latency. Bridge `last_qpc_100ns` belongs to the latest
+received valid packet, even if overflow drops it; it is not FIFO audio age.

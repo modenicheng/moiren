@@ -8,11 +8,17 @@ use crate::{
 };
 use windows::Win32::Media::Audio::IAudioCaptureClient;
 
+#[derive(Default)]
+pub(super) struct CaptureTransfer {
+    pub native_frames: u32,
+    pub accepted_frames: usize,
+}
+
 pub(super) fn transfer_packet(
     client: &IAudioCaptureClient,
     capacity: u32,
     ingress: &mut CaptureIngress,
-) -> Result<usize, CaptureError> {
+) -> Result<CaptureTransfer, CaptureError> {
     let (mut data, mut frames, mut flags, mut position, mut qpc) =
         (std::ptr::null_mut(), 0, 0, 0, 0);
     api("GetBuffer(capture)", unsafe {
@@ -26,7 +32,7 @@ pub(super) fn transfer_packet(
     })?;
     // AUDCLNT_S_BUFFER_EMPTY has no lease; outputs other than frames are undefined.
     if frames == 0 {
-        return Ok(0);
+        return Ok(CaptureTransfer::default());
     }
     let lease = PacketLease {
         client,
@@ -47,7 +53,7 @@ pub(super) fn transfer_packet(
         // this live WASAPI lease. Decoder uses bytes, not aligned f32 references.
         unsafe { std::slice::from_raw_parts(data, count) }
     };
-    ingress.push_packet(
+    let accepted_frames = ingress.push_packet(
         bytes,
         CapturePacket {
             frames: frames as usize,
@@ -58,5 +64,8 @@ pub(super) fn transfer_packet(
     )?;
     // Release the entire packet even when bridge overflow discarded its tail.
     api("ReleaseBuffer(capture)", lease.release())?;
-    Ok(frames as usize)
+    Ok(CaptureTransfer {
+        native_frames: frames,
+        accepted_frames,
+    })
 }

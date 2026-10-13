@@ -2,6 +2,7 @@
 use super::{
     RenderOwnerExit, Wake, api, format::mix_format, handle, packet::submit, ready_and_wait, wait,
 };
+use crate::latency::{CallbackObservation, LatencyRecorder, clock::QpcClock};
 use crate::{Activation, ActivationGate};
 use crate::{
     owner::{Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory},
@@ -152,6 +153,8 @@ pub(super) fn owner(
         .filter(|&n| n <= 8 * 1024 * 1024 / size_of::<f32>())
         .ok_or(RenderError::StagingBudget)?;
     let mut staging = vec![0.0f32; sample_count];
+    let mut telemetry = LatencyRecorder::new(options.latency_telemetry);
+    let clock = QpcClock::prepare(options.latency_telemetry);
     if ready_and_wait(ready, gate)? == Activation::Cancelled {
         return Ok(RenderStatus::Stopped);
     }
@@ -187,10 +190,18 @@ pub(super) fn owner(
                 }
                 Wake::Audio => report.stats.audio_wakes += 1,
             }
+            let wake_qpc_100ns = clock.as_ref().and_then(QpcClock::now);
             let padding = api("GetCurrentPadding", unsafe { client.GetCurrentPadding() })?;
             let demand = writable_frames(capacity, padding)?;
             if demand == 0 {
                 report.stats.zero_demand_wakes += 1;
+                telemetry.record(CallbackObservation {
+                    wake_qpc_100ns,
+                    completed_qpc_100ns: clock.as_ref().and_then(QpcClock::now),
+                    demand_frames: 0,
+                    padding_before_frames: Some(padding),
+                    submitted_frames: 0,
+                });
                 continue;
             }
             if padding == 0 {
@@ -207,6 +218,13 @@ pub(super) fn owner(
             produce(renderer, samples, &mut report.stats)?;
             submit(&render, samples)?;
             record_submit(samples, &mut report.stats);
+            telemetry.record(CallbackObservation {
+                wake_qpc_100ns,
+                completed_qpc_100ns: clock.as_ref().and_then(QpcClock::now),
+                demand_frames: u64::from(demand),
+                padding_before_frames: Some(padding),
+                submitted_frames: u64::from(demand),
+            });
         }
         Ok(RenderStatus::Completed)
     })();
@@ -215,6 +233,7 @@ pub(super) fn owner(
         SetEvent(handle(stop))
     });
     let stopped = streaming.stop();
+    report.latency = telemetry.snapshot();
     report.stop_succeeded = stopped.is_ok();
     if let Err(error) = &stopped {
         report.stop_hresult = Some(error.code().0);
@@ -249,7 +268,8 @@ pub(super) fn run_owner_with(
 ) -> RenderOwnerExit {
     let initial_frame = renderer.timeline();
     let mut report = RenderReport {
-        schema_version: 2,
+        schema_version: 3,
+        latency: LatencyRecorder::new(options.latency_telemetry).snapshot(),
         endpoint_id: options.endpoint_id.clone(),
         status: RenderStatus::Failed,
         requested_seconds: options.duration.requested_seconds(),

@@ -170,7 +170,7 @@ impl MonitorSession {
         match (capture_report, render_report) {
             (Some(capture), Some(render)) => {
                 exit.report = Some(MonitorReport {
-                    schema_version: 2,
+                    schema_version: 3,
                     status: report_status(capture.status, render.status),
                     capture,
                     render,
@@ -232,10 +232,12 @@ fn prepare_monitor_inner(
 ) -> Result<PreparedMonitorSession, MonitorError> {
     options.config.validate()?;
     let capture_options = CaptureOptions {
+        latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
         endpoint_id: options.input_endpoint_id,
         duration: options.duration,
     };
     let render_options = RenderOptions {
+        latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
         endpoint_id: options.output_endpoint_id,
         duration: options.duration,
     };
@@ -278,6 +280,7 @@ fn prepare_process_monitor_inner(
 ) -> Result<PreparedMonitorSession, MonitorError> {
     options.config.validate()?;
     let render_options = RenderOptions {
+        latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
         endpoint_id: options.output_endpoint_id,
         duration: options.duration,
     };
@@ -285,6 +288,7 @@ fn prepare_process_monitor_inner(
     let gate = ActivationGate::new(stop.clone())?;
     let capture = prepare_process_capture_with_gate(
         ProcessLoopbackOptions {
+            latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
             target: options.target,
             duration: options.duration,
         },

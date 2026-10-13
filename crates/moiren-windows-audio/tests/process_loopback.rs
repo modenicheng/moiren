@@ -6,6 +6,7 @@ use std::time::Duration;
 
 fn options(pid: u32, creation_time_100ns: u64) -> ProcessLoopbackOptions {
     ProcessLoopbackOptions {
+        latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
         target: ProcessIdentity {
             pid,
             creation_time_100ns,

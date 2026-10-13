@@ -267,6 +267,7 @@ fn padding_and_explicit_render_options_are_checked() {
     for endpoint in ["", " ", "id\0other"] {
         assert_eq!(
             RenderOptions {
+                latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
                 endpoint_id: endpoint.into(),
                 duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(10))
             }
@@ -277,6 +278,7 @@ fn padding_and_explicit_render_options_are_checked() {
     for duration in [Duration::ZERO, Duration::from_secs(601)] {
         assert_eq!(
             RenderOptions {
+                latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
                 endpoint_id: "id".into(),
                 duration: moiren_windows_audio::SessionDuration::For(duration)
             }
@@ -286,6 +288,7 @@ fn padding_and_explicit_render_options_are_checked() {
     }
     assert!(
         RenderOptions {
+            latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
             endpoint_id: "id".into(),
             duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(10))
         }

@@ -33,6 +33,7 @@ impl ProcessIdentity {
 }
 #[derive(Debug, Clone)]
 pub struct ProcessLoopbackOptions {
+    pub latency_telemetry: crate::latency::TelemetryMode,
     pub target: ProcessIdentity,
     pub duration: SessionDuration,
 }

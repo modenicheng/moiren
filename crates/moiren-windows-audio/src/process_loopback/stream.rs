@@ -52,6 +52,7 @@ pub fn prepare_process_capture_with_gate(
     gate.validate_stop(&stop)?;
     start_owner(stop, move |stop, sender, started| {
         let mut report = CaptureReport::new(CaptureSource::ProcessLoopback, options.duration);
+        report.latency = crate::latency::LatencyRecorder::new(options.latency_telemetry).snapshot();
         report.process = Some(options.target.clone());
         let result = owner(&options, &stop, &sender, &mut report, &gate, &started);
         stream::finish(result, &stop, &sender, report)
@@ -121,6 +122,7 @@ fn owner(
             target: Some(process.handle.0),
             stop,
             duration: options.duration,
+            latency_telemetry: options.latency_telemetry,
             sample_rate: 48000,
             channels: 2,
         },
@@ -147,6 +149,7 @@ mod tests {
         let stop = StopSignal::new().unwrap();
         stop.request_stop().unwrap();
         let options = ProcessLoopbackOptions {
+            latency_telemetry: crate::latency::TelemetryMode::Summary,
             target: super::super::ProcessIdentity {
                 pid: u32::MAX,
                 creation_time_100ns: 1,

@@ -85,6 +85,7 @@ fn owner(
             target: None,
             stop,
             duration: options.duration,
+            latency_telemetry: options.latency_telemetry,
             sample_rate: base.nSamplesPerSec,
             channels: usize::from(base.nChannels),
         },
@@ -100,6 +101,7 @@ pub(super) fn run_owner(
     started: Arc<AtomicBool>,
 ) -> CaptureReport {
     let mut report = CaptureReport::new(CaptureSource::Physical, options.duration);
+    report.latency = crate::latency::LatencyRecorder::new(options.latency_telemetry).snapshot();
     report.endpoint_id = Some(options.endpoint_id.clone());
     let result = owner(&options, &stop, &sender, &mut report, &gate, &started);
     stream::finish(result, &stop, &sender, report)

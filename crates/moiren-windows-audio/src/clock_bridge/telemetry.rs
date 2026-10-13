@@ -15,6 +15,8 @@ pub struct BridgeSnapshot {
     pub discontinuities: u64,
     pub timestamp_errors: u64,
     pub last_device_position_frames: u64,
+    /// Latest received valid packet stamp, including packets dropped by overflow.
+    /// This does not measure the oldest queued audio.
     pub last_qpc_100ns: u64,
     pub output_frames: u64,
     pub priming_frames: u64,
