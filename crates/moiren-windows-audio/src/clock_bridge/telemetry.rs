@@ -24,6 +24,8 @@ pub struct BridgeSnapshot {
     /// Intentional old-frame removal while interpolation is already running.
     pub backlog_discarded_frames: u64,
     pub backlog_recoveries: u64,
+    /// Successful output frames rendered with the bounded low-water correction.
+    pub low_water_guard_frames: u64,
     pub underrun_frames: u64,
     pub last_underrun_at_output_frame: u64,
     pub last_underrun_producer_finished: bool,
@@ -48,6 +50,7 @@ pub(super) struct Counters {
     pub prime_discarded_frames: AtomicU64,
     pub backlog_discarded_frames: AtomicU64,
     pub backlog_recoveries: AtomicU64,
+    pub low_water_guard_frames: AtomicU64,
     pub underrun_frames: AtomicU64,
     pub last_underrun_at_output_frame: AtomicU64,
     pub last_underrun_producer_finished: AtomicBool,
@@ -75,6 +78,7 @@ impl Counters {
             prime_discarded_frames: AtomicU64::new(0),
             backlog_discarded_frames: AtomicU64::new(0),
             backlog_recoveries: AtomicU64::new(0),
+            low_water_guard_frames: AtomicU64::new(0),
             underrun_frames: AtomicU64::new(0),
             last_underrun_at_output_frame: AtomicU64::new(0),
             last_underrun_producer_finished: AtomicBool::new(false),
@@ -110,6 +114,7 @@ impl BridgeObserver {
             prime_discarded_frames: c.prime_discarded_frames.load(Relaxed),
             backlog_discarded_frames: c.backlog_discarded_frames.load(Relaxed),
             backlog_recoveries: c.backlog_recoveries.load(Relaxed),
+            low_water_guard_frames: c.low_water_guard_frames.load(Relaxed),
             underrun_frames: c.underrun_frames.load(Relaxed),
             last_underrun_at_output_frame: c.last_underrun_at_output_frame.load(Relaxed),
             last_underrun_producer_finished: c.last_underrun_producer_finished.load(Relaxed),

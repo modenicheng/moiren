@@ -9,6 +9,7 @@ use rtrb::Consumer;
 use std::sync::{Arc, atomic::Ordering::Relaxed};
 
 const RECOVERY_FADE_FRAMES: usize = 32;
+const SERVO_QUANTUM_FRAMES: usize = 32;
 
 pub struct ClockSource {
     rx: Consumer<Frame>,
@@ -19,6 +20,9 @@ pub struct ClockSource {
     phase: f64,
     filtered_fill: f64,
     integral: f64,
+    step: f64,
+    servo_frames_remaining: usize,
+    low_water_guard: bool,
     fade_remaining: usize,
 }
 impl ClockSource {
@@ -36,6 +40,9 @@ impl ClockSource {
             phase: 0.0,
             filtered_fill: config.servo_reference() as f64,
             integral: 0.0,
+            step: f64::from(config.input_sample_rate) / f64::from(OUTPUT_SAMPLE_RATE),
+            servo_frames_remaining: 0,
+            low_water_guard: false,
             fade_remaining: 0,
         }
     }
@@ -57,6 +64,9 @@ impl ClockSource {
         self.phase = 0.0;
         self.filtered_fill = self.config.servo_reference() as f64;
         self.integral = 0.0;
+        self.step = f64::from(self.config.input_sample_rate) / f64::from(OUTPUT_SAMPLE_RATE);
+        self.servo_frames_remaining = 0;
+        self.low_water_guard = false;
         self.fade_remaining = 0;
         self.counters
             .correction_bits
@@ -97,25 +107,37 @@ impl ClockSource {
         self.counters.backlog_recoveries.fetch_add(1, Relaxed);
         discarded
     }
-    fn ratio(&mut self, fill: usize, frames: usize) -> f64 {
-        // Scale updates by elapsed output time, rather than by callback count:
-        // parameter events can divide one Engine block into many segments.
-        let dt = frames as f64 / f64::from(OUTPUT_SAMPLE_RATE);
+    fn ratio(&mut self, fill: usize) -> f64 {
+        // A fixed output-frame cadence samples the same FIFO trajectory even
+        // when parameter events divide one Engine block into many segments.
+        let dt = SERVO_QUANTUM_FRAMES as f64 / f64::from(OUTPUT_SAMPLE_RATE);
         self.filtered_fill += dt / (0.25 + dt) * (fill as f64 - self.filtered_fill);
         let error_seconds = (self.filtered_fill - self.config.servo_reference() as f64)
             / f64::from(self.config.input_sample_rate);
         let limit = self.config.max_correction_ppm / 1_000_000.0;
+        self.low_water_guard = self
+            .config
+            .prepared_input
+            .is_some_and(|input| fill <= input.low_water_frames as usize && limit > 0.0);
         let candidate = (self.integral + 0.02 * error_seconds * dt).clamp(-limit, limit);
         let raw = 0.2 * error_seconds + candidate;
         // Integrate only when unsaturated, or when the error pulls back from a
         // saturated limit. Startup/event backlog is not evidence of clock drift.
-        if (-limit..=limit).contains(&raw)
-            || (raw > limit && error_seconds < 0.0)
-            || (raw < -limit && error_seconds > 0.0)
+        if !self.low_water_guard
+            && ((-limit..=limit).contains(&raw)
+                || (raw > limit && error_seconds < 0.0)
+                || (raw < -limit && error_seconds > 0.0))
         {
             self.integral = candidate;
         }
-        let correction = (0.2 * error_seconds + self.integral).clamp(-limit, limit);
+        // A stale filtered backlog must not accelerate a depleted queue.
+        // This temporary guard stays inside the admitted rate correction
+        // limit and freezes integral learning; real starvation still reports.
+        let correction = if self.low_water_guard {
+            -limit
+        } else {
+            (0.2 * error_seconds + self.integral).clamp(-limit, limit)
+        };
         self.counters
             .correction_bits
             .store((correction * 1_000_000.0).to_bits(), Relaxed);
@@ -167,7 +189,7 @@ impl ClockSource {
         }
         self.counters.min_fill_frames.fetch_min(fill, Relaxed);
         self.counters.max_fill_frames.fetch_max(fill, Relaxed);
-        let step = self.ratio(fill, frames);
+        let mut guarded_frames = 0u64;
         for frame in 0..frames {
             while self.phase >= 1.0 {
                 self.phase -= 1.0;
@@ -198,6 +220,13 @@ impl ClockSource {
                 self.reset();
                 break;
             }
+            if self.servo_frames_remaining == 0 {
+                self.step = self.ratio(self.rx.slots() + 2);
+                self.servo_frames_remaining = SERVO_QUANTUM_FRAMES;
+            }
+            let step = self.step;
+            self.servo_frames_remaining -= 1;
+            guarded_frames += u64::from(self.low_water_guard);
             let gain = if self.fade_remaining > 0 {
                 let gain = (RECOVERY_FADE_FRAMES - self.fade_remaining + 1) as f64
                     / RECOVERY_FADE_FRAMES as f64;
@@ -220,6 +249,11 @@ impl ClockSource {
         self.counters
             .output_frames
             .fetch_add(report.transferred_frames as u64, Relaxed);
+        if guarded_frames > 0 {
+            self.counters
+                .low_water_guard_frames
+                .fetch_add(guarded_frames, Relaxed);
+        }
         report
     }
 }

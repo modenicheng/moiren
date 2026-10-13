@@ -161,9 +161,9 @@ producer drops and native discontinuities. Recovery marks the boundary as
 discontinuous without an xrun unless interpolation also encounters starvation
 or a generation boundary. `trim_on_prime=false` disables both trimming
 policies; configurations without prepared watermarks keep their existing
-running behavior. Audio-age limits and low-inventory servo protection remain
-future work. Probe envelope schema 3 and application monitor schema 4 include
-the new scalar counters; Capture/Render schemas stay 6/5.
+running behavior. Audio-age limits remain future work.
+Probe envelope schema 4 and application monitor schema 5 include
+the bridge scalar counters; Capture/Render schemas stay 6/5.
 
 Continuous linear interpolation handles nominal 44.1→48 kHz and small clock
 differences. A smoothed fill PI servo, with anti-windup, bounds correction to
@@ -172,6 +172,17 @@ it is not a professional bandlimited converter. `correction_ppm` is a queue
 control signal, not a hardware clock measurement. The target adds buffering
 latency and neither `GetStreamLatency` nor nominal sample rate measures the
 complete input-to-output latency.
+
+The controller samples inventory every 32 successful output frames, carrying
+its cadence and ratio across Engine segments. Splitting one demand into
+parameter segments therefore follows the same control trajectory. At a
+prepared low-water boundary it temporarily uses the configured negative
+correction limit and freezes integral learning, so stale filtered backlog
+cannot accelerate a depleted queue. `low_water_guard_frames` counts only
+successful guarded output. Refilling releases the guard at the next fixed
+quantum. The guard never invents samples or clears underrun counts and cannot
+replace the period, gap and jitter admission budget. Feed-forward from valid
+packet timestamps remains future work.
 
 Snapshots are approximate independent atomic scalars; final snapshots after
 joining both owners are stable. Capture/render failures, packet discontinuity,

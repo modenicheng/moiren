@@ -467,16 +467,23 @@ fn startup_backlog_is_trimmed_to_target_instead_of_winding_up_drift_controller()
     let cfg = ClockBridgeConfig::default();
     let (mut input, mut source, observer) = capture_bridge(cfg).unwrap();
     let ramp: Vec<f32> = (0..6000).flat_map(|i| [i as f32, -(i as f32)]).collect();
-    input
-        .push_packet(&bytes(&ramp), packet(6000, 0, 0))
-        .unwrap();
+    let payload = bytes(&ramp);
+    input.push_packet(&payload, packet(6000, 0, 0)).unwrap();
     let mut out = [99.0; 512];
     assert_eq!(
         source
-            .read_interleaved(&mut out)
+            .read_interleaved(&mut out[..2])
             .unwrap()
             .transferred_frames,
-        256
+        1
+    );
+    assert_eq!(observer.snapshot().correction_ppm, 0.0);
+    assert_eq!(
+        source
+            .read_interleaved(&mut out[2..])
+            .unwrap()
+            .transferred_frames,
+        255
     );
     assert_eq!(out[0], (6000 - cfg.target_fill_frames) as f32);
     let snapshot = observer.snapshot();
@@ -484,7 +491,24 @@ fn startup_backlog_is_trimmed_to_target_instead_of_winding_up_drift_controller()
         snapshot.prime_discarded_frames,
         (6000 - cfg.target_fill_frames) as u64
     );
-    assert_eq!(snapshot.correction_ppm, 0.0);
+    let start = 6000 - cfg.target_fill_frames;
+    let (mut baseline_input, mut baseline_source, baseline_observer) = capture_bridge(cfg).unwrap();
+    baseline_input
+        .push_packet(
+            &payload[start * 8..],
+            packet(cfg.target_fill_frames, start as u64, 0),
+        )
+        .unwrap();
+    let mut baseline_output = [99.0; 512];
+    baseline_source
+        .read_interleaved(&mut baseline_output)
+        .unwrap();
+    assert_eq!(out, baseline_output);
+    assert_eq!(
+        snapshot.correction_ppm,
+        baseline_observer.snapshot().correction_ppm
+    );
+    assert_eq!(baseline_observer.snapshot().prime_discarded_frames, 0);
     assert_eq!(snapshot.backlog_discarded_frames, 0);
     assert_eq!(snapshot.backlog_recoveries, 0);
 }
@@ -818,4 +842,25 @@ fn running_backlog_empty_demand_defers_recovery_without_moving_samples() {
     assert!(source.read_interleaved(&mut output).unwrap().discontinuity);
     assert_eq!(output, [6.0, -6.0]);
     assert_eq!(observer.snapshot().backlog_discarded_frames, 192);
+}
+
+#[test]
+fn low_water_controller_guard_allocates_and_frees_nothing() {
+    let mut config = recovery_config(true, 240);
+    config.max_correction_ppm = 2000.0;
+    config.prepared_input.as_mut().unwrap().low_water_frames = 48;
+    let (mut input, mut source, observer) = running_recovery_bridge(config);
+    let payload = ramp_bytes(64, 192);
+    let mut output = [0.0; 320];
+    COUNTS.with(|counts| counts.set((0, 0)));
+    TRACK.with(|track| track.set(true));
+    input.push_packet(&payload, packet(128, 64, 0)).unwrap();
+    let report = source.read_interleaved(&mut output).unwrap();
+    let snapshot = observer.snapshot();
+    TRACK.with(|track| track.set(false));
+    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    assert_eq!(report.transferred_frames, 160);
+    assert_eq!(report.xruns, 0);
+    assert_eq!(snapshot.low_water_guard_frames, 1);
+    assert_eq!(snapshot.correction_ppm, -2000.0);
 }
