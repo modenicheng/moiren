@@ -44,7 +44,7 @@ fn fake_prepared(
                 Outcome::LostMetadata => return Ok(CaptureStatus::Stopped),
                 Outcome::Run => {}
             }
-            let _ingress = preparation.prepare(timing(), 2, &stop, &mut report)?;
+            let _ingress = preparation.prepare(timing(), 2, &stop, &mut report, None)?;
             if gate.wait()? == Activation::Cancelled {
                 return Ok(CaptureStatus::Stopped);
             }

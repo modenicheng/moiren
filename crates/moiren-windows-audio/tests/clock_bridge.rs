@@ -713,6 +713,61 @@ fn running_backlog_recovery_and_fade_allocate_and_free_nothing() {
 }
 
 #[test]
+fn running_age_recovery_and_query_allocate_and_free_nothing() {
+    let mut config = ClockBridgeConfig::with_prepared_input(
+        48_000,
+        2,
+        moiren_windows_audio::latency::PreparedInputQueue {
+            capacity_frames: 256,
+            prime_frames: 64,
+            servo_reference_frames: 64,
+            low_water_frames: 16,
+            high_water_frames: 240,
+            modeled_minimum_frames: Some(64),
+        },
+    );
+    config.age_limit_100ns = Some(10_000);
+    let (mut input, mut source, observer) = capture_bridge(config).unwrap();
+    let payload = ramp_bytes(0, 64);
+    input
+        .push_packet(
+            &payload,
+            CapturePacket {
+                frames: 64,
+                flags: SILENT,
+                device_position_frames: 0,
+                qpc_100ns: 1_000_000,
+            },
+        )
+        .unwrap();
+    input
+        .push_packet(
+            &payload,
+            CapturePacket {
+                frames: 64,
+                flags: SILENT,
+                device_position_frames: 64,
+                qpc_100ns: 1_013_333,
+            },
+        )
+        .unwrap();
+    source.read_interleaved(&mut [0.0; 2]).unwrap();
+    let mut output = [0.0; 2];
+    COUNTS.with(|counts| counts.set((0, 0)));
+    TRACK.with(|track| track.set(true));
+    let report = source
+        .read_interleaved_at_qpc(&mut output, Some(1_033_333))
+        .unwrap();
+    let _ = source.oldest_frame_age(1_033_333);
+    let snapshot = observer.snapshot();
+    TRACK.with(|track| track.set(false));
+    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    assert!(report.discontinuity);
+    assert_eq!(snapshot.age_recoveries, 1);
+    assert!(snapshot.age_discarded_frames > 0);
+}
+
+#[test]
 fn running_backlog_recovers_to_servo_reference_independently_of_prime() {
     let mut config = recovery_config(true, 128);
     config

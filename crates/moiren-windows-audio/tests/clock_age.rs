@@ -301,3 +301,147 @@ fn age_uses_the_rate_estimate_attached_to_its_queued_frame() {
         assert_eq!(age.estimated_age_100ns, 20_000 - projected);
     }
 }
+
+#[test]
+fn age_recovery_discards_one_snapshot_and_does_not_repeat_without_new_stale_fill() {
+    let mut config = ClockBridgeConfig::with_prepared_input(
+        48_000,
+        2,
+        moiren_windows_audio::latency::PreparedInputQueue {
+            capacity_frames: 256,
+            prime_frames: 64,
+            servo_reference_frames: 64,
+            low_water_frames: 16,
+            high_water_frames: 240,
+            modeled_minimum_frames: Some(64),
+        },
+    );
+    config.trim_on_prime = true;
+    config.age_limit_100ns = Some(10_000);
+    let (mut ingress, mut source, observer) = capture_bridge(config).unwrap();
+    let first = (0..64)
+        .flat_map(|frame| {
+            (frame as f32)
+                .to_le_bytes()
+                .into_iter()
+                .chain((-(frame as f32)).to_le_bytes())
+        })
+        .collect::<Vec<_>>();
+    ingress.push_packet(&first, packet(64, 0, 48_000)).unwrap();
+    ingress.push_packet(&first, packet(64, 64, 48_000)).unwrap();
+    consume(&mut source, 64);
+    let second = (128..228)
+        .flat_map(|frame| {
+            (frame as f32)
+                .to_le_bytes()
+                .into_iter()
+                .chain((-(frame as f32)).to_le_bytes())
+        })
+        .collect::<Vec<_>>();
+    ingress
+        .push_packet(&second, packet(100, 128, 48_000))
+        .unwrap();
+    let report = source
+        .read_interleaved_at_qpc(&mut [0.0; 2], Some(ORIGIN + 40_000))
+        .unwrap();
+    assert!(report.discontinuity);
+    assert_eq!(report.xruns, 0);
+    assert_eq!(observer.snapshot().age_discarded_frames, 17);
+    assert_eq!(observer.snapshot().age_recoveries, 1);
+    let age = source.oldest_frame_age(ORIGIN + 40_000).unwrap();
+    assert!(age.estimated_age_100ns <= 10_000);
+    source
+        .read_interleaved_at_qpc(&mut [0.0; 2], Some(ORIGIN + 40_000))
+        .unwrap();
+    assert_eq!(observer.snapshot().age_recoveries, 1);
+    assert_eq!(observer.snapshot().age_discarded_frames, 17);
+}
+
+#[test]
+fn age_limit_is_inclusive_and_empty_demand_does_not_move_the_queue() {
+    let mut config = ClockBridgeConfig::with_prepared_input(
+        48_000,
+        2,
+        moiren_windows_audio::latency::PreparedInputQueue {
+            capacity_frames: 64,
+            prime_frames: 8,
+            servo_reference_frames: 8,
+            low_water_frames: 4,
+            high_water_frames: 56,
+            modeled_minimum_frames: Some(8),
+        },
+    );
+    config.age_limit_100ns = Some(10_000);
+    let (mut ingress, mut source, observer) = capture_bridge(config).unwrap();
+    push(&mut ingress, 16, 0, 48_000);
+    let before = source.oldest_frame_stamp();
+    assert_eq!(
+        source
+            .read_interleaved_at_qpc(&mut [], Some(ORIGIN + 10_000))
+            .unwrap()
+            .transferred_frames,
+        0
+    );
+    assert_eq!(source.oldest_frame_stamp(), before);
+    assert_eq!(observer.snapshot().age_recoveries, 0);
+    source
+        .read_interleaved_at_qpc(&mut [0.0; 2], Some(ORIGIN + 10_000))
+        .unwrap();
+    assert_eq!(observer.snapshot().age_recoveries, 0);
+}
+
+#[test]
+fn offline_fifo_policy_ignores_age_limit_and_preserves_all_frames() {
+    let mut config = config(64, 48_000);
+    config.trim_on_prime = false;
+    config.age_limit_100ns = Some(1);
+    let (mut ingress, mut source, observer) = capture_bridge(config).unwrap();
+    let payload = (0..16)
+        .flat_map(|frame| {
+            (frame as f32)
+                .to_le_bytes()
+                .into_iter()
+                .chain((-(frame as f32)).to_le_bytes())
+        })
+        .collect::<Vec<_>>();
+    ingress
+        .push_packet(&payload, packet(16, 0, 48_000))
+        .unwrap();
+    let mut output = [0.0; 32];
+    let report = source
+        .read_interleaved_at_qpc(&mut output, Some(ORIGIN + 1_000_000))
+        .unwrap();
+    assert_eq!(report.transferred_frames, 15);
+    assert_eq!(observer.snapshot().age_recoveries, 0);
+    assert_eq!(observer.snapshot().age_discarded_frames, 0);
+    assert_eq!(output[0], 0.0);
+}
+
+#[test]
+fn high_water_recovery_wins_once_and_age_recovery_stays_separate() {
+    let mut config = ClockBridgeConfig::with_prepared_input(
+        48_000,
+        2,
+        moiren_windows_audio::latency::PreparedInputQueue {
+            capacity_frames: 128,
+            prime_frames: 16,
+            servo_reference_frames: 16,
+            low_water_frames: 8,
+            high_water_frames: 96,
+            modeled_minimum_frames: Some(16),
+        },
+    );
+    config.age_limit_100ns = Some(1);
+    let (mut ingress, mut source, observer) = capture_bridge(config).unwrap();
+    push(&mut ingress, 16, 0, 48_000);
+    consume(&mut source, 1);
+    push(&mut ingress, 96, 16, 48_000);
+    let report = source
+        .read_interleaved_at_qpc(&mut [0.0; 2], Some(ORIGIN + 1_000_000))
+        .unwrap();
+    let snapshot = observer.snapshot();
+    assert!(report.discontinuity);
+    assert_eq!(snapshot.backlog_recoveries, 1);
+    assert_eq!(snapshot.age_recoveries, 0);
+    assert_eq!(snapshot.resets, 1);
+}

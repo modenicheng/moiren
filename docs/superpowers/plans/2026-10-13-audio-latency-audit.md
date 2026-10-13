@@ -358,7 +358,7 @@ fn target_refill_does_not_fill_native_capacity() {
 
 ### T4：修正低存量 servo 并限制运行中积压（P1）
 
-实施进度：运行中 high-water 的有界 consumer 丢弃、phase / servo reset、32 帧淡入与独立恢复计数已通过第一切片验证，见 [运行中高水位恢复记录](2026-10-13-backlog-recovery-validation.md)。第二切片完成固定输出帧 servo 与有界低水位保护，以及各 48 个 admitted 120 / 7200 秒模型组合，见 [Clock 控制验证记录](2026-10-13-clock-control-validation.md)。第三切片扩展联合 padding / demand 的连续迟包、连续 Render 迟醒和停顿恢复模型，各 144 个 120 / 7200 秒组合均通过，见 [Clock 故障验证记录](2026-10-13-clock-faults-validation.md)。第四切片把原包时间、实际接收区间和 native offset 与音频帧一起提交，并提供最老待用帧的 owner-local 查询，见 [包时间关联验证记录](2026-10-13-packet-timing-validation.md)。第五切片完成两个一致长窗口的 Capture / QPC 前馈、总限幅与 FIFO residual 控制，见 [速率前馈验证记录](2026-10-13-clock-rate-validation.md)；541 项全工作区测试通过，新运行实现的各 208 个 120 / 7200 秒模型组合均通过。音频年龄、持续故障控制侧降档、完整故障矩阵与硬件准入仍待实现，以下整体任务暂不勾选完成。
+实施进度：运行中 high-water 的有界 consumer 丢弃、phase / servo reset、32 帧淡入与独立恢复计数已通过第一切片验证，见 [运行中高水位恢复记录](2026-10-13-backlog-recovery-validation.md)。第二切片完成固定输出帧 servo 与有界低水位保护，以及各 48 个 admitted 120 / 7200 秒模型组合，见 [Clock 控制验证记录](2026-10-13-clock-control-validation.md)。第三切片扩展联合 padding / demand 的连续迟包、连续 Render 迟醒和停顿恢复模型，各 144 个 120 / 7200 秒组合均通过，见 [Clock 故障验证记录](2026-10-13-clock-faults-validation.md)。第四切片把原包时间、实际接收区间和 native offset 与音频帧一起提交，并提供最老待用帧的 owner-local 查询，见 [包时间关联验证记录](2026-10-13-packet-timing-validation.md)。第五切片完成两个一致长窗口的 Capture / QPC 前馈、总限幅与 FIFO residual 控制，见 [速率前馈验证记录](2026-10-13-clock-rate-validation.md)；第六切片接入 native QPC owner clock，并在显式年龄上限下完成一次性、有界的 consumer stale-frame recovery、phase / servo reset、32 帧 fade、独立 telemetry 与 allocation 回归；年龄上限默认关闭，尚未通过真实设备准入。此前 541 项全工作区测试与新运行实现的各 208 个 120 / 7200 秒模型组合均通过。持续故障控制侧降档、完整故障矩阵与硬件准入仍待实现，以下整体任务暂不勾选完成。
 
 **文件职责：** 修改 `clock_bridge.rs`、`clock_bridge/source.rs`、`clock_bridge/ingress.rs`、`clock_bridge/telemetry.rs`；新增 `clock_bridge/timing.rs` 存放包时间与年龄推导；扩展 `tests/clock_bridge.rs`。
 
@@ -368,8 +368,9 @@ fn target_refill_does_not_fill_native_capacity() {
 - [ ] 将本轮失败组合纳入 regression，另增加 44.1 kHz、render-first / capture-first、相位 sweep、连续迟包、startup 预填与恢复；新策略必须完整通过 ±1000 ppm，不能靠允许短读通过。
 - [ ] 对有可信位置的源估算 rate / QPC 斜率并筛掉异常，给 servo feed-forward。Process source 零位置 / timestamp error 回退到只用 FIFO 的模式。
 - [ ] 重新校准低目标的 fill reference / startup integral，使同一设备不同 Engine segment 切分下 drift 收敛相近，并对最低库存作有界保护；不能把零 drift 的 FIFO 锯齿解释成硬件漂移。
-- [ ] 达到 high-water / age limit 时，consumer 在一次初始队列快照内丢弃有限数量旧帧，重置相位 / servo，进行短 fade；禁止 producer 越权移动 consumer。跨 generation 禁止插值，intentional skip 与 dropped / discontinuity 独立统计。
-- [ ] 同一状态下不会不停 reset；故障持续时通过 control 降档。离线 `trim_on_prime=false` 场景保留完整录音，不启用 age-based discard。
+- [x] 达到 high-water / 显式 age limit 时，consumer 在一次初始队列快照内丢弃有限数量旧帧，重置相位 / servo，进行短 fade；禁止 producer 越权移动 consumer。跨 generation 禁止插值，intentional skip 与 dropped / discontinuity 独立统计；默认 age limit 关闭，尚未进行硬件准入。
+- [x] 在相同写入计数的状态下不会不停 age reset；high-water recovery 优先。离线 `trim_on_prime=false` 场景保留完整录音，不启用 age-based discard。
+- [ ] 故障持续时通过 control 侧降档，避免在同一设备故障状态下反复依赖实时恢复。
 - [ ] 执行 Clock Bridge 与 RT allocation 测试；新增低目标矩阵每组合先模拟 120 秒，合格后扩展至 7200 秒。提交建议：`fix(audio): stabilize low-fill clock adaptation and bound backlog`。
 
 **验收：** 新目标在全部矩阵下无稳定阶段 underrun；暂停 render 后恢复不会持续输出陈旧音频，追赶量和 fade 成本有界。

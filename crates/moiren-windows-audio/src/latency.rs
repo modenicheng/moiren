@@ -9,7 +9,6 @@ pub use budget::{
     prepare_render_queue, target_demand,
 };
 
-#[cfg(windows)]
 pub(crate) mod clock;
 
 use serde::Serialize;

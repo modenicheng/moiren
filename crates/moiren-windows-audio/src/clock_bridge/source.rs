@@ -1,5 +1,6 @@
 //! Continuous linear interpolation and a bounded fill servo on the render owner.
 use super::{ClockBridgeConfig, ClockBridgeError, Frame, OUTPUT_SAMPLE_RATE, telemetry::Counters};
+use crate::latency::clock::QpcClock;
 use moiren_engine::{
     boundary::{BoundaryReport, RtAudioSource},
     buffer::AudioBlockMut,
@@ -24,6 +25,8 @@ pub struct ClockSource {
     servo_frames_remaining: usize,
     low_water_guard: bool,
     fade_remaining: usize,
+    last_age_recovery_written_frames: Option<u64>,
+    age_clock: Option<QpcClock>,
 }
 impl ClockSource {
     /// Estimate the age of the oldest pending native frame without advancing
@@ -33,6 +36,13 @@ impl ClockSource {
     pub fn oldest_frame_age(&self, now_qpc_100ns: u64) -> Option<super::QueuedFrameAge> {
         self.oldest_frame_stamp()?
             .estimate_age(self.config.input_sample_rate, now_qpc_100ns)
+    }
+
+    pub fn oldest_frame_age_now(&self) -> Option<super::QueuedFrameAge> {
+        self.age_clock
+            .as_ref()?
+            .now()
+            .and_then(|now| self.oldest_frame_age(now))
     }
 
     /// Read a coherent owner-local correlation without consuming audio. None
@@ -63,6 +73,7 @@ impl ClockSource {
         rx: Consumer<Frame>,
         config: ClockBridgeConfig,
         counters: Arc<Counters>,
+        age_clock: Option<QpcClock>,
     ) -> Self {
         Self {
             rx,
@@ -77,19 +88,34 @@ impl ClockSource {
             servo_frames_remaining: 0,
             low_water_guard: false,
             fade_remaining: 0,
+            last_age_recovery_written_frames: None,
+            age_clock,
         }
     }
     pub fn read_interleaved(
         &mut self,
         output: &mut [f32],
     ) -> Result<BoundaryReport, ClockBridgeError> {
+        self.read_interleaved_at_qpc(output, None)
+    }
+
+    /// Test/control-side variant that supplies a QPC observation for the
+    /// optional live age policy. Native integration supplies this clock from
+    /// its prepared owner clock; the ordinary FIFO API remains unchanged.
+    pub fn read_interleaved_at_qpc(
+        &mut self,
+        output: &mut [f32],
+        now_qpc_100ns: Option<u64>,
+    ) -> Result<BoundaryReport, ClockBridgeError> {
         if !output.len().is_multiple_of(2) {
             return Err(ClockBridgeError::InvalidOutput);
         }
         output.fill(0.0);
-        Ok(self.read_to(output.len() / 2, |frame, pair| {
-            output[frame * 2..frame * 2 + 2].copy_from_slice(&pair)
-        }))
+        Ok(
+            self.read_to(output.len() / 2, now_qpc_100ns, |frame, pair| {
+                output[frame * 2..frame * 2 + 2].copy_from_slice(&pair)
+            }),
+        )
     }
     fn reset(&mut self) {
         self.current = None;
@@ -140,6 +166,51 @@ impl ClockSource {
         self.counters.backlog_recoveries.fetch_add(1, Relaxed);
         discarded
     }
+    fn recover_age(&mut self, fill: usize, now_qpc_100ns: u64) -> usize {
+        let Some(limit) = self.config.age_limit_100ns else {
+            return 0;
+        };
+        if !self.config.trim_on_prime || self.current.is_none() || fill <= 2 {
+            return 0;
+        }
+        let written_frames = self.counters.written_frames.load(Relaxed);
+        if self
+            .last_age_recovery_written_frames
+            .is_some_and(|previous| previous == written_frames)
+        {
+            return 0;
+        }
+        let Some(age) = self.oldest_frame_age(now_qpc_100ns) else {
+            return 0;
+        };
+        if age.estimated_age_100ns <= limit {
+            return 0;
+        }
+        let rate = u128::from(self.config.input_sample_rate);
+        let excess = u128::from(age.estimated_age_100ns - limit);
+        let desired = usize::try_from((excess * rate).div_ceil(10_000_000))
+            .unwrap_or(fill - 2)
+            .clamp(1, fill - 2);
+        let held = usize::from(self.current.is_some()) + usize::from(self.next.is_some());
+        let ring_discarded = desired.saturating_sub(held);
+        if ring_discarded > 0 {
+            self.rx
+                .read_chunk(ring_discarded)
+                .expect("running capture age snapshot")
+                .commit_all();
+        }
+        let retained = (desired == 1).then_some(self.next).flatten();
+        self.reset();
+        self.current = retained.or_else(|| self.rx.pop().ok());
+        self.next = self.rx.pop().ok();
+        self.fade_remaining = RECOVERY_FADE_FRAMES;
+        self.last_age_recovery_written_frames = Some(written_frames);
+        self.counters
+            .age_discarded_frames
+            .fetch_add(desired as u64, Relaxed);
+        self.counters.age_recoveries.fetch_add(1, Relaxed);
+        desired
+    }
     fn ratio(&mut self, fill: usize, rate_correction_ppm: Option<i64>) -> f64 {
         // A fixed output-frame cadence samples the same FIFO trajectory even
         // when parameter events divide one Engine block into many segments.
@@ -184,17 +255,30 @@ impl ClockSource {
         f64::from(self.config.input_sample_rate) / f64::from(OUTPUT_SAMPLE_RATE)
             * (1.0 + correction)
     }
-    fn read_to(&mut self, frames: usize, mut set: impl FnMut(usize, [f32; 2])) -> BoundaryReport {
+    fn read_to(
+        &mut self,
+        frames: usize,
+        now_qpc_100ns: Option<u64>,
+        mut set: impl FnMut(usize, [f32; 2]),
+    ) -> BoundaryReport {
         if frames == 0 {
             return BoundaryReport::default();
         }
+        let now_qpc_100ns =
+            now_qpc_100ns.or_else(|| self.age_clock.as_ref().and_then(QpcClock::now));
         let mut fill = self.rx.slots()
             + usize::from(self.current.is_some())
             + usize::from(self.next.is_some());
         let mut report = BoundaryReport::default();
         let discarded = self.recover_backlog(fill);
-        if discarded > 0 {
-            fill -= discarded;
+        let age_discarded = (discarded == 0)
+            .then_some(now_qpc_100ns)
+            .flatten()
+            .map(|now| self.recover_age(fill - discarded, now))
+            .unwrap_or(0);
+        let recovered_age = age_discarded > 0;
+        if discarded + age_discarded > 0 {
+            fill -= discarded + age_discarded;
             report.discontinuity = true;
         }
         self.counters.fill_frames.store(fill, Relaxed);
@@ -204,7 +288,7 @@ impl ClockSource {
             } else {
                 self.config.target_fill_frames
             };
-            if fill < target {
+            if !recovered_age && fill < target {
                 self.counters
                     .priming_frames
                     .fetch_add(frames as u64, Relaxed);
@@ -313,7 +397,7 @@ impl RtAudioSource<f32> for ClockSource {
                 ..BoundaryReport::default()
             };
         }
-        self.read_to(output.frames(), |frame, pair| {
+        self.read_to(output.frames(), None, |frame, pair| {
             output.channel_mut(0)[frame] = pair[0];
             output.channel_mut(1)[frame] = pair[1];
         })
