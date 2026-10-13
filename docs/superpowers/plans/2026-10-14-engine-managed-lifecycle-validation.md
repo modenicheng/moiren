@@ -31,6 +31,8 @@ cargo run --locked -p moiren-engine --example managed_graph
 
 以上命令均在合入目标 `860f096` 后以退出码 0 完成；两项原生静音用例同样通过。远程 CI 未触发。工作流新增 `managed_graph` 示例检查，既有 workspace 和双模式 Miri 检查继续保留。
 
+随后纳入并行提交 `29f302f` 的应用恢复/fade 改动，唯一冲突在 renderer 构造器：统一的 `prepared` 入口继续初始化其 FadeEnvelope。再次完整执行以上五条命令和两项硬件用例，全部以退出码 0 完成；未丢弃或代替并行恢复逻辑。
+
 宿主测试 25 项，runtime 测试 56 项。新增回归包括：退役 candidate 不得再发布、复用失败不得丢失已接受控制请求、关闭返回 pending candidate、输出槽位迁移后的复用保护、配置 A→B 后忽略 A 的旧资源事件。
 
 Linux-target Miri 命令（默认及 `-Zmiri-tree-borrows` 分别执行）：
@@ -43,6 +45,8 @@ cargo +nightly miri test --target x86_64-unknown-linux-gnu --locked -p moiren-en
 `update` 过滤包含 14 项 IO 复用与相关信号回归。完整 core Miri 尝试因既有 65,536-port 大图用例耗时过长而主动中止；不声称完整 workspace Miri 或远程 CI 已通过。Windows-target Miri 的 `System` 对齐释放报告在未修改的既有 swap 分配跟踪测试上也能复现，因此使用 CI 所采用的 Linux 目标验证新增行为，不修改无关分配器。
 
 宿主 25 项及上述 update 14 项在两种模式下均通过。进一步扩大到 runtime 全量时，默认模式为 55 通过、1 失败：未修改的 `meter_and_compressor_demand_transitions_keep_full_dsp_and_zero_heap_work` 把浮点结果逐位比较，Miri 中结果相差约 1e-16。在原工作区未合入本分支的基线代码上独立复现同一失败，未修改这个无关测试。Tree Borrows 扩大检查时显式排除此已确认的基线失败，不把这次排除后的运行称为完整 Miri 通过。
+
+排除该基线失败后的 Tree Borrows runtime 检查为 55 通过、0 失败、1 filtered out，包含新增的真实 owner 线程信号/source 复用测试。没有使用 `miri-ignore-leaks` 绕过拥有权闭合检查。
 
 验证期间发现并修复了测试自身的快照时序假设：owner 已停止不代表协调器已发布 Closing；测试等待快照确认。既有未修改的 app `signal_service` 首次全工作区运行出现一次即时快照为空，独立复跑及随后完整运行通过，未对应用测试做范围外修改。
 
