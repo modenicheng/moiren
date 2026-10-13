@@ -1,0 +1,28 @@
+{
+  "source_commit": "d2849852eb478fff78c5cb706a1fe83271b1621c",
+  "source_tree": "150fabf984918938be9c6608480ab1ddaf514844",
+  "timestamp": "2026-10-13T13:44:55.3821837+08:00",
+  "timezone": "Asia/Shanghai",
+  "profile": "release",
+  "os_version": "10.0.26300.0",
+  "logical_processors": 16,
+  "probe_sha256": "1296f97edcf34e34c58cda3ad71785743fe38b75892ced46e3746f28150335f2",
+  "capture": {
+    "channels": 1,
+    "endpoint_id": "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}",
+    "errors": [],
+    "format_supported": true,
+    "name": "麦克风 (5- FreeDSP)",
+    "sample_rate": 48000
+  },
+  "render": {
+    "channels": 2,
+    "endpoint_id": "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+    "errors": [],
+    "format_supported": true,
+    "name": "耳机 (5- FreeDSP)",
+    "sample_rate": 48000
+  },
+  "gain": 0,
+  "measurement_method": "unknown"
+}

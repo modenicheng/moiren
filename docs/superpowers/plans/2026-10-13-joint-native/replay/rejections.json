@@ -1,0 +1,18 @@
+[
+  {
+    "case": "rejected-small-479",
+    "exit_code": 1,
+    "elapsed_seconds": 0.5131957,
+    "expected_message": "render target cannot cover period, wake margin and callback budget",
+    "period": "5",
+    "render_target": "479"
+  },
+  {
+    "case": "rejected-default-624",
+    "exit_code": 1,
+    "elapsed_seconds": 0.456317,
+    "expected_message": "input target cannot cover render demand, capture gap, jitter and lookahead",
+    "period": "default",
+    "render_target": "624"
+  }
+]

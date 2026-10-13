@@ -38,4 +38,6 @@ Clock Bridge 回归先关闭 prime trim，在 fill=16、prime=8、servo referenc
 
 ## 当前边界
 
-尚未在本轮重新执行硬件采集；上一轮 `docs/superpowers/plans/2026-10-13-render-target-validation.md` 的 FreeDSP 证据仍只覆盖 Render target 480、输入旧配置。新的 physical Monitor/probe 路径可用 Custom `input_target=1024`，但需要重新跑硬件和 20–30 分钟漂移矩阵后才能宣称联合输入库存稳定。
+本轮已执行并用复现脚本重跑 FreeDSP 矩阵，两轮各八组、共 16 组：Compatible 对照、联合 Custom 1024/480 的 Disabled/Summary/Trace、120 秒对照与联合长测，以及两路 CPU worker 负载；原生两阶段路径的 input_queue、共同 Stop 与音频计数已经核对，详见 `2026-10-13-joint-native-validation.md`。
+
+此前 `2026-10-13-render-target-validation.md` 的报告仍只覆盖旧输入 2048，本轮报告才覆盖实际 1024 输入。新结果是最长单次 120 秒的候选验证；20–30 分钟漂移矩阵、T4 的运行保护/积压恢复和物理端到端测量仍未完成。
