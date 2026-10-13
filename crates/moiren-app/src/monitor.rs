@@ -7,6 +7,160 @@ use moiren_engine::{
 };
 use thiserror::Error;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorLatencyProfile {
+    Compatible,
+    Balanced,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MonitorLatencyConfig {
+    pub profile: MonitorLatencyProfile,
+    pub shared_period_ms: Option<f64>,
+    pub input_target_frames: Option<u32>,
+    pub input_jitter_frames: Option<u32>,
+    pub render_target_frames: Option<u32>,
+    pub wake_margin_frames: Option<u32>,
+    pub callback_budget_frames: Option<u32>,
+}
+
+impl Default for MonitorLatencyConfig {
+    fn default() -> Self {
+        Self {
+            profile: MonitorLatencyProfile::Compatible,
+            shared_period_ms: Some(5.0),
+            input_target_frames: None,
+            input_jitter_frames: None,
+            render_target_frames: None,
+            wake_margin_frames: None,
+            callback_budget_frames: None,
+        }
+    }
+}
+
+impl MonitorLatencyConfig {
+    pub fn balanced() -> Self {
+        Self {
+            profile: MonitorLatencyProfile::Balanced,
+            shared_period_ms: Some(5.0),
+            input_target_frames: Some(1024),
+            input_jitter_frames: Some(96),
+            render_target_frames: Some(480),
+            wake_margin_frames: Some(96),
+            callback_budget_frames: Some(48),
+        }
+    }
+
+    pub fn custom() -> Self {
+        Self {
+            profile: MonitorLatencyProfile::Custom,
+            shared_period_ms: Some(5.0),
+            input_target_frames: None,
+            input_jitter_frames: None,
+            render_target_frames: None,
+            wake_margin_frames: None,
+            callback_budget_frames: None,
+        }
+    }
+
+    pub fn validate(self) -> Result<(), MonitorLatencyError> {
+        if self
+            .shared_period_ms
+            .is_some_and(|value| !value.is_finite() || !(0.1..=100.0).contains(&value))
+        {
+            return Err(MonitorLatencyError::InvalidSharedPeriod);
+        }
+        if self
+            .input_target_frames
+            .is_some_and(|value| !(2..=8190).contains(&value))
+        {
+            return Err(MonitorLatencyError::InvalidInputTarget);
+        }
+        if self.input_jitter_frames.is_some_and(|value| value > 8192) {
+            return Err(MonitorLatencyError::InvalidInputJitter);
+        }
+        if self
+            .render_target_frames
+            .is_some_and(|value| !(2..=8192).contains(&value))
+        {
+            return Err(MonitorLatencyError::InvalidRenderTarget);
+        }
+        if self.wake_margin_frames.is_some_and(|value| value > 8192) {
+            return Err(MonitorLatencyError::InvalidWakeMargin);
+        }
+        if self
+            .callback_budget_frames
+            .is_some_and(|value| !(1..=8192).contains(&value))
+        {
+            return Err(MonitorLatencyError::InvalidCallbackBudget);
+        }
+        match self.profile {
+            MonitorLatencyProfile::Compatible => {
+                if self.input_target_frames.is_some()
+                    || self.input_jitter_frames.is_some()
+                    || self.render_target_frames.is_some()
+                    || self.wake_margin_frames.is_some()
+                    || self.callback_budget_frames.is_some()
+                {
+                    return Err(MonitorLatencyError::BudgetOverridesRequireProfile);
+                }
+            }
+            MonitorLatencyProfile::Balanced => {
+                if self.input_target_frames.is_none()
+                    || self.input_jitter_frames.is_none()
+                    || self.render_target_frames.is_none()
+                    || self.wake_margin_frames.is_none()
+                    || self.callback_budget_frames.is_none()
+                {
+                    return Err(MonitorLatencyError::IncompleteProfile);
+                }
+            }
+            MonitorLatencyProfile::Custom => {
+                if self.input_target_frames.is_none() {
+                    return Err(MonitorLatencyError::MissingInputTarget);
+                }
+                if self.render_target_frames.is_none() {
+                    return Err(MonitorLatencyError::MissingRenderTarget);
+                }
+                if self.input_jitter_frames.is_none()
+                    || self.wake_margin_frames.is_none()
+                    || self.callback_budget_frames.is_none()
+                {
+                    return Err(MonitorLatencyError::IncompleteProfile);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum MonitorLatencyError {
+    #[error("shared period must be default or finite and within 0.1..=100 milliseconds")]
+    InvalidSharedPeriod,
+    #[error("input target must be within 2..=8190 frames")]
+    InvalidInputTarget,
+    #[error("input jitter must be within 0..=8192 frames")]
+    InvalidInputJitter,
+    #[error("render target must be within 2..=8192 frames")]
+    InvalidRenderTarget,
+    #[error("wake margin must be within 0..=8192 frames")]
+    InvalidWakeMargin,
+    #[error("callback budget must be within 1..=8192 frames")]
+    InvalidCallbackBudget,
+    #[error("queue budget overrides require --profile balanced or --profile custom")]
+    BudgetOverridesRequireProfile,
+    #[error("balanced profile is incomplete")]
+    IncompleteProfile,
+    #[error("custom profile requires --input-target-frames")]
+    MissingInputTarget,
+    #[error("custom profile requires --render-target-frames")]
+    MissingRenderTarget,
+    #[error("process loopback supports only the compatible latency profile")]
+    ProcessProfileUnsupported,
+}
+
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -26,6 +180,7 @@ pub struct MonitorConfig {
     pub gain: f64,
     pub pan: f64,
     pub max_block_frames: usize,
+    pub latency: MonitorLatencyConfig,
 }
 impl Default for MonitorConfig {
     fn default() -> Self {
@@ -33,6 +188,7 @@ impl Default for MonitorConfig {
             gain: 0.05,
             pan: 0.0,
             max_block_frames: 256,
+            latency: MonitorLatencyConfig::default(),
         }
     }
 }
@@ -46,6 +202,7 @@ impl MonitorConfig {
         {
             return Err(MonitorError::InvalidConfig);
         }
+        self.latency.validate()?;
         Ok(())
     }
 }
@@ -57,6 +214,8 @@ pub enum MonitorError {
     #[cfg(windows)]
     #[error(transparent)]
     Gate(#[from] moiren_windows_audio::GateError),
+    #[error(transparent)]
+    Latency(#[from] MonitorLatencyError),
     #[error(
         "monitor requires finite gain in [0,1], pan in [-1,1], a 1..4096 frame block and a stereo source"
     )]

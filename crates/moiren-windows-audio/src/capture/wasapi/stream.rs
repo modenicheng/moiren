@@ -80,6 +80,7 @@ pub(super) fn run_prepared(
         input.channels,
         input.stop,
         report,
+        clock,
     )?;
     let activation = input.gate.wait_with_target(input.target)?;
     // A process can exit during preparation. Stop still wins over that exit.

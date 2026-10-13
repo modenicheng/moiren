@@ -1,5 +1,7 @@
 //! Control-side orchestration. No device objects or polling enter Engine RT.
-use super::{MonitorConfig, MonitorError, prepare_monitor};
+use super::{
+    MonitorConfig, MonitorError, MonitorLatencyConfig, MonitorLatencyProfile, prepare_monitor,
+};
 use moiren_core::graph::NodeId;
 use moiren_engine::{compiler::CompiledBindings, control::ControlPort};
 use moiren_windows_audio::{
@@ -23,7 +25,6 @@ use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct MonitorOptions {
-    pub latency_budget: moiren_windows_audio::latency::LatencyBudgetPolicy,
     pub input_endpoint_id: String,
     pub output_endpoint_id: String,
     pub duration: SessionDuration,
@@ -35,6 +36,49 @@ pub struct ProcessMonitorOptions {
     pub output_endpoint_id: String,
     pub duration: SessionDuration,
     pub config: MonitorConfig,
+}
+
+fn native_latency_options(
+    latency: MonitorLatencyConfig,
+) -> Result<
+    (
+        moiren_windows_audio::shared_stream::SharedPeriodPolicy,
+        moiren_windows_audio::latency::LatencyBudgetPolicy,
+    ),
+    MonitorError,
+> {
+    latency.validate()?;
+    let shared_period = moiren_windows_audio::shared_stream::SharedPeriodPolicy {
+        desired_period_ms: latency.shared_period_ms,
+    };
+    let budget = match latency.profile {
+        MonitorLatencyProfile::Compatible => {
+            moiren_windows_audio::latency::LatencyBudgetPolicy::Compatible
+        }
+        MonitorLatencyProfile::Balanced | MonitorLatencyProfile::Custom => {
+            moiren_windows_audio::latency::LatencyBudgetPolicy::Custom {
+                input_capacity_frames: 8192,
+                input_target_frames: latency
+                    .input_target_frames
+                    .ok_or(super::MonitorLatencyError::MissingInputTarget)?,
+                input_jitter_frames: latency
+                    .input_jitter_frames
+                    .ok_or(super::MonitorLatencyError::IncompleteProfile)?,
+                render: moiren_windows_audio::latency::RenderQueuePolicy::Target {
+                    frames: latency
+                        .render_target_frames
+                        .ok_or(super::MonitorLatencyError::MissingRenderTarget)?,
+                    wake_margin_frames: latency
+                        .wake_margin_frames
+                        .ok_or(super::MonitorLatencyError::IncompleteProfile)?,
+                    callback_budget_frames: latency
+                        .callback_budget_frames
+                        .ok_or(super::MonitorLatencyError::IncompleteProfile)?,
+                },
+            }
+        }
+    };
+    Ok((shared_period, budget))
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -172,7 +216,7 @@ impl MonitorSession {
         match (capture_report, render_report) {
             (Some(capture), Some(render)) => {
                 exit.report = Some(MonitorReport {
-                    schema_version: 5,
+                    schema_version: 6,
                     status: report_status(capture.status, render.status),
                     capture,
                     render,
@@ -233,21 +277,22 @@ fn prepare_monitor_inner(
     signals: Option<&mut crate::service::SignalPreparation>,
 ) -> Result<PreparedMonitorSession, MonitorError> {
     options.config.validate()?;
+    let (shared_period, latency_budget) = native_latency_options(options.config.latency)?;
     let capture_options = CaptureOptions {
         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
-        shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
+        shared_period,
         endpoint_id: options.input_endpoint_id,
         duration: options.duration,
     };
     let render_options = RenderOptions {
-        queue: match options.latency_budget {
+        queue: match latency_budget {
             moiren_windows_audio::latency::LatencyBudgetPolicy::Compatible => {
                 moiren_windows_audio::latency::RenderQueuePolicy::FullCapacity
             }
             moiren_windows_audio::latency::LatencyBudgetPolicy::Custom { render, .. } => render,
         },
         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
-        shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
+        shared_period,
         endpoint_id: options.output_endpoint_id,
         duration: options.duration,
     };
@@ -259,7 +304,7 @@ fn prepare_monitor_inner(
     let budget = moiren_windows_audio::latency::prepare_latency_budget(
         capture.info().timing,
         render.info().timing,
-        options.latency_budget,
+        latency_budget,
     )?;
     let capture = capture.attach(budget.input)?;
     attach_monitor(
@@ -303,10 +348,16 @@ fn prepare_process_monitor_inner(
     signals: Option<&mut crate::service::SignalPreparation>,
 ) -> Result<PreparedMonitorSession, MonitorError> {
     options.config.validate()?;
+    if options.config.latency.profile != MonitorLatencyProfile::Compatible {
+        return Err(super::MonitorLatencyError::ProcessProfileUnsupported.into());
+    }
+    let shared_period = moiren_windows_audio::shared_stream::SharedPeriodPolicy {
+        desired_period_ms: options.config.latency.shared_period_ms,
+    };
     let render_options = RenderOptions {
         queue: moiren_windows_audio::latency::RenderQueuePolicy::default(),
         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
-        shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
+        shared_period,
         endpoint_id: options.output_endpoint_id,
         duration: options.duration,
     };

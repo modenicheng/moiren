@@ -32,7 +32,6 @@ fn monitor(command: MonitorCommand) -> anyhow::Result<()> {
                     input_endpoint_id, output_endpoint_id, seconds, config.gain, config.pan
                 );
                 let session = start_monitor(MonitorOptions {
-                    latency_budget: moiren_windows_audio::latency::LatencyBudgetPolicy::Compatible,
                     input_endpoint_id,
                     output_endpoint_id,
                     duration: moiren_windows_audio::SessionDuration::For(

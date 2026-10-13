@@ -713,6 +713,61 @@ fn running_backlog_recovery_and_fade_allocate_and_free_nothing() {
 }
 
 #[test]
+fn running_age_recovery_and_query_allocate_and_free_nothing() {
+    let mut config = ClockBridgeConfig::with_prepared_input(
+        48_000,
+        2,
+        moiren_windows_audio::latency::PreparedInputQueue {
+            capacity_frames: 256,
+            prime_frames: 64,
+            servo_reference_frames: 64,
+            low_water_frames: 16,
+            high_water_frames: 240,
+            modeled_minimum_frames: Some(64),
+        },
+    );
+    config.age_limit_100ns = Some(10_000);
+    let (mut input, mut source, observer) = capture_bridge(config).unwrap();
+    let payload = ramp_bytes(0, 64);
+    input
+        .push_packet(
+            &payload,
+            CapturePacket {
+                frames: 64,
+                flags: SILENT,
+                device_position_frames: 0,
+                qpc_100ns: 1_000_000,
+            },
+        )
+        .unwrap();
+    input
+        .push_packet(
+            &payload,
+            CapturePacket {
+                frames: 64,
+                flags: SILENT,
+                device_position_frames: 64,
+                qpc_100ns: 1_013_333,
+            },
+        )
+        .unwrap();
+    source.read_interleaved(&mut [0.0; 2]).unwrap();
+    let mut output = [0.0; 2];
+    COUNTS.with(|counts| counts.set((0, 0)));
+    TRACK.with(|track| track.set(true));
+    let report = source
+        .read_interleaved_at_qpc(&mut output, Some(1_033_333))
+        .unwrap();
+    let _ = source.oldest_frame_age(1_033_333);
+    let snapshot = observer.snapshot();
+    TRACK.with(|track| track.set(false));
+    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    assert!(report.discontinuity);
+    assert_eq!(snapshot.age_recoveries, 1);
+    assert!(snapshot.age_discarded_frames > 0);
+}
+
+#[test]
 fn running_backlog_recovers_to_servo_reference_independently_of_prime() {
     let mut config = recovery_config(true, 128);
     config
@@ -895,6 +950,8 @@ fn queued_packet_stamp_acceptance_and_query_allocate_and_free_nothing() {
         .unwrap();
     let report = source.read_interleaved(&mut output).unwrap();
     let stamp = source.oldest_frame_stamp().unwrap();
+    let age = source.oldest_frame_age(1_010_000).unwrap();
+    let unavailable_age = source.oldest_frame_age(0);
     let snapshot = observer.snapshot();
     TRACK.with(|track| track.set(false));
     assert_eq!(COUNTS.with(Cell::get), (0, 0));
@@ -903,5 +960,53 @@ fn queued_packet_stamp_acceptance_and_query_allocate_and_free_nothing() {
     assert_eq!(stamp.packet_position_frames, 8);
     assert_eq!(stamp.packet_qpc_100ns, 1_001_667);
     assert_eq!(stamp.packet_offset_frames, 0);
+    assert_eq!(age.stamp, stamp);
+    assert_eq!(age.estimated_age_100ns, 8_333);
+    assert_eq!(unavailable_age, None);
     assert_eq!(snapshot.dropped_frames, 0);
+}
+
+#[test]
+fn rate_clock_windows_and_feed_forward_allocate_and_free_nothing() {
+    let input_queue = moiren_windows_audio::latency::PreparedInputQueue {
+        capacity_frames: 8_192,
+        prime_frames: 1_024,
+        servo_reference_frames: 1_024,
+        low_water_frames: 480,
+        high_water_frames: 8_000,
+        modeled_minimum_frames: None,
+    };
+    let (mut input, mut source, observer) = capture_bridge(ClockBridgeConfig::with_prepared_input(
+        48_000,
+        2,
+        input_queue,
+    ))
+    .unwrap();
+    let mut output = [0.0; 960];
+    let mut estimate = None;
+    let mut xruns = 0;
+    COUNTS.with(|counts| counts.set((0, 0)));
+    TRACK.with(|track| track.set(true));
+    for index in 0..440 {
+        input
+            .push_packet(
+                &[],
+                CapturePacket {
+                    frames: 480,
+                    flags: SILENT,
+                    device_position_frames: index * 480,
+                    qpc_100ns: 1_000_000 + index * 100_000,
+                },
+            )
+            .unwrap();
+        xruns += source.read_interleaved(&mut output).unwrap().xruns;
+        estimate = source
+            .oldest_frame_stamp()
+            .and_then(|stamp| stamp.rate_correction_ppm);
+        let _ = observer.snapshot();
+    }
+    TRACK.with(|track| track.set(false));
+    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    assert_eq!(estimate, Some(0));
+    assert_eq!(xruns, 0);
 }

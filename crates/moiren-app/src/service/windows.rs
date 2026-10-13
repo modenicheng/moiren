@@ -83,14 +83,13 @@ impl WindowsBackend {
             gain: spec.gain,
             pan: spec.pan,
             max_block_frames: spec.max_block_frames,
+            ..MonitorConfig::default()
         };
         let duration = duration(spec.limit);
         let session = match spec.source {
             InputSelection::Physical { endpoint_id } => PreparedAppSession::Monitor {
                 session: prepare_physical(
                     MonitorOptions {
-                        latency_budget:
-                            moiren_windows_audio::latency::LatencyBudgetPolicy::Compatible,
                         input_endpoint_id: endpoint_id,
                         output_endpoint_id: spec.output_endpoint_id,
                         duration,

@@ -3,7 +3,8 @@ use super::{CaptureSession, PreparedCapture, Startup, api, handle, physical};
 use crate::{
     ActivationGate, StopSignal,
     capture::{CaptureError, CaptureOptions, CaptureReport, CaptureStatus},
-    clock_bridge::{CaptureIngress, ClockBridgeConfig, capture_bridge},
+    clock_bridge::{CaptureIngress, ClockBridgeConfig, capture_bridge_with_clock},
+    latency::clock::QpcClock,
     latency::{NativeStreamTiming, PreparedInputQueue},
     preparation,
 };
@@ -19,6 +20,7 @@ pub struct NativeCaptureInfo {
     pub timing: NativeStreamTiming,
     pub channels: usize,
     pub shared_period: crate::shared_stream::SharedPeriodReport,
+    pub(crate) age_clock: Option<QpcClock>,
 }
 pub struct PreparedNativeCapture {
     info: NativeCaptureInfo,
@@ -31,11 +33,14 @@ impl PreparedNativeCapture {
         self.info
     }
     pub fn attach(self, input: PreparedInputQueue) -> Result<PreparedCapture, CaptureError> {
-        let (ingress, source, observer) = capture_bridge(ClockBridgeConfig::with_prepared_input(
-            self.info.timing.sample_rate,
-            self.info.channels,
-            input,
-        ))?;
+        let (ingress, source, observer) = capture_bridge_with_clock(
+            ClockBridgeConfig::with_prepared_input(
+                self.info.timing.sample_rate,
+                self.info.channels,
+                input,
+            ),
+            self.info.age_clock,
+        )?;
         api("Send capture bridge", self.bridge.send((ingress, input)))?;
         self.attached
             .recv()
@@ -64,15 +69,20 @@ impl CapturePreparation {
         channels: usize,
         stop: &OwnedHandle,
         report: &mut CaptureReport,
+        age_clock: Option<QpcClock>,
     ) -> Result<CaptureIngress, CaptureError> {
         match self {
             Self::Immediate(sender) => {
-                let (ingress, source, observer) = capture_bridge(ClockBridgeConfig {
-                    input_sample_rate: timing.sample_rate,
-                    input_channels: channels,
-                    detect_position_gaps: report.source == crate::capture::CaptureSource::Physical,
-                    ..ClockBridgeConfig::default()
-                })?;
+                let (ingress, source, observer) = capture_bridge_with_clock(
+                    ClockBridgeConfig {
+                        input_sample_rate: timing.sample_rate,
+                        input_channels: channels,
+                        detect_position_gaps: report.source
+                            == crate::capture::CaptureSource::Physical,
+                        ..ClockBridgeConfig::default()
+                    },
+                    age_clock,
+                )?;
                 sender
                     .send(Ok(Startup {
                         source,
@@ -93,6 +103,7 @@ impl CapturePreparation {
                         timing,
                         channels,
                         shared_period: report.shared_period,
+                        age_clock,
                     }))
                     .map_err(|_| CaptureError::StartupLost)?;
                 let (ingress, input) = api("Wait for capture bridge", bridge.receive(stop))?

@@ -1,10 +1,12 @@
 //! Backend-owned capture clock adaptation. The graph sees only stereo f32 at
 //! 48 kHz; native packet layout, buffering and clock correction stay here.
+use crate::latency::clock::QpcClock;
 use rtrb::RingBuffer;
 use std::sync::Arc;
 use thiserror::Error;
 
 mod ingress;
+mod rate;
 mod source;
 mod telemetry;
 mod timing;
@@ -12,7 +14,7 @@ pub use ingress::{CaptureIngress, CapturePacket};
 pub use source::ClockSource;
 use telemetry::Counters;
 pub use telemetry::{BridgeObserver, BridgeSnapshot};
-pub use timing::QueuedFrameStamp;
+pub use timing::{QueuedFrameAge, QueuedFrameStamp};
 
 pub const OUTPUT_SAMPLE_RATE: u32 = 48_000;
 
@@ -35,6 +37,9 @@ pub struct ClockBridgeConfig {
     pub max_correction_ppm: f64,
     /// Ring sample/metadata storage budget, excluding Arc/ring bookkeeping.
     pub byte_budget: usize,
+    /// Optional age limit for live native input. This is deliberately an
+    /// explicit owner-local policy; offline FIFO consumers leave it unset.
+    pub age_limit_100ns: Option<u64>,
 }
 impl Default for ClockBridgeConfig {
     fn default() -> Self {
@@ -48,6 +53,7 @@ impl Default for ClockBridgeConfig {
             detect_position_gaps: true,
             max_correction_ppm: 2000.0,
             byte_budget: 8 * 1024 * 1024,
+            age_limit_100ns: None,
         }
     }
 }
@@ -116,11 +122,19 @@ struct Frame {
 pub fn capture_bridge(
     config: ClockBridgeConfig,
 ) -> Result<(CaptureIngress, ClockSource, BridgeObserver), ClockBridgeError> {
+    capture_bridge_with_clock(config, None)
+}
+
+pub(crate) fn capture_bridge_with_clock(
+    config: ClockBridgeConfig,
+    age_clock: Option<QpcClock>,
+) -> Result<(CaptureIngress, ClockSource, BridgeObserver), ClockBridgeError> {
     if ![44_100, 48_000].contains(&config.input_sample_rate)
         || !(1..=2).contains(&config.input_channels)
         || config.target_fill_frames < 2
         || config.target_fill_frames >= config.capacity_frames
         || !config.prepared_input_valid()
+        || config.age_limit_100ns == Some(0)
         || !config.max_correction_ppm.is_finite()
         || !(0.0..=2000.0).contains(&config.max_correction_ppm)
     {
@@ -135,7 +149,7 @@ pub fn capture_bridge(
     let (tx, rx) = RingBuffer::new(config.capacity_frames);
     Ok((
         CaptureIngress::new(tx, config, Arc::clone(&counters)),
-        ClockSource::new(rx, config, Arc::clone(&counters)),
+        ClockSource::new(rx, config, Arc::clone(&counters), age_clock),
         BridgeObserver(counters),
     ))
 }
