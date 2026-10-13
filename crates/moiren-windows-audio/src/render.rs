@@ -9,6 +9,9 @@ use moiren_engine::{
 use serde::Serialize;
 use thiserror::Error;
 
+mod fade;
+pub use fade::{FadeError, RenderFadeControl};
+
 #[cfg(windows)]
 pub(crate) mod wasapi;
 #[cfg(windows)]
@@ -122,6 +125,7 @@ pub struct DemandRenderer {
     output: AudioReader<f32>,
     counters: DemandCounters,
     timeline: TimelineObserver,
+    fade: fade::FadeEnvelope,
 }
 
 pub struct RendererPreparationFailure {
@@ -206,10 +210,18 @@ impl DemandRenderer {
             output,
             counters: DemandCounters::default(),
             timeline,
+            fade: fade::FadeEnvelope::new(),
         }
     }
     pub fn timeline(&self) -> u64 {
         self.engine.timeline()
+    }
+    pub fn fade_control(&self) -> RenderFadeControl {
+        self.fade.control()
+    }
+    /// Call only after the last rendered buffer was successfully submitted.
+    pub fn acknowledge_submission(&self) {
+        self.fade.acknowledge_submission();
     }
     pub fn timeline_observer(&self) -> TimelineObserver {
         self.timeline.clone()
@@ -257,6 +269,7 @@ impl DemandRenderer {
             report.blocks += 1;
             report.segments += rendered.segments;
         }
+        self.fade.apply(output);
         Ok(report)
     }
 }

@@ -15,8 +15,8 @@ use moiren_windows_audio::{
         ProcessIdentity, ProcessLoopbackOptions, prepare_process_capture_with_gate,
     },
     render::{
-        DemandRenderer, PreparedNativeRender, RenderOptions, RenderReport, RenderSession,
-        RenderStatus, TimelineObserver, prepare_render_native_with_gate,
+        DemandRenderer, PreparedNativeRender, RenderFadeControl, RenderOptions, RenderReport,
+        RenderSession, RenderStatus, TimelineObserver, prepare_render_native_with_gate,
         start_render_prepared_with_gate,
     },
 };
@@ -97,6 +97,8 @@ pub struct MonitorReport {
     pub bridge: BridgeSnapshot,
 }
 pub struct MonitorSession {
+    pub fade: RenderFadeControl,
+    pub queue_drain_duration: Duration,
     capture: CaptureSession,
     render: RenderSession,
     pub observer: BridgeObserver,
@@ -148,6 +150,10 @@ pub struct PreparedMonitorSession {
     gate: ActivationGate,
 }
 impl PreparedMonitorSession {
+    pub fn request_fade_in(&self, frames: u32) -> Result<(), MonitorError> {
+        self.session.fade.request_fade_in(frames)?;
+        Ok(())
+    }
     pub fn activate(&self) -> Result<(), MonitorError> {
         self.gate.activate()?;
         Ok(())
@@ -389,6 +395,15 @@ fn attach_monitor(
     };
     let compiled = graph.compiled;
     let renderer = DemandRenderer::new(compiled.engine, graph.output)?;
+    let fade = renderer.fade_control();
+    // Submission acknowledges generated silence, not presentation. Allow a full
+    // native capacity plus one period to drain before requesting Stop.
+    let queue_drain_duration = native_render.as_ref().map_or(Duration::ZERO, |render| {
+        let timing = render.info().timing;
+        let frames =
+            u64::from(timing.capacity_frames) + u64::from(timing.period_frames.unwrap_or(0));
+        Duration::from_nanos((frames * 1_000_000_000).div_ceil(u64::from(timing.sample_rate)))
+    });
     let timeline = renderer.timeline_observer();
     // All fallible later preparation is protected by CaptureSession's stop/join
     // Drop. There is no live capture leak if compile or render startup fails.
@@ -405,6 +420,8 @@ fn attach_monitor(
     Ok(PreparedMonitorSession {
         gate,
         session: MonitorSession {
+            fade,
+            queue_drain_duration,
             capture: capture.session,
             render: render.into_session(),
             observer: capture.observer,

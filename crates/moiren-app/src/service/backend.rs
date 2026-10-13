@@ -1,11 +1,13 @@
 //! Non-RT contracts shared by native adapters and deterministic backend tests.
 use super::{DeviceCatalog, SessionSpec, SignalPreparation};
+use crate::monitor::{MonitorFaults, MonitorLatencyConfig};
 use moiren_core::{graph::NodeId, protocol::ControlReply};
 use moiren_engine::{compiler::CompiledBindings, control::ControlPort};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{stage}: {reason}")]
@@ -68,6 +70,22 @@ pub trait BackendAdapter: Send + Sync + 'static {
         self.prepare(spec, cancellation)
     }
     fn catalog(&self) -> Result<DeviceCatalog, BackendError>;
+    fn prepare_with_monitor_latency(
+        &self,
+        spec: SessionSpec,
+        cancellation: Cancellation,
+        signals: &mut SignalPreparation,
+        latency: MonitorLatencyConfig,
+        fade_in_frames: u32,
+    ) -> Result<Box<dyn PreparedSession>, BackendError> {
+        if latency != MonitorLatencyConfig::default() || fade_in_frames != 0 {
+            return Err(BackendError::new(
+                "monitor latency",
+                "adapter does not support this policy",
+            ));
+        }
+        self.prepare_with_signals(spec, cancellation, signals)
+    }
 }
 pub trait PreparedSession: Send {
     fn activate(&self) -> Result<(), BackendError>;
@@ -100,6 +118,21 @@ pub trait ActiveSession: Send {
     }
     fn gain_pan_nodes(&self) -> Option<(NodeId, NodeId)> {
         None
+    }
+    fn monitor_faults(&self) -> Option<MonitorFaults> {
+        None
+    }
+    fn request_monitor_fade_out(&self, _frames: u32) -> Result<(), BackendError> {
+        Err(BackendError::new(
+            "monitor fade",
+            "adapter does not support output fade",
+        ))
+    }
+    fn monitor_fade_out_submitted(&self) -> bool {
+        false
+    }
+    fn monitor_queue_drain_duration(&self) -> Duration {
+        Duration::ZERO
     }
     fn join(self: Box<Self>) -> Result<SessionReport, BackendError>;
 }

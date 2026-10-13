@@ -358,7 +358,7 @@ fn target_refill_does_not_fill_native_capacity() {
 
 ### T4：修正低存量 servo 并限制运行中积压（P1）
 
-实施进度：运行中 high-water 的有界 consumer 丢弃、phase / servo reset、32 帧淡入与独立恢复计数已通过第一切片验证，见 [运行中高水位恢复记录](2026-10-13-backlog-recovery-validation.md)。第二切片完成固定输出帧 servo 与有界低水位保护，以及各 48 个 admitted 120 / 7200 秒模型组合，见 [Clock 控制验证记录](2026-10-13-clock-control-validation.md)。第三切片扩展联合 padding / demand 的连续迟包、连续 Render 迟醒和停顿恢复模型，各 144 个 120 / 7200 秒组合均通过，见 [Clock 故障验证记录](2026-10-13-clock-faults-validation.md)。第四切片把原包时间、实际接收区间和 native offset 与音频帧一起提交，并提供最老待用帧的 owner-local 查询，见 [包时间关联验证记录](2026-10-13-packet-timing-validation.md)。第五切片完成两个一致长窗口的 Capture / QPC 前馈、总限幅与 FIFO residual 控制，见 [速率前馈验证记录](2026-10-13-clock-rate-validation.md)；第六切片接入 native QPC owner clock，并在显式年龄上限下完成一次性、有界的 consumer stale-frame recovery、phase / servo reset、32 帧 fade、独立 telemetry 与 allocation 回归；年龄上限默认关闭，尚未通过真实设备准入。此前 541 项全工作区测试与新运行实现的各 208 个 120 / 7200 秒模型组合均通过。持续故障控制侧降档、完整故障矩阵与硬件准入仍待实现，以下整体任务暂不勾选完成。
+实施进度：运行中 high-water 的有界 consumer 丢弃、phase / servo reset、32 帧淡入与独立恢复计数已通过第一切片验证，见 [运行中高水位恢复记录](2026-10-13-backlog-recovery-validation.md)。第二切片完成固定输出帧 servo 与有界低水位保护，以及各 48 个 admitted 120 / 7200 秒模型组合，见 [Clock 控制验证记录](2026-10-13-clock-control-validation.md)。第三切片扩展联合 padding / demand 的连续迟包、连续 Render 迟醒和停顿恢复模型，各 144 个 120 / 7200 秒组合均通过，见 [Clock 故障验证记录](2026-10-13-clock-faults-validation.md)。第四切片把原包时间、实际接收区间和 native offset 与音频帧一起提交，并提供最老待用帧的 owner-local 查询，见 [包时间关联验证记录](2026-10-13-packet-timing-validation.md)。第五切片完成两个一致长窗口的 Capture / QPC 前馈、总限幅与 FIFO residual 控制，见 [速率前馈验证记录](2026-10-13-clock-rate-validation.md)；第六切片接入 native QPC owner clock，并在显式年龄上限下完成一次性、有界的 consumer stale-frame recovery、phase / servo reset、32 帧 fade、独立 telemetry 与 allocation 回归；年龄上限默认关闭，尚未通过真实设备准入。此前 541 项全工作区测试与新运行实现的各 208 个 120 / 7200 秒模型组合均通过。第七切片完成各 90 个 120 / 7200 秒低库存启动矩阵；第八切片在物理监听服务中交付显式启用的持续故障检测与有序 Compatible 回退，见 [持续故障回退验证记录](2026-10-14-monitor-recovery-validation.md)。低库存控制进一步标定、UI 档位与原因展示、硬件准入及物理测量仍待完成，T4 / T5 整体保持未完成。
 
 **文件职责：** 修改 `clock_bridge.rs`、`clock_bridge/source.rs`、`clock_bridge/ingress.rs`、`clock_bridge/telemetry.rs`；新增 `clock_bridge/timing.rs` 存放包时间与年龄推导；扩展 `tests/clock_bridge.rs`。
 
@@ -370,8 +370,8 @@ fn target_refill_does_not_fill_native_capacity() {
 - [ ] 重新校准低目标的 fill reference / startup integral，使同一设备不同 Engine segment 切分下 drift 收敛相近，并对最低库存作有界保护；不能把零 drift 的 FIFO 锯齿解释成硬件漂移。
 - [x] 达到 high-water / 显式 age limit 时，consumer 在一次初始队列快照内丢弃有限数量旧帧，重置相位 / servo，进行短 fade；禁止 producer 越权移动 consumer。跨 generation 禁止插值，intentional skip 与 dropped / discontinuity 独立统计；默认 age limit 关闭，尚未进行硬件准入。
 - [x] 在相同写入计数的状态下不会不停 age reset；high-water recovery 优先。离线 `trim_on_prime=false` 场景保留完整录音，不启用 age-based discard。
-- [ ] 故障持续时通过 control 侧降档，避免在同一设备故障状态下反复依赖实时恢复。
-- [x] 执行 Clock Bridge 与 RT allocation 测试；新增低目标矩阵每组合先模拟 120 秒，合格后扩展至 7200 秒。Clock Bridge / RT allocation 既有回归与低库存启动矩阵均通过；完整 T4 仍因控制侧持续故障降档、硬件准入与物理测量未完成而保持未完成。验证记录见 [低库存启动验证记录](2026-10-13-clock-startup-validation.md)。提交建议：`fix(audio): stabilize low-fill clock adaptation and bound backlog`。
+- [x] 故障持续时通过 control 侧降档，避免在同一设备故障状态下反复依赖实时恢复。第八切片在物理监听服务中提供显式启用的连续故障窗口检测、独立输出 fade、成功提交确认与排空等待、有序 Stop / join / control retirement / prepare / Start、单次 Compatible 回退和 generation 原因快照；默认不启用自动回退，真实设备验收仍待进行。见 [持续故障回退验证记录](2026-10-14-monitor-recovery-validation.md)。
+- [x] 执行 Clock Bridge 与 RT allocation 测试；新增低目标矩阵每组合先模拟 120 秒，合格后扩展至 7200 秒。Clock Bridge / RT allocation 既有回归与低库存启动矩阵均通过；完整 T4 仍因低库存控制进一步标定、硬件准入与物理测量未完成而保持未完成。验证记录见 [低库存启动验证记录](2026-10-13-clock-startup-validation.md)。提交建议：`fix(audio): stabilize low-fill clock adaptation and bound backlog`。
 
 **验收：** 新目标在全部矩阵下无稳定阶段 underrun；暂停 render 后恢复不会持续输出陈旧音频，追赶量和 fade 成本有界。
 
@@ -384,7 +384,7 @@ fn target_refill_does_not_fill_native_capacity() {
 - [x] CLI 加 profile / 期望周期 / 显式 target 配置及单位验证；Balanced 默认使用输入 1024、输入 jitter 96、Render target 480、wake margin 96、callback budget 48 帧；Custom 必须显式提供全部五项预算，非法或无法满足的配置在启动前拒绝。物理 monitor 已将 Shared period 与联合 `LatencyBudgetPolicy` 传入两端 owner；Process Loopback 保留兼容 profile 约束，避免把虚拟输入端未协商的预算误报为已生效。
 - [ ] UI 选择档位，显示 actual period、估计队列和已测物理时延；不把 nominal 256 frame blocks 标成总时延。
 - [ ] 按第 8 节的负载 / 时长 / 格式矩阵执行候选准入，配置只记录同 endpoint、driver / format / mode 下通过的档位；设备属性变化使标定失效。
-- [ ] 对用户选择的档位允许受控回退，运行中调整依照控制侧 fade / Stop / prepare / Start；展示回退原因。
+- [ ] 对用户选择的档位允许受控回退，运行中调整依照控制侧 fade / Stop / prepare / Start；展示回退原因。服务控制侧协议和 `AppSnapshot.monitor_latency` 已完成，见 [持续故障回退验证记录](2026-10-14-monitor-recovery-validation.md)；UI 选择与原因展示、实机验收尚未完成，因此此整体条目保持未勾选。
 - [ ] 运行 app CLI / session 测试、workspace check / fmt / Clippy；由设备实测结果决定默认是否从 Compatible 升级。提交建议：`feat(app): expose measured audio latency profiles`。
 
 **验收：** 配置确实影响 backend actual 行为；低数字伴随可核实的测量及稳定性结果。
