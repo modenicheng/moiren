@@ -550,6 +550,12 @@ impl<S: ProcessingSample> PreparedPlan<S> {
     pub fn snapshot(&self) -> PlanSnapshot {
         self.engine.plan_snapshot()
     }
+
+    /// Non-RT reclamation for an unpublished or stopped pending candidate.
+    /// Keep its ControlPort alive and drain replies until this returns zero.
+    pub fn retire_controls(&mut self) -> usize {
+        self.engine.retire_controls()
+    }
     /// Explicit reuse asserts compatible static configuration, including IO
     /// backend identity. Type/role/port/schema checks cannot establish that two
     /// user processors with the same Rust type have equivalent configuration.
@@ -560,6 +566,25 @@ impl<S: ProcessingSample> PreparedPlan<S> {
         basis: &PlanSnapshot,
         mappings: &[ProcessorReuse],
     ) -> Result<Self, PlanSwapError> {
+        if let Err(error) = self.prepare_reuse(basis, mappings) {
+            let remaining = self.engine.retire_controls();
+            debug_assert_eq!(
+                remaining, 0,
+                "unrendered candidate replies fit their paired queue"
+            );
+            return Err(error);
+        }
+        Ok(self)
+    }
+
+    fn prepare_reuse(
+        &mut self,
+        basis: &PlanSnapshot,
+        mappings: &[ProcessorReuse],
+    ) -> Result<(), PlanSwapError> {
+        if self.engine.parameters.is_retired() {
+            return Err(PlanSwapError::InvalidCandidate);
+        }
         for instance in &self.engine.resources.instances {
             if let Some((reserved_basis, previous)) = &instance.reservation {
                 if !Arc::ptr_eq(&reserved_basis.0, &basis.0) {
@@ -672,7 +697,7 @@ impl<S: ProcessingSample> PreparedPlan<S> {
                 parameters: parameters.into_boxed_slice(),
             })
         };
-        Ok(self)
+        Ok(())
     }
 }
 
@@ -742,6 +767,8 @@ impl<S: ProcessingSample> PlanControlPort<S> {
     pub fn publish(&mut self, plan: PreparedPlan<S>) -> Result<(), PublishFailure<S>> {
         let reason = if self.pending.is_abandoned() {
             Some(PlanSwapError::Disconnected)
+        } else if plan.engine.parameters.is_retired() {
+            Some(PlanSwapError::InvalidCandidate)
         } else if self.config != plan.engine.config() {
             Some(PlanSwapError::IncompatibleConfig)
         } else if self.epoch != plan.engine.epoch() {
@@ -792,6 +819,14 @@ impl<S: ProcessingSample> Engine<S> {
     /// Non-RT only; take this before transferring Engine to the render owner.
     pub fn plan_snapshot(&self) -> PlanSnapshot {
         self.snapshot.clone()
+    }
+
+    /// Call only after the audio owner has joined. Pending candidates still
+    /// own accepted controls and must be returned intact for terminal replies.
+    pub fn take_pending_plan(&mut self) -> Option<PreparedPlan<S>> {
+        let candidate = self.swaps.as_mut()?.pending.pop().ok()?;
+        candidate.engine.parameters.retire();
+        Some(candidate)
     }
     /// Non-RT preparation. After render stops, move this Engine back to control
     /// before dropping it or calling into_parts, including when control closed.

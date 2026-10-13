@@ -994,6 +994,64 @@ fn c3_drop_probe_and_signal_ownership_return_to_control_after_worker_stops() {
     assert!(bus.budget_used() < baseline);
 }
 
+#[test]
+fn reserved_source_keeps_signal_publisher_and_dsp_state_on_audio_owner_thread() {
+    let mut bus = Bus::new(Default::default()).unwrap();
+    let latest = bus
+        .register_latest_value("update/reserved-latest", 0_u64)
+        .unwrap();
+    let stream = bus
+        .register_stream_value("update/reserved-stream", 0_u64, 8)
+        .unwrap();
+    let (control, host) = bus.create_host(4).unwrap();
+    let mut reader = bus.subscribe(&latest, Default::default()).unwrap();
+    let _stream_reader = bus.subscribe(&stream, Default::default()).unwrap();
+    let key = control.new_binding().unwrap();
+    let latest_publisher = control.prepare(&latest, key).unwrap();
+    let stream_publisher = control.prepare(&stream, key).unwrap();
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 1).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings
+        .bind_io(
+            source,
+            SignalSource {
+                latest: latest_publisher.handle(),
+                stream: stream_publisher.handle(),
+                bindings: [latest_publisher.erase(), stream_publisher.erase()],
+                calls: 0,
+                publish: true,
+            },
+        )
+        .unwrap();
+    let compiled = compile_with_signals(&graph, bindings, config(1), &control).unwrap();
+    let mut engine = compiled.engine;
+    engine.attach_signal_host(host).unwrap();
+    let basis = engine.plan_snapshot();
+    let mut plans = engine.enable_plan_switching(1).unwrap();
+    c3_render(&mut engine, 1);
+    let update = moiren_engine::compiler::compile_update(
+        &graph,
+        NodeBindings::new(),
+        config(2),
+        &basis,
+        &[(source, compiled.bindings.node(source).unwrap())],
+        Some(&control),
+    )
+    .unwrap();
+    plans.publish(update.plan).unwrap();
+    let worker = std::thread::spawn(move || {
+        c3_render(&mut engine, 1);
+        engine
+    });
+    let engine = worker.join().unwrap();
+    assert_eq!(engine.revision(), 2);
+    pump(&mut bus);
+    let value = reader.read_latest().unwrap();
+    assert_eq!((value.value, value.meta.sequence), (2, 2));
+    drop(plans.poll_retired().unwrap());
+}
+
 struct SignalSource {
     latest: PublisherHandle<LatestValue<u64>>,
     stream: PublisherHandle<StreamValue<u64>>,
