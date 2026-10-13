@@ -5,6 +5,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 mod ingress;
+mod rate;
 mod source;
 mod telemetry;
 mod timing;

@@ -1,5 +1,5 @@
 //! Packet correlation travels in the same SPSC slot as its accepted audio frame.
-use super::CapturePacket;
+use super::{CapturePacket, rate::RateClock};
 use crate::stats::{DISCONTINUITY, TIMESTAMP_ERROR};
 use std::num::NonZeroU64;
 
@@ -13,6 +13,10 @@ pub struct QueuedFrameStamp {
     pub packet_qpc_100ns: u64,
     pub packet_accepted_frames: u64,
     pub packet_offset_frames: u64,
+    /// Capture/QPC drift relative to the nominal input rate, rounded to ppm.
+    /// Requires two agreeing one-second windows. This is not the ratio between
+    /// independent capture and render clocks.
+    pub rate_correction_ppm: Option<i64>,
 }
 
 #[derive(Clone, Copy)]
@@ -20,6 +24,7 @@ pub(super) struct PacketStamp {
     pub position_frames: u64,
     pub qpc_100ns: NonZeroU64,
     pub accepted_frames: u64,
+    pub rate_correction_ppm: Option<i64>,
 }
 
 #[derive(Clone, Copy)]
@@ -33,10 +38,35 @@ struct Anchor {
 #[derive(Default)]
 pub(super) struct PacketTiming {
     previous: Option<Anchor>,
+    rate: RateClock,
 }
 
 impl PacketTiming {
     pub fn accept(
+        &mut self,
+        packet: CapturePacket,
+        accepted_frames: usize,
+        generation: u64,
+        sample_rate: u32,
+        position_clock: bool,
+    ) -> Option<PacketStamp> {
+        let Some(mut stamp) = self.correlate(
+            packet,
+            accepted_frames,
+            generation,
+            sample_rate,
+            position_clock,
+        ) else {
+            self.rate = RateClock::default();
+            return None;
+        };
+        stamp.rate_correction_ppm =
+            self.rate
+                .observe(stamp.position_frames, stamp.qpc_100ns.get(), sample_rate);
+        Some(stamp)
+    }
+
+    fn correlate(
         &mut self,
         packet: CapturePacket,
         accepted_frames: usize,
@@ -88,6 +118,7 @@ impl PacketTiming {
             position_frames: current.position_frames,
             qpc_100ns,
             accepted_frames: accepted_frames as u64,
+            rate_correction_ppm: None,
         })
     }
 }

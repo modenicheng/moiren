@@ -905,3 +905,48 @@ fn queued_packet_stamp_acceptance_and_query_allocate_and_free_nothing() {
     assert_eq!(stamp.packet_offset_frames, 0);
     assert_eq!(snapshot.dropped_frames, 0);
 }
+
+#[test]
+fn rate_clock_windows_and_feed_forward_allocate_and_free_nothing() {
+    let input_queue = moiren_windows_audio::latency::PreparedInputQueue {
+        capacity_frames: 8_192,
+        prime_frames: 1_024,
+        servo_reference_frames: 1_024,
+        low_water_frames: 480,
+        high_water_frames: 8_000,
+        modeled_minimum_frames: None,
+    };
+    let (mut input, mut source, observer) = capture_bridge(ClockBridgeConfig::with_prepared_input(
+        48_000,
+        2,
+        input_queue,
+    ))
+    .unwrap();
+    let mut output = [0.0; 960];
+    let mut estimate = None;
+    let mut xruns = 0;
+    COUNTS.with(|counts| counts.set((0, 0)));
+    TRACK.with(|track| track.set(true));
+    for index in 0..440 {
+        input
+            .push_packet(
+                &[],
+                CapturePacket {
+                    frames: 480,
+                    flags: SILENT,
+                    device_position_frames: index * 480,
+                    qpc_100ns: 1_000_000 + index * 100_000,
+                },
+            )
+            .unwrap();
+        xruns += source.read_interleaved(&mut output).unwrap().xruns;
+        estimate = source
+            .oldest_frame_stamp()
+            .and_then(|stamp| stamp.rate_correction_ppm);
+        let _ = observer.snapshot();
+    }
+    TRACK.with(|track| track.set(false));
+    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    assert_eq!(estimate, Some(0));
+    assert_eq!(xruns, 0);
+}

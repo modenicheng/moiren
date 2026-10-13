@@ -181,8 +181,7 @@ correction limit and freezes integral learning, so stale filtered backlog
 cannot accelerate a depleted queue. `low_water_guard_frames` counts only
 successful guarded output. Refilling releases the guard at the next fixed
 quantum. The guard never invents samples or clears underrun counts and cannot
-replace the period, gap and jitter admission budget. Feed-forward from valid
-packet timestamps remains future work.
+replace the period, gap and jitter admission budget.
 
 `ClockSource::oldest_frame_stamp()` returns an owner-local `QueuedFrameStamp`
 for the oldest pending native frame. Packet position, first-frame QPC,
@@ -200,6 +199,23 @@ drift or widen the SRC correction limit. First-frame QPC and native offset stay
 separate: this API does not report audio age or physical presentation time.
 Preparation includes all sample/stamp slot storage in `byte_budget`. Telemetry
 schemas and the approximate latest-received packet scalars remain unchanged.
+
+Qualified packets also carry `rate_correction_ppm`, a capture/QPC estimate
+relative to the nominal input rate. It requires two successive windows of at
+least one second and eight packets, each within 2000 ppm of nominal and agreeing
+within 100 ppm. Integer differences are taken before division; callback arrival
+time and large absolute QPC values do not bias this estimate. Invalid clocks,
+generation changes and fully dropped packets restart qualification. An already
+queued packet keeps its original estimate.
+
+Prepared live inputs (`prepared_input` and `trim_on_prime`) use the oldest
+current frame's estimate as servo feed-forward. Capture/QPC drift does not
+measure the ratio between independent capture and render clocks, so the FIFO
+controller continues to learn the residual. Feed-forward and FIFO correction
+share one total configured limit; low-water protection overrides their sum.
+Legacy inputs, finite offline policy and unqualified timestamps retain FIFO
+control. This estimate neither enables age-based discard nor qualifies a
+hardware latency profile.
 
 Snapshots are approximate independent atomic scalars; final snapshots after
 joining both owners are stable. Capture/render failures, packet discontinuity,

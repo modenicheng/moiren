@@ -5,6 +5,7 @@ use moiren_windows_audio::latency::{
     LatencyBudgetError, LatencyBudgetPolicy, NativeStreamTiming, PreparedInputQueue,
     RenderQueuePolicy, prepare_latency_budget,
 };
+use moiren_windows_audio::stats::TIMESTAMP_ERROR;
 
 #[derive(Debug, Clone, Copy)]
 struct ClockCase {
@@ -14,6 +15,8 @@ struct ClockCase {
     target: usize,
     segment: usize,
     drift_ppm: f64,
+    render_drift_ppm: f64,
+    invalid_clock: bool,
     late_frames: f64,
     render_first: bool,
     phase_frames: f64,
@@ -29,6 +32,8 @@ impl Default for ClockCase {
             target: 1024,
             segment: 256,
             drift_ppm: 0.0,
+            render_drift_ppm: 0.0,
+            invalid_clock: false,
             late_frames: 0.0,
             render_first: false,
             phase_frames: 0.0,
@@ -42,6 +47,7 @@ struct ClockResult {
     short_callbacks: usize,
     ending_inventory: f64,
     mean_correction_ppm: f64,
+    last_rate_estimate_ppm: Option<i64>,
     bridge: BridgeSnapshot,
 }
 
@@ -60,7 +66,8 @@ fn simulate(case: ClockCase, seconds: u32) -> ClockResult {
         / (1.0 + case.drift_ppm / 1_000_000.0);
     let mut capture_at = capture_interval + case.phase_frames;
     let mut nominal_capture_at = capture_at;
-    let mut render_at = case.render_period as f64;
+    let render_interval = case.render_period as f64 / (1.0 + case.render_drift_ppm / 1_000_000.0);
+    let mut render_at = render_interval;
     let mut capture_events = 0usize;
     let mut position = 0u64;
     let mut payload = vec![0u8; case.capture_period * 8];
@@ -89,7 +96,11 @@ fn simulate(case: ClockCase, seconds: u32) -> ClockResult {
                     &payload,
                     CapturePacket {
                         frames: case.capture_period,
-                        flags: 0,
+                        flags: if case.invalid_clock {
+                            TIMESTAMP_ERROR
+                        } else {
+                            0
+                        },
                         device_position_frames: position,
                         qpc_100ns: stamp,
                     },
@@ -120,7 +131,7 @@ fn simulate(case: ClockCase, seconds: u32) -> ClockResult {
             if render_at >= end / 2.0 && warm_sample.is_none() {
                 warm_sample = Some((last_sample.unwrap(), output_frames));
             }
-            render_at += case.render_period as f64;
+            render_at += render_interval;
         }
     }
     let (warm_sample, warm_frames) = warm_sample.unwrap();
@@ -133,6 +144,9 @@ fn simulate(case: ClockCase, seconds: u32) -> ClockResult {
             - 1.0)
             * 1_000_000.0,
         bridge: observer.snapshot(),
+        last_rate_estimate_ppm: source
+            .oldest_frame_stamp()
+            .and_then(|stamp| stamp.rate_correction_ppm),
     }
 }
 
@@ -238,6 +252,8 @@ fn clock_control_prepared_low_inventory_handles_rate_phase_order_and_lateness() 
                         target: 1024,
                         segment: 256,
                         drift_ppm,
+                        render_drift_ppm: 0.0,
+                        invalid_clock: false,
                         late_frames: 96.0,
                         render_first,
                         phase_frames,
@@ -431,4 +447,103 @@ fn clock_control_guard_preserves_real_starvation_reports() {
     );
     assert_eq!(observer.snapshot().correction_ppm, 0.0);
     assert_eq!(observer.snapshot().resets, 1);
+}
+
+#[test]
+fn clock_control_handles_independent_render_drift_and_timestamp_fallback() {
+    let seconds = std::env::var("MOIREN_CONTROL_SIM_SECONDS")
+        .ok()
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .expect("simulation duration is an integer")
+        })
+        .unwrap_or(120);
+    assert!((120..=7200).contains(&seconds));
+    for sample_rate in [44_100, 48_000] {
+        let capture_period = if sample_rate == 44_100 { 309 } else { 336 };
+        let budget = prepare_latency_budget(
+            NativeStreamTiming {
+                sample_rate,
+                period_frames: Some(capture_period),
+                capacity_frames: 738,
+            },
+            NativeStreamTiming {
+                sample_rate: 48_000,
+                period_frames: Some(336),
+                capacity_frames: 738,
+            },
+            LatencyBudgetPolicy::Custom {
+                input_capacity_frames: 8_192,
+                input_target_frames: 1_024,
+                input_jitter_frames: (96u64 * u64::from(sample_rate)).div_ceil(48_000) as u32,
+                render: RenderQueuePolicy::Target {
+                    frames: 480,
+                    wake_margin_frames: 96,
+                    callback_budget_frames: 48,
+                },
+            },
+        )
+        .unwrap();
+        for drift_ppm in [-1_000.0, 1_000.0] {
+            for render_drift_ppm in [-500.0, 500.0] {
+                for invalid_clock in [false, true] {
+                    let case = ClockCase {
+                        sample_rate,
+                        capture_period: capture_period as usize,
+                        render_period: 336,
+                        target: 1_024,
+                        segment: 256,
+                        drift_ppm,
+                        render_drift_ppm,
+                        invalid_clock,
+                        late_frames: 96.0,
+                        render_first: true,
+                        phase_frames: 168.0,
+                        prepared_input: Some(budget.input),
+                    };
+                    let result = simulate(case, seconds);
+                    let expected_relative = ((1.0 + drift_ppm / 1_000_000.0)
+                        / (1.0 + render_drift_ppm / 1_000_000.0)
+                        - 1.0)
+                        * 1_000_000.0;
+                    assert_eq!(result.short_callbacks, 0, "case={case:?}: {result:?}");
+                    assert_eq!(
+                        result.bridge.underrun_frames, 0,
+                        "case={case:?}: {result:?}"
+                    );
+                    assert_eq!(result.bridge.dropped_frames, 0, "case={case:?}: {result:?}");
+                    assert_eq!(
+                        result.bridge.backlog_recoveries, 0,
+                        "case={case:?}: {result:?}"
+                    );
+                    assert!(
+                        (result.mean_correction_ppm - expected_relative).abs() < 300.0,
+                        "case={case:?}: {result:?}"
+                    );
+                    assert!(result.bridge.correction_ppm.abs() <= 2_000.0);
+                    assert_eq!(
+                        result.last_rate_estimate_ppm,
+                        if invalid_clock {
+                            None
+                        } else {
+                            Some(drift_ppm as i64)
+                        }
+                    );
+                    println!(
+                        "rate_case,{sample_rate},{drift_ppm},{render_drift_ppm},{invalid_clock},{seconds},{},{},{},{},{:.6},{:.6},{}",
+                        result.short_callbacks,
+                        result.bridge.underrun_frames,
+                        result.bridge.dropped_frames,
+                        result.bridge.backlog_recoveries,
+                        result.mean_correction_ppm,
+                        result.bridge.correction_ppm,
+                        result
+                            .last_rate_estimate_ppm
+                            .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+                    );
+                }
+            }
+        }
+    }
 }

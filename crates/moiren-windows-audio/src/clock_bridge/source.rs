@@ -46,6 +46,7 @@ impl ClockSource {
             packet_qpc_100ns: stamp.qpc_100ns.get(),
             packet_accepted_frames: stamp.accepted_frames,
             packet_offset_frames: frame.packet_offset_frames,
+            rate_correction_ppm: stamp.rate_correction_ppm,
         })
     }
 
@@ -130,7 +131,7 @@ impl ClockSource {
         self.counters.backlog_recoveries.fetch_add(1, Relaxed);
         discarded
     }
-    fn ratio(&mut self, fill: usize) -> f64 {
+    fn ratio(&mut self, fill: usize, rate_correction_ppm: Option<i64>) -> f64 {
         // A fixed output-frame cadence samples the same FIFO trajectory even
         // when parameter events divide one Engine block into many segments.
         let dt = SERVO_QUANTUM_FRAMES as f64 / f64::from(OUTPUT_SAMPLE_RATE);
@@ -138,12 +139,19 @@ impl ClockSource {
         let error_seconds = (self.filtered_fill - self.config.servo_reference() as f64)
             / f64::from(self.config.input_sample_rate);
         let limit = self.config.max_correction_ppm / 1_000_000.0;
+        // Only a prepared live input enables capture/QPC feed-forward. The
+        // FIFO servo still corrects render-clock drift and queue phase bias.
+        let feed_forward = if self.config.prepared_input.is_some() && self.config.trim_on_prime {
+            rate_correction_ppm.map_or(0.0, |ppm| ppm as f64 / 1_000_000.0)
+        } else {
+            0.0
+        };
         self.low_water_guard = self
             .config
             .prepared_input
             .is_some_and(|input| fill <= input.low_water_frames as usize && limit > 0.0);
         let candidate = (self.integral + 0.02 * error_seconds * dt).clamp(-limit, limit);
-        let raw = 0.2 * error_seconds + candidate;
+        let raw = feed_forward + 0.2 * error_seconds + candidate;
         // Integrate only when unsaturated, or when the error pulls back from a
         // saturated limit. Startup/event backlog is not evidence of clock drift.
         if !self.low_water_guard
@@ -159,7 +167,7 @@ impl ClockSource {
         let correction = if self.low_water_guard {
             -limit
         } else {
-            (0.2 * error_seconds + self.integral).clamp(-limit, limit)
+            (feed_forward + 0.2 * error_seconds + self.integral).clamp(-limit, limit)
         };
         self.counters
             .correction_bits
@@ -244,7 +252,10 @@ impl ClockSource {
                 break;
             }
             if self.servo_frames_remaining == 0 {
-                self.step = self.ratio(self.rx.slots() + 2);
+                self.step = self.ratio(
+                    self.rx.slots() + 2,
+                    a.packet_stamp.and_then(|stamp| stamp.rate_correction_ppm),
+                );
                 self.servo_frames_remaining = SERVO_QUANTUM_FRAMES;
             }
             let step = self.step;

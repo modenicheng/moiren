@@ -38,6 +38,7 @@ fn stamp(generation: u64, position: u64, accepted: u64, offset: u64) -> QueuedFr
         packet_qpc_100ns: packet(accepted as usize, position).qpc_100ns,
         packet_accepted_frames: accepted,
         packet_offset_frames: offset,
+        rate_correction_ppm: None,
     }
 }
 
