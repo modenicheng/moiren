@@ -7,6 +7,11 @@ use moiren_engine::{
 };
 use thiserror::Error;
 
+mod diagnostics;
+pub use diagnostics::{
+    MonitorInitializationApi, MonitorInputBudget, MonitorObservation, MonitorPeriodFallback,
+    MonitorPreparedDiagnostics, MonitorRenderBudget, MonitorStreamDiagnostics,
+};
 mod recovery;
 pub use recovery::{
     MonitorFaults, MonitorRecovery, MonitorRecoveryError, MonitorRecoveryPolicy,

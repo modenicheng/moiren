@@ -19,9 +19,7 @@ use std::time::{Duration, Instant};
 fn typed_subscription_is_admitted_by_the_running_service() {
     let runtime = ServiceRuntime::spawn().unwrap();
     let handle = runtime.handle();
-    let topic = handle
-        .try_snapshot()
-        .unwrap()
+    let topic = wait_snapshot(&handle, |_| true)
         .signal_topics
         .tone_output
         .clone();

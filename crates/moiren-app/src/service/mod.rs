@@ -76,6 +76,7 @@ impl Default for RoundBudget {
 }
 pub struct ServiceContext {
     pub monitor_latency: Option<MonitorLatencyStatus>,
+    pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
     pub core: ServiceCore,
     pub catalog: Arc<DeviceCatalog>,
     pub catalog_error: Option<String>,
@@ -88,6 +89,7 @@ impl Default for ServiceContext {
     fn default() -> Self {
         Self {
             monitor_latency: None,
+            monitor_diagnostics: None,
             core: ServiceCore::default(),
             catalog: Arc::new(DeviceCatalog::default()),
             catalog_error: None,
@@ -188,6 +190,11 @@ impl ServiceDriver for CoreDriver {
 pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
     AppSnapshot {
         monitor_latency: c.monitor_latency.clone(),
+        monitor_diagnostics: c.monitor_diagnostics.filter(|diagnostics| {
+            c.core.phase() == SessionPhase::Running
+                && c.core.generation() == diagnostics.generation
+                && c.core.owner_generation() == Some(diagnostics.generation)
+        }),
         consumed_request_id: RequestId::default(),
         generation: c.core.generation(),
         phase: c.core.phase(),

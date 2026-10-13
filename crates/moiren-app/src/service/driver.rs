@@ -527,6 +527,24 @@ impl ServiceDriver for BackendDriver {
         }
         self.prepare(c, pool);
         self.catalog(pool);
+        c.monitor_diagnostics =
+            self.active
+                .as_ref()
+                .filter(|owner| {
+                    owner.generation == c.core.generation()
+                        && c.core.phase() == SessionPhase::Running
+                        && c.core.desired().is_some_and(|spec| {
+                            matches!(spec.source, InputSelection::Physical { .. })
+                        })
+                })
+                .and_then(|owner| {
+                    owner.session.monitor_observation().map(|observation| {
+                        MonitorDiagnosticsSnapshot {
+                            generation: owner.generation,
+                            observation,
+                        }
+                    })
+                });
     }
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
         self.exiting = true;

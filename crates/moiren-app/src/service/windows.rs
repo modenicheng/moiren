@@ -349,6 +349,12 @@ impl PreparedSession for PreparedAppSession {
     }
 }
 impl ActiveSession for ActiveAppSession {
+    fn monitor_observation(&self) -> Option<crate::monitor::MonitorObservation> {
+        match self {
+            Self::Monitor { session, .. } => session.observation(),
+            Self::Tone(_) => None,
+        }
+    }
     fn monitor_faults(&self) -> Option<MonitorFaults> {
         let Self::Monitor { session, .. } = self else {
             return None;

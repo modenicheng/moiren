@@ -1,5 +1,9 @@
 use moiren_app::{
-    monitor::{MonitorFaults, MonitorLatencyConfig, MonitorLatencyProfile, MonitorRecoveryPolicy},
+    monitor::{
+        MonitorFaults, MonitorInitializationApi, MonitorInputBudget, MonitorLatencyConfig,
+        MonitorLatencyProfile, MonitorObservation, MonitorPreparedDiagnostics,
+        MonitorRecoveryPolicy, MonitorRenderBudget, MonitorStreamDiagnostics,
+    },
     service::*,
 };
 use moiren_engine::{compiler::CompiledBindings, control::ControlPort};
@@ -21,6 +25,9 @@ struct State {
     fade_ready: AtomicBool,
     join_failure: AtomicBool,
     prepare_failure: AtomicBool,
+    delay_start: AtomicBool,
+    hide_diagnostics: AtomicBool,
+    input_fill: AtomicU64,
     join_blocked: Mutex<bool>,
     wake: Condvar,
 }
@@ -44,19 +51,11 @@ impl Drop for Session {
         self.state.record(self.id, "drop");
     }
 }
-impl BackendAdapter for Fake {
-    fn prepare(
-        &self,
-        _: SessionSpec,
-        _: Cancellation,
-    ) -> Result<Box<dyn PreparedSession>, BackendError> {
-        Err(BackendError::new("prepare", "latency contract required"))
-    }
-    fn prepare_with_monitor_latency(
+impl Fake {
+    fn prepare_session(
         &self,
         spec: SessionSpec,
         cancellation: Cancellation,
-        _: &mut SignalPreparation,
         latency: MonitorLatencyConfig,
         fade_in_frames: u32,
     ) -> Result<Box<dyn PreparedSession>, BackendError> {
@@ -73,6 +72,25 @@ impl BackendAdapter for Fake {
             id,
             stopped: AtomicBool::new(false),
         }))
+    }
+}
+impl BackendAdapter for Fake {
+    fn prepare(
+        &self,
+        spec: SessionSpec,
+        cancellation: Cancellation,
+    ) -> Result<Box<dyn PreparedSession>, BackendError> {
+        self.prepare_session(spec, cancellation, MonitorLatencyConfig::default(), 0)
+    }
+    fn prepare_with_monitor_latency(
+        &self,
+        spec: SessionSpec,
+        cancellation: Cancellation,
+        _: &mut SignalPreparation,
+        latency: MonitorLatencyConfig,
+        fade_in_frames: u32,
+    ) -> Result<Box<dyn PreparedSession>, BackendError> {
+        self.prepare_session(spec, cancellation, latency, fade_in_frames)
     }
     fn catalog(&self) -> Result<DeviceCatalog, BackendError> {
         Ok(DeviceCatalog::default())
@@ -104,7 +122,11 @@ impl ActiveSession for Session {
         self.stopped.load(Ordering::Acquire)
     }
     fn poll_started(&self) -> StartedState {
-        StartedState::Running
+        if self.state.delay_start.load(Ordering::Acquire) {
+            StartedState::Starting
+        } else {
+            StartedState::Running
+        }
     }
     fn control(&mut self) -> Option<(&mut ControlPort, &CompiledBindings)> {
         None
@@ -119,6 +141,47 @@ impl ActiveSession for Session {
                 0
             },
             ..MonitorFaults::default()
+        })
+    }
+    fn monitor_observation(&self) -> Option<MonitorObservation> {
+        if self.state.hide_diagnostics.load(Ordering::Acquire) {
+            return None;
+        }
+        let fallback = self.state.preparations.lock().unwrap()[self.id].1.profile
+            == MonitorLatencyProfile::Compatible;
+        let stream = MonitorStreamDiagnostics {
+            sample_rate: 48_000,
+            actual_period_frames: Some(if fallback { 480 } else { 288 }),
+            capacity_frames: 1056,
+            requested_period_frames: Some(if fallback { 480 } else { 240 }),
+            initialization_api: Some(MonitorInitializationApi::Client3),
+            period_fallback: None,
+        };
+        let target = if fallback { 2048 } else { 1024 };
+        Some(MonitorObservation {
+            prepared: MonitorPreparedDiagnostics {
+                input: MonitorStreamDiagnostics {
+                    actual_period_frames: None,
+                    ..stream
+                },
+                output: stream,
+                input_queue: MonitorInputBudget {
+                    capacity_frames: 8192,
+                    prime_frames: target,
+                    servo_reference_frames: target,
+                    low_water_frames: 2,
+                    high_water_frames: 8191,
+                    modeled_minimum_frames: None,
+                },
+                render_queue: MonitorRenderBudget {
+                    capacity_frames: 1056,
+                    target_frames: if fallback { 1056 } else { 480 },
+                    deadline_budget_frames: if fallback { None } else { Some(432) },
+                },
+            },
+            processed_frames: self.state.counter.load(Ordering::Relaxed) * 480,
+            input_fill_frames: self.state.input_fill.load(Ordering::Acquire),
+            correction_ppm: 0.0,
         })
     }
     fn request_monitor_fade_out(&self, _: u32) -> Result<(), BackendError> {
@@ -188,6 +251,153 @@ fn shutdown(runtime: ServiceRuntime) {
 }
 
 #[test]
+fn default_physical_driver_publishes_native_diagnostics_without_a_profile_override() {
+    let state = Arc::new(State::default());
+    let runtime =
+        ServiceRuntime::spawn_with_driver(BackendDriver::new(Arc::new(Fake(state.clone()))))
+            .unwrap();
+    let handle = runtime.handle();
+    handle.try_request(AppRequest::Start(spec())).unwrap();
+    wait(|| {
+        handle
+            .try_snapshot()
+            .is_some_and(|snapshot| snapshot.monitor_diagnostics.is_some())
+    });
+    let running = handle.try_snapshot().unwrap();
+    assert!(running.monitor_latency.is_none());
+    assert_eq!(
+        running
+            .monitor_diagnostics
+            .unwrap()
+            .observation
+            .prepared
+            .input_queue
+            .prime_frames,
+        2048
+    );
+    shutdown(runtime);
+}
+
+#[test]
+fn non_physical_sources_cannot_publish_physical_monitor_diagnostics() {
+    for source in [
+        InputSelection::Tone {
+            frequency_hz: 440.0,
+        },
+        InputSelection::Process {
+            pid: 123,
+            creation_time_100ns: 456,
+        },
+    ] {
+        let state = Arc::new(State::default());
+        let runtime = runtime(&state, None);
+        let handle = runtime.handle();
+        let mut session = spec();
+        session.source = source;
+        handle.try_request(AppRequest::Start(session)).unwrap();
+        wait(|| {
+            handle
+                .try_snapshot()
+                .is_some_and(|snapshot| snapshot.phase == SessionPhase::Running)
+        });
+        let running = handle.try_snapshot().unwrap();
+        assert!(running.monitor_latency.is_none());
+        assert!(running.monitor_diagnostics.is_none());
+        shutdown(runtime);
+    }
+}
+
+#[test]
+fn native_diagnostics_remain_unpublished_until_both_owners_are_running() {
+    let state = Arc::new(State::default());
+    state.delay_start.store(true, Ordering::Release);
+    let runtime = runtime(&state, None);
+    let handle = runtime.handle();
+    handle.try_request(AppRequest::Start(spec())).unwrap();
+    wait(|| state.events.lock().unwrap().contains(&(0, "activate")));
+    let starting = handle.try_snapshot().unwrap();
+    assert_eq!(starting.phase, SessionPhase::Starting);
+    assert!(starting.monitor_diagnostics.is_none());
+    state.delay_start.store(false, Ordering::Release);
+    wait(|| {
+        handle
+            .try_snapshot()
+            .is_some_and(|snapshot| snapshot.monitor_diagnostics.is_some())
+    });
+    let running = handle.try_snapshot().unwrap();
+    assert_eq!(running.phase, SessionPhase::Running);
+    let diagnostics = running.monitor_diagnostics.unwrap();
+    assert_eq!(diagnostics.generation, running.generation);
+    let prepared = diagnostics.observation.prepared;
+    assert_eq!(prepared.output.requested_period_frames, Some(240));
+    assert_eq!(prepared.output.actual_period_frames, Some(288));
+    assert_eq!(prepared.input.actual_period_frames, None);
+    shutdown(runtime);
+}
+
+#[test]
+fn running_diagnostics_follow_fill_and_clear_before_cleanup_finishes() {
+    struct Unblock(Arc<State>);
+    impl Drop for Unblock {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+    let state = Arc::new(State::default());
+    state.input_fill.store(512, Ordering::Release);
+    let runtime = runtime(&state, None);
+    let _unblock = Unblock(state.clone());
+    let handle = runtime.handle();
+    handle.try_request(AppRequest::Start(spec())).unwrap();
+    wait(|| {
+        handle
+            .try_snapshot()
+            .is_some_and(|snapshot| snapshot.monitor_diagnostics.is_some())
+    });
+    let earlier = handle.try_snapshot().unwrap().monitor_diagnostics.unwrap();
+    assert_eq!(earlier.observation.input_fill_frames, 512);
+    state.input_fill.store(1536, Ordering::Release);
+    wait(|| {
+        handle.try_snapshot().is_some_and(|snapshot| {
+            snapshot
+                .monitor_diagnostics
+                .is_some_and(|diagnostics| diagnostics.observation.input_fill_frames == 1536)
+        })
+    });
+    assert_eq!(earlier.observation.input_fill_frames, 512);
+    *state.join_blocked.lock().unwrap() = true;
+    handle.try_request(AppRequest::Stop).unwrap();
+    wait(|| state.events.lock().unwrap().contains(&(0, "join")));
+    let stopping = handle.try_snapshot().unwrap();
+    assert_eq!(stopping.phase, SessionPhase::Stopping);
+    assert_eq!(stopping.generation, SessionGeneration(2));
+    assert!(stopping.monitor_diagnostics.is_none());
+    state.release();
+    shutdown(runtime);
+}
+
+#[test]
+fn a_selected_policy_does_not_invent_missing_native_diagnostics() {
+    let state = Arc::new(State::default());
+    state.hide_diagnostics.store(true, Ordering::Release);
+    let runtime = runtime(&state, None);
+    let handle = runtime.handle();
+    handle.try_request(AppRequest::Start(spec())).unwrap();
+    wait(|| {
+        handle
+            .try_snapshot()
+            .is_some_and(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let running = handle.try_snapshot().unwrap();
+    assert_eq!(
+        running.monitor_latency.as_ref().unwrap().selected,
+        MonitorLatencyConfig::balanced()
+    );
+    assert!(running.monitor_diagnostics.is_none());
+    shutdown(runtime);
+}
+
+#[test]
 fn fallback_waits_for_fade_and_reaping_then_prepares_compatible_once() {
     let state = Arc::new(State::default());
     state.faults.store(true, Ordering::Release);
@@ -206,6 +416,7 @@ fn fallback_waits_for_fade_and_reaping_then_prepares_compatible_once() {
     state.fade_ready.store(true, Ordering::Release);
     wait(|| state.events.lock().unwrap().contains(&(0, "join")));
     assert_eq!(state.preparations.lock().unwrap().len(), 1);
+    assert!(handle.try_snapshot().unwrap().monitor_diagnostics.is_none());
     state.release();
     wait(|| {
         handle.try_snapshot().is_some_and(|snapshot| {
@@ -213,6 +424,20 @@ fn fallback_waits_for_fade_and_reaping_then_prepares_compatible_once() {
         })
     });
     let snapshot = handle.try_snapshot().unwrap();
+    let diagnostics = snapshot.monitor_diagnostics.as_ref().unwrap();
+    assert_eq!(diagnostics.generation, SessionGeneration(2));
+    assert_eq!(
+        diagnostics.observation.prepared.input_queue.prime_frames,
+        2048
+    );
+    assert_eq!(
+        diagnostics.observation.prepared.render_queue.target_frames,
+        1056
+    );
+    assert_eq!(
+        diagnostics.observation.prepared.output.actual_period_frames,
+        Some(480)
+    );
     let status = snapshot.monitor_latency.as_ref().unwrap();
     assert_eq!(status.requested.profile, MonitorLatencyProfile::Balanced);
     assert_eq!(status.selected, MonitorLatencyConfig::compatible_fallback());
@@ -311,6 +536,7 @@ fn cleanup_and_replacement_prepare_failures_are_terminal_without_retry() {
                 .is_some_and(|snapshot| snapshot.phase == SessionPhase::Failed)
         });
         assert!(handle.try_snapshot().unwrap().error.is_some());
+        assert!(handle.try_snapshot().unwrap().monitor_diagnostics.is_none());
         shutdown(runtime);
         assert_eq!(
             state.preparations.lock().unwrap().len(),
@@ -357,6 +583,7 @@ fn newer_start_during_cleanup_supersedes_fallback_and_restores_requested_policy(
             .try_snapshot()
             .is_some_and(|snapshot| snapshot.generation == SessionGeneration(3))
     });
+    assert!(handle.try_snapshot().unwrap().monitor_diagnostics.is_none());
     state.release();
     wait(|| {
         handle
@@ -369,6 +596,16 @@ fn newer_start_during_cleanup_supersedes_fallback_and_restores_requested_policy(
         MonitorLatencyConfig::balanced()
     );
     assert!(status.monitor_latency.as_ref().unwrap().fallback.is_none());
+    let diagnostics = status.monitor_diagnostics.unwrap();
+    assert_eq!(diagnostics.generation, SessionGeneration(3));
+    assert_eq!(
+        diagnostics.observation.prepared.input_queue.prime_frames,
+        1024
+    );
+    assert_eq!(
+        diagnostics.observation.prepared.render_queue.target_frames,
+        480
+    );
     let preparations = state.preparations.lock().unwrap();
     assert_eq!(preparations.len(), 2);
     assert_eq!(preparations[1].0.gain, 0.4);
@@ -382,11 +619,15 @@ fn exit_during_fade_revokes_replacement() {
     let state = Arc::new(State::default());
     state.faults.store(true, Ordering::Release);
     let runtime = runtime(&state, Some(policy()));
+    let handle = runtime.handle();
     runtime
         .handle()
         .try_request(AppRequest::Start(spec()))
         .unwrap();
     wait(|| state.events.lock().unwrap().contains(&(0, "fade")));
     shutdown(runtime);
+    let exited = handle.try_snapshot().unwrap();
+    assert_eq!(exited.phase, SessionPhase::Exited);
+    assert!(exited.monitor_diagnostics.is_none());
     assert_eq!(state.preparations.lock().unwrap().len(), 1);
 }

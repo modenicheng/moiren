@@ -1,6 +1,7 @@
 //! Control-side orchestration. No device objects or polling enter Engine RT.
 use super::{
-    MonitorConfig, MonitorError, MonitorLatencyConfig, MonitorLatencyProfile, prepare_monitor,
+    MonitorConfig, MonitorError, MonitorLatencyConfig, MonitorLatencyProfile, MonitorObservation,
+    MonitorPreparedDiagnostics, prepare_monitor,
 };
 use moiren_core::graph::NodeId;
 use moiren_engine::{compiler::CompiledBindings, control::ControlPort};
@@ -97,6 +98,7 @@ pub struct MonitorReport {
     pub bridge: BridgeSnapshot,
 }
 pub struct MonitorSession {
+    prepared_diagnostics: Option<MonitorPreparedDiagnostics>,
     pub fade: RenderFadeControl,
     pub queue_drain_duration: Duration,
     capture: CaptureSession,
@@ -166,6 +168,16 @@ impl PreparedMonitorSession {
     }
 }
 impl MonitorSession {
+    pub fn observation(&self) -> Option<MonitorObservation> {
+        let prepared = self.prepared_diagnostics?;
+        let bridge = self.observer.snapshot();
+        Some(MonitorObservation {
+            prepared,
+            processed_frames: self.timeline.snapshot().frame,
+            input_fill_frames: bridge.fill_frames as u64,
+            correction_ppm: bridge.correction_ppm,
+        })
+    }
     /// Both native clients must acknowledge Start before reporting Running.
     pub fn has_started(&self) -> bool {
         self.capture.has_started() && self.render.has_started()
@@ -307,11 +319,18 @@ fn prepare_monitor_inner(
     let gate = ActivationGate::new(stop.clone())?;
     let capture = prepare_capture_native_with_gate(capture_options, stop.clone(), gate.clone())?;
     let render = prepare_render_native_with_gate(render_options.clone(), stop, gate.clone())?;
+    let input_info = capture.info();
+    let output_info = render.info();
     let budget = moiren_windows_audio::latency::prepare_latency_budget(
-        capture.info().timing,
-        render.info().timing,
+        input_info.timing,
+        output_info.timing,
         latency_budget,
     )?;
+    let diagnostics = MonitorPreparedDiagnostics::from_native(
+        budget,
+        input_info.shared_period,
+        output_info.shared_period,
+    );
     let capture = capture.attach(budget.input)?;
     attach_monitor(
         capture,
@@ -319,7 +338,7 @@ fn prepare_monitor_inner(
         options.config,
         gate,
         signals,
-        Some(render),
+        Some((render, diagnostics)),
     )
 }
 pub fn start_process_monitor(
@@ -386,7 +405,7 @@ fn attach_monitor(
     config: MonitorConfig,
     gate: ActivationGate,
     signals: Option<&mut crate::service::SignalPreparation>,
-    native_render: Option<PreparedNativeRender>,
+    native_render: Option<(PreparedNativeRender, MonitorPreparedDiagnostics)>,
 ) -> Result<PreparedMonitorSession, MonitorError> {
     let graph = if let Some(signals) = signals {
         super::prepare_monitor_with_signals(capture.source, config, signals)?
@@ -398,16 +417,19 @@ fn attach_monitor(
     let fade = renderer.fade_control();
     // Submission acknowledges generated silence, not presentation. Allow a full
     // native capacity plus one period to drain before requesting Stop.
-    let queue_drain_duration = native_render.as_ref().map_or(Duration::ZERO, |render| {
-        let timing = render.info().timing;
-        let frames =
-            u64::from(timing.capacity_frames) + u64::from(timing.period_frames.unwrap_or(0));
-        Duration::from_nanos((frames * 1_000_000_000).div_ceil(u64::from(timing.sample_rate)))
-    });
+    let prepared_diagnostics = native_render.as_ref().map(|(_, diagnostics)| *diagnostics);
+    let queue_drain_duration = native_render
+        .as_ref()
+        .map_or(Duration::ZERO, |(render, _)| {
+            let timing = render.info().timing;
+            let frames =
+                u64::from(timing.capacity_frames) + u64::from(timing.period_frames.unwrap_or(0));
+            Duration::from_nanos((frames * 1_000_000_000).div_ceil(u64::from(timing.sample_rate)))
+        });
     let timeline = renderer.timeline_observer();
     // All fallible later preparation is protected by CaptureSession's stop/join
     // Drop. There is no live capture leak if compile or render startup fails.
-    let render = if let Some(render) = native_render {
+    let render = if let Some((render, _)) = native_render {
         render.attach(renderer, render_options.queue)?
     } else {
         start_render_prepared_with_gate(
@@ -420,6 +442,7 @@ fn attach_monitor(
     Ok(PreparedMonitorSession {
         gate,
         session: MonitorSession {
+            prepared_diagnostics,
             fade,
             queue_drain_duration,
             capture: capture.session,

@@ -1,6 +1,6 @@
 //! Non-RT contracts shared by native adapters and deterministic backend tests.
 use super::{DeviceCatalog, SessionSpec, SignalPreparation};
-use crate::monitor::{MonitorFaults, MonitorLatencyConfig};
+use crate::monitor::{MonitorFaults, MonitorLatencyConfig, MonitorObservation};
 use moiren_core::{graph::NodeId, protocol::ControlReply};
 use moiren_engine::{compiler::CompiledBindings, control::ControlPort};
 use std::sync::{
@@ -120,6 +120,9 @@ pub trait ActiveSession: Send {
         None
     }
     fn monitor_faults(&self) -> Option<MonitorFaults> {
+        None
+    }
+    fn monitor_observation(&self) -> Option<MonitorObservation> {
         None
     }
     fn request_monitor_fade_out(&self, _frames: u32) -> Result<(), BackendError> {

@@ -1,4 +1,4 @@
-use crate::monitor::{MonitorLatencyConfig, MonitorRecoveryReason};
+use crate::monitor::{MonitorLatencyConfig, MonitorObservation, MonitorRecoveryReason};
 use moiren_core::protocol::ControlReply;
 use std::{sync::Arc, time::Duration};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -117,6 +117,7 @@ pub struct RequestId(pub u64);
 #[derive(Debug, Clone)]
 pub struct AppSnapshot {
     pub monitor_latency: Option<MonitorLatencyStatus>,
+    pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
     /// Consumption is published with the phase produced by those requests.
     pub consumed_request_id: RequestId,
     pub generation: SessionGeneration,
@@ -145,4 +146,11 @@ pub struct MonitorFallback {
     pub to_generation: SessionGeneration,
     pub reason: MonitorRecoveryReason,
     pub fade_timed_out: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MonitorDiagnosticsSnapshot {
+    /// Only the currently Running physical owner may publish this observation.
+    pub generation: SessionGeneration,
+    pub observation: MonitorObservation,
 }
