@@ -442,7 +442,7 @@ each stream's native rate. A 5 ms desire can therefore produce a longer request.
 Client3 initialization uses `EVENTCALLBACK` and the stream's session GUID.
 Process Loopback retains its independent initialization path.
 
-Capture report schema 5 and Render schema 4 include `shared_period`: desired
+Capture report schema 5 and Render schema 5 include `shared_period`: desired
 time, capabilities, effective request, actual engine period, initialization
 API, and error details. The existing Render `engine_period_frames` mirrors the
 same actual-period observation. Capacity remains a separate `buffer_frames`
@@ -467,3 +467,39 @@ cargo run --locked --release -p moiren-windows-audio --example latency_probe -- 
 Using `cargo run` ensures that the probe reflects the current sources. Record
 actual periods and callback demand as well as capacity; the desired value and
 `GetStreamLatency` alone do not establish end-to-end latency.
+
+## Explicit render queue targets and preparation budgets
+
+Render options accept `queue: RenderQueuePolicy`. `FullCapacity` preserves the
+existing prefill and refill behavior. `Target` requires a frame target, wake
+margin, and positive callback budget, all in native output frames. Preparation
+requires an actual engine period and rejects targets that cannot cover the sum
+of period, wake margin and callback budget, or exceed capacity. It never clamps an
+unachievable deadline budget to capacity.
+
+Render report schema 5 includes the immutable prepared `queue`. Startup prefill
+and callback demand both use its target, while staging retains native capacity.
+Padding above target causes zero demand without advancing Engine time; native
+`min_writable_frames`/`max_writable_frames` retain their capacity-minus-padding
+meaning. The latency histogram measures the actual requested refill demand.
+
+The pure `prepare_latency_budget` API resolves independent input capacity,
+prime/servo/low/high targets and a render queue from both native timings. Custom
+input admission models one capture period plus explicit jitter, maximum render
+demand converted to native input frames, and two-frame interpolation lookahead.
+Compatible resolution preserves the 8192/2048 input settings and full output
+capacity, without claiming a modeled deadline. These calculations do not prove
+that actual device jitter fits the supplied assumptions.
+
+This first T3 slice integrates only the render queue. The joint input budget is
+not installed on the live Clock Bridge yet; two-phase native owner preparation
+and low-inventory servo/backlog enforcement remain separate follow-up work.
+Application entry points retain `FullCapacity` in this slice.
+
+```powershell
+cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --input '<capture-id>' --output '<render-id>' --seconds 30 --gain 0 --mode summary --period-ms 5 --render-target-frames 480 --wake-margin-frames 96 --callback-budget-frames 48
+```
+
+The declared wake margin/callback budget are assumptions to validate, not
+measured values. An unsupported or too-large actual period rejects this custom
+queue before activation and cleans up both owners.

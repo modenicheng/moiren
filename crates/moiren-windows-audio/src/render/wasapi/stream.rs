@@ -152,6 +152,15 @@ pub(super) fn owner(
         client.GetStreamLatency()
     })?);
     record_optional_properties(&client, report);
+    let queue = crate::latency::prepare_render_queue(
+        crate::latency::NativeStreamTiming {
+            sample_rate: SAMPLE_RATE,
+            period_frames: report.engine_period_frames,
+            capacity_frames: capacity,
+        },
+        options.queue,
+    )?;
+    report.queue = Some(queue);
     let render: IAudioRenderClient = api("GetService(IAudioRenderClient)", unsafe {
         client.GetService()
     })?;
@@ -167,10 +176,11 @@ pub(super) fn owner(
     if ready_and_wait(ready, gate)? == Activation::Cancelled {
         return Ok(RenderStatus::Stopped);
     }
-    produce(renderer, &mut staging, &mut report.stats)?;
-    submit(&render, &staging)?;
-    report.stats.primed_frames = capacity;
-    record_submit(&staging, &mut report.stats);
+    let prefill = &mut staging[..queue.target_frames as usize * CHANNELS];
+    produce(renderer, prefill, &mut report.stats)?;
+    submit(&render, prefill)?;
+    report.stats.primed_frames = queue.target_frames;
+    record_submit(prefill, &mut report.stats);
     let mut task_index = 0;
     let _mmcss =
         match unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Audio"), &mut task_index) }
@@ -201,7 +211,17 @@ pub(super) fn owner(
             }
             let wake_qpc_100ns = clock.as_ref().and_then(QpcClock::now);
             let padding = api("GetCurrentPadding", unsafe { client.GetCurrentPadding() })?;
-            let demand = writable_frames(capacity, padding)?;
+            let writable = writable_frames(capacity, padding)?;
+            let demand = queue.demand(padding)?;
+            if writable > 0 {
+                report.stats.min_writable_frames = Some(
+                    report
+                        .stats
+                        .min_writable_frames
+                        .map_or(writable, |frames| frames.min(writable)),
+                );
+                report.stats.max_writable_frames = report.stats.max_writable_frames.max(writable);
+            }
             if demand == 0 {
                 report.stats.zero_demand_wakes += 1;
                 telemetry.record(CallbackObservation {
@@ -216,13 +236,6 @@ pub(super) fn owner(
             if padding == 0 {
                 report.stats.empty_padding_wakes += 1;
             }
-            report.stats.min_writable_frames = Some(
-                report
-                    .stats
-                    .min_writable_frames
-                    .map_or(demand, |n| n.min(demand)),
-            );
-            report.stats.max_writable_frames = report.stats.max_writable_frames.max(demand);
             let samples = &mut staging[..demand as usize * CHANNELS];
             produce(renderer, samples, &mut report.stats)?;
             submit(&render, samples)?;
@@ -277,7 +290,8 @@ pub(super) fn run_owner_with(
 ) -> RenderOwnerExit {
     let initial_frame = renderer.timeline();
     let mut report = RenderReport {
-        schema_version: 4,
+        schema_version: 5,
+        queue: None,
         latency: LatencyRecorder::new(options.latency_telemetry).snapshot(),
         shared_period: crate::shared_stream::SharedPeriodReport::default(),
         endpoint_id: options.endpoint_id.clone(),

@@ -145,6 +145,7 @@ impl WindowsBackend {
                 let timeline = renderer.timeline_observer();
                 let render = start_render_prepared(
                     RenderOptions {
+                        queue: moiren_windows_audio::latency::RenderQueuePolicy::default(),
                         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
                         shared_period:
                             moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),

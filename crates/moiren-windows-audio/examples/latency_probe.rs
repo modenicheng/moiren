@@ -9,7 +9,7 @@ fn main() -> Result<()> {
     }
     if arguments.is_empty() || arguments == ["--help"] {
         println!(
-            "latency_probe --list | --benchmark | --input ID --output ID [--seconds 5] [--mode disabled|summary|trace] [--gain 0] [--period-ms default|5]"
+            "latency_probe --list | --benchmark | --input ID --output ID [--seconds 5] [--mode disabled|summary|trace] [--gain 0] [--period-ms default|5] [--render-target-frames capacity|480] [--wake-margin-frames 96] [--callback-budget-frames 48]"
         );
         return Ok(());
     }
@@ -139,6 +139,9 @@ mod native {
         let mut mode = TelemetryMode::Summary;
         let mut gain = 0.0f64;
         let mut shared_period = moiren_windows_audio::shared_stream::SharedPeriodPolicy::default();
+        let mut render_target = None;
+        let mut wake_margin_frames = 96;
+        let mut callback_budget_frames = 48;
         for pair in arguments.chunks(2) {
             if pair.len() != 2 {
                 bail!("Every option requires a value.");
@@ -156,6 +159,19 @@ mod native {
                 }
                 "--seconds" => seconds = pair[1].parse().context("Invalid duration")?,
                 "--gain" => gain = pair[1].parse().context("Invalid gain")?,
+                "--render-target-frames" => {
+                    render_target = if pair[1] == "capacity" {
+                        None
+                    } else {
+                        Some(pair[1].parse().context("Invalid render target")?)
+                    };
+                }
+                "--wake-margin-frames" => {
+                    wake_margin_frames = pair[1].parse().context("Invalid wake margin")?
+                }
+                "--callback-budget-frames" => {
+                    callback_budget_frames = pair[1].parse().context("Invalid callback budget")?
+                }
                 "--period-ms" => {
                     shared_period.desired_period_ms = if pair[1] == "default" {
                         None
@@ -181,6 +197,15 @@ mod native {
         let output = output.context("An explicit --output endpoint ID is required")?;
         let duration = SessionDuration::For(Duration::from_secs(seconds));
         shared_period.validate()?;
+        let queue = render_target.map_or(
+            moiren_windows_audio::latency::RenderQueuePolicy::FullCapacity,
+            |frames| moiren_windows_audio::latency::RenderQueuePolicy::Target {
+                frames,
+                wake_margin_frames,
+                callback_budget_frames,
+            },
+        );
+        queue.validate()?;
         let stop = StopSignal::new()?;
         let gate = ActivationGate::new(stop.clone())?;
         let prepared = prepare_capture_with_gate(
@@ -234,6 +259,7 @@ mod native {
         let _bindings = compiled.bindings;
         let render = start_render_prepared_with_gate(
             RenderOptions {
+                queue,
                 endpoint_id: output,
                 duration,
                 latency_telemetry: mode,

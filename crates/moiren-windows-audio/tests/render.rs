@@ -267,6 +267,7 @@ fn padding_and_explicit_render_options_are_checked() {
     for endpoint in ["", " ", "id\0other"] {
         assert_eq!(
             RenderOptions {
+                queue: moiren_windows_audio::latency::RenderQueuePolicy::default(),
                 latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
                 shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
                 endpoint_id: endpoint.into(),
@@ -279,6 +280,7 @@ fn padding_and_explicit_render_options_are_checked() {
     for duration in [Duration::ZERO, Duration::from_secs(601)] {
         assert_eq!(
             RenderOptions {
+                queue: moiren_windows_audio::latency::RenderQueuePolicy::default(),
                 latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
                 shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
                 endpoint_id: "id".into(),
@@ -290,6 +292,7 @@ fn padding_and_explicit_render_options_are_checked() {
     }
     assert!(
         RenderOptions {
+            queue: moiren_windows_audio::latency::RenderQueuePolicy::default(),
             latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
             shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
             endpoint_id: "id".into(),
@@ -298,4 +301,39 @@ fn padding_and_explicit_render_options_are_checked() {
         .validate()
         .is_ok()
     );
+}
+
+#[test]
+fn target_prefill_and_irregular_refills_advance_only_submitted_audio() {
+    use moiren_windows_audio::latency::{
+        NativeStreamTiming, RenderQueuePolicy, prepare_render_queue,
+    };
+    let (engine, reader) = graph(48000.0);
+    let mut renderer = DemandRenderer::new(engine, reader).unwrap();
+    let queue = prepare_render_queue(
+        NativeStreamTiming {
+            sample_rate: 48_000,
+            period_frames: Some(8),
+            capacity_frames: 32,
+        },
+        RenderQueuePolicy::Target {
+            frames: 16,
+            wake_margin_frames: 4,
+            callback_budget_frames: 4,
+        },
+    )
+    .unwrap();
+    let mut staging = [0.0; 64];
+    let mut submitted = 0;
+    for padding in [0, 16, 9, 21, 2, 32] {
+        let demand = queue.demand(padding).unwrap();
+        let before = renderer.timeline();
+        renderer
+            .render_interleaved(&mut staging[..demand as usize * 2])
+            .unwrap();
+        submitted += u64::from(demand);
+        assert_eq!(renderer.timeline(), before + u64::from(demand));
+    }
+    assert_eq!(submitted, 37);
+    assert_eq!(renderer.counters().frames, 37);
 }

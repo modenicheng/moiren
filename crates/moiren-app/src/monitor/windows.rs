@@ -238,6 +238,7 @@ fn prepare_monitor_inner(
         duration: options.duration,
     };
     let render_options = RenderOptions {
+        queue: moiren_windows_audio::latency::RenderQueuePolicy::default(),
         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
         shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
         endpoint_id: options.output_endpoint_id,
@@ -282,6 +283,7 @@ fn prepare_process_monitor_inner(
 ) -> Result<PreparedMonitorSession, MonitorError> {
     options.config.validate()?;
     let render_options = RenderOptions {
+        queue: moiren_windows_audio::latency::RenderQueuePolicy::default(),
         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
         shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
         endpoint_id: options.output_endpoint_id,

@@ -1,0 +1,5 @@
+"case","mode","seconds","capture_period","render_period","render_capacity","render_target","deadline_budget","prefill","render_callback_p99_100ns","render_callback_max_100ns","wake_interval_max_100ns","padding_min","padding_max","max_demand","zero_demand_wakes","empty_padding_wakes","bridge_underrun_frames","bridge_dropped_frames","capture_timeout_wakes","render_timeout_wakes","capture_trace_dropped","render_trace_dropped"
+"capacity-summary","summary","5","336","336","738","738",,"738","895","1085","74429","402","402","336","0","0","0","0","0","0","0","0"
+"target-480-summary","summary","5","336","336","738","480","480","480","1023","1537","75084","144","144","336","0","0","0","0","0","0","0","0"
+"target-480-trace","trace","5","336","336","738","480","480","480","1279","1527","73907","144","144","336","0","0","0","0","0","0","457","459"
+"target-480-summary-30s","summary","30","336","336","738","480","480","480","1023","1916","74793","144","144","336","0","0","0","0","0","0","0","0"

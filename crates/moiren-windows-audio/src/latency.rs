@@ -1,6 +1,13 @@
 //! Bounded owner-local diagnostics. Queue and callback observations are not
 //! an end-to-end latency measurement. Quantiles are histogram upper bounds.
+mod budget;
 mod telemetry;
+
+pub use budget::{
+    LatencyBudgetError, LatencyBudgetPolicy, NativeStreamTiming, PreparedInputQueue,
+    PreparedLatencyBudget, PreparedRenderQueue, RenderQueuePolicy, prepare_latency_budget,
+    prepare_render_queue, target_demand,
+};
 
 #[cfg(windows)]
 pub(crate) mod clock;

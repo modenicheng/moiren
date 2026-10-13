@@ -128,6 +128,7 @@ fn render(command: RenderCommand) -> anyhow::Result<()> {
                 );
                 let session = start_render(
                     RenderOptions {
+                        queue: moiren_windows_audio::latency::RenderQueuePolicy::default(),
                         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
                         shared_period:
                             moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),

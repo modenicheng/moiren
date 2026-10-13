@@ -138,6 +138,7 @@ fn invalid_policy_is_rejected_by_both_owners_before_spawning() {
             shared_period,
         };
         let render = RenderOptions {
+            queue: moiren_windows_audio::latency::RenderQueuePolicy::default(),
             endpoint_id: "fake".into(),
             duration: SessionDuration::UntilStopped,
             latency_telemetry: TelemetryMode::Disabled,

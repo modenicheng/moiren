@@ -84,10 +84,13 @@ pub enum RenderError {
     WorkerPanicked,
     #[error(transparent)]
     SharedPeriod(#[from] crate::shared_stream::SharedPeriodError),
+    #[error(transparent)]
+    LatencyBudget(#[from] crate::latency::LatencyBudgetError),
 }
 
 #[derive(Debug, Clone)]
 pub struct RenderOptions {
+    pub queue: crate::latency::RenderQueuePolicy,
     pub latency_telemetry: crate::latency::TelemetryMode,
     pub shared_period: crate::shared_stream::SharedPeriodPolicy,
     pub endpoint_id: String,
@@ -102,6 +105,7 @@ impl RenderOptions {
             return Err(RenderError::InvalidDuration);
         }
         self.shared_period.validate()?;
+        self.queue.validate()?;
         Ok(())
     }
 }
@@ -243,6 +247,7 @@ pub struct RenderStats {
 
 #[derive(Debug, Serialize)]
 pub struct RenderReport {
+    pub queue: Option<crate::latency::PreparedRenderQueue>,
     pub schema_version: u32,
     pub latency: crate::latency::LatencySnapshot,
     pub shared_period: crate::shared_stream::SharedPeriodReport,
