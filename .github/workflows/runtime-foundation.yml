@@ -28,6 +28,7 @@ jobs:
         run: cargo +stable fmt --all -- --check
       - run: cargo +stable run --locked -p moiren-engine --example offline
       - run: cargo +stable run --locked -p moiren-engine --example logical_graph
+      - run: cargo +stable run --locked -p moiren-engine --example managed_graph
       - run: cargo +stable run --locked -p moiren-app
   miri:
     runs-on: ubuntu-latest
