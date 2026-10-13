@@ -35,6 +35,7 @@ fn monitor_uses_compiler_graph_and_preserves_gain_pan_bindings() {
             gain: 0.5,
             pan: 1.0,
             max_block_frames: 8,
+            ..MonitorConfig::default()
         },
     )
     .unwrap();
@@ -174,6 +175,7 @@ fn physical_packet_bridge_reaches_demand_renderer_through_real_graph() {
             gain: 0.5,
             pan: -0.5,
             max_block_frames: 4,
+            ..MonitorConfig::default()
         },
     )
     .unwrap();
@@ -196,7 +198,6 @@ fn cancelled_monitor_preparation_never_opens_physical_devices() {
     stop.request_stop().unwrap();
     let result = prepare_monitor_with_stop(
         MonitorOptions {
-            latency_budget: moiren_windows_audio::latency::LatencyBudgetPolicy::Compatible,
             input_endpoint_id: "unopened input".into(),
             output_endpoint_id: "unopened output".into(),
             duration: SessionDuration::UntilStopped,

@@ -1,9 +1,9 @@
 //! Parsing is pure; no capture starts until both explicit selectors validate.
-use super::monitor::{MonitorConfig, MonitorError};
+use super::monitor::{MonitorConfig, MonitorError, MonitorLatencyConfig, MonitorLatencyProfile};
 use std::collections::BTreeSet;
 use thiserror::Error;
 
-pub const MONITOR_HELP: &str = "Moiren input monitoring\nUsage:\n  moiren-app monitor --list\n  moiren-app monitor --input <capture ID> --output <render ID> [--seconds 1..600] [--gain 0..1] [--pan -1..1]\n  moiren-app monitor --process <PID> --output <render ID> [--seconds 1..600] [--gain 0..1] [--pan -1..1]\nDefaults: 10 seconds, gain 0.05, centered stereo. Physical input: native 44.1/48 kHz mono/stereo f32. Process input: include target process tree, Windows-converted 48 kHz stereo f32; creation time pinned and checked at startup. Targets containing this host are rejected. Output: 48 kHz stereo f32 Shared. Linear SRC with bounded clock correction.";
+pub const MONITOR_HELP: &str = "Moiren input monitoring\nUsage:\n  moiren-app monitor --list\n  moiren-app monitor --input <capture ID> --output <render ID> [--profile compatible|balanced|custom] [latency options]\n  moiren-app monitor --process <PID> --output <render ID> [--profile compatible]\nLatency options: --period-ms default|0.1..100, --input-target-frames 2..8190, --input-jitter-frames 0..8192, --render-target-frames 2..8192, --wake-margin-frames 0..8192, --callback-budget-frames 1..8192. Balanced defaults to input 1024, jitter 96, render 480, wake 96, callback 48 frames. Custom requires all latency frame options. Other defaults: 10 seconds, gain 0.05, centered stereo. Physical input: native 44.1/48 kHz mono/stereo f32. Process input: include target process tree, Windows-converted 48 kHz stereo f32; creation time pinned and checked at startup. Targets containing this host are rejected. Output: 48 kHz stereo f32 Shared. Linear SRC with bounded clock correction.";
 #[derive(Debug)]
 pub enum MonitorCommand {
     List,
@@ -39,6 +39,8 @@ pub enum MonitorCliError {
     ExclusiveMode,
     #[error(transparent)]
     Config(#[from] MonitorError),
+    #[error("process loopback supports only --profile compatible")]
+    ProcessProfileUnsupported,
 }
 pub fn parse_monitor_args(
     args: impl IntoIterator<Item = String>,
@@ -52,6 +54,13 @@ pub fn parse_monitor_args(
     let mut output = None;
     let mut seconds = 10u32;
     let mut config = MonitorConfig::default();
+    let mut profile = MonitorLatencyProfile::Compatible;
+    let mut period_ms = config.latency.shared_period_ms;
+    let mut input_target_frames = None;
+    let mut input_jitter_frames = None;
+    let mut render_target_frames = None;
+    let mut wake_margin_frames = None;
+    let mut callback_budget_frames = None;
     while let Some(arg) = args.next() {
         let key = if arg == "-h" {
             "--help".to_owned()
@@ -76,6 +85,13 @@ pub fn parse_monitor_args(
             "--seconds",
             "--gain",
             "--pan",
+            "--profile",
+            "--period-ms",
+            "--input-target-frames",
+            "--input-jitter-frames",
+            "--render-target-frames",
+            "--wake-margin-frames",
+            "--callback-budget-frames",
         ]
         .contains(&key.as_str())
         {
@@ -111,6 +127,36 @@ pub fn parse_monitor_args(
             }
             "--gain" => config.gain = value.parse().map_err(|_| invalid())?,
             "--pan" => config.pan = value.parse().map_err(|_| invalid())?,
+            "--profile" => {
+                profile = match value.as_str() {
+                    "compatible" => MonitorLatencyProfile::Compatible,
+                    "balanced" => MonitorLatencyProfile::Balanced,
+                    "custom" => MonitorLatencyProfile::Custom,
+                    _ => return Err(invalid()),
+                };
+            }
+            "--period-ms" => {
+                period_ms = if value == "default" {
+                    None
+                } else {
+                    Some(value.parse().map_err(|_| invalid())?)
+                };
+            }
+            "--input-target-frames" => {
+                input_target_frames = Some(value.parse().map_err(|_| invalid())?)
+            }
+            "--input-jitter-frames" => {
+                input_jitter_frames = Some(value.parse().map_err(|_| invalid())?)
+            }
+            "--render-target-frames" => {
+                render_target_frames = Some(value.parse().map_err(|_| invalid())?)
+            }
+            "--wake-margin-frames" => {
+                wake_margin_frames = Some(value.parse().map_err(|_| invalid())?)
+            }
+            "--callback-budget-frames" => {
+                callback_budget_frames = Some(value.parse().map_err(|_| invalid())?)
+            }
             _ => unreachable!("known monitor option"),
         }
     }
@@ -124,9 +170,26 @@ pub fn parse_monitor_args(
             MonitorCommand::Help
         });
     }
+    let defaults = match profile {
+        MonitorLatencyProfile::Compatible => MonitorLatencyConfig::default(),
+        MonitorLatencyProfile::Balanced => MonitorLatencyConfig::balanced(),
+        MonitorLatencyProfile::Custom => MonitorLatencyConfig::custom(),
+    };
+    config.latency = MonitorLatencyConfig {
+        profile,
+        shared_period_ms: period_ms,
+        input_target_frames: input_target_frames.or(defaults.input_target_frames),
+        input_jitter_frames: input_jitter_frames.or(defaults.input_jitter_frames),
+        render_target_frames: render_target_frames.or(defaults.render_target_frames),
+        wake_margin_frames: wake_margin_frames.or(defaults.wake_margin_frames),
+        callback_budget_frames: callback_budget_frames.or(defaults.callback_budget_frames),
+    };
     config.validate()?;
     if input.is_some() && process.is_some() {
         return Err(MonitorCliError::ConflictingInput);
+    }
+    if process.is_some() && profile != MonitorLatencyProfile::Compatible {
+        return Err(MonitorCliError::ProcessProfileUnsupported);
     }
     if let Some(pid) = process {
         return Ok(MonitorCommand::Process {

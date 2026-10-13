@@ -74,3 +74,96 @@ fn process_selection_is_explicit_and_exclusive() {
         assert!(parse(&args).is_err(), "{args:?}");
     }
 }
+
+#[test]
+fn balanced_profile_exposes_joint_latency_budget() {
+    let MonitorCommand::Run { config, .. } = parse(&[
+        "--input",
+        "mic",
+        "--output",
+        "speakers",
+        "--profile",
+        "balanced",
+        "--period-ms",
+        "1.5",
+    ])
+    .unwrap() else {
+        panic!("run expected");
+    };
+    assert_eq!(
+        config.latency.profile,
+        moiren_app::monitor::MonitorLatencyProfile::Balanced
+    );
+    assert_eq!(config.latency.shared_period_ms, Some(1.5));
+    assert_eq!(config.latency.input_target_frames, Some(1024));
+    assert_eq!(config.latency.input_jitter_frames, Some(96));
+    assert_eq!(config.latency.render_target_frames, Some(480));
+    assert_eq!(config.latency.wake_margin_frames, Some(96));
+    assert_eq!(config.latency.callback_budget_frames, Some(48));
+}
+
+#[test]
+fn custom_profile_requires_explicit_budget_and_rejects_process_mode() {
+    assert!(
+        parse(&[
+            "--input",
+            "mic",
+            "--output",
+            "speakers",
+            "--profile",
+            "custom",
+        ])
+        .is_err()
+    );
+    let command = parse(&[
+        "--process",
+        "123",
+        "--output",
+        "speakers",
+        "--profile",
+        "balanced",
+    ]);
+    assert!(matches!(
+        command,
+        Err(moiren_app::monitor_cli::MonitorCliError::ProcessProfileUnsupported)
+    ));
+}
+
+#[test]
+fn latency_values_are_strictly_validated() {
+    for args in [
+        vec!["--input", "mic", "--output", "out", "--period-ms", "0"],
+        vec![
+            "--input",
+            "mic",
+            "--output",
+            "out",
+            "--period-ms",
+            "default",
+            "--profile",
+            "balanced",
+            "--input-target-frames",
+            "1",
+        ],
+        vec![
+            "--input",
+            "mic",
+            "--output",
+            "out",
+            "--profile",
+            "custom",
+            "--input-target-frames",
+            "1024",
+            "--input-jitter-frames",
+            "96",
+            "--render-target-frames",
+            "480",
+            "--wake-margin-frames",
+            "96",
+            "--callback-budget-frames",
+            "0",
+        ],
+    ] {
+        assert!(parse(&args).is_err(), "{args:?}");
+    }
+}

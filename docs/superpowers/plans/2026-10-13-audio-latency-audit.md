@@ -381,7 +381,7 @@ fn target_refill_does_not_fill_native_capacity() {
 
 **接口：** SessionSpec 增加明确 policy；服务 snapshot 返回 requested / actual profile、fallback reason 与测量状态。低延迟能力缺失时显示实际兼容档位。
 
-- [ ] CLI 加 profile / 期望周期 / 显式 target 配置及单位验证；非法或无法满足的 Custom 配置在启动前拒绝。
+- [x] CLI 加 profile / 期望周期 / 显式 target 配置及单位验证；Balanced 默认使用输入 1024、输入 jitter 96、Render target 480、wake margin 96、callback budget 48 帧；Custom 必须显式提供全部五项预算，非法或无法满足的配置在启动前拒绝。物理 monitor 已将 Shared period 与联合 `LatencyBudgetPolicy` 传入两端 owner；Process Loopback 保留兼容 profile 约束，避免把虚拟输入端未协商的预算误报为已生效。
 - [ ] UI 选择档位，显示 actual period、估计队列和已测物理时延；不把 nominal 256 frame blocks 标成总时延。
 - [ ] 按第 8 节的负载 / 时长 / 格式矩阵执行候选准入，配置只记录同 endpoint、driver / format / mode 下通过的档位；设备属性变化使标定失效。
 - [ ] 对用户选择的档位允许受控回退，运行中调整依照控制侧 fade / Stop / prepare / Start；展示回退原因。
