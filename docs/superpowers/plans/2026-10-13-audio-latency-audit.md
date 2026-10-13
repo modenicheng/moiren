@@ -358,6 +358,8 @@ fn target_refill_does_not_fill_native_capacity() {
 
 ### T4：修正低存量 servo 并限制运行中积压（P1）
 
+实施进度：运行中 high-water 的有界 consumer 丢弃、phase / servo reset、32 帧淡入与独立恢复计数已通过第一切片验证，见 [运行中高水位恢复记录](2026-10-13-backlog-recovery-validation.md)。年龄限制、低库存 servo 与完整矩阵仍待实现，以下整体任务暂不勾选完成。
+
 **文件职责：** 修改 `clock_bridge.rs`、`clock_bridge/source.rs`、`clock_bridge/ingress.rs`、`clock_bridge/telemetry.rs`；新增 `clock_bridge/timing.rs` 存放包时间与年龄推导；扩展 `tests/clock_bridge.rs`。
 
 **接口：** 输入 packet stamp 必须关联 generation、原生首帧位置、QPC 与已接收的连续帧区间；consumer 能知道最老实际待用帧的年龄。元数据使用预分配、有界结构，音频与 stamp 提交关系必须一致；满载时显式失效，不使用最新包时间冒充旧音频时间。

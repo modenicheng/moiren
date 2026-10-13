@@ -8,6 +8,8 @@ use moiren_engine::{
 use rtrb::Consumer;
 use std::sync::{Arc, atomic::Ordering::Relaxed};
 
+const RECOVERY_FADE_FRAMES: usize = 32;
+
 pub struct ClockSource {
     rx: Consumer<Frame>,
     config: ClockBridgeConfig,
@@ -17,6 +19,7 @@ pub struct ClockSource {
     phase: f64,
     filtered_fill: f64,
     integral: f64,
+    fade_remaining: usize,
 }
 impl ClockSource {
     pub(super) fn new(
@@ -33,6 +36,7 @@ impl ClockSource {
             phase: 0.0,
             filtered_fill: config.servo_reference() as f64,
             integral: 0.0,
+            fade_remaining: 0,
         }
     }
     pub fn read_interleaved(
@@ -53,10 +57,45 @@ impl ClockSource {
         self.phase = 0.0;
         self.filtered_fill = self.config.servo_reference() as f64;
         self.integral = 0.0;
+        self.fade_remaining = 0;
         self.counters
             .correction_bits
             .store(0.0f64.to_bits(), Relaxed);
         self.counters.resets.fetch_add(1, Relaxed);
+    }
+    fn recover_backlog(&mut self, fill: usize) -> usize {
+        let Some(input) = self.config.prepared_input else {
+            return 0;
+        };
+        if !self.config.trim_on_prime
+            || self.current.is_none()
+            || fill < input.high_water_frames as usize
+        {
+            return 0;
+        }
+        let discarded = fill - self.config.servo_reference();
+        let held = usize::from(self.current.is_some()) + usize::from(self.next.is_some());
+        // One discarded frame removes current only; next is already outside
+        // the ring and must become the first retained interpolation frame.
+        let retained = if discarded == 1 { self.next } else { None };
+        let ring_discarded = discarded.saturating_sub(held);
+        if ring_discarded > 0 {
+            // Only this consumer advances the read cursor. The discard is
+            // bounded by the initial snapshot, even if capture keeps writing.
+            self.rx
+                .read_chunk(ring_discarded)
+                .expect("running capture backlog snapshot")
+                .commit_all();
+        }
+        self.reset();
+        self.current = retained.or_else(|| self.rx.pop().ok());
+        self.next = self.rx.pop().ok();
+        self.fade_remaining = RECOVERY_FADE_FRAMES;
+        self.counters
+            .backlog_discarded_frames
+            .fetch_add(discarded as u64, Relaxed);
+        self.counters.backlog_recoveries.fetch_add(1, Relaxed);
+        discarded
     }
     fn ratio(&mut self, fill: usize, frames: usize) -> f64 {
         // Scale updates by elapsed output time, rather than by callback count:
@@ -90,6 +129,12 @@ impl ClockSource {
         let mut fill = self.rx.slots()
             + usize::from(self.current.is_some())
             + usize::from(self.next.is_some());
+        let mut report = BoundaryReport::default();
+        let discarded = self.recover_backlog(fill);
+        if discarded > 0 {
+            fill -= discarded;
+            report.discontinuity = true;
+        }
         self.counters.fill_frames.store(fill, Relaxed);
         if self.current.is_none() {
             let target = if self.rx.is_abandoned() {
@@ -105,8 +150,7 @@ impl ClockSource {
             }
             if self.config.trim_on_prime && fill > self.config.target_fill_frames {
                 // Startup/Graph/device preparation can accumulate old audio.
-                // Trim exactly one initial snapshot; never chase the producer
-                // or change this policy while an interpolation run is active.
+                // Trim exactly one initial snapshot; never chase the producer.
                 let discarded = fill - self.config.target_fill_frames;
                 self.rx
                     .read_chunk(discarded)
@@ -124,7 +168,6 @@ impl ClockSource {
         self.counters.min_fill_frames.fetch_min(fill, Relaxed);
         self.counters.max_fill_frames.fetch_max(fill, Relaxed);
         let step = self.ratio(fill, frames);
-        let mut report = BoundaryReport::default();
         for frame in 0..frames {
             while self.phase >= 1.0 {
                 self.phase -= 1.0;
@@ -155,11 +198,20 @@ impl ClockSource {
                 self.reset();
                 break;
             }
+            let gain = if self.fade_remaining > 0 {
+                let gain = (RECOVERY_FADE_FRAMES - self.fade_remaining + 1) as f64
+                    / RECOVERY_FADE_FRAMES as f64;
+                self.fade_remaining -= 1;
+                gain
+            } else {
+                1.0
+            };
             let pair = std::array::from_fn(|ch| {
                 // Use f64 intermediate so finite f32 headroom cannot overflow
                 // the subtraction used by interpolation.
-                (f64::from(a.samples[ch]) * (1.0 - self.phase)
-                    + f64::from(b.samples[ch]) * self.phase) as f32
+                ((f64::from(a.samples[ch]) * (1.0 - self.phase)
+                    + f64::from(b.samples[ch]) * self.phase)
+                    * gain) as f32
             });
             set(frame, pair);
             report.transferred_frames += 1;

@@ -485,4 +485,337 @@ fn startup_backlog_is_trimmed_to_target_instead_of_winding_up_drift_controller()
         (6000 - cfg.target_fill_frames) as u64
     );
     assert_eq!(snapshot.correction_ppm, 0.0);
+    assert_eq!(snapshot.backlog_discarded_frames, 0);
+    assert_eq!(snapshot.backlog_recoveries, 0);
+}
+
+fn recovery_config(trim_on_prime: bool, high_water_frames: u32) -> ClockBridgeConfig {
+    ClockBridgeConfig {
+        trim_on_prime,
+        max_correction_ppm: 0.0,
+        ..ClockBridgeConfig::with_prepared_input(
+            48000,
+            2,
+            moiren_windows_audio::latency::PreparedInputQueue {
+                capacity_frames: 256,
+                prime_frames: 64,
+                servo_reference_frames: 64,
+                low_water_frames: 16,
+                high_water_frames,
+                modeled_minimum_frames: Some(64),
+            },
+        )
+    }
+}
+
+fn ramp_bytes(start: usize, end: usize) -> Vec<u8> {
+    bytes(
+        &(start..end)
+            .flat_map(|frame| [frame as f32, -(frame as f32)])
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn running_recovery_bridge(
+    config: ClockBridgeConfig,
+) -> (CaptureIngress, ClockSource, BridgeObserver) {
+    let (mut input, mut source, observer) = capture_bridge(config).unwrap();
+    input
+        .push_packet(&ramp_bytes(0, 64), packet(64, 0, 0))
+        .unwrap();
+    assert_eq!(
+        source
+            .read_interleaved(&mut [0.0; 2])
+            .unwrap()
+            .transferred_frames,
+        1
+    );
+    (input, source, observer)
+}
+
+#[test]
+fn running_backlog_recovery_discards_old_prefix_and_fades_latest_inventory() {
+    let (mut input, mut source, observer) = running_recovery_bridge(recovery_config(true, 128));
+    input
+        .push_packet(&ramp_bytes(64, 256), packet(192, 64, 0))
+        .unwrap();
+    let mut output = [0.0; 64];
+    let report = source.read_interleaved(&mut output).unwrap();
+    assert_eq!(report.transferred_frames, 32);
+    assert!(report.discontinuity);
+    assert_eq!(report.xruns, 0);
+    for (index, samples) in output.as_chunks::<2>().0.iter().enumerate() {
+        let expected = (192 + index) as f32 * (index + 1) as f32 / 32.0;
+        assert_eq!(*samples, [expected, -expected]);
+    }
+    let snapshot = observer.snapshot();
+    assert_eq!(snapshot.resets, 1);
+    assert_eq!(snapshot.dropped_frames, 0);
+    assert_eq!(snapshot.discontinuities, 0);
+    assert_eq!(snapshot.correction_ppm, 0.0);
+    assert_eq!(snapshot.backlog_discarded_frames, 192);
+    assert_eq!(snapshot.backlog_recoveries, 1);
+    assert_eq!(snapshot.prime_discarded_frames, 0);
+    assert_eq!(snapshot.fill_frames, 64);
+    let mut next = [0.0; 2];
+    assert!(!source.read_interleaved(&mut next).unwrap().discontinuity);
+    assert_eq!(next, [224.0, -224.0]);
+    assert_eq!(observer.snapshot().resets, 1);
+    assert_eq!(observer.snapshot().backlog_recoveries, 1);
+}
+
+#[test]
+fn running_backlog_high_water_is_inclusive_and_lower_fill_keeps_continuity() {
+    for (incoming, expected, recovered) in [(63, 1.0, false), (64, 2.0, true)] {
+        let (mut input, mut source, _) = running_recovery_bridge(recovery_config(true, 128));
+        input
+            .push_packet(&ramp_bytes(64, 64 + incoming), packet(incoming, 64, 0))
+            .unwrap();
+        let mut output = [0.0; 2];
+        let report = source.read_interleaved(&mut output).unwrap();
+        assert_eq!(report.transferred_frames, 1);
+        assert_eq!(report.discontinuity, recovered);
+        assert_eq!(report.xruns, 0);
+        assert_eq!(output, [expected, -expected]);
+    }
+}
+
+#[test]
+fn running_backlog_offline_policy_preserves_every_queued_sample() {
+    let (mut input, mut source, observer) = running_recovery_bridge(recovery_config(false, 128));
+    input
+        .push_packet(&ramp_bytes(64, 256), packet(192, 64, 0))
+        .unwrap();
+    let mut output = [0.0; 64];
+    let report = source.read_interleaved(&mut output).unwrap();
+    assert_eq!(report.transferred_frames, 32);
+    assert!(!report.discontinuity);
+    for (index, samples) in output.as_chunks::<2>().0.iter().enumerate() {
+        assert_eq!(*samples, [(index + 1) as f32, -((index + 1) as f32)]);
+    }
+    assert_eq!(observer.snapshot().resets, 0);
+    assert_eq!(observer.snapshot().dropped_frames, 0);
+    assert_eq!(observer.snapshot().backlog_discarded_frames, 0);
+    assert_eq!(observer.snapshot().backlog_recoveries, 0);
+}
+
+#[test]
+fn running_backlog_one_frame_discard_retains_the_pending_interpolation_frame() {
+    let (mut input, mut source, _) = running_recovery_bridge(recovery_config(true, 65));
+    input
+        .push_packet(&ramp_bytes(64, 65), packet(1, 64, 0))
+        .unwrap();
+    let mut output = [0.0; 64];
+    let report = source.read_interleaved(&mut output).unwrap();
+    assert_eq!(report.transferred_frames, 32);
+    assert!(report.discontinuity);
+    for (index, samples) in output.as_chunks::<2>().0.iter().enumerate() {
+        let expected = (index + 1) as f32 * (index + 1) as f32 / 32.0;
+        assert_eq!(*samples, [expected, -expected]);
+    }
+}
+
+#[test]
+fn running_backlog_fade_spans_engine_segments_without_restarting() {
+    let mut outputs = Vec::new();
+    for segments in [&[32][..], &[1, 3, 5, 7, 16][..]] {
+        let (mut input, mut source, observer) = running_recovery_bridge(recovery_config(true, 128));
+        input
+            .push_packet(&ramp_bytes(64, 256), packet(192, 64, 0))
+            .unwrap();
+        let mut output = [0.0; 64];
+        let mut offset = 0;
+        for &frames in segments {
+            let report = source
+                .read_interleaved(&mut output[offset * 2..(offset + frames) * 2])
+                .unwrap();
+            assert_eq!(report.transferred_frames, frames);
+            assert_eq!(report.discontinuity, offset == 0);
+            offset += frames;
+        }
+        assert_eq!(observer.snapshot().resets, 1);
+        outputs.push(output);
+    }
+    assert_eq!(outputs[0], outputs[1]);
+}
+
+#[test]
+fn running_backlog_recovery_never_interpolates_across_a_generation_boundary() {
+    let (mut input, mut source, observer) = running_recovery_bridge(recovery_config(true, 128));
+    input
+        .push_packet(&bytes(&[1.0; 129 * 2]), packet(129, 64, 0))
+        .unwrap();
+    input
+        .push_packet(&bytes(&[9.0; 63 * 2]), packet(63, 193, DISCONTINUITY))
+        .unwrap();
+    let mut output = [99.0; 16];
+    let report = source.read_interleaved(&mut output).unwrap();
+    assert_eq!(report.transferred_frames, 0);
+    assert!(report.discontinuity);
+    assert_eq!(report.xruns, 1);
+    assert_eq!(output, [0.0; 16]);
+    input
+        .push_packet(&bytes(&[9.0; 4]), packet(2, 256, 0))
+        .unwrap();
+    assert_eq!(
+        source
+            .read_interleaved(&mut output)
+            .unwrap()
+            .transferred_frames,
+        8
+    );
+    assert_eq!(output, [9.0; 16]);
+    assert_eq!(observer.snapshot().discontinuities, 1);
+    assert_eq!(observer.snapshot().underrun_frames, 0);
+}
+
+#[test]
+fn running_backlog_recovery_and_fade_allocate_and_free_nothing() {
+    let (mut input, mut source, observer) = running_recovery_bridge(recovery_config(true, 128));
+    let payload = ramp_bytes(64, 256);
+    let mut output = [0.0; 64];
+    COUNTS.with(|counts| counts.set((0, 0)));
+    TRACK.with(|track| track.set(true));
+    input.push_packet(&payload, packet(192, 64, 0)).unwrap();
+    let report = source.read_interleaved(&mut output).unwrap();
+    let snapshot = observer.snapshot();
+    TRACK.with(|track| track.set(false));
+    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    assert_eq!(report.transferred_frames, 32);
+    assert!(report.discontinuity);
+    assert_eq!(snapshot.resets, 1);
+    assert_eq!(snapshot.backlog_discarded_frames, 192);
+    assert_eq!(snapshot.backlog_recoveries, 1);
+}
+
+#[test]
+fn running_backlog_recovers_to_servo_reference_independently_of_prime() {
+    let mut config = recovery_config(true, 128);
+    config
+        .prepared_input
+        .as_mut()
+        .unwrap()
+        .servo_reference_frames = 96;
+    let (mut input, mut source, observer) = running_recovery_bridge(config);
+    input
+        .push_packet(&ramp_bytes(64, 256), packet(192, 64, 0))
+        .unwrap();
+    let mut output = [0.0; 2];
+    let report = source.read_interleaved(&mut output).unwrap();
+    assert_eq!(report.xruns, 0);
+    assert!(report.discontinuity);
+    assert_eq!(output, [5.0, -5.0]);
+    let snapshot = observer.snapshot();
+    assert_eq!(snapshot.fill_frames, 96);
+    assert_eq!(snapshot.backlog_discarded_frames, 160);
+    assert_eq!(snapshot.backlog_recoveries, 1);
+    let json = serde_json::to_value(snapshot).unwrap();
+    assert_eq!(json["backlog_discarded_frames"], 160);
+    assert_eq!(json["backlog_recoveries"], 1);
+}
+
+#[test]
+fn running_backlog_resets_fractional_phase_and_fades_44100_hz_samples() {
+    let config = ClockBridgeConfig {
+        input_sample_rate: 44_100,
+        ..recovery_config(true, 128)
+    };
+    let (mut input, mut source, observer) = running_recovery_bridge(config);
+    input
+        .push_packet(&ramp_bytes(64, 256), packet(192, 64, 0))
+        .unwrap();
+    let mut output = [0.0; 64];
+    let report = source.read_interleaved(&mut output).unwrap();
+    assert_eq!(report.transferred_frames, 32);
+    assert_eq!(report.xruns, 0);
+    assert!(report.discontinuity);
+    for (index, samples) in output.as_chunks::<2>().0.iter().enumerate() {
+        let expected =
+            ((192.0 + index as f64 * 44_100.0 / 48_000.0) * (index + 1) as f64 / 32.0) as f32;
+        assert!((samples[0] - expected).abs() < 0.00003);
+        assert!((samples[1] + expected).abs() < 0.00003);
+    }
+    assert_eq!(observer.snapshot().backlog_discarded_frames, 192);
+    assert_eq!(observer.snapshot().backlog_recoveries, 1);
+}
+
+#[test]
+fn running_backlog_discards_one_snapshot_across_ring_wrap() {
+    let (mut input, mut source, observer) = running_recovery_bridge(recovery_config(true, 256));
+    input
+        .push_packet(&ramp_bytes(64, 192), packet(128, 64, 0))
+        .unwrap();
+    let report = source.read_interleaved(&mut [0.0; 256]).unwrap();
+    assert_eq!(report.transferred_frames, 128);
+    assert!(!report.discontinuity);
+    input
+        .push_packet(&ramp_bytes(192, 384), packet(192, 192, 0))
+        .unwrap();
+    let mut output = [0.0; 2];
+    let report = source.read_interleaved(&mut output).unwrap();
+    assert_eq!(report.transferred_frames, 1);
+    assert!(report.discontinuity);
+    assert_eq!(report.xruns, 0);
+    assert_eq!(output, [10.0, -10.0]);
+    assert_eq!(observer.snapshot().backlog_discarded_frames, 192);
+    assert_eq!(observer.snapshot().backlog_recoveries, 1);
+    assert_eq!(observer.snapshot().dropped_frames, 0);
+}
+
+#[test]
+fn running_backlog_without_prepared_watermarks_keeps_legacy_continuity() {
+    let config = ClockBridgeConfig {
+        prepared_input: None,
+        ..recovery_config(true, 128)
+    };
+    let (mut input, mut source, observer) = running_recovery_bridge(config);
+    input
+        .push_packet(&ramp_bytes(64, 256), packet(192, 64, 0))
+        .unwrap();
+    let mut output = [0.0; 2];
+    let report = source.read_interleaved(&mut output).unwrap();
+    assert_eq!(report.transferred_frames, 1);
+    assert!(!report.discontinuity);
+    assert_eq!(output, [1.0, -1.0]);
+    assert_eq!(observer.snapshot().backlog_discarded_frames, 0);
+    assert_eq!(observer.snapshot().backlog_recoveries, 0);
+}
+
+#[test]
+fn running_backlog_recovery_clears_prior_controller_correction_once() {
+    let mut config = recovery_config(true, 128);
+    config.max_correction_ppm = 2000.0;
+    config
+        .prepared_input
+        .as_mut()
+        .unwrap()
+        .servo_reference_frames = 96;
+    let (mut input, mut source, observer) = running_recovery_bridge(config);
+    assert!(observer.snapshot().correction_ppm < 0.0);
+    input
+        .push_packet(&ramp_bytes(64, 256), packet(192, 64, 0))
+        .unwrap();
+    let report = source.read_interleaved(&mut [0.0; 2]).unwrap();
+    assert_eq!(report.transferred_frames, 1);
+    assert_eq!(report.xruns, 0);
+    assert!(report.discontinuity);
+    assert_eq!(observer.snapshot().correction_ppm, 0.0);
+    assert_eq!(observer.snapshot().resets, 1);
+    assert_eq!(observer.snapshot().backlog_recoveries, 1);
+}
+
+#[test]
+fn running_backlog_empty_demand_defers_recovery_without_moving_samples() {
+    let (mut input, mut source, observer) = running_recovery_bridge(recovery_config(true, 128));
+    input
+        .push_packet(&ramp_bytes(64, 256), packet(192, 64, 0))
+        .unwrap();
+    let report = source.read_interleaved(&mut []).unwrap();
+    assert_eq!(report.transferred_frames, 0);
+    assert!(!report.discontinuity);
+    assert_eq!(observer.snapshot().backlog_recoveries, 0);
+    let mut output = [0.0; 2];
+    assert!(source.read_interleaved(&mut output).unwrap().discontinuity);
+    assert_eq!(output, [6.0, -6.0]);
+    assert_eq!(observer.snapshot().backlog_discarded_frames, 192);
 }

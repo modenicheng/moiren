@@ -150,6 +150,21 @@ trimmed to the target once; `prime_discarded_frames` records intentional old
 frame removal. Offline callers can disable `trim_on_prime` to start at frame 0.
 Overflow drops new tail frames; underrun clears the tail and reprimes.
 
+Prepared input watermarks also bound running backlog. On a nonempty read at
+or above high water, the consumer discards an old prefix from one queue
+snapshot, including held interpolation frames, down to the independent servo
+reference. It resets phase and controller state and fades the retained stream
+in over 32 output frames, continuing across Engine segments. Generation
+checks still precede interpolation. `backlog_discarded_frames` and
+`backlog_recoveries` count intentional recovery separately from startup trim,
+producer drops and native discontinuities. Recovery marks the boundary as
+discontinuous without an xrun unless interpolation also encounters starvation
+or a generation boundary. `trim_on_prime=false` disables both trimming
+policies; configurations without prepared watermarks keep their existing
+running behavior. Audio-age limits and low-inventory servo protection remain
+future work. Probe envelope schema 3 and application monitor schema 4 include
+the new scalar counters; Capture/Render schemas stay 6/5.
+
 Continuous linear interpolation handles nominal 44.1→48 kHz and small clock
 differences. A smoothed fill PI servo, with anti-windup, bounds correction to
 ±2000 ppm. This is a functional SRC baseline, with frequency-response limits;

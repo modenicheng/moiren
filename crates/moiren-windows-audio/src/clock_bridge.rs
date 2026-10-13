@@ -23,6 +23,7 @@ pub struct ClockBridgeConfig {
     pub target_fill_frames: usize,
     pub prepared_input: Option<crate::latency::PreparedInputQueue>,
     /// Discard older queued frames once at each prime to bound startup latency.
+    /// With prepared watermarks, also recover running high-water backlog.
     /// Disable when consuming a finite offline recording from its first frame.
     pub trim_on_prime: bool,
     /// Physical clients expose a frame clock; some virtual process clients

@@ -291,7 +291,7 @@ mod native {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "schema_version": 2, "measurement_method": "unknown", "gain": gain,
+                "schema_version": 3, "measurement_method": "unknown", "gain": gain,
                 "graph": "input_send_gain_send_pan_send_output", "capture": capture_report,
                 "render": render_report, "bridge": observer.snapshot(),
             }))?
