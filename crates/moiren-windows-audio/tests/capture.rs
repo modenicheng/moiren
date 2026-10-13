@@ -7,6 +7,7 @@ fn capture_requires_pinned_id_and_bounded_duration_before_spawning() {
         assert_eq!(
             CaptureOptions {
                 latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
+                shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
                 endpoint_id: id.into(),
                 duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(10))
             }
@@ -18,6 +19,7 @@ fn capture_requires_pinned_id_and_bounded_duration_before_spawning() {
         assert_eq!(
             CaptureOptions {
                 latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
+                shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
                 endpoint_id: "id".into(),
                 duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(seconds))
             }
@@ -28,6 +30,7 @@ fn capture_requires_pinned_id_and_bounded_duration_before_spawning() {
     assert!(
         CaptureOptions {
             latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
+            shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
             endpoint_id: "opaque".into(),
             duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(1))
         }

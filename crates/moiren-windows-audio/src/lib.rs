@@ -7,6 +7,7 @@ mod duration;
 pub mod latency;
 pub mod process_loopback;
 pub mod render;
+pub mod shared_stream;
 pub mod stats;
 pub use duration::{DurationError, SessionDuration};
 

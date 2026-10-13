@@ -82,11 +82,14 @@ pub enum RenderError {
     WorkerSpawn { code: Option<i32> },
     #[error("render worker panicked")]
     WorkerPanicked,
+    #[error(transparent)]
+    SharedPeriod(#[from] crate::shared_stream::SharedPeriodError),
 }
 
 #[derive(Debug, Clone)]
 pub struct RenderOptions {
     pub latency_telemetry: crate::latency::TelemetryMode,
+    pub shared_period: crate::shared_stream::SharedPeriodPolicy,
     pub endpoint_id: String,
     pub duration: SessionDuration,
 }
@@ -98,6 +101,7 @@ impl RenderOptions {
         if self.duration.validate().is_err() {
             return Err(RenderError::InvalidDuration);
         }
+        self.shared_period.validate()?;
         Ok(())
     }
 }
@@ -241,6 +245,7 @@ pub struct RenderStats {
 pub struct RenderReport {
     pub schema_version: u32,
     pub latency: crate::latency::LatencySnapshot,
+    pub shared_period: crate::shared_stream::SharedPeriodReport,
     pub endpoint_id: String,
     pub status: RenderStatus,
     pub requested_seconds: Option<f64>,

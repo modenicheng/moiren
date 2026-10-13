@@ -5,7 +5,7 @@ use super::{
 use crate::latency::{CallbackObservation, LatencyRecorder, clock::QpcClock};
 use crate::{Activation, ActivationGate};
 use crate::{
-    owner::{Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory},
+    owner::{Apartment, Mmcss, OwnedHandle, Streaming},
     render::{
         CHANNELS, DemandRenderer, RenderError, RenderOptions, RenderReport, RenderStats,
         RenderStatus, SAMPLE_RATE, writable_frames,
@@ -25,7 +25,7 @@ use windows::{
         Media::Audio::{
             AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             AUDCLNT_STREAMFLAGS_NOPERSIST, AudioCategory_Other, AudioClientProperties,
-            IAudioClient, IAudioClient2, IAudioClient3, IAudioRenderClient, IAudioSessionControl,
+            IAudioClient, IAudioClient2, IAudioRenderClient, IAudioSessionControl,
             IAudioSessionControl2, IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator, eRender,
         },
         System::{
@@ -38,20 +38,8 @@ use windows::{
 
 // Optional metadata cannot prevent an otherwise supported stream from starting.
 fn record_optional_properties(client: &IAudioClient, report: &mut RenderReport) {
-    match client.cast::<IAudioClient3>() {
-        Ok(client3) => {
-            let mut ptr = std::ptr::null_mut();
-            let mut period = 0;
-            let period_result =
-                unsafe { client3.GetCurrentSharedModeEnginePeriod(&mut ptr, &mut period) };
-            let _format = TaskMemory(ptr);
-            match period_result {
-                Ok(()) => report.engine_period_frames = Some(period),
-                Err(error) => report.period_hresult = Some(error.code().0),
-            }
-        }
-        Err(error) => report.period_hresult = Some(error.code().0),
-    }
+    report.engine_period_frames = report.shared_period.actual_period_frames;
+    report.period_hresult = report.shared_period.actual_period_hresult;
     let ducking_result = unsafe { client.GetService::<IAudioSessionControl>() }
         .and_then(|s| s.cast::<IAudioSessionControl2>())
         .and_then(|session| unsafe { session.SetDuckingPreference(true) });
@@ -125,16 +113,37 @@ pub(super) fn owner(
     })?;
     let memory = mix_format(&client, report)?;
     let session_guid = api("CoCreateGuid(session)", unsafe { CoCreateGuid() })?;
-    api("Initialize(Shared)", unsafe {
-        client.Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
-            0,
-            0,
-            memory.0,
-            Some(&session_guid),
-        )
-    })?;
+    let client3 = crate::shared_stream::initialize_with_client3(
+        &client,
+        memory.0,
+        SAMPLE_RATE,
+        options.shared_period,
+        Some(&session_guid),
+        &mut report.shared_period,
+    );
+    if let Err(error) = client3 {
+        if let Some(reason) = error.fallback_reason {
+            report.shared_period.fallback_reason = Some(reason);
+            api("Initialize(Shared fallback)", unsafe {
+                client.Initialize(
+                    AUDCLNT_SHAREMODE_SHARED,
+                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
+                    0,
+                    0,
+                    memory.0,
+                    Some(&session_guid),
+                )
+            })?;
+            report.shared_period.initialization_api =
+                Some(crate::shared_stream::SharedInitializationApi::LegacyClient);
+        } else {
+            return Err(RenderError::Api {
+                stage: error.stage,
+                hresult: error.error.code().0,
+            });
+        }
+    }
+    crate::shared_stream::record_current_period(&client, &mut report.shared_period);
     api("SetEventHandle", unsafe { client.SetEventHandle(event.0) })?;
     let capacity = api("GetBufferSize", unsafe { client.GetBufferSize() })?;
     writable_frames(capacity, 0)?;
@@ -268,8 +277,9 @@ pub(super) fn run_owner_with(
 ) -> RenderOwnerExit {
     let initial_frame = renderer.timeline();
     let mut report = RenderReport {
-        schema_version: 3,
+        schema_version: 4,
         latency: LatencyRecorder::new(options.latency_telemetry).snapshot(),
+        shared_period: crate::shared_stream::SharedPeriodReport::default(),
         endpoint_id: options.endpoint_id.clone(),
         status: RenderStatus::Failed,
         requested_seconds: options.duration.requested_seconds(),

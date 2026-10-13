@@ -431,3 +431,39 @@ reports raw `GetStreamLatency` separately and keeps end-to-end measurement
 method `unknown`. Queue observations and callback timings cannot establish
 physical end-to-end latency. Bridge `last_qpc_100ns` belongs to the latest
 received valid packet, even if overflow drops it; it is not FIFO audio age.
+
+## Shared engine periods
+
+Physical Capture and Render accept `shared_period: SharedPeriodPolicy`. The
+default desired period is 5 ms; `desired_period_ms: None` requests the device's
+default. Preparation queries Client3 capabilities after setting client
+properties and rounds to a fundamental multiple inside the min/max range at
+each stream's native rate. A 5 ms desire can therefore produce a longer request.
+Client3 initialization uses `EVENTCALLBACK` and the stream's session GUID.
+Process Loopback retains its independent initialization path.
+
+Capture report schema 5 and Render schema 4 include `shared_period`: desired
+time, capabilities, effective request, actual engine period, initialization
+API, and error details. The existing Render `engine_period_frames` mirrors the
+same actual-period observation. Capacity remains a separate `buffer_frames`
+value. An unavailable actual-period query stays null with its HRESULT.
+
+Only a missing Client3 interface or an explicitly unsupported capability query
+permits legacy initialization. The report preserves the failed Client3 stage
+and HRESULT alongside the fallback reason. Invalid capabilities, device loss,
+and failed Client3 initialization return an error. No attempted initialization
+is retried on the same client and no automatic period/format-conflict retry is
+provided in this slice.
+
+Compare the device default, a small desired period, and an intermediate desire
+without changing the graph or gain:
+
+```powershell
+cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --input '<capture-id>' --output '<render-id>' --seconds 5 --gain 0 --mode summary --period-ms default
+cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --input '<capture-id>' --output '<render-id>' --seconds 5 --gain 0 --mode summary --period-ms 1
+cargo run --locked --release -p moiren-windows-audio --example latency_probe -- --input '<capture-id>' --output '<render-id>' --seconds 5 --gain 0 --mode summary --period-ms 8
+```
+
+Using `cargo run` ensures that the probe reflects the current sources. Record
+actual periods and callback demand as well as capacity; the desired value and
+`GetStreamLatency` alone do not establish end-to-end latency.

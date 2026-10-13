@@ -9,7 +9,7 @@ fn main() -> Result<()> {
     }
     if arguments.is_empty() || arguments == ["--help"] {
         println!(
-            "latency_probe --list | --benchmark | --input ID --output ID [--seconds 5] [--mode disabled|summary|trace] [--gain 0]"
+            "latency_probe --list | --benchmark | --input ID --output ID [--seconds 5] [--mode disabled|summary|trace] [--gain 0] [--period-ms default|5]"
         );
         return Ok(());
     }
@@ -138,6 +138,7 @@ mod native {
         let mut seconds = 5u64;
         let mut mode = TelemetryMode::Summary;
         let mut gain = 0.0f64;
+        let mut shared_period = moiren_windows_audio::shared_stream::SharedPeriodPolicy::default();
         for pair in arguments.chunks(2) {
             if pair.len() != 2 {
                 bail!("Every option requires a value.");
@@ -155,6 +156,13 @@ mod native {
                 }
                 "--seconds" => seconds = pair[1].parse().context("Invalid duration")?,
                 "--gain" => gain = pair[1].parse().context("Invalid gain")?,
+                "--period-ms" => {
+                    shared_period.desired_period_ms = if pair[1] == "default" {
+                        None
+                    } else {
+                        Some(pair[1].parse().context("Invalid shared period")?)
+                    };
+                }
                 "--mode" => {
                     mode = match pair[1].as_str() {
                         "disabled" => TelemetryMode::Disabled,
@@ -172,6 +180,7 @@ mod native {
         let input = input.context("An explicit --input endpoint ID is required")?;
         let output = output.context("An explicit --output endpoint ID is required")?;
         let duration = SessionDuration::For(Duration::from_secs(seconds));
+        shared_period.validate()?;
         let stop = StopSignal::new()?;
         let gate = ActivationGate::new(stop.clone())?;
         let prepared = prepare_capture_with_gate(
@@ -179,6 +188,7 @@ mod native {
                 endpoint_id: input,
                 duration,
                 latency_telemetry: mode,
+                shared_period,
             },
             stop.clone(),
             gate.clone(),
@@ -227,6 +237,7 @@ mod native {
                 endpoint_id: output,
                 duration,
                 latency_telemetry: mode,
+                shared_period,
             },
             renderer,
             stop,

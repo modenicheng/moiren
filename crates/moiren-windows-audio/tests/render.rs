@@ -268,6 +268,7 @@ fn padding_and_explicit_render_options_are_checked() {
         assert_eq!(
             RenderOptions {
                 latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
+                shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
                 endpoint_id: endpoint.into(),
                 duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(10))
             }
@@ -279,6 +280,7 @@ fn padding_and_explicit_render_options_are_checked() {
         assert_eq!(
             RenderOptions {
                 latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
+                shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
                 endpoint_id: "id".into(),
                 duration: moiren_windows_audio::SessionDuration::For(duration)
             }
@@ -289,6 +291,7 @@ fn padding_and_explicit_render_options_are_checked() {
     assert!(
         RenderOptions {
             latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
+            shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
             endpoint_id: "id".into(),
             duration: moiren_windows_audio::SessionDuration::For(Duration::from_secs(10))
         }

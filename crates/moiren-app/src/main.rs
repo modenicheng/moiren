@@ -129,6 +129,8 @@ fn render(command: RenderCommand) -> anyhow::Result<()> {
                 let session = start_render(
                     RenderOptions {
                         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
+                        shared_period:
+                            moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
                         endpoint_id,
                         duration: moiren_windows_audio::SessionDuration::For(
                             std::time::Duration::from_secs(u64::from(seconds)),

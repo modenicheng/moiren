@@ -12,6 +12,7 @@ fn capture_and_process_preparation_reject_foreign_gate_stop_before_spawning() {
     let physical = prepare_capture_with_gate(
         CaptureOptions {
             latency_telemetry: crate::latency::TelemetryMode::Summary,
+            shared_period: crate::shared_stream::SharedPeriodPolicy::default(),
             endpoint_id: "unopened".into(),
             duration: SessionDuration::UntilStopped,
         },
@@ -242,6 +243,8 @@ fn prepared_capture_publishes_bridge_before_gate_and_cancel_never_runs() {
                 crate::capture::CaptureSource::Physical,
                 SessionDuration::UntilStopped,
             );
+            report.shared_period.requested_period_frames = Some(240);
+            report.shared_period.actual_period_frames = Some(336);
             let result = stream::ready_and_wait(
                 &sender,
                 Startup {
@@ -277,10 +280,12 @@ fn prepared_capture_publishes_bridge_before_gate_and_cancel_never_runs() {
         let report = prepared.session.join().unwrap();
         assert_eq!(report.stream_started, !cancel);
         assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
-        assert_eq!(report.schema_version, 4);
+        assert_eq!(report.schema_version, 5);
         assert_eq!(report.requested_seconds, None);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 4);
+        assert_eq!(json["schema_version"], 5);
+        assert_eq!(json["shared_period"]["requested_period_frames"], 240);
+        assert_eq!(json["shared_period"]["actual_period_frames"], 336);
         assert!(json["requested_seconds"].is_null());
     }
 }
@@ -296,7 +301,7 @@ fn capture_preparation_failure_joins_owner_before_returning() {
         );
         let report = stream::finish(Err(CaptureError::UnsupportedFormat), &stop, &sender, report);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 4);
+        assert_eq!(json["schema_version"], 5);
         assert_eq!(json["requested_seconds"], 10.0);
         owner_exited.store(true, std::sync::atomic::Ordering::Release);
         report

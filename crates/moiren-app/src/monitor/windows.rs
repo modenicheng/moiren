@@ -233,11 +233,13 @@ fn prepare_monitor_inner(
     options.config.validate()?;
     let capture_options = CaptureOptions {
         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
+        shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
         endpoint_id: options.input_endpoint_id,
         duration: options.duration,
     };
     let render_options = RenderOptions {
         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
+        shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
         endpoint_id: options.output_endpoint_id,
         duration: options.duration,
     };
@@ -281,6 +283,7 @@ fn prepare_process_monitor_inner(
     options.config.validate()?;
     let render_options = RenderOptions {
         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
+        shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
         endpoint_id: options.output_endpoint_id,
         duration: options.duration,
     };

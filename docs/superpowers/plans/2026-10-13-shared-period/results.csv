@@ -1,0 +1,8 @@
+"case","desired_period","mode","seconds","capture_period","render_period","capture_capacity","render_capacity","capture_callback_p99_100ns","capture_callback_max_100ns","render_callback_p99_100ns","render_callback_max_100ns","render_wakes","empty_padding_wakes","bridge_underrun_frames","bridge_dropped_frames","capture_trace_dropped","render_trace_dropped","capture_timeout_wakes","render_timeout_wakes","capture_elapsed_seconds","render_elapsed_seconds","capture_status","render_status"
+"default-summary","default","summary","5","480","480","1056","1056","383","620","1023","1076","500","0","0","0","0","0","1","1","4.9995576","5.0003801","stopped","completed"
+"desired-1-summary","1","summary","5","336","336","738","738","223","478","1023","1384","715","0","0","0","0","0","0","0","5.0007951","5.0012445","stopped","completed"
+"desired-8-summary","8","summary","5","384","384","844","844","319","965","1023","1201","625","0","0","0","0","0","0","0","5.0047856","5.0054517","completed","stopped"
+"desired-5-disabled","5","disabled","5","336","336","738","738","","","","","715","0","0","0","0","0","0","0","5.0012344","5.0017083","stopped","completed"
+"desired-5-summary","5","summary","5","336","336","738","738","255","673","1023","1665","715","0","0","0","0","0","0","0","5.0021163","5.002599","completed","stopped"
+"desired-5-trace","5","trace","5","336","336","738","738","255","445","1023","1837","715","0","0","0","457","459","0","0","5.0007126","5.001099","stopped","completed"
+"desired-5-summary-30s","5","summary","30","336","336","738","738","319","3388","1023","2279","4287","0","0","0","0","0","0","0","30.0025188","30.003148","stopped","completed"

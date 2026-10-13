@@ -63,16 +63,37 @@ fn owner(
     report.sample_rate = Some(base.nSamplesPerSec);
     report.channels = Some(usize::from(base.nChannels));
     let guid = api("CoCreateGuid(capture)", unsafe { CoCreateGuid() })?;
-    api("Initialize(capture Shared)", unsafe {
-        client.Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
-            0,
-            0,
-            memory.0,
-            Some(&guid),
-        )
-    })?;
+    let client3 = crate::shared_stream::initialize_with_client3(
+        &client,
+        memory.0,
+        base.nSamplesPerSec,
+        options.shared_period,
+        Some(&guid),
+        &mut report.shared_period,
+    );
+    if let Err(error) = client3 {
+        if let Some(reason) = error.fallback_reason {
+            report.shared_period.fallback_reason = Some(reason);
+            api("Initialize(capture Shared fallback)", unsafe {
+                client.Initialize(
+                    AUDCLNT_SHAREMODE_SHARED,
+                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
+                    0,
+                    0,
+                    memory.0,
+                    Some(&guid),
+                )
+            })?;
+            report.shared_period.initialization_api =
+                Some(crate::shared_stream::SharedInitializationApi::LegacyClient);
+        } else {
+            return Err(CaptureError::Api {
+                stage: error.stage,
+                hresult: error.error.code().0,
+            });
+        }
+    }
+    crate::shared_stream::record_current_period(&client, &mut report.shared_period);
     api("SetEventHandle(capture)", unsafe {
         client.SetEventHandle(event.0)
     })?;

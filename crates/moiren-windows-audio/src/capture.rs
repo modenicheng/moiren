@@ -36,6 +36,8 @@ pub enum CaptureError {
     WorkerSpawn { code: Option<i32> },
     #[error("capture worker panicked")]
     WorkerPanicked,
+    #[error(transparent)]
+    SharedPeriod(#[from] crate::shared_stream::SharedPeriodError),
     #[error("capture startup channel closed before preparation completed")]
     StartupLost,
     #[error("process capture requires a nonzero PID and creation time")]
@@ -54,6 +56,7 @@ pub enum CaptureError {
 #[derive(Debug, Clone)]
 pub struct CaptureOptions {
     pub latency_telemetry: crate::latency::TelemetryMode,
+    pub shared_period: crate::shared_stream::SharedPeriodPolicy,
     pub endpoint_id: String,
     pub duration: SessionDuration,
 }
@@ -62,7 +65,9 @@ impl CaptureOptions {
         if self.endpoint_id.trim().is_empty() || self.endpoint_id.contains('\0') {
             return Err(CaptureError::InvalidEndpoint);
         }
-        validate_duration(self.duration)
+        validate_duration(self.duration)?;
+        self.shared_period.validate()?;
+        Ok(())
     }
 }
 pub(crate) fn validate_duration(duration: SessionDuration) -> Result<(), CaptureError> {
@@ -89,6 +94,7 @@ pub enum CaptureStatus {
 pub struct CaptureReport {
     pub schema_version: u32,
     pub latency: crate::latency::LatencySnapshot,
+    pub shared_period: crate::shared_stream::SharedPeriodReport,
     pub stream_latency_100ns: Option<i64>,
     pub source: CaptureSource,
     pub endpoint_id: Option<String>,
@@ -115,9 +121,10 @@ pub struct CaptureReport {
 impl CaptureReport {
     pub(crate) fn new(source: CaptureSource, duration: SessionDuration) -> Self {
         Self {
-            schema_version: 4,
+            schema_version: 5,
             latency: crate::latency::LatencyRecorder::new(crate::latency::TelemetryMode::Disabled)
                 .snapshot(),
+            shared_period: crate::shared_stream::SharedPeriodReport::default(),
             stream_latency_100ns: None,
             source,
             endpoint_id: None,

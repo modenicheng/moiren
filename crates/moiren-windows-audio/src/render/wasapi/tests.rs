@@ -15,6 +15,7 @@ fn render_preparation_rejects_foreign_gate_stop_before_spawning() {
     let result = start_render_prepared_with_gate(
         RenderOptions {
             latency_telemetry: crate::latency::TelemetryMode::Summary,
+            shared_period: crate::shared_stream::SharedPeriodPolicy::default(),
             endpoint_id: "unopened".into(),
             duration: SessionDuration::UntilStopped,
         },
@@ -319,6 +320,7 @@ fn prepared_render_waits_before_dsp_and_returns_renderer_to_joiner() {
                 stream::run_owner_with(
                     RenderOptions {
                         latency_telemetry: crate::latency::TelemetryMode::Summary,
+                        shared_period: crate::shared_stream::SharedPeriodPolicy::default(),
                         endpoint_id: "fake".into(),
                         duration: SessionDuration::UntilStopped,
                     },
@@ -328,6 +330,8 @@ fn prepared_render_waits_before_dsp_and_returns_renderer_to_joiner() {
                     ready,
                     started,
                     move |_, renderer, _, report, gate, ready, started| {
+                        report.shared_period.requested_period_frames = Some(240);
+                        report.shared_period.actual_period_frames = Some(336);
                         if ready_and_wait(ready, gate)? == Activation::Cancelled {
                             return Ok(super::super::RenderStatus::Stopped);
                         }
@@ -353,7 +357,9 @@ fn prepared_render_waits_before_dsp_and_returns_renderer_to_joiner() {
         assert_eq!(exit.renderer.timeline(), u64::from(!cancel));
         assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
         let json = serde_json::to_value(&exit.report).unwrap();
-        assert_eq!(json["schema_version"], 3);
+        assert_eq!(json["schema_version"], 4);
+        assert_eq!(json["shared_period"]["requested_period_frames"], 240);
+        assert_eq!(json["shared_period"]["actual_period_frames"], 336);
         assert!(json["requested_seconds"].is_null());
         assert!(rx.try_recv().is_err());
         drop(exit.renderer);
@@ -375,6 +381,7 @@ fn post_ready_failure_returns_unstarted_renderer_and_finite_report() {
             stream::run_owner_with(
                 RenderOptions {
                     latency_telemetry: crate::latency::TelemetryMode::Summary,
+                    shared_period: crate::shared_stream::SharedPeriodPolicy::default(),
                     endpoint_id: "fake".into(),
                     duration: SessionDuration::For(std::time::Duration::from_secs(10)),
                 },
@@ -405,7 +412,7 @@ fn post_ready_failure_returns_unstarted_renderer_and_finite_report() {
     assert!(!exit.report.stream_started);
     assert_eq!(exit.renderer.timeline(), 0);
     let json = serde_json::to_value(&exit.report).unwrap();
-    assert_eq!(json["schema_version"], 3);
+    assert_eq!(json["schema_version"], 4);
     assert_eq!(json["requested_seconds"], 10.0);
     assert!(rx.try_recv().is_err());
     drop(exit.renderer);
@@ -426,6 +433,7 @@ fn render_prepare_failure_joins_and_drops_renderer_on_preparing_thread() {
             stream::run_owner_with(
                 RenderOptions {
                     latency_telemetry: crate::latency::TelemetryMode::Summary,
+                    shared_period: crate::shared_stream::SharedPeriodPolicy::default(),
                     endpoint_id: "fake".into(),
                     duration: SessionDuration::UntilStopped,
                 },

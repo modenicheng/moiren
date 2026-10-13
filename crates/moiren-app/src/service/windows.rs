@@ -146,6 +146,8 @@ impl WindowsBackend {
                 let render = start_render_prepared(
                     RenderOptions {
                         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
+                        shared_period:
+                            moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
                         endpoint_id: spec.output_endpoint_id,
                         duration,
                     },
