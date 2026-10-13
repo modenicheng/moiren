@@ -69,4 +69,18 @@ cargo test --locked --release -p moiren-windows-audio --test clock_faults -- --n
 
 此树通过 `cargo check --locked --workspace --all-targets`、`cargo test --locked --workspace -- --nocapture`（519 通过、0 失败、4 忽略，含 doc-tests）、`cargo fmt --all -- --check` 和严格 workspace / all-targets Clippy。日志为 `.tmp/audio-latency-audit/clock-faults-{check,workspace-tests,fmt,clippy}.log`。原有分配、并发、图与 DSP 回归也在此次 workspace 测试中运行。
 
+## 两小时完整矩阵复核
+
+同一已验证源树的全部 144 个组合又各运行 7200 个模拟秒，全部通过。与 120 秒 CSV 逐行比较，除 `seconds` 外所有字段完全一致，包括 low-water guard 计数；没有新增短读、generation xrun、输入 underrun、producer dropped、backlog recovery 或 reset。这是给定场景的加速软件模型验证，不是两小时实机采集 / 播放。
+
+```powershell
+$env:MOIREN_FAULT_SIM_SECONDS = '7200'
+cargo test --locked --release -p moiren-windows-audio --test clock_faults clock_faults_joint_queue_handles_bursts_stalls_and_pause_recovery -- --nocapture
+./docs/superpowers/plans/2026-10-13-clock-faults/verify.ps1 -Csv ./docs/superpowers/plans/2026-10-13-clock-faults/results-7200.csv -Seconds 7200
+```
+
+矩阵加速执行耗时 486.66 秒，CSV 为 `2026-10-13-clock-faults/results-7200.csv`。随后按 release 模式重放完整 120 秒矩阵，耗时 7.81 秒，144 行全部字段与归档的 debug CSV 完全一致。源树的 `crates/` 内容与提交 `0fc8b28` 相同；日志分别为 `.tmp/audio-latency-audit/clock-faults-7200-0fc8b28.log` 与 `clock-faults-release-120-0fc8b28.log`。
+
+两个 CSV 均通过独立 verifier。另使用临时副本验证了五类负例：缺少一行、坐标重复、非零稳定区短读、把实际 producer dropped 改成零、非法计数字符串，全部按预期拒绝。
+
 本切片未进行新的实机采集或播放。完整 T4 仍未完成，下一切片需要把 packet stamp 与已接收帧 / generation 一致关联，再实现可信速率估计、最老帧音频年龄及持续故障的控制侧处理。
