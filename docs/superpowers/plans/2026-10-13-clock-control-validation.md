@@ -61,10 +61,29 @@ cargo test --locked -p moiren-windows-audio --test clock_control -- --nocapture
 ./docs/superpowers/plans/2026-10-13-clock-control/verify.ps1
 ```
 
-长模拟通过 `MOIREN_CONTROL_SIM_SECONDS=7200` 启用，仍执行完整 48 个组合与同样的严格音频断言；当前本记录的已交付数据为 120 秒矩阵。
+长模拟通过 `MOIREN_CONTROL_SIM_SECONDS=7200` 启用，仍执行完整 48 个组合与同样的严格音频断言。
+
+## 7200 秒完整矩阵
+
+控制修正提交 `6db4ad58542b46f65de982e95a24a42dc8093974` 后，使用与该提交 crate 内容完全相同的上述导出树，在 release profile 执行完整 48 个组合，每组合 7200 秒。命令退出码为 0，测试运行时间为 156.22 秒；它是加速离线模拟，不是 96 小时的实机监听。
+
+```powershell
+$env:MOIREN_CONTROL_SIM_SECONDS = '7200'
+cargo test --locked --release -p moiren-windows-audio --test clock_control clock_control_prepared_low_inventory_handles_rate_phase_order_and_lateness -- --nocapture
+```
+
+48 组 short callbacks、underrun、producer dropped、backlog recovery 均为 0。后 3600 秒实际应用平均 correction 的最大误差约 0.979 ppm；所有 case 的最后 correction 仍在 ±2000 ppm 内。输入位置由 f32 ramp 读取，在长测末尾的单点库存估计可有数十帧量化误差，不能作为精确音频年龄；长窗口的平均 rate 分析与严格音频计数分别保留。
+
+长测 guard 合计仍为 43200 帧，每个坐标的累计值均与 120 秒一致。同一 release 二进制随后重跑完整 120 秒矩阵，48 行的每一个 CSV 字段均与归档的 debug 记录完全一致；在本确定性模型的相同前缀之后，没有新增保护帧。
+
+长测结果：`2026-10-13-clock-control/results-7200.csv`。日志分别保存于 `.tmp/audio-latency-audit/clock-control-7200-6db4ad5.log` 与 `clock-control-release-120-6db4ad5.log`。两个 CSV 都通过独立校验；长测复核命令为：
+
+```powershell
+./docs/superpowers/plans/2026-10-13-clock-control/verify.ps1 -Csv ./docs/superpowers/plans/2026-10-13-clock-control/results-7200.csv -Seconds 7200
+```
 
 ## 当前边界
 
 Probe envelope schema 升为 4，应用 monitor schema 升为 5；Capture/Render schema 保持 6/5。本切片未进行新的实机采集或播放，T3 的 FreeDSP 数据不能作为这次控制器修改的硬件结果。
 
-T4 整体仍未完成：7200 秒矩阵、连续迟包/Render 迟醒与积压后恢复的组合模型、可信 stamp/rate feed-forward、最老实际待用帧的年龄、持续故障的控制侧降档，以及 20–30 分钟硬件准入和物理测量仍需继续。
+T4 整体仍未完成：连续迟包/Render 迟醒与积压后恢复的组合模型、可信 stamp/rate feed-forward、最老实际待用帧的年龄、持续故障的控制侧降档，以及 20–30 分钟硬件准入和物理测量仍需继续。本次 7200 秒矩阵覆盖上表给定的相位、周期与单次周期性迟包，不代表所有故障矩阵已经通过。
