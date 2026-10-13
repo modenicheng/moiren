@@ -79,6 +79,11 @@ impl ClockBridgeConfig {
                 && input.prime_frames < input.high_water_frames
                 && input.servo_reference_frames < input.high_water_frames
                 && input.high_water_frames <= input.capacity_frames
+                && input.modeled_minimum_frames.is_none_or(|minimum| {
+                    minimum >= 2
+                        && minimum <= input.prime_frames
+                        && minimum <= input.servo_reference_frames
+                })
         })
     }
 }

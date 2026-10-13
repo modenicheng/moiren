@@ -28,6 +28,20 @@ fn render_preparation_rejects_foreign_gate_stop_before_spawning() {
         stage: "ActivationGate stop identity", hresult,
     })) if hresult == 0x80070057u32 as i32));
     assert_eq!(rx.recv().unwrap(), std::thread::current().id());
+    let native = prepare_render_native_with_gate(
+        RenderOptions {
+            queue: crate::latency::RenderQueuePolicy::default(),
+            latency_telemetry: crate::latency::TelemetryMode::Summary,
+            shared_period: crate::shared_stream::SharedPeriodPolicy::default(),
+            endpoint_id: "unopened".into(),
+            duration: SessionDuration::UntilStopped,
+        },
+        StopSignal::new().unwrap(),
+        ActivationGate::new(StopSignal::new().unwrap()).unwrap(),
+    );
+    assert!(matches!(native, Err(RenderError::Gate(GateError::Api {
+        stage: "ActivationGate stop identity", hresult,
+    })) if hresult == 0x80070057u32 as i32));
 }
 
 #[test]
@@ -238,7 +252,9 @@ fn shared_gate_releases_both_owners_only_after_activation() {
     }
 }
 
-fn probe_renderer(dropped: std::sync::mpsc::Sender<std::thread::ThreadId>) -> DemandRenderer {
+pub(super) fn probe_renderer(
+    dropped: std::sync::mpsc::Sender<std::thread::ThreadId>,
+) -> DemandRenderer {
     use moiren_core::graph::*;
     use moiren_engine::{boundary::*, compiler::*, runtime::*};
     struct DropProbe(std::sync::mpsc::Sender<std::thread::ThreadId>);

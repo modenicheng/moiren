@@ -236,8 +236,8 @@ mod native {
             },
         );
         let budget = moiren_windows_audio::latency::prepare_latency_budget(
-            capture.info.timing,
-            render.info.timing,
+            capture.info().timing,
+            render.info().timing,
             budget_policy,
         )?;
         let prepared = capture.attach(budget.input)?;

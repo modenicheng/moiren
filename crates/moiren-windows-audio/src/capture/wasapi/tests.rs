@@ -20,6 +20,17 @@ fn capture_and_process_preparation_reject_foreign_gate_stop_before_spawning() {
         gate.clone(),
     );
     assert!(matches!(physical, Err(error) if error == expected));
+    let native = prepare_capture_native_with_gate(
+        CaptureOptions {
+            latency_telemetry: crate::latency::TelemetryMode::Summary,
+            shared_period: crate::shared_stream::SharedPeriodPolicy::default(),
+            endpoint_id: "unopened".into(),
+            duration: SessionDuration::UntilStopped,
+        },
+        stop.clone(),
+        gate.clone(),
+    );
+    assert!(matches!(native, Err(error) if error == expected));
     let process = crate::process_loopback::prepare_process_capture_with_gate(
         crate::process_loopback::ProcessLoopbackOptions {
             latency_telemetry: crate::latency::TelemetryMode::Summary,

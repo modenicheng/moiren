@@ -21,12 +21,15 @@ pub struct NativeCaptureInfo {
     pub shared_period: crate::shared_stream::SharedPeriodReport,
 }
 pub struct PreparedNativeCapture {
-    pub info: NativeCaptureInfo,
+    info: NativeCaptureInfo,
     session: CaptureSession,
     bridge: preparation::Sender<(CaptureIngress, PreparedInputQueue)>,
     attached: mpsc::Receiver<Result<(), CaptureError>>,
 }
 impl PreparedNativeCapture {
+    pub fn info(&self) -> NativeCaptureInfo {
+        self.info
+    }
     pub fn attach(self, input: PreparedInputQueue) -> Result<PreparedCapture, CaptureError> {
         let (ingress, source, observer) = capture_bridge(ClockBridgeConfig::with_prepared_input(
             self.info.timing.sample_rate,
@@ -136,6 +139,16 @@ pub fn prepare_capture_native_with_gate(
 ) -> Result<PreparedNativeCapture, CaptureError> {
     options.validate()?;
     gate.validate_stop(&stop)?;
+    start_native_owner(stop, move |stop, preparation, started| {
+        physical::run_owner_prepared(options, stop, preparation, gate, started)
+    })
+}
+fn start_native_owner(
+    stop: StopSignal,
+    owner: impl FnOnce(Arc<OwnedHandle>, CapturePreparation, Arc<AtomicBool>) -> CaptureReport
+    + Send
+    + 'static,
+) -> Result<PreparedNativeCapture, CaptureError> {
     let (sender, receiver) = api("Create capture handoff", preparation::channel())?;
     let (ready, metadata) = mpsc::sync_channel(1);
     let (attached, attachment) = mpsc::sync_channel(1);
@@ -145,15 +158,14 @@ pub fn prepare_capture_native_with_gate(
     let worker = thread::Builder::new()
         .name("moiren-shared-capture".into())
         .spawn(move || {
-            physical::run_owner_prepared(
-                options,
+            let _stop_on_exit = preparation::OwnerStop(worker_stop.clone());
+            owner(
                 worker_stop,
                 CapturePreparation::Deferred {
                     ready,
                     bridge: receiver,
                     attached,
                 },
-                gate,
                 worker_started,
             )
         })
@@ -180,3 +192,6 @@ pub fn prepare_capture_native_with_gate(
         attached: attachment,
     })
 }
+
+#[cfg(test)]
+mod tests;

@@ -257,8 +257,8 @@ fn prepare_monitor_inner(
     let capture = prepare_capture_native_with_gate(capture_options, stop.clone(), gate.clone())?;
     let render = prepare_render_native_with_gate(render_options.clone(), stop, gate.clone())?;
     let budget = moiren_windows_audio::latency::prepare_latency_budget(
-        capture.info.timing,
-        render.info.timing,
+        capture.info().timing,
+        render.info().timing,
         options.latency_budget,
     )?;
     let capture = capture.attach(budget.input)?;

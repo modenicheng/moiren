@@ -19,6 +19,13 @@ pub(crate) struct Receiver<T> {
     event: Arc<OwnedHandle>,
     closed: Arc<Mutex<bool>>,
 }
+pub(crate) struct OwnerStop(pub(crate) Arc<OwnedHandle>);
+impl Drop for OwnerStop {
+    fn drop(&mut self) {
+        let _ =
+            unsafe { windows::Win32::System::Threading::SetEvent(HANDLE(self.0.as_raw_handle())) };
+    }
+}
 pub(crate) fn channel<T>() -> windows::core::Result<(Sender<T>, Receiver<T>)> {
     let event = StopSignal::new()?;
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -49,6 +56,11 @@ impl<T> Sender<T> {
             .try_send(value)
             .map_err(|_| windows::core::Error::from_hresult(E_ABORT))?;
         self.event.request_stop()
+    }
+}
+impl<T> Drop for Sender<T> {
+    fn drop(&mut self) {
+        let _ = self.event.request_stop();
     }
 }
 impl<T> Receiver<T> {
@@ -82,6 +94,22 @@ impl<T> Receiver<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn abandoned_sender_signals_mailbox_without_peer_cancellation() {
+        let (sender, receiver) = channel::<usize>().unwrap();
+        drop(sender);
+        assert_eq!(
+            unsafe {
+                windows::Win32::System::Threading::WaitForSingleObject(
+                    HANDLE(receiver.event.as_raw_handle()),
+                    1000,
+                )
+            },
+            WAIT_OBJECT_0
+        );
+        let stop = StopSignal::new().unwrap();
+        assert_eq!(receiver.receive(&stop.event).unwrap_err().code(), E_ABORT);
+    }
     #[test]
     fn queued_handoff_loses_to_stop_and_stop_wakes_empty_mailbox() {
         for queued in [false, true] {

@@ -13,11 +13,28 @@
 
 ## 自动验证
 
-`cargo check --locked --target x86_64-pc-windows-msvc -p moiren-windows-audio --all-targets` 通过。`cargo check --locked --workspace --all-targets` 通过后，当前工作区 UI 草稿新增的 Slint 文件导致后续完整 check 失败；该错误来自 `crates/moiren-app/ui/components/dev-ready.slint` 的 `placeholder-text` 与重复 `border-color`，不属于本切片，且文件未纳入提交。
+初始联合准备切片在导出暂存树 `4a26579324242ee62f97d9a435c8535c17cefe56` 上通过 workspace check、test、fmt 与严格 Clippy。工作区另有 UI 与 Cargo.lock 草稿；直接检查工作区曾因 `crates/moiren-app/ui/components/dev-ready.slint` 的 `placeholder-text` 与重复 `border-color` 失败。这些草稿未纳入音频切片。
 
-工作区完整测试在该 UI 草稿生成前已通过：应用单元测试 37 passed/4 ignored，Monitor 集成测试 6 passed；Windows audio 的 Clock Bridge、latency budget、Render、Shared Stream 与 workspace 测试全部通过。两阶段新增 handoff 的 Windows 编译检查通过，便携 handoff 测试覆盖 stop 优先、单次取值、关闭后回收 queued ownership 和拒绝 late handoff。
+本轮生命周期补强的源代码暂存树 `150fabf984918938be9c6608480ab1ddaf514844` 已重新导出，并全部通过：
 
-Clock Bridge 新增回归确认 prepared capacity、prime、servo reference 与 high/low water 不被混淆，并拒绝 metadata 与实际 config 不一致的输入。
+- `cargo check --locked --workspace --all-targets`
+- `cargo test --locked --workspace`
+- `cargo fmt --all -- --check`
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`
+
+日志保存于 `.tmp/audio-latency-audit/staged-joint-lifecycle-20261013-133923/`。handoff 与 fake native owner 测试依赖 Windows event，属于无硬件 Windows 测试，不应称为便携测试。它们复用实际两阶段 supervisor、attachment、报告收尾与 Engine 回收路径；fake 仅替换原生 client 准备和 streaming 边界。
+
+Clock Bridge 回归先关闭 prime trim，在 fill=16、prime=8、servo reference=16 时验证 correction=0；在 fill=8 时允许 prime，且 correction 为负。该对照直接证明启动门槛与 servo reference 独立。配置还拒绝小于 modeled minimum 的 prime 或 servo reference，以及 config/metadata 不一致。
+
+## 生命周期补强
+
+- 断连回归首先观察到 sender 被丢弃后 mailbox 等待超时；sender Drop 现在唤醒 event，让 receiver 报告断连。
+- Render attachment 异常回归在没有 unwind 保护时失败。Engine 现在保留在 unwind 作用域之外，native/staging/DSP panic 转成失败报告，COM 在 owner 上释放，Engine 返回 joiner 销毁。异常前后的 DropProbe 都确认销毁线程是控制侧。
+- 原生 metadata 改为只读 accessor 返回副本，attachment 始终用 owner 实际准备信息验证预算。
+- 两端原生 owner 的退出 guard 在正常退出、metadata channel 丢失或 panic 时发出共同 stop。回归覆盖准备失败、metadata 丢失、attachment 缺失/失败、attachment 前取消、gate 前取消、激活和激活后异常。
+- stop 优先于 queued renderer 时，回收 renderer 的既有 timeline 不计入本 session 的 processed_frames；有界 mailbox 同时拒绝 late handoff。
+
+定向测试包括 18 项 preparation 测试及 2 项 prepared bridge 测试。三个缺陷均有先失败后通过的回归证据；完整 workspace 检查在上述导出树上执行。
 
 ## 当前边界
 
