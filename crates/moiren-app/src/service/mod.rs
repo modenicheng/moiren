@@ -8,6 +8,7 @@ mod jobs;
 mod mailbox;
 mod model;
 mod parameters;
+mod recovery;
 mod signal_preparation;
 mod signals;
 #[cfg(windows)]
@@ -74,6 +75,7 @@ impl Default for RoundBudget {
     }
 }
 pub struct ServiceContext {
+    pub monitor_latency: Option<MonitorLatencyStatus>,
     pub core: ServiceCore,
     pub catalog: Arc<DeviceCatalog>,
     pub catalog_error: Option<String>,
@@ -85,6 +87,7 @@ pub struct ServiceContext {
 impl Default for ServiceContext {
     fn default() -> Self {
         Self {
+            monitor_latency: None,
             core: ServiceCore::default(),
             catalog: Arc::new(DeviceCatalog::default()),
             catalog_error: None,
@@ -184,6 +187,7 @@ impl ServiceDriver for CoreDriver {
 }
 pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
     AppSnapshot {
+        monitor_latency: c.monitor_latency.clone(),
         consumed_request_id: RequestId::default(),
         generation: c.core.generation(),
         phase: c.core.phase(),

@@ -7,6 +7,12 @@ use moiren_engine::{
 };
 use thiserror::Error;
 
+mod recovery;
+pub use recovery::{
+    MonitorFaults, MonitorRecovery, MonitorRecoveryError, MonitorRecoveryPolicy,
+    MonitorRecoveryReason,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitorLatencyProfile {
     Compatible,
@@ -40,6 +46,12 @@ impl Default for MonitorLatencyConfig {
 }
 
 impl MonitorLatencyConfig {
+    pub fn compatible_fallback() -> Self {
+        Self {
+            shared_period_ms: None,
+            ..Self::default()
+        }
+    }
     pub fn balanced() -> Self {
         Self {
             profile: MonitorLatencyProfile::Balanced,
@@ -208,6 +220,11 @@ impl MonitorConfig {
 }
 #[derive(Debug, Error)]
 pub enum MonitorError {
+    #[cfg(windows)]
+    #[error(transparent)]
+    Fade(#[from] moiren_windows_audio::render::FadeError),
+    #[error(transparent)]
+    Recovery(#[from] MonitorRecoveryError),
     #[cfg(windows)]
     #[error(transparent)]
     LatencyBudget(#[from] moiren_windows_audio::latency::LatencyBudgetError),

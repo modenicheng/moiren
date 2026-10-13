@@ -73,6 +73,8 @@ impl WindowsBackend {
         spec: SessionSpec,
         cancellation: Cancellation,
         signals: Option<&mut SignalPreparation>,
+        latency: MonitorLatencyConfig,
+        fade_in_frames: u32,
     ) -> Result<Box<dyn PreparedSession>, BackendError> {
         spec.validate()
             .map_err(|e| BackendError::new("configuration", format!("{e:?}")))?;
@@ -80,10 +82,10 @@ impl WindowsBackend {
             return Err(BackendError::new("prepare", "cancelled"));
         }
         let config = MonitorConfig {
+            latency,
             gain: spec.gain,
             pan: spec.pan,
             max_block_frames: spec.max_block_frames,
-            ..MonitorConfig::default()
         };
         let duration = duration(spec.limit);
         let session = match spec.source {
@@ -168,6 +170,18 @@ impl WindowsBackend {
                 })
             }
         };
+        if fade_in_frames != 0 {
+            if let PreparedAppSession::Monitor { session, .. } = &session {
+                session
+                    .request_fade_in(fade_in_frames)
+                    .map_err(|error| BackendError::new("monitor startup fade", error))?;
+            } else {
+                return Err(BackendError::new(
+                    "monitor startup fade",
+                    "physical input required",
+                ));
+            }
+        }
         Ok(Box::new(session))
     }
 }
@@ -177,7 +191,7 @@ impl BackendAdapter for WindowsBackend {
         spec: SessionSpec,
         cancellation: Cancellation,
     ) -> Result<Box<dyn PreparedSession>, BackendError> {
-        self.prepare_inner(spec, cancellation, None)
+        self.prepare_inner(spec, cancellation, None, MonitorLatencyConfig::default(), 0)
     }
     fn prepare_with_signals(
         &self,
@@ -185,7 +199,29 @@ impl BackendAdapter for WindowsBackend {
         cancellation: Cancellation,
         signals: &mut SignalPreparation,
     ) -> Result<Box<dyn PreparedSession>, BackendError> {
-        self.prepare_inner(spec, cancellation, Some(signals))
+        self.prepare_inner(
+            spec,
+            cancellation,
+            Some(signals),
+            MonitorLatencyConfig::default(),
+            0,
+        )
+    }
+    fn prepare_with_monitor_latency(
+        &self,
+        spec: SessionSpec,
+        cancellation: Cancellation,
+        signals: &mut SignalPreparation,
+        latency: MonitorLatencyConfig,
+        fade_in_frames: u32,
+    ) -> Result<Box<dyn PreparedSession>, BackendError> {
+        if !matches!(spec.source, InputSelection::Physical { .. }) {
+            return Err(BackendError::new(
+                "monitor latency",
+                "physical input required",
+            ));
+        }
+        self.prepare_inner(spec, cancellation, Some(signals), latency, fade_in_frames)
     }
     fn catalog(&self) -> Result<DeviceCatalog, BackendError> {
         let native = catalog_snapshot().map_err(|e| BackendError::new("catalog", e))?;
@@ -313,6 +349,43 @@ impl PreparedSession for PreparedAppSession {
     }
 }
 impl ActiveSession for ActiveAppSession {
+    fn monitor_faults(&self) -> Option<MonitorFaults> {
+        let Self::Monitor { session, .. } = self else {
+            return None;
+        };
+        if session.observer.producer_finished() {
+            return None;
+        }
+        let snapshot = session.observer.snapshot();
+        Some(MonitorFaults {
+            output_frames: session.timeline.snapshot().frame,
+            priming_frames: snapshot.priming_frames,
+            underrun_frames: snapshot.underrun_frames,
+            dropped_frames: snapshot.dropped_frames,
+            resets: snapshot.resets,
+            backlog_recoveries: snapshot.backlog_recoveries,
+            age_recoveries: snapshot.age_recoveries,
+            discontinuities: snapshot.discontinuities,
+        })
+    }
+    fn request_monitor_fade_out(&self, frames: u32) -> Result<(), BackendError> {
+        match self {
+            Self::Monitor { session, .. } => session
+                .fade
+                .request_fade_out(frames)
+                .map_err(|error| BackendError::new("monitor fade", error)),
+            Self::Tone(_) => Err(BackendError::new("monitor fade", "physical input required")),
+        }
+    }
+    fn monitor_fade_out_submitted(&self) -> bool {
+        matches!(self, Self::Monitor { session, .. } if session.fade.fade_out_submitted())
+    }
+    fn monitor_queue_drain_duration(&self) -> Duration {
+        match self {
+            Self::Monitor { session, .. } => session.queue_drain_duration,
+            Self::Tone(_) => Duration::ZERO,
+        }
+    }
     fn request_stop(&self) -> Result<(), BackendError> {
         match self {
             Self::Monitor { session, .. } => session

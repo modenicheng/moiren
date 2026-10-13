@@ -1,5 +1,8 @@
 //! Generation checks and resource handoff; no blocking session destruction here.
 use super::*;
+use crate::monitor::{
+    MonitorError, MonitorLatencyConfig, MonitorLatencyProfile, MonitorRecoveryPolicy,
+};
 use std::{sync::Arc, thread};
 
 struct SessionCredits {
@@ -24,6 +27,7 @@ struct Owner {
     generation: SessionGeneration,
     session: Box<dyn ActiveSession>,
     credits: SessionCredits,
+    recovery: Option<recovery::OwnerRecovery>,
 }
 struct Reaping {
     generation: SessionGeneration,
@@ -46,6 +50,8 @@ impl Cleanup {
     }
 }
 pub struct BackendDriver {
+    monitor_latency: Option<MonitorLatencyConfig>,
+    recovery_policy: Option<MonitorRecoveryPolicy>,
     backend: Arc<dyn BackendAdapter>,
     completions: Option<CompletionQueue<Completion>>,
     preparing: Option<(SessionGeneration, Cancellation)>,
@@ -62,6 +68,8 @@ pub struct BackendDriver {
 impl BackendDriver {
     pub fn new(backend: Arc<dyn BackendAdapter>) -> Self {
         Self {
+            monitor_latency: None,
+            recovery_policy: None,
             backend,
             completions: None,
             preparing: None,
@@ -75,6 +83,19 @@ impl BackendDriver {
             parameters: parameters::Parameters::default(),
             reaping: None,
         }
+    }
+    pub fn with_monitor_latency(
+        mut self,
+        latency: MonitorLatencyConfig,
+        recovery: Option<MonitorRecoveryPolicy>,
+    ) -> Result<Self, MonitorError> {
+        latency.validate()?;
+        if let Some(policy) = recovery {
+            policy.validate()?;
+        }
+        self.monitor_latency = Some(latency);
+        self.recovery_policy = recovery;
+        Ok(self)
     }
     fn queue(&mut self) -> &CompletionQueue<Completion> {
         self.completions
@@ -148,6 +169,26 @@ impl BackendDriver {
         let Some(spec) = c.core.desired().cloned() else {
             return;
         };
+        let latency = if matches!(spec.source, InputSelection::Physical { .. }) {
+            self.monitor_latency.map(|requested| {
+                c.monitor_latency
+                    .get_or_insert(MonitorLatencyStatus {
+                        requested,
+                        selected: requested,
+                        fallback: None,
+                    })
+                    .selected
+            })
+        } else {
+            None
+        };
+        let fade_in_frames = c
+            .monitor_latency
+            .as_ref()
+            .and_then(|status| status.fallback)
+            .filter(|fallback| fallback.to_generation == generation)
+            .and(self.recovery_policy)
+            .map_or(0, |policy| policy.fade_frames);
         let Ok(deferred) = c.try_reserve_cleanup() else {
             return;
         };
@@ -177,7 +218,17 @@ impl BackendDriver {
         };
         let job: Job = Box::new(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                backend.prepare_with_signals(spec, token, &mut signals)
+                if let Some(latency) = latency {
+                    backend.prepare_with_monitor_latency(
+                        spec,
+                        token,
+                        &mut signals,
+                        latency,
+                        fade_in_frames,
+                    )
+                } else {
+                    backend.prepare_with_signals(spec, token, &mut signals)
+                }
             }))
             .unwrap_or_else(|_| Err(BackendError::new("prepare", "backend panicked")));
             completion.send_or_dispose(
@@ -231,12 +282,73 @@ impl BackendDriver {
             Err((_, job)) => drop(job),
         }
     }
+    fn failure_generation(c: &ServiceContext, owner: SessionGeneration) -> SessionGeneration {
+        c.monitor_latency
+            .as_ref()
+            .and_then(|status| status.fallback)
+            .filter(|fallback| {
+                fallback.from_generation == owner && fallback.to_generation == c.core.generation()
+            })
+            .map_or(owner, |fallback| fallback.to_generation)
+    }
+    fn recover_monitor(&mut self, c: &mut ServiceContext) {
+        let Some(owner) = self.active.as_mut() else {
+            return;
+        };
+        if owner.generation != c.core.generation()
+            || c.core.phase() != SessionPhase::Running
+            || owner.session.is_finished()
+        {
+            return;
+        }
+        let Some(recovery) = owner.recovery.as_mut() else {
+            return;
+        };
+        let result = recovery.poll(owner.session.as_ref());
+        match result {
+            Err(error) => {
+                c.core.start_failed(owner.generation, error);
+            }
+            Ok(Some((reason, fade_timed_out))) => {
+                let Some(mut spec) = c.core.desired().cloned() else {
+                    return;
+                };
+                let Some(limit) = recovery::remaining_limit(spec.limit, c.core.elapsed()) else {
+                    return;
+                };
+                spec.limit = limit;
+                match c.core.start(spec) {
+                    Ok(generation) => {
+                        let status = c
+                            .monitor_latency
+                            .as_mut()
+                            .expect("configured physical monitor");
+                        status.selected = MonitorLatencyConfig::compatible_fallback();
+                        status.fallback = Some(MonitorFallback {
+                            from_generation: owner.generation,
+                            to_generation: generation,
+                            reason,
+                            fade_timed_out,
+                        });
+                    }
+                    Err(error) => {
+                        c.core.start_failed(
+                            owner.generation,
+                            BackendError::new("monitor fallback", format!("{error:?}")),
+                        );
+                    }
+                }
+            }
+            Ok(None) => {}
+        }
+    }
 }
 impl ServiceDriver for BackendDriver {
     fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
         match request {
             AppRequest::Start(spec) => {
                 if c.core.start(spec).is_ok() {
+                    c.monitor_latency = None;
                     self.parameters.clear_intent(&mut c.control);
                 }
             }
@@ -247,6 +359,7 @@ impl ServiceDriver for BackendDriver {
             }
             AppRequest::RefreshCatalog => self.refresh = true,
             AppRequest::SetGainPan { gain, pan } if model::valid_gain_pan(gain, pan) => {
+                c.core.update_gain_pan(gain, pan);
                 self.parameters.set(&mut c.control, gain, pan)
             }
             AppRequest::SetGainPan { .. } => {}
@@ -287,6 +400,15 @@ impl ServiceDriver for BackendDriver {
                                     generation,
                                     session: session.into_active(),
                                     credits,
+                                    recovery: c
+                                        .monitor_latency
+                                        .as_ref()
+                                        .filter(|status| {
+                                            status.selected.profile
+                                                != MonitorLatencyProfile::Compatible
+                                        })
+                                        .and(self.recovery_policy)
+                                        .map(recovery::OwnerRecovery::new),
                                 });
                             }
                             Err(error) => {
@@ -343,8 +465,9 @@ impl ServiceDriver for BackendDriver {
         {
             let reaping = self.reaping.take().expect("reaping owner");
             if reaping.status == SessionEnd::Failed {
+                let generation = Self::failure_generation(c, reaping.generation);
                 c.core.start_failed(
-                    reaping.generation,
+                    generation,
                     BackendError::new(
                         "session",
                         reaping.error.unwrap_or_else(|| "owner failed".into()),
@@ -385,7 +508,8 @@ impl ServiceDriver for BackendDriver {
                 let owner = self.active.take().expect("observed owner");
                 c.core.owner_stopping(owner.generation);
                 if let Err(error) = owner.session.request_stop() {
-                    c.core.start_failed(owner.generation, error);
+                    c.core
+                        .start_failed(Self::failure_generation(c, owner.generation), error);
                 }
                 self.cleanup(
                     c,
@@ -396,6 +520,7 @@ impl ServiceDriver for BackendDriver {
                 );
             }
         }
+        self.recover_monitor(c);
         if let Some(owner) = self.active.as_mut() {
             self.parameters
                 .poll(owner.session.as_mut(), &mut c.control, applied);

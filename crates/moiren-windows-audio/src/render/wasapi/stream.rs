@@ -249,6 +249,7 @@ pub(super) fn run_stream(
     let prefill = &mut staging[..queue.target_frames as usize * CHANNELS];
     produce(renderer, prefill, &mut report.stats)?;
     submit(render, prefill)?;
+    renderer.acknowledge_submission();
     report.stats.primed_frames = queue.target_frames;
     record_submit(prefill, &mut report.stats);
     let mut task_index = 0;
@@ -309,6 +310,7 @@ pub(super) fn run_stream(
             let samples = &mut staging[..demand as usize * CHANNELS];
             produce(renderer, samples, &mut report.stats)?;
             submit(render, samples)?;
+            renderer.acknowledge_submission();
             record_submit(samples, &mut report.stats);
             telemetry.record(CallbackObservation {
                 wake_qpc_100ns,

@@ -23,6 +23,14 @@ impl Default for ServiceCore {
     }
 }
 impl ServiceCore {
+    pub fn update_gain_pan(&mut self, gain: f64, pan: f64) {
+        if valid_gain_pan(gain, pan)
+            && let Some(spec) = self.desired.as_mut()
+        {
+            spec.gain = gain;
+            spec.pan = pan;
+        }
+    }
     pub fn start_failed(
         &mut self,
         generation: SessionGeneration,

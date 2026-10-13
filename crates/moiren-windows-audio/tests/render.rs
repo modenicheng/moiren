@@ -67,6 +67,46 @@ fn graph(sample_rate: f64) -> (Engine<f32>, AudioReader<f32>) {
     let (writer, reader) = audio_bridge::<f32>(2, 8, 4096).unwrap();
     (graph_with_sink(sample_rate, writer), reader)
 }
+
+#[test]
+fn fade_is_segment_independent_and_requires_successful_submission() {
+    for chunk in [1, 3, 8, 32] {
+        let (engine, output) = graph(48_000.0);
+        let mut renderer = DemandRenderer::new(engine, output).unwrap();
+        let fade = renderer.fade_control();
+        fade.request_fade_in(8).unwrap();
+        let mut samples = [0.0; 64];
+        COUNTS.with(|count| count.set((0, 0)));
+        TRACK.with(|track| track.set(true));
+        for segment in samples[..16].chunks_mut(chunk * 2) {
+            renderer.render_interleaved(segment).unwrap();
+        }
+        fade.request_fade_out(8).unwrap();
+        renderer.render_interleaved(&mut []).unwrap();
+        assert!(!fade.fade_out_submitted());
+        for segment in samples[16..32].chunks_mut(chunk * 2) {
+            renderer.render_interleaved(segment).unwrap();
+        }
+        assert!(!fade.fade_out_submitted());
+        renderer.acknowledge_submission();
+        assert!(fade.fade_out_submitted());
+        renderer.render_interleaved(&mut samples[32..]).unwrap();
+        TRACK.with(|track| track.set(false));
+        assert_eq!(COUNTS.with(Cell::get), (0, 0));
+        for frame in 0..8 {
+            let expected = frame as f32 / 1000.0 * (frame + 1) as f32 / 8.0;
+            assert!((samples[frame * 2] - expected).abs() < 1e-8);
+        }
+        for frame in 8..16 {
+            let expected = frame as f32 / 1000.0 * (15 - frame) as f32 / 8.0;
+            assert!((samples[frame * 2] - expected).abs() < 1e-8);
+            assert_eq!(samples[frame * 2], -samples[frame * 2 + 1]);
+        }
+        assert!(samples[32..].iter().all(|sample| *sample == 0.0));
+        assert_eq!(renderer.timeline(), 32);
+        assert!(fade.request_fade_out(8).is_err());
+    }
+}
 fn graph_with_sink(sample_rate: f64, writer: impl RtAudioSink<f32> + 'static) -> Engine<f32> {
     let mut graph = LogicalGraph::new();
     let source = graph.create_node(NodeKind::Source, 2).unwrap();
