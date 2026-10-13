@@ -1,9 +1,10 @@
 #![deny(unsafe_op_in_unsafe_fn)]
-//! Realtime foundation and non-RT graph compilation; platform transports live outside.
+//! Realtime execution, non-RT compilation and managed hosts; transports live outside.
 pub mod boundary;
 pub mod buffer;
 pub mod compiler;
 pub mod control;
+pub mod host;
 pub mod meter;
 pub mod node;
 pub mod processor;
