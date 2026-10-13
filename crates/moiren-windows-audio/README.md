@@ -184,6 +184,23 @@ quantum. The guard never invents samples or clears underrun counts and cannot
 replace the period, gap and jitter admission budget. Feed-forward from valid
 packet timestamps remains future work.
 
+`ClockSource::oldest_frame_stamp()` returns an owner-local `QueuedFrameStamp`
+for the oldest pending native frame. Packet position, first-frame QPC,
+accepted-prefix length and frame offset travel in the same SPSC slot as the
+samples and generation. Trimming, overflow and ring wrap therefore cannot
+relabel old samples with a newer packet's clock. Deferred interpolation phase
+is accounted for when selecting the pending frame; a stamp does not establish
+that enough lookahead is available to render it.
+
+Timing needs two consecutive plausible packets in one generation. Zero/error,
+nonmonotonic or implausible QPC, overflowing position and disabled position-clock
+tracking produce `None`; audio continues through the existing FIFO controller.
+The broad 1% packet-slope gate tolerates 100 ns quantization and does not estimate
+drift or widen the SRC correction limit. First-frame QPC and native offset stay
+separate: this API does not report audio age or physical presentation time.
+Preparation includes all sample/stamp slot storage in `byte_budget`. Telemetry
+schemas and the approximate latest-received packet scalars remain unchanged.
+
 Snapshots are approximate independent atomic scalars; final snapshots after
 joining both owners are stable. Capture/render failures, packet discontinuity,
 dropped/silent/nonfinite samples, startup trim, priming silence, underrun,

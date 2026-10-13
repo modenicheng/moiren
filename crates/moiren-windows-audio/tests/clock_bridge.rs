@@ -864,3 +864,44 @@ fn low_water_controller_guard_allocates_and_frees_nothing() {
     assert_eq!(snapshot.low_water_guard_frames, 1);
     assert_eq!(snapshot.correction_ppm, -2000.0);
 }
+
+#[test]
+fn queued_packet_stamp_acceptance_and_query_allocate_and_free_nothing() {
+    let (mut input, mut source, observer) = capture_bridge(config()).unwrap();
+    input
+        .push_packet(
+            &[],
+            CapturePacket {
+                frames: 8,
+                flags: SILENT,
+                device_position_frames: 0,
+                qpc_100ns: 1_000_000,
+            },
+        )
+        .unwrap();
+    let mut output = [0.0; 16];
+    COUNTS.with(|counts| counts.set((0, 0)));
+    TRACK.with(|track| track.set(true));
+    input
+        .push_packet(
+            &[],
+            CapturePacket {
+                frames: 8,
+                flags: SILENT,
+                device_position_frames: 8,
+                qpc_100ns: 1_001_667,
+            },
+        )
+        .unwrap();
+    let report = source.read_interleaved(&mut output).unwrap();
+    let stamp = source.oldest_frame_stamp().unwrap();
+    let snapshot = observer.snapshot();
+    TRACK.with(|track| track.set(false));
+    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    assert_eq!(report.transferred_frames, 8);
+    assert_eq!(report.xruns, 0);
+    assert_eq!(stamp.packet_position_frames, 8);
+    assert_eq!(stamp.packet_qpc_100ns, 1_001_667);
+    assert_eq!(stamp.packet_offset_frames, 0);
+    assert_eq!(snapshot.dropped_frames, 0);
+}

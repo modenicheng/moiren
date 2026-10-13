@@ -26,6 +26,29 @@ pub struct ClockSource {
     fade_remaining: usize,
 }
 impl ClockSource {
+    /// Read a coherent owner-local correlation without consuming audio. None
+    /// means empty/unvalidated timing, including virtual positionless sources.
+    /// A returned stamp does not imply enough lookahead to render the frame.
+    pub fn oldest_frame_stamp(&self) -> Option<super::QueuedFrameStamp> {
+        // Phase advancement is deferred until the next output iteration. At
+        // most two native frames are owed for the supported rates/SRC bound.
+        let frame = if self.current.is_none() || self.phase >= 2.0 {
+            self.rx.peek().ok()
+        } else if self.phase >= 1.0 {
+            self.next.as_ref()
+        } else {
+            self.current.as_ref()
+        }?;
+        let stamp = frame.packet_stamp?;
+        Some(super::QueuedFrameStamp {
+            generation: frame.generation,
+            packet_position_frames: stamp.position_frames,
+            packet_qpc_100ns: stamp.qpc_100ns.get(),
+            packet_accepted_frames: stamp.accepted_frames,
+            packet_offset_frames: frame.packet_offset_frames,
+        })
+    }
+
     pub(super) fn new(
         rx: Consumer<Frame>,
         config: ClockBridgeConfig,

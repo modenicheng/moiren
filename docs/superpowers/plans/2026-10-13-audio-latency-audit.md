@@ -358,7 +358,7 @@ fn target_refill_does_not_fill_native_capacity() {
 
 ### T4：修正低存量 servo 并限制运行中积压（P1）
 
-实施进度：运行中 high-water 的有界 consumer 丢弃、phase / servo reset、32 帧淡入与独立恢复计数已通过第一切片验证，见 [运行中高水位恢复记录](2026-10-13-backlog-recovery-validation.md)。第二切片完成固定输出帧 servo 与有界低水位保护，以及各 48 个 admitted 120 / 7200 秒模型组合，见 [Clock 控制验证记录](2026-10-13-clock-control-validation.md)。第三切片扩展联合 padding / demand 的连续迟包、连续 Render 迟醒和停顿恢复模型，各 144 个 120 / 7200 秒组合均通过，见 [Clock 故障验证记录](2026-10-13-clock-faults-validation.md)。包时间/年龄、完整故障矩阵与硬件准入仍待实现，以下整体任务暂不勾选完成。
+实施进度：运行中 high-water 的有界 consumer 丢弃、phase / servo reset、32 帧淡入与独立恢复计数已通过第一切片验证，见 [运行中高水位恢复记录](2026-10-13-backlog-recovery-validation.md)。第二切片完成固定输出帧 servo 与有界低水位保护，以及各 48 个 admitted 120 / 7200 秒模型组合，见 [Clock 控制验证记录](2026-10-13-clock-control-validation.md)。第三切片扩展联合 padding / demand 的连续迟包、连续 Render 迟醒和停顿恢复模型，各 144 个 120 / 7200 秒组合均通过，见 [Clock 故障验证记录](2026-10-13-clock-faults-validation.md)。第四切片把原包时间、实际接收区间和 native offset 与音频帧一起提交，并提供最老待用帧的 owner-local 查询，见 [包时间关联验证记录](2026-10-13-packet-timing-validation.md)；531 项全工作区测试通过，192 个 120 秒模型结果与归档一致。音频年龄、长窗口 rate feed-forward、完整故障矩阵与硬件准入仍待实现，以下整体任务暂不勾选完成。
 
 **文件职责：** 修改 `clock_bridge.rs`、`clock_bridge/source.rs`、`clock_bridge/ingress.rs`、`clock_bridge/telemetry.rs`；新增 `clock_bridge/timing.rs` 存放包时间与年龄推导；扩展 `tests/clock_bridge.rs`。
 

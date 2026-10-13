@@ -7,10 +7,12 @@ use thiserror::Error;
 mod ingress;
 mod source;
 mod telemetry;
+mod timing;
 pub use ingress::{CaptureIngress, CapturePacket};
 pub use source::ClockSource;
 use telemetry::Counters;
 pub use telemetry::{BridgeObserver, BridgeSnapshot};
+pub use timing::QueuedFrameStamp;
 
 pub const OUTPUT_SAMPLE_RATE: u32 = 48_000;
 
@@ -105,6 +107,8 @@ pub enum ClockBridgeError {
 struct Frame {
     samples: [f32; 2],
     generation: u64,
+    packet_stamp: Option<timing::PacketStamp>,
+    packet_offset_frames: u64,
 }
 
 /// Non-RT preparation. Every endpoint has one owner; all allocation and final

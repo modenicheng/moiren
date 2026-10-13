@@ -1,5 +1,7 @@
 //! Native packet decoding and generation publication; no driver pointer escapes.
-use super::{ClockBridgeConfig, ClockBridgeError, Frame, telemetry::Counters};
+use super::{
+    ClockBridgeConfig, ClockBridgeError, Frame, telemetry::Counters, timing::PacketTiming,
+};
 use crate::stats::{DISCONTINUITY, SILENT, TIMESTAMP_ERROR};
 use rtrb::Producer;
 use std::sync::{Arc, atomic::Ordering::Relaxed};
@@ -16,6 +18,7 @@ pub struct CaptureIngress {
     config: ClockBridgeConfig,
     generation: u64,
     next_position: Option<u64>,
+    timing: PacketTiming,
     counters: Arc<Counters>,
 }
 impl CaptureIngress {
@@ -29,6 +32,7 @@ impl CaptureIngress {
             config,
             generation: 1,
             next_position: None,
+            timing: PacketTiming::default(),
             counters,
         }
     }
@@ -95,6 +99,13 @@ impl CaptureIngress {
         } else {
             packet.frames.min(self.tx.slots())
         };
+        let packet_stamp = self.timing.accept(
+            packet,
+            accepted,
+            self.generation,
+            self.config.input_sample_rate,
+            self.config.detect_position_gaps,
+        );
         let mut nonfinite = 0u64;
         if accepted > 0 {
             let generation = self.generation;
@@ -126,6 +137,8 @@ impl CaptureIngress {
                 Frame {
                     samples,
                     generation,
+                    packet_stamp,
+                    packet_offset_frames: frame as u64,
                 }
             }));
         }
