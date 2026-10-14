@@ -1,0 +1,77 @@
+[
+  {
+    "case": {
+      "nodes": 8,
+      "cycles": 10,
+      "parameters": 0,
+      "seconds": 60,
+      "edits": 0,
+      "name": "baseline"
+    },
+    "pid": 75048,
+    "elapsed_seconds": 61.820767,
+    "sampled_steady_seconds": 54.6215989,
+    "logical_processors": 16,
+    "cpu_one_core_percent": 1.7735658045703968,
+    "cpu_machine_percent": 0.1108478627856498,
+    "private_peak_bytes": 2691072.0,
+    "private_first_bytes": 2449408,
+    "private_last_bytes": 2691072,
+    "private_delta_bytes": 241664,
+    "working_set_peak_bytes": 13017088.0,
+    "handles_min": 189.0,
+    "handles_max": 189.0,
+    "threads_min": 12.0,
+    "threads_max": 12.0
+  },
+  {
+    "case": {
+      "nodes": 64,
+      "cycles": 20,
+      "parameters": 200,
+      "seconds": 120,
+      "edits": 20,
+      "name": "updates"
+    },
+    "pid": 78972,
+    "elapsed_seconds": 123.0679025,
+    "sampled_steady_seconds": 114.0328955,
+    "logical_processors": 16,
+    "cpu_one_core_percent": 5.015000254904516,
+    "cpu_machine_percent": 0.31343751593153224,
+    "private_peak_bytes": 5963776.0,
+    "private_first_bytes": 5005312,
+    "private_last_bytes": 5726208,
+    "private_delta_bytes": 720896,
+    "working_set_peak_bytes": 15802368.0,
+    "handles_min": 188.0,
+    "handles_max": 189.0,
+    "threads_min": 11.0,
+    "threads_max": 12.0
+  },
+  {
+    "case": {
+      "nodes": 120,
+      "cycles": 30,
+      "parameters": 2000,
+      "seconds": 120,
+      "edits": 400,
+      "name": "overload"
+    },
+    "pid": 85384,
+    "elapsed_seconds": 124.938282,
+    "sampled_steady_seconds": 114.04667789999999,
+    "logical_processors": 16,
+    "cpu_one_core_percent": 27.305157478857176,
+    "cpu_machine_percent": 1.7065723424285735,
+    "private_peak_bytes": 7176192.0,
+    "private_first_bytes": 6266880,
+    "private_last_bytes": 6651904,
+    "private_delta_bytes": 385024,
+    "working_set_peak_bytes": 17244160.0,
+    "handles_min": 189.0,
+    "handles_max": 189.0,
+    "threads_min": 11.0,
+    "threads_max": 12.0
+  }
+]
