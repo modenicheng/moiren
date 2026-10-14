@@ -202,12 +202,12 @@ impl EngineProject {
             .any(|config| matches!(config, NodeConfig::Output(_)))
     }
 
-    pub fn edit(
+    pub fn edit<T>(
         &mut self,
-        edit: impl FnOnce(&mut Self) -> Result<(), ProjectError>,
-    ) -> Result<(), ProjectError> {
+        edit: impl FnOnce(&mut Self) -> Result<T, ProjectError>,
+    ) -> Result<T, ProjectError> {
         let mut candidate = self.clone();
-        edit(&mut candidate)?;
+        let result = edit(&mut candidate)?;
         for node in self.graph.nodes() {
             if candidate.graph.get_node(node.id()).is_err() {
                 candidate.nodes.remove(&node.id());
@@ -226,7 +226,7 @@ impl EngineProject {
             });
         candidate.validate()?;
         *self = candidate;
-        Ok(())
+        Ok(result)
     }
 
     pub fn target_exists(&self, target: ParameterTarget) -> bool {

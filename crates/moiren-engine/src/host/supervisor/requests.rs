@@ -11,14 +11,28 @@ impl<S: ProcessingSample> Supervisor<S> {
                 continue;
             }
             match command {
-                Command::Edit(edit, receipt) => {
+                Command::Edit {
+                    expected,
+                    edit,
+                    receipt,
+                } => {
+                    let actual = EditBasis {
+                        host_id: self.shared.host_id,
+                        graph_revision: self.desired,
+                    };
+                    if let Some(expected) = expected
+                        && expected != actual
+                    {
+                        receipt.set(EditOutcome::Conflict { expected, actual });
+                        continue;
+                    }
                     let previous = self.project.clone();
                     let result = catch_unwind(AssertUnwindSafe(|| self.project.edit(edit)));
                     match result {
-                        Ok(Ok(())) => {
+                        Ok(Ok(accept_result)) => {
                             if let Err(error) = self.config.validate_project(&self.project) {
                                 self.project = previous;
-                                receipt.cell.set(EditOutcome::Rejected(error));
+                                receipt.set(EditOutcome::Rejected(error));
                                 continue;
                             }
                             self.resource_nodes.retain(|node, _| {
@@ -29,7 +43,9 @@ impl<S: ProcessingSample> Supervisor<S> {
                             });
                             if same_structure(&previous, &self.project) {
                                 self.send_values(&previous);
-                                receipt.cell.set(EditOutcome::Activated {
+                                accept_result();
+                                self.publish_snapshot();
+                                receipt.set(EditOutcome::Activated {
                                     graph_revision: self.desired,
                                     plan_revision: self
                                         .active
@@ -40,11 +56,13 @@ impl<S: ProcessingSample> Supervisor<S> {
                             } else if let Some(revision) = self.desired.checked_add(1) {
                                 self.desired = revision;
                                 for (_, previous) in self.edits.drain(..) {
-                                    previous.cell.set(EditOutcome::Superseded {
+                                    previous.set(EditOutcome::Superseded {
                                         by_graph_revision: revision,
                                     });
                                 }
-                                receipt.cell.set(EditOutcome::Accepted {
+                                accept_result();
+                                self.publish_snapshot();
+                                receipt.set(EditOutcome::Accepted {
                                     graph_revision: revision,
                                 });
                                 self.edits.push((revision, receipt));
@@ -60,17 +78,13 @@ impl<S: ProcessingSample> Supervisor<S> {
                                 self.project = previous;
                                 self.fault =
                                     Some(Diagnostic::Fault("graph revision exhausted".into()));
-                                receipt
-                                    .cell
-                                    .set(EditOutcome::Rejected(ProjectError::Capacity));
+                                receipt.set(EditOutcome::Rejected(ProjectError::Capacity));
                             }
                         }
-                        Ok(Err(error)) => receipt.cell.set(EditOutcome::Rejected(error)),
+                        Ok(Err(error)) => receipt.set(EditOutcome::Rejected(error)),
                         Err(_) => {
                             self.fault = Some(Diagnostic::Fault("project edit panicked".into()));
-                            receipt
-                                .cell
-                                .set(EditOutcome::Rejected(ProjectError::InvalidProcessing));
+                            receipt.set(EditOutcome::Rejected(ProjectError::InvalidProcessing));
                         }
                     }
                 }

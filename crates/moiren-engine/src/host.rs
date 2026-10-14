@@ -1,5 +1,6 @@
 //! Non-RT managed project, resource and execution ownership.
 mod backend;
+mod edits;
 mod model;
 mod parameters;
 mod preparation;
@@ -71,9 +72,12 @@ impl HostConfig {
     }
 }
 
-type Edit = Box<dyn FnOnce(&mut EngineProject) -> Result<(), ProjectError> + Send>;
 pub(crate) enum Command {
-    Edit(Edit, EditReceipt),
+    Edit {
+        expected: Option<EditBasis>,
+        edit: edits::Edit,
+        receipt: Arc<ReceiptCell<EditOutcome>>,
+    },
     Parameter {
         id: u64,
         target: ParameterTarget,
@@ -84,6 +88,7 @@ pub(crate) enum Command {
     },
 }
 pub(crate) struct Shared {
+    host_id: HostId,
     closing: AtomicBool,
     snapshot: Mutex<ProjectSnapshot>,
     wake_lock: Mutex<()>,
@@ -136,10 +141,12 @@ impl<S: ProcessingSample> EngineHost<S> {
         }
         config.validate_project(&project)?;
         let signals = Arc::new(signals::SignalHub::new(config.signals).map_err(HostError::Worker)?);
+        let host_id = HostId::allocate()?;
         let shared = Arc::new(Shared {
+            host_id,
             closing: AtomicBool::new(false),
             snapshot: Mutex::new(ProjectSnapshot {
-                host_id: HostId::allocate()?,
+                host_id,
                 desired: Arc::new(project),
                 active: None,
                 state: HostSnapshot {
@@ -216,23 +223,6 @@ pub struct EngineControl {
     receipt_capacity: usize,
 }
 impl EngineControl {
-    pub fn edit(
-        &self,
-        edit: impl FnOnce(&mut EngineProject) -> Result<(), ProjectError> + Send + 'static,
-    ) -> Result<EditReceipt, HostError> {
-        if self.shared.closing.load(Ordering::Acquire) {
-            return Err(HostError::Closed);
-        }
-        let receipt = EditReceipt {
-            cell: ReceiptCell::reserve(
-                EditOutcome::Queued,
-                &self.shared.permits,
-                self.receipt_capacity,
-            )?,
-        };
-        self.send(Command::Edit(Box::new(edit), receipt.clone()))?;
-        Ok(receipt)
-    }
     pub fn parameter(
         &self,
         target: ParameterTarget,

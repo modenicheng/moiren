@@ -177,7 +177,7 @@ impl<S: ProcessingSample> Supervisor<S> {
         self.publish_snapshot();
         self.edits.retain(|(revision, receipt)| {
             if *revision == graph {
-                receipt.cell.set(EditOutcome::Activated {
+                receipt.set(EditOutcome::Activated {
                     graph_revision: graph,
                     plan_revision,
                 });

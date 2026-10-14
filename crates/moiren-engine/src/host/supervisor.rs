@@ -69,7 +69,7 @@ struct Supervisor<S: ProcessingSample> {
     blocked: Option<(Basis, Diagnostic)>,
     fault: Option<Diagnostic>,
     cleanup_error: Option<BackendError>,
-    edits: Vec<(u64, EditReceipt)>,
+    edits: Vec<(u64, Arc<ReceiptCell<EditOutcome>>)>,
     router: Router,
 }
 
@@ -242,7 +242,7 @@ impl<S: ProcessingSample> Supervisor<S> {
         }
         self.router.close();
         for (_, receipt) in self.edits.drain(..) {
-            receipt.cell.set(EditOutcome::Closed);
+            receipt.set(EditOutcome::Closed);
         }
         while let Ok(command) = self.commands.try_recv() {
             close_command(command);
@@ -310,7 +310,7 @@ impl<S: ProcessingSample> Supervisor<S> {
 }
 fn close_command(command: Command) {
     match command {
-        Command::Edit(_, receipt) => receipt.cell.set(EditOutcome::Closed),
+        Command::Edit { receipt, .. } => receipt.set(EditOutcome::Closed),
         Command::Parameter { receipt, .. } => receipt.cell.set(ParameterOutcome::Closed),
     }
 }

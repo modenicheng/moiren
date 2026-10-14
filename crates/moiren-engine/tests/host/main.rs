@@ -1,3 +1,4 @@
+mod edits;
 mod lifecycle;
 mod parameters;
 mod project;

@@ -9,7 +9,7 @@ use std::{
 use moiren_core::protocol::{ControlReply, ReplyCode};
 use thiserror::Error;
 
-use super::{BackendError, OwnerTimeline, ProjectError};
+use super::{BackendError, EditBasis, OwnerTimeline, ProjectError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostState {
@@ -71,6 +71,10 @@ pub enum EditOutcome {
         by_graph_revision: u64,
     },
     Rejected(ProjectError),
+    Conflict {
+        expected: EditBasis,
+        actual: EditBasis,
+    },
     Closed,
 }
 impl EditOutcome {
@@ -182,16 +186,41 @@ impl<Outcome> Drop for ReceiptCell<Outcome> {
     }
 }
 
-#[derive(Clone)]
-pub struct EditReceipt {
+pub struct EditReceipt<T = ()> {
     pub(crate) cell: Arc<ReceiptCell<EditOutcome>>,
+    pub(crate) result: Arc<Mutex<Option<T>>>,
 }
-impl EditReceipt {
+impl<T> Clone for EditReceipt<T> {
+    fn clone(&self) -> Self {
+        Self {
+            cell: Arc::clone(&self.cell),
+            result: Arc::clone(&self.result),
+        }
+    }
+}
+impl<T> EditReceipt<T> {
     pub fn outcome(&self) -> EditOutcome {
         self.cell.get()
     }
     pub fn wait(&self, timeout: Duration) -> EditOutcome {
         self.cell.wait(timeout, EditOutcome::is_terminal)
+    }
+    /// Available after project acceptance, even if that plan never becomes
+    /// active. Queued, rejected and conflicting edits do not expose a result.
+    pub fn result(&self) -> Option<T>
+    where
+        T: Clone,
+    {
+        if matches!(
+            self.cell.get(),
+            EditOutcome::Queued | EditOutcome::Rejected(_) | EditOutcome::Conflict { .. }
+        ) {
+            return None;
+        }
+        self.result
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
     }
 }
 #[derive(Clone)]
