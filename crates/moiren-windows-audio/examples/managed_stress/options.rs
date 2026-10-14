@@ -7,6 +7,7 @@ pub struct Options {
     pub edits_per_second: u32,
     pub parameters_per_second: u32,
     pub cycles: u32,
+    pub confirmed_swaps: bool,
 }
 
 impl Options {
@@ -17,6 +18,7 @@ impl Options {
             edits_per_second: 20,
             parameters_per_second: 200,
             cycles: 10,
+            confirmed_swaps: false,
         };
         let mut arguments = arguments.into_iter();
         while let Some(argument) = arguments.next() {
@@ -30,6 +32,10 @@ impl Options {
                 "--edits-per-second" => options.edits_per_second = value,
                 "--parameters-per-second" => options.parameters_per_second = value,
                 "--cycles" => options.cycles = value,
+                "--confirmed-swaps" => {
+                    ensure!(value <= 1, "confirmed-swaps must be 0 or 1");
+                    options.confirmed_swaps = value == 1;
+                }
                 _ => bail!("unknown option: {argument}"),
             }
         }
@@ -68,5 +74,13 @@ mod tests {
         ] {
             assert!(Options::parse(arguments.into_iter().map(str::to_owned)).is_err());
         }
+    }
+
+    #[test]
+    fn confirmed_swaps_is_explicit_and_rejects_non_boolean_values() {
+        let options = Options::parse(["--confirmed-swaps".into(), "1".into()]).unwrap();
+        assert!(options.confirmed_swaps);
+        assert!(!Options::parse(Vec::new()).unwrap().confirmed_swaps);
+        assert!(Options::parse(["--confirmed-swaps".into(), "2".into()]).is_err());
     }
 }

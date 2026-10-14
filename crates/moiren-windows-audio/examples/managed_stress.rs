@@ -7,6 +7,9 @@ mod options;
 #[cfg(any(windows, test))]
 #[path = "managed_stress/project.rs"]
 mod project;
+#[cfg(any(windows, test))]
+#[path = "managed_stress/swaps.rs"]
+mod swaps;
 
 fn main() -> anyhow::Result<()> {
     let options = options::Options::parse(std::env::args().skip(1))?;
