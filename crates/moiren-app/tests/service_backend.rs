@@ -12,6 +12,8 @@ use std::{
 #[derive(Default)]
 struct State {
     catalog_failure: AtomicBool,
+    catalog_empty: AtomicBool,
+    catalog_calls: std::sync::atomic::AtomicUsize,
     join_error: AtomicBool,
     finish_during_poll: AtomicBool,
     next_session: AtomicUsize,
@@ -134,8 +136,14 @@ impl BackendAdapter for Fake {
     }
     fn catalog(&self) -> Result<DeviceCatalog, BackendError> {
         if self.0.catalog_failure.load(Ordering::Acquire) {
+            self.0.catalog_calls.fetch_add(1, Ordering::Release);
             return Err(BackendError::new("catalog", "fake enumeration failure"));
         }
+        if self.0.catalog_empty.load(Ordering::Acquire) {
+            self.0.catalog_calls.fetch_add(1, Ordering::Release);
+            return Ok(DeviceCatalog::default());
+        }
+        self.0.catalog_calls.fetch_add(1, Ordering::Release);
         Ok(DeviceCatalog {
             inputs: vec![DeviceRow {
                 endpoint_id: "input-id".into(),
@@ -354,6 +362,83 @@ fn exit(runtime: ServiceRuntime) {
     h.request_exit();
     phase(&h, SessionPhase::Exited);
     runtime.join().unwrap();
+}
+
+#[test]
+fn automatic_startup_runs_without_ui_requests_and_stop_remains_authoritative() {
+    let state = Arc::new(State::default());
+    state.started.store(true, Ordering::Release);
+    let runtime = ServiceRuntime::spawn_with_driver(
+        BackendDriver::new(Arc::new(Fake(state.clone()))).with_automatic_startup(),
+    )
+    .unwrap();
+    let handle = runtime.handle();
+    phase(&handle, SessionPhase::Running);
+    let initial = handle.try_snapshot().unwrap();
+    assert_eq!(initial.desired.as_ref().unwrap().gain, 0.0);
+    assert_eq!(
+        initial.desired.as_ref().unwrap().limit,
+        RunLimit::UntilStopped
+    );
+    assert_eq!(initial.consumed_request_id, RequestId(0));
+    handle.try_request(AppRequest::Stop).unwrap();
+    phase(&handle, SessionPhase::Idle);
+    let generation = handle.try_snapshot().unwrap().generation;
+    handle.try_request(AppRequest::RefreshCatalog).unwrap();
+    wait_until(|| handle.try_snapshot().unwrap().consumed_request_id == RequestId(2));
+    assert_eq!(handle.try_snapshot().unwrap().generation, generation);
+    assert!(handle.try_snapshot().unwrap().desired.is_none());
+    exit(runtime);
+}
+
+#[test]
+fn automatic_startup_does_not_retry_a_failed_preparation_on_catalog_refresh() {
+    let state = Arc::new(State::default());
+    state.activation_error.store(true, Ordering::Release);
+    let runtime = ServiceRuntime::spawn_with_driver(
+        BackendDriver::new(Arc::new(Fake(state.clone()))).with_automatic_startup(),
+    )
+    .unwrap();
+    let handle = runtime.handle();
+    phase(&handle, SessionPhase::Failed);
+    let generation = handle.try_snapshot().unwrap().generation;
+    handle.try_request(AppRequest::RefreshCatalog).unwrap();
+    wait_until(|| handle.try_snapshot().unwrap().consumed_request_id == RequestId(1));
+    assert_eq!(handle.try_snapshot().unwrap().generation, generation);
+    assert_eq!(handle.try_snapshot().unwrap().phase, SessionPhase::Failed);
+    exit(runtime);
+}
+
+#[test]
+fn automatic_startup_recovers_catalog_or_missing_defaults_without_ui_refresh() {
+    for catalog_failure in [false, true] {
+        let state = Arc::new(State::default());
+        state.started.store(true, Ordering::Release);
+        state
+            .catalog_failure
+            .store(catalog_failure, Ordering::Release);
+        state
+            .catalog_empty
+            .store(!catalog_failure, Ordering::Release);
+        let runtime = ServiceRuntime::spawn_with_driver(
+            BackendDriver::new(Arc::new(Fake(state.clone()))).with_automatic_startup(),
+        )
+        .unwrap();
+        let handle = runtime.handle();
+        wait_until(|| state.catalog_calls.load(Ordering::Acquire) != 0);
+        state.catalog_failure.store(false, Ordering::Release);
+        state.catalog_empty.store(false, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while handle.try_snapshot().unwrap().phase != SessionPhase::Running
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let snapshot = handle.try_snapshot().unwrap();
+        exit(runtime);
+        assert_eq!(snapshot.phase, SessionPhase::Running);
+        assert_eq!(snapshot.consumed_request_id, RequestId(0));
+    }
 }
 
 #[test]

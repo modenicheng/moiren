@@ -3,7 +3,11 @@ use super::*;
 use crate::monitor::{
     MonitorError, MonitorLatencyConfig, MonitorLatencyProfile, MonitorRecoveryPolicy,
 };
-use std::{sync::Arc, thread};
+use std::{
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 
 struct SessionCredits {
     deferred: DeferredPermit,
@@ -60,6 +64,8 @@ pub struct BackendDriver {
     cleaning: usize,
     catalog_running: bool,
     refresh: bool,
+    automatic_startup: bool,
+    startup_retry_at: Option<Instant>,
     exiting: bool,
     refused_cleanup: Option<Job>,
     parameters: parameters::Parameters,
@@ -78,11 +84,19 @@ impl BackendDriver {
             cleaning: 0,
             catalog_running: false,
             refresh: true,
+            automatic_startup: false,
+            startup_retry_at: None,
             exiting: false,
             refused_cleanup: None,
             parameters: parameters::Parameters::default(),
             reaping: None,
         }
+    }
+    /// The desktop starts a muted, unbounded default-device session after the
+    /// first usable catalog. Explicit user intent always takes precedence.
+    pub fn with_automatic_startup(mut self) -> Self {
+        self.automatic_startup = true;
+        self
     }
     pub fn with_monitor_latency(
         mut self,
@@ -348,12 +362,16 @@ impl ServiceDriver for BackendDriver {
         match request {
             AppRequest::Start(spec) => {
                 if c.core.start(spec).is_ok() {
+                    self.automatic_startup = false;
+                    self.startup_retry_at = None;
                     c.monitor_latency = None;
                     self.parameters.clear_intent(&mut c.control);
                 }
             }
             AppRequest::Stop => {
                 if c.core.stop().is_ok() {
+                    self.automatic_startup = false;
+                    self.startup_retry_at = None;
                     self.parameters.clear_intent(&mut c.control);
                 }
             }
@@ -367,6 +385,10 @@ impl ServiceDriver for BackendDriver {
         self.cancel_prepare(c);
     }
     fn poll(&mut self, c: &mut ServiceContext, pool: &mut JobPool, budget: RoundBudget) {
+        if self.automatic_startup && self.startup_retry_at.is_some_and(|at| Instant::now() >= at) {
+            self.startup_retry_at = None;
+            self.refresh = true;
+        }
         if let Some(job) = self.refused_cleanup.take()
             && let Err((_, job)) = c.try_defer(JobPriority::Cleanup, job)
         {
@@ -451,8 +473,25 @@ impl ServiceDriver for BackendDriver {
                         Ok(catalog) => {
                             c.catalog = Arc::new(catalog);
                             c.catalog_error = None;
+                            if self.automatic_startup {
+                                if c.core.generation() != SessionGeneration(0) || self.exiting {
+                                    self.automatic_startup = false;
+                                } else if let Some(spec) = startup::default_session(&c.catalog) {
+                                    self.automatic_startup = false;
+                                    self.request(c, pool, AppRequest::Start(spec));
+                                } else {
+                                    self.startup_retry_at =
+                                        Some(Instant::now() + Duration::from_secs(1));
+                                }
+                            }
                         }
-                        Err(error) => c.catalog_error = Some(error.to_string()),
+                        Err(error) => {
+                            c.catalog_error = Some(error.to_string());
+                            if self.automatic_startup {
+                                self.startup_retry_at =
+                                    Some(Instant::now() + Duration::from_secs(1));
+                            }
+                        }
                     }
                 }
             }
@@ -549,11 +588,14 @@ impl ServiceDriver for BackendDriver {
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
         self.exiting = true;
         self.refresh = false;
+        self.automatic_startup = false;
+        self.startup_retry_at = None;
         self.parameters.clear_intent(&mut c.control);
         self.cancel_prepare(c);
     }
     fn is_drained(&self) -> bool {
-        self.reaping.is_none()
+        !self.automatic_startup
+            && self.reaping.is_none()
             && self.parameters.is_drained()
             && self.preparing.is_none()
             && self.pending_prepare.is_none()

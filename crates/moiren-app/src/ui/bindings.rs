@@ -117,6 +117,16 @@ impl BindingState {
             self.pending_request_id = None;
             self.transport_pending = false;
         }
+        if self.pending_request_id.is_none()
+            && self
+                .snapshot
+                .as_ref()
+                .is_none_or(|previous| previous.generation != snapshot.generation)
+            && let Some(spec) = &snapshot.desired
+        {
+            self.studio
+                .set_parameters(spec.gain as f32, spec.pan as f32);
+        }
     }
 }
 pub(super) type SharedState = Rc<RefCell<BindingState>>;
@@ -726,6 +736,25 @@ pub(super) fn wire(window: &MainWindow, handle: AppHandle, state: SharedState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_startup_parameters_are_projected_from_the_service() {
+        let (handle, _) = ServiceMailbox::new(std::thread::current());
+        let mut snapshot = (*handle.try_snapshot().unwrap()).clone();
+        snapshot.generation = SessionGeneration(1);
+        snapshot.desired = Some(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 0.0,
+            pan: 0.0,
+            max_block_frames: 256,
+        });
+        let mut state = BindingState::default();
+        state.observe_snapshot(&Arc::new(snapshot));
+        assert_eq!(state.studio.gain, 0.0);
+    }
     #[test]
     fn unrelated_publication_cannot_acknowledge_transport_behind_round_budget() {
         let (handle, mailbox) = ServiceMailbox::new(std::thread::current());

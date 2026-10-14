@@ -22,6 +22,114 @@ struct Counts {
     refreshes: AtomicUsize,
 }
 
+#[test]
+#[ignore = "opens a desktop window and live default audio, muted; run with --ignored --test-threads=1"]
+fn desktop_automatically_runs_and_projects_muted_startup_without_clicking_start() -> Result<()> {
+    use moiren_engine::{
+        host::{EngineHost, EngineProject, ExecutionState, HostConfig, NodeConfig},
+        node::{DefaultDeviceRole, EndpointSelector},
+    };
+    let mut project = EngineProject::default();
+    let output = project
+        .graph
+        .create_node(moiren_core::graph::NodeKind::Sink, 2)?;
+    project.nodes.insert(
+        output,
+        NodeConfig::Output(moiren_windows_audio::engine_backend::physical_output(
+            EndpointSelector::FollowDefault(DefaultDeviceRole::Multimedia),
+        )),
+    );
+    let other_owner = EngineHost::<f32>::open(
+        HostConfig::default(),
+        project,
+        moiren_windows_audio::engine_backend::WindowsBackend::new(Default::default())?,
+    )?;
+    let other_deadline = Instant::now() + Duration::from_secs(10);
+    while other_owner.observer().snapshot().execution != ExecutionState::Running {
+        ensure!(
+            Instant::now() < other_deadline,
+            "shared engine fixture did not start"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let runtime = start_service()?;
+    let handle = runtime.handle();
+    let mut owned = OwnedService(Some(runtime));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let snapshot = loop {
+        if let Some(snapshot) = handle.try_snapshot() {
+            ensure!(
+                snapshot.phase != SessionPhase::Failed,
+                "automatic startup failed: {:?}",
+                snapshot.error
+            );
+            if snapshot.phase == SessionPhase::Running {
+                break snapshot;
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "automatic startup timed out: phase={:?}, catalog={:?}, error={:?}",
+                snapshot.phase,
+                snapshot.catalog_error,
+                snapshot.error
+            );
+        }
+        ensure!(Instant::now() < deadline, "automatic startup timed out");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let window = MainWindow::new()?;
+    let tray = AppTray::new()?;
+    window.window().set_size(LogicalSize::new(1600.0, 956.0));
+    let state = Rc::new(RefCell::new(bindings::BindingState::default()));
+    bindings::wire(&window, handle.clone(), state.clone());
+    bindings::update(&state, &snapshot, &window, &tray);
+    ensure!(
+        window.global::<Backend>().get_phase() == BackendPhase::Running,
+        "UI did not project Running"
+    );
+    ensure!(
+        window.global::<Backend>().get_gain() == 0.0,
+        "UI did not project startup mute"
+    );
+    window.show()?;
+    let captured = Rc::new(RefCell::new(None));
+    let result = captured.clone();
+    let weak = window.as_weak();
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::SingleShot,
+        Duration::from_millis(250),
+        move || {
+            let evidence = (|| -> Result<()> {
+                let window = weak.upgrade().unwrap();
+                let image = window.window().take_snapshot()?;
+                let path = std::env::var("MOIREN_STARTUP_SCREENSHOT")
+                    .unwrap_or_else(|_| "target/automatic-startup.ppm".into());
+                let mut file = std::fs::File::create(&path)?;
+                write!(file, "P6\n{} {}\n255\n", image.width(), image.height())?;
+                for pixel in image.as_bytes().as_chunks::<4>().0 {
+                    file.write_all(&pixel[..3])?;
+                }
+                println!("Automatic desktop startup screenshot: {path}");
+                Ok(())
+            })();
+            *result.borrow_mut() = Some(evidence);
+            let _ = slint::quit_event_loop();
+        },
+    );
+    slint::run_event_loop_until_quit()?;
+    timer.stop();
+    window.hide()?;
+    owned.finish()?;
+    drop(other_owner);
+    captured.borrow_mut().take().unwrap()?;
+    ensure!(
+        handle.try_snapshot().unwrap().phase == SessionPhase::Exited,
+        "service did not close"
+    );
+    Ok(())
+}
+
 struct FixtureDriver {
     counts: Arc<Counts>,
     deadline: Option<Instant>,

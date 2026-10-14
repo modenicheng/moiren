@@ -11,6 +11,7 @@ mod parameters;
 mod recovery;
 mod signal_preparation;
 mod signals;
+mod startup;
 #[cfg(windows)]
 mod windows;
 pub use backend::*;
@@ -30,9 +31,10 @@ pub enum ServiceStartError {
 pub fn start_service() -> Result<ServiceRuntime, ServiceStartError> {
     #[cfg(windows)]
     {
-        ServiceRuntime::spawn_with_driver(BackendDriver::new(std::sync::Arc::new(
-            WindowsBackend::default(),
-        )))
+        ServiceRuntime::spawn_with_driver(
+            BackendDriver::new(std::sync::Arc::new(WindowsBackend::default()))
+                .with_automatic_startup(),
+        )
         .map_err(ServiceStartError::WorkerSpawn)
     }
     #[cfg(not(windows))]
