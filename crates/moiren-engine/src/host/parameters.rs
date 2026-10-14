@@ -149,6 +149,11 @@ impl Router {
                     true
                 }
                 ReplyCode::QueueFull => true,
+                ReplyCode::StaleRevision
+                    if matches!(pending.timing, ParameterTiming::NextBlock) =>
+                {
+                    true
+                }
                 code => {
                     finish(
                         pending,
@@ -183,13 +188,17 @@ impl Router {
         } else if reply.code == ReplyCode::StaleRevision
             && !closing
             && matches!(pending.timing, ParameterTiming::NextBlock)
-            && project
+            && project.target_exists(pending.target)
+        {
+            if project
                 .parameter_values()
                 .iter()
                 .any(|value| value.target == pending.target && value.value == pending.value)
-        {
-            pending.submitted = None;
-            return;
+            {
+                pending.submitted = None;
+                return;
+            }
+            finish(pending, ParameterOutcome::Superseded);
         } else {
             finish(
                 pending,
@@ -248,5 +257,122 @@ pub(crate) fn resolve(
                 SendParameter::Mute => keys.mute,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        compiler::{self, NodeBindings},
+        host::{NodeConfig, model::ReceiptCell},
+        processor::Gain,
+    };
+    use moiren_core::graph::NodeKind;
+    use std::sync::{Arc, atomic::AtomicUsize};
+
+    fn receipt() -> ParameterReceipt {
+        ParameterReceipt {
+            cell: ReceiptCell::reserve(ParameterOutcome::Queued, &Arc::new(AtomicUsize::new(0)), 4)
+                .unwrap(),
+        }
+    }
+
+    #[test]
+    fn next_block_parameter_waits_when_rt_has_retired_the_observed_plan() {
+        let mut project = EngineProject::default();
+        let node = project.graph.create_node(NodeKind::Gain, 1).unwrap();
+        project
+            .nodes
+            .insert(node, NodeConfig::Gain { initial: 1.0 });
+        let bind = || {
+            let mut bindings = NodeBindings::<f32>::new();
+            bindings.bind_gain(node, 1.0).unwrap();
+            bindings
+        };
+        let mut compiled = compiler::compile(
+            &project.graph,
+            bind(),
+            project.processing.compile_config(1, 1),
+        )
+        .unwrap();
+        let basis = compiled.engine.plan_snapshot();
+        let mut plans = compiled.engine.enable_plan_switching(2).unwrap();
+        let mut update = compiler::compile_update(
+            &project.graph,
+            bind(),
+            project.processing.compile_config(2, 1),
+            &basis,
+            &[],
+            None,
+        )
+        .unwrap();
+        plans.publish(update.plan).unwrap();
+        compiled.engine.render(8).unwrap();
+        let receipt = receipt();
+        let mut router = Router::default();
+        router.accept(
+            1,
+            ParameterTarget::Node {
+                node,
+                parameter: Gain::LEVEL,
+            },
+            ParamValue::Float(0.5),
+            ParameterTiming::NextBlock,
+            0,
+            Some(receipt.clone()),
+        );
+        router.route(
+            &project,
+            &project,
+            &compiled.bindings,
+            &mut compiled.control,
+            8,
+        );
+        assert_eq!(receipt.outcome(), ParameterOutcome::Accepted);
+        assert_eq!(router.pending.len(), 1);
+        router.route(&project, &project, &update.bindings, &mut update.control, 8);
+        compiled.engine.render(8).unwrap();
+        router.poll(&mut update.control, &mut project, false);
+        assert!(matches!(receipt.outcome(), ParameterOutcome::Applied(_)));
+        assert!(router.pending.is_empty());
+    }
+
+    #[test]
+    fn stale_inflight_parameter_superseded_by_new_intent_is_not_a_runtime_failure() {
+        let mut project = EngineProject::default();
+        let node = project.graph.create_node(NodeKind::Gain, 1).unwrap();
+        project
+            .nodes
+            .insert(node, NodeConfig::Gain { initial: 1.0 });
+        let target = ParameterTarget::Node {
+            node,
+            parameter: Gain::LEVEL,
+        };
+        project.set_parameter(target, ParamValue::Float(0.9));
+        let receipt = receipt();
+        let mut router = Router::default();
+        router.accept(
+            1,
+            target,
+            ParamValue::Float(0.5),
+            ParameterTiming::NextBlock,
+            0,
+            Some(receipt.clone()),
+        );
+        router.pending[0].submitted = Some((1, 1));
+        router.reply(
+            ControlReply {
+                request_id: 1,
+                plan_revision: 1,
+                timeline_epoch: 1,
+                code: ReplyCode::StaleRevision,
+                effective_frame: 0,
+            },
+            &mut project,
+            false,
+        );
+        assert_eq!(receipt.outcome(), ParameterOutcome::Superseded);
+        assert!(router.pending.is_empty());
     }
 }
