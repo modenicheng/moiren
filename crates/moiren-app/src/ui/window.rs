@@ -70,10 +70,12 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
 
+        let tray = super::tray::AppTray::new().ok();
+
         let state = cx.new(|_| UiState::new(handle.clone(), initial));
         state.update(cx, |s, _| s.dispatch(AppRequest::RefreshCatalog));
 
-        let (_, window_entity) = gpui_kit::open_window(
+        let (window_handle, window_entity) = gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::centered(size(px(1180.), px(760.)), cx)),
                 titlebar: Some(TitlebarOptions {
@@ -85,9 +87,21 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
                 ..Default::default()
             },
             cx,
-            |_, cx| cx.new(|cx| StudioShell::new(state, cx)),
+            |window, cx| cx.new(|cx| StudioShell::new(state, window, cx, tray)),
         )
         .expect("failed to open main window");
+
+        // Closing the window hides to the tray instead of quitting.
+        window_handle
+            .update(cx, |_, window, cx| {
+                window.on_window_should_close(cx, |window, _cx| {
+                    // Removing the window hides it; the app stays alive so the
+                    // tray can re-show it.
+                    window.remove_window();
+                    true
+                });
+            })
+            .ok();
 
         window_entity.update(cx, |shell, cx| shell.spawn_poll(cx));
         cx.on_action::<app_view::Quit>(|_, cx| cx.quit());
@@ -103,17 +117,29 @@ pub struct StudioShell {
     selected_node: Option<String>,
     /// Screen-space anchor of an active pan drag (window coordinates).
     pan_grab: Option<(f32, f32)>,
+    /// Tray bridge; None when the platform tray failed to build.
+    tray: Option<super::tray::AppTray>,
+    /// Open window handle for tray "show" re-opens.
+    window_handle: Option<AnyWindowHandle>,
 }
 
 impl StudioShell {
-    fn new(state: Entity<UiState>, _cx: &mut Context<Self>) -> Self {
+    fn new(
+        state: Entity<UiState>,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+        tray: Option<super::tray::AppTray>,
+    ) -> Self {
         let mut shell = Self {
             state,
             presentation: WindowPresentation::default(),
             camera: Camera::default(),
             selected_node: None,
             pan_grab: None,
+            tray,
+            window_handle: None,
         };
+        shell.window_handle = Some(window.window_handle());
         shell.presentation.show();
         shell
     }
@@ -134,6 +160,7 @@ impl StudioShell {
                             }
                             changed
                         });
+                        shell.drain_tray(cx);
                         if changed {
                             cx.notify();
                         }
@@ -150,6 +177,41 @@ impl StudioShell {
     fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
         self.presentation.page = page;
         cx.notify();
+    }
+
+    /// Apply drained tray actions on the UI thread.
+    fn drain_tray(&mut self, cx: &mut Context<Self>) {
+        let Some(tray) = self.tray.as_mut() else {
+            return;
+        };
+        for action in tray.poll_actions() {
+            match action {
+                super::tray::TrayAction::ShowWindow => {
+                    self.presentation.show();
+                    if let Some(handle) = self.window_handle {
+                        handle
+                            .update(cx, |_, window, _| {
+                                window.activate_window();
+                            })
+                            .ok();
+                    }
+                    cx.notify();
+                }
+                super::tray::TrayAction::StopSession => {
+                    self.state.update(cx, |state, _| {
+                        state.dispatch(AppRequest::Stop);
+                    });
+                }
+                super::tray::TrayAction::ExitApp => {
+                    cx.quit();
+                }
+            }
+        }
+        // Reflect session state on the tray menu.
+        let running = self.state.read(cx).snapshot.phase == SessionPhase::Running;
+        if let Some(tray) = self.tray.as_ref() {
+            tray.set_session_active(running);
+        }
     }
 }
 
