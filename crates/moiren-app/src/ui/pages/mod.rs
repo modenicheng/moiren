@@ -31,7 +31,7 @@ impl Page {
     }
 }
 
-/// Mixer page placeholder: gain/pan rails fed by the live snapshot.
+/// Mixer page: gain/pan knobs plus a stereo meter, fed by the live snapshot.
 pub fn mixer_page(state: &UiState) -> impl IntoElement {
     let (gain, pan) = state
         .snapshot
@@ -57,8 +57,35 @@ pub fn mixer_page(state: &UiState) -> impl IntoElement {
             div()
                 .flex()
                 .gap(px(theme::SPACE_6))
+                .items_start()
+                .child(crate::ui::widgets::meters::knob(
+                    "Gain",
+                    (gain / 16.).clamp(0., 1.),
+                    theme::PRIMARY,
+                ))
+                .child(crate::ui::widgets::meters::knob(
+                    "Pan",
+                    ((pan + 1.) / 2.).clamp(0., 1.),
+                    theme::SIGNAL_DEVICE,
+                ))
                 .child(param_readout("Gain", format!("{gain:.2}")))
-                .child(param_readout("Pan", format!("{pan:+.2}"))),
+                .child(param_readout("Pan", format!("{pan:+.2}")))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(theme::SPACE_1))
+                        .h(px(120.))
+                        .child(
+                            div()
+                                .text_size(px(theme::TEXT_XS))
+                                .text_color(theme::TEXT_FAINT)
+                                .child("Monitor"),
+                        )
+                        .child(crate::ui::widgets::meters::stereo_level_meters(
+                            0., 0., 0., 0.,
+                        )),
+                ),
         )
 }
 

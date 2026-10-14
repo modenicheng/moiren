@@ -1,6 +1,7 @@
 //! Shared widgets: window buttons, workspace tabs, statusbar text helpers.
 
 pub mod icon;
+pub mod meters;
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
