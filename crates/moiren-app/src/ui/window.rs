@@ -465,11 +465,149 @@ fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShell>) -> AnyE
     div()
         .id("graph-page")
         .relative()
+        .flex()
         .flex_1()
         .overflow_hidden()
-        .child(canvas_view)
-        .child(editing_toolbar(shell, &this))
+        .child(session_io_panel(shell, cx, &this))
+        .child(
+            div()
+                .id("graph-canvas-host")
+                .relative()
+                .flex_1()
+                .overflow_hidden()
+                .child(canvas_view)
+                .child(editing_toolbar(shell, &this)),
+        )
         .into_any_element()
+}
+
+/// Left rail: SESSION I/O + transport controls.
+fn session_io_panel(
+    shell: &StudioShell,
+    cx: &Context<StudioShell>,
+    this: &Entity<StudioShell>,
+) -> impl IntoElement {
+    use pages::session_setup::{PickerRow, StudioButton, section_heading};
+
+    let snapshot = shell.state.read(cx).snapshot.clone();
+    let running = snapshot.phase == SessionPhase::Running;
+
+    // Cycle output selection through the catalog.
+    let cycle_output = {
+        let this = this.clone();
+        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+            this.update(cx, |shell, cx| {
+                let next = {
+                    let state = shell.state.read(cx);
+                    let catalog = &state.snapshot.catalog;
+                    catalog
+                        .outputs
+                        .iter()
+                        .position(|row| {
+                            Some(&row.endpoint_id) == state.selection.output_id.as_ref()
+                        })
+                        .and_then(|i| catalog.outputs.get((i + 1) % catalog.outputs.len().max(1)))
+                        .or_else(|| catalog.outputs.first())
+                        .map(|row| row.endpoint_id.clone())
+                };
+                if let Some(id) = next {
+                    shell.state.update(cx, |state, _| {
+                        state.selection.output_id = Some(id);
+                    });
+                }
+                cx.notify();
+            });
+        }
+    };
+
+    let output_label = {
+        let state = shell.state.read(cx);
+        state
+            .selection
+            .output_id
+            .clone()
+            .or_else(|| snapshot.catalog.default_output_endpoint_id.clone())
+            .unwrap_or_else(|| "No output selected".into())
+    };
+
+    let start_stop = {
+        let this = this.clone();
+        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+            this.update(cx, |shell, cx| {
+                let state = shell.state.clone();
+                state.update(cx, |state, _| {
+                    let snapshot = state.snapshot.clone();
+                    if snapshot.phase == SessionPhase::Running {
+                        state.dispatch(AppRequest::Stop);
+                    } else if let Some(output) = state
+                        .selection
+                        .output_id
+                        .clone()
+                        .or_else(|| snapshot.catalog.default_output_endpoint_id.clone())
+                    {
+                        state.dispatch(AppRequest::Start(session_setup_tone(&output)));
+                    }
+                });
+                cx.notify();
+            });
+        }
+    };
+
+    let refresh = {
+        let this = this.clone();
+        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+            this.update(cx, |shell, cx| {
+                let state = shell.state.clone();
+                state.update(cx, |state, _| {
+                    state.dispatch(AppRequest::RefreshCatalog);
+                });
+                cx.notify();
+            });
+        }
+    };
+
+    div()
+        .id("session-io-panel")
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w(px(theme::LIBRARY_WIDTH))
+        .bg(theme::SURFACE)
+        .border_r_1()
+        .border_color(theme::BORDER)
+        .p(px(theme::SPACE_3))
+        .gap(px(theme::SPACE_2))
+        .overflow_y_scroll()
+        .child(section_heading("SESSION I/O"))
+        .child(
+            PickerRow::new("picker-output", "Output", output_label)
+                .disabled(running || snapshot.catalog.outputs.is_empty())
+                .on_click(cycle_output),
+        )
+        .child(StudioButton::new("btn-refresh", "Refresh devices").on_click(refresh))
+        .child(
+            StudioButton::new(
+                "btn-start-stop",
+                if running {
+                    "Stop Session"
+                } else {
+                    "Start Monitor"
+                },
+            )
+            .active(running)
+            .disabled(snapshot.catalog.outputs.is_empty())
+            .on_click(start_stop),
+        )
+        .child(
+            div()
+                .text_size(px(theme::TEXT_XS))
+                .text_color(theme::TEXT_FAINT)
+                .child("Device changes apply on Start."),
+        )
+}
+
+fn session_setup_tone(output: &str) -> crate::service::SessionSpec {
+    pages::session_setup::tone_spec(output.to_string(), 10, 0.5, 0.0)
 }
 
 /// Floating Select/Pan toolbar + zoom controls, top-left of the canvas.

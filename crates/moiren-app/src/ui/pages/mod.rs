@@ -2,6 +2,7 @@
 
 pub mod graph_canvas;
 pub mod graph_canvas_view;
+pub mod session_setup;
 
 use std::sync::Arc;
 
