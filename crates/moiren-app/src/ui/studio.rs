@@ -104,8 +104,7 @@ impl StudioState {
             && y.is_finite()
             && let Some(node) = self.node_for_key(key)
         {
-            self.positions
-                .insert(node, (x.clamp(0.0, 1900.0), y.clamp(60.0, 1050.0)));
+            self.positions.insert(node, (x, y));
         }
     }
 
@@ -344,12 +343,12 @@ impl StudioModels {
             .nodes
             .iter()
             .map(|node| node.x + node.card_width)
-            .fold(0.0, f32::max);
+            .fold(f32::NEG_INFINITY, f32::max);
         let bottom = projection
             .nodes
             .iter()
             .map(|node| node.y + node.card_height)
-            .fold(0.0, f32::max);
+            .fold(f32::NEG_INFINITY, f32::max);
         backend.set_graph_left(left);
         backend.set_graph_top(top);
         backend.set_graph_width(right - left);
@@ -418,6 +417,30 @@ mod tests {
         assert_eq!(studio.session.graph.edges().len(), 3);
         studio.move_node(&key, f32::NAN, 300.0);
         assert_eq!(studio.positions[&studio.session.gain], (320.0, 450.0));
+    }
+
+    #[test]
+    fn node_positions_are_unbounded_and_non_finite_moves_are_ignored() {
+        let mut studio = StudioState::default();
+        let key = studio.projection("Input", "INPUT", "Output").nodes[1]
+            .id
+            .to_string();
+        for position in [(5000.0, 3000.0), (-4500.0, -2300.0)] {
+            studio.move_node(&key, position.0, position.1);
+            let projection = studio.projection("Input", "INPUT", "Output");
+            assert_eq!((projection.nodes[1].x, projection.nodes[1].y), position);
+            assert_eq!(projection.wires[0].x2, position.0);
+            assert_eq!(projection.wires[0].y2, position.1 + PORT_Y);
+        }
+        for position in [
+            (f32::INFINITY, 0.0),
+            (0.0, f32::NEG_INFINITY),
+            (f32::NAN, 0.0),
+        ] {
+            studio.move_node(&key, position.0, position.1);
+        }
+        assert_eq!(studio.positions[&studio.session.gain], (-4500.0, -2300.0));
+        assert_eq!(studio.session.graph.edges().len(), 3);
     }
 
     #[test]

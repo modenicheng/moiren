@@ -1,5 +1,6 @@
 //! Slint owns presentation only; backend sessions never cross this boundary.
 mod bindings;
+mod graph_input;
 mod meters;
 pub mod signals;
 mod studio;

@@ -51,6 +51,7 @@ pub fn run() -> anyhow::Result<()> {
 }
 fn run_event_loop(handle: crate::service::AppHandle) -> anyhow::Result<()> {
     let window = MainWindow::new().context("creating main window")?;
+    super::graph_input::install(&window);
     let tray = AppTray::new().context("creating tray")?;
     let presentation = Rc::new(RefCell::new(WindowPresentation::default()));
     let state = Rc::new(RefCell::new(bindings::BindingState::default()));

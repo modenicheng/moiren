@@ -48,12 +48,12 @@ component EditingToolbar inherits Rectangle {
                 spacing: 0px;
                 zoom-out := Rectangle {
                     width: 30px;
-                    background: minus-ta.has-hover && root.zoom > 0.5 ? Theme.surface-4 : transparent;
-                    Text { text: "−"; color: root.zoom > 0.5 ? Theme.text : Theme.text-faint; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                    background: minus-ta.has-hover && root.zoom > 0.25 ? Theme.surface-4 : transparent;
+                    Text { text: "−"; color: root.zoom > 0.25 ? Theme.text : Theme.text-faint; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
                     minus-ta := TouchArea {
-                        enabled: root.zoom > 0.5;
+                        enabled: root.zoom > 0.25;
                         mouse-cursor: pointer;
-                        clicked => { root.zoom-changed(max(0.5, root.zoom / 1.25)); }
+                        clicked => { root.zoom-changed(max(0.25, root.zoom / 1.05)); }
                     }
                 }
                 Text {
@@ -73,7 +73,7 @@ component EditingToolbar inherits Rectangle {
                     plus-ta := TouchArea {
                         enabled: root.zoom < 2;
                         mouse-cursor: pointer;
-                        clicked => { root.zoom-changed(min(2, root.zoom * 1.25)); }
+                        clicked => { root.zoom-changed(min(2, root.zoom * 1.05)); }
                     }
                 }
             }
@@ -114,6 +114,38 @@ export component GraphCanvas inherits Rectangle {
     property <length> canvas-width: self.width;
     property <length> canvas-height: self.height;
     property <bool> camera-adjusted: false;
+    // Keep roughly 24-48 screen pixels between grid lines. At small zoom
+    // levels, a larger world step avoids creating hundreds of near-overlapping
+    // rectangles while preserving the graph's world-space alignment.
+    property <length> grid-world-size: Theme.canvas-grid
+        * (root.zoom < 0.5 ? 4 : root.zoom < 1.0 ? 2 : 1);
+    property <length> grid-screen-size: root.grid-world-size * root.zoom;
+    out property <bool> space-held: false;
+    out property <bool> pan-with-left: root.tool == 1 || root.space-held;
+    out property <length> navigation-top: editing-toolbar.y + editing-toolbar.height + Theme.space-2;
+    public function focus-canvas() { graph-focus.focus(); }
+    public function cancel-input() { root.space-held = false; bg-ta.panning = false; }
+    public function pan-by(delta-x: length, delta-y: length) {
+        root.pan-x += delta-x;
+        root.pan-y += delta-y;
+        root.camera-adjusted = true;
+    }
+    public function zoom-by(factor: float, anchor-x: length, anchor-y: length) {
+        root.zoom-at((root.zoom * factor).clamp(0.25, 2.0), anchor-x, anchor-y);
+    }
+    graph-focus := FocusScope {
+        enabled: root.visible;
+        key-pressed(event) => {
+            if (event.text == " " && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta) {
+                root.space-held = true;
+                accept
+            } else { reject }
+        }
+        key-released(event) => {
+            if (event.text == " ") { root.space-held = false; accept } else { reject }
+        }
+        focus-lost => { root.cancel-input(); }
+    }
     function zoom-at(next-zoom: float, anchor-x: length, anchor-y: length) {
         root.pan-x = anchor-x - (anchor-x - root.pan-x) * next-zoom / root.zoom;
         root.pan-y = anchor-y - (anchor-y - root.pan-y) * next-zoom / root.zoom;
@@ -144,14 +176,15 @@ export component GraphCanvas inherits Rectangle {
         property <bool> panning: false;
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down) {
+                root.focus-canvas();
                 self.grab-x = root.pan-x - self.mouse-x;
                 self.grab-y = root.pan-y - self.mouse-y;
-                if (root.tool == 1 || e.button == PointerEventButton.middle) {
+                if (e.button == PointerEventButton.middle || (e.button == PointerEventButton.left && root.pan-with-left)) {
                     self.panning = true;
-                } else {
+                } else if (e.button == PointerEventButton.left) {
                     Backend.clear-selection();
                 }
-            } else if (e.kind == PointerEventKind.up) {
+            } else if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
                 self.panning = false;
             }
         }
@@ -164,7 +197,7 @@ export component GraphCanvas inherits Rectangle {
         }
         scroll-event(e) => {
             if (e.delta-y == 0px) { return reject; }
-            root.zoom-at((root.zoom * (e.delta-y > 0 ? 1.1 : 0.9)).clamp(0.25, 2.0), self.mouse-x, self.mouse-y);
+            root.zoom-by(pow(1.02, e.delta-y / 60px), self.mouse-x, self.mouse-y);
             accept
         }
     }
@@ -175,26 +208,26 @@ export component GraphCanvas inherits Rectangle {
         height: 100%;
         clip: true;
 
-        for column in ceil(root.width / (Theme.canvas-grid * root.zoom)) + 2: Rectangle {
-            x: mod(mod(root.pan-x / 1px, Theme.canvas-grid / 1px * root.zoom) + Theme.canvas-grid / 1px * root.zoom, Theme.canvas-grid / 1px * root.zoom) * 1px + (column - 1) * Theme.canvas-grid * root.zoom;
+        for column in ceil(root.width / root.grid-screen-size) + 2: Rectangle {
+            x: mod(mod(root.pan-x / 1px, root.grid-screen-size / 1px) + root.grid-screen-size / 1px, root.grid-screen-size / 1px) * 1px + (column - 1) * root.grid-screen-size;
             y: 0px;
             width: 1px;
             height: parent.height;
             background: Theme.hairline;
         }
-        for row in ceil(root.height / (Theme.canvas-grid * root.zoom)) + 2: Rectangle {
+        for row in ceil(root.height / root.grid-screen-size) + 2: Rectangle {
             x: 0px;
-            y: mod(mod(root.pan-y / 1px, Theme.canvas-grid / 1px * root.zoom) + Theme.canvas-grid / 1px * root.zoom, Theme.canvas-grid / 1px * root.zoom) * 1px + (row - 1) * Theme.canvas-grid * root.zoom;
+            y: mod(mod(root.pan-y / 1px, root.grid-screen-size / 1px) + root.grid-screen-size / 1px, root.grid-screen-size / 1px) * 1px + (row - 1) * root.grid-screen-size;
             width: parent.width;
             height: 1px;
             background: Theme.hairline;
         }
 
         world := Rectangle {
-            x: root.pan-x;
-            y: root.pan-y;
-            width: 2208px;
-            height: 1200px;
+            x: root.pan-x + Backend.graph-left * root.zoom;
+            y: root.pan-y + Backend.graph-top * root.zoom;
+            width: max(1px, Backend.graph-width);
+            height: max(1px, Backend.graph-height);
             background: transparent;
             transform-scale: root.zoom;
             transform-origin: {x: 0, y: 0};
@@ -203,28 +236,28 @@ export component GraphCanvas inherits Rectangle {
             for wire in Backend.graph-wires: GraphWire {
                 data: wire;
                 selected: Backend.selected-wire == wire.id;
-                x1: wire.x1; y1: wire.y1;
-                x2: wire.x2; y2: wire.y2;
+                x1: wire.x1 - Backend.graph-left; y1: wire.y1 - Backend.graph-top;
+                x2: wire.x2 - Backend.graph-left; y2: wire.y2 - Backend.graph-top;
             }
             for wire in Backend.graph-wires: Rectangle {
-                x: (wire.x1 + wire.x2) / 2 - 6px;
-                y: (wire.y1 + wire.y2) / 2 - 6px;
+                x: (wire.x1 + wire.x2) / 2 - Backend.graph-left - 6px;
+                y: (wire.y1 + wire.y2) / 2 - Backend.graph-top - 6px;
                 width: 12px; height: 12px;
                 border-radius: 6px;
                 border-width: 1px;
                 border-color: Theme.primary;
                 background: Backend.selected-wire == wire.id ? Theme.primary : Theme.surface-2;
                 TouchArea {
-                    enabled: root.tool == 0;
+                    enabled: !root.pan-with-left;
                     mouse-cursor: pointer;
-                    clicked => { Backend.select-wire(wire.id); }
+                    clicked => { root.focus-canvas(); Backend.select-wire(wire.id); }
                 }
             }
 
             // Nodes.
             for node in Backend.graph-nodes: GraphNodeCard {
-                x: node.x;
-                y: node.y;
+                x: node.x - Backend.graph-left;
+                y: node.y - Backend.graph-top;
                 data: node;
                 selected: Backend.selected-node == node.id;
                 is-parameter: node.type-label == "GAIN" || node.type-label == "PAN";
@@ -233,7 +266,8 @@ export component GraphCanvas inherits Rectangle {
                 right-rms: node.has-input ? Backend.route-meter-r : Backend.input-meter-r;
                 left-peak: node.has-input ? Backend.route-peak-l : Backend.input-peak-l;
                 right-peak: node.has-input ? Backend.route-peak-r : Backend.input-peak-r;
-                interactive: root.tool == 0;
+                interactive: !root.pan-with-left;
+                focused => { root.focus-canvas(); }
             }
         }
     }
@@ -258,7 +292,7 @@ export component GraphCanvas inherits Rectangle {
         x: parent.width - self.width - (Theme.inspector-collapsed ? 60px : 24px);
         y: 24px;
         visible: root.width > 800px;
-        text: "Drag nodes to arrange · Scroll to zoom";
+        text: "Wheel / pinch to zoom · Trackpad / Space + drag to pan";
         color: Theme.text-faint;
         font-family: Theme.font-ui;
         font-size: 10px;

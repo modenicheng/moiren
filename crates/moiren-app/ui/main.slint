@@ -37,7 +37,31 @@ import { NodeLibrary } from "pages/node-library.slint";
 import { GraphCanvas } from "pages/graph-canvas.slint";
 import { ConnectionInspector } from "pages/connection-inspector.slint";
 import { MixerPage } from "pages/mixer.slint";
+import {
+    DevReadyButton,
+    DevReadyIconButton,
+    DevReadyWindowButton,
+    DevReadyStatusBadge,
+    DevReadyProjectSelector,
+    DevReadyEngineStatus,
+    DevReadySearchField,
+    DevReadyToggle,
+    DevReadyNumericField,
+    DevReadyKnob,
+} from "components/dev-ready.slint";
 export { SignalRect, MeterRegion } from "components/signal-meter.slint";
+export {
+    DevReadyButton,
+    DevReadyIconButton,
+    DevReadyWindowButton,
+    DevReadyStatusBadge,
+    DevReadyProjectSelector,
+    DevReadyEngineStatus,
+    DevReadySearchField,
+    DevReadyToggle,
+    DevReadyNumericField,
+    DevReadyKnob,
+} from "components/dev-ready.slint";
 import {
     SignalRect,
     MeterRegion,
@@ -91,6 +115,24 @@ export component MainWindow inherits Window {
     callback toggle-maximize();
     callback close-window();
     callback exit-app();
+    out property <SignalRect> graph-viewport: {
+        left: graph-view.absolute-position.x / 1px,
+        top: graph-view.absolute-position.y / 1px,
+        width: graph-view.width / 1px, height: graph-view.height / 1px,
+    };
+    out property <bool> graph-input-enabled: Backend.view == 0
+        && !root.library-flyout-open && !root.inspector-flyout-open;
+    out property <bool> graph-pan-with-left: graph-view.pan-with-left;
+    out property <length> graph-navigation-top: graph-view.navigation-top;
+    out property <length> graph-pan-x: graph-view.pan-x;
+    out property <length> graph-pan-y: graph-view.pan-y;
+    out property <float> graph-zoom: graph-view.zoom;
+    public function focus-graph() { graph-view.focus-canvas(); }
+    public function cancel-graph-input() { graph-view.cancel-input(); }
+    public function pan-graph(delta-x: length, delta-y: length) { graph-view.pan-by(delta-x, delta-y); }
+    public function zoom-graph(factor: float, anchor-x: length, anchor-y: length) {
+        graph-view.zoom-by(factor, anchor-x, anchor-y);
+    }
     if Backend.signal-debug != "": signal-debug-text := Text {
         text: Backend.signal-debug;
         width: 0px;

@@ -98,6 +98,22 @@ export global Theme {
     out property <color> text-faint:  dark ? #6f818d : #7b8894;
     out property <color> text-on-soft: primary;
 
+    // Dev-ready component library tokens from the v0.1.2 Figma file.
+    // These stay separate from the older Graph shell tokens so the component
+    // library can be adopted without changing audio-graph visuals.
+    out property <color> dev-bar: dark ? #11151b : #f4f5f7;
+    out property <color> dev-input: dark ? #090b0f : #ffffff;
+    out property <color> dev-control: dark ? #1b2028 : #e9ecef;
+    out property <color> dev-border: dark ? #2a303a : #d7dde3;
+    out property <color> dev-text-primary: dark ? #f6f8fa : #14181c;
+    out property <color> dev-text-secondary: dark ? #b4bcc8 : #52606a;
+    out property <color> dev-text-tertiary: dark ? #949cad : #7b8894;
+    out property <color> dev-mint: dark ? #2ecc91 : #187c58;
+    out property <color> dev-cyan: dark ? #19c7d8 : #087f8d;
+    out property <color> dev-coral: dark ? #ff6b70 : #b9383e;
+    out property <color> dev-gold: dark ? #f1b51d : #986f00;
+    out property <color> dev-purple: dark ? #9b5cff : #7040c0;
+
     // --- Semantic status -------------------------------------------------
     // No green by design. `success` is kept as the name older components use,
     // but it resolves to the device blue — a running session is not "green",
@@ -175,7 +191,7 @@ export global Theme {
     out property <length> canvas-chrome-bottom: 48px;
 
     // --- Radii -----------------------------------------------------------
-    out property <length> radius-sm: 6px;
+    out property <length> radius-sm: 4px;
     out property <length> radius-md: 10px;
     out property <length> radius-lg: 14px;
     out property <length> radius-xl: 18px;
