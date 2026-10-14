@@ -155,3 +155,61 @@ fn snapshots_publish_matching_project_and_revision_under_concurrent_edits() {
     }
     writer.join().unwrap();
 }
+
+#[test]
+fn snapshots_refresh_desired_parameters_without_advancing_graph_revision() {
+    use moiren_core::protocol::ParamValue;
+    use moiren_engine::processor::Gain;
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let (project, _, gain, _) = project();
+    let host = EngineHost::<f64>::open(HostConfig::default(), project, backend).unwrap();
+    let observer = host.observer();
+    wait(&observer, |state| {
+        state.active_revision == Some(1) && state.timeline.is_some()
+    });
+    let before = observer.read();
+    let target = ParameterTarget::Node {
+        node: gain,
+        parameter: Gain::LEVEL,
+    };
+    for (value, timing) in [
+        (0.25, ParameterTiming::NextBlock),
+        (0.4, {
+            let timeline = before.state.timeline.unwrap();
+            ParameterTiming::Frame {
+                epoch: timeline.epoch,
+                frame: timeline.frame + 128,
+            }
+        }),
+    ] {
+        let receipt = host
+            .control()
+            .parameter(target, ParamValue::Float(value), timing, 0)
+            .unwrap();
+        assert!(matches!(
+            receipt.wait(TIMEOUT),
+            ParameterOutcome::Applied(_)
+        ));
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            let snapshot = observer.read();
+            if snapshot.desired.parameter_values().iter().any(|parameter| {
+                parameter.target == target && parameter.value == ParamValue::Float(value)
+            }) {
+                assert_eq!(snapshot.state.desired_revision, 1);
+                assert_eq!(snapshot.state.active_revision, Some(1));
+                assert!(!Arc::ptr_eq(&snapshot.desired, &before.desired));
+                assert!(Arc::ptr_eq(
+                    snapshot.active.as_ref().unwrap(),
+                    before.active.as_ref().unwrap()
+                ));
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        wait_sample(&state, value);
+    }
+    assert_eq!(state.prepares.load(Ordering::SeqCst), 1);
+}

@@ -6,6 +6,9 @@ mod model;
 pub use model::*;
 pub mod edit;
 
+mod query;
+pub use query::GraphIndex;
+
 #[cfg(test)]
 mod tests;
 
@@ -185,22 +188,7 @@ impl LogicalGraph {
         dst_port: PortId,
         params: SendParams,
     ) -> Result<EdgeId, GraphError> {
-        let (source, src) = self.find_port(src_port)?;
-        let (destination, dst) = self.find_port(dst_port)?;
-        if src.role != PortRole::Output || dst.role != PortRole::Input {
-            return Err(GraphError::PortDirectionMismatch);
-        }
-        if src.channels != dst.channels {
-            return Err(GraphError::ChannelMismatch);
-        }
-        params.validate()?;
-        if self.edges.iter().any(|e| e.dst_port == dst_port) {
-            return Err(GraphError::InputAlreadyConnected);
-        }
-        let (src, dst) = (source.id, destination.id);
-        if self.would_cycle(src, dst)? {
-            return Err(GraphError::CycleDetected);
-        }
+        let (src, dst) = self.connection_nodes(src_port, dst_port, params)?;
         let next = self
             .counts
             .edge
@@ -217,6 +205,48 @@ impl LogicalGraph {
         });
         self.counts.edge = next;
         Ok(id)
+    }
+
+    /// Advisory non-RT preflight using the complete graph and the same rules
+    /// as `connect`. This does not reserve an input or consume an identity;
+    /// the eventual edit must revalidate against its current project candidate.
+    pub fn validate_connection(
+        &self,
+        src_port: PortId,
+        dst_port: PortId,
+        params: SendParams,
+    ) -> Result<(), GraphError> {
+        self.connection_nodes(src_port, dst_port, params)
+            .map(|_| ())
+    }
+
+    fn connection_nodes(
+        &self,
+        src_port: PortId,
+        dst_port: PortId,
+        params: SendParams,
+    ) -> Result<(NodeId, NodeId), GraphError> {
+        let (source, src) = self.find_port(src_port)?;
+        let (destination, dst) = self.find_port(dst_port)?;
+        if src.role != PortRole::Output || dst.role != PortRole::Input {
+            return Err(GraphError::PortDirectionMismatch);
+        }
+        if src.channels != dst.channels {
+            return Err(GraphError::ChannelMismatch);
+        }
+        params.validate()?;
+        if self.edges.iter().any(|e| e.dst_port == dst_port) {
+            return Err(GraphError::InputAlreadyConnected);
+        }
+        let (src, dst) = (source.id, destination.id);
+        if self.would_cycle(src, dst)? {
+            return Err(GraphError::CycleDetected);
+        }
+        self.counts
+            .edge
+            .checked_add(1)
+            .ok_or(GraphError::TooManyEdges)?;
+        Ok((src, dst))
     }
 
     pub fn disconnect(&mut self, edge_id: EdgeId) -> Result<Edge, GraphError> {

@@ -298,7 +298,10 @@ impl EngineProject {
         }
     }
 
-    pub(crate) fn parameter_values(&self) -> Vec<DesiredParameter> {
+    /// Effective desired values: node/edge configuration defaults overridden
+    /// by explicitly recorded parameter intent. This allocating control-side
+    /// query does not report instantaneous runtime values or apply parameters.
+    pub fn parameter_values(&self) -> Vec<DesiredParameter> {
         let mut values = Vec::new();
         for (&node, config) in &self.nodes {
             let specs = match config {
