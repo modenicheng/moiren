@@ -2,7 +2,10 @@ param(
     [string]$Executable = (Join-Path $PSScriptRoot '..\target\release\examples\managed_stress.exe'),
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\docs\superpowers\plans\2026-10-14-engine-stress'),
     [int]$BaselineSeconds = 60,
-    [int]$LoadSeconds = 120
+    [int]$LoadSeconds = 120,
+    [switch]$FrequentSwaps,
+    [ValidateRange(10, 1800)]
+    [int]$SaturationSeconds = 300
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,6 +21,15 @@ $cases = @(
     @{ name = 'updates'; seconds = $LoadSeconds; nodes = 64; edits = 20; parameters = 200; cycles = 20 },
     @{ name = 'overload'; seconds = $LoadSeconds; nodes = 120; edits = 400; parameters = 2000; cycles = 30 }
 )
+if ($FrequentSwaps) {
+    $cases = @(
+        @{ name = 'swap-baseline'; seconds = $BaselineSeconds; nodes = 120; edits = 0; parameters = 200; cycles = 0 },
+        @{ name = 'swap-20'; seconds = $LoadSeconds; nodes = 64; edits = 20; parameters = 200; cycles = 0 },
+        @{ name = 'swap-50'; seconds = $LoadSeconds; nodes = 120; edits = 50; parameters = 200; cycles = 0 },
+        @{ name = 'swap-100'; seconds = $LoadSeconds; nodes = 120; edits = 100; parameters = 200; cycles = 0 },
+        @{ name = 'swap-saturation'; seconds = $SaturationSeconds; nodes = 120; edits = 2000; parameters = 200; cycles = 10 }
+    )
+}
 $results = [System.Collections.Generic.List[object]]::new()
 foreach ($case in $cases) {
     $stdout = Join-Path $OutputDirectory ($case.name + '.stdout.jsonl')
@@ -25,6 +37,7 @@ foreach ($case in $cases) {
     $arguments = @('--seconds', $case.seconds, '--nodes', $case.nodes,
         '--edits-per-second', $case.edits, '--parameters-per-second', $case.parameters,
         '--cycles', $case.cycles)
+    if ($FrequentSwaps) { $arguments += @('--confirmed-swaps', '1') }
     Write-Output "START $($case.name): $($arguments -join ' ')"
     $process = Start-Process -FilePath $Executable -ArgumentList $arguments -WindowStyle Hidden `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
@@ -82,6 +95,7 @@ foreach ($case in $cases) {
             handles_max = ($steady | Measure-Object handles -Maximum).Maximum
             threads_min = ($steady | Measure-Object threads -Minimum).Minimum
             threads_max = ($steady | Measure-Object threads -Maximum).Maximum
+            confirmed_swaps = $report.confirmed_swaps
             samples = $samples.ToArray()
             engine = $report
         }
@@ -90,6 +104,15 @@ foreach ($case in $cases) {
         Write-Output ("PASS {0}: CPU {1:N2}% of one core; private peak {2:N2} MiB; delta {3:N2} MiB; handles {4}-{5}; threads {6}-{7}" -f
             $case.name, $oneCorePercent, ($result.private_peak_bytes / 1MB), ($result.private_delta_bytes / 1MB),
             $result.handles_min, $result.handles_max, $result.threads_min, $result.threads_max)
+        if ($null -ne $report.confirmed_swaps) {
+            Write-Output ("SWAPS {0}: {1} confirmed; {2:N2}/s; activation p99 {3} ms; max {4:N2} ms" -f
+                $case.name, $report.confirmed_swaps.completed, $report.confirmed_swaps.per_second,
+                $report.confirmed_swaps.latency_p99_ms, $report.confirmed_swaps.latency_max_ms)
+        }
+    } catch {
+        [pscustomobject]@{ case = $case; error = $_.ToString(); samples = $samples.ToArray() } |
+            ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputDirectory ($case.name + '.failure.json'))
+        throw
     } finally {
         $process.Refresh()
         if (-not $process.HasExited) {

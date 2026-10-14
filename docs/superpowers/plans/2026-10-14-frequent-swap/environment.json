@@ -1,0 +1,14 @@
+{
+  "measured_at": "2026-10-14T12:40:55.8296602+08:00",
+  "commit": "0848a97c96a43ce53a5a2135fef6effac0470f62",
+  "binary_sha256": "242A2E32299DE8276C1A5D3E0C9D43EB82F2EDF7217F22749419B3EC4DC5B97F",
+  "cpu": {
+    "Name": "Intel(R) Core(TM) Ultra 9 285H",
+    "NumberOfCores": 16,
+    "NumberOfLogicalProcessors": 16
+  },
+  "logical_processors": 16,
+  "windows": "Microsoft Windows NT 10.0.26300.0",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "note": "Worktree probe changes not committed when measured; all test code is committed with evidence."
+}

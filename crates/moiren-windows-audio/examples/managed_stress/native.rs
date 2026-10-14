@@ -1,4 +1,4 @@
-use super::{options::Options, project};
+use super::{options::Options, project, swaps::ConfirmedSwaps};
 use anyhow::{Context, ensure};
 use moiren_core::protocol::ParamValue;
 use moiren_engine::{
@@ -131,6 +131,29 @@ fn close(host: EngineHost<f32>, counts: &mut Counts) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn collect_swap(
+    pending: &mut Option<(EditReceipt, Instant)>,
+    swaps: &mut Option<ConfirmedSwaps>,
+    snapshot: &HostSnapshot,
+    counts: &mut Counts,
+) -> anyhow::Result<()> {
+    if let Some((receipt, submitted)) = pending {
+        ensure!(
+            submitted.elapsed() < Duration::from_secs(10),
+            "swap timed out: {snapshot:?}"
+        );
+        if swaps
+            .as_mut()
+            .unwrap()
+            .observe(&receipt.outcome(), snapshot, submitted.elapsed())?
+        {
+            counts.edits_activated += 1;
+            *pending = None;
+        }
+    }
+    Ok(())
+}
+
 pub fn run(options: Options) -> anyhow::Result<()> {
     let built = project::build(options.nodes)?;
     let backend = Arc::new(WindowsBackend::new(Default::default())?);
@@ -146,16 +169,31 @@ pub fn run(options: Options) -> anyhow::Result<()> {
     let mut edits = Vec::with_capacity(128);
     let mut parameters = Vec::with_capacity(256);
     let mut counts = Counts::default();
+    let mut pending_swap = None;
+    let mut swaps = options
+        .confirmed_swaps
+        .then(|| ConfirmedSwaps::new(&initial))
+        .transpose()?;
+    let mut next_progress = 1;
     println!(
         "{}",
-        serde_json::json!({"event":"ready","pid":std::process::id(),"processors":options.nodes,"owner":initial.owner_generation})
+        serde_json::json!({"event":"ready","pid":std::process::id(),"processors":options.nodes,"owner":initial.owner_generation,"confirmed_swaps":options.confirmed_swaps})
     );
     while started.elapsed() < Duration::from_secs(u64::from(options.seconds)) {
         collect(&mut edits, &mut parameters, &mut counts)?;
+        collect_swap(
+            &mut pending_swap,
+            &mut swaps,
+            &observer.snapshot(),
+            &mut counts,
+        )?;
         let elapsed = started.elapsed().as_secs_f64();
         let due_edits = (elapsed * f64::from(options.edits_per_second)) as u64;
         let due_parameters = (elapsed * f64::from(options.parameters_per_second)) as u64;
         for _ in 0..due_edits.saturating_sub(edit_attempts).min(64) {
+            if options.confirmed_swaps && pending_swap.is_some() {
+                break;
+            }
             edit_attempts += 1;
             if edits.len() >= 128 {
                 counts.queue_backpressure += 1;
@@ -163,9 +201,9 @@ pub fn run(options: Options) -> anyhow::Result<()> {
             }
             let node = built.edited;
             let value = if edit_attempts.is_multiple_of(2) {
-                0.95
-            } else {
                 1.0
+            } else {
+                0.95
             };
             match control.edit(move |project| {
                 project
@@ -175,7 +213,11 @@ pub fn run(options: Options) -> anyhow::Result<()> {
             }) {
                 Ok(receipt) => {
                     counts.edit_submissions += 1;
-                    edits.push(receipt);
+                    if options.confirmed_swaps {
+                        pending_swap = Some((receipt, Instant::now()));
+                    } else {
+                        edits.push(receipt);
+                    }
                 }
                 Err(HostError::Capacity) => counts.queue_backpressure += 1,
                 Err(error) => return Err(error.into()),
@@ -211,7 +253,7 @@ pub fn run(options: Options) -> anyhow::Result<()> {
         }
         counts.max_pending_receipts = counts
             .max_pending_receipts
-            .max(edits.len() + parameters.len());
+            .max(edits.len() + parameters.len() + usize::from(pending_swap.is_some()));
         let snapshot = observer.snapshot();
         ensure!(
             snapshot.execution == ExecutionState::Running
@@ -241,13 +283,26 @@ pub fn run(options: Options) -> anyhow::Result<()> {
             progress_at.elapsed() < Duration::from_secs(2),
             "timeline stalled: {snapshot:?}"
         );
+        if options.confirmed_swaps && elapsed >= f64::from(next_progress) {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event":"progress", "seconds":elapsed,
+                    "swaps":swaps.as_ref().unwrap().report(elapsed).completed,
+                    "active_revision":snapshot.active_revision,"timeline_frame":last_frame,
+                })
+            );
+            next_progress += 1;
+        }
         thread::sleep(Duration::from_millis(2));
     }
     let drain_deadline = Instant::now() + Duration::from_secs(10);
     loop {
         collect(&mut edits, &mut parameters, &mut counts)?;
         let snapshot = observer.snapshot();
+        collect_swap(&mut pending_swap, &mut swaps, &snapshot, &mut counts)?;
         if edits.is_empty()
+            && pending_swap.is_none()
             && parameters.is_empty()
             && snapshot.active_revision == Some(snapshot.desired_revision)
         {
@@ -260,6 +315,23 @@ pub fn run(options: Options) -> anyhow::Result<()> {
         thread::sleep(Duration::from_millis(2));
     }
     let final_snapshot = observer.snapshot();
+    ensure!(
+        final_snapshot.owner_generation == initial.owner_generation
+            && final_snapshot.timeline.map(|timeline| timeline.epoch)
+                == initial.timeline.map(|timeline| timeline.epoch)
+            && final_snapshot.fault.is_none()
+            && final_snapshot.cleanup_error.is_none(),
+        "owner failed or restarted during drain: {final_snapshot:?}"
+    );
+    let swap_report = swaps
+        .as_ref()
+        .map(|swaps| swaps.report(started.elapsed().as_secs_f64()));
+    if let Some(report) = &swap_report {
+        ensure!(
+            report.completed == counts.edit_submissions,
+            "not every edit became a real swap"
+        );
+    }
     ensure!(
         counts.edit_submissions == counts.edits_activated + counts.edits_superseded,
         "edit receipt mismatch"
@@ -295,6 +367,11 @@ pub fn run(options: Options) -> anyhow::Result<()> {
             "event":"complete","processors":options.nodes,"seconds":options.seconds,
             "counts":counts,"active_revision":final_snapshot.active_revision,
             "desired_revision":final_snapshot.desired_revision,"native":native_report,
+            "confirmed_swaps":swap_report,
+            "initial_plan_revision":initial.plan_revision,"final_plan_revision":final_snapshot.plan_revision,
+            "initial_owner":initial.owner_generation,"final_owner":final_snapshot.owner_generation,
+            "initial_epoch":initial.timeline.map(|timeline| timeline.epoch),
+            "final_epoch":final_snapshot.timeline.map(|timeline| timeline.epoch),
         })
     );
     Ok(())
