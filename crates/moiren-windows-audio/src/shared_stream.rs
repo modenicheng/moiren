@@ -27,6 +27,7 @@ pub enum SharedInitializationApi {
 pub enum SharedFallbackReason {
     Client3Unavailable,
     CapabilityQueryUnsupported,
+    EnginePeriodLocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

@@ -6,8 +6,9 @@ use super::{
 use crate::owner::TaskMemory;
 use windows::{
     Win32::{
-        Foundation::{E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL},
+        Foundation::{E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL, E_POINTER},
         Media::Audio::{
+            AUDCLNT_E_ENGINE_FORMAT_LOCKED, AUDCLNT_E_ENGINE_PERIODICITY_LOCKED,
             AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioClient,
             IAudioClient3, WAVEFORMATEX,
         },
@@ -57,6 +58,9 @@ fn failure(
 trait Client3Api {
     fn capabilities(&self) -> Result<SharedPeriodCaps, Error>;
     fn initialize(&self, period: u32) -> Result<(), Error>;
+    fn current_period(&self) -> Result<u32, Error> {
+        Err(Error::from_hresult(E_NOTIMPL))
+    }
 }
 
 struct NativeClient3<'client> {
@@ -99,6 +103,33 @@ impl Client3Api for NativeClient3<'_> {
             )
         }
     }
+
+    fn current_period(&self) -> Result<u32, Error> {
+        let mut format = std::ptr::null_mut();
+        let mut period = 0;
+        let queried = unsafe {
+            self.client
+                .GetCurrentSharedModeEnginePeriod(&mut format, &mut period)
+        };
+        let _format = TaskMemory(format);
+        queried?;
+        if format.is_null() {
+            return Err(Error::from_hresult(E_POINTER));
+        }
+        // Both descriptors are owner-held COM allocations. A period-only
+        // renegotiation must not silently reinterpret a different engine format.
+        let same_format = unsafe {
+            let expected_size = size_of::<WAVEFORMATEX>() + usize::from((*self.format).cbSize);
+            let current_size = size_of::<WAVEFORMATEX>() + usize::from((*format).cbSize);
+            expected_size == current_size
+                && std::slice::from_raw_parts(self.format.cast::<u8>(), expected_size)
+                    == std::slice::from_raw_parts(format.cast::<u8>(), current_size)
+        };
+        if !same_format {
+            return Err(Error::from_hresult(AUDCLNT_E_ENGINE_FORMAT_LOCKED));
+        }
+        Ok(period)
+    }
 }
 
 fn initialize_client3(
@@ -119,10 +150,33 @@ fn initialize_client3(
         )
     })?;
     report.requested_period_frames = Some(period);
-    // Never retry an attempted Initialize on this client. Configuration and
-    // device failures stay visible; compatibility fallback precedes Initialize.
-    api.initialize(period)
-        .map_err(|error| failure(SharedInitializationStage::Initialization, error, report))?;
+    if let Err(error) = api.initialize(period) {
+        let locked = error.code() == AUDCLNT_E_ENGINE_PERIODICITY_LOCKED;
+        let initial_failure = failure(SharedInitializationStage::Initialization, error, report);
+        if !locked {
+            return Err(initial_failure);
+        }
+        let current = match api.current_period() {
+            Ok(current) => current,
+            Err(error) => {
+                report.actual_period_hresult = Some(error.code().0);
+                return Err(initial_failure);
+            }
+        };
+        if current == period
+            || current < caps.min_frames
+            || current > caps.max_frames
+            || !current.is_multiple_of(caps.fundamental_frames)
+        {
+            return Err(initial_failure);
+        }
+        // PERIODICITY_LOCKED did not initialize a stream. Retry exactly once
+        // with the matching format/current engine period; other failures remain terminal.
+        api.initialize(current)
+            .map_err(|error| failure(SharedInitializationStage::Initialization, error, report))?;
+        report.actual_period_frames = Some(current);
+        report.fallback_reason = Some(SharedFallbackReason::EnginePeriodLocked);
+    }
     report.initialization_api = Some(SharedInitializationApi::Client3);
     Ok(())
 }

@@ -10,6 +10,7 @@ pub enum MonitorInitializationApi {
 pub enum MonitorPeriodFallback {
     Client3Unavailable,
     CapabilityQueryUnsupported,
+    EnginePeriodLocked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +113,9 @@ impl MonitorPreparedDiagnostics {
                         }
                         SharedFallbackReason::CapabilityQueryUnsupported => {
                             MonitorPeriodFallback::CapabilityQueryUnsupported
+                        }
+                        SharedFallbackReason::EnginePeriodLocked => {
+                            MonitorPeriodFallback::EnginePeriodLocked
                         }
                     }),
                 }

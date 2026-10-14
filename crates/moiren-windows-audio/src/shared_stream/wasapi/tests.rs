@@ -9,6 +9,9 @@ struct FakeClient3 {
     caps: Cell<SharedPeriodCaps>,
     query_error: Option<HRESULT>,
     initialization_error: Option<HRESULT>,
+    retry_error: Option<HRESULT>,
+    current_error: Option<HRESULT>,
+    current_period: Cell<u32>,
     operations: RefCell<Vec<&'static str>>,
     requested: Cell<Option<u32>>,
 }
@@ -24,6 +27,9 @@ impl FakeClient3 {
             }),
             query_error: None,
             initialization_error: None,
+            retry_error: None,
+            current_error: None,
+            current_period: Cell::new(480),
             operations: RefCell::new(Vec::new()),
             requested: Cell::new(None),
         }
@@ -42,8 +48,108 @@ impl Client3Api for FakeClient3 {
     fn initialize(&self, period: u32) -> Result<(), Error> {
         self.operations.borrow_mut().push("initialize");
         self.requested.set(Some(period));
+        if self.initialization_error
+            == Some(windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_PERIODICITY_LOCKED)
+            && self
+                .operations
+                .borrow()
+                .iter()
+                .filter(|operation| **operation == "initialize")
+                .count()
+                > 1
+        {
+            return self
+                .retry_error
+                .map_or(Ok(()), |code| Err(Error::from_hresult(code)));
+        }
         self.initialization_error
             .map_or(Ok(()), |code| Err(Error::from_hresult(code)))
+    }
+    fn current_period(&self) -> Result<u32, Error> {
+        self.operations.borrow_mut().push("current_period");
+        self.current_error
+            .map_or(Ok(self.current_period.get()), |code| {
+                Err(Error::from_hresult(code))
+            })
+    }
+}
+
+#[test]
+fn period_locked_negotiates_the_existing_engine_period_once() {
+    let mut api = FakeClient3::new();
+    api.initialization_error =
+        Some(windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_PERIODICITY_LOCKED);
+    let mut report = SharedPeriodReport::default();
+    initialize_client3(&api, 48_000, SharedPeriodPolicy::default(), &mut report).unwrap();
+    assert_eq!(
+        *api.operations.borrow(),
+        ["capabilities", "initialize", "current_period", "initialize"]
+    );
+    assert_eq!(report.requested_period_frames, Some(240));
+    assert_eq!(report.actual_period_frames, Some(480));
+    assert_eq!(api.requested.get(), Some(480));
+    assert_eq!(
+        report.initialization_api,
+        Some(SharedInitializationApi::Client3)
+    );
+}
+
+#[test]
+fn period_locked_never_retries_an_invalid_or_unchanged_current_period() {
+    for period in [0, 240, 481, 500] {
+        let mut api = FakeClient3::new();
+        api.initialization_error =
+            Some(windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_PERIODICITY_LOCKED);
+        api.current_period.set(period);
+        let mut report = SharedPeriodReport::default();
+        assert!(
+            initialize_client3(&api, 48_000, SharedPeriodPolicy::default(), &mut report).is_err()
+        );
+        assert_eq!(
+            *api.operations.borrow(),
+            ["capabilities", "initialize", "current_period"]
+        );
+        assert!(report.initialization_api.is_none());
+    }
+}
+
+#[test]
+fn period_locked_retry_failure_preserves_the_actual_device_error() {
+    let mut api = FakeClient3::new();
+    api.initialization_error =
+        Some(windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_PERIODICITY_LOCKED);
+    api.retry_error = Some(AUDCLNT_E_DEVICE_INVALIDATED);
+    let mut report = SharedPeriodReport::default();
+    let failure =
+        initialize_client3(&api, 48_000, SharedPeriodPolicy::default(), &mut report).unwrap_err();
+    assert_eq!(failure.error.code(), AUDCLNT_E_DEVICE_INVALIDATED);
+    assert!(report.initialization_api.is_none());
+    assert!(report.fallback_reason.is_none());
+}
+
+#[test]
+fn locked_period_query_or_format_failure_never_retries_initialization() {
+    for query_error in [
+        E_NOTIMPL,
+        windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_FORMAT_LOCKED,
+    ] {
+        let mut api = FakeClient3::new();
+        api.initialization_error =
+            Some(windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_PERIODICITY_LOCKED);
+        api.current_error = Some(query_error);
+        let mut report = SharedPeriodReport::default();
+        let failure = initialize_client3(&api, 48_000, SharedPeriodPolicy::default(), &mut report)
+            .unwrap_err();
+        assert_eq!(
+            failure.error.code(),
+            windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_PERIODICITY_LOCKED
+        );
+        assert_eq!(report.actual_period_hresult, Some(query_error.0));
+        assert_eq!(
+            *api.operations.borrow(),
+            ["capabilities", "initialize", "current_period"]
+        );
+        assert!(report.initialization_api.is_none());
     }
 }
 
