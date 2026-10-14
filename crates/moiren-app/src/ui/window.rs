@@ -114,6 +114,7 @@ pub struct StudioShell {
     state: Entity<UiState>,
     presentation: WindowPresentation,
     camera: Camera,
+    canvas_size: Option<(f32, f32)>,
     selected_node: Option<String>,
     /// Screen-space anchor of an active pan drag (window coordinates).
     pan_grab: Option<(f32, f32)>,
@@ -151,6 +152,7 @@ impl StudioShell {
             state,
             presentation: WindowPresentation::default(),
             camera: Camera::default(),
+            canvas_size: None,
             selected_node: None,
             pan_grab: None,
             tray,
@@ -522,11 +524,10 @@ fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShell>) -> AnyE
     // Canvas view with interaction plumbed to the shell entity.
     let on_zoom = {
         let this = this.clone();
-        move |(factor, _anchor, _bounds): (f32, Point<Pixels>, Bounds<Pixels>),
-              _window: &mut Window,
-              cx: &mut App| {
+        move |(factor, anchor): (f32, Point<Pixels>), _window: &mut Window, cx: &mut App| {
             this.update(cx, |shell, cx| {
-                shell.camera.zoom_by(factor, (590., 380.));
+                let anchor = (f32::from(anchor.x), f32::from(anchor.y));
+                shell.camera.zoom_by(factor, anchor);
                 cx.notify();
             });
         }
@@ -583,15 +584,16 @@ fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShell>) -> AnyE
         let this = this.clone();
         move |(dx, dy): (f32, f32), _window: &mut Window, cx: &mut App| {
             this.update(cx, |shell, cx| {
-                shell.camera.pan_by(-dx, -dy);
+                shell.camera.pan_by(dx, dy);
                 cx.notify();
             });
         }
     };
     let on_camera_fit = {
         let this = this.clone();
-        move |fitted: &Camera, _window: &mut Window, cx: &mut App| {
+        move |fitted: &Camera, canvas: Size<Pixels>, _window: &mut Window, cx: &mut App| {
             this.update(cx, |shell, cx| {
+                shell.canvas_size = Some((f32::from(canvas.width), f32::from(canvas.height)));
                 if !shell.camera.adjusted {
                     shell.camera = *fitted;
                     cx.notify();
@@ -604,12 +606,12 @@ fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShell>) -> AnyE
         camera,
         selected.as_deref(),
         pages::graph_canvas_view::CanvasCallbacks {
-            on_background_down: Box::new(on_bg_down),
+            on_background_down: std::rc::Rc::new(on_bg_down),
             on_canvas_mouse_move: Box::new(on_bg_move),
             on_zoom: std::rc::Rc::new(on_zoom),
             on_pan: Box::new(on_scroll_pan),
             on_select_node: std::rc::Rc::new(on_select_node),
-            on_camera_fit: Box::new(on_camera_fit),
+            on_camera_fit: std::rc::Rc::new(on_camera_fit),
         },
     );
 
@@ -791,7 +793,9 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
                     let this = this.clone();
                     move |_, _, cx| {
                         this.update(cx, |shell, cx| {
-                            shell.camera.zoom_by(1.0 / 1.05, (590., 380.));
+                            shell
+                                .camera
+                                .zoom_around_center(shell.canvas_size, 1.0 / 1.05);
                             cx.notify();
                         });
                     }
@@ -834,7 +838,7 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
                     let this = this.clone();
                     move |_, _, cx| {
                         this.update(cx, |shell, cx| {
-                            shell.camera.zoom_by(1.05, (590., 380.));
+                            shell.camera.zoom_around_center(shell.canvas_size, 1.05);
                             cx.notify();
                         });
                     }

@@ -48,6 +48,11 @@ impl Camera {
         self.pan_y += dy;
         self.adjusted = true;
     }
+    /// Toolbar zoom buttons have no cursor; keep the canvas center fixed.
+    pub fn zoom_around_center(&mut self, canvas: Option<(f32, f32)>, factor: f32) {
+        let (ax, ay) = canvas.map_or((0., 0.), |(w, h)| (w / 2., h / 2.));
+        self.zoom_by(factor, (ax, ay));
+    }
     /// Fit the graph into the canvas with gutters. Returns fit geometry.
     pub fn fit(&mut self, canvas: Size<Pixels>, graph: Bounds<f32>) {
         let (cw, ch) = (f32::from(canvas.width), f32::from(canvas.height));
