@@ -27,7 +27,8 @@ impl<S: ProcessingSample> Supervisor<S> {
                         continue;
                     }
                     let previous = self.project.clone();
-                    let result = catch_unwind(AssertUnwindSafe(|| self.project.edit(edit)));
+                    let result =
+                        catch_unwind(AssertUnwindSafe(|| self.project.edit_with_result(edit)));
                     match result {
                         Ok(Ok(accept_result)) => {
                             if let Err(error) = self.config.validate_project(&self.project) {

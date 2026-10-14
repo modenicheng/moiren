@@ -34,6 +34,14 @@ fn project_transaction_rolls_back_invalid_candidate() {
 }
 
 #[test]
+fn project_unit_edit_keeps_error_only_callback_type_inference() {
+    let mut project = EngineProject::default();
+    let result = project.edit(|_| Err(ProjectError::InvalidProcessing));
+    assert_eq!(result.unwrap_err(), ProjectError::InvalidProcessing);
+    assert_eq!(project, EngineProject::default());
+}
+
+#[test]
 fn project_parameter_reads_resolve_explicit_values_over_configuration_defaults() {
     use moiren_core::protocol::ParamValue;
     use moiren_engine::{

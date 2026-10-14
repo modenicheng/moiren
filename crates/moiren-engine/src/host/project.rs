@@ -202,7 +202,16 @@ impl EngineProject {
             .any(|config| matches!(config, NodeConfig::Output(_)))
     }
 
-    pub fn edit<T>(
+    pub fn edit(
+        &mut self,
+        edit: impl FnOnce(&mut Self) -> Result<(), ProjectError>,
+    ) -> Result<(), ProjectError> {
+        self.edit_with_result(edit)
+    }
+
+    /// Return a control-side result only after the entire candidate validates.
+    /// The unit-result `edit` entry point retains its original inference rules.
+    pub fn edit_with_result<T>(
         &mut self,
         edit: impl FnOnce(&mut Self) -> Result<T, ProjectError>,
     ) -> Result<T, ProjectError> {
