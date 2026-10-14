@@ -8,6 +8,8 @@
 
 use gpui_kit::{Hsla, hsla};
 
+pub mod controls;
+
 // --- Accents ---------------------------------------------------------------
 pub const PRIMARY: Hsla = hsla(0.711640, 0.496063, 0.750980, 1.0);
 pub const PRIMARY_HOVER: Hsla = hsla(0.715686, 0.525773, 0.809804, 1.0);

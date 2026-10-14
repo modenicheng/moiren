@@ -10,7 +10,9 @@ use super::app_view;
 use super::pages::{self, Page};
 use super::state::UiState;
 use super::theme;
-use super::widgets::{WorkspaceTab, window_button};
+use super::widgets::action_assets::{ActionAssets, register_fonts};
+use super::widgets::actions::{ActionButton, ButtonVariant};
+use super::widgets::navigation::{WindowAction, WindowControlButton, WorkspaceTab};
 use crate::service::{AppHandle, AppRequest, ServiceRuntime, SessionPhase, start_service};
 use pages::graph_canvas::Camera;
 
@@ -67,45 +69,48 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
     let initial = handle
         .try_snapshot()
         .expect("service publishes its initial snapshot at mailbox creation");
-    gpui_kit::application().run(move |cx| {
-        gpui_kit::init(cx);
+    gpui_kit::application()
+        .with_assets(ActionAssets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            register_fonts(cx).expect("register embedded Inter font");
 
-        let tray = super::tray::AppTray::new().ok();
+            let tray = super::tray::AppTray::new().ok();
 
-        let state = cx.new(|_| UiState::new(handle.clone(), initial));
-        state.update(cx, |s, _| s.dispatch(AppRequest::RefreshCatalog));
+            let state = cx.new(|_| UiState::new(handle.clone(), initial));
+            state.update(cx, |s, _| s.dispatch(AppRequest::RefreshCatalog));
 
-        let (window_handle, window_entity) = gpui_kit::open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::centered(size(px(1180.), px(760.)), cx)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(SharedString::from("Moiren")),
-                    appears_transparent: true,
+            let (window_handle, window_entity) = gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::centered(size(px(1180.), px(760.)), cx)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some(SharedString::from("Moiren")),
+                        appears_transparent: true,
+                        ..Default::default()
+                    }),
+                    window_min_size: Some(size(px(940.), px(600.))),
                     ..Default::default()
-                }),
-                window_min_size: Some(size(px(940.), px(600.))),
-                ..Default::default()
-            },
-            cx,
-            |window, cx| cx.new(|cx| StudioShell::new(state, window, cx, tray)),
-        )
-        .expect("failed to open main window");
+                },
+                cx,
+                |window, cx| cx.new(|cx| StudioShell::new(state, window, cx, tray)),
+            )
+            .expect("failed to open main window");
 
-        // Closing the window hides to the tray instead of quitting.
-        window_handle
-            .update(cx, |_, window, cx| {
-                window.on_window_should_close(cx, |window, _cx| {
-                    // Removing the window hides it; the app stays alive so the
-                    // tray can re-show it.
-                    window.remove_window();
-                    true
-                });
-            })
-            .ok();
+            // Closing the window hides to the tray instead of quitting.
+            window_handle
+                .update(cx, |_, window, cx| {
+                    window.on_window_should_close(cx, |window, _cx| {
+                        // Removing the window hides it; the app stays alive so the
+                        // tray can re-show it.
+                        window.remove_window();
+                        true
+                    });
+                })
+                .ok();
 
-        window_entity.update(cx, |shell, cx| shell.spawn_poll(cx));
-        cx.on_action::<app_view::Quit>(|_, cx| cx.quit());
-    });
+            window_entity.update(cx, |shell, cx| shell.spawn_poll(cx));
+            cx.on_action::<app_view::Quit>(|_, cx| cx.quit());
+        });
     Ok(())
 }
 
@@ -442,12 +447,14 @@ fn render_toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoEl
         // Center: workspace tabs.
         .child(
             div()
+                .id("workspace-tabs")
+                .role(Role::TabList)
                 .flex()
                 .flex_none()
                 .h_full()
                 .items_center()
                 .child(
-                    WorkspaceTab::new("tab-graph", "Graph", "route")
+                    WorkspaceTab::new("tab-graph", "Graph")
                         .active(shell.presentation.page == Page::Graph)
                         .on_click({
                             let this = this.clone();
@@ -457,7 +464,7 @@ fn render_toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoEl
                         }),
                 )
                 .child(
-                    WorkspaceTab::new("tab-mixer", "Mixer", "wave")
+                    WorkspaceTab::new("tab-mixer", "Mixer")
                         .active(shell.presentation.page == Page::Mixer)
                         .on_click({
                             let this = this.clone();
@@ -466,8 +473,8 @@ fn render_toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoEl
                             }
                         }),
                 )
-                .child(WorkspaceTab::new("tab-matrix", "Matrix", "grid").enabled(false))
-                .child(WorkspaceTab::new("tab-devices", "Devices", "devices").enabled(false)),
+                .child(WorkspaceTab::new("tab-matrix", "Matrix").enabled(false))
+                .child(WorkspaceTab::new("tab-devices", "Devices").enabled(false)),
         )
         .child(
             // Right cluster: engine status + window buttons.
@@ -493,17 +500,20 @@ fn render_toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoEl
                                 .child(status_label),
                         ),
                 )
-                .child(window_button(
-                    "win-min",
-                    "minimize",
-                    false,
-                    |_, window, _| {
-                        window.minimize_window();
-                    },
-                ))
-                .child(window_button("win-close", "close", true, |_, _, cx| {
-                    cx.quit();
-                })),
+                .child(
+                    WindowControlButton::new("win-min", WindowAction::Minimize).on_click(
+                        |_, window, _| {
+                            window.minimize_window();
+                        },
+                    ),
+                )
+                .child(
+                    WindowControlButton::new("win-close", WindowAction::Close).on_click(
+                        |_, _, cx| {
+                            cx.quit();
+                        },
+                    ),
+                ),
         )
 }
 
@@ -640,7 +650,7 @@ fn session_io_panel(
     cx: &Context<StudioShell>,
     this: &Entity<StudioShell>,
 ) -> impl IntoElement {
-    use pages::session_setup::{PickerRow, StudioButton, section_heading};
+    use pages::session_setup::{PickerRow, section_heading};
 
     let snapshot = shell.state.read(cx).snapshot.clone();
     let running = snapshot.phase == SessionPhase::Running;
@@ -737,9 +747,9 @@ fn session_io_panel(
                 .disabled(running || snapshot.catalog.outputs.is_empty())
                 .on_click(cycle_output),
         )
-        .child(StudioButton::new("btn-refresh", "Refresh devices").on_click(refresh))
+        .child(ActionButton::new("btn-refresh", "Refresh devices").on_click(refresh))
         .child(
-            StudioButton::new(
+            ActionButton::new(
                 "btn-start-stop",
                 if running {
                     "Stop Session"
@@ -747,7 +757,11 @@ fn session_io_panel(
                     "Start Monitor"
                 },
             )
-            .active(running)
+            .variant(if running {
+                ButtonVariant::Danger
+            } else {
+                ButtonVariant::Primary
+            })
             .disabled(snapshot.catalog.outputs.is_empty())
             .on_click(start_stop),
         )

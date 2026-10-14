@@ -230,7 +230,7 @@ Geometry：`radius/none = 0`、`radius/sm = 4`、`radius/md = 6`、`radius/lg = 
 
 ### 6.1 公共组件
 
-已有组件适用时使用实例和属性覆盖，保持与母版的关系。Figma 与 Slint 都应遵守这个原则。
+已有组件适用时使用实例和属性覆盖，保持与母版的关系。Figma 与 gpui 实现都应遵守这个原则。
 
 | 需求 | Figma 组件 / 集合 | 当前 ID |
 | --- | --- | --- |
@@ -245,6 +245,8 @@ Geometry：`radius/none = 0`、`radius/sm = 4`、`radius/md = 6`、`radius/lg = 
 | 面板与抽屉 | `Dock Panel` / `Panel Header` / `Side Drawer` / `Bottom Drawer` | `81:2402` / `81:2250` / `81:2669` / `82:2670` |
 
 标准按钮包括 Small / Medium / Large，以及 Default、Hover、Pressed、Focus、Disabled 等适用变体。选择状态、错误状态、Tooltip、Menu、Dialog、Toast、Empty / Loading / Error 等使用各自公共组件。
+
+2026-10-14 首批源码实现：Filled / Quiet、Standard / Toggle Icon Button、Window Button、Workspace Tab 已移植为 gpui 公共组件，入口由 `moiren_app::ui` 导出。令牌位于 [theme/controls.rs](crates/moiren-app/src/ui/theme/controls.rs)，原生预览与状态边界见 [第一批 gpui 公共组件](docs/designs/12-gpui-ready-action-components.md)。其他组件仍按当前母版逐批实现。
 
 - 「Show in Graph」使用 `Button / Quiet` 实例；「Apply on next start」使用 `Button / Filled` 实例。
 - 替换时同时核对标签、图标、尺寸、对齐和回调。母版默认的 Plus 图标不能无条件保留到所有操作上；图标必须符合操作语义。

@@ -1,6 +1,7 @@
 //! gpui-kit presentation layer. The service runtime owns audio; this module
 //! only projects snapshots into windows and dispatches [`AppRequest`]s back.
 mod app_view;
+mod component_gallery;
 mod pages;
 mod scroll_policy;
 mod state;
@@ -13,6 +14,13 @@ mod widgets;
 mod window;
 
 pub mod signals;
+pub use component_gallery::run_component_preview;
+
+pub use widgets::action_assets::ActionIcon;
+pub use widgets::actions::{
+    ActionButton, ButtonVariant, ControlSize, Density, IconButton, IconIntent, ToggleIconButton,
+};
+pub use widgets::navigation::{WindowAction, WindowControlButton, WorkspaceTab};
 
 pub use pages::Page;
 pub use window::PageCell;
