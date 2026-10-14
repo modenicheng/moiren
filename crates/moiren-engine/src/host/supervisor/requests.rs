@@ -125,11 +125,6 @@ impl<S: ProcessingSample> Supervisor<S> {
             }
         }
         self.router.prune(&self.project);
-        *self
-            .shared
-            .project
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = self.project.clone();
     }
 
     pub(super) fn send_values(&mut self, previous: &EngineProject) {

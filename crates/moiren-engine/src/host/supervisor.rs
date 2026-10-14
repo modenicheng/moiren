@@ -100,9 +100,11 @@ pub(crate) fn spawn<S: ProcessingSample>(
         }
     };
     let project = shared
-        .project
+        .snapshot
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
+        .desired
+        .as_ref()
         .clone();
     let supervisor = Supervisor {
         config,
@@ -250,22 +252,21 @@ impl<S: ProcessingSample> Supervisor<S> {
         drop(self.cleanup);
         let _ = self.cleanup_worker.join();
         drop(self.backend);
-        *self
-            .shared
-            .project
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = self.project;
         let mut snapshot = self
             .shared
             .snapshot
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        snapshot.host = HostState::Closed;
-        snapshot.execution = ExecutionState::Dormant;
-        snapshot.active_revision = None;
-        snapshot.plan_revision = None;
-        snapshot.timeline = None;
-        snapshot.update = UpdateState::Idle;
+        if snapshot.desired.as_ref() != &self.project {
+            snapshot.desired = Arc::new(self.project);
+        }
+        snapshot.active = None;
+        snapshot.state.host = HostState::Closed;
+        snapshot.state.execution = ExecutionState::Dormant;
+        snapshot.state.active_revision = None;
+        snapshot.state.plan_revision = None;
+        snapshot.state.timeline = None;
+        snapshot.state.update = UpdateState::Idle;
     }
     fn reclaimed(&mut self) {
         while let Ok(result) = self.reclaimed.try_recv() {

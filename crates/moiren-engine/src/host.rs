@@ -6,12 +6,14 @@ mod preparation;
 mod project;
 mod retirement;
 mod signals;
+mod snapshot;
 mod supervisor;
 
 pub use backend::*;
 pub use model::*;
 pub use project::*;
 pub use signals::ManagedSignalSubscription;
+pub use snapshot::*;
 
 use crate::sample::ProcessingSample;
 use moiren_core::protocol::ParamValue;
@@ -83,8 +85,7 @@ pub(crate) enum Command {
 }
 pub(crate) struct Shared {
     closing: AtomicBool,
-    snapshot: Mutex<HostSnapshot>,
-    project: Mutex<EngineProject>,
+    snapshot: Mutex<ProjectSnapshot>,
     wake_lock: Mutex<()>,
     wake: Condvar,
     permits: Arc<AtomicUsize>,
@@ -137,20 +138,24 @@ impl<S: ProcessingSample> EngineHost<S> {
         let signals = Arc::new(signals::SignalHub::new(config.signals).map_err(HostError::Worker)?);
         let shared = Arc::new(Shared {
             closing: AtomicBool::new(false),
-            snapshot: Mutex::new(HostSnapshot {
-                host: HostState::Opening,
-                execution: ExecutionState::Dormant,
-                desired_revision: 1,
-                active_revision: None,
-                plan_revision: None,
-                owner_generation: 0,
-                resource_generation: 0,
-                timeline: None,
-                update: UpdateState::Idle,
-                fault: None,
-                cleanup_error: None,
+            snapshot: Mutex::new(ProjectSnapshot {
+                host_id: HostId::allocate()?,
+                desired: Arc::new(project),
+                active: None,
+                state: HostSnapshot {
+                    host: HostState::Opening,
+                    execution: ExecutionState::Dormant,
+                    desired_revision: 1,
+                    active_revision: None,
+                    plan_revision: None,
+                    owner_generation: 0,
+                    resource_generation: 0,
+                    timeline: None,
+                    update: UpdateState::Idle,
+                    fault: None,
+                    cleanup_error: None,
+                },
             }),
-            project: Mutex::new(project),
             wake_lock: Mutex::new(()),
             wake: Condvar::new(),
             permits: Arc::new(AtomicUsize::new(0)),
@@ -282,18 +287,31 @@ pub struct EngineObserver {
     shared: Arc<Shared>,
 }
 impl EngineObserver {
-    pub fn snapshot(&self) -> HostSnapshot {
+    /// Read project content and its matching runtime metadata in one operation.
+    /// Separate calls to `project()` and `snapshot()` can observe different
+    /// publications even though each call is individually consistent.
+    pub fn read(&self) -> ProjectSnapshot {
         self.shared
             .snapshot
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone()
     }
-    pub fn project(&self) -> EngineProject {
+    pub fn snapshot(&self) -> HostSnapshot {
         self.shared
-            .project
+            .snapshot
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
+            .state
+            .clone()
+    }
+    pub fn project(&self) -> EngineProject {
+        self.shared
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .desired
+            .as_ref()
             .clone()
     }
     pub fn subscribe_compressor(

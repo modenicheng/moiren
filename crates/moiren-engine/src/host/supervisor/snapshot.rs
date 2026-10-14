@@ -34,11 +34,25 @@ impl<S: ProcessingSample> Supervisor<S> {
                 .timeline()
                 .filter(|timeline| (timeline.revision, timeline.epoch) == active.control.identity())
         });
-        *self
+        let mut snapshot = self
             .shared
             .snapshot
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = HostSnapshot {
+            .unwrap_or_else(|poison| poison.into_inner());
+        // Publish both projects and metadata while holding the same lock. Arc
+        // reuse keeps frequent timeline reads from copying an unchanged graph.
+        if snapshot.desired.as_ref() != &self.project {
+            snapshot.desired = Arc::new(self.project.clone());
+        }
+        snapshot.active = active.map(|active| {
+            snapshot
+                .active
+                .as_ref()
+                .filter(|project| project.as_ref() == &active.project)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(active.project.clone()))
+        });
+        snapshot.state = HostSnapshot {
             host: if closing {
                 HostState::Closing
             } else {
