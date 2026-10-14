@@ -8,9 +8,9 @@ Moiren is a Rust 2024 workspace for Windows real-time audio:
 - `crates/moiren-engine`: DSP, graph compilation, buffers, and runtime execution.
 - `crates/moiren-signal`: typed, bounded Latest/Stream signals.
 - `crates/moiren-windows-audio`: WASAPI capture/render, clock adaptation, and probes.
-- `crates/moiren-app`: application service, CLI, and Slint desktop UI.
+- `crates/moiren-app`: application service, CLI, and gpui desktop UI.
 
-Each crate uses `src/` for sources, `tests/` for integration tests, and optional `examples/` for demonstrations. Slint components/icons live in `crates/moiren-app/ui/`; architecture notes in `docs/`; shared logos in `assets/logos/`.
+Each crate uses `src/` for sources, `tests/` for integration tests, and optional `examples/` for demonstrations. The desktop UI is gpui-kit (Rust, no markup language); UI code lives in `crates/moiren-app/src/ui/` with Tabler icon SVGs under `crates/moiren-app/assets/icons/`; architecture notes in `docs/`; shared logos in `assets/logos/`.
 
 ## Build, Test, and Development Commands
 
@@ -22,11 +22,12 @@ Run from the root using the stable toolchain in `rust-toolchain.toml`:
 - `cargo fmt --all -- --check`: verify formatting; omit `--check` to format.
 - `cargo clippy --locked --workspace --all-targets -- -D warnings`: enforce clean lints.
 - `cargo run --locked -p moiren-app`: launch the desktop UI.
+- `cargo test --locked -p moiren-app --features gpui-test`: run the headless UI acceptance tests.
 - `cargo run --locked -p moiren-app -- --gain 0.25`: run the offline audio demo.
 
 ## Coding Style & Naming Conventions
 
-Use four-space indentation and rustfmt defaults. Use `snake_case` for modules/functions, `PascalCase` for types, and `SCREAMING_SNAKE_CASE` for constants. Split modules by responsibility. Explain non-obvious unsafe, ownership, COM, and real-time constraints. Follow existing Slint component/theme patterns.
+Use four-space indentation and rustfmt defaults. Use `snake_case` for modules/functions, `PascalCase` for types, and `SCREAMING_SNAKE_CASE` for constants. Split modules by responsibility. Explain non-obvious unsafe, ownership, COM, and real-time constraints. Follow the existing gpui component/theme patterns in `src/ui/` (RenderOnce components, `#[derive(IntoElement)]`, `theme` tokens).
 
 ## Testing Guidelines
 

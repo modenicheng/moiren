@@ -100,3 +100,25 @@
 - zed issue #55470（GPL 污染仅 git main 路径）；Zed Windows GA 博客（D3D11 一等公民）。
 - 第三方生态报告 GoldStrikeArch/rust-gui-desktop-ecosystem-state `03-gpui.md`（版本断崖、AccessKit 时间线、gpui-kit 生态位）。
 - 本仓库：`crates/moiren-app/ui/**`、`crates/moiren-app/src/ui/**`（行数、机制定位）。
+
+
+---
+
+## 迁移执行记录（2026-10-14，本次会话完成）
+
+依赖路线采用 **gpui-kit = 0.7.3（crates.io 单一依赖）**，未走 getting-started 的 git 依赖块——该 Install 块与仓库实际状态矛盾（workspace 钉 gpui-pre 0.3.9 快照，git zed gpui 类型冲突），installation.md 才是权威。许可证核验：gpui-pre 0.3.9 依赖树无 ztracing/zlog，Apache-2.0 干净。
+
+已落地（提交 ea42434…9be85e4）：
+
+- **地基**：Slint 全移除（依赖/build.rs/ui/*.slint/bindings）；`UiState` entity 33ms 轮询 `AppHandle::try_snapshot` 驱动重绘；服务桥接语义完整保留。
+- **UI**：theme.rs 令牌全量移植（Graph 深色、无绿色约束）；studio 壳（工具栏/工作区标签/错误条/引擎状态栏）；Graph 画布（网格 + 填充多边形贝塞尔连线——gpui Path 无 stroke-width + 绝对定位节点卡片 + 自动 fit + wheel/pinch zoom + 拖拽 pan）；电平表/旋钮自绘（270° 弧带）；Mixer 页；session I/O 左栏（输出选择/刷新/Start-Stop，含 440Hz tone SessionSpec）；tray-icon 系统托盘（Show/Stop/Exit + 关闭到托盘）。
+- **触摸板**：Win32 subclass（RegisterTouchpadThread ordinal 2688）+ WM_POINTER 转发 + MK_CONTROL pinch 守卫；scroll_policy pan/zoom 分类（连续像素 delta=pan，离散/ctrl=zoom）；gpui 原生 PinchEvent 驱动 pinch_zoom_factor；pan grab 无按钮自动释放（触摸板轻点不再粘连）。
+- **测试**：`gpui-test` feature 转发 gpui-kit/test-support（additive）；cocoa/unicode-properties lockfile pin 解决 fast 链版本冲突；3 个 headless 验收测试（真实渲染 + find/click + 页面切换）。测试文件必须显式 import（glob 会遮蔽 `#[test]` 引发宏递归）。
+- **工作区**：build/fmt/test/clippy(--all-targets) 全绿。
+
+遗留（后续 PR）：
+- NodeLibrary/ConnectionInspector 完整面板（现为简化 session 栏）
+- 响应式断点（<1100/<1280 折叠）与 flyout
+- 电平表实信号接入（VisibleSignal 订阅管线已保留在 signals.rs）
+- 旋钮拖拽调参（现为只读显示）
+- muda 菜单句柄细化（Stop 项 enablement 已接）
