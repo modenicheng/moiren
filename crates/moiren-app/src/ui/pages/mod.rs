@@ -116,7 +116,7 @@ pub fn world_from_snapshot(snapshot: &Arc<AppSnapshot>) -> Arc<CanvasWorld> {
 }
 
 /// Engine status bar, ported from EngineStatusbar.
-pub fn engine_statusbar(state: &UiState) -> impl IntoElement {
+pub fn engine_statusbar(state: &UiState) -> gpui_kit::Stateful<gpui_kit::Div> {
     let active = state.snapshot.phase == crate::service::SessionPhase::Running;
     let phase_color = if active {
         theme::PRIMARY

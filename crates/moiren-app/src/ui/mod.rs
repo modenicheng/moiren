@@ -15,6 +15,9 @@ mod window;
 pub mod signals;
 
 pub use pages::Page;
+pub use window::PageCell;
+#[cfg(feature = "gpui-test")]
+pub use window::shell_for_tests;
 /// 32x32 RGBA tray/application icon: violet rounded square on dark.
 /// Generated in code so the binary stays asset-free for the tray (the real
 /// logo lands with the branding pass).

@@ -239,7 +239,7 @@ type ZoomFn = dyn Fn((f32, Point<Pixels>, Bounds<Pixels>), &mut Window, &mut App
 /// Canvas interaction callbacks, owned by the parent view.
 pub struct CanvasCallbacks {
     pub on_background_down: WindowAppFn<(MouseDownEvent, Bounds<Pixels>)>,
-    pub on_canvas_mouse_move: WindowAppFn<(Point<Pixels>, Bounds<Pixels>)>,
+    pub on_canvas_mouse_move: WindowAppFn<(Point<Pixels>, Option<MouseButton>)>,
     pub on_zoom: Rc<ZoomFn>,
     pub on_pan: WindowAppFn<(f32, f32)>,
     pub on_select_node: Rc<SelectNodeFn>,
@@ -304,7 +304,7 @@ pub fn graph_canvas_view(
                     on_background_down((event.clone(), Bounds::default()), window, cx)
                 })
                 .on_mouse_move(move |event: &MouseMoveEvent, window, cx| {
-                    on_canvas_mouse_move((event.position, Bounds::default()), window, cx)
+                    on_canvas_mouse_move((event.position, event.pressed_button), window, cx)
                 })
                 .on_scroll_wheel({
                     let on_zoom = on_zoom.clone();

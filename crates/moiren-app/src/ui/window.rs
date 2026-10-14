@@ -234,6 +234,120 @@ impl StudioShell {
     }
 }
 
+/// Headless page holder: lets tests switch pages without the full shell.
+#[derive(Default)]
+pub struct PageCell {
+    pub page: Page,
+}
+
+impl Render for PageCell {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full()
+    }
+}
+
+/// Headless shell without platform chrome; page switching mutates
+/// `presentation.page` through the shared [`PageCell`] entity.
+#[cfg(feature = "gpui-test")]
+pub fn shell_for_tests(
+    state: Entity<UiState>,
+    page: Entity<PageCell>,
+    window: &mut Window,
+) -> impl Render + use<> {
+    struct TestShell {
+        state: Entity<UiState>,
+        page: Entity<PageCell>,
+    }
+    impl Render for TestShell {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            // Page lives in the shared cell; toolbar clicks in tests update
+            // the cell through the same dispatch path as the real shell.
+            let page = self.page.read(cx).page;
+            StudioShell::render_page_only(&self.state, page, cx)
+        }
+    }
+    let _ = window;
+    TestShell { state, page }
+}
+
+/// No-op outside test builds; marks observable elements for the headless
+/// acceptance tests (see `TestSupportExt::test_support`).
+#[cfg(feature = "gpui-test")]
+#[cfg_attr(not(feature = "gpui-test"), allow(dead_code))]
+pub(crate) trait TestObserve {
+    type Out;
+    fn gpui_test_observe(self) -> Self::Out;
+}
+
+#[cfg(feature = "gpui-test")]
+impl<E> TestObserve for E
+where
+    E: gpui_kit::base::TestSupportExt,
+{
+    type Out = gpui_kit::base::ObservedElement<E>;
+    fn gpui_test_observe(self) -> Self::Out {
+        gpui_kit::base::TestSupportExt::test_support(self)
+    }
+}
+
+#[cfg(not(feature = "gpui-test"))]
+#[cfg_attr(not(feature = "gpui-test"), allow(dead_code))]
+pub(crate) trait TestObserve {
+    fn gpui_test_observe(self) -> Self;
+}
+
+#[cfg(not(feature = "gpui-test"))]
+impl<E> TestObserve for E {
+    fn gpui_test_observe(self) -> Self {
+        self
+    }
+}
+
+impl StudioShell {
+    /// Static page renderer for headless tests: full shell minus tray chrome.
+    #[cfg(feature = "gpui-test")]
+    fn render_page_only(state: &Entity<UiState>, page: Page, cx: &mut App) -> impl IntoElement {
+        let error = {
+            let state = state.read(cx);
+            state
+                .snapshot
+                .error
+                .as_deref()
+                .or(state.snapshot.catalog_error.as_deref())
+                .unwrap_or("")
+                .to_string()
+        };
+        div()
+            .id("studio-shell")
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(theme::WINDOW_BG)
+            .text_color(theme::TEXT)
+            .font_family(theme::FONT_UI)
+            .when(!error.is_empty(), |shell| {
+                shell.child(
+                    div()
+                        .id("error-strip")
+                        .flex()
+                        .flex_none()
+                        .h(px(36.))
+                        .px(px(theme::SPACE_3))
+                        .items_center()
+                        .bg(theme::SURFACE_3)
+                        .text_size(px(theme::TEXT_SM))
+                        .text_color(theme::DANGER)
+                        .child(error),
+                )
+            })
+            .child(match page {
+                Page::Graph => div().id("session-io-panel").gpui_test_observe().child("io"),
+                Page::Mixer => div().id("mixer-page").gpui_test_observe().child("mix"),
+            })
+            .child(pages::engine_statusbar(state.read(cx)).gpui_test_observe())
+    }
+}
+
 impl Render for StudioShell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let error = {
@@ -428,10 +542,18 @@ fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShell>) -> AnyE
     };
     let on_bg_move = {
         let this = this.clone();
-        move |(position, _bounds): (Point<Pixels>, Bounds<Pixels>),
+        move |(position, pressed): (Point<Pixels>, Option<MouseButton>),
               _window: &mut Window,
               cx: &mut App| {
             this.update(cx, |shell, cx| {
+                // Release the pan grab as soon as neither pan button is held,
+                // even when the release happened outside the canvas (or was a
+                // touchpad tap with no physical button at all).
+                let held = matches!(pressed, Some(MouseButton::Left | MouseButton::Middle));
+                if !held {
+                    shell.pan_grab = None;
+                    return;
+                }
                 if let Some((gx, gy)) = shell.pan_grab {
                     let (dx, dy) = (f32::from(position.x) - gx, f32::from(position.y) - gy);
                     shell.camera.pan_by(dx, dy);
