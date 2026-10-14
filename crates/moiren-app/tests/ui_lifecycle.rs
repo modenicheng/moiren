@@ -9,7 +9,7 @@ fn pure_presentation_hide_and_recreate_leaves_idle_service_untouched() {
     let handle = runtime.handle();
     let mut presentation = WindowPresentation::default();
     presentation.show();
-    presentation.page = Page::Session;
+    presentation.page = Page::Graph;
     presentation.hide_to_tray();
     assert!(!presentation.visible);
     let mut replacement = WindowPresentation::default();
