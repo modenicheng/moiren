@@ -4085,6 +4085,7 @@ dependencies = [
  "moiren-engine",
  "moiren-signal",
  "moiren-windows-audio",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

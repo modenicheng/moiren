@@ -234,12 +234,14 @@ pub fn paint_canvas_layer(
 type WindowAppFn<A> = Box<dyn Fn(A, &mut Window, &mut App)>;
 type RefWindowAppFn<A> = Box<dyn Fn(&A, &mut Window, &mut App)>;
 type SelectNodeFn = dyn Fn(&str, &mut Window, &mut App);
+type ZoomFn = dyn Fn((f32, Point<Pixels>, Bounds<Pixels>), &mut Window, &mut App);
 
 /// Canvas interaction callbacks, owned by the parent view.
 pub struct CanvasCallbacks {
     pub on_background_down: WindowAppFn<(MouseDownEvent, Bounds<Pixels>)>,
     pub on_canvas_mouse_move: WindowAppFn<(Point<Pixels>, Bounds<Pixels>)>,
-    pub on_zoom: WindowAppFn<(f32, Point<Pixels>, Bounds<Pixels>)>,
+    pub on_zoom: Rc<ZoomFn>,
+    pub on_pan: WindowAppFn<(f32, f32)>,
     pub on_select_node: Rc<SelectNodeFn>,
     pub on_camera_fit: RefWindowAppFn<Camera>,
 }
@@ -254,6 +256,7 @@ pub fn graph_canvas_view(
         on_background_down,
         on_canvas_mouse_move,
         on_zoom,
+        on_pan,
         on_select_node,
         on_camera_fit,
     } = cb;
@@ -303,16 +306,36 @@ pub fn graph_canvas_view(
                 .on_mouse_move(move |event: &MouseMoveEvent, window, cx| {
                     on_canvas_mouse_move((event.position, Bounds::default()), window, cx)
                 })
-                .on_scroll_wheel(move |event: &ScrollWheelEvent, window, cx| {
-                    let dy = match event.delta {
-                        ScrollDelta::Pixels(delta) => f32::from(delta.y),
-                        ScrollDelta::Lines(lines) => lines.y * 60.,
-                    };
-                    on_zoom(
-                        (1.02_f32.powf(dy / 60.), event.position, Bounds::default()),
-                        window,
-                        cx,
-                    )
+                .on_scroll_wheel({
+                    let on_zoom = on_zoom.clone();
+                    move |event: &ScrollWheelEvent, window, cx| {
+                        // Pixel deltas mark precision touchpads; their
+                        // two-finger scroll pans, wheel notches zoom.
+                        #[cfg(windows)]
+                        let control =
+                            event.modifiers.control || crate::ui::touchpad::wheel_control();
+                        #[cfg(not(windows))]
+                        let control = event.modifiers.control;
+                        let (dx, dy, continuous) = match event.delta {
+                            ScrollDelta::Pixels(delta) => {
+                                (f32::from(delta.x), f32::from(delta.y), true)
+                            }
+                            ScrollDelta::Lines(lines) => (lines.x * 60., lines.y * 60., false),
+                        };
+                        match crate::ui::scroll_policy::scroll_action(dx, dy, continuous, control) {
+                            crate::ui::scroll_policy::ScrollAction::Pan(dx, dy) => {
+                                on_pan((dx, dy), window, cx);
+                            }
+                            crate::ui::scroll_policy::ScrollAction::Zoom(factor) => {
+                                on_zoom((factor, event.position, Bounds::default()), window, cx);
+                            }
+                        }
+                    }
+                })
+                .on_pinch(move |event: &PinchEvent, window, cx| {
+                    // Fractional zoom deltas; 0.1 == +10%, multiplicative.
+                    let factor = crate::ui::scroll_policy::pinch_zoom_factor(event.delta);
+                    on_zoom((factor, event.position, Bounds::default()), window, cx);
                 }),
         )
         // Node cards sit above the input layer; each card's own click

@@ -2,8 +2,12 @@
 //! only projects snapshots into windows and dispatches [`AppRequest`]s back.
 mod app_view;
 mod pages;
+mod scroll_policy;
 mod state;
 mod theme;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod touchpad;
 mod tray;
 mod widgets;
 mod window;

@@ -9,6 +9,7 @@ gpui-kit = "0.7.3"
 moiren-core = { path = "../moiren-core" }
 moiren-engine = { path = "../moiren-engine" }
 moiren-signal = { path = "../moiren-signal" }
+raw-window-handle = "0.6"
 serde_json = "1.0"
 thiserror = { workspace = true }
 tray-icon = "0.21"

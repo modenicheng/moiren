@@ -119,6 +119,11 @@ pub struct StudioShell {
     pan_grab: Option<(f32, f32)>,
     /// Tray bridge; None when the platform tray failed to build.
     tray: Option<super::tray::AppTray>,
+    /// Precision-touchpad subclass state (Windows pointer input). Held for
+    /// its Drop: unregisters the Win32 subclass when the shell goes away.
+    #[cfg(windows)]
+    #[allow(dead_code)]
+    touchpad: super::touchpad::TouchpadRegistration,
     /// Open window handle for tray "show" re-opens.
     window_handle: Option<AnyWindowHandle>,
 }
@@ -130,6 +135,18 @@ impl StudioShell {
         _cx: &mut Context<Self>,
         tray: Option<super::tray::AppTray>,
     ) -> Self {
+        #[cfg(windows)]
+        let touchpad = {
+            let mut registration = super::touchpad::TouchpadRegistration::new();
+            // Subclass the Win32 window so touchpad pointer messages reach
+            // default processing and Windows keeps recognizing gestures.
+            if let Ok(handle) = raw_window_handle::HasWindowHandle::window_handle(window)
+                && let raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw()
+            {
+                registration.attach_raw(win32.hwnd.get());
+            }
+            registration
+        };
         let mut shell = Self {
             state,
             presentation: WindowPresentation::default(),
@@ -138,6 +155,8 @@ impl StudioShell {
             pan_grab: None,
             tray,
             window_handle: None,
+            #[cfg(windows)]
+            touchpad,
         };
         shell.window_handle = Some(window.window_handle());
         shell.presentation.show();
@@ -438,6 +457,15 @@ fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShell>) -> AnyE
         }
     };
 
+    let on_scroll_pan = {
+        let this = this.clone();
+        move |(dx, dy): (f32, f32), _window: &mut Window, cx: &mut App| {
+            this.update(cx, |shell, cx| {
+                shell.camera.pan_by(-dx, -dy);
+                cx.notify();
+            });
+        }
+    };
     let on_camera_fit = {
         let this = this.clone();
         move |fitted: &Camera, _window: &mut Window, cx: &mut App| {
@@ -456,7 +484,8 @@ fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShell>) -> AnyE
         pages::graph_canvas_view::CanvasCallbacks {
             on_background_down: Box::new(on_bg_down),
             on_canvas_mouse_move: Box::new(on_bg_move),
-            on_zoom: Box::new(on_zoom),
+            on_zoom: std::rc::Rc::new(on_zoom),
+            on_pan: Box::new(on_scroll_pan),
             on_select_node: std::rc::Rc::new(on_select_node),
             on_camera_fit: Box::new(on_camera_fit),
         },
