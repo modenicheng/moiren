@@ -14,6 +14,96 @@ struct PublishedObserver {
     published: Arc<AtomicU64>,
 }
 
+#[test]
+fn sink_input_observer_measures_post_send_audio_and_disconnected_silence() {
+    for (connected, mute, expected) in [(true, false, 0.25), (true, true, 0.0), (false, false, 0.0)]
+    {
+        let mut graph = LogicalGraph::new();
+        let source = graph.create_node(NodeKind::Source, 1).unwrap();
+        let sink = graph.create_node(NodeKind::Sink, 1).unwrap();
+        if connected {
+            connect(
+                &mut graph,
+                source,
+                sink,
+                SendParams {
+                    gain: 0.25,
+                    mute,
+                    ..Default::default()
+                },
+            );
+        }
+        let mut bindings = NodeBindings::new();
+        bindings
+            .bind_source(
+                source,
+                ConstantSource {
+                    channels: 1,
+                    value: 1.0,
+                },
+            )
+            .unwrap();
+        let (writer, mut reader) = audio_bridge::<f64>(1, 8, 4096).unwrap();
+        bindings.bind_sink(sink, writer).unwrap();
+        let mut bus = Bus::new(Default::default()).unwrap();
+        let topic = bus
+            .register_latest_value("test/sink-input", 0.0_f64)
+            .unwrap();
+        let (control, host) = bus.create_host(1).unwrap();
+        let publisher = control
+            .prepare(&topic, control.new_binding().unwrap())
+            .unwrap();
+        let observed = Arc::new(AtomicU64::new(f64::NAN.to_bits()));
+        bindings
+            .observe_input(
+                input(&graph, sink),
+                PublishedObserver {
+                    handle: publisher.handle(),
+                    binding: publisher.erase(),
+                    value: observed.clone(),
+                    published: Arc::new(AtomicU64::new(0)),
+                },
+            )
+            .unwrap();
+        let mut compiled = compile_with_signals(&graph, bindings, config(), &control).unwrap();
+        compiled.engine.attach_signal_host(host).unwrap();
+        compiled.engine.render(4).unwrap();
+        assert_eq!(f64::from_bits(observed.load(Ordering::Relaxed)), expected);
+        let mut samples = [f64::NAN; 4];
+        reader.read_interleaved(&mut samples).unwrap();
+        assert_eq!(samples, [expected; 4]);
+    }
+}
+
+#[test]
+fn input_observer_rejects_output_port_in_preparation() {
+    let (graph, _, _, _, output_port) = signal_graph();
+    let mut bus = Bus::new(Default::default()).unwrap();
+    let topic = bus
+        .register_latest_value("test/wrong-input", 0.0_f64)
+        .unwrap();
+    let (control, _host) = bus.create_host(1).unwrap();
+    let publisher = control
+        .prepare(&topic, control.new_binding().unwrap())
+        .unwrap();
+    let mut bindings = NodeBindings::<f64>::new();
+    bindings
+        .observe_input(
+            output_port,
+            PublishedObserver {
+                handle: publisher.handle(),
+                binding: publisher.erase(),
+                value: Arc::new(AtomicU64::new(0)),
+                published: Arc::new(AtomicU64::new(0)),
+            },
+        )
+        .unwrap();
+    assert!(
+        matches!(compile_with_signals(&graph, bindings, config(), &control),
+        Err(CompileError::ObserverOutputPort { port }) if port == output_port)
+    );
+}
+
 impl RtObserver<f64> for PublishedObserver {
     fn validate_inputs(
         &self,

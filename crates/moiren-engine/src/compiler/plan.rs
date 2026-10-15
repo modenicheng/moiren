@@ -83,13 +83,19 @@ impl<S: ProcessingSample> Builder<S> {
                 processor
             }
             NodeKind::Pan => {
-                let initial = if let Some(Binding::Pan(initial)) = binding {
-                    initial
+                let (position, mono, swap) = if let Some(Binding::Pan {
+                    position,
+                    mono,
+                    swap,
+                }) = binding
+                {
+                    (position, mono, swap)
                 } else {
-                    0.0
+                    (0.0, false, false)
                 };
                 let processor = self.processor(Pan)?;
-                self.params.push(Pan::parameter(processor, initial));
+                self.params
+                    .extend(Pan::parameters(processor, position, mono, swap));
                 processor
             }
             NodeKind::Compressor => {
@@ -154,6 +160,11 @@ pub(super) fn build<S: ProcessingSample>(
             };
             let port_index = u16::try_from(index).map_err(|_| GraphError::TooManyPorts)?;
             reads.push((port_index, slot));
+            if let Some(observers) = bindings.take_input_observers(port.id()) {
+                for observer in observers {
+                    super::observers::push(&mut builder, observer, slot)?;
+                }
+            }
         }
         let processor = builder.node_processor(id, node.kind(), bindings.take(id))?;
         mapping.nodes.insert(id, processor);

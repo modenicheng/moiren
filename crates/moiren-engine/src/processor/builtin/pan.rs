@@ -13,6 +13,26 @@ pub struct Pan;
 
 impl Pan {
     pub const POSITION: ParameterId = ParameterId(0);
+    pub const MONO: ParameterId = ParameterId(1);
+    pub const SWAP: ParameterId = ParameterId(2);
+
+    pub fn parameters(id: ProcessorId, position: f64, mono: bool, swap: bool) -> [ParamSpec; 3] {
+        [
+            Self::parameter(id, position),
+            Self::boolean_parameter(id, Self::MONO, mono),
+            Self::boolean_parameter(id, Self::SWAP, swap),
+        ]
+    }
+    fn boolean_parameter(id: ProcessorId, parameter: ParameterId, initial: bool) -> ParamSpec {
+        ParamSpec {
+            key: ParameterKey {
+                processor: id,
+                parameter,
+            },
+            domain: ParamDomain::Bool,
+            initial: ParamValue::Bool(initial),
+        }
+    }
 
     pub fn parameter(id: ProcessorId, initial: f64) -> ParamSpec {
         ParamSpec {
@@ -35,6 +55,21 @@ impl Pan {
             1.0 + position.min(0.0)
         }
     }
+    /// Transform the balanced stereo result. Averaging last makes Mono a true
+    /// dual-mono monitor signal, even at noncentral balance, without boosting.
+    fn stereo(left: f64, right: f64, position: f64, mono: bool, swap: bool) -> (f64, f64) {
+        let mut left = left * Self::coefficient(0, position);
+        let mut right = right * Self::coefficient(1, position);
+        if swap {
+            std::mem::swap(&mut left, &mut right);
+        }
+        if mono {
+            let value = left * 0.5 + right * 0.5;
+            (value, value)
+        } else {
+            (left, right)
+        }
+    }
 }
 
 impl<S: ProcessingSample> RtProcessor<S> for Pan {
@@ -53,10 +88,21 @@ impl<S: ProcessingSample> RtProcessor<S> for Pan {
         params
             .float(Self::POSITION)
             .ok_or(ProcessorError::MissingParameter)?;
-        match params.domain(Self::POSITION) {
-            Some(ParamDomain::Float { min, max }) if min >= -1.0 && max <= 1.0 => Ok(()),
-            _ => Err(ProcessorError::InvalidParameterDomain),
+        if !matches!(params.domain(Self::POSITION), Some(ParamDomain::Float { min, max }) if min >= -1.0 && max <= 1.0)
+        {
+            return Err(ProcessorError::InvalidParameterDomain);
         }
+        // POSITION-only processors prepared through the older public helper
+        // remain valid. When present, switches must use the exact Bool schema.
+        for parameter in [Self::MONO, Self::SWAP] {
+            if let Some(domain) = params.domain(parameter)
+                && (domain != ParamDomain::Bool
+                    || !matches!(params.discrete(parameter), Some(ParamValue::Bool(_))))
+            {
+                return Err(ProcessorError::InvalidParameterDomain);
+            }
+        }
+        Ok(())
     }
 
     fn process(
@@ -69,6 +115,8 @@ impl<S: ProcessingSample> RtProcessor<S> for Pan {
         let position = params
             .float(Self::POSITION)
             .expect("validated pan parameter");
+        let mono = params.discrete(Self::MONO) == Some(ParamValue::Bool(true));
+        let swap = params.discrete(Self::SWAP) == Some(ParamValue::Bool(true));
         match io {
             ProcessIo::Separate {
                 inputs,
@@ -76,23 +124,40 @@ impl<S: ProcessingSample> RtProcessor<S> for Pan {
             } => {
                 let input = inputs.get(0).expect("validated stereo input");
                 let mut output = outputs.get_mut(0).expect("validated stereo output");
-                for (channel, (src, dst)) in input.channels().zip(output.channels_mut()).enumerate()
+                let mut channels = output.channels_mut();
+                let left_output = channels.next().expect("validated left output");
+                let right_output = channels.next().expect("validated right output");
+                for (i, (left, right)) in left_output
+                    .iter_mut()
+                    .zip(right_output.iter_mut())
+                    .enumerate()
                 {
-                    for (i, (src, dst)) in src.iter().zip(dst.iter_mut()).enumerate() {
-                        *dst = S::from_f64(
-                            src.to_f64() * Self::coefficient(channel, position.sample(i)),
-                        );
-                    }
+                    let (l, r) = Self::stereo(
+                        input.channel(0)[i].to_f64(),
+                        input.channel(1)[i].to_f64(),
+                        position.sample(i),
+                        mono,
+                        swap,
+                    );
+                    *left = S::from_f64(l);
+                    *right = S::from_f64(r);
                 }
             }
             ProcessIo::InPlace { mut pairs, .. } => {
                 let mut block = pairs.get_mut(0, 0).expect("validated stereo pair");
-                for (channel, samples) in block.channels_mut().enumerate() {
-                    for (i, sample) in samples.iter_mut().enumerate() {
-                        *sample = S::from_f64(
-                            sample.to_f64() * Self::coefficient(channel, position.sample(i)),
-                        );
-                    }
+                let mut channels = block.channels_mut();
+                let left = channels.next().expect("validated left channel");
+                let right = channels.next().expect("validated right channel");
+                for (i, (left, right)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+                    let (l, r) = Self::stereo(
+                        left.to_f64(),
+                        right.to_f64(),
+                        position.sample(i),
+                        mono,
+                        swap,
+                    );
+                    *left = S::from_f64(l);
+                    *right = S::from_f64(r);
                 }
             }
             ProcessIo::ReadOnly { .. } => unreachable!("pan requires an output"),

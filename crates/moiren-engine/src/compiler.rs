@@ -69,6 +69,8 @@ pub enum CompileError {
     ObserverPortNotFound { port: moiren_core::graph::PortId },
     #[error("observer target port {port:?} is an input port")]
     ObserverInputPort { port: moiren_core::graph::PortId },
+    #[error("input observer targets an output port: {port:?}")]
+    ObserverOutputPort { port: moiren_core::graph::PortId },
     #[error(transparent)]
     Signal(#[from] SignalPlanError),
 }

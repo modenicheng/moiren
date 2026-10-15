@@ -19,7 +19,11 @@ pub(super) enum Binding<S: ProcessingSample> {
         moiren_core::protocol::ProcessorId,
     ),
     Gain(f64),
-    Pan(f64),
+    Pan {
+        position: f64,
+        mono: bool,
+        swap: bool,
+    },
     Compressor(
         CompressorSettings,
         Option<moiren_signal::PreparedPublisher<moiren_signal::LatestValue<f32>>>,
@@ -31,6 +35,7 @@ pub(super) enum Binding<S: ProcessingSample> {
 pub struct NodeBindings<S: ProcessingSample> {
     nodes: BTreeMap<NodeId, Binding<S>>,
     observers: BTreeMap<PortId, Vec<Box<dyn crate::processor::RtObserver<S>>>>,
+    input_observers: BTreeMap<PortId, Vec<Box<dyn crate::processor::RtObserver<S>>>>,
 }
 impl<S: ProcessingSample> Default for NodeBindings<S> {
     fn default() -> Self {
@@ -42,6 +47,7 @@ impl<S: ProcessingSample> NodeBindings<S> {
         Self {
             nodes: BTreeMap::new(),
             observers: BTreeMap::new(),
+            input_observers: BTreeMap::new(),
         }
     }
 
@@ -68,6 +74,12 @@ impl<S: ProcessingSample> NodeBindings<S> {
     ) -> Option<Vec<Box<dyn crate::processor::RtObserver<S>>>> {
         self.observers.remove(&port)
     }
+    pub(super) fn take_input_observers(
+        &mut self,
+        port: PortId,
+    ) -> Option<Vec<Box<dyn crate::processor::RtObserver<S>>>> {
+        self.input_observers.remove(&port)
+    }
 
     pub(super) fn validate(&self, graph: &LogicalGraph) -> Result<(), CompileError> {
         for (&id, binding) in &self.nodes {
@@ -81,7 +93,7 @@ impl<S: ProcessingSample> NodeBindings<S> {
                 (NodeKind::Sink, Binding::ReusedIo(basis, processor)) => {
                     basis.processor_role(*processor) == Some(ProcessorRole::Sink)
                 }
-                (NodeKind::Gain, Binding::Gain(_)) | (NodeKind::Pan, Binding::Pan(_)) => true,
+                (NodeKind::Gain, Binding::Gain(_)) | (NodeKind::Pan, Binding::Pan { .. }) => true,
                 (NodeKind::Compressor, Binding::Compressor(_, _)) => true,
                 _ => false,
             };
@@ -95,6 +107,14 @@ impl<S: ProcessingSample> NodeBindings<S> {
                 .map_err(|_| CompileError::ObserverPortNotFound { port })?;
             if graph_port.role() != PortRole::Output {
                 return Err(CompileError::ObserverInputPort { port });
+            }
+        }
+        for &port in self.input_observers.keys() {
+            let graph_port = graph
+                .get_port(port)
+                .map_err(|_| CompileError::ObserverPortNotFound { port })?;
+            if graph_port.role() != PortRole::Input {
+                return Err(CompileError::ObserverOutputPort { port });
             }
         }
         Ok(())
@@ -136,7 +156,23 @@ impl<S: ProcessingSample> NodeBindings<S> {
         self.insert(node, Binding::Gain(initial))
     }
     pub fn bind_pan(&mut self, node: NodeId, initial: f64) -> Result<(), CompileError> {
-        self.insert(node, Binding::Pan(initial))
+        self.bind_pan_with_stereo(node, initial, false, false)
+    }
+    pub fn bind_pan_with_stereo(
+        &mut self,
+        node: NodeId,
+        position: f64,
+        mono: bool,
+        swap: bool,
+    ) -> Result<(), CompileError> {
+        self.insert(
+            node,
+            Binding::Pan {
+                position,
+                mono,
+                swap,
+            },
+        )
     }
     pub fn bind_compressor(
         &mut self,
@@ -161,6 +197,19 @@ impl<S: ProcessingSample> NodeBindings<S> {
         observer: impl crate::processor::RtObserver<S> + 'static,
     ) -> Result<(), CompileError> {
         self.observers
+            .entry(port)
+            .or_default()
+            .push(Box::new(observer));
+        Ok(())
+    }
+    /// Observe the actual node input after edge sends, including initialized
+    /// silence when disconnected. Preparation owns the observer allocation.
+    pub fn observe_input(
+        &mut self,
+        port: PortId,
+        observer: impl crate::processor::RtObserver<S> + 'static,
+    ) -> Result<(), CompileError> {
+        self.input_observers
             .entry(port)
             .or_default()
             .push(Box::new(observer));

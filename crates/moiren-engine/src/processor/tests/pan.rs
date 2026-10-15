@@ -77,6 +77,117 @@ fn pan_balances_stereo_and_preserves_window_for_both_modes_and_precisions() {
     pan_modes::<f64>();
 }
 
+fn pan_stereo_modes<S: ProcessingSample>() {
+    for in_place in [false, true] {
+        for (mono, swap, expected_left, expected_right) in [
+            (false, true, [-4.0, 8.0, 16.0], [1.0, -2.0, 4.0]),
+            (true, false, [-1.5, 3.0, 10.0], [-1.5, 3.0, 10.0]),
+            (true, true, [-1.5, 3.0, 10.0], [-1.5, 3.0, 10.0]),
+        ] {
+            let mut arena = arena::<S>(&[2, 2]);
+            let original: &[&[f64]] = &[&[1.0, 2.0, -4.0, 8.0], &[2.0, -4.0, 8.0, 16.0]];
+            seed(&mut arena, 0, original);
+            seed(&mut arena, 1, &[&[-9.0; 4], &[-9.0; 4]]);
+            let input = arena.slot(0).unwrap();
+            let output = arena.slot(usize::from(!in_place)).unwrap();
+            let accesses = if in_place {
+                vec![PortAccess::InPlace {
+                    input: 0,
+                    output: 0,
+                    slot: input,
+                }]
+            } else {
+                vec![
+                    PortAccess::Read {
+                        port: 0,
+                        slot: input,
+                    },
+                    PortAccess::Write {
+                        port: 0,
+                        slot: output,
+                    },
+                ]
+            };
+            let io = arena.prepare_io(&accesses).unwrap();
+            let (_, parameters) = parameter_channel(
+                Pan::parameters(PROCESSOR, 0.5, mono, swap).to_vec(),
+                1,
+                1,
+                1,
+                16,
+            )
+            .unwrap();
+            let bindings = parameters.bindings(PROCESSOR);
+            let params = parameters.view(&bindings);
+            RtProcessor::<S>::validate_io(&Pan, &io).unwrap();
+            RtProcessor::<S>::validate_parameters(&Pan, params).unwrap();
+            arena
+                .with_io(&io, 1..4, |io| {
+                    Pan.process(
+                        &ProcessContext {
+                            frames: 3,
+                            ..CONTEXT
+                        },
+                        io,
+                        params,
+                        crate::signal::ProcessSignals::empty(&mut ()),
+                    )
+                })
+                .unwrap();
+            assert_samples(
+                &mut arena,
+                usize::from(!in_place),
+                &[
+                    &[
+                        if in_place { 1.0 } else { -9.0 },
+                        expected_left[0],
+                        expected_left[1],
+                        expected_left[2],
+                    ],
+                    &[
+                        if in_place { 2.0 } else { -9.0 },
+                        expected_right[0],
+                        expected_right[1],
+                        expected_right[2],
+                    ],
+                ],
+            );
+            if !in_place {
+                assert_samples(&mut arena, 0, original);
+            }
+        }
+    }
+}
+
+#[test]
+fn mono_and_swap_transform_stereo_after_balance_for_both_io_modes_and_precisions() {
+    pan_stereo_modes::<f32>();
+    pan_stereo_modes::<f64>();
+}
+
+#[test]
+fn mono_and_swap_reject_non_boolean_domains() {
+    for parameter in [Pan::MONO, Pan::SWAP] {
+        let mut specs = Pan::parameters(PROCESSOR, 0.0, false, false).to_vec();
+        specs
+            .iter_mut()
+            .find(|spec| spec.key.parameter == parameter)
+            .unwrap()
+            .domain = ParamDomain::Float { min: 0.0, max: 1.0 };
+        specs
+            .iter_mut()
+            .find(|spec| spec.key.parameter == parameter)
+            .unwrap()
+            .initial = ParamValue::Float(0.0);
+        let (_, parameters) = parameter_channel(specs, 1, 1, 1, 16).unwrap();
+        let bindings = parameters.bindings(PROCESSOR);
+        assert_eq!(
+            RtProcessor::<f64>::validate_parameters(&Pan, parameters.view(&bindings)),
+            Err(ProcessorError::InvalidParameterDomain)
+        );
+    }
+}
+
 #[test]
 fn pan_rejects_wrong_ports_channels_and_parameter_domains() {
     let arena = arena::<f64>(&[1, 2, 2, 3]);
