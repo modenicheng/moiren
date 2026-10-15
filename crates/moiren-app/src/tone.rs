@@ -65,6 +65,25 @@ struct SineSource {
     phase: f64,
     step: f64,
 }
+
+pub(crate) fn prepare_routed_tone(
+    config: ToneConfig,
+    routing: &crate::service::GraphPreparation,
+    signals: Option<&mut crate::service::SignalPreparation>,
+) -> Result<crate::session_graph::PreparedSessionGraph, crate::monitor::MonitorError> {
+    if config.validate().is_err() {
+        return Err(crate::monitor::MonitorError::InvalidConfig);
+    }
+    crate::session_graph::prepare_routing(
+        routing,
+        SineSource {
+            phase: 0.0,
+            step: std::f64::consts::TAU * config.frequency_hz / 48_000.0,
+        },
+        config.max_block_frames,
+        signals,
+    )
+}
 impl RtAudioSource<f32> for SineSource {
     fn channel_count(&self) -> usize {
         2

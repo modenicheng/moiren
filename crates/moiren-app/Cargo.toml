@@ -10,6 +10,7 @@ moiren-core = { path = "../moiren-core" }
 moiren-engine = { path = "../moiren-engine" }
 moiren-signal = { path = "../moiren-signal" }
 raw-window-handle = "0.6"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = { workspace = true }
 tray-icon = "0.21"
@@ -24,6 +25,5 @@ moiren-windows-audio = { path = "../moiren-windows-audio" }
 
 [target."cfg(windows)".dependencies]
 moiren-windows-audio = { path = "../moiren-windows-audio" }
-serde = { version = "1.0", features = ["derive"] }
 # window_shadows = "0.2.2"
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_UI_Input", "Win32_UI_Input_Pointer", "Win32_UI_WindowsAndMessaging"] }

@@ -429,12 +429,15 @@ fn automatic_startup_recovers_catalog_or_missing_defaults_without_ui_refresh() {
         state.catalog_failure.store(false, Ordering::Release);
         state.catalog_empty.store(false, Ordering::Release);
         let deadline = Instant::now() + Duration::from_secs(3);
-        while handle.try_snapshot().unwrap().phase != SessionPhase::Running
-            && Instant::now() < deadline
-        {
+        let snapshot = loop {
+            if let Some(snapshot) = handle.try_snapshot()
+                && snapshot.phase == SessionPhase::Running
+            {
+                break snapshot;
+            }
+            assert!(Instant::now() < deadline, "automatic startup timed out");
             thread::sleep(Duration::from_millis(5));
-        }
-        let snapshot = handle.try_snapshot().unwrap();
+        };
         exit(runtime);
         assert_eq!(snapshot.phase, SessionPhase::Running);
         assert_eq!(snapshot.consumed_request_id, RequestId(0));
@@ -972,5 +975,231 @@ fn catalog_failure_is_visible_and_refresh_preserves_running_session_and_last_row
     h.try_request(AppRequest::RefreshCatalog).unwrap();
     wait_until(|| h.try_snapshot().is_some_and(|s| s.catalog_error.is_none()));
     assert_eq!(h.try_snapshot().unwrap().phase, SessionPhase::Running);
+    exit(rt);
+}
+
+#[test]
+fn unsupported_topology_application_never_keeps_a_false_active_revision() {
+    use moiren_core::graph::NodeKind;
+    let state = Arc::new(State::default());
+    state.started.store(true, Ordering::Release);
+    let rt = runtime(&state);
+    let h = rt.handle();
+    h.try_request(AppRequest::Start(spec())).unwrap();
+    phase(&h, SessionPhase::Running);
+    let active = h.try_snapshot().unwrap().graph.active_revision.unwrap();
+    h.try_request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Bus,
+        channels: 2,
+    }))
+    .unwrap();
+    wait_until(|| {
+        h.try_snapshot()
+            .is_some_and(|s| s.graph.graph.nodes().len() == 5)
+    });
+    let candidate = h.try_snapshot().unwrap();
+    assert_eq!(candidate.graph.active_revision, Some(active));
+    assert_ne!(candidate.graph.candidate_revision, active);
+    h.try_request(AppRequest::ApplyGraph).unwrap();
+    phase(&h, SessionPhase::Failed);
+    let failed = h.try_snapshot().unwrap();
+    assert_eq!(failed.graph.active_revision, None);
+    assert_eq!(failed.graph.pending_revision, None);
+    assert_eq!(failed.graph.graph.nodes().len(), 5);
+    assert!(
+        failed
+            .graph
+            .last_error
+            .as_ref()
+            .unwrap()
+            .contains("does not support edited topology")
+    );
+    exit(rt);
+}
+
+#[test]
+fn realtime_node_gain_preserves_unapplied_source_selection_and_requires_applied_ack() {
+    use moiren_core::{graph::NodeKind, protocol::ReplyCode};
+    let state = Arc::new(State::default());
+    state.started.store(true, Ordering::Release);
+    state.controls.store(true, Ordering::Release);
+    let rt = runtime(&state);
+    let h = rt.handle();
+    h.try_request(AppRequest::Start(spec())).unwrap();
+    phase(&h, SessionPhase::Running);
+    let snapshot = h.try_snapshot().unwrap();
+    let source = snapshot
+        .graph
+        .graph
+        .nodes()
+        .iter()
+        .find(|n| n.kind() == NodeKind::Source)
+        .unwrap()
+        .id();
+    let gain = snapshot
+        .graph
+        .graph
+        .nodes()
+        .iter()
+        .find(|n| n.kind() == NodeKind::Gain)
+        .unwrap()
+        .id();
+    h.try_request(AppRequest::EditGraph(GraphEdit::BindSource {
+        node: source,
+        source: InputSelection::Tone {
+            frequency_hz: 880.0,
+        },
+    }))
+    .unwrap();
+    h.try_request(AppRequest::EditGraph(GraphEdit::SetGain {
+        node: gain,
+        gain: 0.25,
+    }))
+    .unwrap();
+    wait_until(|| {
+        h.try_snapshot().is_some_and(|s| {
+            s.control
+                .last_result
+                .is_some_and(|r| r.code == ReplyCode::Accepted)
+        })
+    });
+    let accepted = h.try_snapshot().unwrap();
+    assert_eq!(
+        accepted.graph.node(source).unwrap().source,
+        Some(InputSelection::Tone {
+            frequency_hz: 880.0
+        })
+    );
+    assert_eq!(
+        accepted.desired.as_ref().unwrap().source,
+        InputSelection::Tone {
+            frequency_hz: 440.0
+        }
+    );
+    assert_eq!(accepted.control.accepted_pending, 1);
+    state.pump.store(true, Ordering::Release);
+    wait_until(|| {
+        h.try_snapshot().is_some_and(|s| {
+            s.control
+                .last_result
+                .is_some_and(|r| r.code == ReplyCode::Applied)
+        })
+    });
+    assert_eq!(h.try_snapshot().unwrap().control.accepted_pending, 0);
+    exit(rt);
+}
+
+#[test]
+fn loaded_document_id_collisions_cannot_control_an_unrelated_active_node() {
+    use moiren_core::graph::NodeKind;
+    let state = Arc::new(State::default());
+    state.started.store(true, Ordering::Release);
+    state.controls.store(true, Ordering::Release);
+    let rt = runtime(&state);
+    let h = rt.handle();
+    h.try_request(AppRequest::Start(spec())).unwrap();
+    phase(&h, SessionPhase::Running);
+    let snapshot = h.try_snapshot().unwrap();
+    let gain = snapshot
+        .graph
+        .graph
+        .nodes()
+        .iter()
+        .find(|n| n.kind() == NodeKind::Gain)
+        .unwrap()
+        .id();
+    // Public checked restoration can legitimately reuse document-local IDs.
+    // Replacing the document must revoke live parameter targeting until Apply.
+    h.try_request(AppRequest::ReplaceGraph {
+        graph: snapshot.graph.graph.clone(),
+        nodes: snapshot.graph.nodes.clone(),
+    })
+    .unwrap();
+    let last = h
+        .try_request_tracked(AppRequest::EditGraph(GraphEdit::SetGain {
+            node: gain,
+            gain: 0.25,
+        }))
+        .unwrap();
+    wait_until(|| {
+        h.try_snapshot()
+            .is_some_and(|s| s.consumed_request_id >= last)
+    });
+    let candidate = h.try_snapshot().unwrap();
+    assert_eq!(candidate.graph.node(gain).unwrap().gain, 0.25);
+    assert_eq!(candidate.control.accepted_pending, 0);
+    assert!(candidate.control.last_result.is_none());
+    let last = h
+        .try_request_tracked(AppRequest::SetGainPan {
+            gain: 0.7,
+            pan: 0.1,
+        })
+        .unwrap();
+    wait_until(|| {
+        h.try_snapshot()
+            .is_some_and(|s| s.consumed_request_id >= last)
+    });
+    let blocked = h.try_snapshot().unwrap();
+    assert_eq!(blocked.desired.as_ref().unwrap().gain, 0.05);
+    assert!(
+        blocked
+            .graph
+            .last_error
+            .as_ref()
+            .unwrap()
+            .contains("候选项目")
+    );
+    exit(rt);
+}
+
+#[test]
+fn running_mono_and_swap_node_edits_receive_native_boolean_applied_replies() {
+    use moiren_core::{graph::NodeKind, protocol::ReplyCode};
+    let state = Arc::new(State::default());
+    state.started.store(true, Ordering::Release);
+    state.controls.store(true, Ordering::Release);
+    let rt = runtime(&state);
+    let h = rt.handle();
+    h.try_request(AppRequest::Start(spec())).unwrap();
+    phase(&h, SessionPhase::Running);
+    let snapshot = h.try_snapshot().unwrap();
+    let pan = snapshot
+        .graph
+        .graph
+        .nodes()
+        .iter()
+        .find(|n| n.kind() == NodeKind::Pan)
+        .unwrap()
+        .id();
+    h.try_request(AppRequest::EditGraph(GraphEdit::SetMono {
+        node: pan,
+        mono: true,
+    }))
+    .unwrap();
+    h.try_request(AppRequest::EditGraph(GraphEdit::SetSwap {
+        node: pan,
+        swap: true,
+    }))
+    .unwrap();
+    wait_until(|| {
+        h.try_snapshot()
+            .is_some_and(|s| s.control.accepted_pending == 2)
+    });
+    let accepted = h.try_snapshot().unwrap();
+    assert_eq!(
+        accepted.control.last_result.unwrap().code,
+        ReplyCode::Accepted
+    );
+    assert!(accepted.graph.node(pan).unwrap().mono);
+    assert!(accepted.graph.node(pan).unwrap().swap);
+    state.pump.store(true, Ordering::Release);
+    wait_until(|| {
+        h.try_snapshot().is_some_and(|s| {
+            s.control
+                .last_result
+                .is_some_and(|r| r.code == ReplyCode::Applied)
+                && s.control.accepted_pending == 0
+        })
+    });
     exit(rt);
 }

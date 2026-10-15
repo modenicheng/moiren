@@ -75,6 +75,7 @@ impl WindowsBackend {
         signals: Option<&mut SignalPreparation>,
         latency: MonitorLatencyConfig,
         fade_in_frames: u32,
+        routing: Option<&GraphPreparation>,
     ) -> Result<Box<dyn PreparedSession>, BackendError> {
         spec.validate()
             .map_err(|e| BackendError::new("configuration", format!("{e:?}")))?;
@@ -90,16 +91,25 @@ impl WindowsBackend {
         let duration = duration(spec.limit);
         let session = match spec.source {
             InputSelection::Physical { endpoint_id } => PreparedAppSession::Monitor {
-                session: prepare_physical(
-                    MonitorOptions {
+                session: {
+                    let options = MonitorOptions {
                         input_endpoint_id: endpoint_id,
                         output_endpoint_id: spec.output_endpoint_id,
                         duration,
                         config,
-                    },
-                    cancellation.stop_signal(),
-                    signals,
-                )
+                    };
+                    match (routing, signals) {
+                        (Some(routing), Some(signals)) => prepare_routed_monitor(
+                            options,
+                            cancellation.stop_signal(),
+                            signals,
+                            routing,
+                        ),
+                        (_, signals) => {
+                            prepare_physical(options, cancellation.stop_signal(), signals)
+                        }
+                    }
+                }
                 .map_err(|e| BackendError::new("monitor prepare", e))?,
                 diagnostics: self.diagnostics.clone(),
             },
@@ -116,16 +126,25 @@ impl WindowsBackend {
                     ));
                 }
                 PreparedAppSession::Monitor {
-                    session: prepare_process(
-                        ProcessMonitorOptions {
+                    session: {
+                        let options = ProcessMonitorOptions {
                             target,
                             output_endpoint_id: spec.output_endpoint_id,
                             duration,
                             config,
-                        },
-                        cancellation.stop_signal(),
-                        signals,
-                    )
+                        };
+                        match (routing, signals) {
+                            (Some(routing), Some(signals)) => prepare_routed_process_monitor(
+                                options,
+                                cancellation.stop_signal(),
+                                signals,
+                                routing,
+                            ),
+                            (_, signals) => {
+                                prepare_process(options, cancellation.stop_signal(), signals)
+                            }
+                        }
+                    }
                     .map_err(|e| BackendError::new("process monitor prepare", e))?,
                     diagnostics: self.diagnostics.clone(),
                 }
@@ -137,13 +156,24 @@ impl WindowsBackend {
                     pan: spec.pan,
                     max_block_frames: spec.max_block_frames,
                 };
-                let tone = if let Some(signals) = signals {
-                    crate::tone::prepare_tone_with_signals(config, signals)
+                let (compiled, output, controls) = if let Some(routing) = routing {
+                    let tone = crate::tone::prepare_routed_tone(config, routing, signals)
+                        .map_err(|e| BackendError::new("tone graph", e))?;
+                    (tone.compiled, tone.output, tone.controls)
                 } else {
-                    prepare_tone(config)
-                }
-                .map_err(|e| BackendError::new("tone graph", e))?;
-                let renderer = DemandRenderer::new(tone.compiled.engine, tone.output)
+                    let tone = if let Some(signals) = signals {
+                        crate::tone::prepare_tone_with_signals(config, signals)
+                    } else {
+                        prepare_tone(config)
+                    }
+                    .map_err(|e| BackendError::new("tone graph", e))?;
+                    (
+                        tone.compiled,
+                        tone.output,
+                        Some((tone.gain_node, tone.pan_node)),
+                    )
+                };
+                let renderer = DemandRenderer::new(compiled.engine, output)
                     .map_err(|e| BackendError::new("tone renderer", e))?;
                 let timeline = renderer.timeline_observer();
                 let render = start_render_prepared(
@@ -161,11 +191,10 @@ impl WindowsBackend {
                 .map_err(|e| BackendError::new("tone prepare", e))?;
                 PreparedAppSession::Tone(PreparedToneSession {
                     render,
-                    control: tone.compiled.control,
-                    bindings: tone.compiled.bindings,
+                    control: compiled.control,
+                    bindings: compiled.bindings,
                     timeline,
-                    gain: tone.gain_node,
-                    pan: tone.pan_node,
+                    controls,
                     diagnostics: self.diagnostics.clone(),
                 })
             }
@@ -186,12 +215,40 @@ impl WindowsBackend {
     }
 }
 impl BackendAdapter for WindowsBackend {
+    fn prepare_graph(
+        &self,
+        spec: SessionSpec,
+        cancellation: Cancellation,
+        signals: &mut SignalPreparation,
+        graph: &GraphPreparation,
+        latency: Option<MonitorLatencyConfig>,
+        fade_in_frames: u32,
+    ) -> Result<Box<dyn PreparedSession>, BackendError> {
+        graph
+            .io_nodes()
+            .map_err(|e| BackendError::new("graph", e))?;
+        self.prepare_inner(
+            spec,
+            cancellation,
+            Some(signals),
+            latency.unwrap_or_default(),
+            fade_in_frames,
+            Some(graph),
+        )
+    }
     fn prepare(
         &self,
         spec: SessionSpec,
         cancellation: Cancellation,
     ) -> Result<Box<dyn PreparedSession>, BackendError> {
-        self.prepare_inner(spec, cancellation, None, MonitorLatencyConfig::default(), 0)
+        self.prepare_inner(
+            spec,
+            cancellation,
+            None,
+            MonitorLatencyConfig::default(),
+            0,
+            None,
+        )
     }
     fn prepare_with_signals(
         &self,
@@ -205,6 +262,7 @@ impl BackendAdapter for WindowsBackend {
             Some(signals),
             MonitorLatencyConfig::default(),
             0,
+            None,
         )
     }
     fn prepare_with_monitor_latency(
@@ -221,7 +279,14 @@ impl BackendAdapter for WindowsBackend {
                 "physical input required",
             ));
         }
-        self.prepare_inner(spec, cancellation, Some(signals), latency, fade_in_frames)
+        self.prepare_inner(
+            spec,
+            cancellation,
+            Some(signals),
+            latency,
+            fade_in_frames,
+            None,
+        )
     }
     fn catalog(&self) -> Result<DeviceCatalog, BackendError> {
         let native = catalog_snapshot().map_err(|e| BackendError::new("catalog", e))?;
@@ -274,8 +339,7 @@ struct PreparedToneSession {
     control: ControlPort,
     bindings: CompiledBindings,
     timeline: TimelineObserver,
-    gain: NodeId,
-    pan: NodeId,
+    controls: Option<(NodeId, NodeId)>,
     diagnostics: Diagnostics,
 }
 struct ToneOwner {
@@ -283,8 +347,7 @@ struct ToneOwner {
     control: ControlPort,
     bindings: CompiledBindings,
     timeline: TimelineObserver,
-    gain: NodeId,
-    pan: NodeId,
+    controls: Option<(NodeId, NodeId)>,
     diagnostics: Diagnostics,
 }
 enum PreparedAppSession {
@@ -327,8 +390,7 @@ impl PreparedSession for PreparedAppSession {
                 control: tone.control,
                 bindings: tone.bindings,
                 timeline: tone.timeline,
-                gain: tone.gain,
-                pan: tone.pan,
+                controls: tone.controls,
                 diagnostics: tone.diagnostics,
             }),
         })
@@ -441,10 +503,10 @@ impl ActiveSession for ActiveAppSession {
         })
     }
     fn gain_pan_nodes(&self) -> Option<(NodeId, NodeId)> {
-        Some(match self {
-            Self::Monitor { session, .. } => (session.gain_node, session.pan_node),
-            Self::Tone(tone) => (tone.gain, tone.pan),
-        })
+        match self {
+            Self::Monitor { session, .. } => session.control_nodes,
+            Self::Tone(tone) => tone.controls,
+        }
     }
     fn join(self: Box<Self>) -> Result<SessionReport, BackendError> {
         match *self {

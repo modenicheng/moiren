@@ -73,10 +73,19 @@ pub enum DispatchError {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppRequest {
+    EditGraph(super::GraphEdit),
+    ReplaceGraph {
+        graph: moiren_core::graph::LogicalGraph,
+        nodes: Vec<super::GraphNodeState>,
+    },
+    ApplyGraph,
     Start(SessionSpec),
     Stop,
     RefreshCatalog,
-    SetGainPan { gain: f64, pan: f64 },
+    SetGainPan {
+        gain: f64,
+        pan: f64,
+    },
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceRow {
@@ -107,6 +116,7 @@ pub struct DefaultEndpointRow {
 /// The UI keeps only the latest pending pair and latest reply, never a reply history.
 #[derive(Debug, Clone, Default)]
 pub struct ControlSummary {
+    pub pending_node_parameters: usize,
     pub accepted_pending: usize,
     pub pending_gain_pan: Option<(f64, f64)>,
     pub last_result: Option<ControlReply>,
@@ -116,6 +126,7 @@ pub struct ControlSummary {
 pub struct RequestId(pub u64);
 #[derive(Debug, Clone)]
 pub struct AppSnapshot {
+    pub graph: Arc<super::GraphSnapshot>,
     pub monitor_latency: Option<MonitorLatencyStatus>,
     pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
     /// Consumption is published with the phase produced by those requests.

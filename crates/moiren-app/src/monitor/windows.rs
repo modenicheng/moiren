@@ -108,6 +108,7 @@ pub struct MonitorSession {
     pub bindings: CompiledBindings,
     pub gain_node: NodeId,
     pub pan_node: NodeId,
+    pub control_nodes: Option<(NodeId, NodeId)>,
     pub timeline: TimelineObserver,
 }
 /// Blocking cleanup returns both parameter endpoints before either is dropped.
@@ -280,19 +281,28 @@ pub fn prepare_monitor_with_stop(
     options: MonitorOptions,
     stop: StopSignal,
 ) -> Result<PreparedMonitorSession, MonitorError> {
-    prepare_monitor_inner(options, stop, None)
+    prepare_monitor_inner(options, stop, None, None)
 }
 pub(crate) fn prepare_monitor_with_signal_host(
     options: MonitorOptions,
     stop: StopSignal,
     signals: &mut crate::service::SignalPreparation,
 ) -> Result<PreparedMonitorSession, MonitorError> {
-    prepare_monitor_inner(options, stop, Some(signals))
+    prepare_monitor_inner(options, stop, Some(signals), None)
+}
+pub(crate) fn prepare_routed_monitor(
+    options: MonitorOptions,
+    stop: StopSignal,
+    signals: &mut crate::service::SignalPreparation,
+    routing: &crate::service::GraphPreparation,
+) -> Result<PreparedMonitorSession, MonitorError> {
+    prepare_monitor_inner(options, stop, Some(signals), Some(routing))
 }
 fn prepare_monitor_inner(
     options: MonitorOptions,
     stop: StopSignal,
     signals: Option<&mut crate::service::SignalPreparation>,
+    routing: Option<&crate::service::GraphPreparation>,
 ) -> Result<PreparedMonitorSession, MonitorError> {
     options.config.validate()?;
     let (shared_period, latency_budget) = native_latency_options(options.config.latency)?;
@@ -339,6 +349,7 @@ fn prepare_monitor_inner(
         gate,
         signals,
         Some((render, diagnostics)),
+        routing,
     )
 }
 pub fn start_process_monitor(
@@ -358,19 +369,28 @@ pub fn prepare_process_monitor_with_stop(
     options: ProcessMonitorOptions,
     stop: StopSignal,
 ) -> Result<PreparedMonitorSession, MonitorError> {
-    prepare_process_monitor_inner(options, stop, None)
+    prepare_process_monitor_inner(options, stop, None, None)
 }
 pub(crate) fn prepare_process_monitor_with_signal_host(
     options: ProcessMonitorOptions,
     stop: StopSignal,
     signals: &mut crate::service::SignalPreparation,
 ) -> Result<PreparedMonitorSession, MonitorError> {
-    prepare_process_monitor_inner(options, stop, Some(signals))
+    prepare_process_monitor_inner(options, stop, Some(signals), None)
+}
+pub(crate) fn prepare_routed_process_monitor(
+    options: ProcessMonitorOptions,
+    stop: StopSignal,
+    signals: &mut crate::service::SignalPreparation,
+    routing: &crate::service::GraphPreparation,
+) -> Result<PreparedMonitorSession, MonitorError> {
+    prepare_process_monitor_inner(options, stop, Some(signals), Some(routing))
 }
 fn prepare_process_monitor_inner(
     options: ProcessMonitorOptions,
     stop: StopSignal,
     signals: Option<&mut crate::service::SignalPreparation>,
+    routing: Option<&crate::service::GraphPreparation>,
 ) -> Result<PreparedMonitorSession, MonitorError> {
     options.config.validate()?;
     if options.config.latency.profile != MonitorLatencyProfile::Compatible {
@@ -397,7 +417,15 @@ fn prepare_process_monitor_inner(
         stop,
         gate.clone(),
     )?;
-    attach_monitor(capture, render_options, options.config, gate, signals, None)
+    attach_monitor(
+        capture,
+        render_options,
+        options.config,
+        gate,
+        signals,
+        None,
+        routing,
+    )
 }
 fn attach_monitor(
     capture: PreparedCapture,
@@ -406,14 +434,36 @@ fn attach_monitor(
     gate: ActivationGate,
     signals: Option<&mut crate::service::SignalPreparation>,
     native_render: Option<(PreparedNativeRender, MonitorPreparedDiagnostics)>,
+    routing: Option<&crate::service::GraphPreparation>,
 ) -> Result<PreparedMonitorSession, MonitorError> {
-    let graph = if let Some(signals) = signals {
-        super::prepare_monitor_with_signals(capture.source, config, signals)?
+    let (compiled, output, gain_node, pan_node, control_nodes) = if let Some(routing) = routing {
+        let graph = crate::session_graph::prepare_routing(
+            routing,
+            capture.source,
+            config.max_block_frames,
+            signals,
+        )?;
+        let (source, _) = routing
+            .io_nodes()
+            .map_err(|_| MonitorError::InvalidConfig)?;
+        let (gain, pan) = graph.controls.unwrap_or((source, source));
+        (graph.compiled, graph.output, gain, pan, graph.controls)
     } else {
-        prepare_monitor(capture.source, config)?
+        let graph = if let Some(signals) = signals {
+            super::prepare_monitor_with_signals(capture.source, config, signals)?
+        } else {
+            prepare_monitor(capture.source, config)?
+        };
+        let controls = Some((graph.gain_node, graph.pan_node));
+        (
+            graph.compiled,
+            graph.output,
+            graph.gain_node,
+            graph.pan_node,
+            controls,
+        )
     };
-    let compiled = graph.compiled;
-    let renderer = DemandRenderer::new(compiled.engine, graph.output)?;
+    let renderer = DemandRenderer::new(compiled.engine, output)?;
     let fade = renderer.fade_control();
     // Submission acknowledges generated silence, not presentation. Allow a full
     // native capacity plus one period to drain before requesting Stop.
@@ -450,8 +500,9 @@ fn attach_monitor(
             observer: capture.observer,
             control: compiled.control,
             bindings: compiled.bindings,
-            gain_node: graph.gain_node,
-            pan_node: graph.pan_node,
+            gain_node,
+            pan_node,
+            control_nodes,
             timeline,
         },
     })

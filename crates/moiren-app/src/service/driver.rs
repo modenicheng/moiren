@@ -10,6 +10,7 @@ use std::{
 };
 
 struct SessionCredits {
+    graph_revision: u64,
     deferred: DeferredPermit,
     completion: CompletionPermit<Completion>,
     signals: SignalPreparation,
@@ -54,6 +55,8 @@ impl Cleanup {
     }
 }
 pub struct BackendDriver {
+    candidate_identity_matches_session: bool,
+    desired_graph: Option<GraphPreparation>,
     monitor_latency: Option<MonitorLatencyConfig>,
     recovery_policy: Option<MonitorRecoveryPolicy>,
     backend: Arc<dyn BackendAdapter>,
@@ -74,6 +77,8 @@ pub struct BackendDriver {
 impl BackendDriver {
     pub fn new(backend: Arc<dyn BackendAdapter>) -> Self {
         Self {
+            candidate_identity_matches_session: false,
+            desired_graph: None,
             monitor_latency: None,
             recovery_policy: None,
             backend,
@@ -133,6 +138,7 @@ impl BackendDriver {
     ) {
         self.cleaning += 1;
         let SessionCredits {
+            graph_revision: _,
             deferred,
             completion,
             signals,
@@ -183,6 +189,11 @@ impl BackendDriver {
         let Some(spec) = c.core.desired().cloned() else {
             return;
         };
+        let graph = self
+            .desired_graph
+            .clone()
+            .unwrap_or_else(|| c.graph.preparation());
+        let graph_revision = graph.revision;
         let latency = if matches!(spec.source, InputSelection::Physical { .. }) {
             self.monitor_latency.map(|requested| {
                 c.monitor_latency
@@ -232,17 +243,7 @@ impl BackendDriver {
         };
         let job: Job = Box::new(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if let Some(latency) = latency {
-                    backend.prepare_with_monitor_latency(
-                        spec,
-                        token,
-                        &mut signals,
-                        latency,
-                        fade_in_frames,
-                    )
-                } else {
-                    backend.prepare_with_signals(spec, token, &mut signals)
-                }
+                backend.prepare_graph(spec, token, &mut signals, &graph, latency, fade_in_frames)
             }))
             .unwrap_or_else(|_| Err(BackendError::new("prepare", "backend panicked")));
             completion.send_or_dispose(
@@ -250,6 +251,7 @@ impl BackendDriver {
                     generation,
                     result,
                     credits: SessionCredits {
+                        graph_revision,
                         deferred,
                         completion: cleanup_completion,
                         signals,
@@ -270,6 +272,7 @@ impl BackendDriver {
             );
         });
         self.preparing = Some((generation, cancellation));
+        c.graph.preparing(generation, graph_revision);
         if let Err((_, job)) = pool.try_submit_owned(JobPriority::Prepare, job) {
             self.pending_prepare = Some(job);
         }
@@ -361,7 +364,14 @@ impl ServiceDriver for BackendDriver {
     fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
         match request {
             AppRequest::Start(spec) => {
+                if let Err(error) = c.graph.configure_session(&spec) {
+                    c.graph.record_error(error);
+                    return;
+                }
                 if c.core.start(spec).is_ok() {
+                    self.candidate_identity_matches_session = true;
+                    c.graph.clear_pending();
+                    self.desired_graph = Some(c.graph.preparation());
                     self.automatic_startup = false;
                     self.startup_retry_at = None;
                     c.monitor_latency = None;
@@ -370,14 +380,155 @@ impl ServiceDriver for BackendDriver {
             }
             AppRequest::Stop => {
                 if c.core.stop().is_ok() {
+                    self.desired_graph = None;
+                    c.graph.stopped();
+                    c.graph.clear_pending();
                     self.automatic_startup = false;
                     self.startup_retry_at = None;
                     self.parameters.clear_intent(&mut c.control);
                 }
             }
             AppRequest::RefreshCatalog => self.refresh = true,
+            AppRequest::EditGraph(edit) => {
+                let parameter = match edit {
+                    GraphEdit::SetGain { node, gain } => Some((
+                        node,
+                        moiren_engine::processor::Gain::LEVEL,
+                        moiren_core::protocol::ParamValue::Float(gain),
+                    )),
+                    GraphEdit::SetPan { node, pan } => Some((
+                        node,
+                        moiren_engine::processor::Pan::POSITION,
+                        moiren_core::protocol::ParamValue::Float(pan),
+                    )),
+                    GraphEdit::SetMono { node, mono } => Some((
+                        node,
+                        moiren_engine::processor::Pan::MONO,
+                        moiren_core::protocol::ParamValue::Bool(mono),
+                    )),
+                    GraphEdit::SetSwap { node, swap } => Some((
+                        node,
+                        moiren_engine::processor::Pan::SWAP,
+                        moiren_core::protocol::ParamValue::Bool(swap),
+                    )),
+                    _ => None,
+                };
+                if c.graph.edit(edit).is_ok()
+                    && self.candidate_identity_matches_session
+                    && c.core.phase() == SessionPhase::Running
+                    && let Some((node, parameter, value)) = parameter
+                    && let Some(owner) = self.active.as_mut()
+                    && owner.generation == c.core.generation()
+                    && let Some((_, bindings)) = owner.session.control()
+                    && bindings.node(node).is_some()
+                {
+                    if self
+                        .parameters
+                        .set_node_value(&mut c.control, node, parameter, value)
+                    {
+                        if let Some((gain, pan)) = self
+                            .desired_graph
+                            .as_ref()
+                            .and_then(GraphPreparation::gain_pan_nodes)
+                        {
+                            if node == gain && parameter == moiren_engine::processor::Gain::LEVEL {
+                                self.parameters.clear_primary_intent(&mut c.control, 0);
+                            }
+                            if node == pan && parameter == moiren_engine::processor::Pan::POSITION {
+                                self.parameters.clear_primary_intent(&mut c.control, 1);
+                            }
+                        }
+                        // Recovery must preserve the latest admitted value,
+                        // without accidentally adopting unapplied topology edits.
+                        if let Some(prep) = self.desired_graph.as_mut()
+                            && let Some(state) =
+                                prep.nodes.iter_mut().find(|state| state.id == node)
+                        {
+                            match (parameter, value) {
+                                (
+                                    moiren_engine::processor::Gain::LEVEL,
+                                    moiren_core::protocol::ParamValue::Float(value),
+                                ) if prep.graph.get_node(node).is_ok_and(|node| {
+                                    node.kind() == moiren_core::graph::NodeKind::Gain
+                                }) =>
+                                {
+                                    state.gain = value
+                                }
+                                (
+                                    moiren_engine::processor::Pan::POSITION,
+                                    moiren_core::protocol::ParamValue::Float(value),
+                                ) => state.pan = value,
+                                (
+                                    moiren_engine::processor::Pan::MONO,
+                                    moiren_core::protocol::ParamValue::Bool(value),
+                                ) => state.mono = value,
+                                (
+                                    moiren_engine::processor::Pan::SWAP,
+                                    moiren_core::protocol::ParamValue::Bool(value),
+                                ) => state.swap = value,
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        c.graph
+                            .record_error("实时参数队列繁忙；候选值已保留，可稍后重试或应用图");
+                    }
+                }
+            }
+            AppRequest::ReplaceGraph { graph, nodes } => match c.graph.replace(graph, nodes) {
+                Ok(()) => self.candidate_identity_matches_session = false,
+                Err(error) => c.graph.record_error(error),
+            },
+            AppRequest::ApplyGraph => match c.graph.session_spec(c.core.desired()) {
+                Ok(spec) => match c.core.start(spec) {
+                    Ok(_) => {
+                        self.candidate_identity_matches_session = true;
+                        c.graph.clear_pending();
+                        self.desired_graph = Some(c.graph.preparation());
+                        self.automatic_startup = false;
+                        self.startup_retry_at = None;
+                        c.monitor_latency = None;
+                        self.parameters.clear_intent(&mut c.control);
+                    }
+                    Err(error) => c.graph.record_error(format!("{error:?}")),
+                },
+                Err(error) => c.graph.record_error(error),
+            },
             AppRequest::SetGainPan { gain, pan } if model::valid_gain_pan(gain, pan) => {
+                if !self.candidate_identity_matches_session {
+                    c.graph
+                        .record_error("请先应用载入的候选项目，再调整该项目的实时参数");
+                    return;
+                }
                 c.core.update_gain_pan(gain, pan);
+                if let Some(prep) = self.desired_graph.as_mut()
+                    && let Some((gain_node, pan_node)) = prep.gain_pan_nodes()
+                {
+                    self.parameters.clear_node_intent(
+                        &mut c.control,
+                        gain_node,
+                        moiren_engine::processor::Gain::LEVEL,
+                    );
+                    self.parameters.clear_node_intent(
+                        &mut c.control,
+                        pan_node,
+                        moiren_engine::processor::Pan::POSITION,
+                    );
+                    let _ = c.graph.edit(GraphEdit::SetGain {
+                        node: gain_node,
+                        gain,
+                    });
+                    let _ = c.graph.edit(GraphEdit::SetPan {
+                        node: pan_node,
+                        pan,
+                    });
+                    if let Some(node) = prep.nodes.iter_mut().find(|n| n.id == gain_node) {
+                        node.gain = gain;
+                    }
+                    if let Some(node) = prep.nodes.iter_mut().find(|n| n.id == pan_node) {
+                        node.pan = pan;
+                    }
+                }
                 self.parameters.set(&mut c.control, gain, pan)
             }
             AppRequest::SetGainPan { .. } => {}
@@ -408,6 +559,7 @@ impl ServiceDriver for BackendDriver {
                     self.preparing = None;
                     match result {
                         Err(error) => {
+                            c.graph.preparation_failed(generation, &error);
                             c.core.start_failed(generation, error);
                             self.cleanup(c, generation, false, Cleanup::SignalsOnly, credits);
                         }
@@ -434,6 +586,7 @@ impl ServiceDriver for BackendDriver {
                                 });
                             }
                             Err(error) => {
+                                c.graph.preparation_failed(generation, &error);
                                 c.core.start_failed(generation, error);
                                 let _ = session.cancel();
                                 self.cleanup(
@@ -524,6 +677,7 @@ impl ServiceDriver for BackendDriver {
                 c.core.owner_completed(reaping.generation);
             }
             c.core.owner_reaped(reaping.generation);
+            c.graph.stopped();
         }
         if let Some(owner) = self.active.as_ref() {
             let stale = self.exiting
@@ -536,14 +690,19 @@ impl ServiceDriver for BackendDriver {
             let finished = owner.session.is_finished();
             if !stale && !finished && started == StartedState::Running {
                 c.core.owner_started(owner.generation);
+                c.graph
+                    .running(owner.generation, owner.credits.graph_revision);
             }
             if !stale && !finished && started == StartedState::Failed {
+                c.graph
+                    .preparation_failed(owner.generation, "native owner failed");
                 c.core.start_failed(
                     owner.generation,
                     BackendError::new("start", "native owner failed"),
                 );
             }
             if stale || finished || started == StartedState::Failed {
+                c.graph.stopped();
                 let owner = self.active.take().expect("observed owner");
                 c.core.owner_stopping(owner.generation);
                 if let Err(error) = owner.session.request_stop() {
@@ -587,6 +746,8 @@ impl ServiceDriver for BackendDriver {
     }
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
         self.exiting = true;
+        c.graph.clear_pending();
+        c.graph.stopped();
         self.refresh = false;
         self.automatic_startup = false;
         self.startup_retry_at = None;

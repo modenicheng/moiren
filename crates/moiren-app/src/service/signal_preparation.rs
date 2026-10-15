@@ -1,5 +1,5 @@
 use super::LevelTopic;
-use moiren_core::graph::{LogicalGraph, PortId};
+use moiren_core::graph::{LogicalGraph, PortId, PortRole};
 use moiren_engine::{
     compiler::{CompileConfig, CompileError, CompiledGraph, NodeBindings, compile_with_signals},
     meter::signal::{MeterError, SignalLevelMeter},
@@ -61,7 +61,10 @@ impl SignalPreparation {
             let publisher = self.control.prepare(topic, self.control.new_binding()?)?;
             let observer =
                 SignalLevelMeter::new(graph.get_port(port)?.channels(), 1536, publisher)?;
-            bindings.observe_output(port, observer)?;
+            match graph.get_port(port)?.role() {
+                PortRole::Input => bindings.observe_input(port, observer)?,
+                PortRole::Output => bindings.observe_output(port, observer)?,
+            }
         }
         let mut compiled = compile_with_signals(graph, bindings, config, &self.control)?;
         let host = self.host.take().ok_or(HostError::Closed)?;

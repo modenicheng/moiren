@@ -56,6 +56,33 @@ impl Cancellation {
     }
 }
 pub trait BackendAdapter: Send + Sync + 'static {
+    /// Adapters must explicitly opt into arbitrary topology. The compatibility
+    /// path is valid only for the original fixed chain, never silent fallback.
+    fn prepare_graph(
+        &self,
+        spec: SessionSpec,
+        cancellation: Cancellation,
+        signals: &mut SignalPreparation,
+        graph: &super::GraphPreparation,
+        latency: Option<MonitorLatencyConfig>,
+        fade_in_frames: u32,
+    ) -> Result<Box<dyn PreparedSession>, BackendError> {
+        if graph.graph
+            != crate::session_graph::SessionGraph::new()
+                .map_err(|e| BackendError::new("graph", e))?
+                .graph
+        {
+            return Err(BackendError::new(
+                "graph",
+                "adapter does not support edited topology",
+            ));
+        }
+        if let Some(latency) = latency {
+            self.prepare_with_monitor_latency(spec, cancellation, signals, latency, fade_in_frames)
+        } else {
+            self.prepare_with_signals(spec, cancellation, signals)
+        }
+    }
     fn prepare(
         &self,
         spec: SessionSpec,

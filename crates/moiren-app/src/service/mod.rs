@@ -4,6 +4,7 @@
 mod backend;
 mod core;
 mod driver;
+mod graph;
 mod jobs;
 mod mailbox;
 mod model;
@@ -16,6 +17,7 @@ mod startup;
 mod windows;
 pub use backend::*;
 pub use driver::BackendDriver;
+pub use graph::{GraphEdit, GraphNodeState, GraphPreparation, GraphSnapshot, ServiceGraph};
 pub use signal_preparation::{SignalPreparation, SignalPreparationError};
 pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
 #[cfg(windows)]
@@ -77,6 +79,7 @@ impl Default for RoundBudget {
     }
 }
 pub struct ServiceContext {
+    pub graph: ServiceGraph,
     pub monitor_latency: Option<MonitorLatencyStatus>,
     pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
     pub core: ServiceCore,
@@ -90,6 +93,7 @@ pub struct ServiceContext {
 impl Default for ServiceContext {
     fn default() -> Self {
         Self {
+            graph: ServiceGraph::default(),
             monitor_latency: None,
             monitor_diagnostics: None,
             core: ServiceCore::default(),
@@ -186,11 +190,23 @@ impl ServiceDriver for CoreDriver {
             }
             AppRequest::SetGainPan { gain, pan } => c.control.pending_gain_pan = Some((gain, pan)),
             AppRequest::RefreshCatalog => {}
+            AppRequest::EditGraph(edit) => {
+                let _ = c.graph.edit(edit);
+            }
+            AppRequest::ReplaceGraph { graph, nodes } => {
+                if let Err(error) = c.graph.replace(graph, nodes) {
+                    c.graph.record_error(error);
+                }
+            }
+            AppRequest::ApplyGraph => {
+                c.graph.record_error("未配置原生音频驱动");
+            }
         }
     }
 }
 pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
     AppSnapshot {
+        graph: Arc::new(c.graph.snapshot()),
         monitor_latency: c.monitor_latency.clone(),
         monitor_diagnostics: c.monitor_diagnostics.filter(|diagnostics| {
             c.core.phase() == SessionPhase::Running

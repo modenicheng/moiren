@@ -190,6 +190,7 @@ pub use windows::{
 #[cfg(windows)]
 pub(crate) use windows::{
     prepare_monitor_with_signal_host, prepare_process_monitor_with_signal_host,
+    prepare_routed_monitor, prepare_routed_process_monitor,
 };
 
 #[derive(Debug, Clone, Copy)]
