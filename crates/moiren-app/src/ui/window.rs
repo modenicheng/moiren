@@ -1,4 +1,4 @@
-//! Main window: owns the service guard, hides to tray instead of quitting,
+//! Main window: owns the service guard, minimizes instead of quitting,
 //! and polls service snapshots on the UI clock.
 
 use std::time::Duration;
@@ -7,11 +7,13 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use super::app_view;
+use super::monitoring::MeterSubscriptions;
 use super::pages::{self, Page};
 use super::state::UiState;
 use super::theme;
+use super::widgets::action_assets::ActionIcon;
 use super::widgets::action_assets::{ActionAssets, register_fonts};
-use super::widgets::actions::{ActionButton, ButtonVariant};
+use super::widgets::actions::{ActionButton, ButtonVariant, ControlSize, Density, IconButton};
 use super::widgets::navigation::{WindowAction, WindowControlButton, WorkspaceTab};
 use crate::service::{AppHandle, AppRequest, ServiceRuntime, SessionPhase, start_service};
 use pages::graph_canvas::Camera;
@@ -66,9 +68,7 @@ pub fn run() -> anyhow::Result<()> {
 }
 
 fn run_app(handle: AppHandle) -> anyhow::Result<()> {
-    let initial = handle
-        .try_snapshot()
-        .expect("service publishes its initial snapshot at mailbox creation");
+    let initial = super::state::initial_snapshot(&handle)?;
     gpui_kit::application()
         .with_assets(ActionAssets)
         .run(move |cx| {
@@ -82,7 +82,7 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
 
             let (window_handle, window_entity) = gpui_kit::open_window(
                 WindowOptions {
-                    window_bounds: Some(WindowBounds::centered(size(px(1180.), px(760.)), cx)),
+                    window_bounds: Some(WindowBounds::centered(size(px(1440.), px(900.)), cx)),
                     titlebar: Some(TitlebarOptions {
                         title: Some(SharedString::from("Moiren")),
                         appears_transparent: true,
@@ -96,14 +96,14 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
             )
             .expect("failed to open main window");
 
-            // Closing the window hides to the tray instead of quitting.
+            // Closing preserves the window entity and the independent audio owner.
             window_handle
                 .update(cx, |_, window, cx| {
                     window.on_window_should_close(cx, |window, _cx| {
-                        // Removing the window hides it; the app stays alive so the
-                        // tray can re-show it.
-                        window.remove_window();
-                        true
+                        // The tray can reactivate this same entity; removing it would
+                        // discard the service poller and its presentation state.
+                        window.minimize_window();
+                        false
                     });
                 })
                 .ok();
@@ -117,8 +117,42 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
 /// Root view: toolbar, active page, status bar.
 pub struct StudioShell {
     state: Entity<UiState>,
+    settings_open: bool,
+    project_menu: bool,
+    sidebar_open: bool,
+    inspector_open: bool,
+    compact: bool,
+    density: Density,
+    device_tab: devices::DeviceTab,
+    selected_device: Option<String>,
+    selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
+    meters: MeterSubscriptions,
+    gain_slider: Entity<base::slider::SliderState>,
+    pan_slider: Entity<base::slider::SliderState>,
+    project_path: Option<std::path::PathBuf>,
+    project_name: String,
+    project_message: Option<String>,
+    project_busy: bool,
+    pending_project: Option<(
+        crate::service::RequestId,
+        crate::project::ProjectDocument,
+        std::path::PathBuf,
+    )>,
+    #[cfg(feature = "gpui-test")]
+    test_page: Option<Entity<PageCell>>,
     presentation: WindowPresentation,
     camera: Camera,
+    node_positions: std::collections::HashMap<String, (f32, f32)>,
+    node_drag: Option<(String, f32, f32)>,
+    hand_tool: bool,
+    matrix_scroll: ScrollHandle,
+    mixer_scroll: ScrollHandle,
+    meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
+    observation_nodes: Option<(
+        crate::service::SessionGeneration,
+        moiren_core::graph::NodeId,
+        moiren_core::graph::NodeId,
+    )>,
     canvas_size: Option<(f32, f32)>,
     selected_node: Option<String>,
     /// Screen-space anchor of an active pan drag (window coordinates).
@@ -138,7 +172,7 @@ impl StudioShell {
     fn new(
         state: Entity<UiState>,
         window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
         tray: Option<super::tray::AppTray>,
     ) -> Self {
         #[cfg(windows)]
@@ -153,10 +187,89 @@ impl StudioShell {
             }
             registration
         };
+        let gain = state.read(cx).gain as f32;
+        let pan = state.read(cx).pan as f32;
+        let gain_slider = cx.new(|_| {
+            base::slider::SliderState::new()
+                .min(-60.)
+                .max(0.)
+                .step(0.1)
+                .default_value(if gain <= 0. { -60. } else { 20. * gain.log10() })
+        });
+        let pan_slider = cx.new(|_| {
+            base::slider::SliderState::new()
+                .min(-1.)
+                .max(1.)
+                .step(0.01)
+                .default_value(pan)
+        });
+        cx.subscribe(
+            &gain_slider,
+            |shell, _, event: &base::slider::SliderEvent, cx| {
+                if let base::slider::SliderEvent::Change(value) = event {
+                    shell.state.update(cx, |state, _| {
+                        state.gain = if value.end() <= -60. {
+                            0.
+                        } else {
+                            10f64.powf(f64::from(value.end()) / 20.)
+                        };
+                        state.request_parameters();
+                    });
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &pan_slider,
+            |shell, _, event: &base::slider::SliderEvent, cx| {
+                if let base::slider::SliderEvent::Change(value) = event {
+                    shell.state.update(cx, |state, _| {
+                        state.pan = f64::from(value.end());
+                        state.request_parameters();
+                    });
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+        let meters = MeterSubscriptions::new(state.read(cx).handle.clone());
+        let density = crate::project::load_preferences()
+            .map(|p| match p.density {
+                crate::project::UiDensity::Compact => Density::Compact,
+                _ => Density::Comfortable,
+            })
+            .unwrap_or_default();
         let mut shell = Self {
             state,
+            settings_open: false,
+            project_menu: false,
+            sidebar_open: true,
+            inspector_open: true,
+            compact: false,
+            density,
+            device_tab: devices::DeviceTab::Outputs,
+            selected_device: None,
+            selected_route: None,
+            meters,
+            gain_slider,
+            pan_slider,
+            project_path: None,
+            project_name: "Untitled session".into(),
+            project_message: None,
+            project_busy: false,
+            pending_project: None,
+            #[cfg(feature = "gpui-test")]
+            test_page: None,
             presentation: WindowPresentation::default(),
             camera: Camera::default(),
+            node_positions: Default::default(),
+            node_drag: None,
+            hand_tool: false,
+            matrix_scroll: ScrollHandle::new(),
+            mixer_scroll: ScrollHandle::new(),
+            meter_points: Default::default(),
+            observation_nodes: None,
             canvas_size: None,
             selected_node: None,
             pan_grab: None,
@@ -167,6 +280,15 @@ impl StudioShell {
         };
         shell.window_handle = Some(window.window_handle());
         shell.presentation.show();
+        cx.observe_window_visibility(window, |shell, visibility, _, cx| {
+            shell.presentation.visible = visibility.is_visible();
+            shell.presentation.minimized = !visibility.is_visible();
+            if !visibility.is_visible() {
+                shell.meters.update(&shell.state.read(cx).snapshot, false);
+            }
+            cx.notify();
+        })
+        .detach();
         shell
     }
 
@@ -187,7 +309,18 @@ impl StudioShell {
                             changed
                         });
                         shell.drain_tray(cx);
-                        if changed {
+                        shell.finish_project_load(cx);
+                        let visible = shell.presentation.visible
+                            && !shell.presentation.minimized
+                            && !shell.settings_open
+                            && shell.presentation.page == Page::Mixer;
+                        let points = shell.meter_points.get();
+                        let meter_changed = shell.meters.update_points(
+                            &shell.state.read(cx).snapshot,
+                            visible && points.0,
+                            visible && points.1,
+                        );
+                        if changed || meter_changed {
                             cx.notify();
                         }
                     })
@@ -202,6 +335,12 @@ impl StudioShell {
 
     fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
         self.presentation.page = page;
+        self.settings_open = false;
+        self.project_menu = false;
+        #[cfg(feature = "gpui-test")]
+        if let Some(cell) = &self.test_page {
+            cell.update(cx, |cell, _| cell.page = page);
+        }
         cx.notify();
     }
 
@@ -253,56 +392,35 @@ impl Render for PageCell {
     }
 }
 
-/// Headless shell without platform chrome; page switching mutates
-/// `presentation.page` through the shared [`PageCell`] entity.
+/// Tests construct the production shell, including navigation and service callbacks.
 #[cfg(feature = "gpui-test")]
 pub fn shell_for_tests(
     state: Entity<UiState>,
     page: Entity<PageCell>,
     window: &mut Window,
-) -> impl Render + use<> {
-    struct TestShell {
-        state: Entity<UiState>,
-        page: Entity<PageCell>,
-    }
-    impl Render for TestShell {
-        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            // Page lives in the shared cell; toolbar clicks in tests update
-            // the cell through the same dispatch path as the real shell.
-            let page = self.page.read(cx).page;
-            StudioShell::render_page_only(&self.state, page, cx)
-        }
-    }
-    let _ = window;
-    TestShell { state, page }
+    cx: &mut Context<StudioShell>,
+) -> StudioShell {
+    let mut shell = StudioShell::new(state, window, cx, None);
+    shell.test_page = Some(page);
+    shell
 }
 
-/// No-op outside test builds; marks observable elements for the headless
-/// acceptance tests (see `TestSupportExt::test_support`).
 #[cfg(feature = "gpui-test")]
-#[cfg_attr(not(feature = "gpui-test"), allow(dead_code))]
 pub(crate) trait TestObserve {
     type Out;
     fn gpui_test_observe(self) -> Self::Out;
 }
-
 #[cfg(feature = "gpui-test")]
-impl<E> TestObserve for E
-where
-    E: gpui_kit::base::TestSupportExt,
-{
+impl<E: gpui_kit::base::TestSupportExt> TestObserve for E {
     type Out = gpui_kit::base::ObservedElement<E>;
     fn gpui_test_observe(self) -> Self::Out {
         gpui_kit::base::TestSupportExt::test_support(self)
     }
 }
-
 #[cfg(not(feature = "gpui-test"))]
-#[cfg_attr(not(feature = "gpui-test"), allow(dead_code))]
 pub(crate) trait TestObserve {
     fn gpui_test_observe(self) -> Self;
 }
-
 #[cfg(not(feature = "gpui-test"))]
 impl<E> TestObserve for E {
     fn gpui_test_observe(self) -> Self {
@@ -310,580 +428,140 @@ impl<E> TestObserve for E {
     }
 }
 
-impl StudioShell {
-    /// Static page renderer for headless tests: full shell minus tray chrome.
-    #[cfg(feature = "gpui-test")]
-    fn render_page_only(state: &Entity<UiState>, page: Page, cx: &mut App) -> impl IntoElement {
-        let error = {
-            let state = state.read(cx);
-            state
-                .snapshot
-                .error
-                .as_deref()
-                .or(state.snapshot.catalog_error.as_deref())
-                .unwrap_or("")
-                .to_string()
-        };
-        div()
-            .id("studio-shell")
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(theme::WINDOW_BG)
-            .text_color(theme::TEXT)
-            .font_family(theme::FONT_UI)
-            .when(!error.is_empty(), |shell| {
-                shell.child(
-                    div()
-                        .id("error-strip")
-                        .flex()
-                        .flex_none()
-                        .h(px(36.))
-                        .px(px(theme::SPACE_3))
-                        .items_center()
-                        .bg(theme::SURFACE_3)
-                        .text_size(px(theme::TEXT_SM))
-                        .text_color(theme::DANGER)
-                        .child(error),
-                )
-            })
-            .child(match page {
-                Page::Graph => div().id("session-io-panel").gpui_test_observe().child("io"),
-                Page::Mixer => div().id("mixer-page").gpui_test_observe().child("mix"),
-            })
-            .child(pages::engine_statusbar(state.read(cx)).gpui_test_observe())
-    }
-}
+#[cfg(feature = "gpui-test")]
+mod capture;
+mod chrome;
+#[cfg(feature = "gpui-test")]
+pub use capture::run_ui_capture;
+mod controls;
+mod devices;
+mod graph;
+mod matrix;
+mod mixer;
+mod project;
+mod settings;
+#[cfg(all(test, feature = "gpui-test"))]
+mod tests;
 
 impl Render for StudioShell {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "gpui-test")]
+        if let Some(page) = &self.test_page {
+            self.presentation.page = page.read(cx).page;
+        }
+        let compact = f32::from(window.viewport_size().width) < 1200.;
+        if compact != self.compact {
+            self.sidebar_open = !compact;
+            self.inspector_open = !compact;
+        }
+        self.compact = compact;
+        let visible =
+            window.is_visible() && !self.settings_open && self.presentation.page == Page::Mixer;
+        self.refresh_observation_nodes(cx);
+        self.meter_points.set((false, false));
+        if !visible {
+            self.meters.update(&self.state.read(cx).snapshot, false);
+        }
+        let (gain, pan) = {
+            let state = self.state.read(cx);
+            (
+                if state.gain <= 0. {
+                    -60.
+                } else {
+                    (20. * state.gain.log10()).clamp(-60., 0.) as f32
+                },
+                state.pan as f32,
+            )
+        };
+        if self.gain_slider.read(cx).value().end() != gain {
+            self.gain_slider
+                .update(cx, |s, cx| s.set_value(gain, window, cx));
+        }
+        if self.pan_slider.read(cx).value().end() != pan {
+            self.pan_slider
+                .update(cx, |s, cx| s.set_value(pan, window, cx));
+        }
         let error = {
             let state = self.state.read(cx);
-            let snapshot = &state.snapshot;
-            snapshot
-                .error
-                .as_deref()
-                .or(snapshot.catalog_error.as_deref())
-                .unwrap_or("")
-                .to_string()
+            state
+                .dispatch_error
+                .as_ref()
+                .or(state.snapshot.graph.last_error.as_ref())
+                .or(state.snapshot.error.as_ref())
+                .or(state.snapshot.catalog_error.as_ref())
+                .cloned()
         };
-
         div()
             .id("studio-shell")
+            .relative()
             .size_full()
             .flex()
             .flex_col()
+            .overflow_hidden()
             .bg(theme::WINDOW_BG)
             .text_color(theme::TEXT)
             .font_family(theme::FONT_UI)
-            // Toolbar band.
-            .child(render_toolbar(self, cx))
-            // Error strip.
-            .when(!error.is_empty(), |shell| {
-                shell.child(
+            .text_size(px(theme::TEXT_MD))
+            .child(chrome::toolbar(self, cx))
+            .when_some(error, |view, error| {
+                view.child(
                     div()
                         .id("error-strip")
-                        .flex()
                         .flex_none()
-                        .h(px(36.))
-                        .px(px(theme::SPACE_3))
-                        .items_center()
-                        .bg(theme::SURFACE_3)
-                        .text_size(px(theme::TEXT_SM))
+                        .px(px(theme::SPACE_4))
+                        .py(px(theme::SPACE_2))
+                        .bg(theme::soft(theme::DANGER))
                         .text_color(theme::DANGER)
-                        .child(error.to_string()),
-                )
-            })
-            // Body: active page fills remaining space.
-            .child(render_body(self, cx))
-            // Status bar.
-            .child(pages::engine_statusbar(self.state.read(cx)))
-    }
-}
-
-fn render_toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
-    let state = shell.state.read(cx);
-    let active = state.snapshot.phase == SessionPhase::Running;
-    let status_label = if active { "Running" } else { "Idle" };
-    let status_color = if active {
-        theme::PRIMARY
-    } else {
-        theme::TEXT_FAINT
-    };
-    let this = cx.entity();
-
-    div()
-        .id("app-toolbar")
-        .flex()
-        .flex_none()
-        .h(px(theme::TOOLBAR_HEIGHT))
-        .items_center()
-        .justify_between()
-        .px(px(theme::SPACE_2))
-        .bg(theme::SURFACE)
-        .border_b_1()
-        .border_color(theme::BORDER)
-        .child(
-            // Left cluster: brand + project selector.
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(px(theme::SPACE_2))
-                .child(
-                    div()
-                        .text_size(px(theme::TEXT_MD))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::PRIMARY)
-                        .child("Moiren"),
-                )
-                .child(
-                    div()
                         .text_size(px(theme::TEXT_SM))
-                        .text_color(theme::TEXT_MUTED)
-                        .child("Main Session"),
-                ),
-        )
-        // Center: workspace tabs.
-        .child(
-            div()
-                .id("workspace-tabs")
-                .role(Role::TabList)
-                .flex()
-                .flex_none()
-                .h_full()
-                .items_center()
-                .child(
-                    WorkspaceTab::new("tab-graph", "Graph")
-                        .active(shell.presentation.page == Page::Graph)
-                        .on_click({
-                            let this = this.clone();
-                            move |_, _, cx| {
-                                this.update(cx, |shell, cx| shell.set_page(Page::Graph, cx));
-                            }
-                        }),
+                        .child(error)
+                        .gpui_test_observe(),
                 )
-                .child(
-                    WorkspaceTab::new("tab-mixer", "Mixer")
-                        .active(shell.presentation.page == Page::Mixer)
-                        .on_click({
-                            let this = this.clone();
-                            move |_, _, cx| {
-                                this.update(cx, |shell, cx| shell.set_page(Page::Mixer, cx));
-                            }
-                        }),
-                )
-                .child(WorkspaceTab::new("tab-matrix", "Matrix").enabled(false))
-                .child(WorkspaceTab::new("tab-devices", "Devices").enabled(false)),
-        )
-        .child(
-            // Right cluster: engine status + window buttons.
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(px(theme::SPACE_2))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(theme::SPACE_1))
-                        .px(px(theme::SPACE_2))
-                        .h(px(24.))
-                        .rounded(px(theme::RADIUS_SM))
-                        .bg(theme::SURFACE_3)
-                        .child(div().size(px(6.)).rounded_full().bg(status_color))
-                        .child(
-                            div()
-                                .text_size(px(theme::TEXT_XS))
-                                .text_color(status_color)
-                                .child(status_label),
-                        ),
-                )
-                .child(
-                    WindowControlButton::new("win-min", WindowAction::Minimize).on_click(
-                        |_, window, _| {
-                            window.minimize_window();
-                        },
-                    ),
-                )
-                .child(
-                    WindowControlButton::new("win-close", WindowAction::Close).on_click(
-                        |_, _, cx| {
-                            cx.quit();
-                        },
-                    ),
-                ),
-        )
-}
-
-fn render_body(shell: &StudioShell, cx: &mut Context<StudioShell>) -> impl IntoElement {
-    match shell.presentation.page {
-        Page::Graph => render_graph_page(shell, cx),
-        Page::Mixer => pages::mixer_page(shell.state.read(cx)).into_any_element(),
+            })
+            .child(if self.settings_open {
+                settings::page(self, cx)
+            } else {
+                match self.presentation.page {
+                    Page::Graph => graph::render_graph_page(self, cx),
+                    Page::Mixer => mixer::page(self, cx),
+                    Page::Matrix => matrix::page(self, cx),
+                    Page::Devices => devices::page(self, cx),
+                }
+            })
+            .child(chrome::statusbar(self.state.read(cx)).gpui_test_observe())
+            .when(self.project_menu, |v| v.child(project::menu(self, cx)))
     }
 }
 
-fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShell>) -> AnyElement {
-    let state = shell.state.read(cx);
-    let world = pages::world_from_snapshot(&state.snapshot);
-    let camera = shell.camera;
-    let selected = shell.selected_node.clone();
-    let this = cx.entity();
-
-    // Canvas view with interaction plumbed to the shell entity.
-    let on_zoom = {
-        let this = this.clone();
-        move |(factor, anchor): (f32, Point<Pixels>), _window: &mut Window, cx: &mut App| {
-            this.update(cx, |shell, cx| {
-                let anchor = (f32::from(anchor.x), f32::from(anchor.y));
-                shell.camera.zoom_by(factor, anchor);
-                cx.notify();
-            });
+impl StudioShell {
+    fn refresh_observation_nodes(&mut self, cx: &App) {
+        use moiren_core::graph::NodeKind;
+        let snapshot = &self.state.read(cx).snapshot;
+        if snapshot.phase != SessionPhase::Running
+            || self
+                .observation_nodes
+                .is_some_and(|(generation, _, _)| generation != snapshot.generation)
+        {
+            self.observation_nodes = None;
         }
-    };
-    let on_select_node = {
-        let this = this.clone();
-        move |id: &str, _window: &mut Window, cx: &mut App| {
-            this.update(cx, |shell, cx| {
-                shell.selected_node = Some(id.to_string());
-                cx.notify();
-            });
+        let graph = &snapshot.graph;
+        if snapshot.phase == SessionPhase::Running
+            && graph.active_revision == Some(graph.candidate_revision)
+        {
+            let source = graph
+                .graph
+                .nodes()
+                .iter()
+                .find(|n| n.kind() == NodeKind::Source)
+                .map(|n| n.id());
+            let sink = graph
+                .graph
+                .nodes()
+                .iter()
+                .find(|n| n.kind() == NodeKind::Sink)
+                .map(|n| n.id());
+            self.observation_nodes = source
+                .zip(sink)
+                .map(|(source, sink)| (snapshot.generation, source, sink));
         }
-    };
-    let on_bg_move = {
-        let this = this.clone();
-        move |(position, pressed): (Point<Pixels>, Option<MouseButton>),
-              _window: &mut Window,
-              cx: &mut App| {
-            this.update(cx, |shell, cx| {
-                // Release the pan grab as soon as neither pan button is held,
-                // even when the release happened outside the canvas (or was a
-                // touchpad tap with no physical button at all).
-                let held = matches!(pressed, Some(MouseButton::Left | MouseButton::Middle));
-                if !held {
-                    shell.pan_grab = None;
-                    return;
-                }
-                if let Some((gx, gy)) = shell.pan_grab {
-                    let (dx, dy) = (f32::from(position.x) - gx, f32::from(position.y) - gy);
-                    shell.camera.pan_by(dx, dy);
-                    shell.pan_grab = Some((f32::from(position.x), f32::from(position.y)));
-                    cx.notify();
-                }
-            });
-        }
-    };
-    let on_bg_down = {
-        let this = this.clone();
-        move |(_event, _bounds): (MouseDownEvent, Bounds<Pixels>),
-              window: &mut Window,
-              cx: &mut App| {
-            this.update(cx, |shell, cx| {
-                shell.pan_grab = Some((
-                    f32::from(window.mouse_position().x),
-                    f32::from(window.mouse_position().y),
-                ));
-                shell.selected_node = None;
-                cx.notify();
-            });
-        }
-    };
-
-    let on_scroll_pan = {
-        let this = this.clone();
-        move |(dx, dy): (f32, f32), _window: &mut Window, cx: &mut App| {
-            this.update(cx, |shell, cx| {
-                shell.camera.pan_by(dx, dy);
-                cx.notify();
-            });
-        }
-    };
-    let on_camera_fit = {
-        let this = this.clone();
-        move |fitted: &Camera, canvas: Size<Pixels>, _window: &mut Window, cx: &mut App| {
-            this.update(cx, |shell, cx| {
-                shell.canvas_size = Some((f32::from(canvas.width), f32::from(canvas.height)));
-                if !shell.camera.adjusted {
-                    shell.camera = *fitted;
-                    cx.notify();
-                }
-            });
-        }
-    };
-    let canvas_view = pages::graph_canvas_view::graph_canvas_view(
-        world,
-        camera,
-        selected.as_deref(),
-        pages::graph_canvas_view::CanvasCallbacks {
-            on_background_down: std::rc::Rc::new(on_bg_down),
-            on_canvas_mouse_move: Box::new(on_bg_move),
-            on_zoom: std::rc::Rc::new(on_zoom),
-            on_pan: Box::new(on_scroll_pan),
-            on_select_node: std::rc::Rc::new(on_select_node),
-            on_camera_fit: std::rc::Rc::new(on_camera_fit),
-        },
-    );
-
-    div()
-        .id("graph-page")
-        .relative()
-        .flex()
-        .flex_1()
-        .overflow_hidden()
-        .child(session_io_panel(shell, cx, &this))
-        .child(
-            div()
-                .id("graph-canvas-host")
-                .relative()
-                .flex_1()
-                .overflow_hidden()
-                .child(canvas_view)
-                .child(editing_toolbar(shell, &this)),
-        )
-        .into_any_element()
-}
-
-/// Left rail: SESSION I/O + transport controls.
-fn session_io_panel(
-    shell: &StudioShell,
-    cx: &Context<StudioShell>,
-    this: &Entity<StudioShell>,
-) -> impl IntoElement {
-    use pages::session_setup::{PickerRow, section_heading};
-
-    let snapshot = shell.state.read(cx).snapshot.clone();
-    let running = snapshot.phase == SessionPhase::Running;
-
-    // Cycle output selection through the catalog.
-    let cycle_output = {
-        let this = this.clone();
-        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-            this.update(cx, |shell, cx| {
-                let next = {
-                    let state = shell.state.read(cx);
-                    let catalog = &state.snapshot.catalog;
-                    catalog
-                        .outputs
-                        .iter()
-                        .position(|row| {
-                            Some(&row.endpoint_id) == state.selection.output_id.as_ref()
-                        })
-                        .and_then(|i| catalog.outputs.get((i + 1) % catalog.outputs.len().max(1)))
-                        .or_else(|| catalog.outputs.first())
-                        .map(|row| row.endpoint_id.clone())
-                };
-                if let Some(id) = next {
-                    shell.state.update(cx, |state, _| {
-                        state.selection.output_id = Some(id);
-                    });
-                }
-                cx.notify();
-            });
-        }
-    };
-
-    let output_label = {
-        let state = shell.state.read(cx);
-        state
-            .selection
-            .output_id
-            .clone()
-            .or_else(|| snapshot.catalog.default_output_endpoint_id.clone())
-            .unwrap_or_else(|| "No output selected".into())
-    };
-
-    let start_stop = {
-        let this = this.clone();
-        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-            this.update(cx, |shell, cx| {
-                let state = shell.state.clone();
-                state.update(cx, |state, _| {
-                    let snapshot = state.snapshot.clone();
-                    if snapshot.phase == SessionPhase::Running {
-                        state.dispatch(AppRequest::Stop);
-                    } else if let Some(output) = state
-                        .selection
-                        .output_id
-                        .clone()
-                        .or_else(|| snapshot.catalog.default_output_endpoint_id.clone())
-                    {
-                        state.dispatch(AppRequest::Start(session_setup_tone(&output)));
-                    }
-                });
-                cx.notify();
-            });
-        }
-    };
-
-    let refresh = {
-        let this = this.clone();
-        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-            this.update(cx, |shell, cx| {
-                let state = shell.state.clone();
-                state.update(cx, |state, _| {
-                    state.dispatch(AppRequest::RefreshCatalog);
-                });
-                cx.notify();
-            });
-        }
-    };
-
-    div()
-        .id("session-io-panel")
-        .flex()
-        .flex_col()
-        .flex_none()
-        .w(px(theme::LIBRARY_WIDTH))
-        .bg(theme::SURFACE)
-        .border_r_1()
-        .border_color(theme::BORDER)
-        .p(px(theme::SPACE_3))
-        .gap(px(theme::SPACE_2))
-        .overflow_y_scroll()
-        .child(section_heading("SESSION I/O"))
-        .child(
-            PickerRow::new("picker-output", "Output", output_label)
-                .disabled(running || snapshot.catalog.outputs.is_empty())
-                .on_click(cycle_output),
-        )
-        .child(ActionButton::new("btn-refresh", "Refresh devices").on_click(refresh))
-        .child(
-            ActionButton::new(
-                "btn-start-stop",
-                if running {
-                    "Stop Session"
-                } else {
-                    "Start Monitor"
-                },
-            )
-            .variant(if running {
-                ButtonVariant::Danger
-            } else {
-                ButtonVariant::Primary
-            })
-            .disabled(snapshot.catalog.outputs.is_empty())
-            .on_click(start_stop),
-        )
-        .child(
-            div()
-                .text_size(px(theme::TEXT_XS))
-                .text_color(theme::TEXT_FAINT)
-                .child("Device changes apply on Start."),
-        )
-}
-
-fn session_setup_tone(output: &str) -> crate::service::SessionSpec {
-    pages::session_setup::tone_spec(output.to_string(), 10, 0.5, 0.0)
-}
-
-/// Floating Select/Pan toolbar + zoom controls, top-left of the canvas.
-fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl IntoElement {
-    let zoom_label = format!("{}%", (shell.camera.zoom * 100.).round() as i32);
-    div()
-        .id("editing-toolbar")
-        .absolute()
-        .top(px(theme::SPACE_4))
-        .left(px(theme::SPACE_4))
-        .flex()
-        .items_center()
-        .gap(px(7.))
-        .child(
-            div()
-                .id("zoom-out")
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(30.))
-                .rounded(px(theme::RADIUS_SM))
-                .bg(theme::SURFACE_3)
-                .border_1()
-                .border_color(theme::BORDER)
-                .text_size(px(theme::TEXT_SM))
-                .text_color(theme::TEXT)
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::SURFACE_4))
-                .on_click({
-                    let this = this.clone();
-                    move |_, _, cx| {
-                        this.update(cx, |shell, cx| {
-                            shell
-                                .camera
-                                .zoom_around_center(shell.canvas_size, 1.0 / 1.05);
-                            cx.notify();
-                        });
-                    }
-                })
-                .child("−"),
-        )
-        .child(
-            div()
-                .id("zoom-label")
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(64.))
-                .h(px(30.))
-                .rounded(px(theme::RADIUS_SM))
-                .bg(theme::SURFACE_3)
-                .border_1()
-                .border_color(theme::BORDER)
-                .font_family(theme::FONT_MONO)
-                .text_size(px(theme::TEXT_SM))
-                .text_color(theme::TEXT)
-                .child(zoom_label),
-        )
-        .child(
-            div()
-                .id("zoom-in")
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(30.))
-                .rounded(px(theme::RADIUS_SM))
-                .bg(theme::SURFACE_3)
-                .border_1()
-                .border_color(theme::BORDER)
-                .text_size(px(theme::TEXT_SM))
-                .text_color(theme::TEXT)
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::SURFACE_4))
-                .on_click({
-                    let this = this.clone();
-                    move |_, _, cx| {
-                        this.update(cx, |shell, cx| {
-                            shell.camera.zoom_around_center(shell.canvas_size, 1.05);
-                            cx.notify();
-                        });
-                    }
-                })
-                .child("+"),
-        )
-        .child(
-            div()
-                .id("zoom-fit")
-                .flex()
-                .items_center()
-                .justify_center()
-                .px(px(theme::SPACE_2))
-                .h(px(30.))
-                .rounded(px(theme::RADIUS_SM))
-                .bg(theme::SURFACE_3)
-                .border_1()
-                .border_color(theme::BORDER)
-                .text_size(px(theme::TEXT_SM))
-                .text_color(theme::TEXT)
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::SURFACE_4))
-                .on_click({
-                    let this = this.clone();
-                    move |_, _, cx| {
-                        this.update(cx, |shell, cx| {
-                            shell.camera.adjusted = false;
-                            cx.notify();
-                        });
-                    }
-                })
-                .child("Fit"),
-        )
+    }
 }

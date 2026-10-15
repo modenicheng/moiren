@@ -49,6 +49,18 @@ pub(crate) fn register_fonts(cx: &App) -> Result<()> {
 impl AssetSource for ActionAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let bytes: Option<&'static [u8]> = match path {
+            "brand/mark.svg" => Some(include_bytes!(
+                "../../../../../assets/logos/moiren-2c-mark-light.svg"
+            )),
+            "icons/mic.svg" => Some(include_bytes!("../../../assets/icons/mic.svg")),
+            "icons/headphones.svg" => Some(include_bytes!("../../../assets/icons/headphones.svg")),
+            "icons/sliders.svg" => Some(include_bytes!("../../../assets/icons/sliders.svg")),
+            "icons/wave.svg" => Some(include_bytes!("../../../assets/icons/wave.svg")),
+            "icons/app.svg" => Some(include_bytes!("../../../assets/icons/app.svg")),
+            "icons/git-merge.svg" => Some(include_bytes!("../../../assets/icons/git-merge.svg")),
+            "icons/clock.svg" => Some(include_bytes!("../../../assets/icons/clock.svg")),
+            "icons/speaker.svg" => Some(include_bytes!("../../../assets/icons/speaker.svg")),
+            "icons/monitor.svg" => Some(include_bytes!("../../../assets/icons/monitor.svg")),
             "figma-actions/plus.svg" => {
                 Some(include_bytes!("../../../assets/figma-actions/plus.svg"))
             }

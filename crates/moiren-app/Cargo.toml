@@ -19,6 +19,10 @@ tray-icon = "0.21"
 # UI headless tests activate gpui-kit test-support without affecting release builds.
 gpui-test = ["gpui-kit/test-support"]
 
+[[example]]
+name = "ui_capture"
+required-features = ["gpui-test"]
+
 [dev-dependencies]
 # Backend tests exercise the portable renderer without enabling native audio.
 moiren-windows-audio = { path = "../moiren-windows-audio" }

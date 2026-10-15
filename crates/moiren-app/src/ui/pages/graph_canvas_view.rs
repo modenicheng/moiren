@@ -217,6 +217,34 @@ fn paint_node_card(
         ));
     }
 
+    // Ports sit on the card edge; wires use these exact same world anchors.
+    for index in 0..node.input_count {
+        window.paint_quad(PaintQuad {
+            bounds: Bounds {
+                origin: point(px(ox - 3. * z), px(oy + node.input_y(index) * z - 3. * z)),
+                size: size(px(6. * z), px(6. * z)),
+            },
+            corner_radii: (3. * z).into(),
+            background: tint.into(),
+            border_widths: 0f32.into(),
+            border_color: theme::BORDER,
+            border_style: BorderStyle::default(),
+        });
+    }
+    if node.has_output {
+        window.paint_quad(PaintQuad {
+            bounds: Bounds {
+                origin: point(px(ox + w - 3. * z), px(oy + node.port_y() * z - 3. * z)),
+                size: size(px(6. * z), px(6. * z)),
+            },
+            corner_radii: (3. * z).into(),
+            background: tint.into(),
+            border_widths: 0f32.into(),
+            border_color: theme::BORDER,
+            border_style: BorderStyle::default(),
+        });
+    }
+
     // Routing labels.
     let label_size = (9. * z).max(7.);
     let label_y = oy + (theme::card::METER_Y + theme::card::METER_HEIGHT + theme::card::GAP) * z;
@@ -345,6 +373,7 @@ pub struct CanvasCallbacks {
     pub on_zoom: Rc<ZoomFn>,
     pub on_pan: WindowAppFn<(f32, f32)>,
     pub on_select_node: Rc<SelectNodeFn>,
+    pub on_select_wire: Rc<SelectNodeFn>,
     pub on_camera_fit: Rc<CameraFitFn>,
 }
 
@@ -360,6 +389,7 @@ pub fn graph_canvas_view(
         on_zoom,
         on_pan,
         on_select_node,
+        on_select_wire,
         on_camera_fit,
     } = cb;
     let wire_paint_world = world.clone();
@@ -375,42 +405,48 @@ pub fn graph_canvas_view(
         .size_full()
         .bg(theme::WINDOW_BG)
         .overflow_hidden()
-        .child(canvas(
-            {
-                let fit_camera = paint_camera;
-                let fit_world = world.clone();
-                let seen_bounds = canvas_bounds.clone();
-                move |bounds, window, cx| {
-                    seen_bounds.set(Some(bounds));
-                    // Auto-fit once (or after Fit clicked) on real layout.
-                    if !fit_camera.adjusted {
+        .child(
+            canvas(
+                {
+                    let fit_camera = paint_camera;
+                    let fit_world = world.clone();
+                    let seen_bounds = canvas_bounds.clone();
+                    move |bounds, window, cx| {
+                        seen_bounds.set(Some(bounds));
+                        // Auto-fit once (or after Fit clicked) on real layout.
                         let mut fitted = fit_camera;
-                        fitted.fit(bounds.size, fit_world.graph_bounds);
+                        if !fit_camera.adjusted {
+                            fitted.fit(bounds.size, fit_world.graph_bounds);
+                        }
                         on_camera_fit(&fitted, bounds.size, window, cx);
+                        bounds
                     }
-                    bounds
-                }
-            },
-            move |bounds, _state, window, cx| {
-                paint_canvas_layer(
-                    &wire_paint_world,
-                    &paint_camera,
-                    bounds,
-                    selected_node.as_deref(),
-                    window,
-                    cx,
-                )
-            },
-        ))
+                },
+                move |bounds, _state, window, cx| {
+                    paint_canvas_layer(
+                        &wire_paint_world,
+                        &paint_camera,
+                        bounds,
+                        selected_node.as_deref(),
+                        window,
+                        cx,
+                    )
+                },
+            )
+            .size_full(),
+        )
         // Interaction overlay: hit-tests painted node cards via the camera.
         .child(
             div()
                 .id("graph-canvas-input")
                 .absolute()
+                .top_0()
+                .left_0()
                 .size_full()
                 .on_mouse_down(MouseButton::Left, {
                     let on_background_down = on_background_down.clone();
                     let on_select_node = on_select_node.clone();
+                    let on_select_wire = on_select_wire.clone();
                     let hit_camera = paint_camera;
                     let hit_world = world.clone();
                     let seen_bounds = canvas_bounds.clone();
@@ -432,8 +468,25 @@ pub fn graph_canvas_view(
                                 on_select_node(node.id.as_str(), window, cx);
                                 return;
                             }
+                            let world_point = (
+                                (local.0 - hit_camera.pan_x) / hit_camera.zoom,
+                                (local.1 - hit_camera.pan_y) / hit_camera.zoom,
+                            );
+                            if let Some(wire) = hit_world.wires.iter().find(|wire| {
+                                wire_distance(world_point, wire.from, wire.to)
+                                    < 6. / hit_camera.zoom
+                            }) {
+                                on_select_wire(&wire.id, window, cx);
+                                return;
+                            }
                         }
                         on_background_down((event.clone(), Bounds::default()), window, cx);
+                    }
+                })
+                .on_mouse_down(MouseButton::Middle, {
+                    let on_background_down = on_background_down.clone();
+                    move |event, window, cx| {
+                        on_background_down((event.clone(), Bounds::default()), window, cx)
                     }
                 })
                 .on_mouse_move(move |event: &MouseMoveEvent, window, cx| {
@@ -483,4 +536,36 @@ pub fn graph_canvas_view(
                     }
                 }),
         )
+}
+
+fn wire_distance(point: (f32, f32), from: (f32, f32), to: (f32, f32)) -> f32 {
+    let handle = ((to.0 - from.0).abs() * 0.4).max(24.);
+    let mut previous = from;
+    let mut distance = f32::MAX;
+    for i in 1..=24 {
+        let t = i as f32 / 24.;
+        let u = 1. - t;
+        let next = (
+            u * u * u * from.0
+                + 3. * u * u * t * (from.0 + handle)
+                + 3. * u * t * t * (to.0 - handle)
+                + t * t * t * to.0,
+            u * u * u * from.1 + 3. * u * u * t * from.1 + 3. * u * t * t * to.1 + t * t * t * to.1,
+        );
+        let vector = (next.0 - previous.0, next.1 - previous.1);
+        let length = vector.0 * vector.0 + vector.1 * vector.1;
+        let fraction = if length > 0. {
+            ((point.0 - previous.0) * vector.0 + (point.1 - previous.1) * vector.1) / length
+        } else {
+            0.
+        }
+        .clamp(0., 1.);
+        distance = distance.min(
+            ((point.0 - previous.0 - vector.0 * fraction).powi(2)
+                + (point.1 - previous.1 - vector.1 * fraction).powi(2))
+            .sqrt(),
+        );
+        previous = next;
+    }
+    distance
 }

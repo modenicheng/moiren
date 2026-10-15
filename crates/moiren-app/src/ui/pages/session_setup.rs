@@ -6,8 +6,6 @@ use gpui_kit::*;
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
-use crate::service::{InputSelection, RunLimit, SessionSpec};
-
 use crate::ui::theme;
 
 /// A picker row: label + current value; click cycles through options.
@@ -51,8 +49,9 @@ impl PickerRow {
 
 impl RenderOnce for PickerRow {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        div()
-            .id(self.id)
+        gpui_kit::base::Button::new(self.id)
+            .disabled(self.disabled)
+            .accessibility_label(format!("{}: {}", self.label, self.value))
             .flex()
             .items_center()
             .justify_between()
@@ -65,8 +64,7 @@ impl RenderOnce for PickerRow {
             .when(!self.disabled, |s| {
                 s.cursor_pointer().hover(|s| s.bg(theme::SURFACE_4))
             })
-            .when(self.disabled, |s| s.opacity(0.55))
-            .when_some(self.on_click, |s, on_click| {
+            .when_some(self.on_click.filter(|_| !self.disabled), |s, on_click| {
                 s.on_click(move |e, w, cx| on_click(e, w, cx))
             })
             .child(
@@ -77,7 +75,9 @@ impl RenderOnce for PickerRow {
             )
             .child(
                 div()
-                    .font_family(theme::FONT_MONO)
+                    .min_w_0()
+                    .truncate()
+                    .font_family(theme::FONT_UI)
                     .text_size(px(theme::TEXT_SM))
                     .text_color(if self.disabled {
                         theme::TEXT_FAINT
@@ -99,21 +99,6 @@ pub fn section_heading(title: &str) -> impl IntoElement {
         .text_size(px(theme::TEXT_XS))
         .text_color(theme::TEXT_FAINT)
         .child(title.to_string())
-}
-
-/// Placeholder spec builder so the shell can start sessions once the setup
-/// panel wires selection state (kept next to the ported semantics).
-pub fn tone_spec(output_endpoint_id: String, seconds: u16, gain: f64, pan: f64) -> SessionSpec {
-    SessionSpec {
-        source: InputSelection::Tone {
-            frequency_hz: 440.0,
-        },
-        output_endpoint_id,
-        limit: RunLimit::Seconds(seconds),
-        gain,
-        pan,
-        max_block_frames: 256,
-    }
 }
 
 #[cfg(all(test, feature = "gpui-test"))]

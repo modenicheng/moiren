@@ -1,0 +1,195 @@
+use super::*;
+use controls::*;
+
+pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
+    let this = cx.entity();
+    let state = shell.state.read(cx);
+    let limit = if shell.compact { 16 } else { 24 };
+    let project_label = if shell.project_name.chars().count() > limit {
+        format!(
+            "{}…",
+            shell
+                .project_name
+                .chars()
+                .take(limit - 1)
+                .collect::<String>()
+        )
+    } else {
+        shell.project_name.clone()
+    };
+    let running = matches!(
+        state.snapshot.phase,
+        SessionPhase::Running | SessionPhase::Starting
+    );
+    let mut tabs = div()
+        .id("workspace-tabs")
+        .role(Role::TabList)
+        .flex()
+        .h_full()
+        .items_center();
+    for (id, page) in [
+        ("tab-graph", Page::Graph),
+        ("tab-mixer", Page::Mixer),
+        ("tab-matrix", Page::Matrix),
+        ("tab-devices", Page::Devices),
+    ] {
+        let this = this.clone();
+        tabs = tabs.child(
+            WorkspaceTab::new(id, page.title())
+                .active(!shell.settings_open && shell.presentation.page == page)
+                .on_click(move |_, _, cx| this.update(cx, |shell, cx| shell.set_page(page, cx))),
+        );
+    }
+    div()
+        .id("app-toolbar")
+        .flex()
+        .flex_none()
+        .h(px(theme::TOOLBAR_HEIGHT))
+        .items_center()
+        .justify_between()
+        .px(px(theme::SPACE_2))
+        .gap(px(theme::SPACE_2))
+        .bg(theme::SURFACE)
+        .border_b_1()
+        .border_color(theme::BORDER)
+        .child(
+            div()
+                .relative()
+                .flex()
+                .items_center()
+                .gap(px(theme::SPACE_2))
+                .min_w_0()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .window_control_area(WindowControlArea::Drag)
+                        .child(gpui_kit::img("brand/mark.svg").size(px(24.)))
+                        .when(!shell.compact, |v| v.child(heading("Moiren"))),
+                )
+                .child(
+                    ActionButton::new("project-menu", project_label)
+                        .variant(ButtonVariant::Ghost)
+                        .size(ControlSize::Small)
+                        .on_click({
+                            let this = this.clone();
+                            move |_, _, cx| {
+                                this.update(cx, |shell, cx| {
+                                    shell.project_menu = !shell.project_menu;
+                                    cx.notify();
+                                })
+                            }
+                        }),
+                ),
+        )
+        .child(tabs)
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(4.))
+                .child(
+                    button("transport", if running { "Stop" } else { "Start" })
+                        .variant(if running {
+                            ButtonVariant::Danger
+                        } else {
+                            ButtonVariant::Primary
+                        })
+                        .disabled(
+                            state.pending_request
+                                || matches!(
+                                    state.snapshot.phase,
+                                    SessionPhase::Stopping
+                                        | SessionPhase::Exiting
+                                        | SessionPhase::Exited
+                                )
+                                || (!running && state.candidate_spec().is_none()),
+                        )
+                        .on_click({
+                            let this = this.clone();
+                            move |_, _, cx| {
+                                this.update(cx, |shell, cx| {
+                                    shell.state.update(cx, |state, _| state.toggle_transport());
+                                    cx.notify();
+                                })
+                            }
+                        }),
+                )
+                .child(
+                    IconButton::new("open-settings", "Settings", ActionIcon::Settings).on_click({
+                        let this = this.clone();
+                        move |_, _, cx| {
+                            this.update(cx, |shell, cx| {
+                                shell.settings_open = !shell.settings_open;
+                                shell.project_menu = false;
+                                cx.notify();
+                            })
+                        }
+                    }),
+                )
+                .child(
+                    WindowControlButton::new("win-min", WindowAction::Minimize)
+                        .on_click(|_, window, _| window.minimize_window()),
+                )
+                .child(
+                    WindowControlButton::new("win-max", WindowAction::Maximize)
+                        .on_click(|_, window, _| window.zoom_window()),
+                )
+                .child(
+                    WindowControlButton::new("win-close", WindowAction::Close)
+                        .on_click(move |_, window, _| window.minimize_window()),
+                ),
+        )
+}
+
+pub(super) fn statusbar(state: &UiState) -> Stateful<Div> {
+    let snapshot = &state.snapshot;
+    let running = snapshot.phase == SessionPhase::Running;
+    let color = if running {
+        theme::SUCCESS
+    } else if snapshot.phase == SessionPhase::Failed {
+        theme::DANGER
+    } else {
+        theme::TEXT_FAINT
+    };
+    let format = snapshot
+        .monitor_diagnostics
+        .filter(|d| d.generation == snapshot.generation && running)
+        .map(|d| {
+            format!(
+                "{} Hz  ·  period {} frames",
+                d.observation.prepared.output.sample_rate,
+                d.observation
+                    .prepared
+                    .output
+                    .actual_period_frames
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "—".into())
+            )
+        })
+        .unwrap_or_else(|| "Format —  ·  latency —  ·  CPU —  ·  XRUN —".into());
+    div()
+        .id("engine-statusbar")
+        .flex()
+        .flex_none()
+        .h(px(28.))
+        .px(px(theme::SPACE_3))
+        .items_center()
+        .justify_between()
+        .gap(px(theme::SPACE_3))
+        .bg(theme::SURFACE)
+        .border_t_1()
+        .border_color(theme::BORDER)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(theme::SPACE_3))
+                .child(badge(state.phase_text(), color))
+                .child(label(state.elapsed_text()))
+                .child(label(format)),
+        )
+        .child(label(format!("Session {}", snapshot.generation.0)))
+}

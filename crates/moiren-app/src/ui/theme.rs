@@ -1,9 +1,4 @@
-//! Moiren design tokens — the "Graph" deep theme, ported from theme.slint.
-//!
-//! Color-first dark theme (Figma "Graph" palette). Deliberately **no green**:
-//! a running session reads as the device blue, caution/recording as gold.
-//! See docs in the original theme.slint for provenance; keep raw literals out
-//! of pages — components read `theme::…` only.
+//! Shared workstation tokens. Pages and the action library use one palette.
 #![allow(dead_code)]
 
 use gpui_kit::{Hsla, hsla};
@@ -11,22 +6,22 @@ use gpui_kit::{Hsla, hsla};
 pub mod controls;
 
 // --- Accents ---------------------------------------------------------------
-pub const PRIMARY: Hsla = hsla(0.711640, 0.496063, 0.750980, 1.0);
+pub const PRIMARY: Hsla = controls::FOCUS;
 pub const PRIMARY_HOVER: Hsla = hsla(0.715686, 0.525773, 0.809804, 1.0);
 pub const PRIMARY_PRESSED: Hsla = hsla(0.705479, 0.470968, 0.696078, 1.0);
 /// Ink that sits on an accent fill (dark-scheme accents are light).
 pub const ON_PRIMARY: Hsla = hsla(0.583333, 0.166667, 0.094118, 1.0);
 
 // Capture side: input devices, application sources, live signal.
-pub const SIGNAL_DEVICE: Hsla = hsla(0.583333, 0.728571, 0.725490, 1.0);
+pub const SIGNAL_DEVICE: Hsla = hsla(0.522059, 0.857143, 0.533333, 1.0);
 // Render side: output devices, test tone, recording.
-pub const SIGNAL_RECORDER: Hsla = hsla(0.101515, 0.696203, 0.690196, 1.0);
+pub const SIGNAL_RECORDER: Hsla = hsla(0.591991, 0.939024, 0.678431, 1.0);
 
 // --- Surfaces --------------------------------------------------------------
-pub const WINDOW_BG: Hsla = hsla(0.571429, 0.170732, 0.080392, 1.0); // canvas behind cards
-pub const SURFACE: Hsla = hsla(0.574074, 0.183673, 0.096078, 1.0); // chrome: title bar, rail
-pub const SURFACE_2: Hsla = hsla(0.574074, 0.152542, 0.115686, 1.0); // cards, graph nodes
-pub const SURFACE_3: Hsla = hsla(0.569444, 0.153846, 0.152941, 1.0); // controls, inputs
+pub const WINDOW_BG: Hsla = controls::CANVAS;
+pub const SURFACE: Hsla = controls::PANEL;
+pub const SURFACE_2: Hsla = controls::PANEL;
+pub const SURFACE_3: Hsla = controls::RAISED;
 pub const SURFACE_4: Hsla = hsla(0.571429, 0.142857, 0.192157, 1.0); // hover / pressed control
 pub const OVERLAY_SCRIM: Hsla = Hsla {
     a: 0.58,
@@ -34,7 +29,7 @@ pub const OVERLAY_SCRIM: Hsla = Hsla {
 };
 
 // --- Lines -----------------------------------------------------------------
-pub const BORDER: Hsla = hsla(0.564103, 0.156627, 0.162745, 1.0);
+pub const BORDER: Hsla = controls::BORDER;
 pub const BORDER_STRONG: Hsla = hsla(0.562500, 0.142857, 0.219608, 1.0);
 pub const HAIRLINE: Hsla = hsla(0.560606, 0.169231, 0.127451, 1.0);
 pub const GRIP: Hsla = hsla(0.578431, 0.104294, 0.319608, 1.0);
@@ -46,19 +41,19 @@ pub const GRID_LINE: Hsla = Hsla {
 pub const FOCUS_RING: Hsla = Hsla { a: 0.55, ..PRIMARY };
 
 // --- Text ------------------------------------------------------------------
-pub const TEXT: Hsla = hsla(0.550000, 0.238095, 0.917647, 1.0);
-pub const TEXT_MUTED: Hsla = hsla(0.563492, 0.132075, 0.688235, 1.0);
-pub const TEXT_FAINT: Hsla = hsla(0.566667, 0.119048, 0.494118, 1.0);
+pub const TEXT: Hsla = controls::TEXT;
+pub const TEXT_MUTED: Hsla = controls::SECONDARY;
+pub const TEXT_FAINT: Hsla = controls::MUTED;
 
 // --- Semantic status -------------------------------------------------------
 pub const SUCCESS: Hsla = SIGNAL_DEVICE;
-pub const WARNING: Hsla = SIGNAL_RECORDER;
-pub const DANGER: Hsla = hsla(0.014706, 0.621951, 0.678431, 1.0);
+pub const WARNING: Hsla = hsla(0.120155, 0.964126, 0.562745, 1.0);
+pub const DANGER: Hsla = controls::DANGER;
 
 // --- Level meters ----------------------------------------------------------
 pub const METER_LOW: Hsla = SIGNAL_DEVICE;
 pub const METER_MID: Hsla = PRIMARY;
-pub const METER_HIGH: Hsla = SIGNAL_RECORDER;
+pub const METER_HIGH: Hsla = WARNING;
 
 // --- Spacing scale (4pt based) ---------------------------------------------
 pub const SPACE_1: f32 = 4.;
@@ -92,11 +87,11 @@ pub mod card {
 
 // --- Radii -----------------------------------------------------------------
 pub const RADIUS_SM: f32 = 4.;
-pub const RADIUS_MD: f32 = 10.;
-pub const RADIUS_LG: f32 = 14.;
+pub const RADIUS_MD: f32 = 6.;
+pub const RADIUS_LG: f32 = 8.;
 
 // --- Typography ------------------------------------------------------------
-pub const FONT_UI: &str = "Segoe UI";
+pub const FONT_UI: &str = controls::FONT;
 pub const FONT_MONO: &str = "Cascadia Mono";
 pub const TEXT_XS: f32 = 10.;
 pub const TEXT_SM: f32 = 12.;

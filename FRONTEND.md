@@ -1,10 +1,10 @@
 # Moiren 前端设计与协作要求
 
-本文件面向后续修改 Moiren UI 的开发者和设计会话，集中记录公共设计要求、资源入口、数据语义与协作约束。更新日期：2026-10-14。
+本文件面向后续修改 Moiren UI 的开发者和设计会话，集中记录公共设计要求、资源入口、数据语义与协作约束。更新日期：2026-10-15。
 
 **2026-10-14 UI 框架迁移完成：Slint 已完全移除，桌面 UI 改为 gpui-kit 0.7.3（纯 Rust）。** 下文的 Slint 组件/断点描述是历史设计参考；现行实现见 `crates/moiren-app/src/ui/`（theme.rs 令牌、widgets/ 组件、pages/ 页面、window.rs 壳）。设计令牌与配色语义已 1:1 移植。Slint 时代的验收方式作废，headless 测试用 `cargo test -p moiren-app --features gpui-test`。
 
-**当前 UI 只是逻辑与技术验证，大概率需要完全重写。** 现有 Slint 布局、组件划分、窗口断点、配色和局部实现都不是必须继承的产品规范。重写应遵循已确认的目标设计与真实后端契约；现有源码用于理解、验证这些契约。
+**2026-10-15 应用框架接入：Graph、Mixer、Matrix、Devices 和 Settings 共用 gpui 组件与服务快照。** 页面按工作站需求重新组织，不直接复制 Figma。服务拥有候选 LogicalGraph，支持真实拓扑事务、编译启动、Gain / Balance / Mono / Swap、输入与输出观测，以及项目和偏好保存。当前音频驱动的运行范围仍是单 Source、单 Sink 的双声道图；多设备候选可以编辑，应用时会明确报告运行限制。具体接线与验证见 [应用前端接入](docs/designs/13-application-frontend-integration.md)。
 
 使用时按以下顺序判断：用户最新明确要求 → 本文件中的已确认要求 → 当前任务指定的 Figma 设计 → 对应设计文档 → 现有试验实现。仓库工程约束仍以 [AGENTS.md](AGENTS.md) 为准。设计示例、历史验收记录和助手先前的完成声明不能代替当前验证。
 
@@ -27,7 +27,7 @@
 
 ## 2. 产品定位与共享模型
 
-Moiren 是 Windows 原生实时音频路由与监听工作站。默认实现方向是 Rust + Slint；设计要能通过原生组件、布局和轻量绘制实现，不以浏览器技术、Electron 或 WebView 为前提。
+Moiren 是 Windows 原生实时音频路由与监听工作站。现行实现是 Rust + gpui-kit；设计通过原生组件、布局和轻量绘制实现，不以浏览器技术、Electron 或 WebView 为前提。
 
 Graph、Mixer、Matrix 展示同一份音频图：
 
@@ -416,19 +416,20 @@ Slint 文件检查与原生 UI 验证可参考下面的历史接入文档，执�
 
 ### 10.2 技术入口
 
-下面是理解技术验证的入口，不是要求重写继续使用这些文件划分：
+当前源码入口如下；前文 Slint 组件与文件名只保留作历史设计背景。
 
 | 路径 | 用途 |
 | --- | --- |
-| [crates/moiren-app/ui/main.slint](crates/moiren-app/ui/main.slint) | Slint 应用入口与 shell |
-| [crates/moiren-app/ui/theme.slint](crates/moiren-app/ui/theme.slint) | 现有 Theme；旧 Graph 与 dev-ready token 并存，不等于统一的最终设计 |
-| [crates/moiren-app/ui/backend.slint](crates/moiren-app/ui/backend.slint) | UI 属性、model 与 callback 的边界 |
-| [crates/moiren-app/ui/components/](crates/moiren-app/ui/components/) | 控件、图标、Graph 与电平绘制 |
-| [crates/moiren-app/ui/pages/](crates/moiren-app/ui/pages/) | 页面与布局试验 |
-| [crates/moiren-app/src/ui/](crates/moiren-app/src/ui/) | Rust 视图投影、请求绑定、输入适配、meter 与 signal 订阅 |
-| [crates/moiren-app/README.md](crates/moiren-app/README.md) | 应用运行与 Graph 操作说明 |
+| [src/ui/window.rs](crates/moiren-app/src/ui/window.rs) 与 [src/ui/window/](crates/moiren-app/src/ui/window/) | 公共 shell、各工作区、Settings、项目文件操作与 native capture |
+| [src/ui/theme.rs](crates/moiren-app/src/ui/theme.rs) 与 [src/ui/theme/controls.rs](crates/moiren-app/src/ui/theme/controls.rs) | 共享语义令牌、字体与密度 |
+| [src/ui/widgets/](crates/moiren-app/src/ui/widgets/) | 按钮、导航、图标与真实电平组件 |
+| [src/ui/state.rs](crates/moiren-app/src/ui/state.rs) | 服务快照投影、候选资源、请求与确认反馈 |
+| [src/ui/monitoring.rs](crates/moiren-app/src/ui/monitoring.rs) | 按窗口、页面、滚动可见性管理独立输入/输出订阅 |
+| [src/service/graph.rs](crates/moiren-app/src/service/graph.rs) | 真实 LogicalGraph 权威、事务、候选与活动 revision |
+| [src/project.rs](crates/moiren-app/src/project.rs) | 项目与偏好 JSON，原子保存、版本与结构校验 |
+| [README](crates/moiren-app/README.md) | 运行、实际交互与验证命令 |
 
-当前验证实现主要包含 Graph 和单会话 Mixer；Matrix、Devices、Settings 与任意拓扑编辑未完整接入。后续可以重写 UI，不能把未实现页面、固定 4 节点链路或旧 Theme 中「无绿色」的注释当作产品限制。
+未接入的 CPU、端到端延迟、XRUN 等读数保持未知；Compressor 使用引擎默认设置。切换拓扑通过 Apply / restart 准备新会话。载入项目不启动音频，且候选节点不能因 NodeId 数值复用而控制旧活动会话。
 
 ### 10.3 后续维护
 

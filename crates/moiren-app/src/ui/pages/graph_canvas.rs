@@ -4,12 +4,10 @@
 //! stroke width), so wires are built as filled polygon ribbons: sample the
 //! cubic bezier, then offset each sample along the curve normal by ±w/2.
 
-use std::sync::Arc;
-
 use gpui_kit::*;
 
-use super::theme;
 use crate::service::AppSnapshot;
+use crate::ui::theme;
 
 /// Camera state: world origin at canvas top-left.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -81,6 +79,7 @@ pub struct CanvasNode {
     pub y: f32,
     pub wide: bool,
     pub has_input: bool,
+    pub input_count: usize,
     pub has_output: bool,
     pub input_label: String,
     pub output_label: String,
@@ -99,7 +98,10 @@ impl CanvasNode {
         }
     }
     pub fn height(&self) -> f32 {
-        theme::NODE_HEIGHT
+        theme::NODE_HEIGHT.max(self.port_y() + self.input_count as f32 * 18. + 8.)
+    }
+    pub fn input_y(&self, index: usize) -> f32 {
+        self.port_y() + index as f32 * 18.
     }
     pub fn port_y(&self) -> f32 {
         theme::card::PORT_Y
@@ -121,6 +123,7 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         y: 0.,
         wide: false,
         has_input: false,
+        input_count: 0,
         has_output: false,
         input_label: String::new(),
         output_label: String::new(),
@@ -147,66 +150,120 @@ pub struct CanvasWorld {
 }
 
 impl CanvasWorld {
-    /// Project the current fixed stereo session (input -> gain -> pan -> out).
-    pub fn candidate(snapshot: &Arc<AppSnapshot>) -> Self {
-        let gain = snapshot.control.pending_gain_pan.map(|(g, _)| g);
-        let pan = snapshot.control.pending_gain_pan.map(|(_, p)| p);
-        let spacing = 206.;
-        let y = 160.;
-        let nodes = vec![
-            node("in", "Input", "Microphone")
-                .icon("mic")
-                .at(24., y)
-                .ports(false, true)
-                .with_tint(theme::SIGNAL_DEVICE),
-            node(
-                "gain",
-                "Gain",
-                gain.map(|g| format!("{g:.2}")).unwrap_or_default(),
-            )
-            .icon("sliders")
-            .at(24. + spacing, y)
-            .ports(true, true)
-            .parameter(gain.unwrap_or(0.) as f32 / 16.),
-            node(
-                "pan",
-                "Pan",
-                pan.map(|p| format!("{p:+.2}")).unwrap_or_default(),
-            )
-            .icon("sliders")
-            .at(24. + 2. * spacing, y)
-            .ports(true, true)
-            .parameter((pan.unwrap_or(0.) as f32 + 1.) / 2.),
-            node("out", "Output", "Speakers")
-                .icon("headphones")
-                .at(24. + 3. * spacing, y)
-                .ports(true, false)
-                .with_tint(theme::SIGNAL_RECORDER)
-                .wide(),
-        ];
-        let wires: Vec<CanvasWire> = nodes
-            .windows(2)
-            .map(|pair| {
-                let (a, b) = (&pair[0], &pair[1]);
-                CanvasWire {
-                    id: format!("{}-{}", a.id, b.id),
-                    from: (a.x + a.width(), a.y + a.port_y()),
-                    to: (b.x, b.y + b.port_y()),
-                    tint: Some(a.tint()),
+    /// The service snapshot is the only topology authority. Positions are presentation only.
+    pub fn positioned(
+        snapshot: &AppSnapshot,
+        positions: &std::collections::HashMap<String, (f32, f32)>,
+    ) -> Self {
+        use moiren_core::graph::NodeKind;
+        let graph = &snapshot.graph;
+        let order = graph.graph.topological_order().unwrap_or_default();
+        let mut depth = std::collections::HashMap::new();
+        let mut rows = std::collections::HashMap::new();
+        let mut nodes = Vec::new();
+        for id in order {
+            let logical = graph.graph.get_node(id).expect("validated snapshot node");
+            let state = graph.node(id).expect("service node state");
+            let level = graph
+                .graph
+                .edges()
+                .iter()
+                .filter(|edge| edge.dst() == id)
+                .filter_map(|edge| depth.get(&edge.src()))
+                .copied()
+                .max()
+                .map_or(0, |n: usize| n + 1);
+            depth.insert(id, level);
+            let row = rows.entry(level).or_insert(0usize);
+            let key = format!("{id:?}");
+            let position = positions
+                .get(&key)
+                .copied()
+                .unwrap_or((32. + level as f32 * 250., 80. + *row as f32 * 160.));
+            *row += 1;
+            let detail = match logical.kind() {
+                NodeKind::Source => state
+                    .source
+                    .as_ref()
+                    .map(|source| crate::ui::state::source_name(snapshot, source))
+                    .unwrap_or_else(|| "Choose a source".into()),
+                NodeKind::Sink => state
+                    .output_endpoint_id
+                    .as_ref()
+                    .map(|id| crate::ui::state::output_name(snapshot, id))
+                    .unwrap_or_else(|| "Choose an output".into()),
+                NodeKind::Gain => {
+                    if state.gain == 0. {
+                        "−∞ dB".into()
+                    } else {
+                        format!("{:+.1} dB", 20. * state.gain.log10())
+                    }
                 }
+                NodeKind::Pan => format!("Balance {:+.2}", state.pan),
+                NodeKind::Bus => format!(
+                    "{} inputs · {} channels",
+                    logical.inputs().len(),
+                    logical.channels()
+                ),
+                NodeKind::Compressor => "Linked peak compressor".into(),
+            };
+            let (icon, tint) = match logical.kind() {
+                NodeKind::Source => ("wave", theme::SIGNAL_DEVICE),
+                NodeKind::Sink => ("headphones", theme::SIGNAL_RECORDER),
+                NodeKind::Bus => ("git-merge", theme::TEXT_MUTED),
+                _ => ("sliders", theme::PRIMARY),
+            };
+            let mut card = node(&key, &state.label, detail)
+                .at(position.0, position.1)
+                .icon(icon)
+                .ports(!logical.inputs().is_empty(), !logical.outputs().is_empty())
+                .with_tint(tint);
+            card.input_count = logical.inputs().len();
+            if logical.kind() == NodeKind::Gain {
+                card = card.parameter(state.gain as f32);
+            }
+            if logical.kind() == NodeKind::Pan {
+                card = card.parameter((state.pan as f32 + 1.) / 2.);
+            }
+            nodes.push(card);
+        }
+        let wires = graph
+            .graph
+            .edges()
+            .iter()
+            .filter_map(|edge| {
+                let a = nodes.iter().find(|n| n.id == format!("{:?}", edge.src()))?;
+                let b = nodes.iter().find(|n| n.id == format!("{:?}", edge.dst()))?;
+                let input = graph
+                    .graph
+                    .get_node(edge.dst())
+                    .ok()?
+                    .inputs()
+                    .iter()
+                    .position(|p| p.id() == edge.dst_port())?;
+                Some(CanvasWire {
+                    id: format!("{:?}", edge.id()),
+                    from: (a.x + a.width(), a.y + a.port_y()),
+                    to: (b.x, b.y + b.input_y(input)),
+                    tint: Some(if edge.params().mute {
+                        theme::TEXT_FAINT
+                    } else {
+                        a.tint()
+                    }),
+                })
             })
             .collect();
-        let graph_bounds = Bounds {
-            origin: point(24., y - 24.),
-            size: size(
-                3. * spacing + theme::NODE_WIDE_WIDTH + 48.,
-                theme::NODE_HEIGHT + 48.,
-            ),
-        };
+        let min_x = nodes.iter().map(|n| n.x).fold(0., f32::min);
+        let min_y = nodes.iter().map(|n| n.y).fold(0., f32::min);
+        let max_x = nodes.iter().map(|n| n.x + n.width()).fold(400., f32::max);
+        let max_y = nodes.iter().map(|n| n.y + n.height()).fold(220., f32::max);
         Self {
             nodes,
             wires,
-            graph_bounds,
+            graph_bounds: Bounds {
+                origin: point(min_x - 24., min_y - 24.),
+                size: size(max_x - min_x + 48., max_y - min_y + 48.),
+            },
         }
     }
 }
@@ -241,6 +298,7 @@ impl CanvasNode {
         self.level = Some(level.clamp(0., 1.));
         self
     }
+    #[allow(dead_code)]
     fn wide(mut self) -> Self {
         self.wide = true;
         self

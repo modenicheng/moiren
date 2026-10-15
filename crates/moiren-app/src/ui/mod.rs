@@ -2,6 +2,7 @@
 //! only projects snapshots into windows and dispatches [`AppRequest`]s back.
 mod app_view;
 mod component_gallery;
+pub mod monitoring;
 mod pages;
 mod scroll_policy;
 mod state;
@@ -54,4 +55,6 @@ pub(crate) fn tray_icon_rgba() -> Vec<u8> {
 }
 
 pub use state::{SelectionState, UiState};
+#[cfg(feature = "gpui-test")]
+pub use window::run_ui_capture;
 pub use window::{WindowPresentation, run};
