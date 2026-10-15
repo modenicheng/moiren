@@ -41,6 +41,16 @@ library 的 `OfflineApp::process_interleaved` 接受等长、完整 frame 的输
 
 `OfflineApp` 是同步离线 owner。`stop` 在处理结束后释放 engine 与桥。每块 slab/bridge 的 sample storage 上限为 8 MiB，队列及 metadata 不计入该上限。
 
+## 窗口与托盘
+
+Windows 标题栏的 X 和 Alt+F4 会销毁桌面窗口、视图及 UI 仪表订阅，不是最小化；后台音频和托盘继续运行。点击托盘或选择 `Show Moiren` 会新建窗口，并恢复当前工作区、图布局和候选项目展示状态。最小化按钮仍只最小化；托盘的 `Exit` 才退出进程并回收音频服务。托盘创建失败时，关闭最后一个窗口会退出，避免留下不可访问的后台进程。
+
+窗口正常位置、大小、最大化状态和工作区独立保存在 `%APPDATA%\Moiren\window.json`，关闭和退出时原子写入；不会把最小化状态当成下次启动状态。恢复时使用当前显示器工作区校正位置和尺寸。此文件不保存或自动加载音频项目，也不改变 `preferences.json` 的兼容性。
+
+标题栏 Logo 和工作区标签两侧的空白区域可以原生拖动窗口、双击最大化或还原；项目菜单、工作区标签和操作按钮不参与拖动。最大化按钮依据 Windows 当前状态在最大化与还原之间切换，保留正常窗口的恢复位置。
+
+托盘使用已有透明 Logo：Windows 系统浅色主题为紫色，深色主题为米白，主题切换后最多约一秒更新，与应用 UI 的主题偏好无关。应用和 EXE 图标固定使用紫色 Logo 与米白圆角背景；构建时从 `assets/logos/` 的 SVG 生成 16–256 像素多尺寸 ICO，无需运行时 SVG 解码。原始品牌 SVG 保持不变。
+
 ## Windows 实际输出
 
 ```powershell

@@ -83,7 +83,9 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                         }),
                 ),
         )
+        .child(titlebar_drag_region("titlebar-drag-leading"))
         .child(tabs)
+        .child(titlebar_drag_region("titlebar-drag-trailing"))
         .child(
             div()
                 .flex()
@@ -134,14 +136,33 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                         .on_click(|_, window, _| window.minimize_window()),
                 )
                 .child(
-                    WindowControlButton::new("win-max", WindowAction::Maximize)
-                        .on_click(|_, window, _| window.zoom_window()),
+                    WindowControlButton::new("win-max", WindowAction::Maximize).on_click(
+                        |_, window, _| {
+                            if let Err(error) = super::native::toggle_maximize(window) {
+                                eprintln!("Moiren maximize: {error}");
+                            }
+                        },
+                    ),
                 )
                 .child(
-                    WindowControlButton::new("win-close", WindowAction::Close)
-                        .on_click(move |_, window, _| window.minimize_window()),
+                    WindowControlButton::new("win-close", WindowAction::Close).on_click({
+                        let this = cx.entity().downgrade();
+                        move |_, window, cx| {
+                            let _ = this.update(cx, |shell, cx| shell.close_window(window, cx));
+                        }
+                    }),
                 ),
         )
+}
+
+fn titlebar_drag_region(id: &'static str) -> impl IntoElement {
+    div()
+        .id(id)
+        .flex_1()
+        .min_w(px(20.0))
+        .h_full()
+        .window_control_area(WindowControlArea::Drag)
+        .gpui_test_observe()
 }
 
 pub(super) fn statusbar(state: &UiState) -> Stateful<Div> {

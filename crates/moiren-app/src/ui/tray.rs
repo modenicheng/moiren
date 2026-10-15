@@ -1,11 +1,14 @@
 //! System tray bridge via `tray-icon` (gpui has no tray API).
 //!
-//! Windows: tray events arrive on a global crossbeam channel. We drain it on
-//! the UI clock (the same 33ms poll that reads service snapshots), so no extra
-//! event loop integration is needed. The tray owns no audio state; every
-//! action is forwarded to the shell as a [`TrayAction`].
+//! Events are drained by the application owner even when no window exists.
+//! The tray owns no audio state and only produces semantic actions.
 
-use std::sync::mpsc;
+use std::{
+    sync::mpsc,
+    time::{Duration, Instant},
+};
+
+use super::branding::{self, TrayTheme};
 
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -24,7 +27,7 @@ struct TrayHandle {
 }
 
 impl TrayHandle {
-    fn build() -> anyhow::Result<Self> {
+    fn build(theme: TrayTheme) -> anyhow::Result<Self> {
         let show = MenuItem::with_id("show", "Show Moiren", true, None);
         let stop = MenuItem::with_id("stop", "Stop Session", true, None);
         let exit = MenuItem::with_id("exit", "Exit", true, None);
@@ -32,13 +35,14 @@ impl TrayHandle {
         menu.append_items(&[&show, &stop, &exit])
             .map_err(|e| anyhow::anyhow!("tray menu: {e}"))?;
 
-        let icon = tray_icon::Icon::from_rgba(crate::ui::tray_icon_rgba(), 32, 32)
+        let icon = tray_icon::Icon::from_rgba(branding::tray_rgba(theme).to_vec(), 32, 32)
             .map_err(|e| anyhow::anyhow!("tray icon: {e}"))?;
 
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip("Moiren")
             .with_icon(icon)
+            .with_menu_on_left_click(false)
             .build()
             .map_err(|e| anyhow::anyhow!("tray icon build: {e}"))?;
         Ok(Self {
@@ -49,15 +53,19 @@ impl TrayHandle {
 }
 
 /// Owns the tray icon and dispatches drained events into a channel the UI
-/// poll loop reads. Keeps `'static` handles so the icon survives hides.
+/// poll loop reads. No window or view is retained by the tray.
 pub struct AppTray {
     _handle: TrayHandle,
     actions: mpsc::Receiver<TrayAction>,
+    theme: TrayTheme,
+    theme_check: Instant,
+    session_active: std::cell::Cell<Option<bool>>,
 }
 
 impl AppTray {
     pub fn new() -> anyhow::Result<Self> {
-        let handle = TrayHandle::build()?;
+        let theme = branding::system_tray_theme();
+        let handle = TrayHandle::build(theme)?;
         let (tx, rx) = mpsc::channel::<TrayAction>();
         let tx_menu = tx.clone();
         let tx_click = tx;
@@ -79,6 +87,7 @@ impl AppTray {
                 event,
                 TrayIconEvent::Click {
                     button: tray_icon::MouseButton::Left,
+                    button_state: tray_icon::MouseButtonState::Up,
                     ..
                 } | TrayIconEvent::DoubleClick {
                     button: tray_icon::MouseButton::Left,
@@ -93,11 +102,33 @@ impl AppTray {
         Ok(Self {
             _handle: handle,
             actions: rx,
+            theme,
+            theme_check: Instant::now(),
+            session_active: std::cell::Cell::new(None),
         })
     }
 
     /// Drain pending tray actions; called from the UI clock.
     pub fn poll_actions(&mut self) -> Vec<TrayAction> {
+        if self.theme_check.elapsed() >= Duration::from_secs(1) {
+            self.theme_check = Instant::now();
+            let theme = branding::system_tray_theme();
+            if theme != self.theme {
+                let updated =
+                    tray_icon::Icon::from_rgba(branding::tray_rgba(theme).to_vec(), 32, 32)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|icon| {
+                            self._handle
+                                ._icon
+                                .set_icon(Some(icon))
+                                .map_err(anyhow::Error::from)
+                        });
+                match updated {
+                    Ok(()) => self.theme = theme,
+                    Err(error) => eprintln!("Moiren tray theme: {error}"),
+                }
+            }
+        }
         let mut drained = Vec::new();
         while let Ok(action) = self.actions.try_recv() {
             drained.push(action);
@@ -107,6 +138,15 @@ impl AppTray {
 
     /// Enable/disable the stop item with the session state.
     pub fn set_session_active(&self, active: bool) {
-        self._handle.stop_item.set_enabled(active);
+        if self.session_active.replace(Some(active)) != Some(active) {
+            self._handle.stop_item.set_enabled(active);
+        }
+    }
+}
+
+impl Drop for AppTray {
+    fn drop(&mut self) {
+        MenuEvent::set_event_handler(None::<fn(MenuEvent)>);
+        TrayIconEvent::set_event_handler(None::<fn(TrayIconEvent)>);
     }
 }

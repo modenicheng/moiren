@@ -1,6 +1,29 @@
 use super::*;
 use controls::*;
 
+impl StudioShell {
+    /// Serialize preference writes so rapid profile/density actions cannot let
+    /// an older background write overwrite the user's latest choice.
+    pub(super) fn save_preferences(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.preferences_path.clone() else {
+            self.project_message = Some("User configuration directory is unavailable".into());
+            return;
+        };
+        let previous = self.preference_save.take();
+        let preferences = self.preferences.clone();
+        let executor = cx.background_executor().clone();
+        self.preference_save = Some(executor.spawn(async move {
+            if let Some(previous) = previous {
+                previous.await;
+            }
+            if let Err(error) = crate::project::save_preferences_at(path, &preferences) {
+                eprintln!("Moiren preferences: {error}");
+            }
+        }));
+        self.project_message = Some("Preferences save queued".into());
+    }
+}
+
 pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
     let mut density = div().flex().gap(px(8.));
@@ -17,32 +40,14 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     ButtonVariant::Secondary
                 })
                 .on_click(move |_, _, cx| {
-                    this.update(cx, |s, cx| {
-                        s.density = value;
-                        let mut preferences =
-                            crate::project::load_preferences().unwrap_or_default();
-                        preferences.density = if value == Density::Compact {
+                    this.update(cx, |shell, cx| {
+                        shell.density = value;
+                        shell.preferences.density = if value == Density::Compact {
                             crate::project::UiDensity::Compact
                         } else {
                             crate::project::UiDensity::Comfortable
                         };
-                        cx.spawn(async move |this, cx| {
-                            let result = cx
-                                .background_executor()
-                                .spawn(
-                                    async move { crate::project::save_preferences(&preferences) },
-                                )
-                                .await;
-                            let _ = this.update(cx, |s, cx| {
-                                s.project_message = Some(
-                                    result
-                                        .map(|_| "Preferences saved".to_string())
-                                        .unwrap_or_else(|e| e.to_string()),
-                                );
-                                cx.notify();
-                            });
-                        })
-                        .detach();
+                        shell.save_preferences(cx);
                         cx.notify();
                     })
                 }),

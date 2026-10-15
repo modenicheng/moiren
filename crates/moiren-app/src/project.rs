@@ -6,10 +6,12 @@
 mod graph;
 mod model;
 mod storage;
+mod window;
 
 pub use graph::*;
 pub use model::*;
 pub use storage::*;
+pub use window::*;
 
 #[cfg(test)]
 mod tests;

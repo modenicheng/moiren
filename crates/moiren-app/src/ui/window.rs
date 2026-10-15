@@ -1,5 +1,4 @@
-//! Main window: owns the service guard, minimizes instead of quitting,
-//! and polls service snapshots on the UI clock.
+//! Disposable main window views over the application-owned service projection.
 
 use std::time::Duration;
 
@@ -75,40 +74,27 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
             gpui_kit::init(cx);
             register_fonts(cx).expect("register embedded Inter font");
 
-            let tray = super::tray::AppTray::new().ok();
+            let tray = match super::tray::AppTray::new() {
+                Ok(tray) => Some(tray),
+                Err(error) => {
+                    eprintln!("Moiren tray unavailable: {error}");
+                    None
+                }
+            };
 
             let state = cx.new(|_| UiState::new(handle.clone(), initial));
-            state.update(cx, |s, _| s.dispatch(AppRequest::RefreshCatalog));
+            state.update(cx, |s, _| {
+                s.dispatch(AppRequest::RefreshCatalog);
+            });
 
-            let (window_handle, window_entity) = gpui_kit::open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::centered(size(px(1440.), px(900.)), cx)),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some(SharedString::from("Moiren")),
-                        appears_transparent: true,
-                        ..Default::default()
-                    }),
-                    window_min_size: Some(size(px(940.), px(600.))),
-                    ..Default::default()
-                },
-                cx,
-                |window, cx| cx.new(|cx| StudioShell::new(state, window, cx, tray)),
-            )
-            .expect("failed to open main window");
-
-            // Closing preserves the window entity and the independent audio owner.
-            window_handle
-                .update(cx, |_, window, cx| {
-                    window.on_window_should_close(cx, |window, _cx| {
-                        // The tray can reactivate this same entity; removing it would
-                        // discard the service poller and its presentation state.
-                        window.minimize_window();
-                        false
-                    });
-                })
-                .ok();
-
-            window_entity.update(cx, |shell, cx| shell.spawn_poll(cx));
+            let desktop = cx.new(|cx| desktop::Desktop::new(state, tray, cx));
+            cx.set_global(desktop::DesktopOwner {
+                _desktop: desktop.clone(),
+            });
+            desktop.update(cx, |desktop, cx| {
+                desktop.show_window(cx).expect("failed to open main window");
+                desktop.spawn_poll(cx);
+            });
             cx.on_action::<app_view::Quit>(|_, cx| cx.quit());
         });
     Ok(())
@@ -123,6 +109,10 @@ pub struct StudioShell {
     inspector_open: bool,
     compact: bool,
     density: Density,
+    preferences: crate::project::AppPreferences,
+    preferences_path: Option<std::path::PathBuf>,
+    preference_save: Option<Task<()>>,
+    preferences_quitting: std::sync::Arc<std::sync::atomic::AtomicBool>,
     device_tab: devices::DeviceTab,
     selected_device: Option<String>,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
@@ -157,15 +147,13 @@ pub struct StudioShell {
     selected_node: Option<String>,
     /// Screen-space anchor of an active pan drag (window coordinates).
     pan_grab: Option<(f32, f32)>,
-    /// Tray bridge; None when the platform tray failed to build.
-    tray: Option<super::tray::AppTray>,
+    desktop: Option<WeakEntity<desktop::Desktop>>,
+    window_state: crate::project::WindowState,
     /// Precision-touchpad subclass state (Windows pointer input). Held for
     /// its Drop: unregisters the Win32 subclass when the shell goes away.
     #[cfg(windows)]
     #[allow(dead_code)]
     touchpad: super::touchpad::TouchpadRegistration,
-    /// Open window handle for tray "show" re-opens.
-    window_handle: Option<AnyWindowHandle>,
 }
 
 impl StudioShell {
@@ -173,7 +161,7 @@ impl StudioShell {
         state: Entity<UiState>,
         window: &mut Window,
         cx: &mut Context<Self>,
-        tray: Option<super::tray::AppTray>,
+        desktop: Option<WeakEntity<desktop::Desktop>>,
     ) -> Self {
         #[cfg(windows)]
         let touchpad = {
@@ -234,12 +222,11 @@ impl StudioShell {
         )
         .detach();
         let meters = MeterSubscriptions::new(state.read(cx).handle.clone());
-        let density = crate::project::load_preferences()
-            .map(|p| match p.density {
-                crate::project::UiDensity::Compact => Density::Compact,
-                _ => Density::Comfortable,
-            })
-            .unwrap_or_default();
+        let preferences = crate::project::load_preferences().unwrap_or_default();
+        let density = match preferences.density {
+            crate::project::UiDensity::Compact => Density::Compact,
+            _ => Density::Comfortable,
+        };
         let mut shell = Self {
             state,
             settings_open: false,
@@ -248,6 +235,10 @@ impl StudioShell {
             inspector_open: true,
             compact: false,
             density,
+            preferences,
+            preferences_path: crate::project::preferences_path().ok(),
+            preference_save: None,
+            preferences_quitting: Default::default(),
             device_tab: devices::DeviceTab::Outputs,
             selected_device: None,
             selected_route: None,
@@ -273,13 +264,24 @@ impl StudioShell {
             canvas_size: None,
             selected_node: None,
             pan_grab: None,
-            tray,
-            window_handle: None,
+            desktop,
+            window_state: desktop::capture_window_state(window, Page::Graph),
             #[cfg(windows)]
             touchpad,
         };
-        shell.window_handle = Some(window.window_handle());
         shell.presentation.show();
+        cx.observe_window_bounds(window, |shell, window, _| {
+            if shell.presentation.visible {
+                shell.window_state = desktop::capture_window_state(window, shell.presentation.page);
+            }
+        })
+        .detach();
+        cx.on_release(|shell, cx| {
+            if let Some(desktop) = shell.desktop.clone() {
+                let _ = desktop.update(cx, |desktop, cx| desktop.window_released(shell, cx));
+            }
+        })
+        .detach();
         cx.observe_window_visibility(window, |shell, visibility, _, cx| {
             shell.presentation.visible = visibility.is_visible();
             shell.presentation.minimized = !visibility.is_visible();
@@ -289,9 +291,25 @@ impl StudioShell {
             cx.notify();
         })
         .detach();
+        // Quit observers run before GPUI drops the windows. Move the latest
+        // write into shutdown ownership: it also owns every earlier queued
+        // write, and must finish after the shell entity is gone.
+        cx.on_app_quit(|shell, _| {
+            shell
+                .preferences_quitting
+                .store(true, std::sync::atomic::Ordering::Release);
+            let pending = shell.preference_save.take();
+            async move {
+                if let Some(pending) = pending {
+                    pending.await;
+                }
+            }
+        })
+        .detach();
         shell
     }
 
+    #[cfg(feature = "gpui-test")]
     fn spawn_poll(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             loop {
@@ -308,7 +326,6 @@ impl StudioShell {
                             }
                             changed
                         });
-                        shell.drain_tray(cx);
                         shell.finish_project_load(cx);
                         let visible = shell.presentation.visible
                             && !shell.presentation.minimized
@@ -335,6 +352,7 @@ impl StudioShell {
 
     fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
         self.presentation.page = page;
+        self.window_state.workspace = desktop::workspace(page);
         self.settings_open = false;
         self.project_menu = false;
         #[cfg(feature = "gpui-test")]
@@ -344,39 +362,20 @@ impl StudioShell {
         cx.notify();
     }
 
-    /// Apply drained tray actions on the UI thread.
-    fn drain_tray(&mut self, cx: &mut Context<Self>) {
-        let Some(tray) = self.tray.as_mut() else {
-            return;
-        };
-        for action in tray.poll_actions() {
-            match action {
-                super::tray::TrayAction::ShowWindow => {
-                    self.presentation.show();
-                    if let Some(handle) = self.window_handle {
-                        handle
-                            .update(cx, |_, window, _| {
-                                window.activate_window();
-                            })
-                            .ok();
-                    }
-                    cx.notify();
-                }
-                super::tray::TrayAction::StopSession => {
-                    self.state.update(cx, |state, _| {
-                        state.dispatch(AppRequest::Stop);
-                    });
-                }
-                super::tray::TrayAction::ExitApp => {
-                    cx.quit();
-                }
-            }
+    fn prepare_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.presentation.visible {
+            self.window_state = desktop::capture_window_state(window, self.presentation.page);
         }
-        // Reflect session state on the tray menu.
-        let running = self.state.read(cx).snapshot.phase == SessionPhase::Running;
-        if let Some(tray) = self.tray.as_ref() {
-            tray.set_session_active(running);
+        self.presentation.hide_to_tray();
+        self.meters.update(&self.state.read(cx).snapshot, false);
+        if let Some(desktop) = self.desktop.clone() {
+            let _ = desktop.update(cx, |desktop, cx| desktop.prepare_close(self, cx));
         }
+    }
+
+    fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.prepare_close(window, cx);
+        window.remove_window();
     }
 }
 
@@ -431,6 +430,7 @@ impl<E> TestObserve for E {
 #[cfg(feature = "gpui-test")]
 mod capture;
 mod chrome;
+mod desktop;
 #[cfg(feature = "gpui-test")]
 pub use capture::run_ui_capture;
 mod controls;
@@ -438,6 +438,7 @@ mod devices;
 mod graph;
 mod matrix;
 mod mixer;
+mod native;
 mod project;
 mod settings;
 #[cfg(all(test, feature = "gpui-test"))]

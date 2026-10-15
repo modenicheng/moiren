@@ -4488,17 +4488,20 @@ name = "moiren-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "embed-resource",
  "gpui-kit",
  "moiren-core",
  "moiren-engine",
  "moiren-signal",
  "moiren-windows-audio",
  "raw-window-handle",
+ "resvg 0.46.0",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tray-icon",
  "windows 0.62.2",
+ "windows-registry 0.6.1",
 ]
 
 [[package]]
