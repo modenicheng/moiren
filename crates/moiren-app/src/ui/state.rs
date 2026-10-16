@@ -244,7 +244,8 @@ impl UiState {
     /// Explicit node targets let the service distinguish a loaded candidate
     /// from a still-running project whose NodeId numbers happen to coincide.
     pub fn request_parameters(&mut self) {
-            let gain = self
+        use moiren_core::graph::NodeKind;
+        let gain = self
             .snapshot
             .graph
             .graph
@@ -358,7 +359,8 @@ impl UiState {
     }
 
     pub fn restore_graph_candidate(&mut self) {
-            let graph = &self.snapshot.graph;
+        use moiren_core::graph::NodeKind;
+        let graph = &self.snapshot.graph;
         let source = graph
             .graph
             .nodes()
@@ -500,7 +502,8 @@ impl UiState {
                     })
             }
         };
-            let input = self
+        use moiren_core::graph::NodeKind;
+        let input = self
             .snapshot
             .graph
             .graph
@@ -530,6 +533,7 @@ impl UiState {
 }
 
 fn graph_resources(snapshot: &AppSnapshot) -> (Option<InputSelection>, Option<String>) {
+    use moiren_core::graph::NodeKind;
     let source = snapshot
         .graph
         .graph
@@ -550,6 +554,7 @@ fn graph_resources(snapshot: &AppSnapshot) -> (Option<InputSelection>, Option<St
 }
 
 fn primary_parameters(snapshot: &AppSnapshot) -> (f64, f64) {
+    use moiren_core::graph::NodeKind;
     let gain = snapshot
         .graph
         .graph
