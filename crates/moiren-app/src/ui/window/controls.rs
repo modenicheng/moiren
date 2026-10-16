@@ -95,24 +95,6 @@ pub(super) fn apply(shell: &StudioShell, cx: &Context<StudioShell>) -> ActionBut
     })
 }
 
-pub(super) fn graph_summary(state: &UiState) -> Div {
-    let graph = &state.snapshot.graph;
-    div()
-        .flex()
-        .items_center()
-        .gap(px(theme::SPACE_2))
-        .child(badge(
-            format!("Candidate {}", graph.candidate_revision),
-            theme::WARNING,
-        ))
-        .child(label(
-            graph
-                .active_revision
-                .map(|r| format!("Active {r}"))
-                .unwrap_or_else(|| "No active graph".into()),
-        ))
-}
-
 pub(super) fn edit(
     this: Entity<StudioShell>,
     edit: crate::service::GraphEdit,

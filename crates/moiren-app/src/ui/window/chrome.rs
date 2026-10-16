@@ -190,7 +190,7 @@ pub(super) fn statusbar(state: &UiState) -> Stateful<Div> {
                     .unwrap_or_else(|| "—".into())
             )
         })
-        .unwrap_or_else(|| "Format —  ·  latency —  ·  CPU —  ·  XRUN —".into());
+        .unwrap_or_default();
     div()
         .id("engine-statusbar")
         .flex()
@@ -212,5 +212,4 @@ pub(super) fn statusbar(state: &UiState) -> Stateful<Div> {
                 .child(label(state.elapsed_text()))
                 .child(label(format)),
         )
-        .child(label(format!("Session {}", snapshot.generation.0)))
 }

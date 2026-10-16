@@ -244,8 +244,7 @@ impl UiState {
     /// Explicit node targets let the service distinguish a loaded candidate
     /// from a still-running project whose NodeId numbers happen to coincide.
     pub fn request_parameters(&mut self) {
-        use moiren_core::graph::NodeKind;
-        let gain = self
+            let gain = self
             .snapshot
             .graph
             .graph
@@ -359,8 +358,7 @@ impl UiState {
     }
 
     pub fn restore_graph_candidate(&mut self) {
-        use moiren_core::graph::NodeKind;
-        let graph = &self.snapshot.graph;
+            let graph = &self.snapshot.graph;
         let source = graph
             .graph
             .nodes()
@@ -425,22 +423,25 @@ impl UiState {
     pub fn control_feedback(&self) -> String {
         let control = &self.snapshot.control;
         if self.pending_request {
-            return "Requested · waiting for service".into();
+            return "Applying changes...".into();
         }
         if control.accepted_pending > 0 {
-            return format!(
-                "Accepted · {} parameter updates pending",
-                control.accepted_pending
-            );
+            return "Applying changes...".into();
         }
         if let Some(reply) = control.last_result {
             use moiren_core::protocol::ReplyCode;
             return match reply.code {
-                ReplyCode::Applied | ReplyCode::AppliedLate => format!(
-                    "{:?} · revision {} · frame {}",
-                    reply.code, reply.plan_revision, reply.effective_frame
-                ),
-                code => format!("{code:?} · request {}", reply.request_id),
+                ReplyCode::Applied | ReplyCode::AppliedLate => "Changes applied".into(),
+                ReplyCode::Accepted => "Applying changes...".into(),
+                ReplyCode::StaleRevision | ReplyCode::StaleEpoch => {
+                    "Audio routing changed. Try again.".into()
+                }
+                ReplyCode::UnknownParameter => "This control is no longer available.".into(),
+                ReplyCode::InvalidValue => "Choose a valid parameter value.".into(),
+                ReplyCode::QueueFull => "Audio controls are busy. Try again.".into(),
+                ReplyCode::OutOfOrder | ReplyCode::InvalidTime => {
+                    "Unable to apply this change. Try again.".into()
+                }
             };
         }
         if self.snapshot.phase == SessionPhase::Running {
@@ -499,8 +500,7 @@ impl UiState {
                     })
             }
         };
-        use moiren_core::graph::NodeKind;
-        let input = self
+            let input = self
             .snapshot
             .graph
             .graph
@@ -530,7 +530,6 @@ impl UiState {
 }
 
 fn graph_resources(snapshot: &AppSnapshot) -> (Option<InputSelection>, Option<String>) {
-    use moiren_core::graph::NodeKind;
     let source = snapshot
         .graph
         .graph
@@ -551,7 +550,6 @@ fn graph_resources(snapshot: &AppSnapshot) -> (Option<InputSelection>, Option<St
 }
 
 fn primary_parameters(snapshot: &AppSnapshot) -> (f64, f64) {
-    use moiren_core::graph::NodeKind;
     let gain = snapshot
         .graph
         .graph
@@ -578,7 +576,7 @@ pub fn output_name(snapshot: &AppSnapshot, id: &str) -> String {
         .iter()
         .find(|row| row.endpoint_id == id)
         .map(|row| row.name.clone())
-        .unwrap_or_else(|| format!("Unavailable output ({id})"))
+        .unwrap_or_else(|| "Unavailable output".into())
 }
 
 pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
@@ -609,6 +607,35 @@ mod tests {
     use super::*;
     use crate::service::ServiceRuntime;
     use moiren_core::graph::NodeKind;
+
+    #[test]
+    fn control_feedback_reports_results_without_internal_protocol_identifiers() {
+        use moiren_core::protocol::{ControlReply, ReplyCode};
+        let runtime = ServiceRuntime::spawn().unwrap();
+        let handle = runtime.handle();
+        let snapshot = initial_snapshot(&handle).unwrap();
+        let mut state = UiState::new(handle.clone(), snapshot);
+        for (code, expected) in [
+            (ReplyCode::Applied, "Changes applied"),
+            (ReplyCode::AppliedLate, "Changes applied"),
+            (ReplyCode::Accepted, "Applying changes..."),
+            (
+                ReplyCode::StaleRevision,
+                "Audio routing changed. Try again.",
+            ),
+        ] {
+            Arc::make_mut(&mut state.snapshot).control.last_result = Some(ControlReply {
+                code,
+                request_id: 1234,
+                plan_revision: 5678,
+                timeline_epoch: 91011,
+                effective_frame: 121314,
+            });
+            assert_eq!(state.control_feedback(), expected);
+        }
+        handle.request_exit();
+        runtime.join().unwrap();
+    }
 
     #[test]
     fn service_resource_binding_changes_update_the_shared_session_projection() {

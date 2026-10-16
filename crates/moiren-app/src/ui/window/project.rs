@@ -55,9 +55,7 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoE
         .when_some(shell.project_message.clone(), |v, message| {
             v.child(label(message))
         })
-        .child(label(
-            "Projects store candidates and layout. Opening does not start audio.",
-        ))
+        .child(label("Opening a project keeps audio stopped."))
 }
 
 #[cfg(all(test, feature = "gpui-test"))]
@@ -339,7 +337,7 @@ impl StudioShell {
             match self.apply_project_presentation(&document, cx) {
                 Ok(()) => {
                     self.project_path = Some(path);
-                    self.project_message = Some("Project loaded as candidate".into());
+                    self.project_message = Some("Project opened".into());
                 }
                 Err(error) => self.project_message = Some(error.to_string()),
             }

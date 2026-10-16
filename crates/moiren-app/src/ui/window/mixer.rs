@@ -130,7 +130,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             });
             let eligible = identity_matches && binding_matches;
             let (levels, status) = if !eligible {
-                (None, "Candidate · no active observation".to_string())
+                (None, "No active observation".to_string())
             } else if input {
                 (
                     shell.meters.input,
@@ -175,30 +175,15 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 })
                 .into_any_element()
         };
-        strip = strip.child(body).child(
-            div()
-                .p(px(12.))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .child(if Some(node.id()) == first_gain {
+        strip = strip
+            .child(body)
+            .child(div().p(px(12.)).flex().flex_col().gap(px(8.)).child(
+                if Some(node.id()) == first_gain {
                     heading(db(state.effective_gain()))
                 } else {
                     heading(entry.label.clone())
-                })
-                .child(badge(
-                    if graph.active_revision == Some(graph.candidate_revision) {
-                        "Active"
-                    } else {
-                        "Candidate"
-                    },
-                    if graph.active_revision == Some(graph.candidate_revision) {
-                        theme::SUCCESS
-                    } else {
-                        theme::WARNING
-                    },
-                )),
-        );
+                },
+            ));
         if Some(node.id()) == first_gain {
             strip = strip.child(
                 div()
@@ -273,7 +258,6 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .justify_between()
                 .px(px(16.))
                 .child(heading("Mixer"))
-                .child(graph_summary(state))
                 .child(
                     div()
                         .flex()

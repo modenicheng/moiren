@@ -143,7 +143,6 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .justify_between()
                 .px(px(16.))
                 .child(heading("Routing matrix"))
-                .child(graph_summary(state))
                 .child(
                     div()
                         .flex()
@@ -241,11 +240,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> impl 
     let mut view = panel("matrix-inspector").child(heading("Connection"));
     if let Some((source, destination)) = shell.selected_route {
         if let Some((src, dst)) = find_nodes(snapshot, source, destination) {
-            view = view
-                .child(detail("From", src))
-                .child(detail("To", dst))
-                .child(detail("Output port", format!("{source:?}")))
-                .child(detail("Input port", format!("{destination:?}")));
+            view = view.child(detail("From", src)).child(detail("To", dst));
             if let Some(edge) = snapshot
                 .graph
                 .edges()
@@ -255,7 +250,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> impl 
                 let id = edge.id();
                 let params = *edge.params();
                 view = view
-                    .child(badge("Connected in candidate", theme::PRIMARY))
+                    .child(badge("Connected", theme::PRIMARY))
                     .child(detail("Route gain", db(params.gain)))
                     .child(detail("Route balance", format!("{:+.2}", params.pan)))
                     .child(
@@ -348,7 +343,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> impl 
             "Select an intersection to inspect or change a direct connection.",
         ));
     }
-    view.child(label("Apply the candidate to start its routing. Invalid or occupied inputs report a validation error."))
+    view.child(label("Apply graph to use the new routing."))
 }
 
 fn find_nodes(

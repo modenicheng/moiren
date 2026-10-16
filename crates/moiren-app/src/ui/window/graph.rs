@@ -192,27 +192,20 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                 .items_center()
                 .justify_between()
                 .px(px(theme::SPACE_3))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .items_center()
-                        .child(
-                            controls::button("toggle-library", "Session & nodes").on_click({
-                                let this = this.clone();
-                                move |_, _, cx| {
-                                    this.update(cx, |s, cx| {
-                                        s.sidebar_open = !s.sidebar_open;
-                                        if s.compact {
-                                            s.inspector_open = false;
-                                        }
-                                        cx.notify();
-                                    })
+                .child(div().flex().gap(px(8.)).items_center().child(
+                    controls::button("toggle-library", "Session & nodes").on_click({
+                        let this = this.clone();
+                        move |_, _, cx| {
+                            this.update(cx, |s, cx| {
+                                s.sidebar_open = !s.sidebar_open;
+                                if s.compact {
+                                    s.inspector_open = false;
                                 }
-                            }),
-                        )
-                        .child(controls::graph_summary(shell.state.read(cx))),
-                )
+                                cx.notify();
+                            })
+                        }
+                    }),
+                ))
                 .child(
                     div()
                         .flex()
@@ -389,7 +382,6 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         panel = panel
             .child(heading(entry.label.clone()))
             .child(detail("Kind", format!("{:?}", node.kind())))
-            .child(detail("Identity", format!("{id:?}")))
             .child(detail("Channels", node.channels().to_string()));
         if let Some(source) = &entry.source {
             panel = panel.child(detail(
@@ -471,13 +463,13 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         for (index, port) in node.inputs().iter().enumerate() {
             panel = panel.child(detail(
                 &format!("Input {}", index + 1),
-                format!("{:?} · {} ch", port.id(), port.channels()),
+                format!("{} ch", port.channels()),
             ));
         }
         for (index, port) in node.outputs().iter().enumerate() {
             panel = panel.child(detail(
                 &format!("Output {}", index + 1),
-                format!("{:?} · {} ch", port.id(), port.channels()),
+                format!("{} ch", port.channels()),
             ));
         }
         if node.kind() == NodeKind::Bus {
@@ -503,12 +495,9 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 .on_click(edit(cx.entity(), GraphEdit::RemoveNode(id))),
         );
     } else {
-        panel = panel.child(label(
-            "Select a node to inspect its identity, ports and parameters.",
-        ));
+        panel = panel.child(label("Select a node to inspect its parameters."));
     }
     panel
-        .child(div().mt(px(12.)).child(graph_summary(state)))
         .child(label(
             "Changes affect the candidate graph. Apply prepares and starts that graph.",
         ))
