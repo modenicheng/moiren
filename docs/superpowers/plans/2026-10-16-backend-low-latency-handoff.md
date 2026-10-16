@@ -27,7 +27,7 @@ FreeDSP + CABLE 组合未通过 Low 无恢复资格，不能将控制层 healthy
 - **真实诊断**：`engine_backend/observations.rs`、`ui/state.rs` 和 `ui/window/settings.rs`。按 owner / generation 防止旧数据，显示周期、队列、fallback、桥库存、欠载、丢帧和恢复。CPU / 物理端到端时延 / 硬件 XRUN 未测量时保持未知。
 - **设置与持久化**：三档真实动作、候选与活动档位分离、旧文件 Compatible 默认值、后台有序写入、退出 drain、关闭重开保留写入链、失败反馈均完成。
 - **有限静音实机工具**：`crates/moiren-windows-audio/examples/routing_probe.rs`。独立零增益输出，真实兼容计划 1 → 2，检查 owner / epoch、时间线、healthy 和 Closed，不保存 PCM、不改默认设备或音量。
-- **连续长测与异常窗口**：探针显式支持 `--soak-seconds 60..1800`，与 `--seconds 1..60` 互斥；控制侧最多保存 1801 个样本。`--trace` 记录固定 128 个最近 native 异常窗口及最多 8 次前序回调，覆盖数保持可见。Render report schema 为 6。
+- **连续长测与异常窗口**：探针显式支持 `--soak-seconds 60..1800`，与 `--seconds 1..60` 互斥；控制侧最多保存 1801 个样本。`--trace` 记录固定 128 个最近 native 异常窗口及最多 8 次前序回调，覆盖数保持可见，并保留 render `IAudioClock` 相关标量。Render report schema 为 7。
 - **截图工具**：`ui/window/capture.rs` 已补齐与正式入口一致的偏好恢复；设置页 1440×900 / 1024×720 截图保存在 `docs/designs/screenshots/managed-routing-low-latency/`。
 
 ### 必须保留的竞态修复

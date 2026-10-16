@@ -8,11 +8,23 @@ pub const RENDER_EVENT_CAPACITY: usize = 128;
 const HISTORY_CAPACITY: usize = 8;
 
 #[derive(Debug, Default, Clone, Copy, Serialize)]
+pub struct RenderClockSample {
+    /// Raw IAudioClock units; normalize by the report's GetFrequency value,
+    /// never by the client sample rate. S_FALSE remains visible as HRESULT 1.
+    pub position_units: u64,
+    pub qpc_100ns: u64,
+    pub hresult: i32,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize)]
 pub struct RenderCallback {
     pub wake_qpc_100ns: Option<u64>,
     pub wake_interval_100ns: Option<u64>,
     pub padding_before_frames: u32,
     pub demand_frames: u32,
+    pub submitted_frames_before: u64,
+    /// Sampled immediately after padding, not atomically with that query.
+    pub native_clock: Option<RenderClockSample>,
     /// Rendering or native submission failed; demand is not a submitted count.
     pub failed: bool,
     /// Approximate scalar bridge observations, not a cross-owner transaction.

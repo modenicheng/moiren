@@ -597,7 +597,7 @@ requires an actual engine period and rejects targets that cannot cover the sum
 of period, wake margin and callback budget, or exceed capacity. It never clamps an
 unachievable deadline budget to capacity.
 
-Render report schema 6 includes the immutable prepared `queue`. Startup prefill
+Render report schema 7 includes the immutable prepared `queue`. Startup prefill
 and callback demand both use its target, while staging retains native capacity.
 Padding above target causes zero demand without advancing Engine time; native
 `min_writable_frames`/`max_writable_frames` retain their capacity-minus-padding
@@ -645,10 +645,14 @@ keeps one owner alive, applies a real compatible graph update, polls health,
 and verifies closure. Control-side native samples are bounded to 1801 entries.
 
 Trace mode additionally retains the most recent 128 native anomaly windows,
-including up to eight preceding callbacks, padding, demand and follower bridge
-observations. Overwritten windows are counted. Empty padding, callback gaps,
-bridge recovery and underrun remain diagnostic evidence; none is a hardware
-XRUN or physical latency measurement. Summary mode leaves these windows disabled.
+including up to eight preceding callbacks, padding, demand, submitted-frame
+snapshots, render `IAudioClock` position/QPC/HRESULT samples and follower bridge
+observations. The report also retains the clock frequency. Overwritten windows
+are counted. Clock samples are correlation evidence, not an atomic transaction
+with padding; an unavailable clock is recorded without rejecting the stream.
+Empty padding, callback gaps, bridge recovery and underrun remain diagnostic
+evidence; none is a hardware XRUN or physical latency measurement. Summary mode
+leaves these windows and native clock samples disabled.
 
 The [continuous-run qualification record](../../docs/superpowers/plans/2026-10-16-low-latency-qualification.md)
 documents actual hardware, bounded demand-deficit models and profile limits.

@@ -14,8 +14,8 @@ mod fade;
 #[cfg(windows)]
 mod source;
 pub use diagnostics::{
-    RENDER_EVENT_CAPACITY, RenderCallback, RenderCallbackHistory, RenderDiagnostics,
-    RenderDiagnosticsSnapshot, RenderEvent,
+    RENDER_EVENT_CAPACITY, RenderCallback, RenderCallbackHistory, RenderClockSample,
+    RenderDiagnostics, RenderDiagnosticsSnapshot, RenderEvent,
 };
 pub use fade::{FadeError, RenderFadeControl};
 #[cfg(windows)]
@@ -375,6 +375,9 @@ pub struct RenderReport {
     pub engine_period_frames: Option<u32>,
     pub period_hresult: Option<i32>,
     pub stream_latency_100ns: Option<i64>,
+    pub clock_frequency: Option<u64>,
+    /// Optional clock preparation failure; never rejects supported audio IO.
+    pub clock_hresult: Option<i32>,
     pub mmcss_registered: bool,
     pub mmcss_hresult: Option<i32>,
     pub own_session_ducking_opt_out: bool,

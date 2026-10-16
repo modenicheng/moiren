@@ -1,7 +1,8 @@
 # Low 档连续运行资格验证
 
 日期：2026-10-16。承接[后端交接](2026-10-16-backend-low-latency-handoff.md)第 1 项。
-本次补齐有限长测、异常窗口、需求缺口模型和实际设备结论，未修改档位队列或时钟伺服参数。
+本次补齐有限长测、异常窗口、需求缺口模型、native render 时钟相关性和实际设备结论，
+未修改档位队列或时钟伺服参数。
 
 ## 结论与适用范围
 
@@ -58,6 +59,10 @@ overflow / underrun。最终诊断修复二进制各做一次 Low / Balanced 15 
 两次都没有桥恢复；这两段短测只复核新二进制的正常路径，不能推翻此前长测
 或说明队列行为已得到改善。本次没有修改队列 / 伺服参数。
 
+续作用新的 Trace 诊断重复了一段 Realtek + CABLE Low 60 秒记录：仍发生 6 次
+跟随积压恢复、主动丢弃 6036 帧，桥 overflow / underrun 仍为 0，host healthy
+并正常到达 `Closed`。因此该增量没有把 Low 恢复问题修好，也没有改变资格结论。
+
 ## 恢复原因的证据与模型
 
 此前 30 秒基线复现 5 次恢复，丢弃 3923 帧；新增 trace 后的另一段 30 秒记录
@@ -72,6 +77,14 @@ wake 间隔均不超过 6.3803 ms，低于跟随 render target 对应的 7.5 ms�
 两次正常回调应消费 `240 + 240 = 480` 帧，而 `0 + 360 = 360` 少消费 120 帧；
 这种缺口累计后会推高桥库存。有限异常窗口和近似 scalar 快照不能证明具体
 WASAPI 驱动内部原因，也不能把 empty padding 解释成硬件 XRUN。
+
+Trace 现在还在每个异常回调中保留 render `IAudioClock::GetPosition` 的原始位置、
+相关 QPC 和 HRESULT，并在 owner 报告中保留 `GetFrequency`。新记录显示，部分
+`padding=360, demand=0` 窗口中设备位置在该回调与相邻回调之间保持不变，随后又
+出现设备位置推进；这与“设备消费可见性和回调时序共同造成缺口”的假设一致，
+但仍不是具体驱动内部根因证明。`IAudioClock` 不可用时只记录 HRESULT，不阻止支持
+的音频流启动。曾试验的单次短 padding 复查在 60 秒记录中仍有 6 次恢复，已撤销，
+不作为修复或策略变更保留。
 
 `tests/output_followers.rs` 的
 `persistent_native_demand_deficit_is_not_hidden_by_healthy_wake_intervals`
@@ -97,7 +110,8 @@ WASAPI 驱动内部原因，也不能把 empty padding 解释成硬件 XRUN。
 原始运行错误优先于后续关闭错误。轮询只能检测已发布的状态，不能排除两次
 快照之间的事件。
 
-`--trace` 额外开启固定 128 个最近异常窗口，每个窗口最多 8 次前序回调。
+`--trace` 额外开启固定 128 个最近异常窗口，每个窗口最多 8 次前序回调，并保留
+render native clock scalar（位置、QPC、HRESULT）以及提交计数快照。
 窗口覆盖数单独报告，不能把未保留的事件当作没有发生。此次 Low 长测保留
 128 个窗口，覆盖 740 个较早窗口，其中最后保留 18 个恢复窗口；累计桥计数
 和全部 601 个控制侧样本仍保留。原有首 256 次回调 trace 的丢弃计数独立存在。
@@ -176,5 +190,5 @@ panic、取消 / Start 失败、准备前失败，以及同一诊断 Vec 在 nat
 
 原始约 6.7 MB Low JSON、601 个样本、stderr 进度、外部负载记录、诊断审查和
 命令日志保存在 `.superpowers/sdd/managed-low-latency/continuation-20261016/`。
-长测使用失败 / unwind 诊断保留修复之前的二进制；后续修复不改变队列或伺服，
-该版本差异必须和最终短测证据一起保留。
+长测使用失败 / unwind 诊断保留修复之前的二进制；本次 native clock 增量不改变
+队列或伺服，新的 60 秒复现 JSON 和诊断代码差异应与旧长测证据一起保留。

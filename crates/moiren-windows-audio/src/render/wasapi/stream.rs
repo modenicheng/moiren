@@ -25,7 +25,7 @@ use windows::{
         Media::Audio::{
             AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             AUDCLNT_STREAMFLAGS_NOPERSIST, AudioCategory_Other, AudioClientProperties,
-            IAudioClient, IAudioClient2, IAudioRenderClient, IAudioSessionControl,
+            IAudioClient, IAudioClient2, IAudioClock, IAudioRenderClient, IAudioSessionControl,
             IAudioSessionControl2, IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator, eRender,
         },
         System::{
@@ -82,6 +82,22 @@ pub(super) struct NativeRender {
     client: IAudioClient,
     event: OwnedHandle,
     capacity: u32,
+    clock: Option<IAudioClock>,
+}
+
+fn clock_sample(clock: &IAudioClock) -> super::super::RenderClockSample {
+    let mut sample = super::super::RenderClockSample::default();
+    // The service is prepared and retained on this owner before Start. Keep
+    // S_FALSE instead of losing its low-accuracy warning in Result<()>.
+    sample.hresult = unsafe {
+        (Interface::vtable(clock).GetPosition)(
+            Interface::as_raw(clock),
+            &mut sample.position_units,
+            &mut sample.qpc_100ns,
+        )
+    }
+    .0;
+    sample
 }
 impl NativeRender {
     pub(super) fn timing(&self, report: &RenderReport) -> crate::latency::NativeStreamTiming {
@@ -170,12 +186,31 @@ pub(super) fn with_native<ResultValue>(
     let render: IAudioRenderClient = api("GetService(IAudioRenderClient)", unsafe {
         client.GetService()
     })?;
+    let clock = if options.latency_telemetry == crate::latency::TelemetryMode::Trace {
+        match unsafe { client.GetService::<IAudioClock>() }.and_then(|clock| {
+            let frequency = unsafe { clock.GetFrequency()? };
+            if frequency == 0 {
+                return Err(windows::Win32::Foundation::E_INVALIDARG.into());
+            }
+            report.clock_frequency = Some(frequency);
+            Ok(clock)
+        }) {
+            Ok(clock) => Some(clock),
+            Err(error) => {
+                report.clock_hresult = Some(error.code().0);
+                None
+            }
+        }
+    } else {
+        None
+    };
     prepared(
         &NativeRender {
             render,
             client,
             event,
             capacity,
+            clock,
         },
         report,
     )
@@ -232,6 +267,7 @@ pub(super) fn run_stream(
         render,
         event,
         capacity,
+        clock: native_clock,
     } = native;
     let capacity = *capacity;
     let queue = report.queue.ok_or(RenderError::StartupLost)?;
@@ -286,6 +322,10 @@ pub(super) fn run_stream(
             }
             let wake_qpc_100ns = clock.as_ref().and_then(QpcClock::now);
             let padding = api("GetCurrentPadding", unsafe { client.GetCurrentPadding() })?;
+            let native_clock = trace
+                .then(|| native_clock.as_ref().map(clock_sample))
+                .flatten();
+            let submitted_frames_before = report.stats.submitted_frames;
             let writable = writable_frames(capacity, padding)?;
             let demand = queue.demand(padding)?;
             let bridge_before = trace.then(|| renderer.bridge_snapshot()).flatten();
@@ -311,6 +351,8 @@ pub(super) fn run_stream(
                     wake_qpc_100ns,
                     padding_before_frames: padding,
                     demand_frames: demand,
+                    submitted_frames_before,
+                    native_clock,
                     bridge_before,
                     bridge_after: bridge_before,
                     ..Default::default()
@@ -333,6 +375,8 @@ pub(super) fn run_stream(
                 wake_qpc_100ns,
                 padding_before_frames: padding,
                 demand_frames: demand,
+                submitted_frames_before,
+                native_clock,
                 failed: result.is_err(),
                 bridge_before,
                 bridge_after: trace.then(|| renderer.bridge_snapshot()).flatten(),
@@ -417,7 +461,7 @@ pub(super) fn run_owner_with(
 }
 pub(super) fn new_report(options: &RenderOptions) -> RenderReport {
     RenderReport {
-        schema_version: 6,
+        schema_version: 7,
         queue: None,
         latency: LatencyRecorder::new(options.latency_telemetry).snapshot(),
         diagnostics: super::super::RenderDiagnosticsSnapshot {
@@ -443,6 +487,8 @@ pub(super) fn new_report(options: &RenderOptions) -> RenderReport {
         engine_period_frames: None,
         period_hresult: None,
         stream_latency_100ns: None,
+        clock_frequency: None,
+        clock_hresult: None,
         mmcss_registered: false,
         mmcss_hresult: None,
         own_session_ducking_opt_out: false,
@@ -538,6 +584,30 @@ pub(super) mod diagnostic_tests {
         ReleaseBuffer,
         Start,
         Cancel,
+    }
+    #[implement(IAudioClock)]
+    struct DiagnosticClock {
+        hresult: i32,
+    }
+    impl IAudioClock_Impl for DiagnosticClock_Impl {
+        fn GetFrequency(&self) -> WinResult<u64> {
+            Ok(384_000)
+        }
+        fn GetPosition(&self, position: *mut u64, qpc: *mut u64) -> WinResult<()> {
+            // SAFETY: clock_sample supplies valid owner-local output scalars.
+            unsafe {
+                *position = 1234;
+                *qpc = 5678;
+            }
+            if self.hresult == 0 {
+                Ok(())
+            } else {
+                Err(windows::core::Error::from_hresult(HRESULT(self.hresult)))
+            }
+        }
+        fn GetCharacteristics(&self) -> WinResult<u32> {
+            unreachable!()
+        }
     }
     #[implement(IAudioClient)]
     struct DiagnosticClient {
@@ -662,7 +732,9 @@ pub(super) mod diagnostic_tests {
             .into(),
             event,
             capacity: 4,
+            clock: Some(DiagnosticClock { hresult: 0 }.into()),
         };
+        report.clock_frequency = Some(384_000);
         report.queue = Some(
             prepare_render_queue(
                 NativeStreamTiming {
@@ -804,5 +876,39 @@ pub(super) mod diagnostic_tests {
         assert_eq!(json["callback"]["padding_before_frames"], 2);
         assert_eq!(json["callback"]["demand_frames"], 2);
         assert_eq!(report.stats.submitted_frames, 4);
+    }
+
+    #[test]
+    fn trace_correlates_device_clock_padding_and_successful_submissions() {
+        let options = options();
+        let mut report = new_report(&options);
+        let mut renderer = DiagnosticRenderer {
+            renders: 0,
+            acknowledged: Cell::new(0),
+            failure: Failure::Render,
+            bridge: None,
+        };
+        assert!(run(&options, &mut report, &mut renderer, Failure::Render, 0).is_err());
+        let json = serde_json::to_value(&report).unwrap();
+        let callback = &json["diagnostics"]["events"][0]["callback"];
+        assert_eq!(callback["submitted_frames_before"], 4);
+        assert_eq!(callback["native_clock"]["position_units"], 1234);
+        assert_eq!(callback["native_clock"]["qpc_100ns"], 5678);
+        assert_eq!(callback["native_clock"]["hresult"], 0);
+        assert_eq!(json["clock_frequency"], 384_000);
+        assert_eq!(json["clock_hresult"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn raw_clock_sample_keeps_low_accuracy_and_failure_hresult() {
+        for hresult in [1, E_FAIL.0] {
+            let clock: IAudioClock = DiagnosticClock { hresult }.into();
+            let sample = clock_sample(&clock);
+            assert_eq!(sample.hresult, hresult);
+            if hresult == 1 {
+                assert_eq!(sample.position_units, 1234);
+                assert_eq!(sample.qpc_100ns, 5678);
+            }
+        }
     }
 }
