@@ -26,6 +26,7 @@ struct PresentationSnapshot {
     mixer_order: Vec<moiren_core::graph::NodeId>,
     mixer_width: f32,
     mixer_dock_width: f32,
+    pending_node_spawn: Option<graph::PendingNodeSpawn>,
     selected_node: Option<String>,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     sidebar_open: bool,
@@ -53,6 +54,7 @@ impl PresentationSnapshot {
             mixer_order: shell.mixer.order.clone(),
             mixer_width: shell.mixer.width,
             mixer_dock_width: shell.mixer.dock_width,
+            pending_node_spawn: shell.pending_node_spawn.take(),
             selected_node: shell.selected_node.take(),
             selected_route: shell.selected_route,
             sidebar_open: shell.sidebar_open,
@@ -75,6 +77,8 @@ impl PresentationSnapshot {
         shell.mixer.order = self.mixer_order;
         shell.mixer.width = self.mixer_width;
         shell.mixer.dock_width = self.mixer_dock_width;
+        shell.pending_node_spawn = self.pending_node_spawn;
+        shell.node_name_selection = None;
         shell.selected_node = self.selected_node;
         shell.selected_route = self.selected_route;
         shell.sidebar_open = self.sidebar_open;
@@ -309,7 +313,7 @@ impl Desktop {
                 let visible = shell.presentation.visible
                     && !shell.presentation.minimized
                     && !shell.settings_open
-                    && shell.presentation.page == Page::Mixer;
+                    && matches!(shell.presentation.page, Page::Graph | Page::Mixer);
                 let points = shell.meter_points.get();
                 let meter_changed = shell.meters.update_points(
                     &shell.state.read(cx).snapshot,

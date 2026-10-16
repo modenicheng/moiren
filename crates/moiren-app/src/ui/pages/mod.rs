@@ -2,7 +2,7 @@
 
 pub mod graph_canvas;
 pub mod graph_canvas_view;
-pub mod session_setup;
+pub mod node_catalog;
 
 /// Which workspace page is active (toolbar tabs).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

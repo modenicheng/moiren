@@ -302,11 +302,11 @@ impl ProjectLayout {
         if !self.camera_x.is_finite()
             || !self.camera_y.is_finite()
             || !self.zoom.is_finite()
-            || !(0.1..=4.0).contains(&self.zoom)
+            || !(f32::EPSILON..=4.0).contains(&self.zoom)
         {
             return Err(PersistenceError::invalid(
                 "layout.camera",
-                "coordinates must be finite and zoom must be in 0.1..=4.0",
+                "coordinates must be finite and zoom must be in f32::EPSILON..=4.0",
             ));
         }
         let mut ids = BTreeSet::new();

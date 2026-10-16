@@ -36,6 +36,12 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         let this = this.clone();
         tabs = tabs.child(
             WorkspaceTab::new(id, page.title())
+                .icon(match page {
+                    Page::Graph => ActionIcon::Graph,
+                    Page::Mixer => ActionIcon::Mixer,
+                    Page::Matrix => ActionIcon::Matrix,
+                    Page::Devices => ActionIcon::Devices,
+                })
                 .active(!shell.settings_open && shell.presentation.page == page)
                 .on_click(move |_, _, cx| this.update(cx, |shell, cx| shell.set_page(page, cx))),
         );
@@ -209,7 +215,9 @@ pub(super) fn statusbar(state: &UiState) -> Stateful<Div> {
                 .items_center()
                 .gap(px(theme::SPACE_3))
                 .child(badge(state.phase_text(), color))
-                .child(label(state.elapsed_text()))
-                .child(label(format)),
+                .when(running || !snapshot.elapsed.is_zero(), |view| {
+                    view.child(label(state.elapsed_text()))
+                })
+                .when(!format.is_empty(), |view| view.child(label(format))),
         )
 }

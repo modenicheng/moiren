@@ -368,6 +368,9 @@ impl StudioShell {
         cx: &mut Context<Self>,
     ) -> Result<(), crate::project::PersistenceError> {
         self.node_positions.clear();
+        self.pending_node_spawn = None;
+        self.node_name_selection = None;
+        self.compressor = graph::CompressorControls::default();
         self.mixer.order.clear();
         self.mixer.width = document.layout.mixer_width;
         self.mixer.dock_width = document.layout.mixer_dock_width;

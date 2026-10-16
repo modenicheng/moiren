@@ -69,20 +69,35 @@ pub const LIBRARY_WIDTH: f32 = 210.;
 pub const INSPECTOR_WIDTH: f32 = 280.;
 pub const INSPECTOR_COLLAPSED_AT: f32 = 1280.;
 pub const LIBRARY_COLLAPSED_AT: f32 = 1100.;
-pub const NODE_WIDTH: f32 = 186.;
-pub const NODE_WIDE_WIDTH: f32 = 226.;
-pub const NODE_HEIGHT: f32 = 105.;
+pub const NODE_WIDTH: f32 = 270.;
+pub const NODE_WIDE_WIDTH: f32 = 270.;
+pub const NODE_HEIGHT: f32 = 112.;
+pub const NODE_SOURCE: Hsla = hsla(0.439203, 0.643725, 0.515686, 1.);
+pub const NODE_DSP: Hsla = hsla(0.722741, 0.781022, 0.731373, 1.);
+pub const NODE_SINK: Hsla = hsla(0.125581, 0.964126, 0.562745, 1.);
+pub const NODE_UTILITY: Hsla = TEXT_FAINT;
+pub const NODE_ANALYSIS: Hsla = SIGNAL_DEVICE;
 pub const CANVAS_GRID: f32 = 24.;
 
 // Graph node card metrics (graph.slint GraphCardMetrics).
 pub mod card {
-    pub const PADDING: f32 = 16.;
+    pub const DECO_HEIGHT: f32 = 6.;
+    pub const PADDING: f32 = 12.;
     pub const GAP: f32 = 10.;
-    pub const HEADER_HEIGHT: f32 = 32.;
-    pub const METER_HEIGHT: f32 = 9.;
+    pub const HEADER_HEIGHT: f32 = 28.;
+    pub const ICON_SIZE: f32 = 28.;
+    pub const TITLE_WIDTH: f32 = 181.;
+    pub const METER_HEIGHT: f32 = 2.;
     pub const ROUTING_HEIGHT: f32 = 12.;
-    pub const METER_Y: f32 = PADDING + HEADER_HEIGHT + GAP;
-    pub const PORT_Y: f32 = METER_Y + METER_HEIGHT + GAP + ROUTING_HEIGHT / 2.;
+    pub const METER_Y: f32 = 60.;
+    pub const PORT_Y: f32 = 80.;
+    pub const FADER_Y: f32 = 68.;
+    pub const BALANCE_Y: f32 = 88.;
+    pub const TRACK_WIDTH: f32 = 211.;
+    pub const TRACK_HEIGHT: f32 = 4.;
+    pub const VALUE_WIDTH: f32 = 25.;
+    pub const TRACK_FILL: super::Hsla = gpui_kit::hsla(0.597222, 0.151899, 0.309804, 1.);
+    pub const THUMB: super::Hsla = gpui_kit::hsla(0., 0., 0.85098, 1.);
 }
 
 // --- Radii -----------------------------------------------------------------

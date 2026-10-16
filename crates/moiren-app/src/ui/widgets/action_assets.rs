@@ -10,6 +10,9 @@ pub enum ActionIcon {
     Plus,
     Settings,
     Graph,
+    Mixer,
+    Matrix,
+    Devices,
     Minimize,
     Maximize,
     Close,
@@ -21,6 +24,9 @@ impl ActionIcon {
             Self::Plus => "plus",
             Self::Settings => "settings",
             Self::Graph => "graph",
+            Self::Mixer => "sliders",
+            Self::Matrix => "route",
+            Self::Devices => "devices",
             Self::Minimize => "minimize",
             Self::Maximize => "maximize",
             Self::Close => "close",
@@ -29,8 +35,12 @@ impl ActionIcon {
     pub(crate) fn element(self) -> impl IntoElement {
         // Kit's Icon resolves inherited text color before painting Svg. A bare
         // Svg with no explicit color silently skips painting in this GPUI version.
+        let directory = match self {
+            Self::Mixer | Self::Matrix | Self::Devices => "icons",
+            _ => "figma-actions",
+        };
         Icon::default()
-            .path(format!("figma-actions/{}.svg", self.name()))
+            .path(format!("{directory}/{}.svg", self.name()))
             .with_size(Size::Size(px(controls::ICON)))
     }
 }
@@ -49,6 +59,23 @@ pub(crate) fn register_fonts(cx: &App) -> Result<()> {
 impl AssetSource for ActionAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let bytes: Option<&'static [u8]> = match path {
+            "figma-nodes/input.svg" => {
+                Some(include_bytes!("../../../assets/figma-nodes/input.svg"))
+            }
+            "figma-nodes/output.svg" => {
+                Some(include_bytes!("../../../assets/figma-nodes/output.svg"))
+            }
+            "figma-nodes/fader.svg" => {
+                Some(include_bytes!("../../../assets/figma-nodes/fader.svg"))
+            }
+            "figma-nodes/bus.svg" => Some(include_bytes!("../../../assets/figma-nodes/bus.svg")),
+            "figma-nodes/more.svg" => Some(include_bytes!("../../../assets/figma-nodes/more.svg")),
+            "figma-nodes/input-port.svg" => {
+                Some(include_bytes!("../../../assets/figma-nodes/input-port.svg"))
+            }
+            "figma-nodes/output-port.svg" => Some(include_bytes!(
+                "../../../assets/figma-nodes/output-port.svg"
+            )),
             "brand/mark.svg" => Some(include_bytes!(
                 "../../../../../assets/logos/moiren-2c-mark-light.svg"
             )),
@@ -61,6 +88,8 @@ impl AssetSource for ActionAssets {
             "icons/clock.svg" => Some(include_bytes!("../../../assets/icons/clock.svg")),
             "icons/speaker.svg" => Some(include_bytes!("../../../assets/icons/speaker.svg")),
             "icons/monitor.svg" => Some(include_bytes!("../../../assets/icons/monitor.svg")),
+            "icons/route.svg" => Some(include_bytes!("../../../assets/icons/route.svg")),
+            "icons/devices.svg" => Some(include_bytes!("../../../assets/icons/devices.svg")),
             "figma-actions/plus.svg" => {
                 Some(include_bytes!("../../../assets/figma-actions/plus.svg"))
             }

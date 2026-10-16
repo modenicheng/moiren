@@ -137,10 +137,17 @@ pub struct StudioShell {
     camera: Camera,
     node_positions: std::collections::HashMap<String, (f32, f32)>,
     node_drag: Option<(String, f32, f32)>,
+    graph_focus: FocusHandle,
+    connection_drag: Option<graph::ConnectionDrag>,
+    pending_node_spawn: Option<graph::PendingNodeSpawn>,
+    node_search: Entity<component::input::InputState>,
+    node_name: Entity<component::input::InputState>,
+    node_name_selection: Option<String>,
     hand_tool: bool,
     matrix_scroll: ScrollHandle,
     mixer_scroll: ScrollHandle,
     mixer: mixer::MixerPresentation,
+    compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     observation_nodes: Option<(
         crate::service::SessionGeneration,
@@ -151,6 +158,8 @@ pub struct StudioShell {
     selected_node: Option<String>,
     /// Screen-space anchor of an active pan drag (window coordinates).
     pan_grab: Option<(f32, f32)>,
+    /// Left background clicks deselect only on release; a pan keeps selection.
+    background_click: Option<(f32, f32)>,
     desktop: Option<WeakEntity<desktop::Desktop>>,
     window_state: crate::project::WindowState,
     /// Precision-touchpad subclass state (Windows pointer input). Held for
@@ -226,6 +235,14 @@ impl StudioShell {
             },
         )
         .detach();
+        let node_search =
+            cx.new(|cx| component::input::InputState::new(window, cx).placeholder("Search nodes"));
+        cx.subscribe(
+            &node_search,
+            |_, _, _: &component::input::InputEvent, cx| cx.notify(),
+        )
+        .detach();
+        let node_name = cx.new(|cx| component::input::InputState::new(window, cx));
         let meters = MeterSubscriptions::new(state.read(cx).handle.clone());
         let node_meters = super::monitoring::NodeMeters::new(state.read(cx).handle.clone());
         let preferences = crate::project::load_preferences().unwrap_or_default();
@@ -264,15 +281,23 @@ impl StudioShell {
             camera: Camera::default(),
             node_positions: Default::default(),
             node_drag: None,
+            graph_focus: cx.focus_handle(),
+            connection_drag: None,
+            pending_node_spawn: None,
+            node_search,
+            node_name,
+            node_name_selection: None,
             hand_tool: false,
             matrix_scroll: ScrollHandle::new(),
             mixer_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPresentation::default(),
+            compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
             observation_nodes: None,
             canvas_size: None,
             selected_node: None,
             pan_grab: None,
+            background_click: None,
             desktop,
             window_state: desktop::capture_window_state(window, Page::Graph),
             #[cfg(windows)]
@@ -339,7 +364,7 @@ impl StudioShell {
                         let visible = shell.presentation.visible
                             && !shell.presentation.minimized
                             && !shell.settings_open
-                            && shell.presentation.page == Page::Mixer;
+                            && matches!(shell.presentation.page, Page::Graph | Page::Mixer);
                         let points = shell.meter_points.get();
                         let meter_changed = shell.meters.update_points(
                             &shell.state.read(cx).snapshot,
@@ -458,7 +483,10 @@ mod tests;
 
 impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.finish_node_spawn(cx);
+        self.sync_node_name(window, cx);
         self.sync_mixer_controls(window, cx);
+        self.sync_compressor_controls(window, cx);
         #[cfg(feature = "gpui-test")]
         if let Some(page) = &self.test_page {
             self.presentation.page = page.read(cx).page;
@@ -469,8 +497,9 @@ impl Render for StudioShell {
             self.inspector_open = !compact;
         }
         self.compact = compact;
-        let visible =
-            window.is_visible() && !self.settings_open && self.presentation.page == Page::Mixer;
+        let visible = window.is_visible()
+            && !self.settings_open
+            && matches!(self.presentation.page, Page::Graph | Page::Mixer);
         self.refresh_observation_nodes(cx);
         self.meter_points.set((false, false));
         self.node_meter_points.borrow_mut().clear();

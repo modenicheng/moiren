@@ -95,13 +95,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                 .flex_1()
                                 .min_w_0()
                                 .gap(px(4.))
-                                .child(heading(row.name.clone()))
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(theme::TEXT_FAINT)
-                                        .child(row.endpoint_id.clone()),
-                                ),
+                                .child(heading(row.name.clone())),
                         )
                         .when(default, |v| v.child(badge("Default", theme::TEXT_MUTED)))
                         .when(active, |v| v.child(badge("Active", theme::SUCCESS)))

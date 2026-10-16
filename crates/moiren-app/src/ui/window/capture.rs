@@ -7,7 +7,11 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| "docs/designs/screenshots/application".into());
     std::fs::create_dir_all(&directory)?;
-    let service = start_service().map_err(|error| anyhow::anyhow!("service: {error:?}"))?;
+    // Capture presentation without starting hardware or changing its format.
+    #[cfg(windows)]
+    let service = ServiceRuntime::spawn_with_driver(crate::service::ManagedDriver::windows())?;
+    #[cfg(not(windows))]
+    let service = ServiceRuntime::spawn()?;
     let handle = service.handle();
     let initial = crate::ui::state::initial_snapshot(&handle)?;
     let mut owned = OwnedService(Some(service));
@@ -19,7 +23,9 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
             gpui_kit::init(cx);
             register_fonts(cx).expect("embedded font");
             let state = cx.new(|_| UiState::new(handle.clone(), initial));
-            state.update(cx, |s, _| s.dispatch(AppRequest::RefreshCatalog));
+            state.update(cx, |s, _| {
+                s.dispatch(AppRequest::RefreshCatalog);
+            });
             let (window, shell) = gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::centered(size(px(1440.), px(900.)), cx)),
@@ -58,8 +64,30 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             s.set_page(page, cx);
                         });
                         cx.background_executor()
-                            .timer(Duration::from_millis(100))
+                            .timer(Duration::from_millis(if page == Page::Mixer {
+                                1500
+                            } else {
+                                100
+                            }))
                             .await;
+                        if page == Page::Mixer {
+                            shell.update(cx, |shell, cx| {
+                                let snapshot = &shell.state.read(cx).snapshot;
+                                let live = snapshot
+                                    .graph
+                                    .nodes
+                                    .iter()
+                                    .filter(|node| shell.node_meters.levels(node.id).is_some())
+                                    .count();
+                                eprintln!(
+                                    "Native mixer meters: {live}/{} live, {} visible, {} topics, phase {:?}",
+                                    snapshot.graph.nodes.len(),
+                                    shell.node_meter_points.borrow().len(),
+                                    snapshot.signal_topics.node_levels.len(),
+                                    snapshot.phase,
+                                );
+                            });
+                        }
                         let path =
                             directory.join(format!("{name}-{}.png", page.title().to_lowercase()));
                         let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
@@ -90,6 +118,218 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     }
                     eprintln!("Capture {}: {result:?}", path.display());
                 }
+                shell.update(cx, |shell, cx| {
+                    shell.set_page(Page::Graph, cx);
+                    shell.sidebar_open = false;
+                    shell.inspector_open = false;
+                    let order = shell
+                        .state
+                        .read(cx)
+                        .snapshot
+                        .graph
+                        .graph
+                        .topological_order()
+                        .unwrap();
+                    for (index, id) in order.iter().enumerate() {
+                        let position = match index {
+                            0 => (30., 175.),
+                            1 => (290., 575.),
+                            2 => (480., 35.),
+                            _ => (810. + index.saturating_sub(3) as f32 * 250., 175.),
+                        };
+                        shell.node_positions.insert(format!("{id:?}"), position);
+                    }
+                    cx.notify();
+                });
+                for (name, zoom) in [
+                    ("graph-fit", None),
+                    ("graph-quarter", Some(0.25)),
+                    ("graph-fractional", Some(0.89)),
+                    ("graph-native-size", Some(1.)),
+                    ("graph-double", Some(2.)),
+                ] {
+                    shell.update(cx, |shell, cx| {
+                        shell.camera = match zoom {
+                            Some(zoom) => Camera {
+                                pan_x: 24.,
+                                pan_y: 64.,
+                                zoom,
+                                adjusted: true,
+                            },
+                            None => Camera::default(),
+                        };
+                        cx.notify();
+                    });
+                    cx.background_executor()
+                        .timer(Duration::from_millis(120))
+                        .await;
+                    let path = directory.join(format!("{name}.png"));
+                    let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
+                        window.draw(cx).clear(cx);
+                        window.render_to_image()?.save(&path)?;
+                        Ok(())
+                    });
+                    if !matches!(result, Ok(Ok(()))) {
+                        capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    eprintln!("Capture {}: {result:?}", path.display());
+                }
+                let _ = window.update(cx, |_, window, _| window.resize(size(px(1440.), px(900.))));
+                for (name, page, strip_width) in [
+                    ("node-inspector", Page::Graph, 176.),
+                    ("mixer-min-width", Page::Mixer, 136.),
+                    ("connection-inspector", Page::Graph, 176.),
+                ] {
+                    shell.update(cx, |shell, cx| {
+                        shell.set_page(page, cx);
+                        shell.camera = Camera::default();
+                        shell.sidebar_open = page == Page::Graph;
+                        shell.inspector_open = true;
+                        shell.mixer.width = strip_width;
+                        let gain = shell
+                            .state
+                            .read(cx)
+                            .snapshot
+                            .graph
+                            .graph
+                            .nodes()
+                            .iter()
+                            .find(|node| node.kind() == moiren_core::graph::NodeKind::Gain)
+                            .map(|node| format!("{:?}", node.id()));
+                        shell.selected_node = gain;
+                        shell.selected_route = None;
+                        if name == "connection-inspector" {
+                            shell.selected_node = None;
+                            let state = shell.state.read(cx);
+                            shell.selected_route = state.snapshot.graph.graph.edges().first()
+                                .map(|edge| (edge.src_port(), edge.dst_port()));
+                        }
+                        cx.notify();
+                    });
+                    cx.background_executor()
+                        .timer(Duration::from_millis(120))
+                        .await;
+                    let path = directory.join(format!("{name}.png"));
+                    let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
+                        window.draw(cx).clear(cx);
+                        window.render_to_image()?.save(&path)?;
+                        Ok(())
+                    });
+                    if !matches!(result, Ok(Ok(()))) {
+                        capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    eprintln!("Capture {}: {result:?}", path.display());
+                }
+                shell.update(cx, |shell, cx| {
+                    shell.state.update(cx, |state, _| {
+                        state.dispatch(AppRequest::EditGraph(crate::service::GraphEdit::AddNode {
+                            kind: moiren_core::graph::NodeKind::Compressor,
+                            channels: 2,
+                        }))
+                    });
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(200))
+                    .await;
+                shell.update(cx, |shell, cx| {
+                    shell.state.update(cx, |state, _| state.poll());
+                    shell.set_page(Page::Graph, cx);
+                    shell.inspector_open = true;
+                    shell.sidebar_open = true;
+                    shell.selected_node = shell
+                        .state
+                        .read(cx)
+                        .snapshot
+                        .graph
+                        .graph
+                        .nodes()
+                        .iter()
+                        .find(|node| node.kind() == moiren_core::graph::NodeKind::Compressor)
+                        .map(|node| format!("{:?}", node.id()));
+                    if let Some(key) = &shell.selected_node {
+                        shell.node_positions.insert(key.clone(), (480., 370.));
+                    }
+                    shell.camera = Camera::default();
+                    cx.notify();
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
+                    .await;
+                let path = directory.join("compressor-inspector.png");
+                let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
+                    window.draw(cx).clear(cx);
+                    window.render_to_image()?.save(&path)?;
+                    Ok(())
+                });
+                if !matches!(result, Ok(Ok(()))) {
+                    capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                eprintln!("Capture {}: {result:?}", path.display());
+                for kind in [
+                    moiren_core::graph::NodeKind::Source,
+                    moiren_core::graph::NodeKind::Bus,
+                ] {
+                    shell.update(cx, |shell, cx| {
+                        shell.state.update(cx, |state, _| {
+                            state.dispatch(AppRequest::EditGraph(crate::service::GraphEdit::AddNode {
+                                kind,
+                                channels: 2,
+                            }));
+                        });
+                    });
+                    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                    loop {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(10))
+                            .await;
+                        let pending = shell.update(cx, |shell, cx| {
+                            shell.state.update(cx, |state, _| state.poll());
+                            shell.state.read(cx).pending_request
+                        });
+                        if !pending {
+                            break;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                }
+                shell.update(cx, |shell, cx| {
+                    shell.set_page(Page::Graph, cx);
+                    shell.sidebar_open = false;
+                    shell.inspector_open = false;
+                    shell.selected_route = None;
+                    shell.selected_node = None;
+                    shell.camera = Camera {
+                        pan_x: 24.,
+                        pan_y: 64.,
+                        zoom: 1.,
+                        adjusted: true,
+                    };
+                    let graph = &shell.state.read(cx).snapshot.graph.graph;
+                    let ids = graph.nodes().iter().map(|node| node.id()).collect::<Vec<_>>();
+                    for (index, id) in ids.iter().enumerate() {
+                        shell.node_positions.insert(
+                            format!("{id:?}"),
+                            (40. + (index % 4) as f32 * 330., 120. + (index / 4) as f32 * 190.),
+                        );
+                    }
+                    cx.notify();
+                });
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
+                    .await;
+                let path = directory.join("node-families.png");
+                let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
+                    window.draw(cx).clear(cx);
+                    window.render_to_image()?.save(&path)?;
+                    Ok(())
+                });
+                if !matches!(result, Ok(Ok(()))) {
+                    capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                eprintln!("Capture {}: {result:?}", path.display());
                 cx.update(|cx| cx.quit());
             })
             .detach();

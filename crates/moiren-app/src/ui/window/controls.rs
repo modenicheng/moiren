@@ -75,24 +75,17 @@ pub(super) fn apply(shell: &StudioShell, cx: &Context<StudioShell>) -> ActionBut
     let this = cx.entity();
     let state = shell.state.read(cx);
     let graph = &state.snapshot.graph;
-    button(
-        "apply-graph",
-        if state.snapshot.phase == SessionPhase::Running {
-            "Apply & restart"
-        } else {
-            "Apply graph"
-        },
-    )
-    .variant(ButtonVariant::Primary)
-    .disabled(graph.pending_revision.is_some() || state.pending_request)
-    .on_click(move |_, _, cx| {
-        this.update(cx, |shell, cx| {
-            shell
-                .state
-                .update(cx, |state, _| state.dispatch(AppRequest::ApplyGraph));
-            cx.notify();
+    button("apply-graph", "Apply graph")
+        .variant(ButtonVariant::Primary)
+        .disabled(graph.pending_revision.is_some() || state.pending_request)
+        .on_click(move |_, _, cx| {
+            this.update(cx, |shell, cx| {
+                shell
+                    .state
+                    .update(cx, |state, _| state.dispatch(AppRequest::ApplyGraph));
+                cx.notify();
+            })
         })
-    })
 }
 
 pub(super) fn edit(

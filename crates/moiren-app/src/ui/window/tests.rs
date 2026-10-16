@@ -210,7 +210,7 @@ fn closed_window_keeps_preference_writes_until_application_shutdown(
 }
 
 #[gpui_kit::test]
-fn graph_uses_full_canvas_and_wire_selection_opens_real_route_inspector(
+fn graph_wire_selection_shows_connection_properties_without_selecting_node(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(gpui_kit::init);
@@ -250,6 +250,8 @@ fn graph_uses_full_canvas_and_wire_selection_opens_real_route_inspector(
     });
     cx.update(|window, cx| {
         window.click_at("graph-page", position, cx);
+        window.render_frame(cx);
+        assert!(window.find("matrix-inspector").visible());
         assert!(window.find("disconnect-route").visible());
     });
     view.update(cx, |shell, cx| {

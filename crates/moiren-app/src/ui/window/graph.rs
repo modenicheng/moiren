@@ -1,14 +1,83 @@
 use super::*;
 
+mod compressor;
+mod library;
+pub(super) use compressor::CompressorControls;
+mod node_inspector;
+pub(super) use library::PendingNodeSpawn;
+use library::library;
+pub(super) use node_inspector::inspector;
+
+#[cfg(all(test, feature = "gpui-test"))]
+mod tests;
+
+#[derive(Clone, Copy)]
+pub(super) struct ConnectionDrag {
+    port: pages::graph_canvas::PortTarget,
+    cursor: (f32, f32),
+}
+
+impl StudioShell {
+    fn delete_graph_selection(&mut self, cx: &mut Context<Self>) {
+        let graph = &self.state.read(cx).snapshot.graph.graph;
+        let edit = self
+            .selected_node
+            .as_ref()
+            .and_then(|selected| {
+                graph
+                    .nodes()
+                    .iter()
+                    .find(|node| format!("{:?}", node.id()) == *selected)
+                    .map(|node| crate::service::GraphEdit::RemoveNode(node.id()))
+            })
+            .or_else(|| {
+                self.selected_route.and_then(|ports| {
+                    graph
+                        .edges()
+                        .iter()
+                        .find(|edge| (edge.src_port(), edge.dst_port()) == ports)
+                        .map(|edge| crate::service::GraphEdit::Disconnect(edge.id()))
+                })
+            });
+        if let Some(edit) = edit
+            && self.state.update(cx, |state, _| {
+                state.try_dispatch(AppRequest::EditGraph(edit)).is_ok()
+            })
+        {
+            self.selected_node = None;
+            self.selected_route = None;
+        }
+        self.connection_drag = None;
+        self.node_drag = None;
+        cx.notify();
+    }
+}
+
 pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
-    let world = std::sync::Arc::new(pages::graph_canvas::CanvasWorld::positioned(
-        &state.snapshot,
-        &shell.node_positions,
-    ));
-    let overview = minimap(world.clone(), shell.camera, shell.canvas_size);
+    let mut projected =
+        pages::graph_canvas::CanvasWorld::positioned(&state.snapshot, &shell.node_positions);
+    if state.snapshot.graph.active_revision == Some(state.snapshot.graph.candidate_revision) {
+        for node in &mut projected.nodes {
+            node.peaks = node
+                .node_id
+                .and_then(|id| shell.node_meters.levels(id))
+                .map(|levels| levels.map(|level| level.peak));
+        }
+    }
+    let world = std::sync::Arc::new(projected);
     let camera = shell.camera;
     let selected = shell.selected_node.clone();
+    let selected_wire = shell.selected_route.and_then(|ports| {
+        state
+            .snapshot
+            .graph
+            .graph
+            .edges()
+            .iter()
+            .find(|edge| (edge.src_port(), edge.dst_port()) == ports)
+            .map(|edge| format!("{:?}", edge.id()))
+    });
     let this = cx.entity();
 
     // Canvas view with interaction plumbed to the shell entity.
@@ -28,6 +97,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
         move |id: &str, window: &mut Window, cx: &mut App| {
             this.update(cx, |shell, cx| {
                 shell.pan_grab = None;
+                shell.background_click = None;
                 shell.node_drag = None;
                 if shell.hand_tool {
                     let pos = window.mouse_position();
@@ -43,11 +113,8 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                         .or_insert((node.x, node.y));
                 }
                 let pos = window.mouse_position();
-                if shell.hand_tool {
-                    shell.pan_grab = Some((f32::from(pos.x), f32::from(pos.y)));
-                } else {
-                    shell.node_drag = Some((id.into(), f32::from(pos.x), f32::from(pos.y)));
-                }
+                shell.camera.adjusted = true;
+                shell.node_drag = Some((id.into(), f32::from(pos.x), f32::from(pos.y)));
                 if shell.compact {
                     shell.inspector_open = true;
                     shell.sidebar_open = false;
@@ -69,18 +136,37 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                 if !held {
                     shell.pan_grab = None;
                     shell.node_drag = None;
+                    if shell.background_click.take().is_some_and(|(x, y)| {
+                        (f32::from(position.x) - x).hypot(f32::from(position.y) - y) <= 3.
+                    }) {
+                        shell.selected_node = None;
+                        shell.selected_route = None;
+                        cx.notify();
+                    }
+                    if shell.connection_drag.take().is_some() {
+                        cx.notify();
+                    }
                     return;
                 }
                 if let Some((id, gx, gy)) = shell.node_drag.clone() {
                     shell.camera.adjusted = true;
+                    let delta = shell.camera.canvas_delta_to_world((
+                        f32::from(position.x) - gx,
+                        f32::from(position.y) - gy,
+                    ));
                     if let Some(pos) = shell.node_positions.get_mut(&id) {
-                        pos.0 += (f32::from(position.x) - gx) / shell.camera.zoom;
-                        pos.1 += (f32::from(position.y) - gy) / shell.camera.zoom;
+                        pos.0 += delta.0;
+                        pos.1 += delta.1;
                     }
                     shell.node_drag = Some((id, f32::from(position.x), f32::from(position.y)));
                     cx.notify();
                 }
                 if let Some((gx, gy)) = shell.pan_grab {
+                    if shell.background_click.is_some_and(|(x, y)| {
+                        (f32::from(position.x) - x).hypot(f32::from(position.y) - y) > 3.
+                    }) {
+                        shell.background_click = None;
+                    }
                     let (dx, dy) = (f32::from(position.x) - gx, f32::from(position.y) - gy);
                     shell.camera.pan_by(dx, dy);
                     shell.node_drag = None;
@@ -92,16 +178,17 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
     };
     let on_bg_down = {
         let this = this.clone();
-        move |(_event, _bounds): (MouseDownEvent, Bounds<Pixels>),
+        move |(event, _bounds): (MouseDownEvent, Bounds<Pixels>),
               window: &mut Window,
               cx: &mut App| {
             this.update(cx, |shell, cx| {
-                shell.pan_grab = Some((
+                let anchor = (
                     f32::from(window.mouse_position().x),
                     f32::from(window.mouse_position().y),
-                ));
-                shell.selected_node = None;
-                shell.selected_route = None;
+                );
+                shell.pan_grab = Some(anchor);
+                shell.background_click =
+                    (event.button == MouseButton::Left && !shell.hand_tool).then_some(anchor);
                 cx.notify();
             });
         }
@@ -118,8 +205,24 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
     };
     let on_camera_fit = {
         let this = this.clone();
+        let nodes = world.clone();
         move |fitted: &Camera, canvas: Size<Pixels>, _window: &mut Window, cx: &mut App| {
             this.update(cx, |shell, cx| {
+                let viewport = Bounds {
+                    origin: point(0., 0.),
+                    size: size(f32::from(canvas.width), f32::from(canvas.height)),
+                };
+                shell.node_meter_points.borrow_mut().extend(
+                    nodes
+                        .nodes
+                        .iter()
+                        .filter(|node| {
+                            fitted
+                                .project_rect(pages::graph_canvas::NodeLayout::new(node).card)
+                                .intersects(&viewport)
+                        })
+                        .filter_map(|node| node.node_id),
+                );
                 let canvas_size = Some((f32::from(canvas.width), f32::from(canvas.height)));
                 let changed = shell.canvas_size != canvas_size
                     || (!shell.camera.adjusted && shell.camera != *fitted);
@@ -134,10 +237,100 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
         }
     };
     let canvas_view = pages::graph_canvas_view::graph_canvas_view(
-        world,
+        world.clone(),
         camera,
         selected.as_deref(),
+        selected_wire.as_deref(),
         pages::graph_canvas_view::CanvasCallbacks {
+            focus: shell.graph_focus.clone(),
+            connection: shell.connection_drag.map(|drag| (drag.port, drag.cursor)),
+            on_port_down: std::rc::Rc::new({
+                let this = this.clone();
+                let nodes = world.clone();
+                move |(port, cursor), window, cx| {
+                    this.update(cx, |shell, cx| {
+                        shell.node_drag = None;
+                        shell.pan_grab = None;
+                        shell.background_click = None;
+                        if shell.hand_tool {
+                            let position = window.mouse_position();
+                            shell.pan_grab = Some((f32::from(position.x), f32::from(position.y)));
+                        }
+                        if !shell.hand_tool {
+                            shell.camera.adjusted = true;
+                            for node in &nodes.nodes {
+                                shell
+                                    .node_positions
+                                    .entry(node.id.clone())
+                                    .or_insert((node.x, node.y));
+                            }
+                            shell.connection_drag = Some(ConnectionDrag { port, cursor });
+                            cx.notify();
+                        }
+                    })
+                }
+            }),
+            on_connection_move: std::rc::Rc::new({
+                let this = this.clone();
+                move |cursor, _, cx| {
+                    this.update(cx, |shell, cx| {
+                        if let Some(drag) = &mut shell.connection_drag {
+                            drag.cursor = cursor;
+                            cx.notify();
+                        }
+                    })
+                }
+            }),
+            on_port_up: std::rc::Rc::new({
+                let this = this.clone();
+                move |target, _, cx| {
+                    this.update(cx, |shell, cx| {
+                        use pages::graph_canvas::PortDirection;
+                        let Some(drag) = shell.connection_drag.take() else {
+                            return;
+                        };
+                        if let Some(target) = target
+                            && target.direction != drag.port.direction
+                        {
+                            let (source, destination) = match drag.port.direction {
+                                PortDirection::Output => (drag.port.id, target.id),
+                                PortDirection::Input => (target.id, drag.port.id),
+                            };
+                            shell.state.update(cx, |state, _| {
+                                state.dispatch(AppRequest::EditGraph(
+                                    crate::service::GraphEdit::Connect {
+                                        source,
+                                        destination,
+                                    },
+                                ))
+                            });
+                        }
+                        cx.notify();
+                    })
+                }
+            }),
+            on_delete: std::rc::Rc::new({
+                let this = this.clone();
+                move |(), _, cx| this.update(cx, |shell, cx| shell.delete_graph_selection(cx))
+            }),
+            on_cancel: std::rc::Rc::new({
+                let this = this.clone();
+                move |(), _, cx| {
+                    this.update(cx, |shell, cx| {
+                        shell.connection_drag = None;
+                        shell.node_drag = None;
+                        shell.pan_grab = None;
+                        shell.background_click = None;
+                        cx.notify();
+                    })
+                }
+            }),
+            on_drop_node: std::rc::Rc::new({
+                let this = this.clone();
+                move |(template, position), _, cx| {
+                    this.update(cx, |shell, cx| shell.spawn_node(template, position, cx));
+                }
+            }),
             on_background_down: std::rc::Rc::new(on_bg_down),
             on_canvas_mouse_move: Box::new(on_bg_move),
             on_zoom: std::rc::Rc::new(on_zoom),
@@ -149,6 +342,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                     this.update(cx, |shell, cx| {
                         shell.node_drag = None;
                         shell.pan_grab = None;
+                        shell.background_click = None;
                         if shell.hand_tool {
                             let pos = window.mouse_position();
                             shell.pan_grab = Some((f32::from(pos.x), f32::from(pos.y)));
@@ -193,7 +387,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                 .justify_between()
                 .px(px(theme::SPACE_3))
                 .child(div().flex().gap(px(8.)).items_center().child(
-                    controls::button("toggle-library", "Session & nodes").on_click({
+                    controls::button("toggle-library", "Node library").on_click({
                         let this = this.clone();
                         move |_, _, cx| {
                             this.update(cx, |s, cx| {
@@ -241,267 +435,17 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                         .min_w_0()
                         .overflow_hidden()
                         .child(canvas_view)
-                        .child(editing_toolbar(shell, &this))
-                        .child(overview),
+                        .child(editing_toolbar(shell, &this)),
                 )
-                .when(shell.inspector_open, |v| v.child(inspector(shell, cx))),
+                .when(shell.inspector_open, |view| {
+                    if shell.selected_node.is_none() && shell.selected_route.is_some() {
+                        view.child(matrix::inspector(shell, cx))
+                    } else {
+                        view.child(inspector(shell, cx))
+                    }
+                }),
         )
         .gpui_test_observe()
-        .into_any_element()
-}
-
-fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
-    use crate::ui::state::{SourceMode, output_name};
-    use controls::*;
-    use moiren_core::graph::NodeKind;
-    let this = cx.entity();
-    let state = shell.state.read(cx);
-    let mut view = div()
-        .id("session-io-panel")
-        .flex()
-        .flex_col()
-        .flex_none()
-        .w(px(theme::LIBRARY_WIDTH))
-        .p(px(theme::SPACE_3))
-        .gap(px(10.))
-        .bg(theme::SURFACE)
-        .border_r_1()
-        .border_color(theme::BORDER)
-        .overflow_y_scroll()
-        .child(heading("Session"))
-        .child(label("Source for next start"));
-    for mode in [SourceMode::Tone, SourceMode::Input, SourceMode::Application] {
-        let this = this.clone();
-        view = view.child(
-            button(SharedString::from(format!("mode-{mode:?}")), mode.title())
-                .variant(if state.source_mode == mode {
-                    ButtonVariant::Primary
-                } else {
-                    ButtonVariant::Ghost
-                })
-                .on_click(move |_, _, cx| {
-                    this.update(cx, |s, cx| {
-                        s.state.update(cx, |state, _| {
-                            state.source_mode = mode;
-                            state.bind_candidate_resources();
-                        });
-                        cx.notify();
-                    })
-                }),
-        );
-    }
-    view = view
-        .child(label(
-            state
-                .candidate_spec()
-                .map(|spec| crate::ui::state::source_name(&state.snapshot, &spec.source))
-                .unwrap_or_else(|| "Select resources in Devices".into()),
-        ))
-        .child(
-            pages::session_setup::PickerRow::new(
-                "candidate-output",
-                "Output",
-                state
-                    .selection
-                    .output_id
-                    .as_ref()
-                    .map(|id| output_name(&state.snapshot, id))
-                    .unwrap_or_else(|| "Not selected".into()),
-            )
-            .disabled(state.snapshot.catalog.outputs.is_empty())
-            .on_click({
-                let this = this.clone();
-                move |_, _, cx| {
-                    this.update(cx, |s, cx| {
-                        s.state.update(cx, |state, _| {
-                            let catalog = &state.snapshot.catalog;
-                            let next = state
-                                .selection
-                                .output_index(catalog)
-                                .map_or(0, |i| (i + 1) % catalog.outputs.len().max(1));
-                            state.selection.output_id =
-                                catalog.outputs.get(next).map(|row| row.endpoint_id.clone());
-                            state.bind_candidate_resources();
-                        });
-                        cx.notify();
-                    })
-                }
-            }),
-        )
-        .child(button("choose-devices", "Choose devices").on_click({
-            let this = this.clone();
-            move |_, _, cx| this.update(cx, |s, cx| s.set_page(Page::Devices, cx))
-        }))
-        .child(
-            div()
-                .mt(px(12.))
-                .child(pages::session_setup::section_heading("Add node")),
-        );
-    for (name, kind) in [
-        ("Gain", NodeKind::Gain),
-        ("Balance", NodeKind::Pan),
-        ("Compressor", NodeKind::Compressor),
-        ("Bus", NodeKind::Bus),
-        ("Input", NodeKind::Source),
-        ("Output", NodeKind::Sink),
-    ] {
-        view = view.child(
-            button(SharedString::from(format!("add-{name}")), name)
-                .icon(ActionIcon::Plus)
-                .on_click(edit(
-                    this.clone(),
-                    crate::service::GraphEdit::AddNode { kind, channels: 2 },
-                )),
-        );
-    }
-    view.child(label(
-        "New nodes are candidates. Connect them in Matrix, then apply.",
-    ))
-    .gpui_test_observe()
-}
-
-pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
-    if shell.selected_node.is_none() && shell.selected_route.is_some() {
-        return matrix::inspector(shell, cx).into_any_element();
-    }
-    use crate::service::GraphEdit;
-    use controls::*;
-    use moiren_core::graph::NodeKind;
-    let state = shell.state.read(cx);
-    let snapshot = &state.snapshot;
-    let selected = snapshot
-        .graph
-        .graph
-        .nodes()
-        .iter()
-        .find(|n| shell.selected_node.as_deref() == Some(format!("{:?}", n.id()).as_str()));
-    let mut panel = panel("graph-inspector").child(heading("Inspector"));
-    if let Some(node) = selected {
-        let id = node.id();
-        let entry = snapshot.graph.node(id).expect("service metadata");
-        panel = panel
-            .child(heading(entry.label.clone()))
-            .child(detail("Kind", format!("{:?}", node.kind())))
-            .child(detail("Channels", node.channels().to_string()));
-        if let Some(source) = &entry.source {
-            panel = panel.child(detail(
-                "Source",
-                crate::ui::state::source_name(snapshot, source),
-            ));
-        }
-        if let Some(output) = &entry.output_endpoint_id {
-            panel = panel.child(detail(
-                "Output",
-                crate::ui::state::output_name(snapshot, output),
-            ));
-        }
-        if node.kind() == NodeKind::Compressor {
-            panel = panel.child(label(
-                "Linked peak compressor with the engine's default settings.",
-            ));
-        }
-        if node.kind() == NodeKind::Gain {
-            panel = panel.child(detail("Candidate gain", db(entry.gain))).child(
-                div()
-                    .flex()
-                    .gap(px(6.))
-                    .child(button("node-gain-down", "−1 dB").on_click(edit(
-                        cx.entity(),
-                        GraphEdit::SetGain {
-                            node: id,
-                            gain: entry.gain * 10f64.powf(-1. / 20.),
-                        },
-                    )))
-                    .child(button("node-gain-up", "+1 dB").on_click(edit(
-                        cx.entity(),
-                        GraphEdit::SetGain {
-                            node: id,
-                            gain: if entry.gain == 0. {
-                                0.01
-                            } else {
-                                (entry.gain * 10f64.powf(1. / 20.)).min(16.)
-                            },
-                        },
-                    )))
-                    .child(
-                        button("node-unity", "Unity")
-                            .on_click(edit(cx.entity(), GraphEdit::SetGain { node: id, gain: 1. })),
-                    ),
-            );
-        }
-        if node.kind() == NodeKind::Pan {
-            panel =
-                panel
-                    .child(detail("Candidate balance", format!("{:+.2}", entry.pan)))
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(6.))
-                            .child(button("node-left", "Left").on_click(edit(
-                                cx.entity(),
-                                GraphEdit::SetPan {
-                                    node: id,
-                                    pan: (entry.pan - 0.1).max(-1.),
-                                },
-                            )))
-                            .child(button("node-center", "Center").on_click(edit(
-                                cx.entity(),
-                                GraphEdit::SetPan { node: id, pan: 0. },
-                            )))
-                            .child(button("node-right", "Right").on_click(edit(
-                                cx.entity(),
-                                GraphEdit::SetPan {
-                                    node: id,
-                                    pan: (entry.pan + 0.1).min(1.),
-                                },
-                            ))),
-                    );
-        }
-        if node.kind() == NodeKind::Pan {
-            panel = panel.child(stereo_controls(entry, cx));
-        }
-        for (index, port) in node.inputs().iter().enumerate() {
-            panel = panel.child(detail(
-                &format!("Input {}", index + 1),
-                format!("{} ch", port.channels()),
-            ));
-        }
-        for (index, port) in node.outputs().iter().enumerate() {
-            panel = panel.child(detail(
-                &format!("Output {}", index + 1),
-                format!("{} ch", port.channels()),
-            ));
-        }
-        if node.kind() == NodeKind::Bus {
-            panel = panel.child(
-                button("add-bus-input", "Add bus input")
-                    .on_click(edit(cx.entity(), GraphEdit::AddBusInput(id))),
-            );
-            if let Some(port) = node.inputs().last() {
-                panel = panel.child(button("remove-bus-input", "Remove last input").on_click(
-                    edit(
-                        cx.entity(),
-                        GraphEdit::RemoveBusInput {
-                            node: id,
-                            port: port.id(),
-                        },
-                    ),
-                ));
-            }
-        }
-        panel = panel.child(
-            button("remove-node", "Delete node")
-                .variant(ButtonVariant::Danger)
-                .on_click(edit(cx.entity(), GraphEdit::RemoveNode(id))),
-        );
-    } else {
-        panel = panel.child(label("Select a node to inspect its parameters."));
-    }
-    panel
-        .child(label(
-            "Changes affect the candidate graph. Apply prepares and starts that graph.",
-        ))
-        .child(label(state.control_feedback()))
         .into_any_element()
 }
 
@@ -561,69 +505,4 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
             })
         }
     }))
-}
-
-fn minimap(
-    world: std::sync::Arc<pages::graph_canvas::CanvasWorld>,
-    camera: Camera,
-    viewport: Option<(f32, f32)>,
-) -> impl IntoElement {
-    div()
-        .absolute()
-        .bottom(px(12.))
-        .right(px(12.))
-        .w(px(164.))
-        .p(px(8.))
-        .rounded(px(theme::RADIUS_SM))
-        .bg(theme::SURFACE)
-        .border_1()
-        .border_color(theme::BORDER)
-        .overflow_hidden()
-        .child(controls::label("Overview"))
-        .child(
-            canvas(
-                move |bounds, _, _| bounds,
-                move |bounds, _, window, _| {
-                    let graph = world.graph_bounds;
-                    let scale = (f32::from(bounds.size.width) / graph.size.width.max(1.))
-                        .min(f32::from(bounds.size.height) / graph.size.height.max(1.));
-                    let origin = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
-                    for node in &world.nodes {
-                        window.paint_quad(fill(
-                            Bounds {
-                                origin: point(
-                                    px(origin.0 + (node.x - graph.origin.x) * scale),
-                                    px(origin.1 + (node.y - graph.origin.y) * scale),
-                                ),
-                                size: size(px(node.width() * scale), px(node.height() * scale)),
-                            },
-                            theme::soft(node.tint()),
-                        ));
-                    }
-                    if let Some((width, height)) = viewport {
-                        window.paint_quad(PaintQuad {
-                            bounds: Bounds {
-                                origin: point(
-                                    px(origin.0
-                                        + (-camera.pan_x / camera.zoom - graph.origin.x) * scale),
-                                    px(origin.1
-                                        + (-camera.pan_y / camera.zoom - graph.origin.y) * scale),
-                                ),
-                                size: size(
-                                    px(width / camera.zoom * scale),
-                                    px(height / camera.zoom * scale),
-                                ),
-                            },
-                            corner_radii: 0f32.into(),
-                            background: transparent_black().into(),
-                            border_widths: 1f32.into(),
-                            border_color: theme::TEXT_MUTED,
-                            border_style: BorderStyle::default(),
-                        });
-                    }
-                },
-            )
-            .w_full()
-            .h(px(64.)),
-        )
 }

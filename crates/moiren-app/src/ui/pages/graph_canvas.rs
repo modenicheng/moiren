@@ -1,92 +1,42 @@
-//! Signal-graph canvas: grid, pan/zoom camera, node cards, bezier wires.
-//!
-//! Ported from graph-canvas.slint. gpui's `Path` primitive is fill-only (no
-//! stroke width), so wires are built as filled polygon ribbons: sample the
-//! cubic bezier, then offset each sample along the curve normal by ±w/2.
+//! Presentation-only graph projection with shared camera, layout and wire geometry.
 
 use gpui_kit::*;
 
 use crate::service::AppSnapshot;
 use crate::ui::theme;
 
-/// Camera state: world origin at canvas top-left.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Camera {
-    pub pan_x: f32,
-    pub pan_y: f32,
-    pub zoom: f32,
-    /// User moved the camera manually; stop auto-fitting.
-    pub adjusted: bool,
-}
+mod camera;
+mod frame;
+mod layout;
+mod wire;
 
-impl Default for Camera {
-    fn default() -> Self {
-        Self {
-            pan_x: 0.,
-            pan_y: 0.,
-            zoom: 1.,
-            adjusted: false,
-        }
-    }
-}
+pub use camera::Camera;
+pub use frame::{CanvasFrame, HitTarget, PortDirection, PortTarget};
+pub use layout::{NodeLayout, TextLayout};
+pub use wire::{WireCurve, WireGeometry};
 
-impl Camera {
-    pub fn zoom_by(&mut self, factor: f32, anchor: (f32, f32)) {
-        self.zoom_at((self.zoom * factor).clamp(0.25, 2.0), anchor);
-    }
-    pub fn zoom_at(&mut self, next_zoom: f32, anchor: (f32, f32)) {
-        let (ax, ay) = anchor;
-        self.pan_x = ax - (ax - self.pan_x) * next_zoom / self.zoom;
-        self.pan_y = ay - (ay - self.pan_y) * next_zoom / self.zoom;
-        self.zoom = next_zoom;
-        self.adjusted = true;
-    }
-    pub fn pan_by(&mut self, dx: f32, dy: f32) {
-        self.pan_x += dx;
-        self.pan_y += dy;
-        self.adjusted = true;
-    }
-    /// Toolbar zoom buttons have no cursor; keep the canvas center fixed.
-    pub fn zoom_around_center(&mut self, canvas: Option<(f32, f32)>, factor: f32) {
-        let (ax, ay) = canvas.map_or((0., 0.), |(w, h)| (w / 2., h / 2.));
-        self.zoom_by(factor, (ax, ay));
-    }
-    /// Fit the graph into the canvas with gutters. Returns fit geometry.
-    pub fn fit(&mut self, canvas: Size<Pixels>, graph: Bounds<f32>) {
-        let (cw, ch) = (f32::from(canvas.width), f32::from(canvas.height));
-        let gutter = theme::SPACE_5;
-        let chrome_top = 96.;
-        let chrome_bottom = 48.;
-        let avail_w = (cw - 2. * gutter).max(1.);
-        let avail_h = (ch - chrome_top - chrome_bottom).max(1.);
-        let gw = graph.size.width.max(1.);
-        let gh = graph.size.height.max(1.);
-        self.zoom = (avail_w / gw).min(avail_h / gh).clamp(0.25, 1.0);
-        self.pan_x = gutter + (avail_w - gw * self.zoom) / 2. - graph.origin.x * self.zoom;
-        self.pan_y = chrome_top + (avail_h - gh * self.zoom) / 2. - graph.origin.y * self.zoom;
-    }
-}
+#[cfg(test)]
+mod tests;
 
 /// World-space node descriptor for the candidate session graph.
 #[derive(Debug, Clone)]
 pub struct CanvasNode {
+    pub node_id: Option<moiren_core::graph::NodeId>,
     pub id: String,
     pub name: String,
     pub detail: String,
-    pub value: String,
     pub icon: Option<&'static str>,
     pub x: f32,
     pub y: f32,
     pub wide: bool,
-    pub has_input: bool,
     pub input_count: usize,
+    pub input_ports: Vec<moiren_core::graph::PortId>,
+    pub output_port: Option<moiren_core::graph::PortId>,
     pub has_output: bool,
-    pub input_label: String,
-    pub output_label: String,
     pub tint: Option<Hsla>,
-    /// 0..1 parameter level (GAIN/PAN bars).
-    pub level: Option<f32>,
-    pub is_parameter: bool,
+    pub gain: f64,
+    pub balance: Option<f64>,
+    pub peaks: Option<[f32; 2]>,
 }
 
 impl CanvasNode {
@@ -98,13 +48,11 @@ impl CanvasNode {
         }
     }
     pub fn height(&self) -> f32 {
-        theme::NODE_HEIGHT.max(self.port_y() + self.input_count as f32 * 18. + 8.)
-    }
-    pub fn input_y(&self, index: usize) -> f32 {
-        self.port_y() + index as f32 * 18.
-    }
-    pub fn port_y(&self) -> f32 {
-        theme::card::PORT_Y
+        theme::NODE_HEIGHT.max(
+            theme::card::PORT_Y
+                + self.input_count.saturating_sub(1) as f32 * 18.
+                + theme::card::PADDING,
+        )
     }
     pub fn tint(&self) -> Hsla {
         self.tint.unwrap_or(theme::PRIMARY)
@@ -114,22 +62,22 @@ impl CanvasNode {
 /// Fresh card with sensible defaults; callers refine via the builder.
 fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
     CanvasNode {
+        node_id: None,
         id: id.into(),
         name: name.into(),
         detail: detail.into(),
-        value: String::new(),
         icon: None,
         x: 0.,
         y: 0.,
         wide: false,
-        has_input: false,
         input_count: 0,
+        input_ports: Vec::new(),
+        output_port: None,
         has_output: false,
-        input_label: String::new(),
-        output_label: String::new(),
         tint: Some(theme::PRIMARY),
-        level: None,
-        is_parameter: false,
+        gain: 1.,
+        balance: None,
+        peaks: None,
     }
 }
 
@@ -137,6 +85,8 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
 #[derive(Debug, Clone)]
 pub struct CanvasWire {
     pub id: String,
+    pub source: String,
+    pub destination: String,
     pub from: (f32, f32),
     pub to: (f32, f32),
     pub tint: Option<Hsla>,
@@ -179,39 +129,45 @@ impl CanvasWorld {
             let position = positions
                 .get(&key)
                 .copied()
-                .unwrap_or((32. + level as f32 * 250., 80. + *row as f32 * 160.));
+                .unwrap_or((32. + level as f32 * 330., 80. + *row as f32 * 170.));
             *row += 1;
+            let channels = if logical.channels() == 2 {
+                "L/R".into()
+            } else {
+                format!("{} ch", logical.channels())
+            };
+            let format = snapshot
+                .monitor_diagnostics
+                .filter(|diagnostics| {
+                    diagnostics.generation == snapshot.generation
+                        && snapshot.phase == crate::service::SessionPhase::Running
+                        && graph.active_revision == Some(graph.candidate_revision)
+                })
+                .map(|diagnostics| {
+                    format!(
+                        "{}kHz {channels}",
+                        diagnostics.observation.prepared.output.sample_rate as f64 / 1000.
+                    )
+                });
             let detail = match logical.kind() {
-                NodeKind::Source => state
-                    .source
-                    .as_ref()
-                    .map(|source| crate::ui::state::source_name(snapshot, source))
-                    .unwrap_or_else(|| "Choose a source".into()),
-                NodeKind::Sink => state
-                    .output_endpoint_id
-                    .as_ref()
-                    .map(|id| crate::ui::state::output_name(snapshot, id))
-                    .unwrap_or_else(|| "Choose an output".into()),
-                NodeKind::Gain => {
-                    if state.gain == 0. {
-                        "−∞ dB".into()
-                    } else {
-                        format!("{:+.1} dB", 20. * state.gain.log10())
-                    }
-                }
-                NodeKind::Pan => format!("Balance {:+.2}", state.pan),
-                NodeKind::Bus => format!(
-                    "{} inputs · {} channels",
-                    logical.inputs().len(),
-                    logical.channels()
-                ),
-                NodeKind::Compressor => "Linked peak compressor".into(),
+                NodeKind::Source if state.source.is_none() => "Choose a source".into(),
+                NodeKind::Sink if state.output_endpoint_id.is_none() => "Choose an output".into(),
+                _ => format.unwrap_or(channels),
             };
             let (icon, tint) = match logical.kind() {
-                NodeKind::Source => ("wave", theme::SIGNAL_DEVICE),
-                NodeKind::Sink => ("headphones", theme::SIGNAL_RECORDER),
-                NodeKind::Bus => ("git-merge", theme::TEXT_MUTED),
-                _ => ("sliders", theme::PRIMARY),
+                NodeKind::Source => (
+                    match state.source {
+                        Some(crate::service::InputSelection::Physical { .. }) | None => {
+                            "figma-input"
+                        }
+                        Some(crate::service::InputSelection::Process { .. }) => "app",
+                        Some(crate::service::InputSelection::Tone { .. }) => "wave",
+                    },
+                    theme::NODE_SOURCE,
+                ),
+                NodeKind::Sink => ("figma-output", theme::NODE_SINK),
+                NodeKind::Bus => ("figma-bus", theme::NODE_UTILITY),
+                _ => ("figma-fader", theme::NODE_DSP),
             };
             let mut card = node(&key, &state.label, detail)
                 .at(position.0, position.1)
@@ -219,12 +175,15 @@ impl CanvasWorld {
                 .ports(!logical.inputs().is_empty(), !logical.outputs().is_empty())
                 .with_tint(tint);
             card.input_count = logical.inputs().len();
-            if logical.kind() == NodeKind::Gain {
-                card = card.parameter(state.gain as f32);
-            }
-            if logical.kind() == NodeKind::Pan {
-                card = card.parameter((state.pan as f32 + 1.) / 2.);
-            }
+            card.node_id = Some(id);
+            card.gain = if logical.kind() == NodeKind::Gain {
+                state.gain
+            } else {
+                state.mixer.gain
+            };
+            card.balance = (logical.kind() == NodeKind::Pan).then_some(state.pan);
+            card.input_ports = logical.inputs().iter().map(|port| port.id()).collect();
+            card.output_port = logical.outputs().first().map(|port| port.id());
             nodes.push(card);
         }
         let wires = graph
@@ -243,8 +202,10 @@ impl CanvasWorld {
                     .position(|p| p.id() == edge.dst_port())?;
                 Some(CanvasWire {
                     id: format!("{:?}", edge.id()),
-                    from: (a.x + a.width(), a.y + a.port_y()),
-                    to: (b.x, b.y + b.input_y(input)),
+                    source: a.id.clone(),
+                    destination: b.id.clone(),
+                    from: NodeLayout::new(a).output?,
+                    to: *NodeLayout::new(b).inputs.get(input)?,
                     tint: Some(if edge.params().mute {
                         theme::TEXT_FAINT
                     } else {
@@ -253,16 +214,29 @@ impl CanvasWorld {
                 })
             })
             .collect();
-        let min_x = nodes.iter().map(|n| n.x).fold(0., f32::min);
-        let min_y = nodes.iter().map(|n| n.y).fold(0., f32::min);
-        let max_x = nodes.iter().map(|n| n.x + n.width()).fold(400., f32::max);
-        let max_y = nodes.iter().map(|n| n.y + n.height()).fold(220., f32::max);
+        Self::new(nodes, wires)
+    }
+
+    pub fn new(nodes: Vec<CanvasNode>, wires: Vec<CanvasWire>) -> Self {
+        let graph_bounds = nodes
+            .iter()
+            .map(|node| NodeLayout::new(node).card)
+            .chain(
+                wires
+                    .iter()
+                    .map(|wire| WireCurve::new(wire.from, wire.to).bounds()),
+            )
+            .reduce(|bounds, next| bounds.union(&next))
+            .unwrap_or(Bounds {
+                origin: point(0., 0.),
+                size: size(400., 220.),
+            });
         Self {
             nodes,
             wires,
             graph_bounds: Bounds {
-                origin: point(min_x - 24., min_y - 24.),
-                size: size(max_x - min_x + 48., max_y - min_y + 48.),
+                origin: graph_bounds.origin - point(8., 8.),
+                size: graph_bounds.size + size(16., 16.),
             },
         }
     }
@@ -279,23 +253,12 @@ impl CanvasNode {
         self
     }
     fn ports(mut self, input: bool, output: bool) -> Self {
-        self.has_input = input;
+        self.input_count = usize::from(input);
         self.has_output = output;
-        if input {
-            self.input_label = "in".into();
-        }
-        if output {
-            self.output_label = "out".into();
-        }
         self
     }
     fn with_tint(mut self, tint: Hsla) -> Self {
         self.tint = Some(tint);
-        self
-    }
-    fn parameter(mut self, level: f32) -> Self {
-        self.is_parameter = true;
-        self.level = Some(level.clamp(0., 1.));
         self
     }
     #[allow(dead_code)]
@@ -303,48 +266,4 @@ impl CanvasNode {
         self.wide = true;
         self
     }
-}
-
-/// Fill-only cubic bezier ribbon (stroke emulation via normal offsets).
-pub fn wire_ribbon(from: (f32, f32), to: (f32, f32), width: f32) -> Path<Pixels> {
-    let (x1, y1) = from;
-    let (x2, y2) = to;
-    let dx = ((x2 - x1).abs() * 0.4).max(24.);
-    // Cubic bezier with horizontal handles.
-    let p = |t: f32| -> (f32, f32) {
-        let mt = 1. - t;
-        let a = mt * mt * mt;
-        let b = 3. * mt * mt * t;
-        let c = 3. * mt * t * t;
-        let d = t * t * t;
-        (
-            a * x1 + b * (x1 + dx) + c * (x2 - dx) + d * x2,
-            a * y1 + b * y1 + c * y2 + d * y2,
-        )
-    };
-    let samples = 16;
-    let half = width / 2.;
-    let mut upper: Vec<(f32, f32)> = Vec::with_capacity(samples + 1);
-    let mut lower: Vec<(f32, f32)> = Vec::with_capacity(samples + 1);
-    for i in 0..=samples {
-        let t = i as f32 / samples as f32;
-        let (cx, cy) = p(t);
-        let (nx, ny) = p((t + 1. / samples as f32).min(1.));
-        // tangent
-        let tx = nx - cx;
-        let ty = ny - cy;
-        let len = (tx * tx + ty * ty).sqrt().max(1e-6);
-        // normal
-        let (ux, uy) = (-ty / len * half, tx / len * half);
-        upper.push((cx + ux, cy + uy));
-        lower.push((cx - ux, cy - uy));
-    }
-    let mut path = Path::new(point(px(upper[0].0), px(upper[0].1)));
-    for (x, y) in upper.iter().skip(1) {
-        path.line_to(point(px(*x), px(*y)));
-    }
-    for (x, y) in lower.iter().rev() {
-        path.line_to(point(px(*x), px(*y)));
-    }
-    path
 }

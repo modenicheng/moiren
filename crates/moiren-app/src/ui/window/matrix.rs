@@ -234,13 +234,16 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .into_any_element()
 }
 
-pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
+pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot.graph;
     let mut view = panel("matrix-inspector").child(heading("Connection"));
     if let Some((source, destination)) = shell.selected_route {
-        if let Some((src, dst)) = find_nodes(snapshot, source, destination) {
-            view = view.child(detail("From", src)).child(detail("To", dst));
+        if let Some((src, dst, channels)) = find_nodes(snapshot, source, destination) {
+            view = view
+                .child(detail("From", src))
+                .child(detail("To", dst))
+                .child(detail("Channels", channels.to_string()));
             if let Some(edge) = snapshot
                 .graph
                 .edges()
@@ -253,6 +256,13 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> impl 
                     .child(badge("Connected", theme::PRIMARY))
                     .child(detail("Route gain", db(params.gain)))
                     .child(detail("Route balance", format!("{:+.2}", params.pan)))
+                    .child(detail(
+                        "Tap",
+                        match params.tap {
+                            moiren_core::graph::SendTap::PreFader => "Pre-fader",
+                            moiren_core::graph::SendTap::PostFader => "Post-fader",
+                        },
+                    ))
                     .child(
                         button("disconnect-route", "Disconnect")
                             .variant(ButtonVariant::Danger)
@@ -317,24 +327,17 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> impl 
                 );
             }
             let this = cx.entity();
-            let node = snapshot
-                .graph
-                .nodes()
-                .iter()
-                .find(|n| n.outputs().iter().any(|p| p.id() == source))
-                .map(|n| format!("{:?}", n.id()));
-            view = view
-                .child(
+            view = view.when(shell.presentation.page != Page::Graph, |view| {
+                view.child(
                     button("show-in-graph", "Show in Graph").on_click(move |_, _, cx| {
                         this.update(cx, |s, cx| {
-                            s.selected_node = node.clone();
+                            s.selected_node = None;
                             s.set_page(Page::Graph, cx);
+                            s.inspector_open = true;
                         })
                     }),
                 )
-                .child(label(
-                    "Route gain belongs to this connection. It is independent of a node's fader.",
-                ));
+            });
         } else {
             view = view.child(label("This connection no longer exists. Select a cell."));
         }
@@ -343,14 +346,14 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> impl 
             "Select an intersection to inspect or change a direct connection.",
         ));
     }
-    view.child(label("Apply graph to use the new routing."))
+    view.gpui_test_observe().into_any_element()
 }
 
 fn find_nodes(
     snapshot: &crate::service::GraphSnapshot,
     source: PortId,
     destination: PortId,
-) -> Option<(String, String)> {
+) -> Option<(String, String, usize)> {
     let src = snapshot
         .graph
         .nodes()
@@ -361,8 +364,18 @@ fn find_nodes(
         .nodes()
         .iter()
         .find(|n| n.inputs().iter().any(|p| p.id() == destination))?;
-    Some((
-        snapshot.node(src.id())?.label.clone(),
-        snapshot.node(dst.id())?.label.clone(),
-    ))
+    let mut from = snapshot.node(src.id())?.label.clone();
+    let mut to = snapshot.node(dst.id())?.label.clone();
+    if src.outputs().len() > 1 {
+        let index = src.outputs().iter().position(|port| port.id() == source)?;
+        from.push_str(&format!(" · output {}", index + 1));
+    }
+    if dst.inputs().len() > 1 {
+        let index = dst
+            .inputs()
+            .iter()
+            .position(|port| port.id() == destination)?;
+        to.push_str(&format!(" · input {}", index + 1));
+    }
+    Some((from, to, src.channels()))
 }
