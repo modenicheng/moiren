@@ -14,6 +14,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
     let service = ServiceRuntime::spawn()?;
     let handle = service.handle();
     let initial = crate::ui::state::initial_snapshot(&handle)?;
+    let preferences = crate::project::load_preferences().unwrap_or_default();
     let mut owned = OwnedService(Some(service));
     let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let capture_failure = failed.clone();
@@ -23,7 +24,10 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
             gpui_kit::init(cx);
             register_fonts(cx).expect("embedded font");
             let state = cx.new(|_| UiState::new(handle.clone(), initial));
+            // Match production startup so persisted intent and service state
+            // agree in captures without writing the user's preferences.
             state.update(cx, |s, _| {
+                s.restore_preferences(&preferences);
                 s.dispatch(AppRequest::RefreshCatalog);
             });
             let (window, shell) = gpui_kit::open_window(

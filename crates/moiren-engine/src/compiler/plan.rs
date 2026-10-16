@@ -1,6 +1,6 @@
 //! Dedicated signal slots preserve fan-out and make preparation deterministic.
 use moiren_core::{
-    graph::{GraphError, LogicalGraph, NodeId, NodeKind},
+    graph::{GraphError, LogicalGraph, NodeId, NodeKind, SendTap},
     protocol::ProcessorId,
 };
 use std::collections::BTreeMap;
@@ -38,6 +38,23 @@ impl<S: ProcessingSample> Builder<S> {
             capacity_frames: self.frames,
         });
         slot
+    }
+
+    fn strip(
+        &mut self,
+        source: usize,
+        channels: usize,
+        config: crate::processor::StripConfig,
+    ) -> Result<usize, CompileError> {
+        let slot = self.slot(channels);
+        let processor =
+            self.processor(crate::processor::builtin::ChannelStrip { channels, config })?;
+        self.ops.push(DraftOp {
+            processor,
+            reads: vec![(0, source)],
+            output: Some(slot),
+        });
+        Ok(slot)
     }
     pub(super) fn processor(
         &mut self,
@@ -123,6 +140,7 @@ pub(super) fn build<S: ProcessingSample>(
 ) -> Result<(Builder<S>, CompiledBindings), CompileError> {
     let incoming: BTreeMap<_, _> = graph.edges().iter().map(|e| (e.dst_port(), e)).collect();
     let mut outputs = BTreeMap::new();
+    let mut pre_fader = BTreeMap::new();
     let mut mapping = CompiledBindings {
         nodes: BTreeMap::new(),
         edges: BTreeMap::new(),
@@ -136,10 +154,15 @@ pub(super) fn build<S: ProcessingSample>(
     };
     for id in graph.topological_order()? {
         let node = graph.get_node(id)?;
+        let strip = bindings.strips.get(&id).copied();
         let mut reads = Vec::with_capacity(node.inputs().len());
         for (index, port) in node.inputs().iter().enumerate() {
             let slot = if let Some(edge) = incoming.get(&port.id()) {
-                let source = outputs[&edge.src_port()];
+                let source = if edge.params().tap == SendTap::PreFader {
+                    pre_fader[&edge.src()]
+                } else {
+                    outputs[&edge.src_port()]
+                };
                 let slot = builder.slot(port.channels());
                 let send = Send {
                     channels: port.channels(),
@@ -159,6 +182,13 @@ pub(super) fn build<S: ProcessingSample>(
                 builder.slot(port.channels())
             };
             let port_index = u16::try_from(index).map_err(|_| GraphError::TooManyPorts)?;
+            let slot = if node.kind() == NodeKind::Sink
+                && let Some(config) = strip
+            {
+                builder.strip(slot, node.channels(), config)?
+            } else {
+                slot
+            };
             reads.push((port_index, slot));
             if let Some(observers) = bindings.take_input_observers(port.id()) {
                 for observer in observers {
@@ -167,6 +197,9 @@ pub(super) fn build<S: ProcessingSample>(
             }
         }
         let processor = builder.node_processor(id, node.kind(), bindings.take(id))?;
+        if node.kind() == NodeKind::Gain {
+            pre_fader.insert(id, reads[0].1);
+        }
         mapping.nodes.insert(id, processor);
         let output = node.outputs().first().map(|port| {
             let slot = builder.slot(port.channels());
@@ -178,6 +211,19 @@ pub(super) fn build<S: ProcessingSample>(
             reads,
             output,
         });
+        if let Some(raw) = output
+            && let Some(config) = strip
+        {
+            let before = raw;
+            let before = builder.strip(
+                before,
+                node.channels(),
+                crate::processor::StripConfig { gain: 1., ..config },
+            )?;
+            pre_fader.insert(id, before);
+            let after = builder.strip(raw, node.channels(), config)?;
+            outputs.insert(node.outputs()[0].id(), after);
+        }
         for port in node.outputs() {
             let Some(observers) = bindings.take_observers(port.id()) else {
                 continue;

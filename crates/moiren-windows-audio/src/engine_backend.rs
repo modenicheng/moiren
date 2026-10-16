@@ -14,12 +14,22 @@ mod preparation;
 #[cfg(windows)]
 mod resources;
 mod selectors;
+mod validation;
+pub use validation::validate_native_project;
+mod observations;
+mod profile;
+pub use observations::{
+    NativeBridgeObservation, NativeObservationSnapshot, NativeObservations, NativeStreamKind,
+    NativeStreamObservation,
+};
+pub use profile::NativeLatencyProfile;
 
 #[cfg(windows)]
 pub use preparation::WindowsBackend;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WindowsBackendConfig {
+    pub latency_profile: NativeLatencyProfile,
     pub probe_interval: Duration,
     pub max_resources: usize,
     pub render_queue: crate::latency::RenderQueuePolicy,
@@ -30,6 +40,7 @@ pub struct WindowsBackendConfig {
 impl Default for WindowsBackendConfig {
     fn default() -> Self {
         Self {
+            latency_profile: NativeLatencyProfile::Compatible,
             probe_interval: Duration::from_millis(500),
             max_resources: 64,
             render_queue: crate::latency::RenderQueuePolicy::default(),
@@ -52,6 +63,14 @@ impl WindowsBackendConfig {
         self.render_queue
             .validate()
             .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+        if self.latency_profile != NativeLatencyProfile::Compatible
+            && (self.render_queue != crate::latency::RenderQueuePolicy::FullCapacity
+                || self.latency_budget != crate::latency::LatencyBudgetPolicy::Compatible)
+        {
+            return Err(BackendError::Unsupported(
+                "relative latency profiles cannot be combined with explicit queue budgets".into(),
+            ));
+        }
         if let crate::latency::LatencyBudgetPolicy::Custom { render, .. } = self.latency_budget
             && render != self.render_queue
         {

@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use super::{GraphDocument, PersistenceError};
-use crate::service::{InputSelection, RunLimit, SessionSpec};
+use crate::service::{AudioLatencyProfile, InputSelection, RunLimit, SessionSpec};
 
 pub const PROJECT_VERSION: u32 = 1;
 pub const PREFERENCES_VERSION: u32 = 1;
@@ -363,6 +363,8 @@ pub struct AppPreferences {
     pub version: u32,
     pub density: UiDensity,
     pub appearance: Appearance,
+    /// Requested for the next audio apply/start, not a measured device result.
+    pub latency_profile: AudioLatencyProfile,
     pub restore_last_project: bool,
     pub last_project_path: Option<std::path::PathBuf>,
 }
@@ -373,6 +375,7 @@ impl Default for AppPreferences {
             version: PREFERENCES_VERSION,
             density: UiDensity::Comfortable,
             appearance: Appearance::Dark,
+            latency_profile: AudioLatencyProfile::Compatible,
             restore_last_project: false,
             last_project_path: None,
         }

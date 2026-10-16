@@ -106,7 +106,12 @@ impl BridgeObserver {
         self.0.producer_finished.load(Relaxed)
     }
     pub fn snapshot(&self) -> BridgeSnapshot {
-        let c = &self.0;
+        self.0.snapshot()
+    }
+}
+impl Counters {
+    pub(super) fn snapshot(&self) -> BridgeSnapshot {
+        let c = self;
         BridgeSnapshot {
             captured_frames: c.captured_frames.load(Relaxed),
             written_frames: c.written_frames.load(Relaxed),

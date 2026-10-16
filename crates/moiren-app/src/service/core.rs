@@ -23,6 +23,45 @@ impl Default for ServiceCore {
     }
 }
 impl ServiceCore {
+    /// Managed graph updates keep the same service owner identity. Session
+    /// controls may update run limits/defaults without pretending it restarted.
+    pub(crate) fn managed_desired(&mut self, spec: SessionSpec) -> Result<(), DispatchError> {
+        self.check_open()?;
+        spec.validate()?;
+        if self.desired.is_none() {
+            self.start(spec)?;
+        } else {
+            self.desired = Some(spec);
+        }
+        Ok(())
+    }
+    /// A managed host can wait for resources and later recover without a new
+    /// user request. Keep its intent/identity while projecting actual execution.
+    pub(crate) fn managed_execution(
+        &mut self,
+        generation: SessionGeneration,
+        running: bool,
+        error: Option<String>,
+    ) {
+        if self.generation != generation || self.desired.is_none() || self.check_open().is_err() {
+            return;
+        }
+        self.owner = Some(generation);
+        self.error = error;
+        if running {
+            if self.running_since.is_none() {
+                self.running_since = Some(Instant::now());
+            }
+            self.phase = SessionPhase::Running;
+        } else {
+            self.running_since = None;
+            self.phase = if self.error.is_some() {
+                SessionPhase::Failed
+            } else {
+                SessionPhase::Starting
+            };
+        }
+    }
     pub fn update_gain_pan(&mut self, gain: f64, pan: f64) {
         if valid_gain_pan(gain, pan)
             && let Some(spec) = self.desired.as_mut()

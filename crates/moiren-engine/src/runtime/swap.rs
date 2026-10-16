@@ -749,7 +749,7 @@ pub(super) struct RtPlanPort<S: ProcessingSample> {
     pending: Consumer<PreparedPlan<S>>,
     retired: Producer<RetiredPlan<S>>,
     status: Arc<Status>,
-    protected_sink: Option<usize>,
+    protected_sinks: Vec<usize>,
 }
 pub struct PlanControlPort<S: ProcessingSample> {
     pending: Producer<PreparedPlan<S>>,
@@ -858,7 +858,7 @@ impl<S: ProcessingSample> Engine<S> {
             pending: rx,
             retired: retired_tx,
             status: Arc::clone(&status),
-            protected_sink: None,
+            protected_sinks: Vec::new(),
         });
         Ok(PlanControlPort {
             pending: tx,
@@ -872,6 +872,7 @@ impl<S: ProcessingSample> Engine<S> {
 
     /// Non-RT setup for a demand-driven renderer whose consumer stays fixed.
     /// Every later activation must migrate this exact live sink instance.
+    /// Calls accumulate, protecting all native output consumers in a fan-out.
     pub fn require_sink_reuse(&mut self, sink: ProcessorId) -> Result<(), PlanSwapError> {
         if self.timeline != 0 {
             return Err(PlanSwapError::InvalidCandidate);
@@ -885,10 +886,14 @@ impl<S: ProcessingSample> Engine<S> {
         if self.resources.instances[slot].processor.role() != ProcessorRole::Sink {
             return Err(PlanSwapError::IncompatibleProcessor);
         }
-        self.swaps
+        let sinks = &mut self
+            .swaps
             .as_mut()
             .ok_or(PlanSwapError::InvalidCandidate)?
-            .protected_sink = Some(slot);
+            .protected_sinks;
+        if !sinks.contains(&slot) {
+            sinks.push(slot);
+        }
         Ok(())
     }
     pub(super) fn apply_pending_plan(&mut self) {
@@ -917,7 +922,7 @@ impl<S: ProcessingSample> Engine<S> {
             .is_some_and(|transfer| !Arc::ptr_eq(&transfer.basis.0, &self.snapshot.0))
         {
             Some(PlanSwapError::StaleBasis)
-        } else if port.protected_sink.is_some_and(|sink| {
+        } else if port.protected_sinks.iter().any(|&sink| {
             !candidate
                 .transfer
                 .as_ref()
@@ -949,11 +954,15 @@ impl<S: ProcessingSample> Engine<S> {
             Err(reason) => (RetireOutcome::Rejected(reason), None),
             Ok(retired_signals) => {
                 if let Some(transfer) = &candidate.transfer {
-                    if let Some(sink) = port.protected_sink {
-                        port.protected_sink = transfer
+                    // The set is allocated during non-RT attachment. Updating
+                    // indices in place protects every retained native consumer
+                    // without allocating or destroying on the audio thread.
+                    for sink in &mut port.protected_sinks {
+                        *sink = transfer
                             .processors
                             .iter()
-                            .find_map(|&(old, new)| (old == sink).then_some(new));
+                            .find_map(|&(old, new)| (old == *sink).then_some(new))
+                            .expect("all protected sinks validated above");
                     }
                     for &(old, new) in &transfer.processors {
                         mem::swap(

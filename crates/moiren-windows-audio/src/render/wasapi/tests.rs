@@ -255,9 +255,20 @@ fn shared_gate_releases_both_owners_only_after_activation() {
 pub(super) fn probe_renderer(
     dropped: std::sync::mpsc::Sender<std::thread::ThreadId>,
 ) -> DemandRenderer {
+    probe_renderer_with_panic(dropped, None)
+}
+
+pub(super) fn probe_renderer_with_panic(
+    dropped: std::sync::mpsc::Sender<std::thread::ThreadId>,
+    panic_on_call: Option<usize>,
+) -> DemandRenderer {
     use moiren_core::graph::*;
     use moiren_engine::{boundary::*, compiler::*, runtime::*};
-    struct DropProbe(std::sync::mpsc::Sender<std::thread::ThreadId>);
+    struct DropProbe(
+        std::sync::mpsc::Sender<std::thread::ThreadId>,
+        Option<usize>,
+        usize,
+    );
     impl Drop for DropProbe {
         fn drop(&mut self) {
             self.0.send(std::thread::current().id()).unwrap();
@@ -272,6 +283,8 @@ pub(super) fn probe_renderer(
             ctx: &moiren_engine::processor::ProcessContext,
             mut output: moiren_engine::buffer::AudioBlockMut<'_, f32>,
         ) -> BoundaryReport {
+            self.2 += 1;
+            assert_ne!(Some(self.2), self.1, "injected source panic");
             for channel in output.channels_mut() {
                 channel.fill(0.25);
             }
@@ -293,7 +306,9 @@ pub(super) fn probe_renderer(
         .unwrap();
     let (writer, reader) = audio_bridge(2, 8, 4096).unwrap();
     let mut bindings = NodeBindings::new();
-    bindings.bind_source(source, DropProbe(dropped)).unwrap();
+    bindings
+        .bind_source(source, DropProbe(dropped, panic_on_call, 0))
+        .unwrap();
     bindings.bind_sink(sink, writer).unwrap();
     let compiled = compile(
         &graph,
@@ -375,7 +390,8 @@ fn prepared_render_waits_before_dsp_and_returns_renderer_to_joiner() {
         assert_eq!(exit.renderer.timeline(), u64::from(!cancel));
         assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
         let json = serde_json::to_value(&exit.report).unwrap();
-        assert_eq!(json["schema_version"], 5);
+        assert_eq!(json["schema_version"], 6);
+        assert_eq!(json["diagnostics"]["enabled"], false);
         assert_eq!(json["shared_period"]["requested_period_frames"], 240);
         assert_eq!(json["shared_period"]["actual_period_frames"], 336);
         assert!(json["requested_seconds"].is_null());
@@ -431,7 +447,8 @@ fn post_ready_failure_returns_unstarted_renderer_and_finite_report() {
     assert!(!exit.report.stream_started);
     assert_eq!(exit.renderer.timeline(), 0);
     let json = serde_json::to_value(&exit.report).unwrap();
-    assert_eq!(json["schema_version"], 5);
+    assert_eq!(json["schema_version"], 6);
+    assert_eq!(json["diagnostics"]["events"], serde_json::json!([]));
     assert_eq!(json["requested_seconds"], 10.0);
     assert!(rx.try_recv().is_err());
     drop(exit.renderer);
@@ -468,4 +485,74 @@ fn render_prepare_failure_joins_and_drops_renderer_on_preparing_thread() {
     );
     assert!(matches!(result, Err(RenderError::UnsupportedFormat)));
     assert_eq!(rx.recv().unwrap(), std::thread::current().id());
+}
+
+#[test]
+fn direct_trace_owner_retains_windows_and_renderer_after_callback_panic() {
+    use stream::diagnostic_tests as diagnostic;
+    let (dropped, released) = std::sync::mpsc::channel();
+    let renderer = probe_renderer_with_panic(dropped, Some(4));
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let (ready, _metadata) = std::sync::mpsc::sync_channel(1);
+    let joined = std::thread::spawn(move || {
+        stream::run_owner_with(
+            diagnostic::options(),
+            renderer,
+            stop.event,
+            gate,
+            ready,
+            Arc::new(AtomicBool::new(false)),
+            |options, renderer, _, report, _, _, _| {
+                diagnostic::run(options, report, renderer, diagnostic::Failure::None, 0)
+            },
+        )
+    })
+    .join();
+    assert!(joined.is_ok(), "direct owner let the callback panic escape");
+    let exit = joined.unwrap();
+    assert!(released.try_recv().is_err());
+    drop(exit.renderer);
+    assert_eq!(released.recv().unwrap(), std::thread::current().id());
+    assert_eq!(
+        exit.report.failure.as_deref(),
+        Some(RenderError::WorkerPanicked.to_string().as_str())
+    );
+    assert!(exit.report.diagnostics.enabled);
+    assert_eq!(exit.report.diagnostics.wake_budget_100ns, 834);
+    assert_eq!(exit.report.diagnostics.events.len(), 2);
+}
+
+#[test]
+fn trace_report_preserves_selected_mode_on_preparation_failure() {
+    use crate::latency::TelemetryMode;
+    for mode in [
+        TelemetryMode::Disabled,
+        TelemetryMode::Summary,
+        TelemetryMode::Trace,
+    ] {
+        let mut options = stream::diagnostic_tests::options();
+        options.latency_telemetry = mode;
+        let (dropped, released) = std::sync::mpsc::channel();
+        let stop = StopSignal::new().unwrap();
+        let gate = ActivationGate::new(stop.clone()).unwrap();
+        let (ready, _metadata) = std::sync::mpsc::sync_channel(1);
+        let exit = stream::run_owner_with(
+            options,
+            probe_renderer(dropped),
+            stop.event,
+            gate,
+            ready,
+            Arc::new(AtomicBool::new(false)),
+            |_, _, _, _, _, _, _| Err(RenderError::UnsupportedFormat),
+        );
+        drop(exit.renderer);
+        assert_eq!(released.recv().unwrap(), std::thread::current().id());
+        assert_eq!(
+            exit.report.diagnostics.enabled,
+            mode == TelemetryMode::Trace
+        );
+        assert_eq!(exit.report.diagnostics.wake_budget_100ns, 0);
+        assert!(exit.report.diagnostics.events.is_empty());
+    }
 }

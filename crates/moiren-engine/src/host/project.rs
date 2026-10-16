@@ -86,6 +86,7 @@ impl ProcessingConfig {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EngineProject {
+    pub strips: BTreeMap<NodeId, crate::processor::StripConfig>,
     pub graph: LogicalGraph,
     pub nodes: BTreeMap<NodeId, NodeConfig>,
     pub parameters: Vec<DesiredParameter>,
@@ -119,6 +120,11 @@ pub enum ProjectError {
 impl EngineProject {
     pub fn validate(&self) -> Result<(), ProjectError> {
         self.graph.validate()?;
+        for (&node, config) in &self.strips {
+            if !config.valid(self.graph.get_node(node)?.channels()) {
+                return Err(ProjectError::InvalidProcessor(node));
+            }
+        }
         let config = self.processing;
         if !config.engine.processing_sr.is_finite()
             || config.engine.processing_sr <= 0.0
@@ -220,6 +226,7 @@ impl EngineProject {
         for node in self.graph.nodes() {
             if candidate.graph.get_node(node.id()).is_err() {
                 candidate.nodes.remove(&node.id());
+                candidate.strips.remove(&node.id());
             }
         }
         let graph = &candidate.graph;
@@ -257,8 +264,12 @@ impl EngineProject {
                         && crate::processor::Gain::parameter(ProcessorId(0), 1.0).accepts(value, 0)
                 }
                 Some(NodeConfig::Pan { .. }) => {
-                    parameter == crate::processor::Pan::POSITION
-                        && matches!(value, ParamValue::Float(value) if value.is_finite() && (-1.0..=1.0).contains(&value))
+                    (parameter == crate::processor::Pan::POSITION
+                        && matches!(value, ParamValue::Float(value) if value.is_finite() && (-1.0..=1.0).contains(&value)))
+                        || (matches!(
+                            parameter,
+                            crate::processor::Pan::MONO | crate::processor::Pan::SWAP
+                        ) && matches!(value, ParamValue::Bool(_)))
                 }
                 Some(NodeConfig::Compressor(settings)) => {
                     Compressor::parameters(ProcessorId(0), *settings)
@@ -333,6 +344,14 @@ impl EngineProject {
                     },
                     value: spec.initial,
                 });
+            }
+            if matches!(config, NodeConfig::Pan { .. }) {
+                for parameter in [crate::processor::Pan::MONO, crate::processor::Pan::SWAP] {
+                    values.push(DesiredParameter {
+                        target: ParameterTarget::Node { node, parameter },
+                        value: ParamValue::Bool(false),
+                    });
+                }
             }
         }
         for edge in self.graph.edges() {

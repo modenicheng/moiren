@@ -1,6 +1,7 @@
 //! All COM objects stay on the worker; preparation precedes the event loop.
 use super::{RenderOwnerExit, Wake, api, format::mix_format, handle, packet::submit, wait};
 use crate::latency::{CallbackObservation, LatencyRecorder, clock::QpcClock};
+use crate::render::SampleRenderer;
 use crate::{Activation, ActivationGate};
 use crate::{
     owner::{Apartment, Mmcss, OwnedHandle, Streaming},
@@ -11,6 +12,7 @@ use crate::{
 };
 use std::{
     os::windows::io::OwnedHandle as StdHandle,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -48,7 +50,7 @@ fn record_optional_properties(client: &IAudioClient, report: &mut RenderReport) 
 }
 
 fn produce(
-    renderer: &mut DemandRenderer,
+    renderer: &mut impl SampleRenderer,
     samples: &mut [f32],
     stats: &mut RenderStats,
 ) -> Result<(), RenderError> {
@@ -214,7 +216,7 @@ pub(super) fn owner(
 }
 pub(super) fn run_stream(
     native: &NativeRender,
-    renderer: &mut DemandRenderer,
+    renderer: &mut impl SampleRenderer,
     report: &mut RenderReport,
     context: StreamContext<'_>,
     ready: impl FnOnce() -> Result<(), RenderError>,
@@ -233,6 +235,7 @@ pub(super) fn run_stream(
     } = native;
     let capacity = *capacity;
     let queue = report.queue.ok_or(RenderError::StartupLost)?;
+    report.prepare_diagnostics(queue.target_frames);
     // Native capacity is driver supplied: cap staging to the explicit 8 MiB
     // preparation budget before allocating; failure never enters streaming.
     let sample_count = (capacity as usize)
@@ -241,6 +244,7 @@ pub(super) fn run_stream(
         .ok_or(RenderError::StagingBudget)?;
     let mut staging = vec![0.0f32; sample_count];
     let mut telemetry = LatencyRecorder::new(options.latency_telemetry);
+    let trace = options.latency_telemetry == crate::latency::TelemetryMode::Trace;
     let clock = QpcClock::prepare(options.latency_telemetry);
     ready()?;
     if gate.wait()? == Activation::Cancelled {
@@ -284,6 +288,7 @@ pub(super) fn run_stream(
             let padding = api("GetCurrentPadding", unsafe { client.GetCurrentPadding() })?;
             let writable = writable_frames(capacity, padding)?;
             let demand = queue.demand(padding)?;
+            let bridge_before = trace.then(|| renderer.bridge_snapshot()).flatten();
             if writable > 0 {
                 report.stats.min_writable_frames = Some(
                     report
@@ -302,23 +307,45 @@ pub(super) fn run_stream(
                     padding_before_frames: Some(padding),
                     submitted_frames: 0,
                 });
+                report.record_diagnostics(super::super::RenderCallback {
+                    wake_qpc_100ns,
+                    padding_before_frames: padding,
+                    demand_frames: demand,
+                    bridge_before,
+                    bridge_after: bridge_before,
+                    ..Default::default()
+                });
                 continue;
             }
             if padding == 0 {
                 report.stats.empty_padding_wakes += 1;
             }
             let samples = &mut staging[..demand as usize * CHANNELS];
-            produce(renderer, samples, &mut report.stats)?;
-            submit(render, samples)?;
-            renderer.acknowledge_submission();
-            record_submit(samples, &mut report.stats);
+            let result = produce(renderer, samples, &mut report.stats)
+                .and_then(|()| submit(render, samples));
+            if result.is_ok() {
+                renderer.acknowledge_submission();
+                record_submit(samples, &mut report.stats);
+            }
+            // Preserve the terminal wake and post-render bridge state before
+            // propagating the original error. Failed transfers are not submissions.
+            report.record_diagnostics(super::super::RenderCallback {
+                wake_qpc_100ns,
+                padding_before_frames: padding,
+                demand_frames: demand,
+                failed: result.is_err(),
+                bridge_before,
+                bridge_after: trace.then(|| renderer.bridge_snapshot()).flatten(),
+                ..Default::default()
+            });
             telemetry.record(CallbackObservation {
                 wake_qpc_100ns,
                 completed_qpc_100ns: clock.as_ref().and_then(QpcClock::now),
                 demand_frames: u64::from(demand),
                 padding_before_frames: Some(padding),
-                submitted_frames: u64::from(demand),
+                submitted_frames: if result.is_ok() { u64::from(demand) } else { 0 },
             });
+            result?;
         }
         Ok(RenderStatus::Completed)
     })();
@@ -362,15 +389,21 @@ pub(super) fn run_owner_with(
 ) -> RenderOwnerExit {
     let initial_frame = renderer.timeline();
     let mut report = new_report(&options);
-    let result = run(
-        &options,
-        &mut renderer,
-        &stop,
-        &mut report,
-        &gate,
-        &ready,
-        &acknowledged,
-    );
+    // Both owned allocations survive a callback panic and return to the joiner
+    // after the borrowed native objects and Streaming guard have unwound.
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        run(
+            &options,
+            &mut renderer,
+            &stop,
+            &mut report,
+            &gate,
+            &ready,
+            &acknowledged,
+        )
+    }))
+    .unwrap_or(Err(RenderError::WorkerPanicked));
+    report.finish_diagnostics();
     let _ = unsafe { SetEvent(handle(&stop)) };
     match result {
         Ok(status) => report.status = status,
@@ -384,9 +417,17 @@ pub(super) fn run_owner_with(
 }
 pub(super) fn new_report(options: &RenderOptions) -> RenderReport {
     RenderReport {
-        schema_version: 5,
+        schema_version: 6,
         queue: None,
         latency: LatencyRecorder::new(options.latency_telemetry).snapshot(),
+        diagnostics: super::super::RenderDiagnosticsSnapshot {
+            enabled: options.latency_telemetry == crate::latency::TelemetryMode::Trace,
+            ..Default::default()
+        },
+        diagnostics_recorder: Some(super::super::RenderDiagnostics::new(
+            options.latency_telemetry,
+            0,
+        )),
         shared_period: crate::shared_stream::SharedPeriodReport::default(),
         endpoint_id: options.endpoint_id.clone(),
         status: RenderStatus::Failed,
@@ -411,5 +452,357 @@ pub(super) fn new_report(options: &RenderOptions) -> RenderReport {
         stop_hresult: None,
         stats: RenderStats::default(),
         failure: None,
+    }
+}
+
+#[cfg(test)]
+pub(super) mod diagnostic_tests {
+    use super::*;
+    use crate::{
+        clock_bridge::BridgeSnapshot,
+        latency::{NativeStreamTiming, RenderQueuePolicy, TelemetryMode, prepare_render_queue},
+        render::{DemandCounters, DemandReport, RENDER_EVENT_CAPACITY, RenderEvent},
+    };
+    use std::{
+        alloc::{GlobalAlloc, Layout, System},
+        cell::Cell,
+        sync::atomic::AtomicUsize,
+    };
+    use windows::{
+        Win32::{Foundation::E_FAIL, Media::Audio::*},
+        core::{GUID, HRESULT, Result as WinResult, implement},
+    };
+
+    struct EventAllocator;
+    thread_local! {
+        static TRACK_EVENTS: Cell<bool> = const { Cell::new(false) };
+    }
+    static EVENT_POINTER: AtomicUsize = AtomicUsize::new(0);
+    static WORKER_FREES: AtomicUsize = AtomicUsize::new(0);
+    static JOINER_FREES: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe impl GlobalAlloc for EventAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: Forward the caller's allocation contract unchanged.
+            let pointer = unsafe { System.alloc(layout) };
+            if layout.size() == size_of::<RenderEvent>() * RENDER_EVENT_CAPACITY
+                && TRACK_EVENTS.try_with(Cell::get).unwrap_or(false)
+            {
+                let _ = EVENT_POINTER.compare_exchange(
+                    0,
+                    pointer as usize,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+            }
+            pointer
+        }
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            if pointer as usize == EVENT_POINTER.load(Ordering::SeqCst) {
+                if TRACK_EVENTS.try_with(Cell::get).unwrap_or(false) {
+                    WORKER_FREES.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    JOINER_FREES.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            // SAFETY: This allocator forwards all allocations to System.
+            unsafe { System.dealloc(pointer, layout) };
+        }
+    }
+    #[global_allocator]
+    static ALLOCATOR: EventAllocator = EventAllocator;
+
+    pub(crate) fn track_events() {
+        EVENT_POINTER.store(0, Ordering::SeqCst);
+        WORKER_FREES.store(0, Ordering::SeqCst);
+        JOINER_FREES.store(0, Ordering::SeqCst);
+        TRACK_EVENTS.with(|track| track.set(true));
+    }
+    pub(crate) fn stop_tracking_events() {
+        TRACK_EVENTS.with(|track| track.set(false));
+    }
+    pub(crate) fn event_allocation() -> (usize, usize, usize) {
+        (
+            EVENT_POINTER.load(Ordering::SeqCst),
+            WORKER_FREES.load(Ordering::SeqCst),
+            JOINER_FREES.load(Ordering::SeqCst),
+        )
+    }
+
+    #[derive(Clone, Copy, Default)]
+    pub(crate) enum Failure {
+        #[default]
+        None,
+        Render,
+        GetBuffer,
+        ReleaseBuffer,
+        Start,
+        Cancel,
+    }
+    #[implement(IAudioClient)]
+    struct DiagnosticClient {
+        audio: windows::Win32::Foundation::HANDLE,
+        padding: u32,
+        fail_start: bool,
+    }
+    impl IAudioClient_Impl for DiagnosticClient_Impl {
+        fn Initialize(
+            &self,
+            _: AUDCLNT_SHAREMODE,
+            _: u32,
+            _: i64,
+            _: i64,
+            _: *const WAVEFORMATEX,
+            _: *const GUID,
+        ) -> WinResult<()> {
+            unreachable!()
+        }
+        fn GetBufferSize(&self) -> WinResult<u32> {
+            unreachable!()
+        }
+        fn GetStreamLatency(&self) -> WinResult<i64> {
+            unreachable!()
+        }
+        fn GetCurrentPadding(&self) -> WinResult<u32> {
+            // Rearm the fake wake for the next callback without device access.
+            unsafe { SetEvent(self.audio)? };
+            Ok(self.padding)
+        }
+        fn IsFormatSupported(
+            &self,
+            _: AUDCLNT_SHAREMODE,
+            _: *const WAVEFORMATEX,
+            _: *mut *mut WAVEFORMATEX,
+        ) -> HRESULT {
+            unreachable!()
+        }
+        fn GetMixFormat(&self) -> WinResult<*mut WAVEFORMATEX> {
+            unreachable!()
+        }
+        fn GetDevicePeriod(&self, _: *mut i64, _: *mut i64) -> WinResult<()> {
+            unreachable!()
+        }
+        fn Start(&self) -> WinResult<()> {
+            if self.fail_start {
+                return Err(E_FAIL.into());
+            }
+            unsafe { SetEvent(self.audio) }
+        }
+        fn Stop(&self) -> WinResult<()> {
+            Ok(())
+        }
+        fn Reset(&self) -> WinResult<()> {
+            unreachable!()
+        }
+        fn SetEventHandle(&self, _: windows::Win32::Foundation::HANDLE) -> WinResult<()> {
+            unreachable!()
+        }
+        fn GetService(&self, _: *const GUID, _: *mut *mut std::ffi::c_void) -> WinResult<()> {
+            unreachable!()
+        }
+    }
+    #[implement(IAudioRenderClient)]
+    struct DiagnosticRender {
+        data: std::cell::UnsafeCell<[f32; 8]>,
+        submissions: Cell<usize>,
+        failure: Failure,
+    }
+    impl IAudioRenderClient_Impl for DiagnosticRender_Impl {
+        fn GetBuffer(&self, frames: u32) -> WinResult<*mut u8> {
+            assert!(frames <= 4);
+            self.submissions.set(self.submissions.get() + 1);
+            if self.submissions.get() == 2 && matches!(self.failure, Failure::GetBuffer) {
+                return Err(E_FAIL.into());
+            }
+            Ok(self.data.get().cast())
+        }
+        fn ReleaseBuffer(&self, _: u32, _: u32) -> WinResult<()> {
+            if self.submissions.get() == 2 && matches!(self.failure, Failure::ReleaseBuffer) {
+                return Err(E_FAIL.into());
+            }
+            Ok(())
+        }
+    }
+    pub(crate) fn options() -> RenderOptions {
+        RenderOptions {
+            queue: RenderQueuePolicy::FullCapacity,
+            latency_telemetry: TelemetryMode::Trace,
+            shared_period: Default::default(),
+            endpoint_id: "fake-diagnostic-render".into(),
+            duration: crate::SessionDuration::For(Duration::from_secs(1)),
+        }
+    }
+    pub(crate) fn run(
+        options: &RenderOptions,
+        report: &mut RenderReport,
+        renderer: &mut impl SampleRenderer,
+        failure: Failure,
+        padding: u32,
+    ) -> Result<RenderStatus, RenderError> {
+        let stop = crate::StopSignal::new().unwrap();
+        let gate = ActivationGate::new(stop.clone()).unwrap();
+        if matches!(failure, Failure::Cancel) {
+            gate.cancel().unwrap();
+        } else {
+            gate.activate().unwrap();
+        }
+        let event = OwnedHandle::event().unwrap();
+        let native = NativeRender {
+            client: DiagnosticClient {
+                audio: event.0,
+                padding,
+                fail_start: matches!(failure, Failure::Start),
+            }
+            .into(),
+            render: DiagnosticRender {
+                data: std::cell::UnsafeCell::new([0.0; 8]),
+                submissions: Cell::new(0),
+                failure,
+            }
+            .into(),
+            event,
+            capacity: 4,
+        };
+        report.queue = Some(
+            prepare_render_queue(
+                NativeStreamTiming {
+                    sample_rate: SAMPLE_RATE,
+                    period_frames: Some(2),
+                    capacity_frames: 4,
+                },
+                options.queue,
+            )
+            .unwrap(),
+        );
+        let result = run_stream(
+            &native,
+            renderer,
+            report,
+            StreamContext {
+                options,
+                stop: &stop.event,
+                gate: &gate,
+                acknowledged: &AtomicBool::new(false),
+            },
+            || Ok(()),
+        );
+        report.finish_diagnostics();
+        result
+    }
+    struct DiagnosticRenderer {
+        renders: usize,
+        acknowledged: Cell<usize>,
+        failure: Failure,
+        bridge: Option<BridgeSnapshot>,
+    }
+    impl SampleRenderer for DiagnosticRenderer {
+        fn timeline(&self) -> u64 {
+            0
+        }
+        fn counters(&self) -> DemandCounters {
+            DemandCounters::default()
+        }
+        fn render_interleaved(&mut self, _: &mut [f32]) -> Result<DemandReport, RenderError> {
+            self.renders += 1;
+            if let Some(bridge) = &mut self.bridge {
+                bridge.fill_frames -= 4;
+                bridge.backlog_recoveries += 1;
+                bridge.underrun_frames += 2;
+            }
+            if self.renders == 2 && matches!(self.failure, Failure::Render) {
+                return Err(RenderError::InvalidSamples);
+            }
+            Ok(DemandReport::default())
+        }
+        fn acknowledge_submission(&self) {
+            self.acknowledged.set(self.acknowledged.get() + 1);
+        }
+        fn bridge_snapshot(&self) -> Option<BridgeSnapshot> {
+            self.bridge
+        }
+    }
+
+    fn assert_terminal_error(failure: Failure, expected: RenderError) {
+        let options = options();
+        let mut report = new_report(&options);
+        let mut renderer = DiagnosticRenderer {
+            renders: 0,
+            acknowledged: Cell::new(0),
+            failure,
+            bridge: Some(BridgeSnapshot {
+                fill_frames: 100,
+                ..Default::default()
+            }),
+        };
+        assert_eq!(
+            run(&options, &mut report, &mut renderer, failure, 0),
+            Err(expected)
+        );
+        assert_eq!(renderer.acknowledged.get(), 1, "only prefill was submitted");
+        assert_eq!(report.stats.submitted_frames, 4);
+        assert_eq!(report.stats.empty_padding_wakes, 1);
+        assert_eq!(
+            report.diagnostics.events.len(),
+            1,
+            "terminal callback is missing"
+        );
+        let event = &report.diagnostics.events[0];
+        assert!(event.callback.wake_qpc_100ns.is_some());
+        assert_eq!(event.callback.padding_before_frames, 0);
+        assert_eq!(event.callback.demand_frames, 4);
+        assert_eq!(event.callback.bridge_before.unwrap().fill_frames, 96);
+        assert_eq!(event.callback.bridge_after.unwrap().fill_frames, 92);
+        assert!(event.bridge_recovered);
+        assert!(event.bridge_underrun);
+        assert!(event.empty_padding);
+        let latency = report.latency.trace.records().last().unwrap();
+        assert_eq!(latency.demand_frames, 4);
+        assert_eq!(latency.submitted_frames, 0);
+    }
+
+    #[test]
+    fn terminal_render_error_retains_callback_and_original_error() {
+        assert_terminal_error(Failure::Render, RenderError::InvalidSamples);
+    }
+
+    #[test]
+    fn terminal_get_buffer_error_retains_callback_and_original_error() {
+        assert_terminal_error(
+            Failure::GetBuffer,
+            RenderError::Api {
+                stage: "GetBuffer(render)",
+                hresult: E_FAIL.0,
+            },
+        );
+    }
+
+    #[test]
+    fn terminal_release_buffer_error_retains_callback_and_original_error() {
+        assert_terminal_error(
+            Failure::ReleaseBuffer,
+            RenderError::Api {
+                stage: "ReleaseBuffer(render)",
+                hresult: E_FAIL.0,
+            },
+        );
+    }
+
+    #[test]
+    fn terminal_submit_error_with_nonempty_padding_is_an_event_without_bridge() {
+        let options = options();
+        let mut report = new_report(&options);
+        let mut renderer = DiagnosticRenderer {
+            renders: 0,
+            acknowledged: Cell::new(0),
+            failure: Failure::GetBuffer,
+            bridge: None,
+        };
+        assert!(run(&options, &mut report, &mut renderer, Failure::GetBuffer, 2).is_err());
+        assert_eq!(report.diagnostics.events.len(), 1);
+        let json = serde_json::to_value(report.diagnostics.events[0]).unwrap();
+        assert_eq!(json["callback"]["failed"], true);
+        assert_eq!(json["callback"]["padding_before_frames"], 2);
+        assert_eq!(json["callback"]["demand_frames"], 2);
+        assert_eq!(report.stats.submitted_frames, 4);
     }
 }

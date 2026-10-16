@@ -46,6 +46,14 @@ impl<S: ProcessingSample> RtProcessor<S> for ReservedIo {
 }
 
 impl PlanSnapshot {
+    /// Prepared sink identities, without inspecting or borrowing live IO.
+    pub fn sink_processors(&self) -> impl Iterator<Item = ProcessorId> + '_ {
+        self.0
+            .processors
+            .iter()
+            .filter(|schema| schema.role == ProcessorRole::Sink)
+            .map(|schema| schema.id)
+    }
     pub fn single_sink(&self) -> Option<ProcessorId> {
         let mut sinks = self
             .0

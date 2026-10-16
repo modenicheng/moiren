@@ -14,6 +14,7 @@ pub type LevelTopic = LatestBlock<AudioWindow, ChannelLevel>;
 
 #[derive(Debug, Clone)]
 pub struct SignalTopics {
+    pub node_levels: std::collections::BTreeMap<moiren_core::graph::NodeId, Topic<LevelTopic>>,
     pub monitor_input: Topic<LevelTopic>,
     pub monitor_output: Topic<LevelTopic>,
     pub tone_output: Topic<LevelTopic>,
@@ -27,6 +28,11 @@ pub(crate) struct SignalService {
 }
 
 impl SignalService {
+    pub(super) fn create_bridge_host(
+        &mut self,
+    ) -> Result<(moiren_signal::HostControl, moiren_signal::RtHost), moiren_signal::HostError> {
+        self.bus.create_host(131)
+    }
     pub fn prepare_session(
         &mut self,
         source: &super::InputSelection,
@@ -43,7 +49,7 @@ impl SignalService {
 
     pub fn new() -> Result<Self, RegisterError> {
         let mut bus = Bus::new(BusConfig {
-            max_topics: 3,
+            max_topics: 131,
             ..BusConfig::default()
         })?;
         let topics = SignalTopics::register(&mut bus)?;
@@ -64,8 +70,8 @@ impl SignalService {
             return None;
         }
         let report = self.bus.pump(PumpBudget {
-            topic_checks: 32,
-            deliveries: 64,
+            topic_checks: 524,
+            deliveries: 256,
             copy_bytes: self.copy_budget,
         });
         self.copy_budget = (256 * 1024)
@@ -98,10 +104,65 @@ impl SignalTopics {
             capacity: 2,
         };
         Ok(Self {
+            node_levels: Default::default(),
             monitor_input: bus.register_latest_block("monitor/input/output/level", initial)?,
             monitor_output: bus.register_latest_block("monitor/output/level", initial)?,
             tone_output: bus.register_latest_block("tone/output/level", initial)?,
         })
+    }
+}
+
+impl SignalService {
+    pub(super) fn prepare_node_levels(
+        &mut self,
+        graph: &moiren_core::graph::LogicalGraph,
+    ) -> Result<(), String> {
+        let removed: Vec<_> = self
+            .topics
+            .node_levels
+            .keys()
+            .filter(|id| graph.get_node(**id).is_err())
+            .copied()
+            .collect();
+        for id in removed {
+            let topic = self
+                .topics
+                .node_levels
+                .remove(&id)
+                .expect("existing level topic");
+            self.bus
+                .unregister(&topic)
+                .map_err(|error| error.to_string())?;
+        }
+        for node in graph.nodes() {
+            if self.topics.node_levels.contains_key(&node.id()) {
+                continue;
+            }
+            let topic = self
+                .bus
+                .register_latest_block(
+                    &format!("node/{:?}/level", node.id()),
+                    BlockInit {
+                        header: AudioWindow {
+                            timeline_epoch: 0,
+                            frame_start: 0,
+                            frame_end: 0,
+                            sample_rate: 0.,
+                        },
+                        element: ChannelLevel { peak: 0., rms: 0. },
+                        capacity: node.channels(),
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            self.topics.node_levels.insert(node.id(), topic);
+        }
+        Ok(())
+    }
+
+    pub(super) fn clear_node_levels(&mut self) {
+        for topic in std::mem::take(&mut self.topics.node_levels).into_values() {
+            let _ = self.bus.unregister(&topic);
+        }
     }
 }
 
@@ -194,8 +255,8 @@ mod tests {
         service.execute(request);
         let subscriber = ticket.try_take().unwrap().unwrap();
         let report = service.pump_if_due(now).unwrap();
-        assert!(report.topic_checks <= 32);
-        assert!(report.deliveries <= 64);
+        assert!(report.topic_checks <= 524);
+        assert!(report.deliveries <= 256);
         assert!(report.copy_bytes <= 256 * 1024);
         assert_eq!(service.wait_duration(now), Some(Duration::from_millis(5)));
         assert!(

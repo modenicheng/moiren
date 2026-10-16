@@ -3,7 +3,7 @@ use crate::{Activation, SessionDuration, capture::CaptureSource};
 use std::sync::atomic::Ordering;
 
 #[derive(Clone, Copy)]
-enum Outcome {
+pub(super) enum Outcome {
     Run,
     Fail,
     Panic,
@@ -29,7 +29,7 @@ fn input() -> PreparedInputQueue {
         modeled_minimum_frames: Some(914),
     }
 }
-fn fake_prepared(
+pub(super) fn fake_prepared(
     stop: StopSignal,
     gate: ActivationGate,
     outcome: Outcome,
@@ -37,6 +37,10 @@ fn fake_prepared(
 ) -> Result<PreparedNativeCapture, CaptureError> {
     start_native_owner(stop, move |stop, preparation, started| {
         let mut report = report();
+        report.sample_rate = Some(timing().sample_rate);
+        report.endpoint_id = Some("fake-capture".into());
+        report.channels = Some(2);
+        report.buffer_frames = Some(timing().capacity_frames);
         let result = (|| {
             match outcome {
                 Outcome::Fail => return Err(CaptureError::UnsupportedFormat),

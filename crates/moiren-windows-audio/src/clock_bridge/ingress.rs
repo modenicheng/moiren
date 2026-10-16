@@ -162,3 +162,80 @@ impl Drop for CaptureIngress {
         self.counters.producer_finished.store(true, Relaxed);
     }
 }
+
+/// The same continuous clock adapter also accepts graph output. It carries
+/// graph timeline continuity, rather than inventing hardware/QPC timestamps.
+impl moiren_engine::boundary::RtAudioSink<f32> for CaptureIngress {
+    fn channel_count(&self) -> usize {
+        2
+    }
+
+    fn write(
+        &mut self,
+        context: &moiren_engine::processor::ProcessContext,
+        input: moiren_engine::buffer::AudioBlock<'_, f32>,
+    ) -> moiren_engine::boundary::BoundaryReport {
+        use moiren_engine::boundary::BoundaryReport;
+        if input.channel_count() != 2
+            || self.config.input_channels != 2
+            || self.config.input_sample_rate != 48_000
+        {
+            return BoundaryReport {
+                discontinuity: true,
+                xruns: 1,
+                ..BoundaryReport::default()
+            };
+        }
+        let gap = self
+            .next_position
+            .is_some_and(|position| position != context.timeline_start);
+        if gap {
+            self.generation = self.generation.wrapping_add(1);
+            self.counters.discontinuities.fetch_add(1, Relaxed);
+        }
+        self.next_position = context.timeline_start.checked_add(input.frames() as u64);
+        let accepted = if self.tx.is_abandoned() {
+            0
+        } else {
+            input.frames().min(self.tx.slots())
+        };
+        if accepted > 0 {
+            let generation = self.generation;
+            let chunk = self
+                .tx
+                .write_chunk_uninit(accepted)
+                .expect("reserved output follower frames");
+            chunk.fill_from_iter((0..accepted).map(|frame| Frame {
+                samples: std::array::from_fn(|channel| {
+                    let value = input.channel(channel)[frame];
+                    if value.is_finite() {
+                        value
+                    } else {
+                        self.counters.nonfinite_samples.fetch_add(1, Relaxed);
+                        0.0
+                    }
+                }),
+                generation,
+                packet_stamp: None,
+                packet_offset_frames: frame as u64,
+            }));
+        }
+        self.counters
+            .captured_frames
+            .fetch_add(input.frames() as u64, Relaxed);
+        self.counters
+            .written_frames
+            .fetch_add(accepted as u64, Relaxed);
+        self.counters
+            .dropped_frames
+            .fetch_add((input.frames() - accepted) as u64, Relaxed);
+        if accepted < input.frames() {
+            self.generation = self.generation.wrapping_add(1);
+        }
+        BoundaryReport {
+            transferred_frames: accepted,
+            discontinuity: gap || accepted < input.frames(),
+            xruns: u64::from(accepted < input.frames()),
+        }
+    }
+}

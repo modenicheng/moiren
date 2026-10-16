@@ -29,6 +29,16 @@ pub struct ClockSource {
     age_clock: Option<QpcClock>,
 }
 impl ClockSource {
+    /// Non-consuming owner-local fill, with approximate scalar counters.
+    /// Concurrent producer writes can advance immediately after this sample.
+    pub fn snapshot(&self) -> super::BridgeSnapshot {
+        let mut snapshot = self.counters.snapshot();
+        snapshot.fill_frames = self.rx.slots()
+            + usize::from(self.current.is_some())
+            + usize::from(self.next.is_some());
+        snapshot
+    }
+
     /// Estimate the age of the oldest pending native frame without advancing
     /// interpolation or changing telemetry. The observation must use the same
     /// QPC/100 ns domain as CapturePacket; callback arrival time is not a stamp.

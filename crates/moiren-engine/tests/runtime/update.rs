@@ -584,3 +584,108 @@ fn retired_candidate_cannot_replace_reuse_mappings() {
         Err(PlanSwapError::InvalidCandidate)
     ));
 }
+
+#[test]
+fn every_protected_sink_survives_partial_reuse_rejection_and_slot_migration_without_rt_heap_work() {
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 1).unwrap();
+    let a = graph.create_node(NodeKind::Sink, 1).unwrap();
+    let b = graph.create_node(NodeKind::Sink, 1).unwrap();
+    let edge_a = connect(&mut graph, source, a);
+    connect(&mut graph, source, b);
+    let (writer_a, mut output_a) = audio_bridge(1, 32, 4096).unwrap();
+    let (writer_b, mut output_b) = audio_bridge(1, 32, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_source(source, Counter(1.0)).unwrap();
+    bindings.bind_sink(a, writer_a).unwrap();
+    bindings.bind_sink(b, writer_b).unwrap();
+    let mut active = compile(&graph, bindings, config(1)).unwrap();
+    let mut plans = active.engine.enable_plan_switching(1).unwrap();
+    active
+        .engine
+        .require_sink_reuse(active.bindings.node(a).unwrap())
+        .unwrap();
+    active
+        .engine
+        .require_sink_reuse(active.bindings.node(b).unwrap())
+        .unwrap();
+    let basis = active.engine.plan_snapshot();
+    let (foreign, mut foreign_output) = audio_bridge(1, 32, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_sink(a, foreign).unwrap();
+    let partial = compile_update(
+        &graph,
+        bindings,
+        config(2),
+        &basis,
+        &[
+            (source, active.bindings.node(source).unwrap()),
+            (b, active.bindings.node(b).unwrap()),
+        ],
+        None,
+    )
+    .unwrap();
+    plans.publish(partial.plan).unwrap();
+    let (_, allocations) = track_allocations(|| active.engine.render(2).unwrap());
+    assert_eq!(allocations, (0, 0));
+    assert_eq!(
+        plans.poll_retired().unwrap().outcome(),
+        RetireOutcome::Rejected(PlanSwapError::MissingReuse)
+    );
+    samples(&mut output_a, &[1.0, 2.0]);
+    samples(&mut output_b, &[1.0, 2.0]);
+    assert_eq!(
+        foreign_output
+            .read_interleaved(&mut [0.0; 2])
+            .unwrap()
+            .transferred_frames,
+        0
+    );
+    graph.disconnect(edge_a).unwrap();
+    let gain = graph.create_node(NodeKind::Gain, 1).unwrap();
+    connect(&mut graph, source, gain);
+    connect(&mut graph, gain, a);
+    let mut bindings = NodeBindings::new();
+    bindings.bind_gain(gain, 0.5).unwrap();
+    let reuse: Vec<_> = [source, a, b]
+        .map(|node| (node, active.bindings.node(node).unwrap()))
+        .into();
+    let update = compile_update(&graph, bindings, config(3), &basis, &reuse, None).unwrap();
+    plans.publish(update.plan).unwrap();
+    let (_, allocations) = track_allocations(|| active.engine.render(2).unwrap());
+    assert_eq!(allocations, (0, 0));
+    assert!(matches!(
+        plans.poll_retired().unwrap().outcome(),
+        RetireOutcome::Replaced {
+            active_revision: 3,
+            ..
+        }
+    ));
+    samples(&mut output_a, &[1.5, 2.0]);
+    samples(&mut output_b, &[3.0, 4.0]);
+    let (foreign, _) = audio_bridge(1, 32, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_sink(b, foreign).unwrap();
+    bindings.bind_gain(gain, 0.5).unwrap();
+    let reuse: Vec<_> = [source, gain, a]
+        .map(|node| (node, update.bindings.node(node).unwrap()))
+        .into();
+    let partial = compile_update(
+        &graph,
+        bindings,
+        config(4),
+        &active.engine.plan_snapshot(),
+        &reuse,
+        None,
+    )
+    .unwrap();
+    plans.publish(partial.plan).unwrap();
+    let (_, allocations) = track_allocations(|| active.engine.render(2).unwrap());
+    assert_eq!(allocations, (0, 0));
+    assert_eq!(
+        plans.poll_retired().unwrap().outcome(),
+        RetireOutcome::Rejected(PlanSwapError::MissingReuse)
+    );
+    samples(&mut output_a, &[2.5, 3.0]);
+    samples(&mut output_b, &[5.0, 6.0]);
+}

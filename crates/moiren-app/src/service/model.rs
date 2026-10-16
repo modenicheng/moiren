@@ -73,6 +73,7 @@ pub enum DispatchError {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppRequest {
+    SetLatencyProfile(super::AudioLatencyProfile),
     EditGraph(super::GraphEdit),
     ReplaceGraph {
         graph: moiren_core::graph::LogicalGraph,
@@ -126,6 +127,10 @@ pub struct ControlSummary {
 pub struct RequestId(pub u64);
 #[derive(Debug, Clone)]
 pub struct AppSnapshot {
+    #[cfg(windows)]
+    pub native_observations: Option<NativeSessionObservations>,
+    pub latency_profile: super::AudioLatencyProfile,
+    pub active_latency_profile: Option<super::AudioLatencyProfile>,
     pub graph: Arc<super::GraphSnapshot>,
     pub monitor_latency: Option<MonitorLatencyStatus>,
     pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
@@ -142,6 +147,12 @@ pub struct AppSnapshot {
     pub control: ControlSummary,
     pub signal_topics: super::SignalTopics,
     pub elapsed: Duration,
+}
+#[cfg(windows)]
+#[derive(Debug, Clone)]
+pub struct NativeSessionObservations {
+    pub generation: SessionGeneration,
+    pub observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq)]

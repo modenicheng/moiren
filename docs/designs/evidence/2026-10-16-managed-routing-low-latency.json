@@ -1,0 +1,785 @@
+{
+  "schema_version": 1,
+  "recorded_on": "2026-10-16",
+  "description": "Selected fields from actual muted Windows routing_probe runs. Not a physical latency or hardware XRUN measurement. Null plan revisions in the older 30-second Low run were not recorded.",
+  "records": [
+    {
+      "source_log": "hardware-compatible-final.json",
+      "source_sha256": "0d5465f90139538714bb8a4508d2a93c66b0a1fb54b8a207359873c7b1a716e4",
+      "profile": "compatible",
+      "elapsed_seconds": 3.0278256,
+      "muted": true,
+      "inputs": [],
+      "outputs": [
+        "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+        "{0.0.0.00000000}.{93f962ad-26f6-4485-8a34-e1c7b27f44d5}"
+      ],
+      "healthy": true,
+      "closed": "Closed",
+      "fault": null,
+      "cleanup_error": null,
+      "compatible_edit_activated": true,
+      "same_owner": true,
+      "same_epoch_and_advancing": true,
+      "plan_replaced": true,
+      "plan_revision_initial": 1,
+      "plan_revision_final": 2,
+      "physical_end_to_end_latency_ms": null,
+      "observation": {
+        "bridges": [
+          {
+            "counters": {
+              "age_discarded_frames": 0,
+              "age_recoveries": 0,
+              "backlog_discarded_frames": 0,
+              "backlog_recoveries": 0,
+              "captured_frames": 146496,
+              "correction_ppm": -713.9200664811927,
+              "discontinuities": 0,
+              "dropped_frames": 0,
+              "fill_frames": 2160,
+              "last_device_position_frames": 0,
+              "last_qpc_100ns": 0,
+              "last_underrun_at_output_frame": 0,
+              "last_underrun_producer_finished": false,
+              "low_water_guard_frames": 0,
+              "max_fill_frames": 2160,
+              "min_fill_frames": 2048,
+              "nonfinite_samples": 0,
+              "output_frames": 144000,
+              "prime_discarded_frames": 448,
+              "priming_frames": 2976,
+              "resets": 0,
+              "silent_frames": 0,
+              "timestamp_errors": 0,
+              "underrun_frames": 0,
+              "written_frames": 146496
+            },
+            "node": "NodeId(7)"
+          }
+        ],
+        "owner_generation": 1,
+        "running": true,
+        "streams": [
+          {
+            "input_queue": null,
+            "kind": "master_output",
+            "node": "NodeId(5)",
+            "render_queue": {
+              "capacity_frames": 1056,
+              "deadline_budget_frames": null,
+              "target_frames": 1056
+            },
+            "shared_period": {
+              "actual_period_frames": 480,
+              "actual_period_hresult": null,
+              "caps": {
+                "default_frames": 480,
+                "fundamental_frames": 1,
+                "max_frames": 480,
+                "min_frames": 336
+              },
+              "client3_failure": null,
+              "desired_period_ms": null,
+              "fallback_reason": null,
+              "initialization_api": "client3",
+              "requested_period_frames": 480
+            },
+            "timing": {
+              "capacity_frames": 1056,
+              "period_frames": 480,
+              "sample_rate": 48000
+            }
+          },
+          {
+            "input_queue": {
+              "capacity_frames": 8192,
+              "high_water_frames": 8191,
+              "low_water_frames": 2,
+              "modeled_minimum_frames": null,
+              "prime_frames": 2048,
+              "servo_reference_frames": 2048
+            },
+            "kind": "follower_output",
+            "node": "NodeId(7)",
+            "render_queue": {
+              "capacity_frames": 1056,
+              "deadline_budget_frames": null,
+              "target_frames": 1056
+            },
+            "shared_period": {
+              "actual_period_frames": 480,
+              "actual_period_hresult": null,
+              "caps": {
+                "default_frames": 480,
+                "fundamental_frames": 1,
+                "max_frames": 480,
+                "min_frames": 128
+              },
+              "client3_failure": null,
+              "desired_period_ms": null,
+              "fallback_reason": null,
+              "initialization_api": "client3",
+              "requested_period_frames": 480
+            },
+            "timing": {
+              "capacity_frames": 1056,
+              "period_frames": 480,
+              "sample_rate": 48000
+            }
+          }
+        ]
+      },
+      "native_master_stats": {
+        "audio_wakes": 303,
+        "bridge_shortfall_frames": 0,
+        "dsp_blocks": 611,
+        "dsp_segments": 611,
+        "empty_padding_wakes": 0,
+        "max_writable_frames": 480,
+        "min_writable_frames": 480,
+        "nonzero_samples": 0,
+        "peak_amplitude": 0.0,
+        "primed_frames": 1056,
+        "processed_frames": 146496,
+        "submitted_frames": 146496,
+        "timeout_wakes": 0,
+        "zero_demand_wakes": 0
+      },
+      "native_follower_stats": [
+        {
+          "audio_wakes": 302,
+          "bridge_shortfall_frames": 0,
+          "dsp_blocks": 0,
+          "dsp_segments": 0,
+          "empty_padding_wakes": 0,
+          "max_writable_frames": 960,
+          "min_writable_frames": 480,
+          "nonzero_samples": 0,
+          "peak_amplitude": 0.0,
+          "primed_frames": 1056,
+          "processed_frames": 146976,
+          "submitted_frames": 146976,
+          "timeout_wakes": 0,
+          "zero_demand_wakes": 0
+        }
+      ]
+    },
+    {
+      "source_log": "hardware-balanced-final.json",
+      "source_sha256": "28964a7fa8c71b13c3984eba03b2033ef7680304241033d7d913e14b1f611e83",
+      "profile": "balanced",
+      "elapsed_seconds": 3.0157195,
+      "muted": true,
+      "inputs": [],
+      "outputs": [
+        "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+        "{0.0.0.00000000}.{93f962ad-26f6-4485-8a34-e1c7b27f44d5}"
+      ],
+      "healthy": true,
+      "closed": "Closed",
+      "fault": null,
+      "cleanup_error": null,
+      "compatible_edit_activated": true,
+      "same_owner": true,
+      "same_epoch_and_advancing": true,
+      "plan_replaced": true,
+      "plan_revision_initial": 1,
+      "plan_revision_final": 2,
+      "physical_end_to_end_latency_ms": null,
+      "observation": {
+        "bridges": [
+          {
+            "counters": {
+              "age_discarded_frames": 0,
+              "age_recoveries": 0,
+              "backlog_discarded_frames": 0,
+              "backlog_recoveries": 0,
+              "captured_frames": 145920,
+              "correction_ppm": -1979.8281537611178,
+              "discontinuities": 0,
+              "dropped_frames": 0,
+              "fill_frames": 1711,
+              "last_device_position_frames": 0,
+              "last_qpc_100ns": 0,
+              "last_underrun_at_output_frame": 0,
+              "last_underrun_producer_finished": false,
+              "low_water_guard_frames": 0,
+              "max_fill_frames": 2155,
+              "min_fill_frames": 1445,
+              "nonfinite_samples": 0,
+              "output_frames": 144000,
+              "prime_discarded_frames": 478,
+              "priming_frames": 2400,
+              "resets": 0,
+              "silent_frames": 0,
+              "timestamp_errors": 0,
+              "underrun_frames": 0,
+              "written_frames": 145920
+            },
+            "node": "NodeId(7)"
+          }
+        ],
+        "owner_generation": 1,
+        "running": true,
+        "streams": [
+          {
+            "input_queue": null,
+            "kind": "master_output",
+            "node": "NodeId(5)",
+            "render_queue": {
+              "capacity_frames": 1056,
+              "deadline_budget_frames": 960,
+              "target_frames": 960
+            },
+            "shared_period": {
+              "actual_period_frames": 480,
+              "actual_period_hresult": null,
+              "caps": {
+                "default_frames": 480,
+                "fundamental_frames": 1,
+                "max_frames": 480,
+                "min_frames": 336
+              },
+              "client3_failure": null,
+              "desired_period_ms": 10.0,
+              "fallback_reason": null,
+              "initialization_api": "client3",
+              "requested_period_frames": 480
+            },
+            "timing": {
+              "capacity_frames": 1056,
+              "period_frames": 480,
+              "sample_rate": 48000
+            }
+          },
+          {
+            "input_queue": {
+              "capacity_frames": 4322,
+              "high_water_frames": 3362,
+              "low_water_frames": 962,
+              "modeled_minimum_frames": 1922,
+              "prime_frames": 1922,
+              "servo_reference_frames": 1922
+            },
+            "kind": "follower_output",
+            "node": "NodeId(7)",
+            "render_queue": {
+              "capacity_frames": 1056,
+              "deadline_budget_frames": 960,
+              "target_frames": 960
+            },
+            "shared_period": {
+              "actual_period_frames": 480,
+              "actual_period_hresult": null,
+              "caps": {
+                "default_frames": 480,
+                "fundamental_frames": 1,
+                "max_frames": 480,
+                "min_frames": 128
+              },
+              "client3_failure": null,
+              "desired_period_ms": 10.0,
+              "fallback_reason": null,
+              "initialization_api": "client3",
+              "requested_period_frames": 480
+            },
+            "timing": {
+              "capacity_frames": 1056,
+              "period_frames": 480,
+              "sample_rate": 48000
+            }
+          }
+        ]
+      },
+      "native_master_stats": {
+        "audio_wakes": 302,
+        "bridge_shortfall_frames": 0,
+        "dsp_blocks": 608,
+        "dsp_segments": 608,
+        "empty_padding_wakes": 0,
+        "max_writable_frames": 576,
+        "min_writable_frames": 576,
+        "nonzero_samples": 0,
+        "peak_amplitude": 0.0,
+        "primed_frames": 960,
+        "processed_frames": 145920,
+        "submitted_frames": 145920,
+        "timeout_wakes": 0,
+        "zero_demand_wakes": 0
+      },
+      "native_follower_stats": [
+        {
+          "audio_wakes": 302,
+          "bridge_shortfall_frames": 0,
+          "dsp_blocks": 0,
+          "dsp_segments": 0,
+          "empty_padding_wakes": 2,
+          "max_writable_frames": 1056,
+          "min_writable_frames": 96,
+          "nonzero_samples": 0,
+          "peak_amplitude": 0.0,
+          "primed_frames": 960,
+          "processed_frames": 146400,
+          "submitted_frames": 146400,
+          "timeout_wakes": 0,
+          "zero_demand_wakes": 1
+        }
+      ]
+    },
+    {
+      "source_log": "hardware-low-final.json",
+      "source_sha256": "05fd65ae571e79d053570298d10b60ae89a117292f56ee19e8a09a3612952cf8",
+      "profile": "low",
+      "elapsed_seconds": 30.1569038,
+      "muted": true,
+      "inputs": [
+        "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      ],
+      "outputs": [
+        "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+        "{0.0.0.00000000}.{93f962ad-26f6-4485-8a34-e1c7b27f44d5}"
+      ],
+      "healthy": true,
+      "closed": "Closed",
+      "fault": null,
+      "cleanup_error": null,
+      "compatible_edit_activated": true,
+      "same_owner": true,
+      "same_epoch_and_advancing": true,
+      "plan_replaced": null,
+      "plan_revision_initial": null,
+      "plan_revision_final": null,
+      "physical_end_to_end_latency_ms": null,
+      "observation": {
+        "bridges": [
+          {
+            "counters": {
+              "age_discarded_frames": 0,
+              "age_recoveries": 0,
+              "backlog_discarded_frames": 0,
+              "backlog_recoveries": 0,
+              "captured_frames": 1441440,
+              "correction_ppm": 29.132134557839702,
+              "discontinuities": 1,
+              "dropped_frames": 0,
+              "fill_frames": 923,
+              "last_device_position_frames": 1441440,
+              "last_qpc_100ns": 7045142806695,
+              "last_underrun_at_output_frame": 0,
+              "last_underrun_producer_finished": false,
+              "low_water_guard_frames": 0,
+              "max_fill_frames": 1285,
+              "min_fill_frames": 756,
+              "nonfinite_samples": 0,
+              "output_frames": 1440096,
+              "prime_discarded_frames": 334,
+              "priming_frames": 2184,
+              "resets": 0,
+              "silent_frames": 0,
+              "timestamp_errors": 0,
+              "underrun_frames": 0,
+              "written_frames": 1441440
+            },
+            "node": "NodeId(1)"
+          },
+          {
+            "counters": {
+              "age_discarded_frames": 0,
+              "age_recoveries": 0,
+              "backlog_discarded_frames": 777,
+              "backlog_recoveries": 1,
+              "captured_frames": 1442280,
+              "correction_ppm": 1370.7486524688036,
+              "discontinuities": 0,
+              "dropped_frames": 0,
+              "fill_frames": 1176,
+              "last_device_position_frames": 0,
+              "last_qpc_100ns": 0,
+              "last_underrun_at_output_frame": 0,
+              "last_underrun_producer_finished": false,
+              "low_water_guard_frames": 800,
+              "max_fill_frames": 1597,
+              "min_fill_frames": 532,
+              "nonfinite_samples": 0,
+              "output_frames": 1439760,
+              "prime_discarded_frames": 310,
+              "priming_frames": 720,
+              "resets": 1,
+              "silent_frames": 0,
+              "timestamp_errors": 0,
+              "underrun_frames": 0,
+              "written_frames": 1442280
+            },
+            "node": "NodeId(6)"
+          }
+        ],
+        "owner_generation": 1,
+        "running": true,
+        "streams": [
+          {
+            "input_queue": null,
+            "kind": "master_output",
+            "node": "NodeId(4)",
+            "render_queue": {
+              "capacity_frames": 738,
+              "deadline_budget_frames": 504,
+              "target_frames": 504
+            },
+            "shared_period": {
+              "actual_period_frames": 336,
+              "actual_period_hresult": null,
+              "caps": {
+                "default_frames": 480,
+                "fundamental_frames": 1,
+                "max_frames": 480,
+                "min_frames": 336
+              },
+              "client3_failure": null,
+              "desired_period_ms": 5.0,
+              "fallback_reason": null,
+              "initialization_api": "client3",
+              "requested_period_frames": 336
+            },
+            "timing": {
+              "capacity_frames": 738,
+              "period_frames": 336,
+              "sample_rate": 48000
+            }
+          },
+          {
+            "input_queue": {
+              "capacity_frames": 2114,
+              "high_water_frames": 1610,
+              "low_water_frames": 362,
+              "modeled_minimum_frames": 866,
+              "prime_frames": 866,
+              "servo_reference_frames": 866
+            },
+            "kind": "follower_output",
+            "node": "NodeId(6)",
+            "render_queue": {
+              "capacity_frames": 528,
+              "deadline_budget_frames": 360,
+              "target_frames": 360
+            },
+            "shared_period": {
+              "actual_period_frames": 240,
+              "actual_period_hresult": null,
+              "caps": {
+                "default_frames": 480,
+                "fundamental_frames": 1,
+                "max_frames": 480,
+                "min_frames": 128
+              },
+              "client3_failure": null,
+              "desired_period_ms": 5.0,
+              "fallback_reason": null,
+              "initialization_api": "client3",
+              "requested_period_frames": 240
+            },
+            "timing": {
+              "capacity_frames": 528,
+              "period_frames": 240,
+              "sample_rate": 48000
+            }
+          },
+          {
+            "input_queue": {
+              "capacity_frames": 1683,
+              "high_water_frames": 1347,
+              "low_water_frames": 506,
+              "modeled_minimum_frames": 1010,
+              "prime_frames": 1010,
+              "servo_reference_frames": 1010
+            },
+            "kind": "physical_input",
+            "node": "NodeId(1)",
+            "render_queue": null,
+            "shared_period": {
+              "actual_period_frames": 336,
+              "actual_period_hresult": null,
+              "caps": {
+                "default_frames": 480,
+                "fundamental_frames": 1,
+                "max_frames": 480,
+                "min_frames": 336
+              },
+              "client3_failure": null,
+              "desired_period_ms": 5.0,
+              "fallback_reason": null,
+              "initialization_api": "client3",
+              "requested_period_frames": 336
+            },
+            "timing": {
+              "capacity_frames": 738,
+              "period_frames": 336,
+              "sample_rate": 48000
+            }
+          }
+        ]
+      },
+      "native_master_stats": {
+        "audio_wakes": 4291,
+        "bridge_shortfall_frames": 0,
+        "dsp_blocks": 8584,
+        "dsp_segments": 8584,
+        "empty_padding_wakes": 0,
+        "max_writable_frames": 570,
+        "min_writable_frames": 570,
+        "nonzero_samples": 0,
+        "peak_amplitude": 0.0,
+        "primed_frames": 504,
+        "processed_frames": 1442280,
+        "submitted_frames": 1442280,
+        "timeout_wakes": 0,
+        "zero_demand_wakes": 0
+      },
+      "native_follower_stats": [
+        {
+          "audio_wakes": 6006,
+          "bridge_shortfall_frames": 0,
+          "dsp_blocks": 0,
+          "dsp_segments": 0,
+          "empty_padding_wakes": 15,
+          "max_writable_frames": 528,
+          "min_writable_frames": 168,
+          "nonzero_samples": 0,
+          "peak_amplitude": 0.0,
+          "primed_frames": 360,
+          "processed_frames": 1440720,
+          "submitted_frames": 1440720,
+          "timeout_wakes": 0,
+          "zero_demand_wakes": 12
+        }
+      ]
+    },
+    {
+      "source_log": "hardware-low-verified.json",
+      "source_sha256": "217866cdf47b733fbee07b009d9c4ddf2a897bd835d5e4427e476b27c9c9a5ae",
+      "profile": "low",
+      "elapsed_seconds": 10.1582646,
+      "muted": true,
+      "inputs": [
+        "{0.0.1.00000000}.{0e3bce79-16b7-4594-8ef2-5db33dfb70b6}"
+      ],
+      "outputs": [
+        "{0.0.0.00000000}.{dedcefcb-f139-4c50-8950-6925f8c60444}",
+        "{0.0.0.00000000}.{93f962ad-26f6-4485-8a34-e1c7b27f44d5}"
+      ],
+      "healthy": true,
+      "closed": "Closed",
+      "fault": null,
+      "cleanup_error": null,
+      "compatible_edit_activated": true,
+      "same_owner": true,
+      "same_epoch_and_advancing": true,
+      "plan_replaced": true,
+      "plan_revision_initial": 1,
+      "plan_revision_final": 2,
+      "physical_end_to_end_latency_ms": null,
+      "observation": {
+        "bridges": [
+          {
+            "counters": {
+              "age_discarded_frames": 0,
+              "age_recoveries": 0,
+              "backlog_discarded_frames": 0,
+              "backlog_recoveries": 0,
+              "captured_frames": 480144,
+              "correction_ppm": -116.16869193623693,
+              "discontinuities": 1,
+              "dropped_frames": 0,
+              "fill_frames": 949,
+              "last_device_position_frames": 480144,
+              "last_qpc_100ns": 7052671966187,
+              "last_underrun_at_output_frame": 0,
+              "last_underrun_producer_finished": false,
+              "low_water_guard_frames": 256,
+              "max_fill_frames": 1205,
+              "min_fill_frames": 676,
+              "nonfinite_samples": 0,
+              "output_frames": 479136,
+              "prime_discarded_frames": 334,
+              "priming_frames": 1848,
+              "resets": 0,
+              "silent_frames": 0,
+              "timestamp_errors": 0,
+              "underrun_frames": 0,
+              "written_frames": 480144
+            },
+            "node": "NodeId(1)"
+          },
+          {
+            "counters": {
+              "age_discarded_frames": 0,
+              "age_recoveries": 0,
+              "backlog_discarded_frames": 1562,
+              "backlog_recoveries": 2,
+              "captured_frames": 480984,
+              "correction_ppm": -1107.876798533894,
+              "discontinuities": 0,
+              "dropped_frames": 0,
+              "fill_frames": 1142,
+              "last_device_position_frames": 0,
+              "last_qpc_100ns": 0,
+              "last_underrun_at_output_frame": 0,
+              "last_underrun_producer_finished": false,
+              "low_water_guard_frames": 8192,
+              "max_fill_frames": 1562,
+              "min_fill_frames": 412,
+              "nonfinite_samples": 0,
+              "output_frames": 478080,
+              "prime_discarded_frames": 310,
+              "priming_frames": 1200,
+              "resets": 2,
+              "silent_frames": 0,
+              "timestamp_errors": 0,
+              "underrun_frames": 0,
+              "written_frames": 480984
+            },
+            "node": "NodeId(6)"
+          }
+        ],
+        "owner_generation": 1,
+        "running": true,
+        "streams": [
+          {
+            "input_queue": null,
+            "kind": "master_output",
+            "node": "NodeId(4)",
+            "render_queue": {
+              "capacity_frames": 738,
+              "deadline_budget_frames": 504,
+              "target_frames": 504
+            },
+            "shared_period": {
+              "actual_period_frames": 336,
+              "actual_period_hresult": null,
+              "caps": {
+                "default_frames": 480,
+                "fundamental_frames": 1,
+                "max_frames": 480,
+                "min_frames": 336
+              },
+              "client3_failure": null,
+              "desired_period_ms": 5.0,
+              "fallback_reason": null,
+              "initialization_api": "client3",
+              "requested_period_frames": 336
+            },
+            "timing": {
+              "capacity_frames": 738,
+              "period_frames": 336,
+              "sample_rate": 48000
+            }
+          },
+          {
+            "input_queue": {
+              "capacity_frames": 2114,
+              "high_water_frames": 1610,
+              "low_water_frames": 362,
+              "modeled_minimum_frames": 866,
+              "prime_frames": 866,
+              "servo_reference_frames": 866
+            },
+            "kind": "follower_output",
+            "node": "NodeId(6)",
+            "render_queue": {
+              "capacity_frames": 528,
+              "deadline_budget_frames": 360,
+              "target_frames": 360
+            },
+            "shared_period": {
+              "actual_period_frames": 240,
+              "actual_period_hresult": null,
+              "caps": {
+                "default_frames": 480,
+                "fundamental_frames": 1,
+                "max_frames": 480,
+                "min_frames": 128
+              },
+              "client3_failure": null,
+              "desired_period_ms": 5.0,
+              "fallback_reason": null,
+              "initialization_api": "client3",
+              "requested_period_frames": 240
+            },
+            "timing": {
+              "capacity_frames": 528,
+              "period_frames": 240,
+              "sample_rate": 48000
+            }
+          },
+          {
+            "input_queue": {
+              "capacity_frames": 1683,
+              "high_water_frames": 1347,
+              "low_water_frames": 506,
+              "modeled_minimum_frames": 1010,
+              "prime_frames": 1010,
+              "servo_reference_frames": 1010
+            },
+            "kind": "physical_input",
+            "node": "NodeId(1)",
+            "render_queue": null,
+            "shared_period": {
+              "actual_period_frames": 336,
+              "actual_period_hresult": null,
+              "caps": {
+                "default_frames": 480,
+                "fundamental_frames": 1,
+                "max_frames": 480,
+                "min_frames": 336
+              },
+              "client3_failure": null,
+              "desired_period_ms": 5.0,
+              "fallback_reason": null,
+              "initialization_api": "client3",
+              "requested_period_frames": 336
+            },
+            "timing": {
+              "capacity_frames": 738,
+              "period_frames": 336,
+              "sample_rate": 48000
+            }
+          }
+        ]
+      },
+      "native_master_stats": {
+        "audio_wakes": 1430,
+        "bridge_shortfall_frames": 0,
+        "dsp_blocks": 2862,
+        "dsp_segments": 2862,
+        "empty_padding_wakes": 0,
+        "max_writable_frames": 570,
+        "min_writable_frames": 570,
+        "nonzero_samples": 0,
+        "peak_amplitude": 0.0,
+        "primed_frames": 504,
+        "processed_frames": 480984,
+        "submitted_frames": 480984,
+        "timeout_wakes": 0,
+        "zero_demand_wakes": 0
+      },
+      "native_follower_stats": [
+        {
+          "audio_wakes": 2003,
+          "bridge_shortfall_frames": 0,
+          "dsp_blocks": 0,
+          "dsp_segments": 0,
+          "empty_padding_wakes": 15,
+          "max_writable_frames": 528,
+          "min_writable_frames": 168,
+          "nonzero_samples": 0,
+          "peak_amplitude": 0.0,
+          "primed_frames": 360,
+          "processed_frames": 479280,
+          "submitted_frames": 479280,
+          "timeout_wakes": 0,
+          "zero_demand_wakes": 15
+        }
+      ]
+    }
+  ]
+}

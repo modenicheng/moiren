@@ -104,6 +104,11 @@ fn transport(
         Box::new(WindowsTransport {
             native: Some(native),
             captures: Vec::new(),
+            followers: Vec::new(),
+            sinks: vec![sink],
+            observations: NativeObservations::default(),
+            streams: Vec::new(),
+            bridges: Vec::new(),
             output: Some(reader),
             sink,
             stop,
@@ -235,6 +240,124 @@ fn stale_completion_can_cancel_and_return_engine_without_starting_native_stream(
     assert!(returned.error.is_none());
     assert!(released.try_recv().is_err());
     drop(returned);
+    assert_eq!(
+        released.recv_timeout(Duration::from_secs(1)).unwrap(),
+        std::thread::current().id()
+    );
+}
+
+#[test]
+fn every_follower_must_acknowledge_start_and_peer_failure_joins_all_owners() {
+    for failed in [false, true] {
+        let (mut transport, engine, bindings, released, diagnostics) =
+            transport(TestOutcome::RunUntilStopped, false);
+        let observers = transport.observations.clone();
+        let (ingress, source, _) = crate::clock_bridge::capture_bridge(Default::default()).unwrap();
+        let outcome = if failed {
+            TestOutcome::PanicAfterActivation
+        } else {
+            TestOutcome::RunUntilStopped
+        };
+        let native =
+            prepare_test_native(transport.stop.clone(), transport.gate.clone(), outcome).unwrap();
+        let follower = match native.attach_follower(source, RenderQueuePolicy::FullCapacity) {
+            Ok(follower) => follower.into_session(),
+            Err(_) => panic!("prepared follower attachment"),
+        };
+        transport.followers.push(follower);
+        let owner = match transport.attach(engine, &bindings, CancellationToken::default()) {
+            Ok(owner) => owner,
+            Err(_) => panic!("prepared master attachment"),
+        };
+        assert_eq!(owner.status(), OwnerStatus::Starting);
+        assert!(!observers.snapshot().unwrap().running);
+        owner.activate().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while owner.status() == OwnerStatus::Starting && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        if failed {
+            assert!(matches!(owner.status(), OwnerStatus::Failed(_)));
+            assert!(observers.snapshot().is_none());
+        } else {
+            assert_eq!(owner.status(), OwnerStatus::Running);
+            assert!(observers.snapshot().unwrap().running);
+        }
+        assert!(released.try_recv().is_err());
+        let returned = owner.stop_and_join();
+        assert_eq!(returned.error.is_some(), failed);
+        assert!(observers.snapshot().is_none());
+        let report: serde_json::Value =
+            serde_json::from_str(diagnostics.lock().unwrap().as_ref().unwrap()).unwrap();
+        assert_eq!(report["followers"].as_array().unwrap().len(), 1);
+        assert_eq!(report["followers"][0]["stream_started"], !failed);
+        drop(ingress);
+        drop(returned);
+        assert_eq!(
+            released.recv_timeout(Duration::from_secs(1)).unwrap(),
+            std::thread::current().id()
+        );
+    }
+}
+
+#[test]
+fn cancelling_prepared_group_never_starts_followers_or_master() {
+    let (mut transport, engine, bindings, released, _) =
+        transport(TestOutcome::RunUntilStopped, false);
+    let native = prepare_test_native(
+        transport.stop.clone(),
+        transport.gate.clone(),
+        TestOutcome::RunUntilStopped,
+    )
+    .unwrap();
+    let (ingress, source, _) = crate::clock_bridge::capture_bridge(Default::default()).unwrap();
+    let follower = match native.attach_follower(source, RenderQueuePolicy::FullCapacity) {
+        Ok(follower) => follower.into_session(),
+        Err(_) => panic!("prepared follower"),
+    };
+    transport.followers.push(follower);
+    let cancel = CancellationToken::default();
+    cancel.cancel();
+    let failure = match transport.attach(engine, &bindings, cancel) {
+        Err(failure) => failure,
+        Ok(_) => panic!("cancelled group attached"),
+    };
+    assert_eq!(failure.engine.timeline(), 0);
+    assert_eq!(failure.error, BackendError::Cancelled);
+    assert!(released.try_recv().is_err());
+    drop(ingress);
+    drop(failure);
+    assert_eq!(
+        released.recv_timeout(Duration::from_secs(1)).unwrap(),
+        std::thread::current().id()
+    );
+}
+
+#[test]
+fn dropping_unattached_transport_joins_every_owner_and_preserves_reports() {
+    let (mut transport, engine, _bindings, released, diagnostics) =
+        transport(TestOutcome::RunUntilStopped, false);
+    let native = prepare_test_native(
+        transport.stop.clone(),
+        transport.gate.clone(),
+        TestOutcome::RunUntilStopped,
+    )
+    .unwrap();
+    let (ingress, source, _) = crate::clock_bridge::capture_bridge(Default::default()).unwrap();
+    let follower = match native.attach_follower(source, RenderQueuePolicy::FullCapacity) {
+        Ok(follower) => follower.into_session(),
+        Err(_) => panic!("prepared follower"),
+    };
+    transport.followers.push(follower);
+    drop(transport);
+    let report: serde_json::Value =
+        serde_json::from_str(diagnostics.lock().unwrap().as_ref().unwrap()).unwrap();
+    assert!(!report["render"]["stream_started"].as_bool().unwrap());
+    assert_eq!(report["followers"].as_array().unwrap().len(), 1);
+    assert!(!report["followers"][0]["stream_started"].as_bool().unwrap());
+    assert!(released.try_recv().is_err());
+    drop(engine);
+    drop(ingress);
     assert_eq!(
         released.recv_timeout(Duration::from_secs(1)).unwrap(),
         std::thread::current().id()

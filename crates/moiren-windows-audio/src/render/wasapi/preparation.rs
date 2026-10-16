@@ -4,7 +4,10 @@ use crate::{
     ActivationGate, StopSignal,
     latency::{NativeStreamTiming, PreparedRenderQueue, RenderQueuePolicy, prepare_render_queue},
     preparation,
-    render::{DemandRenderer, RenderError, RenderOptions, RenderReport, RenderStatus},
+    render::{
+        DemandRenderer, FollowerRenderer, NativeRenderer, RenderError, RenderOptions, RenderReport,
+        RenderStatus, SampleRenderer,
+    },
 };
 use std::{
     os::windows::io::OwnedHandle,
@@ -26,11 +29,21 @@ pub struct PreparedNativeRender {
     renderer: preparation::Sender<(RendererHandoff, PreparedRenderQueue)>,
     attached: mpsc::Receiver<Result<(), RenderError>>,
 }
-type RendererHandoff = Arc<Mutex<Option<DemandRenderer>>>;
+type RendererHandoff = Arc<Mutex<Option<NativeRenderer>>>;
 
 pub struct RenderAttachFailure {
     pub error: RenderError,
     pub renderer: DemandRenderer,
+    pub report: Option<RenderReport>,
+}
+
+struct NativeAttachFailure {
+    error: RenderError,
+    renderer: NativeRenderer,
+    report: Option<RenderReport>,
+}
+pub(crate) struct FollowerAttachFailure {
+    pub error: RenderError,
     pub report: Option<RenderReport>,
 }
 
@@ -57,13 +70,44 @@ impl PreparedNativeRender {
         renderer: DemandRenderer,
         queue: RenderQueuePolicy,
     ) -> Result<PreparedRenderSession, Box<RenderAttachFailure>> {
+        self.attach_source(NativeRenderer::Master(Box::new(renderer)), queue)
+            .map_err(|failure| {
+                Box::new(RenderAttachFailure {
+                    error: failure.error,
+                    renderer: failure.renderer.into_master().expect("master handoff"),
+                    report: failure.report,
+                })
+            })
+    }
+    pub(crate) fn attach_follower(
+        self,
+        source: crate::clock_bridge::ClockSource,
+        queue: RenderQueuePolicy,
+    ) -> Result<PreparedRenderSession, Box<FollowerAttachFailure>> {
+        self.attach_source(
+            NativeRenderer::Follower(Box::new(FollowerRenderer::new(source))),
+            queue,
+        )
+        .map_err(|failure| {
+            Box::new(FollowerAttachFailure {
+                error: failure.error,
+                report: failure.report,
+            })
+        })
+    }
+    fn attach_source(
+        self,
+        renderer: NativeRenderer,
+        queue: RenderQueuePolicy,
+    ) -> Result<PreparedRenderSession, Box<NativeAttachFailure>> {
         let queue = match prepare_render_queue(self.info.timing, queue) {
             Ok(queue) => queue,
             Err(error) => {
-                return Err(Box::new(RenderAttachFailure {
+                let report = self.cancel_with_report().ok();
+                return Err(Box::new(NativeAttachFailure {
                     error: error.into(),
                     renderer,
-                    report: None,
+                    report,
                 }));
             }
         };
@@ -95,7 +139,7 @@ impl PreparedNativeRender {
                         .take()
                 })
                 .expect("native owner retains renderer outside its unwind scope");
-            return Err(Box::new(RenderAttachFailure {
+            return Err(Box::new(NativeAttachFailure {
                 error,
                 renderer,
                 report,
@@ -194,7 +238,7 @@ struct RenderPreparation {
     ready: mpsc::SyncSender<Result<NativeRenderInfo, RenderError>>,
     attached: mpsc::SyncSender<Result<(), RenderError>>,
     receiver: preparation::Receiver<(RendererHandoff, PreparedRenderQueue)>,
-    renderer: Option<DemandRenderer>,
+    renderer: Option<NativeRenderer>,
     initial_frame: u64,
     recovery: RendererHandoff,
 }
@@ -292,12 +336,13 @@ fn run_owner_with(
     ) -> Result<RenderStatus, RenderError>,
 ) -> NativeOwnerExit {
     let mut report = stream::new_report(options);
-    // Keep the Engine outside the unwind scope so native/DSP failures still
-    // transfer its destruction to the cleanup joiner after COM has unwound.
+    // Keep the Engine and report-owned diagnostic allocation outside the unwind
+    // scope so the cleanup joiner reclaims both after COM has unwound.
     let result = catch_unwind(AssertUnwindSafe(|| {
         run(&stop, &gate, &started, &mut preparation, &mut report)
     }))
     .unwrap_or(Err(RenderError::WorkerPanicked));
+    report.finish_diagnostics();
     let pending = preparation.receiver.close_and_take();
     if let Some((handoff, _)) = pending {
         let renderer = handoff
@@ -332,4 +377,7 @@ fn run_owner_with(
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(crate) use tests::{Outcome as TestOutcome, fake_prepared as prepare_test_native};
+pub(crate) use tests::{
+    Outcome as TestOutcome, fake_prepared as prepare_test_native,
+    fake_prepared_with_info as prepare_test_native_with_info,
+};

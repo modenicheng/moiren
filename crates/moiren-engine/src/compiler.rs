@@ -147,7 +147,10 @@ fn compile_inner<S: ProcessingSample>(
     }
     graph.validate()?;
     for edge in graph.edges() {
-        if edge.params().tap != SendTap::PostFader {
+        if edge.params().tap == SendTap::PreFader
+            && graph.get_node(edge.src())?.kind() != moiren_core::graph::NodeKind::Gain
+            && !bindings.strips.contains_key(&edge.src())
+        {
             return Err(CompileError::UnsupportedTap { edge: edge.id() });
         }
         let channels = graph.get_port(edge.src_port())?.channels();

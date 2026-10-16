@@ -17,21 +17,32 @@ executable selectors are ambiguous and return `Unsupported`; an exited/recycled
 process is never silently replaced. Explicit endpoints wait for their exact ID;
 `FollowDefault` retains its role and follows changes to the default identity.
 
-The supported transport has one 48 kHz stereo f32 Shared render output, which
-owns the master clock, and follower inputs. Physical capture supports existing
+The supported transport has one 48 kHz stereo f32 Shared render master, additional
+Shared stereo follower outputs, and follower inputs. Every output consumes its
+own graph sink; only the master runs Engine. Bounded preallocated follower bridges
+adapt independent device clocks continuously. Duplicate resolved endpoints and
+missing/multiple masters are rejected. Physical capture supports existing
 44.1/48 kHz mono/stereo f32 negotiation and clock adaptation; process capture uses
 the existing 48 kHz process-tree path. Hardware rate/period requirements are
 checked, and custom input queue budgets require physical capture negotiation.
 Both sides share one cancellation signal and activation gate. `Running` requires
-every native stream to acknowledge Start; capture failure stops its render peer.
+every native stream to acknowledge Start; a stream failure stops the linked owners.
 
-Compatible updates retain the initial output consumer and transfer its sole
-writer at the block boundary. `DemandRenderer::new_managed` installs the engine's
-protected sink guard; arbitrary candidates that omit sink reuse are retired and
+Compatible updates retain every active output consumer and transfer each sole
+writer at the block boundary. Managed attachment installs all required engine
+sink guards; arbitrary candidates that omit any protected sink reuse are retired and
 the current output continues. Legacy `DemandRenderer::new` still rejects engines
 with plan switching. `try_snapshot`/`managed_snapshot` make one bounded coherent
 read; the legacy `snapshot` returns its coherent preparation value if publication
 is in flight. Successful swaps publish the current revision and continuous frame.
+
+`WindowsBackendConfig::latency_profile` selects Compatible, Balanced or Low.
+Relative queue budgets are derived from actual native timing and rejected when
+they cannot fit capacity; smaller periods are requests, not measurements.
+`WindowsBackend::observations()` publishes per-owner stream timing, initialization
+fallback, prepared queues and bounded bridge counters. Process capture retains
+its distinct virtual timing boundary. See [managed routing and low latency](../../docs/designs/14-managed-routing-low-latency.md)
+and the finite muted `routing_probe` example for hardware verification.
 
 Resource polling runs on one adapter-owned worker, with at most one outstanding
 probe per resource and coalesced bounded events. The configurable interval is
@@ -586,7 +597,7 @@ requires an actual engine period and rejects targets that cannot cover the sum
 of period, wake margin and callback budget, or exceed capacity. It never clamps an
 unachievable deadline budget to capacity.
 
-Render report schema 5 includes the immutable prepared `queue`. Startup prefill
+Render report schema 6 includes the immutable prepared `queue`. Startup prefill
 and callback demand both use its target, while staging retains native capacity.
 Padding above target causes zero demand without advancing Engine time; native
 `min_writable_frames`/`max_writable_frames` retain their capacity-minus-padding
@@ -615,3 +626,31 @@ cargo run --locked --release -p moiren-windows-audio --example latency_probe -- 
 The declared wake margin/callback budget are assumptions to validate, not
 measured values. An unsupported or too-large actual period rejects this custom
 queue before activation and cleans up both owners.
+
+## Muted multi-output qualification
+
+`routing_probe` prepares one managed Engine with explicit master/follower
+endpoints and an independent zero-gain guard for every output. Omit `--input`
+to mix two software tones; repeat it for supported physical capture endpoints.
+The probe changes no system default, endpoint format, volume, or mute setting.
+
+```powershell
+cargo run --locked -p moiren-windows-audio --example routing_probe -- --list
+cargo run --locked -p moiren-windows-audio --example routing_probe -- --output '<master-id>' --output '<follower-id>' --soak-seconds 600 --profile low --trace
+```
+
+Default duration is five seconds. `--seconds 1..60` and explicit
+`--soak-seconds 60..1800` are mutually exclusive and cannot be repeated. A soak
+keeps one owner alive, applies a real compatible graph update, polls health,
+and verifies closure. Control-side native samples are bounded to 1801 entries.
+
+Trace mode additionally retains the most recent 128 native anomaly windows,
+including up to eight preceding callbacks, padding, demand and follower bridge
+observations. Overwritten windows are counted. Empty padding, callback gaps,
+bridge recovery and underrun remain diagnostic evidence; none is a hardware
+XRUN or physical latency measurement. Summary mode leaves these windows disabled.
+
+The [continuous-run qualification record](../../docs/superpowers/plans/2026-10-16-low-latency-qualification.md)
+documents actual hardware, bounded demand-deficit models and profile limits.
+Successful preparation and healthy ownership alone do not qualify a profile
+for uninterrupted audio on a particular device combination.

@@ -68,6 +68,7 @@ pub fn run() -> anyhow::Result<()> {
 
 fn run_app(handle: AppHandle) -> anyhow::Result<()> {
     let initial = super::state::initial_snapshot(&handle)?;
+    let preferences = crate::project::load_preferences().unwrap_or_default();
     gpui_kit::application()
         .with_assets(ActionAssets)
         .run(move |cx| {
@@ -84,6 +85,7 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
 
             let state = cx.new(|_| UiState::new(handle.clone(), initial));
             state.update(cx, |s, _| {
+                s.restore_preferences(&preferences);
                 s.dispatch(AppRequest::RefreshCatalog);
             });
 
@@ -112,6 +114,7 @@ pub struct StudioShell {
     preferences: crate::project::AppPreferences,
     preferences_path: Option<std::path::PathBuf>,
     preference_save: Option<Task<()>>,
+    preference_save_revision: u64,
     preferences_quitting: std::sync::Arc<std::sync::atomic::AtomicBool>,
     device_tab: devices::DeviceTab,
     selected_device: Option<String>,
@@ -261,6 +264,7 @@ impl StudioShell {
             preferences,
             preferences_path: crate::project::preferences_path().ok(),
             preference_save: None,
+            preference_save_revision: 0,
             preferences_quitting: Default::default(),
             device_tab: devices::DeviceTab::Outputs,
             selected_device: None,

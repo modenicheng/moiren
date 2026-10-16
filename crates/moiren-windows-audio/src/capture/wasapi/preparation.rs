@@ -28,30 +28,57 @@ pub struct PreparedNativeCapture {
     bridge: preparation::Sender<(CaptureIngress, PreparedInputQueue)>,
     attached: mpsc::Receiver<Result<(), CaptureError>>,
 }
+pub(crate) struct CaptureAttachFailure {
+    pub error: CaptureError,
+    pub report: Option<CaptureReport>,
+}
 impl PreparedNativeCapture {
     pub fn info(&self) -> NativeCaptureInfo {
         self.info
     }
     pub fn attach(self, input: PreparedInputQueue) -> Result<PreparedCapture, CaptureError> {
-        let (ingress, source, observer) = capture_bridge_with_clock(
-            ClockBridgeConfig::with_prepared_input(
-                self.info.timing.sample_rate,
-                self.info.channels,
-                input,
-            ),
-            self.info.age_clock,
-        )?;
-        api("Send capture bridge", self.bridge.send((ingress, input)))?;
-        self.attached
-            .recv()
-            .map_err(|_| CaptureError::StartupLost)??;
-        Ok(PreparedCapture {
-            session: self.session,
-            source,
-            observer,
-            sample_rate: self.info.timing.sample_rate,
-            channels: self.info.channels,
-        })
+        self.attach_returning(input)
+            .map_err(|failure| failure.error)
+    }
+    pub(crate) fn cancel_with_report(self) -> Result<CaptureReport, CaptureError> {
+        let _ = self.session.request_stop();
+        self.session.join()
+    }
+    /// Control-side failures retain the negotiated stream report, including a
+    /// rejected queue before handoff. The peer stop precedes every blocking join.
+    pub(crate) fn attach_returning(
+        self,
+        input: PreparedInputQueue,
+    ) -> Result<PreparedCapture, Box<CaptureAttachFailure>> {
+        let attachment = (|| {
+            let (ingress, source, observer) = capture_bridge_with_clock(
+                ClockBridgeConfig::with_prepared_input(
+                    self.info.timing.sample_rate,
+                    self.info.channels,
+                    input,
+                ),
+                self.info.age_clock,
+            )?;
+            api("Send capture bridge", self.bridge.send((ingress, input)))?;
+            self.attached
+                .recv()
+                .map_err(|_| CaptureError::StartupLost)??;
+            Ok::<_, CaptureError>((source, observer))
+        })();
+        match attachment {
+            Ok((source, observer)) => Ok(PreparedCapture {
+                session: self.session,
+                source,
+                observer,
+                sample_rate: self.info.timing.sample_rate,
+                channels: self.info.channels,
+            }),
+            Err(error) => {
+                let _ = self.session.request_stop();
+                let report = self.session.join().ok();
+                Err(Box::new(CaptureAttachFailure { error, report }))
+            }
+        }
     }
 }
 pub(super) enum CapturePreparation {
@@ -206,3 +233,11 @@ fn start_native_owner(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) fn prepare_test_native(
+    stop: StopSignal,
+    gate: ActivationGate,
+    exited: Arc<AtomicBool>,
+) -> Result<PreparedNativeCapture, CaptureError> {
+    tests::fake_prepared(stop, gate, tests::Outcome::Run, exited)
+}

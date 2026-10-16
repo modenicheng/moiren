@@ -363,6 +363,7 @@ impl BackendDriver {
 impl ServiceDriver for BackendDriver {
     fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
         match request {
+            AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
             AppRequest::Start(spec) => {
                 if let Err(error) = c.graph.configure_session(&spec) {
                     c.graph.record_error(error);
@@ -391,6 +392,15 @@ impl ServiceDriver for BackendDriver {
             AppRequest::RefreshCatalog => self.refresh = true,
             AppRequest::EditGraph(edit) => {
                 let parameter = match edit {
+                    GraphEdit::SetCompressor {
+                        node,
+                        parameter,
+                        value,
+                    } => Some((
+                        node,
+                        parameter.id(),
+                        moiren_core::protocol::ParamValue::Float(value),
+                    )),
                     GraphEdit::SetGain { node, gain } => Some((
                         node,
                         moiren_engine::processor::Gain::LEVEL,
@@ -445,6 +455,18 @@ impl ServiceDriver for BackendDriver {
                                 prep.nodes.iter_mut().find(|state| state.id == node)
                         {
                             match (parameter, value) {
+                                (parameter, moiren_core::protocol::ParamValue::Float(value))
+                                    if prep.graph.get_node(node).is_ok_and(|node| {
+                                        node.kind() == moiren_core::graph::NodeKind::Compressor
+                                    }) =>
+                                {
+                                    if let Some(parameter) = super::CompressorParameter::ALL
+                                        .into_iter()
+                                        .find(|entry| entry.id() == parameter)
+                                    {
+                                        state.compressor.set(parameter, value);
+                                    }
+                                }
                                 (
                                     moiren_engine::processor::Gain::LEVEL,
                                     moiren_core::protocol::ParamValue::Float(value),

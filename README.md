@@ -2,60 +2,54 @@
 
 A real-time audio graph for Windows.
 
-当前仓库包含 Rust 音频引擎、自动 Graph Compiler、首条 WASAPI Shared 实际输出链路和独立 Windows 可行性实验，尚非可安装音频路由产品。
+Moiren 是 Rust 2024 音频工作区。桌面界面使用 gpui-kit，Graph、Mixer 和 Matrix 读取同一份真实 `LogicalGraph`。正式 Windows 路径使用 `EngineHost` 管理图编译、兼容热更新、资源等待和控制侧回收。
 
-## 运行首版应用
+## 运行
 
-```sh
+```powershell
 cargo run --locked -p moiren-app
+# 离线音频演示，不打开设备
 cargo run --locked -p moiren-app -- --gain 0.25
 ```
 
-默认入口跑通 `软件输入 → InputNode → Gain → OutputNode → 软件输出`，打印处理后样本与 IO 状态。应用使用一个 planar slab 和两个预分配音频桥，支持多声道、可变 block 与经控制队列下发增益；此离线模式不打开设备。见 [App 说明](crates/moiren-app/README.md)与 [IO 节点设计](docs/designs/03-io-nodes.md)。
+Graph 中的每个 Source、Sink 独立绑定音源或设备，多个输入可通过 Bus 混合到多个输出。首个输出驱动主时钟，其他输出通过有界时钟桥跟随。Compatible 图修改在块边界更新；改变设备或 IO 集合可能重建音频 owner。界面区分候选与引擎确认的活动版本。
 
-Windows 下可播放 Compiler 准备的 `Sine → Gain → Pan → Sink → WASAPI Shared` 测试信号：
+Settings 中的 Compatible、Balanced、Low 保存期望的延迟档位，通过 Apply 生效。实际设备周期、队列和初始化 fallback 来自原生观测。请求 5 ms 不代表设备实际为 5 ms，队列帧数也不代表物理端到端时延。
+
+支持项目保存/加载、物理输入、进程树捕获、Gain、Balance/Mono/Swap、Bus、Compressor、发送参数和真实电平。正式 native 边界仍为 WASAPI Shared、双声道 graph、48 kHz 输出；物理输入接受 44.1/48 kHz 单/双声道 f32。
+
+## 验证
 
 ```powershell
-cargo run --locked -p moiren-app -- render --list
-# 从列表选择 endpoint；默认 10 秒、440 Hz、gain 0.05，不修改设备或其他应用音量。
-cargo run --locked -p moiren-app -- render --endpoint '<endpoint ID>'
-```
-
-首版仅接受 native 48 kHz / stereo / f32；不转换其他设备格式。FreeDSP 的 10 秒实机输出已获用户试听确认，见[验收记录](docs/experiments/windows/2026-10-08-shared-render.md)。该单输出 owner 直接驱动 Engine，尚未接入真实 capture、跨设备 SRC 或运行中换图的应用控制入口。
-
-## 运行引擎骨架
-
-LogicalGraph 已提供节点/端口/边编辑、独立 Bus 动态输入、连接校验及稳定 DAG 排序；Compiler 自动准备 Source/Sink/Gain/Bus/Pan/Compressor 和 PostFader Edge 的 gain/pan/mute。执行 `cargo run --locked -p moiren-engine --example logical_graph` 可验证两个 Source → Bus → Pan → 软件输出及跨 block 声像 ramp，无需手写 OpSpec 或 BufferSlotId。当前使用独立槽位，PreFader 和非 stereo 非零 send pan 明确报错，见 [Compiler 契约](docs/designs/05-graph-compiler.md)。
-
-Compressor 提供 10 个可自动化参数、多声道 peak 联动、soft knee、attack / hold / release 与干湿混合。Engine 支持控制侧准备候选、音频块边界切换和控制侧延迟回收；显式兼容复用可保持 DSP 状态、参数 ramp 和输出桥。热切换要求 EngineConfig 和 timeline epoch 不变，见 [Compressor 与 Plan 切换契约](docs/designs/06-compressor-plan-swap.md)。离线示例在线插入 Compressor 并校验连续增益 ramp：
-
-```sh
-cargo run --locked -p moiren-engine --example plan_swap
-```
-
-在仓库根目录执行；Windows 与 Linux 使用相同 Cargo 命令：
-
-```sh
+cargo check --locked --workspace --all-targets
 cargo test --locked --workspace
-cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked -p moiren-app --features gpui-test
+cargo clippy --locked --workspace --all-targets --features moiren-app/gpui-test -- -D warnings
 cargo fmt --all -- --check
-cargo run --locked -p moiren-engine --example offline
 ```
 
-`offline` 演示 `Source → Pre Meter → In-place Gain → Post Meter`，全部音频使用一个 planar slab；参数经版本化消息编解码、有界控制队列及 Processing Timeline 下发。示例不打开音频设备，不播放声音。
+普通测试不打开音频设备。`routing_probe` 提供有限时长、全输出静音的多输出/低延迟实机检查，不改变系统默认设备或音量：
 
-平铺 buffer、unsafe 不变量与 IPC 分层见[实时基础实施计划](docs/plans/2026-10-08-runtime-foundation.md)；新增编译能力见 [Compiler 契约](docs/designs/05-graph-compiler.md)。Named Pipe、标准 LUFS、完整 Windows backend、优化 BufferPlanner 与跨 epoch / 采样率热切换尚未实现。
+```powershell
+cargo run --locked -p moiren-windows-audio --example routing_probe -- --list
+cargo run --locked -p moiren-windows-audio --example routing_probe -- --output '<master endpoint ID>' --output '<follower endpoint ID>' --seconds 10 --profile low
+```
 
-## 文档入口
+可重复指定 `--input '<capture endpoint ID>'`；不指定时混合两个软件音源。硬件验证与普通测试分别记录。实时路径的图、buffer 和信号绑定均在控制侧准备；音频线程不进行堆分配/回收、阻塞等待或 COM 重建。
 
-- [产品与路线图](docs/Moiren-PRD-Roadmap.md)
-- [Graph 设计](docs/designs/01-audio-graph.md)与[Engine 总体设计](docs/designs/02-engine-design.md)
-- [基础 IO 节点](docs/designs/03-io-nodes.md)与[IO / App 实施记录](docs/plans/2026-10-08-basic-io-nodes.md)
-- [LogicalGraph、Bus 与 Pan](docs/designs/04-logical-graph.md)与[实施记录](docs/plans/2026-10-08-logical-graph.md)
-- [Graph Compiler](docs/designs/05-graph-compiler.md)与[实施计划](docs/superpowers/plans/2026-10-08-graph-compiler.md)
-- [Compressor 与 Plan 切换](docs/designs/06-compressor-plan-swap.md)与[实施记录](docs/superpowers/plans/2026-10-09-compressor-plan-swap.md)
-- [Shared Render 设计](docs/superpowers/specs/2026-10-08-shared-render-design.md)、[实施记录](docs/superpowers/plans/2026-10-08-shared-render.md)与[实机验收](docs/experiments/windows/2026-10-08-shared-render.md)
-- [实时基础实施计划](docs/plans/2026-10-08-runtime-foundation.md)：本轮具体实现契约；与历史 buffer 草案冲突时以该计划为准
-- [Windows 接入计划](docs/plans/2026-10-08-windows-integration-plan.md)与[W00 实验说明](crates/moiren-windows-audio/README.md)
+## 当前边界
 
-W00 探针仍保持独立；新增 render 模块连接正式 Engine。已有实验与单输出结果不表示已完成应用输出接管、多设备桥接或长期稳定性验收。
+- Process Loopback 是 Application Capture / Monitor；真正的逐应用 Redirect / Takeover 尚未解决。独占探针保持独立实验。
+- SRC 仍是线性插值基线。没有承诺专业重采样质量、多输出延迟补偿、物理端到端时延或长期无 XRUN。
+- 正式 Exclusive、ASIO、多通道、虚拟音频驱动、CLAP/VST3、Named Pipe 和远程控制仍属后续能力。
+- EQ/Gate/Limiter/Delay/Recorder 和标准 LUFS/True Peak 尚未补齐；PreFader 目前只支持 Gain 或已绑定 channel strip 的节点。
+
+## 文档
+
+- [托管路由与低延迟](docs/designs/14-managed-routing-low-latency.md)
+- [本轮验证记录](docs/superpowers/plans/2026-10-16-managed-routing-low-latency-validation.md)
+- [EngineHost 所有权与更新](crates/moiren-engine/README.md)
+- [Windows 音频后端、探针与硬件边界](crates/moiren-windows-audio/README.md)
+- [桌面应用与 CLI](crates/moiren-app/README.md)
+- [产品与路线图](docs/Moiren-PRD-Roadmap.md)（早期进度段落以当前实现和本轮验收记录为准）
+- [Graph Compiler](docs/designs/05-graph-compiler.md)、[IO 节点](docs/designs/03-io-nodes.md)、[Compressor 与 Plan swap](docs/designs/06-compressor-plan-swap.md)

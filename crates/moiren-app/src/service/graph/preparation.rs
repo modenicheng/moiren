@@ -5,6 +5,164 @@ use moiren_engine::{
 };
 
 impl GraphPreparation {
+    /// Translate resource intent for every IO node. The first stable sink owns
+    /// the render clock; further sinks follow it through native output bridges.
+    pub fn engine_project(
+        &self,
+        max_block_frames: usize,
+    ) -> Result<moiren_engine::host::EngineProject, String> {
+        use moiren_core::protocol::ParamValue;
+        use moiren_engine::{
+            boundary::{CaptureIntent, ClockRole},
+            host::{DesiredParameter, EngineProject, NodeConfig, ParameterTarget},
+            node::{
+                DeviceOptions, EndpointSelector, InputConfig, InputSource, OutputConfig,
+                OutputTarget,
+            },
+            processor::{Gain, Pan},
+        };
+        self.primary_io_nodes()?;
+        let mut project = EngineProject {
+            graph: self.graph.clone(),
+            ..EngineProject::default()
+        };
+        project.processing.engine.max_block_frames = max_block_frames;
+        project.strips.extend(self.mixer_configs());
+        let master = self
+            .graph
+            .nodes()
+            .iter()
+            .filter(|n| n.kind() == NodeKind::Sink)
+            .map(|n| n.id())
+            .min();
+        let mut endpoints = std::collections::BTreeSet::new();
+        let mut inputs = std::collections::BTreeSet::new();
+        let pinned = |endpoint_id: &String| EndpointSelector::PinnedEndpoint {
+            endpoint_id: endpoint_id.clone(),
+            stable_id: None,
+        };
+        for node in self.graph.nodes() {
+            let state = self
+                .nodes
+                .iter()
+                .find(|s| s.id == node.id())
+                .expect("validated node state");
+            let config = match node.kind() {
+                NodeKind::Source => {
+                    let source = match state.source.as_ref().ok_or("输入节点尚未绑定音源")?
+                    {
+                        InputSelection::Physical { endpoint_id } => {
+                            if !inputs.insert(format!("physical:{endpoint_id}")) {
+                                return Err("多个输入节点绑定了同一物理设备".into());
+                            }
+                            InputSource::Physical(pinned(endpoint_id))
+                        }
+                        InputSelection::Process {
+                            pid,
+                            creation_time_100ns,
+                        } => {
+                            if *creation_time_100ns == 0 {
+                                return Err("应用音源缺少稳定进程身份".into());
+                            }
+                            let executable = format!("moiren:process:{pid}:{creation_time_100ns}");
+                            if !inputs.insert(executable.clone()) {
+                                return Err("多个输入节点绑定了同一应用音源".into());
+                            }
+                            InputSource::Application {
+                                executable,
+                                intent: CaptureIntent::PassiveTap,
+                            }
+                        }
+                        InputSelection::Tone { frequency_hz } => InputSource::Software {
+                            name: format!("moiren:tone:{frequency_hz}"),
+                        },
+                    };
+                    NodeConfig::Input(InputConfig {
+                        source,
+                        channels: node.channels(),
+                        device: DeviceOptions::default(),
+                    })
+                }
+                NodeKind::Sink => {
+                    let endpoint = state
+                        .output_endpoint_id
+                        .as_ref()
+                        .ok_or("输出节点尚未绑定设备")?;
+                    if !endpoints.insert(endpoint.clone()) {
+                        return Err("多个输出节点绑定了同一设备".into());
+                    }
+                    NodeConfig::Output(OutputConfig {
+                        target: OutputTarget::Physical(pinned(endpoint)),
+                        channels: node.channels(),
+                        device: DeviceOptions {
+                            clock_role: if Some(node.id()) == master {
+                                ClockRole::Master
+                            } else {
+                                ClockRole::Follower
+                            },
+                            ..DeviceOptions::default()
+                        },
+                    })
+                }
+                NodeKind::Gain => NodeConfig::Gain { initial: 1.0 },
+                NodeKind::Pan => NodeConfig::Pan { initial: 0.0 },
+                NodeKind::Compressor => NodeConfig::Compressor(CompressorSettings::default()),
+                NodeKind::Bus => NodeConfig::Bus,
+            };
+            project.nodes.insert(node.id(), config);
+            let values = match node.kind() {
+                NodeKind::Gain => vec![(Gain::LEVEL, ParamValue::Float(state.gain))],
+                NodeKind::Pan => vec![
+                    (Pan::POSITION, ParamValue::Float(state.pan)),
+                    (Pan::MONO, ParamValue::Bool(state.mono)),
+                    (Pan::SWAP, ParamValue::Bool(state.swap)),
+                ],
+                NodeKind::Compressor => CompressorParameter::ALL
+                    .into_iter()
+                    .map(|parameter| parameter.desired(state.compressor))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            project
+                .parameters
+                .extend(
+                    values
+                        .into_iter()
+                        .map(|(parameter, value)| DesiredParameter {
+                            target: ParameterTarget::Node {
+                                node: node.id(),
+                                parameter,
+                            },
+                            value,
+                        }),
+                );
+        }
+        project.validate().map_err(|e| e.to_string())?;
+        Ok(project)
+    }
+    pub fn primary_io_nodes(&self) -> Result<(NodeId, NodeId), String> {
+        self.validate_state()?;
+        if self.graph.nodes().iter().any(|node| node.channels() != 2) {
+            return Err("当前设备桥仅支持双声道节点".into());
+        }
+        let source = self
+            .graph
+            .nodes()
+            .iter()
+            .filter(|n| n.kind() == NodeKind::Source)
+            .map(|n| n.id())
+            .min()
+            .ok_or("图需要输入节点")?;
+        let sink = self
+            .graph
+            .nodes()
+            .iter()
+            .filter(|n| n.kind() == NodeKind::Sink)
+            .map(|n| n.id())
+            .min()
+            .ok_or("图需要输出节点")?;
+        Ok((source, sink))
+    }
     pub(super) fn validate_state(&self) -> Result<(), String> {
         self.graph.validate().map_err(|e| e.to_string())?;
         if self.graph.nodes().len() > 4096 || self.nodes.len() != self.graph.nodes().len() {
@@ -28,7 +186,9 @@ impl GraphPreparation {
             if node.kind() != NodeKind::Pan && (state.mono || state.swap) {
                 return Err("Mono 和 Swap 只能用于 Balance 节点".into());
             }
-            if state.label.trim().is_empty()
+            if !state.compressor.valid()
+                || !state.mixer.valid(node.channels())
+                || state.label.trim().is_empty()
                 || state.label.len() > 256
                 || state.label.contains('\0')
                 || !state.gain.is_finite()
@@ -101,6 +261,9 @@ impl GraphPreparation {
         &self,
         bindings: &mut NodeBindings<f32>,
     ) -> Result<(), CompileError> {
+        for (node, config) in self.mixer_configs() {
+            bindings.bind_strip(node, config);
+        }
         for node in self.graph.nodes() {
             let state = self.nodes.iter().find(|state| state.id == node.id());
             match node.kind() {
@@ -111,9 +274,12 @@ impl GraphPreparation {
                     state.is_some_and(|s| s.mono),
                     state.is_some_and(|s| s.swap),
                 )?,
-                NodeKind::Compressor => {
-                    bindings.bind_compressor(node.id(), CompressorSettings::default())?
-                }
+                NodeKind::Compressor => bindings.bind_compressor(
+                    node.id(),
+                    state.map_or_else(CompressorSettings::default, |state| {
+                        state.compressor.settings()
+                    }),
+                )?,
                 NodeKind::Source | NodeKind::Sink | NodeKind::Bus => {}
             }
         }

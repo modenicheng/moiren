@@ -10,7 +10,6 @@ pub(super) fn validate_frequency(frequency: f64) -> Result<(), BackendError> {
     }
 }
 
-#[cfg(windows)]
 pub(super) fn tone(name: &str) -> Result<f64, BackendError> {
     let frequency = name
         .strip_prefix("moiren:tone:")
@@ -22,7 +21,6 @@ pub(super) fn tone(name: &str) -> Result<f64, BackendError> {
     Ok(frequency)
 }
 
-#[cfg(windows)]
 pub(super) fn process(selector: &str) -> Result<(u32, u64), BackendError> {
     let (pid, creation) = selector
         .strip_prefix("moiren:process:")

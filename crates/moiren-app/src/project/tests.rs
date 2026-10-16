@@ -424,6 +424,30 @@ fn preferences_persist_density_and_missing_file_uses_defaults() {
 }
 
 #[test]
+fn preferences_restore_every_latency_profile_and_default_older_documents() {
+    use crate::service::AudioLatencyProfile;
+    let directory = TestDirectory::new();
+    let path = directory.file("preferences.json");
+    for profile in AudioLatencyProfile::ALL {
+        let preferences = AppPreferences {
+            latency_profile: profile,
+            ..AppPreferences::default()
+        };
+        save_preferences_at(&path, &preferences).unwrap();
+        assert_eq!(load_preferences_at(&path).unwrap(), preferences);
+    }
+    fs::write(&path, br#"{"version":1,"density":"compact","appearance":"dark","restore_last_project":false,"last_project_path":null}"#).unwrap();
+    let restored = load_preferences_at(&path).unwrap();
+    assert_eq!(restored.latency_profile, AudioLatencyProfile::Compatible);
+    assert_eq!(restored.density, UiDensity::Compact);
+    fs::write(&path, br#"{"version":1,"latency_profile":"turbo"}"#).unwrap();
+    assert!(matches!(
+        load_preferences_at(&path),
+        Err(PersistenceError::Json { .. })
+    ));
+}
+
+#[test]
 fn unbound_candidate_graph_saves_without_creating_an_active_session() {
     let directory = TestDirectory::new();
     let path = directory.file("unbound.moiren");

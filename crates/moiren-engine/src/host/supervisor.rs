@@ -336,6 +336,7 @@ fn transport_compatible(previous: &EngineProject, desired: &EngineProject) -> bo
 }
 fn same_structure(previous: &EngineProject, desired: &EngineProject) -> bool {
     previous.nodes == desired.nodes
+        && previous.strips == desired.strips
         && previous.processing == desired.processing
         && previous.graph.nodes() == desired.graph.nodes()
         && previous.graph.edges().len() == desired.graph.edges().len()

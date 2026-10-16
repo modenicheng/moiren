@@ -1,5 +1,5 @@
 //! Thread-owned WASAPI objects. Only the stop kernel handle is shared.
-use super::{DemandRenderer, RenderError, RenderOptions, RenderReport};
+use super::{DemandRenderer, NativeRenderer, RenderError, RenderOptions, RenderReport};
 #[cfg(test)]
 use crate::Activation;
 use crate::{ActivationGate, StopSignal};
@@ -30,7 +30,7 @@ pub use preparation::{
     NativeRenderInfo, PreparedNativeRender, RenderAttachFailure, prepare_render_native_with_gate,
 };
 #[cfg(test)]
-pub(crate) use preparation::{TestOutcome, prepare_test_native};
+pub(crate) use preparation::{TestOutcome, prepare_test_native, prepare_test_native_with_info};
 
 pub use endpoint::{RenderEndpoint, list_render_endpoints};
 
@@ -62,13 +62,13 @@ pub struct RenderOwnerExit {
 }
 struct NativeOwnerExit {
     report: RenderReport,
-    renderer: Option<DemandRenderer>,
+    renderer: Option<NativeRenderer>,
 }
 pub struct RenderSession {
     stop: Arc<StdHandle>,
     started: Arc<AtomicBool>,
     worker: Option<JoinHandle<NativeOwnerExit>>,
-    recovery: Option<Arc<Mutex<Option<DemandRenderer>>>>,
+    recovery: Option<Arc<Mutex<Option<NativeRenderer>>>>,
     fallback: Option<RenderReport>,
 }
 impl RenderSession {
@@ -88,7 +88,10 @@ impl RenderSession {
         let exit = self.join_owner()?;
         Ok(RenderOwnerExit {
             report: exit.report,
-            renderer: exit.renderer.ok_or(RenderError::StartupLost)?,
+            renderer: exit
+                .renderer
+                .and_then(NativeRenderer::into_master)
+                .ok_or(RenderError::StartupLost)?,
         })
     }
     fn join_owner(mut self) -> Result<NativeOwnerExit, RenderError> {
@@ -123,7 +126,7 @@ impl RenderSession {
     }
     /// CLI convenience: releases the renderer on the calling thread.
     pub fn join(self) -> Result<RenderReport, RenderError> {
-        let exit = self.join_with_renderer()?;
+        let exit = self.join_owner()?;
         Ok(exit.report)
     }
 }
@@ -223,7 +226,7 @@ fn start_owner(
             let exit = owner(renderer, worker_stop, worker_gate, tx, worker_started);
             NativeOwnerExit {
                 report: exit.report,
-                renderer: Some(exit.renderer),
+                renderer: Some(NativeRenderer::Master(Box::new(exit.renderer))),
             }
         })
         .map_err(|error| RenderError::WorkerSpawn {

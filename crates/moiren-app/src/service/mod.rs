@@ -6,7 +6,9 @@ mod core;
 mod driver;
 mod graph;
 mod jobs;
+mod latency;
 mod mailbox;
+mod managed;
 mod model;
 mod parameters;
 mod recovery;
@@ -17,7 +19,12 @@ mod startup;
 mod windows;
 pub use backend::*;
 pub use driver::BackendDriver;
-pub use graph::{GraphEdit, GraphNodeState, GraphPreparation, GraphSnapshot, ServiceGraph};
+pub use graph::{
+    CompressorParameter, CompressorState, GraphEdit, GraphNodeState, GraphPreparation,
+    GraphSnapshot, MixerState, ServiceGraph,
+};
+pub use latency::AudioLatencyProfile;
+pub use managed::ManagedDriver;
 pub use signal_preparation::{SignalPreparation, SignalPreparationError};
 pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
 #[cfg(windows)]
@@ -33,11 +40,8 @@ pub enum ServiceStartError {
 pub fn start_service() -> Result<ServiceRuntime, ServiceStartError> {
     #[cfg(windows)]
     {
-        ServiceRuntime::spawn_with_driver(
-            BackendDriver::new(std::sync::Arc::new(WindowsBackend::default()))
-                .with_automatic_startup(),
-        )
-        .map_err(ServiceStartError::WorkerSpawn)
+        ServiceRuntime::spawn_with_driver(ManagedDriver::windows().with_automatic_startup())
+            .map_err(ServiceStartError::WorkerSpawn)
     }
     #[cfg(not(windows))]
     {
@@ -79,6 +83,10 @@ impl Default for RoundBudget {
     }
 }
 pub struct ServiceContext {
+    #[cfg(windows)]
+    pub native_observations: Option<NativeSessionObservations>,
+    pub latency_profile: AudioLatencyProfile,
+    pub active_latency_profile: Option<AudioLatencyProfile>,
     pub graph: ServiceGraph,
     pub monitor_latency: Option<MonitorLatencyStatus>,
     pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
@@ -93,6 +101,10 @@ pub struct ServiceContext {
 impl Default for ServiceContext {
     fn default() -> Self {
         Self {
+            #[cfg(windows)]
+            native_observations: None,
+            latency_profile: AudioLatencyProfile::default(),
+            active_latency_profile: None,
             graph: ServiceGraph::default(),
             monitor_latency: None,
             monitor_diagnostics: None,
@@ -190,6 +202,7 @@ impl ServiceDriver for CoreDriver {
             }
             AppRequest::SetGainPan { gain, pan } => c.control.pending_gain_pan = Some((gain, pan)),
             AppRequest::RefreshCatalog => {}
+            AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
             AppRequest::EditGraph(edit) => {
                 let _ = c.graph.edit(edit);
             }
@@ -206,6 +219,14 @@ impl ServiceDriver for CoreDriver {
 }
 pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
     AppSnapshot {
+        #[cfg(windows)]
+        native_observations: c.native_observations.clone().filter(|value| {
+            c.core.phase() == SessionPhase::Running
+                && c.core.owner_generation() == Some(value.generation)
+                && c.core.generation() == value.generation
+        }),
+        latency_profile: c.latency_profile,
+        active_latency_profile: c.active_latency_profile,
         graph: Arc::new(c.graph.snapshot()),
         monitor_latency: c.monitor_latency.clone(),
         monitor_diagnostics: c.monitor_diagnostics.filter(|diagnostics| {

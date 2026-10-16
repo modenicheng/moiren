@@ -11,7 +11,7 @@ pub struct NativeStreamTiming {
 }
 
 impl NativeStreamTiming {
-    fn validate(self) -> Result<(), LatencyBudgetError> {
+    pub(crate) fn validate(self) -> Result<(), LatencyBudgetError> {
         if self.sample_rate == 0
             || self.capacity_frames == 0
             || self.period_frames.is_some_and(|period| period == 0)

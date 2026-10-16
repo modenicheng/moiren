@@ -33,6 +33,7 @@ pub(super) enum Binding<S: ProcessingSample> {
 /// Prepared backend ownership and initial DSP values, separate from editable
 /// topology. All methods and all destruction are control-side operations.
 pub struct NodeBindings<S: ProcessingSample> {
+    pub(super) strips: BTreeMap<NodeId, crate::processor::StripConfig>,
     nodes: BTreeMap<NodeId, Binding<S>>,
     observers: BTreeMap<PortId, Vec<Box<dyn crate::processor::RtObserver<S>>>>,
     input_observers: BTreeMap<PortId, Vec<Box<dyn crate::processor::RtObserver<S>>>>,
@@ -45,6 +46,7 @@ impl<S: ProcessingSample> Default for NodeBindings<S> {
 impl<S: ProcessingSample> NodeBindings<S> {
     pub fn new() -> Self {
         Self {
+            strips: BTreeMap::new(),
             nodes: BTreeMap::new(),
             observers: BTreeMap::new(),
             input_observers: BTreeMap::new(),
@@ -53,6 +55,10 @@ impl<S: ProcessingSample> NodeBindings<S> {
 
     pub fn contains_node(&self, node: NodeId) -> bool {
         self.nodes.contains_key(&node)
+    }
+
+    pub fn bind_strip(&mut self, node: NodeId, config: crate::processor::StripConfig) {
+        self.strips.insert(node, config);
     }
 
     pub(super) fn bind_reused_io(
@@ -82,6 +88,11 @@ impl<S: ProcessingSample> NodeBindings<S> {
     }
 
     pub(super) fn validate(&self, graph: &LogicalGraph) -> Result<(), CompileError> {
+        for (&node, config) in &self.strips {
+            if !config.valid(graph.get_node(node)?.channels()) {
+                return Err(CompileError::BindingKind { node });
+            }
+        }
         for (&id, binding) in &self.nodes {
             let kind = graph.get_node(id)?.kind();
             let valid = match (kind, binding) {

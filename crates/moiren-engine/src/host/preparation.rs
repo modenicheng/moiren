@@ -141,6 +141,9 @@ fn prepare<S: ProcessingSample>(
     if job.cancel.is_cancelled() {
         return Err(fail(BackendError::Cancelled));
     }
+    for (&node, config) in &job.project.strips {
+        prepared.bindings.bind_strip(node, *config);
+    }
     for (&node, configuration) in &job.project.nodes {
         if matches!(
             configuration,
@@ -168,12 +171,16 @@ fn prepare<S: ProcessingSample>(
                     ParamValue::Float(*value),
                 )),
             ),
-            NodeConfig::Pan { initial: value } => prepared.bindings.bind_pan(
+            NodeConfig::Pan { initial: value } => prepared.bindings.bind_pan_with_stereo(
                 node,
                 float(initial(
                     crate::processor::Pan::POSITION,
                     ParamValue::Float(*value),
                 )),
+                initial(crate::processor::Pan::MONO, ParamValue::Bool(false))
+                    == ParamValue::Bool(true),
+                initial(crate::processor::Pan::SWAP, ParamValue::Bool(false))
+                    == ParamValue::Bool(true),
             ),
             NodeConfig::Compressor(settings) => {
                 let mut settings = *settings;
@@ -205,6 +212,10 @@ fn prepare<S: ProcessingSample>(
         };
         result.map_err(|error| Diagnostic::Compile(error.to_string()))?;
     }
+    shared
+        .signals
+        .prepare_levels(&job.project, &signals, &mut prepared.bindings)
+        .map_err(fail)?;
     let mut graph = job.project.graph.clone();
     for parameter in &job.project.parameters {
         if let ParameterTarget::Edge {

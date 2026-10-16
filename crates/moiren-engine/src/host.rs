@@ -13,7 +13,7 @@ mod supervisor;
 pub use backend::*;
 pub use model::*;
 pub use project::*;
-pub use signals::ManagedSignalSubscription;
+pub use signals::{ManagedLevelSubscription, ManagedLevelTopic, ManagedSignalSubscription};
 pub use snapshot::*;
 
 use crate::sample::ProcessingSample;
@@ -51,7 +51,10 @@ impl Default for HostConfig {
             max_edges: 512,
             max_parameters: 2048,
             signal_bindings: 256,
-            signals: Default::default(),
+            signals: moiren_signal::BusConfig {
+                max_topics: 256,
+                ..Default::default()
+            },
             poll_interval: Duration::from_millis(5),
         }
     }
@@ -309,5 +312,11 @@ impl EngineObserver {
         node: moiren_core::graph::NodeId,
     ) -> Result<ManagedSignalSubscription, String> {
         self.shared.signals.subscribe(node)
+    }
+    pub fn subscribe_level(
+        &self,
+        node: moiren_core::graph::NodeId,
+    ) -> Result<ManagedLevelSubscription, String> {
+        self.shared.signals.subscribe_level(node)
     }
 }

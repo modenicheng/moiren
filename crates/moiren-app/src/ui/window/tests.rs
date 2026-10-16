@@ -210,6 +210,223 @@ fn closed_window_keeps_preference_writes_until_application_shutdown(
 }
 
 #[gpui_kit::test]
+fn app_quit_drains_delayed_preference_chain_and_restores_latest_profile(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::{project, service::AudioLatencyProfile};
+    use std::{
+        sync::{Arc, Mutex},
+        task::{Poll, Waker},
+    };
+    cx.update(gpui_kit::init);
+    let runtime = ServiceRuntime::spawn().unwrap();
+    let handle = runtime.handle();
+    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let directory = std::env::temp_dir().join(format!(
+        "moiren-latency-quit-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let path = directory.join("preferences.json");
+    project::save_preferences_at(&path, &project::AppPreferences::default()).unwrap();
+    let gate = Arc::new(Mutex::new((false, None::<Waker>)));
+    let blocked = gate.clone();
+    view.update(cx, |shell, cx| {
+        shell.preferences = project::AppPreferences::default();
+        shell.preferences_path = Some(path.clone());
+        shell.settings_open = true;
+        // A parked predecessor deterministically delays the first actual save
+        // without blocking the UI executor or relying on filesystem speed.
+        shell.preference_save = Some(cx.background_executor().spawn(async move {
+            std::future::poll_fn(move |cx| {
+                let mut state = blocked.lock().unwrap();
+                if state.0 {
+                    Poll::Ready(())
+                } else {
+                    state.1 = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            })
+            .await;
+        }));
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("latency-balanced", cx);
+        window.click("latency-low", cx);
+    });
+    cx.run_until_parked();
+    let quitting = view.update(cx, |shell, _| {
+        assert_eq!(
+            shell.preferences.latency_profile,
+            AudioLatencyProfile::Low,
+            "both profile clicks were accepted before shutdown"
+        );
+        assert!(shell.preference_save.is_some());
+        shell.preferences_quitting.clone()
+    });
+    assert!(gate.lock().unwrap().1.is_some(), "save chain is parked");
+    assert_eq!(
+        project::load_preferences_at(&path).unwrap().latency_profile,
+        AudioLatencyProfile::Compatible
+    );
+    // Release only from the shutdown future, after quit has transferred the
+    // pending chain and cleared the windows. A detached task alone is insufficient.
+    let release = gate.clone();
+    cx.update(|_, cx| {
+        cx.on_app_quit(move |_| {
+            let gate = release.clone();
+            async move {
+                let mut state = gate.lock().unwrap();
+                state.0 = true;
+                if let Some(waker) = state.1.take() {
+                    waker.wake();
+                }
+            }
+        })
+        .detach();
+    });
+    // Invoke GPUI's real shutdown directly. TestAppContext::quit also destroys
+    // the leaked VisualTestContext itself and is reserved for test teardown.
+    let app = cx.app.clone();
+    drop(view);
+    app.borrow_mut().shutdown();
+    assert!(
+        quitting.load(std::sync::atomic::Ordering::Acquire),
+        "shell transferred its pending write at quit"
+    );
+    assert!(gate.lock().unwrap().0, "shutdown polled its quit futures");
+    let restored = project::load_preferences_at(&path).unwrap();
+    assert_eq!(restored.latency_profile, AudioLatencyProfile::Low);
+    handle.request_exit();
+    runtime.join().unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_dir(&directory).unwrap();
+}
+
+#[gpui_kit::test]
+fn settings_profile_actions_reach_service_and_persist_last_choice(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::{project, service::AudioLatencyProfile};
+    cx.update(gpui_kit::init);
+    let runtime = ServiceRuntime::spawn().unwrap();
+    let handle = runtime.handle();
+    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let directory = std::env::temp_dir().join(format!(
+        "moiren-latency-ui-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let path = directory.join("preferences.json");
+    view.update(cx, |shell, cx| {
+        shell.preferences = project::AppPreferences::default();
+        shell.preferences_path = Some(path.clone());
+        shell.settings_open = true;
+        cx.notify();
+    });
+    for (id, expected) in [
+        ("latency-balanced", AudioLatencyProfile::Balanced),
+        ("latency-low", AudioLatencyProfile::Low),
+        ("latency-compatible", AudioLatencyProfile::Compatible),
+    ] {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(id, cx);
+        });
+        cx.run_until_parked();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let consumed = view.update(cx, |shell, cx| {
+                shell.state.update(cx, |state, _| state.poll());
+                let state = shell.state.read(cx);
+                !state.pending_request && state.snapshot.latency_profile == expected
+            });
+            if consumed {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(
+            project::load_preferences_at(&path).unwrap().latency_profile,
+            expected
+        );
+        view.update(cx, |shell, cx| {
+            assert_eq!(shell.project_message.as_deref(), Some("Preferences saved"));
+            assert_eq!(
+                shell.state.read(cx).snapshot.phase,
+                crate::service::SessionPhase::Idle
+            );
+            assert_eq!(shell.state.read(cx).snapshot.active_latency_profile, None);
+        });
+    }
+    // Both writes are queued before the executor runs; their order must survive
+    // background filesystem work, rather than depending on task scheduling.
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("latency-balanced", cx);
+        window.click("latency-low", cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        project::load_preferences_at(&path).unwrap().latency_profile,
+        AudioLatencyProfile::Low
+    );
+    let blocked_path = directory.join("blocked");
+    std::fs::write(&blocked_path, b"a file cannot be a configuration directory").unwrap();
+    view.update(cx, |shell, cx| {
+        shell.preferences_path = Some(blocked_path.join("preferences.json"));
+        shell.save_preferences(cx);
+    });
+    cx.run_until_parked();
+    view.update(cx, |shell, cx| {
+        assert!(
+            shell
+                .project_message
+                .as_deref()
+                .unwrap()
+                .starts_with("Could not save preferences:")
+        );
+        shell.preferences_path = Some(path.clone());
+        shell.save_preferences(cx);
+    });
+    cx.run_until_parked();
+    view.update(cx, |shell, _| {
+        assert_eq!(shell.project_message.as_deref(), Some("Preferences saved"))
+    });
+    handle.request_exit();
+    runtime.join().unwrap();
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("latency-compatible", cx);
+    });
+    cx.run_until_parked();
+    view.update(cx, |shell, cx| {
+        assert_eq!(shell.preferences.latency_profile, AudioLatencyProfile::Low);
+        assert!(shell.state.read(cx).dispatch_error.is_some());
+    });
+    assert_eq!(
+        project::load_preferences_at(&path).unwrap().latency_profile,
+        AudioLatencyProfile::Low
+    );
+    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_file(&blocked_path).unwrap();
+    std::fs::remove_dir(&directory).unwrap();
+}
+
+#[gpui_kit::test]
 fn graph_wire_selection_shows_connection_properties_without_selecting_node(
     cx: &mut gpui_kit::TestAppContext,
 ) {

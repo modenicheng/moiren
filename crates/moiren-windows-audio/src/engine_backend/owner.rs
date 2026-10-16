@@ -1,4 +1,5 @@
 use super::{
+    NativeObservations, NativeStreamObservation,
     preparation::{Diagnostics, capture_error, render_error},
     resources::Resources,
 };
@@ -30,6 +31,11 @@ use std::sync::{
 pub(super) struct WindowsTransport {
     pub(super) native: Option<PreparedNativeRender>,
     pub(super) captures: Vec<CaptureSession>,
+    pub(super) followers: Vec<RenderSession>,
+    pub(super) sinks: Vec<NodeId>,
+    pub(super) observations: NativeObservations,
+    pub(super) streams: Vec<NativeStreamObservation>,
+    pub(super) bridges: Vec<(NodeId, crate::clock_bridge::BridgeObserver)>,
     pub(super) output: Option<AudioReader<f32>>,
     pub(super) sink: NodeId,
     pub(super) stop: StopSignal,
@@ -42,8 +48,10 @@ pub(super) struct WindowsTransport {
 
 impl Drop for WindowsTransport {
     fn drop(&mut self) {
-        if self.native.is_some() || !self.captures.is_empty() {
-            let _ = self.stop.request_stop();
+        if self.native.is_some() || !self.captures.is_empty() || !self.followers.is_empty() {
+            // A compiler rejection may drop an unattached transport. Reclaim
+            // all owners here too, retaining their reports on the control side.
+            self.cancel_and_report(None, &BackendError::Cancelled);
         }
     }
 }
@@ -56,6 +64,11 @@ impl WindowsTransport {
                 .take()
                 .and_then(|native| native.cancel_with_report().ok())
         });
+        let followers = std::mem::take(&mut self.followers)
+            .into_iter()
+            .filter_map(|follower| follower.join().ok())
+            .collect();
+        self.observations.clear(self.generation);
         let capture = std::mem::take(&mut self.captures)
             .into_iter()
             .filter_map(|capture| capture.join().ok())
@@ -64,6 +77,8 @@ impl WindowsTransport {
             &self.diagnostics,
             NativeReport {
                 render,
+                prepared: Vec::new(),
+                followers,
                 capture,
                 failure: Some(failure.to_string()),
             },
@@ -85,20 +100,32 @@ impl PreparedTransport<f32> for WindowsTransport {
                 error: BackendError::Cancelled,
             }));
         }
-        let Some(sink) = bindings
-            .node(self.sink)
-            .filter(|sink| engine.plan_snapshot().single_sink() == Some(*sink))
-        else {
+        let Some(sink) = bindings.node(self.sink) else {
             let error = BackendError::Unsupported(
                 "transport does not match the compiled output sink".into(),
             );
             self.cancel_and_report(None, &error);
             return Err(Box::new(AttachFailure { engine, error }));
         };
-        let renderer = match DemandRenderer::new_managed_returning(
+        let protected: Option<Vec<_>> =
+            self.sinks.iter().map(|&node| bindings.node(node)).collect();
+        let Some(protected) = protected else {
+            let error = BackendError::Unsupported(
+                "transport sink set does not match compiled outputs".into(),
+            );
+            self.cancel_and_report(None, &error);
+            return Err(Box::new(AttachFailure { engine, error }));
+        };
+        if !protected.contains(&sink) {
+            let error =
+                BackendError::Unsupported("master sink missing from transport sink set".into());
+            self.cancel_and_report(None, &error);
+            return Err(Box::new(AttachFailure { engine, error }));
+        }
+        let renderer = match DemandRenderer::new_managed_outputs_returning(
             engine,
             self.output.take().expect("prepared output consumer"),
-            sink,
+            &protected,
             self.generation,
         ) {
             Ok(renderer) => renderer,
@@ -139,8 +166,17 @@ impl PreparedTransport<f32> for WindowsTransport {
             let (engine, _) = exit.renderer.into_parts();
             return Err(Box::new(AttachFailure { engine, error }));
         }
+        self.observations.publish(
+            self.generation,
+            std::mem::take(&mut self.streams),
+            std::mem::take(&mut self.bridges),
+        );
         Ok(Box::new(WindowsOwner {
             render,
+            followers: std::mem::take(&mut self.followers),
+            observations: self.observations.clone(),
+            generation: self.generation,
+            _observation_lease: self.observations.lease(self.generation),
             captures: std::mem::take(&mut self.captures),
             stop: self.stop.clone(),
             timeline,
@@ -154,8 +190,12 @@ impl PreparedTransport<f32> for WindowsTransport {
 }
 
 struct WindowsOwner {
+    _observation_lease: super::observations::ObservationLease,
     render: RenderSession,
     captures: Vec<CaptureSession>,
+    followers: Vec<RenderSession>,
+    observations: NativeObservations,
+    generation: u64,
     stop: StopSignal,
     timeline: TimelineObserver,
     diagnostics: Diagnostics,
@@ -176,19 +216,28 @@ impl BackendOwner<f32> for WindowsOwner {
     }
 
     fn cancel(&self) {
+        self.observations.clear(self.generation);
         let _ = self.stop.request_stop();
     }
 
     fn status(&self) -> OwnerStatus {
-        if self.render.is_finished() || self.captures.iter().any(CaptureSession::is_finished) {
+        if self.render.is_finished()
+            || self.captures.iter().any(CaptureSession::is_finished)
+            || self.followers.iter().any(RenderSession::is_finished)
+        {
+            self.observations.clear(self.generation);
+            let _ = self.stop.request_stop();
             if !self.reported_failure.swap(true, Ordering::AcqRel) {
                 self.resources.retry();
             }
             OwnerStatus::Failed(BackendError::ResourceUnavailable(
                 "native audio owner stopped; cleanup retains its report".into(),
             ))
-        } else if self.render.has_started() && self.captures.iter().all(CaptureSession::has_started)
+        } else if self.render.has_started()
+            && self.captures.iter().all(CaptureSession::has_started)
+            && self.followers.iter().all(RenderSession::has_started)
         {
+            self.observations.running(self.generation);
             OwnerStatus::Running
         } else {
             OwnerStatus::Starting
@@ -207,10 +256,14 @@ impl BackendOwner<f32> for WindowsOwner {
         let Self {
             render,
             captures,
+            followers,
+            observations,
+            generation,
             stop,
             diagnostics,
             ..
         } = *self;
+        observations.clear(generation);
         let mut failure = stop
             .request_stop()
             .err()
@@ -218,6 +271,27 @@ impl BackendOwner<f32> for WindowsOwner {
         // Both sides share stop. Always join every capture even if render or a
         // peer fails, and keep the returned Engine for host control retirement.
         let rendered = render.join_with_renderer();
+        let mut follower_reports = Vec::with_capacity(followers.len());
+        for follower in followers {
+            match follower.join() {
+                Ok(report) => {
+                    if report.status == RenderStatus::Failed {
+                        failure.get_or_insert_with(|| {
+                            BackendError::ResourceUnavailable(
+                                report
+                                    .failure
+                                    .clone()
+                                    .unwrap_or_else(|| "follower render stopped".into()),
+                            )
+                        });
+                    }
+                    follower_reports.push(report);
+                }
+                Err(error) => {
+                    failure.get_or_insert_with(|| render_error(error));
+                }
+            }
+        }
         let mut reports = Vec::with_capacity(captures.len());
         for capture in captures {
             match capture.join() {
@@ -261,6 +335,8 @@ impl BackendOwner<f32> for WindowsOwner {
             &diagnostics,
             NativeReport {
                 render: Some(rendered.report),
+                prepared: Vec::new(),
+                followers: follower_reports,
                 capture: reports,
                 failure: failure.as_ref().map(ToString::to_string),
             },
@@ -274,12 +350,15 @@ impl BackendOwner<f32> for WindowsOwner {
 }
 
 #[derive(Serialize)]
-struct NativeReport {
-    render: Option<RenderReport>,
-    capture: Vec<CaptureReport>,
-    failure: Option<String>,
+pub(super) struct NativeReport {
+    pub(super) render: Option<RenderReport>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) prepared: Vec<RenderReport>,
+    pub(super) followers: Vec<RenderReport>,
+    pub(super) capture: Vec<CaptureReport>,
+    pub(super) failure: Option<String>,
 }
-fn save(diagnostics: &Diagnostics, report: NativeReport) {
+pub(super) fn save(diagnostics: &Diagnostics, report: NativeReport) {
     *diagnostics
         .lock()
         .unwrap_or_else(|poison| poison.into_inner()) = serde_json::to_string(&report).ok();

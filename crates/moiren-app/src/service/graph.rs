@@ -2,9 +2,13 @@
 //! only validated transactions replace the candidate and native startup confirms it.
 use super::{InputSelection, RunLimit, SessionGeneration, SessionSpec};
 use moiren_core::graph::{EdgeId, GraphError, LogicalGraph, NodeId, NodeKind, PortId, SendParams};
+mod compressor;
 mod edit;
+mod mixer;
 mod preparation;
+pub use compressor::{CompressorParameter, CompressorState};
 use edit::edit_candidate;
+pub use mixer::MixerState;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphNodeState {
@@ -14,6 +18,8 @@ pub struct GraphNodeState {
     pub pan: f64,
     pub mono: bool,
     pub swap: bool,
+    pub mixer: MixerState,
+    pub compressor: CompressorState,
     pub source: Option<InputSelection>,
     pub output_endpoint_id: Option<String>,
 }
@@ -36,6 +42,16 @@ impl GraphSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphEdit {
+    SetCompressor {
+        node: NodeId,
+        parameter: CompressorParameter,
+        value: f64,
+    },
+    ClearBinding(NodeId),
+    SetMixer {
+        node: NodeId,
+        state: MixerState,
+    },
     AddNode {
         kind: NodeKind,
         channels: usize,
@@ -115,6 +131,8 @@ impl Default for ServiceGraph {
                 pan: 0.0,
                 mono: false,
                 swap: false,
+                mixer: MixerState::default(),
+                compressor: CompressorState::default(),
                 source: (node.kind() == NodeKind::Source).then_some(InputSelection::Tone {
                     frequency_hz: 440.0,
                 }),
@@ -201,7 +219,7 @@ impl ServiceGraph {
     pub fn configure_session(&mut self, spec: &SessionSpec) -> Result<(), String> {
         spec.validate().map_err(|e| format!("{e:?}"))?;
         let preparation = self.preparation();
-        let (source, output) = preparation.io_nodes()?;
+        let (source, output) = preparation.primary_io_nodes()?;
         let mut next = self.snapshot.clone();
         for state in &mut next.nodes {
             if state.id == source {
@@ -235,7 +253,7 @@ impl ServiceGraph {
     }
     pub fn session_spec(&self, current: Option<&SessionSpec>) -> Result<SessionSpec, String> {
         let prep = self.preparation();
-        let (source, output) = prep.io_nodes()?;
+        let (source, output) = prep.primary_io_nodes()?;
         let source = self
             .snapshot
             .node(source)
@@ -268,7 +286,9 @@ impl ServiceGraph {
         self.snapshot.pending_revision = Some(revision);
     }
     pub fn running(&mut self, generation: SessionGeneration, revision: u64) {
-        if self.pending_generation == Some(generation) {
+        if self.pending_generation == Some(generation)
+            && self.snapshot.pending_revision == Some(revision)
+        {
             self.snapshot.active_revision = Some(revision);
             self.snapshot.pending_revision = None;
             self.pending_generation = None;
@@ -276,6 +296,22 @@ impl ServiceGraph {
     }
     pub fn stopped(&mut self) {
         self.snapshot.active_revision = None;
+    }
+    /// Only a managed owner may call this after host/RT confirmation. An older
+    /// applied topology may become active while a newer candidate is pending.
+    pub(crate) fn confirmed(&mut self, generation: SessionGeneration, revision: u64) {
+        if self.snapshot.candidate_revision == revision
+            && (self.snapshot.active_revision != Some(revision)
+                || self.snapshot.pending_revision == Some(revision))
+        {
+            self.snapshot.last_error = None;
+        }
+        self.snapshot.active_revision = Some(revision);
+        if self.pending_generation == Some(generation)
+            && self.snapshot.pending_revision == Some(revision)
+        {
+            self.clear_pending();
+        }
     }
     pub fn clear_pending(&mut self) {
         self.pending_generation = None;

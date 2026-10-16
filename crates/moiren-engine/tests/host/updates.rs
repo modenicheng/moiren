@@ -4,6 +4,34 @@ use moiren_engine::host::*;
 use std::{sync::atomic::Ordering, time::Duration};
 
 #[test]
+fn strip_changes_prepare_a_new_plan_and_reuse_native_io() {
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let (project, source, _, _) = project();
+    let host = EngineHost::<f64>::open(HostConfig::default(), project, backend).unwrap();
+    wait(&host.observer(), |snapshot| {
+        snapshot.active_revision == Some(1)
+    });
+    let edit = host
+        .control()
+        .edit(move |project| {
+            project.strips.insert(
+                source,
+                moiren_engine::processor::StripConfig {
+                    gain: 0.5,
+                    ..Default::default()
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(edit.wait(TIMEOUT), EditOutcome::Activated { .. }));
+    wait_count(&state.prepares, 2);
+    wait_sample(&state, 0.5);
+    assert_eq!(state.starts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn updates_reuse_io_and_keep_owner_epoch_and_active_confirmation() {
     let backend = FakeBackend::default();
     let state = backend.0.clone();

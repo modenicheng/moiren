@@ -1,5 +1,170 @@
 use super::*;
 
+struct ChannelSource(usize);
+impl RtAudioSource<f64> for ChannelSource {
+    fn channel_count(&self) -> usize {
+        self.0
+    }
+    fn read(
+        &mut self,
+        _: &ProcessContext,
+        mut output: moiren_engine::buffer::AudioBlockMut<'_, f64>,
+    ) -> BoundaryReport {
+        let frames = output.frames();
+        for (channel, samples) in output.channels_mut().enumerate() {
+            samples.fill((channel + 1) as f64 * 0.1);
+        }
+        BoundaryReport {
+            transferred_frames: frames,
+            ..BoundaryReport::default()
+        }
+    }
+}
+
+#[test]
+fn mixer_channel_modes_and_faders_render_without_heap_activity() {
+    for channels in [1, 2, 4] {
+        for mode in [
+            ChannelMode::Normal,
+            ChannelMode::Mono,
+            ChannelMode::Solo(channels - 1),
+            ChannelMode::Swap,
+        ] {
+            for muted in [false, true] {
+                let mut graph = LogicalGraph::new();
+                let source = graph.create_node(NodeKind::Source, channels).unwrap();
+                let sink = graph.create_node(NodeKind::Sink, channels).unwrap();
+                connect(&mut graph, source, sink, SendParams::default());
+                let (writer, mut reader) = audio_bridge::<f64>(channels, 8, 4096).unwrap();
+                let mut bindings = NodeBindings::new();
+                bindings
+                    .bind_source(source, ChannelSource(channels))
+                    .unwrap();
+                bindings.bind_strip(
+                    source,
+                    StripConfig {
+                        gain: 0.5,
+                        muted,
+                        mode,
+                    },
+                );
+                bindings.bind_strip(
+                    sink,
+                    StripConfig {
+                        gain: 0.5,
+                        ..StripConfig::default()
+                    },
+                );
+                bindings.bind_sink(sink, writer).unwrap();
+                let mut compiled = compile(&graph, bindings, config()).unwrap();
+                let (result, counts) = allocation::track_allocations(|| compiled.engine.render(4));
+                result.unwrap();
+                assert_eq!(counts, (0, 0));
+                let mut samples = vec![0.; channels * 4];
+                reader.read_interleaved(&mut samples).unwrap();
+                for frame in samples.chunks_exact(channels) {
+                    for (channel, sample) in frame.iter().enumerate() {
+                        let expected = if muted {
+                            0.
+                        } else {
+                            0.025
+                                * match mode {
+                                    ChannelMode::Normal => (channel + 1) as f64,
+                                    ChannelMode::Mono => (channels + 1) as f64 / 2.,
+                                    ChannelMode::Solo(selected) => (selected + 1) as f64,
+                                    ChannelMode::Swap => (channels - channel) as f64,
+                                }
+                        };
+                        assert!(
+                            (sample - expected).abs() < 1e-9,
+                            "{channels} {mode:?}: {sample} != {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn strip_pre_fader_bypasses_only_strip_gain_and_respects_mute() {
+    for muted in [false, true] {
+        let mut graph = LogicalGraph::new();
+        let source = graph.create_node(NodeKind::Source, 2).unwrap();
+        let pre = graph.create_node(NodeKind::Sink, 2).unwrap();
+        let post = graph.create_node(NodeKind::Sink, 2).unwrap();
+        connect(
+            &mut graph,
+            source,
+            pre,
+            SendParams {
+                tap: SendTap::PreFader,
+                gain: 0.5,
+                ..SendParams::default()
+            },
+        );
+        connect(&mut graph, source, post, SendParams::default());
+        let (pre_writer, mut pre_reader) = audio_bridge::<f64>(2, 8, 4096).unwrap();
+        let (post_writer, mut post_reader) = audio_bridge::<f64>(2, 8, 4096).unwrap();
+        let mut bindings = NodeBindings::new();
+        constant(&mut bindings, source, 2);
+        bindings.bind_strip(
+            source,
+            StripConfig {
+                gain: 0.25,
+                muted,
+                ..StripConfig::default()
+            },
+        );
+        bindings.bind_sink(pre, pre_writer).unwrap();
+        bindings.bind_sink(post, post_writer).unwrap();
+        let mut compiled = compile(&graph, bindings, config()).unwrap();
+        compiled.engine.render(4).unwrap();
+        let mut before = [0.; 8];
+        let mut after = [0.; 8];
+        pre_reader.read_interleaved(&mut before).unwrap();
+        post_reader.read_interleaved(&mut after).unwrap();
+        assert_eq!(before, [if muted { 0. } else { 0.1875 }; 8]);
+        assert_eq!(after, [if muted { 0. } else { 0.09375 }; 8]);
+    }
+}
+
+#[test]
+fn pre_fader_send_uses_gain_input_without_changing_the_post_fader_route() {
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 2).unwrap();
+    let gain = graph.create_node(NodeKind::Gain, 2).unwrap();
+    let pre = graph.create_node(NodeKind::Sink, 2).unwrap();
+    let post = graph.create_node(NodeKind::Sink, 2).unwrap();
+    connect(&mut graph, source, gain, SendParams::default());
+    connect(
+        &mut graph,
+        gain,
+        pre,
+        SendParams {
+            tap: SendTap::PreFader,
+            gain: 0.5,
+            ..SendParams::default()
+        },
+    );
+    connect(&mut graph, gain, post, SendParams::default());
+    let (pre_writer, mut pre_reader) = audio_bridge::<f64>(2, 8, 4096).unwrap();
+    let (post_writer, mut post_reader) = audio_bridge::<f64>(2, 8, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    constant(&mut bindings, source, 2);
+    bindings.bind_gain(gain, 0.25).unwrap();
+    bindings.bind_sink(pre, pre_writer).unwrap();
+    bindings.bind_sink(post, post_writer).unwrap();
+    let mut compiled = compile(&graph, bindings, config()).unwrap();
+    compiled.engine.render(4).unwrap();
+    let mut before = [0.; 8];
+    let mut after = [0.; 8];
+    pre_reader.read_interleaved(&mut before).unwrap();
+    post_reader.read_interleaved(&mut after).unwrap();
+    assert_eq!(before, [0.1875; 8]);
+    assert_eq!(after, [0.09375; 8]);
+}
+
 #[test]
 fn sends_preserve_fan_out_and_accept_gain_above_the_node_gain_limit() {
     let mut graph = LogicalGraph::new();

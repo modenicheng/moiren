@@ -4,11 +4,11 @@
 
 - Graph、Mixer、Matrix、Devices 共用服务端的 LogicalGraph。Settings 从齿轮进入，返回时保留工作区与选择。
 - 在 Devices 选择下次启动的物理输入、应用音源与输出；选择不会替换当前活动会话。Graph 的 Session 面板也可选测试音。
-- Graph 添加、删除节点，Inspector 调参数与 Bus 输入；在 Matrix 选择端口交点并连接、断开或编辑路由增益。Apply 准备并重启候选图，实际 Running 后才显示活动 revision。
-- Mixer 的推子、Balance、Mute、Dim、Mono、Swap 提交真实音频请求，反馈区分 Requested、Accepted、Applied。输入/输出 Peak、RMS 仅显示真实观测；中间处理节点不复用这些读数。
-- 项目菜单可打开、保存完整候选图和布局；加载不启动音频。密度偏好保存在用户配置目录，项目缺失设备仍保留稳定身份。
+- Graph 添加、删除节点，Inspector 调参数与 Bus 输入；在 Matrix 选择端口交点并连接、断开或编辑路由增益。Apply 经 EngineHost 准备候选图；兼容更新保留原音频 owner，在引擎确认后显示活动 revision。设备或 IO 集合变化可以重建会话。
+- Mixer 的推子、Balance、Mute、Dim、Mono、Swap 提交真实音频请求，反馈区分 Requested、Accepted、Applied。Peak、RMS 仅显示对应节点的真实观测。
+- 项目菜单可打开、保存完整候选图和布局；加载不启动音频。密度和延迟档位偏好保存在用户配置目录，项目缺失设备仍保留稳定身份。
 
-当前驱动支持单输入、单输出的双声道图，以及 Gain、Pan、Bus、Compressor。多个 IO 节点可保存在候选里，应用时会报告当前运行限制；Compressor 采用默认设置。CPU、端到端延迟和 XRUN 没有对应观测时显示 `—`。
+Windows 桌面驱动支持多输入、多输出的双声道图，以及 Gain、Pan、Bus、Compressor。每个 IO 节点独立绑定资源；首个输出为 master，其余输出使用独立时钟桥。Settings 可选择 Compatible / Balanced / Low，通过 Apply 生效，并查看各原生流的实际周期、队列与时钟桥统计；CPU、端到端延迟和 XRUN 没有对应观测时显示 `—`。见[托管路由与低延迟](../../docs/designs/14-managed-routing-low-latency.md)。
 
 Graph 节点位置属于展示状态；拖动节点不会改变拓扑。`Fit` 使用实际节点边界，滚轮以光标为锚缩放，触控板双指滚动与捏合分别平移、缩放，也可用中键拖动或 Hand 工具平移。小窗口默认收起 Session / Inspector，使用页内按钮打开；Mixer 可横向滚动，Matrix 表头随滚动保持可见。
 
@@ -64,7 +64,7 @@ cargo run --locked -p moiren-app -- render --endpoint '<endpoint ID>' --seconds 
 
 正常时长结束后 Stop、释放全部 stream/COM 对象，再输出 JSON 标量报告。库的 `RenderSession` 支持 `request_stop` / `join`，Drop 也会发 stop 并 join；命令行尚无 Ctrl+C 优雅停机处理。运行期报告区分处理帧、成功提交帧和失败阶段；空 padding 只是诊断，不能单独证明 underrun。
 
-FreeDSP 10 秒实际输出已获用户试听确认，见[实机记录](../../docs/experiments/windows/2026-10-08-shared-render.md)。Engine 已提供 [Plan swap API 与离线例子](../../docs/designs/06-compressor-plan-swap.md)，桌面端已接入候选拓扑编译与重启应用，CLI 的在线换图入口仍未接入。其他 native output formats 与多设备仍在当前范围之外；完整长期接口见 [IO 节点设计](../../docs/designs/03-io-nodes.md)。
+FreeDSP 10 秒实际输出已获用户试听确认，见[实机记录](../../docs/experiments/windows/2026-10-08-shared-render.md)。Engine 已提供 [Plan swap API 与离线例子](../../docs/designs/06-compressor-plan-swap.md)，桌面端通过 EngineHost 执行兼容热更新与多个输出；旧 `render` CLI 仍使用独立单输出路径，未提供交互换图。其他 native output formats 仍在当前范围之外；完整长期接口见 [IO 节点设计](../../docs/designs/03-io-nodes.md)。
 
 ## Windows 物理输入闭环
 

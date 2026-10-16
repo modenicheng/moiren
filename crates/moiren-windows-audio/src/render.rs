@@ -9,8 +9,17 @@ use moiren_engine::{
 use serde::Serialize;
 use thiserror::Error;
 
+mod diagnostics;
 mod fade;
+#[cfg(windows)]
+mod source;
+pub use diagnostics::{
+    RENDER_EVENT_CAPACITY, RenderCallback, RenderCallbackHistory, RenderDiagnostics,
+    RenderDiagnosticsSnapshot, RenderEvent,
+};
 pub use fade::{FadeError, RenderFadeControl};
+#[cfg(windows)]
+pub(crate) use source::{FollowerRenderer, NativeRenderer, SampleRenderer};
 
 #[cfg(windows)]
 pub(crate) mod wasapi;
@@ -182,6 +191,45 @@ impl DemandRenderer {
         Ok(Self::prepared(engine, output, owner_generation))
     }
 
+    /// Non-RT attachment for native fan-out. All readers remain connected to
+    /// their original sink instances through every compatible activation.
+    pub fn new_managed_outputs_returning(
+        mut engine: Engine<f32>,
+        output: AudioReader<f32>,
+        sinks: &[ProcessorId],
+        owner_generation: u64,
+    ) -> Result<Self, Box<RendererPreparationFailure>> {
+        let validation = Self::validate(&engine, &output).and_then(|()| {
+            if sinks.is_empty()
+                || engine
+                    .plan_snapshot()
+                    .sink_processors()
+                    .any(|sink| !sinks.contains(&sink))
+            {
+                return Err(PlanSwapError::MissingReuse.into());
+            }
+            if sinks
+                .iter()
+                .enumerate()
+                .any(|(index, sink)| sinks[..index].contains(sink))
+            {
+                return Err(PlanSwapError::DuplicateReuse.into());
+            }
+            for &sink in sinks {
+                engine.require_sink_reuse(sink)?;
+            }
+            Ok(())
+        });
+        if let Err(error) = validation {
+            return Err(Box::new(RendererPreparationFailure {
+                error,
+                engine,
+                output,
+            }));
+        }
+        Ok(Self::prepared(engine, output, owner_generation))
+    }
+
     fn prepare(
         engine: Engine<f32>,
         output: AudioReader<f32>,
@@ -306,6 +354,12 @@ pub struct RenderReport {
     pub queue: Option<crate::latency::PreparedRenderQueue>,
     pub schema_version: u32,
     pub latency: crate::latency::LatencySnapshot,
+    pub diagnostics: RenderDiagnosticsSnapshot,
+    /// Retain the allocation outside the native loop's unwind scope. Only the
+    /// finalized snapshot is serialized, and the joining control owner frees it.
+    #[cfg(windows)]
+    #[serde(skip)]
+    diagnostics_recorder: Option<RenderDiagnostics>,
     pub shared_period: crate::shared_stream::SharedPeriodReport,
     pub endpoint_id: String,
     pub status: RenderStatus,
@@ -330,4 +384,27 @@ pub struct RenderReport {
     pub stop_hresult: Option<i32>,
     pub stats: RenderStats,
     pub failure: Option<String>,
+}
+
+#[cfg(windows)]
+impl RenderReport {
+    fn prepare_diagnostics(&mut self, target_frames: u32) {
+        let budget = (u64::from(target_frames) * 10_000_000).div_ceil(u64::from(SAMPLE_RATE));
+        self.diagnostics.wake_budget_100ns = budget;
+        if let Some(recorder) = &mut self.diagnostics_recorder {
+            recorder.set_wake_budget(budget);
+        }
+    }
+
+    fn record_diagnostics(&mut self, callback: RenderCallback) {
+        if let Some(recorder) = &mut self.diagnostics_recorder {
+            recorder.record(callback);
+        }
+    }
+
+    fn finish_diagnostics(&mut self) {
+        if let Some(recorder) = self.diagnostics_recorder.take() {
+            self.diagnostics = recorder.finish();
+        }
+    }
 }
