@@ -23,6 +23,9 @@ struct PresentationSnapshot {
     page: Page,
     camera: Camera,
     node_positions: std::collections::HashMap<String, (f32, f32)>,
+    mixer_order: Vec<moiren_core::graph::NodeId>,
+    mixer_width: f32,
+    mixer_dock_width: f32,
     selected_node: Option<String>,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     sidebar_open: bool,
@@ -47,6 +50,9 @@ impl PresentationSnapshot {
             page: shell.presentation.page,
             camera: shell.camera,
             node_positions: std::mem::take(&mut shell.node_positions),
+            mixer_order: shell.mixer.order.clone(),
+            mixer_width: shell.mixer.width,
+            mixer_dock_width: shell.mixer.dock_width,
             selected_node: shell.selected_node.take(),
             selected_route: shell.selected_route,
             sidebar_open: shell.sidebar_open,
@@ -66,6 +72,9 @@ impl PresentationSnapshot {
         shell.presentation.page = self.page;
         shell.camera = self.camera;
         shell.node_positions = self.node_positions;
+        shell.mixer.order = self.mixer_order;
+        shell.mixer.width = self.mixer_width;
+        shell.mixer.dock_width = self.mixer_dock_width;
         shell.selected_node = self.selected_node;
         shell.selected_route = self.selected_route;
         shell.sidebar_open = self.sidebar_open;
@@ -307,6 +316,8 @@ impl Desktop {
                     visible && points.0,
                     visible && points.1,
                 );
+                let node_meter_changed = shell.update_node_meters(visible, cx);
+                let meter_changed = meter_changed || node_meter_changed;
                 if changed || meter_changed {
                     cx.notify();
                 }

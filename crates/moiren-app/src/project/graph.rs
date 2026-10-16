@@ -4,7 +4,7 @@ use moiren_core::graph::{LogicalGraph, NodeId, NodeKind, SendParams, SendTap};
 use serde::{Deserialize, Serialize};
 
 use super::{PersistenceError, SourceDocument, model::validate_identity};
-use crate::service::{GraphNodeState, GraphSnapshot};
+use crate::service::{CompressorState, GraphNodeState, GraphSnapshot, MixerState};
 
 const MAX_PROJECT_NODES: usize = 4096;
 const MAX_PROJECT_EDGES: usize = 32768;
@@ -22,6 +22,10 @@ pub struct GraphDocument {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphNodeDocument {
+    #[serde(default)]
+    pub compressor: CompressorState,
+    #[serde(default)]
+    pub mixer: MixerState,
     pub id: u64,
     pub kind: GraphNodeKind,
     pub channels: usize,
@@ -128,6 +132,8 @@ impl GraphDocument {
                     pan: state.pan,
                     mono: state.mono,
                     swap: state.swap,
+                    mixer: state.mixer,
+                    compressor: state.compressor,
                     source: state.source.as_ref().map(Into::into),
                     output_endpoint_id: state.output_endpoint_id.clone(),
                 })
@@ -220,14 +226,16 @@ impl GraphDocument {
                     "label must contain 1 to 256 bytes without NUL",
                 ));
             }
-            if !node.gain.is_finite()
+            if !node.compressor.valid()
+                || !node.mixer.valid(node.channels)
+                || !node.gain.is_finite()
                 || !(0.0..=16.0).contains(&node.gain)
                 || !node.pan.is_finite()
                 || !(-1.0..=1.0).contains(&node.pan)
             {
                 return Err(PersistenceError::invalid(
                     &field,
-                    "gain must be in 0..=16 and pan in -1..=1",
+                    "node parameters must be finite and within their engine domains",
                 ));
             }
             if node.kind != GraphNodeKind::Pan && (node.mono || node.swap) {
@@ -331,6 +339,8 @@ impl GraphDocument {
                 pan: node.pan,
                 mono: node.mono,
                 swap: node.swap,
+                mixer: node.mixer,
+                compressor: node.compressor,
                 source: node.source.as_ref().map(SourceDocument::to_selection),
                 output_endpoint_id: node.output_endpoint_id.clone(),
             })

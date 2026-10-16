@@ -222,6 +222,94 @@ struct MeterSubscription {
     status: MeterStatus,
 }
 
+pub struct NodeMeters {
+    handle: AppHandle,
+    generation: Option<SessionGeneration>,
+    subscriptions: std::collections::BTreeMap<moiren_core::graph::NodeId, MeterSubscription>,
+    clips: std::collections::BTreeMap<moiren_core::graph::NodeId, ClipHold>,
+}
+
+#[derive(Default)]
+struct ClipHold([bool; 2]);
+
+impl ClipHold {
+    fn observe(&mut self, levels: [ChannelLevel; 2]) {
+        for (clip, level) in self.0.iter_mut().zip(levels) {
+            *clip |= level.peak >= 1.;
+        }
+    }
+}
+
+impl NodeMeters {
+    pub fn new(handle: AppHandle) -> Self {
+        Self {
+            handle,
+            generation: None,
+            subscriptions: Default::default(),
+            clips: Default::default(),
+        }
+    }
+
+    pub fn update(
+        &mut self,
+        snapshot: &AppSnapshot,
+        visible: &std::collections::BTreeSet<moiren_core::graph::NodeId>,
+    ) -> bool {
+        if self.generation != Some(snapshot.generation) {
+            self.subscriptions.clear();
+            self.clips.clear();
+            self.generation = Some(snapshot.generation);
+        }
+        let active = snapshot.phase == SessionPhase::Running
+            && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision);
+        let before = self.subscriptions.len();
+        self.subscriptions.retain(|id, _| {
+            active && visible.contains(id) && snapshot.signal_topics.node_levels.contains_key(id)
+        });
+        self.clips
+            .retain(|id, _| snapshot.graph.node(*id).is_some());
+        let mut changed = before != self.subscriptions.len();
+        if !active {
+            return changed;
+        }
+        let now = Instant::now();
+        for id in visible {
+            let Some(topic) = snapshot.signal_topics.node_levels.get(id) else {
+                continue;
+            };
+            let subscription = self
+                .subscriptions
+                .entry(*id)
+                .or_insert_with(|| MeterSubscription::new(self.handle.clone(), topic.clone()));
+            if subscription.topic != *topic {
+                *subscription = MeterSubscription::new(self.handle.clone(), topic.clone());
+                self.clips.remove(id);
+            }
+            let status = subscription.status.clone();
+            let publication = subscription.poll(now);
+            changed |= publication || subscription.status != status;
+            if publication && let Some(levels) = subscription.levels {
+                self.clips.entry(*id).or_default().observe(levels);
+            }
+        }
+        changed
+    }
+
+    pub fn levels(&self, id: moiren_core::graph::NodeId) -> Option<[ChannelLevel; 2]> {
+        self.subscriptions
+            .get(&id)
+            .and_then(|subscription| subscription.levels)
+    }
+
+    pub fn clips(&self, id: moiren_core::graph::NodeId) -> [bool; 2] {
+        self.clips.get(&id).map(|hold| hold.0).unwrap_or_default()
+    }
+
+    pub fn reset_clip(&mut self, id: moiren_core::graph::NodeId) {
+        self.clips.remove(&id);
+    }
+}
+
 impl MeterSubscription {
     fn new(handle: AppHandle, topic: Topic<LevelTopic>) -> Self {
         Self {
@@ -313,6 +401,33 @@ impl MeterSubscription {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_hold_retains_each_channel_until_explicit_reset() {
+        let mut hold = ClipHold::default();
+        hold.observe([
+            ChannelLevel { peak: 1., rms: 0.5 },
+            ChannelLevel {
+                peak: 0.9,
+                rms: 0.5,
+            },
+        ]);
+        hold.observe([
+            ChannelLevel { peak: 0., rms: 0. },
+            ChannelLevel { peak: 0., rms: 0. },
+        ]);
+        assert_eq!(hold.0, [true, false]);
+        hold.observe([
+            ChannelLevel { peak: 0., rms: 0. },
+            ChannelLevel {
+                peak: 1.1,
+                rms: 0.8,
+            },
+        ]);
+        assert_eq!(hold.0, [true, true]);
+        hold = ClipHold::default();
+        assert_eq!(hold.0, [false, false]);
+    }
     use crate::service::{RunLimit, ServiceContext, ServiceMailbox, SessionSpec};
     use crate::tone::{ToneConfig, prepare_tone_with_signals};
     use moiren_engine::{boundary::AudioReader, runtime::Engine};
@@ -342,6 +457,56 @@ mod tests {
         while let Some(request) = mailbox.try_dispatch(&mut context.signals) {
             assert!(request.is_none());
         }
+    }
+
+    #[test]
+    fn node_meter_demand_is_per_node_visible_and_confirmed_revision_scoped() {
+        let (mut context, handle, mailbox, mut snapshot) =
+            fixture(InputSelection::Tone { frequency_hz: 440. });
+        let id = snapshot.graph.nodes[1].id;
+        let other = snapshot.graph.nodes[2].id;
+        snapshot
+            .signal_topics
+            .node_levels
+            .insert(id, snapshot.signal_topics.tone_output.clone());
+        snapshot
+            .signal_topics
+            .node_levels
+            .insert(other, snapshot.signal_topics.monitor_output.clone());
+        std::sync::Arc::make_mut(&mut snapshot.graph).active_revision =
+            Some(snapshot.graph.candidate_revision);
+        let mut meters = NodeMeters::new(handle);
+        let visible = [id].into_iter().collect();
+        meters.update(&snapshot, &visible);
+        drain(&mailbox, &mut context);
+        assert_eq!(
+            snapshot.signal_topics.node_levels[&id].business_subscribers(),
+            1
+        );
+        assert_eq!(
+            snapshot.signal_topics.node_levels[&other].business_subscribers(),
+            0
+        );
+        std::sync::Arc::make_mut(&mut snapshot.graph).candidate_revision += 1;
+        meters.update(&snapshot, &visible);
+        assert_eq!(
+            snapshot.signal_topics.node_levels[&id].business_subscribers(),
+            0
+        );
+        std::sync::Arc::make_mut(&mut snapshot.graph).active_revision =
+            Some(snapshot.graph.candidate_revision);
+        meters.update(&snapshot, &visible);
+        drain(&mailbox, &mut context);
+        assert_eq!(
+            snapshot.signal_topics.node_levels[&id].business_subscribers(),
+            1
+        );
+        meters.update(&snapshot, &Default::default());
+        assert_eq!(
+            snapshot.signal_topics.node_levels[&id].business_subscribers(),
+            0
+        );
+        assert!(meters.levels(id).is_none());
     }
 
     fn render(engine: &mut Engine<f32>, output: &mut AudioReader<f32>, blocks: usize) {

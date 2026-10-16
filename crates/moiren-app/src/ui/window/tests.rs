@@ -65,6 +65,9 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
                 .node_positions
                 .insert("test-node".into(), (12.0, 34.0));
             shell.project_name = "Keep candidate".into();
+            shell.mixer.width = 210.;
+            shell.mixer.dock_width = 410.;
+            shell.mixer.order.reverse();
         })
         .unwrap();
         window
@@ -97,6 +100,8 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
                 assert_eq!(shell.camera.pan_x, 84.0);
                 assert_eq!(shell.node_positions.get("test-node"), Some(&(12.0, 34.0)));
                 assert_eq!(shell.project_name, "Keep candidate");
+                assert_eq!(shell.mixer.width, 210.);
+                assert_eq!(shell.mixer.dock_width, 410.);
                 assert!(
                     shell.sidebar_open && shell.inspector_open,
                     "reopen must preserve manually opened compact drawers"

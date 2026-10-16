@@ -149,7 +149,7 @@ mod tests {
 }
 
 impl StudioShell {
-    fn project_document(
+    pub(super) fn project_document(
         &self,
         cx: &App,
     ) -> Result<ProjectDocument, crate::project::PersistenceError> {
@@ -160,6 +160,23 @@ impl StudioShell {
         document.layout.camera_x = self.camera.pan_x;
         document.layout.camera_y = self.camera.pan_y;
         document.layout.zoom = self.camera.zoom;
+        document.layout.mixer_width = self.mixer.width;
+        document.layout.mixer_dock_width = self.mixer.dock_width;
+        document.layout.mixer_order = self
+            .mixer
+            .order
+            .iter()
+            .filter_map(|id| {
+                state
+                    .snapshot
+                    .graph
+                    .graph
+                    .nodes()
+                    .iter()
+                    .position(|node| node.id() == *id)
+                    .map(|index| index as u64)
+            })
+            .collect();
         document.layout.workspace = match self.presentation.page {
             Page::Graph => WorkspaceDocument::Graph,
             Page::Mixer => WorkspaceDocument::Mixer,
@@ -345,14 +362,23 @@ impl StudioShell {
         cx.notify();
     }
 
-    fn apply_project_presentation(
+    pub(super) fn apply_project_presentation(
         &mut self,
         document: &ProjectDocument,
         cx: &mut Context<Self>,
     ) -> Result<(), crate::project::PersistenceError> {
         self.node_positions.clear();
+        self.mixer.order.clear();
+        self.mixer.width = document.layout.mixer_width;
+        self.mixer.dock_width = document.layout.mixer_dock_width;
         if let Some(graph) = &document.graph {
             let restored = graph.to_graph()?;
+            self.mixer.order = document
+                .layout
+                .mixer_order
+                .iter()
+                .filter_map(|id| restored.node_ids.get(id).copied())
+                .collect();
             for position in &document.layout.nodes {
                 if let Some(id) = restored.node_ids.get(&position.node_id) {
                     self.node_positions

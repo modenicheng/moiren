@@ -11,6 +11,130 @@ use crate::service::{GraphEdit, InputSelection, RunLimit, ServiceGraph, SessionS
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn compressor_properties_restore_and_prepare_the_saved_values() {
+    let mut service = ServiceGraph::default();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Compressor,
+            channels: 2,
+        })
+        .unwrap();
+    let document = ProjectDocument::from_graph("Dynamics", &service.snapshot()).unwrap();
+    let mut json = serde_json::to_value(&document).unwrap();
+    let compressor = json["graph"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap();
+    compressor["compressor"] = serde_json::json!({
+        "input_gain_db": 2.0, "threshold_db": -24.0, "ratio": 3.0,
+        "attack_ms": 5.0, "release_ms": 200.0, "hold_ms": 20.0,
+        "knee_db": 3.0, "makeup_gain_db": 4.0, "output_gain_db": -2.0, "mix": 0.75
+    });
+    let restored: ProjectDocument =
+        serde_json::from_value(json).expect("editable compressor properties must load");
+    restored.validate().unwrap();
+    let (graph, nodes) = restored.graph.as_ref().unwrap().restore().unwrap();
+    let mut project_graph = crate::service::GraphPreparation {
+        graph,
+        nodes,
+        revision: 1,
+    };
+    let sink_id = project_graph
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Sink)
+        .unwrap()
+        .id();
+    project_graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == sink_id)
+        .unwrap()
+        .output_endpoint_id = Some("output".into());
+    let project = project_graph.engine_project(256).unwrap();
+    let compressor_id = project_graph
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Compressor)
+        .unwrap()
+        .id();
+    for (parameter, value) in [
+        (crate::service::CompressorParameter::Threshold, -24.),
+        (crate::service::CompressorParameter::Hold, 20.),
+        (crate::service::CompressorParameter::Mix, 0.75),
+    ] {
+        assert!(project.parameters.iter().any(|desired| desired.target
+            == moiren_engine::host::ParameterTarget::Node {
+                node: compressor_id,
+                parameter: parameter.id()
+            }
+            && desired.value == moiren_core::protocol::ParamValue::Float(value)));
+    }
+    assert_eq!(
+        serde_json::to_value(&restored).unwrap()["graph"]["nodes"][4]["compressor"]["ratio"],
+        3.0
+    );
+}
+
+#[test]
+fn mixer_layout_and_node_settings_round_trip_with_document_local_ids() {
+    let mut service = ServiceGraph::default();
+    let id = service.snapshot().nodes[0].id;
+    let settings = crate::service::MixerState {
+        gain: 0.5,
+        muted: true,
+        solo: true,
+        channel_mode: 3,
+        ..Default::default()
+    };
+    service
+        .edit(GraphEdit::SetMixer {
+            node: id,
+            state: settings,
+        })
+        .unwrap();
+    let mut document = ProjectDocument::from_graph("Mixer", &service.snapshot()).unwrap();
+    document.layout.mixer_order = vec![3, 0, 2, 1];
+    document.layout.mixer_width = 220.;
+    document.layout.mixer_dock_width = 440.;
+    let json = serde_json::to_string(&document).unwrap();
+    let restored: ProjectDocument = serde_json::from_str(&json).unwrap();
+    restored.validate().unwrap();
+    assert_eq!(restored.layout, document.layout);
+    assert_eq!(
+        restored.graph.as_ref().unwrap().restore().unwrap().1[0].mixer,
+        settings
+    );
+    let mut invalid = restored.clone();
+    invalid.layout.mixer_order = vec![0, 0];
+    assert!(invalid.validate().is_err());
+    invalid.layout.mixer_order = vec![99];
+    assert!(invalid.validate().is_err());
+    let mut old = serde_json::to_value(&restored).unwrap();
+    for field in ["mixer_order", "mixer_width", "mixer_dock_width"] {
+        old["layout"].as_object_mut().unwrap().remove(field);
+    }
+    for node in old["graph"]["nodes"].as_array_mut().unwrap() {
+        node.as_object_mut().unwrap().remove("mixer");
+        node.as_object_mut().unwrap().remove("compressor");
+    }
+    let compatible: ProjectDocument = serde_json::from_value(old).unwrap();
+    compatible.validate().unwrap();
+    assert_eq!(compatible.layout.mixer_width, 176.);
+    assert!(
+        compatible
+            .graph
+            .unwrap()
+            .nodes
+            .iter()
+            .all(|node| node.compressor == Default::default())
+    );
+}
+
 struct TestDirectory(PathBuf);
 impl TestDirectory {
     fn new() -> Self {

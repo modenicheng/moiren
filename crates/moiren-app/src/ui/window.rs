@@ -117,6 +117,9 @@ pub struct StudioShell {
     selected_device: Option<String>,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     meters: MeterSubscriptions,
+    node_meters: super::monitoring::NodeMeters,
+    node_meter_points:
+        std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<moiren_core::graph::NodeId>>>,
     gain_slider: Entity<base::slider::SliderState>,
     pan_slider: Entity<base::slider::SliderState>,
     project_path: Option<std::path::PathBuf>,
@@ -137,6 +140,7 @@ pub struct StudioShell {
     hand_tool: bool,
     matrix_scroll: ScrollHandle,
     mixer_scroll: ScrollHandle,
+    mixer: mixer::MixerPresentation,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     observation_nodes: Option<(
         crate::service::SessionGeneration,
@@ -163,6 +167,7 @@ impl StudioShell {
         cx: &mut Context<Self>,
         desktop: Option<WeakEntity<desktop::Desktop>>,
     ) -> Self {
+        component::Theme::change(component::ThemeMode::Dark, Some(window), cx);
         #[cfg(windows)]
         let touchpad = {
             let mut registration = super::touchpad::TouchpadRegistration::new();
@@ -222,6 +227,7 @@ impl StudioShell {
         )
         .detach();
         let meters = MeterSubscriptions::new(state.read(cx).handle.clone());
+        let node_meters = super::monitoring::NodeMeters::new(state.read(cx).handle.clone());
         let preferences = crate::project::load_preferences().unwrap_or_default();
         let density = match preferences.density {
             crate::project::UiDensity::Compact => Density::Compact,
@@ -243,6 +249,8 @@ impl StudioShell {
             selected_device: None,
             selected_route: None,
             meters,
+            node_meters,
+            node_meter_points: Default::default(),
             gain_slider,
             pan_slider,
             project_path: None,
@@ -259,6 +267,7 @@ impl StudioShell {
             hand_tool: false,
             matrix_scroll: ScrollHandle::new(),
             mixer_scroll: ScrollHandle::new(),
+            mixer: mixer::MixerPresentation::default(),
             meter_points: Default::default(),
             observation_nodes: None,
             canvas_size: None,
@@ -337,6 +346,8 @@ impl StudioShell {
                             visible && points.0,
                             visible && points.1,
                         );
+                        let node_meter_changed = shell.update_node_meters(visible, cx);
+                        let meter_changed = meter_changed || node_meter_changed;
                         if changed || meter_changed {
                             cx.notify();
                         }
@@ -368,6 +379,7 @@ impl StudioShell {
         }
         self.presentation.hide_to_tray();
         self.meters.update(&self.state.read(cx).snapshot, false);
+        self.update_node_meters(false, cx);
         if let Some(desktop) = self.desktop.clone() {
             let _ = desktop.update(cx, |desktop, cx| desktop.prepare_close(self, cx));
         }
@@ -446,6 +458,7 @@ mod tests;
 
 impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_mixer_controls(window, cx);
         #[cfg(feature = "gpui-test")]
         if let Some(page) = &self.test_page {
             self.presentation.page = page.read(cx).page;
@@ -460,8 +473,10 @@ impl Render for StudioShell {
             window.is_visible() && !self.settings_open && self.presentation.page == Page::Mixer;
         self.refresh_observation_nodes(cx);
         self.meter_points.set((false, false));
+        self.node_meter_points.borrow_mut().clear();
         if !visible {
             self.meters.update(&self.state.read(cx).snapshot, false);
+            self.update_node_meters(false, cx);
         }
         let (gain, pan) = {
             let state = self.state.read(cx);

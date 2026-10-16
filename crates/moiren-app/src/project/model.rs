@@ -84,6 +84,17 @@ impl ProjectDocument {
         self.layout.validate()?;
         if let Some(graph) = &self.graph {
             let node_ids: BTreeSet<_> = graph.nodes.iter().map(|node| node.id).collect();
+            if self
+                .layout
+                .mixer_order
+                .iter()
+                .any(|id| !node_ids.contains(id))
+            {
+                return Err(PersistenceError::invalid(
+                    "layout.mixer_order",
+                    "missing graph node",
+                ));
+            }
             for layout in &self.layout.nodes {
                 if !node_ids.contains(&layout.node_id) {
                     return Err(PersistenceError::invalid(
@@ -250,6 +261,9 @@ impl From<RunLimitDocument> for RunLimit {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProjectLayout {
+    pub mixer_order: Vec<u64>,
+    pub mixer_width: f32,
+    pub mixer_dock_width: f32,
     pub workspace: WorkspaceDocument,
     pub camera_x: f32,
     pub camera_y: f32,
@@ -261,6 +275,9 @@ impl Default for ProjectLayout {
     fn default() -> Self {
         Self {
             workspace: WorkspaceDocument::Graph,
+            mixer_order: Vec::new(),
+            mixer_width: 176.0,
+            mixer_dock_width: 360.0,
             camera_x: 0.0,
             camera_y: 0.0,
             zoom: 1.0,
@@ -271,6 +288,17 @@ impl Default for ProjectLayout {
 
 impl ProjectLayout {
     pub fn validate(&self) -> Result<(), PersistenceError> {
+        if !self.mixer_width.is_finite()
+            || !(136.0..=280.0).contains(&self.mixer_width)
+            || !self.mixer_dock_width.is_finite()
+            || !(160.0..=640.0).contains(&self.mixer_dock_width)
+            || self.mixer_order.iter().collect::<BTreeSet<_>>().len() != self.mixer_order.len()
+        {
+            return Err(PersistenceError::invalid(
+                "layout.mixer",
+                "invalid widths or duplicate node IDs",
+            ));
+        }
         if !self.camera_x.is_finite()
             || !self.camera_y.is_finite()
             || !self.zoom.is_finite()

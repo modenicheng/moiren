@@ -1,246 +1,70 @@
-//! One strip per real graph node. Only source/sink strips own observed meters.
 use super::*;
+use crate::service::{GraphEdit, GraphNodeState, MixerState};
 use controls::*;
-use moiren_core::graph::NodeKind;
+use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
+
+mod model;
+pub(super) use model::MixerPresentation;
+use model::{StripDrag, gain_db, reorder};
+
+impl StudioShell {
+    pub(super) fn update_node_meters(&mut self, visible: bool, cx: &App) -> bool {
+        let nodes = if visible {
+            self.node_meter_points.borrow().clone()
+        } else {
+            Default::default()
+        };
+        self.node_meters
+            .update(&self.state.read(cx).snapshot, &nodes)
+    }
+}
+
+#[cfg(all(test, feature = "gpui-test"))]
+mod tests;
 
 pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
     let graph = &state.snapshot.graph;
-    let first_gain = graph
-        .graph
-        .nodes()
-        .iter()
-        .find(|n| n.kind() == NodeKind::Gain)
-        .map(|n| n.id());
-    let first_pan = graph
-        .graph
-        .nodes()
-        .iter()
-        .find(|n| n.kind() == NodeKind::Pan)
-        .map(|n| n.id());
-    let mut strips = div()
+    let mut channels = div()
         .id("mixer-strips")
         .flex()
         .flex_1()
+        .min_w_0()
         .min_h_0()
         .track_scroll(&shell.mixer_scroll)
+        .overflow_x_scroll()
+        .overflow_y_scroll()
         .on_scroll_wheel({
             let this = cx.entity();
             move |_, _, cx| this.update(cx, |_, cx| cx.notify())
-        })
+        });
+    let mut dock = div().flex().flex_none().min_w_full().h_full().justify_end();
+    let dock_container = div()
+        .id("mixer-dock")
+        .flex()
+        .flex_none()
+        .w(px(shell.mixer.dock_width))
+        .max_w(relative(0.55))
+        .min_h_0()
+        .border_l_1()
+        .border_color(theme::BORDER_STRONG)
         .overflow_x_scroll()
-        .overflow_y_scroll();
-    for node in graph.graph.nodes() {
-        let entry = graph.node(node.id()).expect("service metadata");
-        let key = format!("{:?}", node.id());
-        let selected = shell.selected_node.as_ref() == Some(&key);
-        let color = match node.kind() {
-            NodeKind::Source => theme::SIGNAL_DEVICE,
-            NodeKind::Sink => theme::SIGNAL_RECORDER,
-            _ => theme::PRIMARY,
+        .overflow_y_scroll()
+        .on_scroll_wheel({
+            let this = cx.entity();
+            move |_, _, cx| this.update(cx, |_, cx| cx.notify())
+        });
+    for id in &shell.mixer.order {
+        let Ok(node) = graph.graph.get_node(*id) else {
+            continue;
         };
-        let this = cx.entity();
-        let mut strip = div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .w(px(if shell.density == Density::Compact {
-                150.
-            } else {
-                170.
-            }))
-            .min_h(px(550.))
-            .bg(if selected {
-                theme::SURFACE_3
-            } else {
-                theme::SURFACE
-            })
-            .border_r_1()
-            .border_color(theme::BORDER)
-            .child(div().h(px(3.)).bg(color))
-            .child(
-                div()
-                    .p(px(12.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(
-                        button(
-                            SharedString::from(format!("select-{key}")),
-                            entry.label.clone(),
-                        )
-                        .variant(ButtonVariant::Ghost)
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |s, cx| {
-                                s.selected_node = Some(key.clone());
-                                s.inspector_open = true;
-                                cx.notify();
-                            })
-                        }),
-                    )
-                    .child(label(format!("{:?} · {} ch", node.kind(), node.channels())))
-                    .child(label(format!(
-                        "{} in / {} out",
-                        node.inputs().len(),
-                        node.outputs().len()
-                    ))),
-            );
-        if Some(node.id()) == first_pan {
-            strip = strip.child(
-                div()
-                    .px(px(12.))
-                    .h(px(66.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .child(detail("Balance", format!("{:+.2}", state.pan)))
-                    .child(horizontal_slider(&shell.pan_slider, state.pan as f32)),
-            );
+        let entry = graph.node(*id).expect("service metadata");
+        let strip = strip(shell, entry, node.kind(), node.channels(), cx);
+        if matches!(node.kind(), NodeKind::Bus | NodeKind::Sink) {
+            dock = dock.child(strip);
         } else {
-            strip = strip.child(div().px(px(12.)).h(px(66.)).child(label(match node.kind() {
-                NodeKind::Compressor => "Linked peak · default settings",
-                NodeKind::Bus => "Sum connected inputs",
-                _ => "Direct graph stream",
-            })));
+            channels = channels.child(strip);
         }
-        let body = if Some(node.id()) == first_gain {
-            div()
-                .h(px(250.))
-                .flex()
-                .justify_center()
-                .gap(px(8.))
-                .child(scale())
-                .child(fader(&shell.gain_slider, state.gain))
-                .into_any_element()
-        } else if node.kind() == NodeKind::Source || node.kind() == NodeKind::Sink {
-            let input = node.kind() == NodeKind::Source;
-            let identity_matches =
-                shell
-                    .observation_nodes
-                    .is_some_and(|(generation, source, sink)| {
-                        generation == state.snapshot.generation
-                            && node.id() == if input { source } else { sink }
-                    });
-            let binding_matches = state.snapshot.desired.as_ref().is_some_and(|active| {
-                if input {
-                    entry.source.as_ref() == Some(&active.source)
-                } else {
-                    entry.output_endpoint_id.as_ref() == Some(&active.output_endpoint_id)
-                }
-            });
-            let eligible = identity_matches && binding_matches;
-            let (levels, status) = if !eligible {
-                (None, "No active observation".to_string())
-            } else if input {
-                (
-                    shell.meters.input,
-                    shell.meters.input_status.label().to_string(),
-                )
-            } else {
-                (
-                    shell.meters.output,
-                    shell.meters.output_status.label().to_string(),
-                )
-            };
-            div()
-                .relative()
-                .h(px(250.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(6.))
-                .when(eligible, |v| {
-                    v.child(meter_probe(shell.meter_points.clone(), input))
-                })
-                .child(crate::ui::widgets::meters::stereo_meter(levels))
-                .child(label(status))
-                .into_any_element()
-        } else {
-            div()
-                .h(px(250.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(12.))
-                .child(label("No meter at this node"))
-                .child(
-                    div()
-                        .font_family(theme::FONT_MONO)
-                        .text_color(theme::TEXT_FAINT)
-                        .child("—"),
-                )
-                .when(node.kind() == NodeKind::Gain, |v| {
-                    v.child(label(db(entry.gain)))
-                })
-                .into_any_element()
-        };
-        strip = strip
-            .child(body)
-            .child(div().p(px(12.)).flex().flex_col().gap(px(8.)).child(
-                if Some(node.id()) == first_gain {
-                    heading(db(state.effective_gain()))
-                } else {
-                    heading(entry.label.clone())
-                },
-            ));
-        if Some(node.id()) == first_gain {
-            strip = strip.child(
-                div()
-                    .px(px(12.))
-                    .flex()
-                    .gap(px(6.))
-                    .child(
-                        button("mix-mute", "Mute")
-                            .variant(if state.muted {
-                                ButtonVariant::Primary
-                            } else {
-                                ButtonVariant::Secondary
-                            })
-                            .on_click({
-                                let this = cx.entity();
-                                move |_, _, cx| {
-                                    this.update(cx, |s, cx| {
-                                        s.state.update(cx, |state, _| {
-                                            state.muted = !state.muted;
-                                            state.request_parameters();
-                                        });
-                                        cx.notify();
-                                    })
-                                }
-                            }),
-                    )
-                    .child(
-                        button("mix-dim", "Dim")
-                            .variant(if state.dimmed {
-                                ButtonVariant::Primary
-                            } else {
-                                ButtonVariant::Secondary
-                            })
-                            .on_click({
-                                let this = cx.entity();
-                                move |_, _, cx| {
-                                    this.update(cx, |s, cx| {
-                                        s.state.update(cx, |state, _| {
-                                            state.dimmed = !state.dimmed;
-                                            state.request_parameters();
-                                        });
-                                        cx.notify();
-                                    })
-                                }
-                            }),
-                    ),
-            );
-        }
-        if Some(node.id()) == first_pan {
-            strip = strip.child(
-                div()
-                    .px(px(12.))
-                    .pt(px(8.))
-                    .child(stereo_controls(entry, cx)),
-            );
-        }
-        strips = strips.child(strip);
     }
     div()
         .id("mixer-page")
@@ -249,6 +73,28 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .flex_1()
         .min_h_0()
         .overflow_hidden()
+        .on_mouse_move({
+            let this = cx.entity();
+            move |event, _, cx| {
+                this.update(cx, |shell, cx| {
+                    if event.pressed_button == Some(MouseButton::Left)
+                        && let Some((docked, origin, width)) = shell.mixer.resize
+                    {
+                        let delta = f32::from(event.position.x) - origin;
+                        if docked {
+                            shell.mixer.dock_width = (width - delta).clamp(160., 640.);
+                        } else {
+                            shell.mixer.width = (width + delta).clamp(136., 280.);
+                        }
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .on_mouse_up(MouseButton::Left, {
+            let this = cx.entity();
+            move |_, _, cx| this.update(cx, |shell, _| shell.mixer.resize = None)
+        })
         .child(
             div()
                 .flex()
@@ -271,9 +117,12 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .child(strips)
-                .when(shell.inspector_open, |v| {
-                    v.child(graph::inspector(shell, cx))
+                .min_w_0()
+                .child(channels.gpui_test_observe())
+                .child(resize_handle(shell, true, "mixer-dock-resize", cx))
+                .child(dock_container.child(dock).gpui_test_observe())
+                .when(shell.inspector_open, |view| {
+                    view.child(graph::inspector(shell, cx))
                 }),
         )
         .child(
@@ -281,48 +130,447 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .flex_none()
                 .px(px(16.))
                 .py(px(8.))
-                .child(label(state.control_feedback())),
+                .border_t_1()
+                .border_color(theme::BORDER)
+                .child(label("Drag headers to reorder · drag dividers to resize")),
         )
         .gpui_test_observe()
         .into_any_element()
 }
 
+fn resize_handle(
+    shell: &StudioShell,
+    docked: bool,
+    id: impl Into<ElementId>,
+    cx: &Context<StudioShell>,
+) -> impl IntoElement {
+    let width = if docked {
+        shell.mixer.dock_width
+    } else {
+        shell.mixer.width
+    };
+    let this = cx.entity();
+    div()
+        .id(id)
+        .w(px(6.))
+        .h_full()
+        .flex_none()
+        .bg(theme::SURFACE)
+        .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+            cx.stop_propagation();
+            this.update(cx, |shell, _| {
+                shell.mixer.resize = Some((docked, f32::from(event.position.x), width))
+            });
+        })
+        .gpui_test_observe()
+}
+
+fn strip(
+    shell: &StudioShell,
+    entry: &GraphNodeState,
+    kind: NodeKind,
+    channels: usize,
+    cx: &Context<StudioShell>,
+) -> impl IntoElement {
+    let id = entry.id;
+    let key = format!("{id:?}");
+    let selected = shell.selected_node.as_ref() == Some(&key);
+    let color = match kind {
+        NodeKind::Source => theme::NODE_SOURCE,
+        NodeKind::Sink => theme::NODE_SINK,
+        NodeKind::Bus => theme::NODE_UTILITY,
+        _ => theme::NODE_DSP,
+    };
+    let title = div()
+        .id(SharedString::from(format!("strip-header-{id:?}")))
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .p(px(12.))
+        .cursor_pointer()
+        .child(heading(entry.label.clone()))
+        .child(label(format!("{kind:?} · {channels} ch")))
+        .on_click({
+            let this = cx.entity();
+            move |_, _, cx| {
+                this.update(cx, |shell, cx| {
+                    shell.selected_node = Some(key.clone());
+                    shell.inspector_open = true;
+                    cx.notify();
+                })
+            }
+        })
+        .on_drag(id, move |_, _, _, cx| cx.new(|_| StripDrag))
+        .gpui_test_observe();
+    div()
+        .id(SharedString::from(format!("strip-{id:?}")))
+        .flex()
+        .flex_none()
+        .w(px(shell.mixer.width))
+        .min_h(px(720.))
+        .bg(if selected {
+            theme::SURFACE_3
+        } else {
+            theme::SURFACE
+        })
+        .border_r_1()
+        .border_color(theme::BORDER)
+        .on_drop({
+            let this = cx.entity();
+            move |dragged: &NodeId, _, cx| {
+                this.update(cx, |shell, cx| {
+                    let graph = &shell.state.read(cx).snapshot.graph.graph;
+                    let docked = |id| {
+                        graph
+                            .get_node(id)
+                            .is_ok_and(|node| matches!(node.kind(), NodeKind::Bus | NodeKind::Sink))
+                    };
+                    if docked(*dragged) == docked(id) {
+                        reorder(&mut shell.mixer.order, *dragged, id);
+                    }
+                    cx.notify();
+                })
+            }
+        })
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(div().h(px(3.)).bg(color.opacity(0.55)))
+                .child(title)
+                .child(sends(shell, id, cx))
+                .child(
+                    div()
+                        .flex_none()
+                        .px(px(10.))
+                        .py(px(8.))
+                        .child(node_controls(entry, channels, cx)),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("strip-levels-{id:?}")))
+                        .flex()
+                        .flex_none()
+                        .justify_center()
+                        .gap(px(4.))
+                        .py(px(12.))
+                        .child(scale())
+                        .child(fader(&shell.mixer.faders[&id], entry.mixer.gain))
+                        .child(meter(shell, entry, kind, cx))
+                        .gpui_test_observe(),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("strip-readout-{id:?}")))
+                        .flex_none()
+                        .px(px(12.))
+                        .pb(px(12.))
+                        .child(heading(db(entry.mixer.gain)))
+                        .gpui_test_observe(),
+                ),
+        )
+        .child(resize_handle(
+            shell,
+            false,
+            SharedString::from(format!("strip-resize-{id:?}")),
+            cx,
+        ))
+        .gpui_test_observe()
+}
+
+pub(super) fn node_controls(
+    entry: &GraphNodeState,
+    channels: usize,
+    cx: &Context<StudioShell>,
+) -> Div {
+    let id = entry.id;
+    let requested = entry.mixer;
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .gap(px(6.))
+        .child(
+            div()
+                .flex()
+                .gap(px(6.))
+                .child(
+                    button(SharedString::from(format!("strip-mute-{id:?}")), "M")
+                        .variant(if requested.muted {
+                            ButtonVariant::Primary
+                        } else {
+                            ButtonVariant::Secondary
+                        })
+                        .on_click(mixer_edit(cx.entity(), id, |state| {
+                            state.muted = !state.muted
+                        })),
+                )
+                .child(
+                    button(SharedString::from(format!("strip-solo-{id:?}")), "S")
+                        .variant(if requested.solo {
+                            ButtonVariant::Primary
+                        } else {
+                            ButtonVariant::Secondary
+                        })
+                        .on_click(mixer_edit(cx.entity(), id, |state| {
+                            state.solo = !state.solo
+                        })),
+                ),
+        )
+        .child(
+            button(SharedString::from(format!("strip-dim-{id:?}")), "DIM −12")
+                .variant(if requested.dimmed {
+                    ButtonVariant::Secondary
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .on_click(mixer_edit(cx.entity(), id, |state| {
+                    state.dimmed = !state.dimmed
+                })),
+        )
+        .child(
+            button(
+                SharedString::from(format!("strip-mode-{id:?}")),
+                requested.mode_label(channels),
+            )
+            .on_click(mixer_edit(cx.entity(), id, move |state| {
+                *state = state.next_mode(channels)
+            })),
+        )
+}
+
+fn mixer_edit(
+    this: Entity<StudioShell>,
+    id: NodeId,
+    change: impl Fn(&mut MixerState) + 'static,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
+    move |_, _, cx| {
+        this.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                if let Some(node) = state.snapshot.graph.node(id) {
+                    let mut requested = node.mixer;
+                    change(&mut requested);
+                    state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
+                        node: id,
+                        state: requested,
+                    }));
+                }
+            });
+            cx.notify();
+        })
+    }
+}
+
+fn sends(shell: &StudioShell, id: NodeId, cx: &Context<StudioShell>) -> impl IntoElement {
+    let graph = &shell.state.read(cx).snapshot.graph;
+    let mut rows = div()
+        .id(SharedString::from(format!("sends-{id:?}")))
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .h(px(130.))
+        .flex_none()
+        .px(px(10.))
+        .py(px(8.))
+        .border_y_1()
+        .border_color(theme::BORDER)
+        .overflow_y_scroll()
+        .child(label("SENDS"));
+    let mut count = 0;
+    for edge in graph.graph.edges().iter().filter(|edge| edge.src() == id) {
+        count += 1;
+        let edge_id = edge.id();
+        let pre = edge.params().tap == SendTap::PreFader;
+        rows = rows.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .items_center()
+                        .child(label(
+                            graph
+                                .node(edge.dst())
+                                .map(|node| node.label.clone())
+                                .unwrap_or_default(),
+                        ))
+                        .child(
+                            button(
+                                SharedString::from(format!("send-pre-{edge_id:?}")),
+                                if pre { "PRE" } else { "POST" },
+                            )
+                            .variant(if pre {
+                                ButtonVariant::Secondary
+                            } else {
+                                ButtonVariant::Ghost
+                            })
+                            .on_click({
+                                let this = cx.entity();
+                                move |_, _, cx| {
+                                    this.update(cx, |shell, cx| {
+                                        shell.state.update(cx, |state, _| {
+                                            if let Ok(edge) =
+                                                state.snapshot.graph.graph.get_edge(edge_id)
+                                            {
+                                                let params = SendParams {
+                                                    tap: if edge.params().tap == SendTap::PreFader {
+                                                        SendTap::PostFader
+                                                    } else {
+                                                        SendTap::PreFader
+                                                    },
+                                                    ..*edge.params()
+                                                };
+                                                state.dispatch(AppRequest::EditGraph(
+                                                    GraphEdit::SetSend {
+                                                        edge: edge_id,
+                                                        params,
+                                                    },
+                                                ));
+                                            }
+                                        });
+                                        cx.notify();
+                                    })
+                                }
+                            }),
+                        ),
+                )
+                .child(label(db(edge.params().gain)))
+                .child(component::slider::Slider::new(&shell.mixer.sends[&edge_id])),
+        );
+    }
+    if count == 0 {
+        rows = rows.child(label("No sends · connect in Graph"));
+    }
+    rows.gpui_test_observe()
+}
+
+fn meter(
+    shell: &StudioShell,
+    entry: &GraphNodeState,
+    kind: NodeKind,
+    cx: &Context<StudioShell>,
+) -> impl IntoElement {
+    let state = shell.state.read(cx);
+    let input = kind == NodeKind::Source;
+    let eligible = matches!(kind, NodeKind::Source | NodeKind::Sink)
+        && state.snapshot.graph.active_revision == Some(state.snapshot.graph.candidate_revision)
+        && shell
+            .observation_nodes
+            .is_some_and(|(generation, source, sink)| {
+                generation == state.snapshot.generation
+                    && entry.id == if input { source } else { sink }
+            })
+        && state.snapshot.desired.as_ref().is_some_and(|active| {
+            if input {
+                entry.source.as_ref() == Some(&active.source)
+            } else {
+                entry.output_endpoint_id.as_ref() == Some(&active.output_endpoint_id)
+            }
+        });
+    let levels = eligible
+        .then_some({
+            if input {
+                shell.meters.input
+            } else {
+                shell.meters.output
+            }
+        })
+        .flatten();
+    let levels = (state.snapshot.graph.active_revision
+        == Some(state.snapshot.graph.candidate_revision))
+    .then(|| shell.node_meters.levels(entry.id))
+    .flatten()
+    .or(levels);
+    let clips = shell.node_meters.clips(entry.id);
+    let managed = state
+        .snapshot
+        .signal_topics
+        .node_levels
+        .contains_key(&entry.id)
+        && state.snapshot.graph.active_revision == Some(state.snapshot.graph.candidate_revision);
+    div()
+        .id(SharedString::from(format!("meter-reset-{:?}", entry.id)))
+        .on_mouse_down(MouseButton::Left, {
+            let this = cx.entity();
+            let id = entry.id;
+            move |_, _, cx| {
+                this.update(cx, |shell, cx| {
+                    shell.node_meters.reset_clip(id);
+                    cx.notify();
+                })
+            }
+        })
+        .relative()
+        .when(managed, |view| {
+            let points = shell.node_meter_points.clone();
+            let id = entry.id;
+            view.child(
+                canvas(
+                    move |bounds, window, _| {
+                        let intersection = bounds.intersect(&window.content_mask().bounds);
+                        if intersection.size.width > px(0.) && intersection.size.height > px(0.) {
+                            points.borrow_mut().insert(id);
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+        })
+        .when(eligible, |view| {
+            view.child(meter_probe(shell.meter_points.clone(), input))
+        })
+        .child(crate::ui::widgets::meters::stereo_meter_with_clip(
+            levels, clips,
+        ))
+        .gpui_test_observe()
+}
+
 fn scale() -> Div {
     let mut view = div()
         .relative()
-        .w(px(30.))
+        .flex_none()
+        .w(px(18.))
         .h(px(230.))
         .font_family(theme::FONT_MONO)
-        .text_size(px(10.))
+        .text_size(px(9.))
         .text_color(theme::TEXT_FAINT);
-    for db in [0, -6, -12, -24, -48, -60] {
-        view = view.child(div().absolute().top(px(((-db as f32) / 60.) * 216.)).child(
-            if db == -60 {
-                "−∞".into()
-            } else {
-                db.to_string()
-            },
-        ));
+    for db in [24, 12, 0, -6, -12, -24, -48, -60] {
+        view = view.child(
+            div()
+                .absolute()
+                .top(px((24. - db as f32) / 84. * 216.))
+                .child(if db == -60 {
+                    "−∞".into()
+                } else {
+                    db.to_string()
+                }),
+        );
     }
     view
 }
 
 fn fader(state: &Entity<base::slider::SliderState>, gain: f64) -> impl IntoElement {
-    let normalized = if gain <= 0. {
-        0.
-    } else {
-        ((20. * gain.log10() + 60.) / 60.).clamp(0., 1.) as f32
-    };
+    let normalized = (gain_db(gain) + 60.) / 84.;
     base::slider::Slider::new(state)
         .vertical()
         .relative()
-        .w(px(45.))
+        .flex_none()
+        .w(px(26.))
         .h(px(230.))
         .child(
             base::slider::SliderTrack::new(state)
                 .axis(Axis::Vertical)
                 .absolute()
-                .left(px(21.))
+                .left(px(12.))
                 .top(px(7.))
                 .w(px(3.))
                 .h(px(216.))
@@ -332,9 +580,9 @@ fn fader(state: &Entity<base::slider::SliderState>, gain: f64) -> impl IntoEleme
             base::slider::SliderThumb::new(state)
                 .axis(Axis::Vertical)
                 .absolute()
-                .left(px(6.))
+                .left(px(1.))
                 .top(px((1. - normalized) * 216.))
-                .w(px(31.))
+                .w(px(24.))
                 .h(px(14.))
                 .rounded(px(3.))
                 .bg(theme::TEXT_MUTED)
@@ -342,33 +590,6 @@ fn fader(state: &Entity<base::slider::SliderState>, gain: f64) -> impl IntoEleme
         )
 }
 
-fn horizontal_slider(state: &Entity<base::slider::SliderState>, pan: f32) -> impl IntoElement {
-    base::slider::Slider::new(state)
-        .relative()
-        .w_full()
-        .h(px(24.))
-        .child(
-            base::slider::SliderTrack::new(state)
-                .absolute()
-                .top(px(11.))
-                .w_full()
-                .h(px(3.))
-                .bg(theme::BORDER_STRONG),
-        )
-        .child(
-            base::slider::SliderThumb::new(state)
-                .absolute()
-                .left(relative((pan + 1.) / 2.))
-                .ml(px(-6.))
-                .top(px(5.))
-                .size(px(12.))
-                .rounded_full()
-                .bg(theme::PRIMARY),
-        )
-}
-
-/// Prepaint sees the real clipping mask of horizontal/vertical scroll ancestors.
-/// The UI clock consumes these flags after layout, so no hidden strip owns demand.
 fn meter_probe(
     points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     input: bool,
@@ -379,9 +600,9 @@ fn meter_probe(
             let visible = intersection.size.width > px(0.) && intersection.size.height > px(0.);
             let mut flags = points.get();
             if input {
-                flags.0 = visible
+                flags.0 = visible;
             } else {
-                flags.1 = visible
+                flags.1 = visible;
             }
             points.set(flags);
         },
