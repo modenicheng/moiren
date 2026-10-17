@@ -87,6 +87,32 @@ fn samples(reader: &mut AudioReader<f64>, expected: &[f64]) {
 }
 
 #[test]
+fn changed_prepared_value_overrides_reused_parameter_on_first_block_without_resetting_source() {
+    let (graph, [source, gain, sink], mut active, mut output) = initial();
+    active.engine.render(2).unwrap();
+    samples(&mut output, &[1.0, 2.0]);
+    let basis = active.engine.plan_snapshot();
+    let mut plans = active.engine.enable_plan_switching(1).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_gain(gain, 0.25).unwrap();
+    let reuse = [source, gain, sink].map(|node| (node, active.bindings.node(node).unwrap()));
+    let update = compile_update(&graph, bindings, config(2), &basis, &reuse, None).unwrap();
+    let plan = update.plan.with_initial_parameters(&[ParameterKey {
+        processor: update.bindings.node(gain).unwrap(),
+        parameter: Gain::LEVEL,
+    }]);
+    plans.publish(plan).unwrap();
+    let (result, heap) = super::allocation::track_heap(|| active.engine.render(2));
+    result.unwrap();
+    assert_eq!(heap, (0, 0, 0));
+    samples(&mut output, &[0.75, 1.0]);
+    assert!(matches!(
+        plans.poll_retired().unwrap().outcome(),
+        RetireOutcome::Replaced { .. }
+    ));
+}
+
+#[test]
 fn rack_delay_history_survives_processor_id_migration_without_rt_heap_work() {
     use moiren_engine::{
         processor::DelaySettings,

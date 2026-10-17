@@ -551,6 +551,21 @@ impl<S: ProcessingSample> PreparedPlan<S> {
         self.engine.plan_snapshot()
     }
 
+    /// Keep the reused kernel but start selected parameters from their prepared
+    /// values. Apply after `with_reuse`, off RT. Other parameters retain ramps.
+    pub fn with_initial_parameters(mut self, keys: &[moiren_core::protocol::ParameterKey]) -> Self {
+        if let Some(transfer) = &mut self.transfer {
+            let schema = self.engine.parameters.schema();
+            transfer.parameters = transfer
+                .parameters
+                .iter()
+                .copied()
+                .filter(|&(_, new)| !keys.contains(&schema[new].key))
+                .collect();
+        }
+        self
+    }
+
     /// Non-RT reclamation for an unpublished or stopped pending candidate.
     /// Keep its ControlPort alive and drain replies until this returns zero.
     pub fn retire_controls(&mut self) -> usize {

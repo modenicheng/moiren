@@ -39,6 +39,7 @@ pub(crate) struct PrepareJob {
     pub reuse: Vec<(NodeId, ProcessorId)>,
     pub edge_reuse: Vec<(EdgeId, ProcessorId)>,
     pub rack_reuse: Vec<((NodeId, u32), ProcessorId)>,
+    pub initial_parameters: Vec<ParameterTarget>,
     pub observer_reuse: Vec<(NodeId, ProcessorId)>,
     pub active: Option<PlanSnapshot>,
     pub signals: Option<moiren_signal::HostControl>,
@@ -387,7 +388,7 @@ fn prepare<S: ProcessingSample>(
                 .bind_observer_reuse(node, processor)
                 .map_err(|error| Diagnostic::Compile(error.to_string()))?;
         }
-        let update = compiler::compile_update_with_reuse(
+        let mut update = compiler::compile_update_with_reuse(
             &graph,
             prepared.bindings,
             compile_config,
@@ -400,6 +401,12 @@ fn prepare<S: ProcessingSample>(
             Some(&signals),
         )
         .map_err(|error| Diagnostic::Compile(error.to_string()))?;
+        let initial: Vec<_> = job
+            .initial_parameters
+            .iter()
+            .filter_map(|&target| super::parameters::resolve(&update.bindings, target))
+            .collect();
+        update.plan = update.plan.with_initial_parameters(&initial);
         // Only a successfully validated observer transfer may keep its original
         // reader. Placeholder endpoints are reclaimed here, never on RT.
         for &(node, _) in &job.observer_reuse {

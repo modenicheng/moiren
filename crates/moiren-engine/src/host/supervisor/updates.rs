@@ -31,6 +31,8 @@ impl<S: ProcessingSample> Supervisor<S> {
                 active.snapshot = candidate.snapshot;
                 active.project = candidate.project;
                 active.graph = candidate.graph;
+                self.structural_values
+                    .retain(|(revision, _)| *revision > candidate.graph);
                 let control = std::mem::replace(&mut active.control, candidate.control);
                 let graph = active.graph;
                 let plan = active.control.identity().0;
@@ -117,6 +119,8 @@ impl<S: ProcessingSample> Supervisor<S> {
                     owner_generation: completion.basis.owner,
                     confirmed: false,
                 });
+                self.structural_values
+                    .retain(|(revision, _)| *revision > completion.basis.graph);
                 self.blocked = None;
             }
             Ok(Ready::Update { update, readers }) => {
@@ -290,6 +294,11 @@ impl<S: ProcessingSample> Supervisor<S> {
             edge_reuse,
             observer_reuse,
             rack_reuse,
+            initial_parameters: self
+                .structural_values
+                .iter()
+                .map(|(_, target)| *target)
+                .collect(),
             active: self.active.as_ref().map(|active| active.snapshot.clone()),
             signals: self.active.as_ref().map(|active| active.signals.clone()),
             cancel: cancel.clone(),

@@ -74,6 +74,7 @@ struct Supervisor<S: ProcessingSample> {
     cleanup_error: Option<BackendError>,
     edits: Vec<(u64, Arc<ReceiptCell<EditOutcome>>)>,
     router: Router,
+    structural_values: Vec<(u64, ParameterTarget)>,
 }
 
 pub(crate) fn spawn<S: ProcessingSample>(
@@ -136,6 +137,7 @@ pub(crate) fn spawn<S: ProcessingSample>(
         cleanup_error: None,
         edits: Vec::new(),
         router: Router::default(),
+        structural_values: Vec::new(),
     };
     thread::Builder::new()
         .name("moiren-host-control".into())

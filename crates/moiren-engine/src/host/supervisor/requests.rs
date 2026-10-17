@@ -55,6 +55,14 @@ impl<S: ProcessingSample> Supervisor<S> {
                                         .map(|active| active.control.identity().0),
                                 });
                             } else if let Some(revision) = self.desired.checked_add(1) {
+                                let previous_values = previous.parameter_values();
+                                for value in self.project.parameter_values() {
+                                    if !previous_values.contains(&value) {
+                                        self.structural_values
+                                            .retain(|(_, target)| *target != value.target);
+                                        self.structural_values.push((revision, value.target));
+                                    }
+                                }
                                 self.desired = revision;
                                 for (_, previous) in self.edits.drain(..) {
                                     previous.set(EditOutcome::Superseded {
@@ -140,6 +148,8 @@ impl<S: ProcessingSample> Supervisor<S> {
             }
         }
         self.router.prune(&self.project);
+        self.structural_values
+            .retain(|(_, target)| self.project.target_exists(*target));
     }
 
     pub(super) fn send_values(&mut self, previous: &EngineProject) {
