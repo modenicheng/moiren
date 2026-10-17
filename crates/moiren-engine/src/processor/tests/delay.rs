@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn delay_rejects_unrepresentable_or_excessive_storage_before_allocation() {
+    let settings = DelaySettings::default();
+    for (channels, sample_rate) in [
+        (1, f64::MAX),
+        (usize::MAX, 48_000.0),
+        (257, 48_000.0),
+        (256, 1_000_000.0),
+    ] {
+        assert!(matches!(
+            Delay::new(channels, settings, sample_rate),
+            Err(ProcessorError::InvalidIo)
+        ));
+    }
+}
+
+#[test]
 fn delay_preserves_state_across_blocks() {
     let mut arena = arena::<f64>(&[1, 1]);
     seed(&mut arena, 0, &[&[1.0, 2.0, 3.0, 4.0]]);

@@ -1,4 +1,5 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
+use super::MAX_CHANNELS;
 use crate::{
     buffer::{PreparedIo, ProcessIo},
     control::{ParamDomain, ParamSpec, ProcessParameters},
@@ -41,13 +42,15 @@ impl Delay {
     pub const FEEDBACK: ParameterId = ParameterId(1);
     pub const MIX: ParameterId = ParameterId(2);
     const MAX_DELAY_MS: f64 = 60_000.0;
+    /// Delay history is separate from the compiler's audio slab budget.
+    pub const MAX_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 
     pub fn new(
         channels: usize,
         settings: DelaySettings,
         sample_rate: f64,
     ) -> Result<Self, ProcessorError> {
-        if channels == 0
+        if !(1..=MAX_CHANNELS).contains(&channels)
             || !settings.max_delay_ms.is_finite()
             || !(0.0..=Self::MAX_DELAY_MS).contains(&settings.max_delay_ms)
             || !sample_rate.is_finite()
@@ -55,13 +58,31 @@ impl Delay {
         {
             return Err(ProcessorError::InvalidIo);
         }
-        let capacity = (settings.max_delay_ms * sample_rate / 1_000.0).ceil() as usize + 1;
+        let frames = (settings.max_delay_ms * sample_rate / 1_000.0).ceil();
+        if !frames.is_finite() || frames >= usize::MAX as f64 {
+            return Err(ProcessorError::InvalidIo);
+        }
+        let capacity = (frames as usize)
+            .checked_add(1)
+            .ok_or(ProcessorError::InvalidIo)?;
         let len = channels
             .checked_mul(capacity)
             .ok_or(ProcessorError::InvalidIo)?;
+        let bytes = len
+            .checked_mul(std::mem::size_of::<f64>())
+            .ok_or(ProcessorError::InvalidIo)?;
+        if bytes > Self::MAX_BUFFER_BYTES || bytes > isize::MAX as usize {
+            return Err(ProcessorError::InvalidIo);
+        }
+        // Preparation can reject an unavailable allocation instead of aborting
+        // the process; no allocation or resizing occurs during audio callbacks.
+        let mut ring = Vec::new();
+        ring.try_reserve_exact(len)
+            .map_err(|_| ProcessorError::InvalidIo)?;
+        ring.resize(len, 0.0);
         Ok(Self {
             channels,
-            ring: vec![0.0; len].into_boxed_slice(),
+            ring: ring.into_boxed_slice(),
             write: 0,
             capacity,
         })
