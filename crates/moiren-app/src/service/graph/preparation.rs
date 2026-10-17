@@ -103,7 +103,10 @@ impl GraphPreparation {
                 }
                 NodeKind::Gain => NodeConfig::Gain { initial: 1.0 },
                 NodeKind::Pan => NodeConfig::Pan { initial: 0.0 },
-                NodeKind::Compressor => NodeConfig::Compressor(state.compressor.settings()),
+                // Compressor values are live parameters. Keep the prepared
+                // processor's static shape at its default so editing a
+                // compressor field does not force a topology rebuild.
+                NodeKind::Compressor => NodeConfig::Compressor(Default::default()),
                 NodeKind::Eq
                 | NodeKind::Gate
                 | NodeKind::Limiter
