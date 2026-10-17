@@ -58,7 +58,9 @@ fn wait_spectrum(subscription: &mut ManagedSpectrumSubscription, fft_size: usize
 }
 
 fn wait_level(subscription: &mut ManagedLevelSubscription, channels: usize, peak: f32) {
-    let deadline = Instant::now() + TIMEOUT;
+    // A 1536-frame window needs 192 fake 8-frame callbacks. Windows may round
+    // each 1 ms callback wait to a timer tick, exceeding the ordinary 3 s bound.
+    let deadline = Instant::now() + TIMEOUT.max(Duration::from_secs(10));
     loop {
         if let Some(block) = subscription.subscriber.read_latest() {
             assert_eq!(block.elements().len(), channels);

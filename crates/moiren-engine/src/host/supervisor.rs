@@ -45,6 +45,7 @@ struct Candidate {
     snapshot: PlanSnapshot,
     project: EngineProject,
     graph: u64,
+    parameter_intent: u64,
     readers: PreparedReaders,
 }
 struct Supervisor<S: ProcessingSample> {

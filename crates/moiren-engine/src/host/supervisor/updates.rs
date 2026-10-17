@@ -44,7 +44,10 @@ impl<S: ProcessingSample> Supervisor<S> {
                 control
             }
             RetireOutcome::Rejected(error) => {
-                if candidate.graph == self.desired && !self.closing() {
+                if candidate.graph == self.desired
+                    && candidate.parameter_intent == self.parameter_intent
+                    && !self.closing()
+                {
                     self.blocked = Some((self.basis(), Diagnostic::Compile(error.to_string())));
                 }
                 drop(candidate.readers);
@@ -143,6 +146,7 @@ impl<S: ProcessingSample> Supervisor<S> {
                             snapshot,
                             project: completion.project,
                             graph: completion.basis.graph,
+                            parameter_intent: completion.basis.parameter_intent,
                             readers,
                         });
                         self.blocked = None;

@@ -590,6 +590,51 @@ fn newer_live_ramp_supersedes_a_structural_initial_in_a_preparing_candidate() {
 }
 
 #[test]
+fn live_intent_cancels_a_published_initial_override_without_blocking_its_replacement() {
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let (project, node) = rack_project();
+    let host = EngineHost::<f64>::open(HostConfig::default(), project, backend).unwrap();
+    wait(&host.observer(), |snapshot| {
+        snapshot.execution == ExecutionState::Running
+    });
+    state.pause_audio.store(true, Ordering::SeqCst);
+    let edit = host
+        .control()
+        .edit(move |project| {
+            rack_config(project, node).slots.push(gain_slot(999, 1.0));
+            project.parameters.push(DesiredParameter {
+                target: slot_target(node, 90, Gain::LEVEL),
+                value: ParamValue::Float(0.25),
+            });
+            Ok(())
+        })
+        .unwrap();
+    wait(&host.observer(), |snapshot| {
+        matches!(snapshot.update, UpdateState::Pending(2))
+    });
+    let parameter = host
+        .control()
+        .parameter(
+            slot_target(node, 90, Gain::LEVEL),
+            ParamValue::Float(0.75),
+            ParameterTiming::NextBlock,
+            0,
+        )
+        .unwrap();
+    wait(&host.observer(), |_| {
+        !matches!(parameter.outcome(), ParameterOutcome::Queued)
+    });
+    state.pause_audio.store(false, Ordering::SeqCst);
+    assert!(matches!(
+        parameter.wait(TIMEOUT),
+        ParameterOutcome::Applied(_)
+    ));
+    assert!(matches!(edit.wait(TIMEOUT), EditOutcome::Activated { .. }));
+    wait_sample(&state, 0.375);
+}
+
+#[test]
 fn rack_slot_schema_uses_post_mapper_input_width_not_node_width() {
     let mut project = EngineProject::default();
     let node = project.graph.create_rack(&[1], &[1]).unwrap();
