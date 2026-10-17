@@ -4,7 +4,131 @@ use crate::{
     signal::ProcessSignals,
 };
 use serde::de::value::{Error as ValueError, MapDeserializer};
-use std::mem::size_of;
+use std::{cell::RefCell, mem::size_of, sync::mpsc, time::Duration};
+
+thread_local! {
+    static CONVERSION_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone, Copy)]
+struct BoundarySample(f64);
+
+impl ProcessingSample for BoundarySample {
+    const ZERO: Self = Self(0.0);
+
+    fn from_f64(value: f64) -> Self {
+        Self(value)
+    }
+
+    fn to_f64(self) -> f64 {
+        let hook = CONVERSION_HOOK.with(|slot| slot.borrow_mut().take());
+        if let Some(hook) = hook {
+            hook();
+        }
+        self.0
+    }
+}
+
+#[test]
+fn quiescence_waits_for_inflight_block_even_when_stopped_queue_is_empty() {
+    let (mut recorder, mut reader) = recorder(2, settings(4)).unwrap();
+    let (entered, at_conversion) = mpsc::sync_channel(0);
+    let (release, resume) = mpsc::sync_channel(0);
+    let timeout = if cfg!(miri) { 120 } else { 10 };
+    let observer = std::thread::spawn(move || {
+        CONVERSION_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                entered.send(()).unwrap();
+                resume.recv().unwrap();
+            }));
+        });
+        observe::<BoundarySample>(&mut recorder, &[&[1.0, 2.0], &[3.0, 4.0]]);
+        recorder
+    });
+    // Conversion starts after the observer accepted Recording, but before its
+    // queue commit. No sleeps or scheduler timing assumptions establish this.
+    at_conversion
+        .recv_timeout(Duration::from_secs(timeout))
+        .unwrap();
+    reader.stop();
+    let stopped = reader.state();
+    let premature = reader.is_quiescent();
+    let queued = reader.queued_frames();
+    let accepted = reader.stats().accepted_frames;
+    // Always release/join before asserting, including on the failing baseline.
+    release.send(()).unwrap();
+    let recorder = observer.join().unwrap();
+    assert_eq!(stopped, RecorderState::Stopped);
+    assert_eq!(queued, 0);
+    assert_eq!(accepted, 0);
+    assert!(
+        !premature,
+        "stopped is not quiescent until the final block commits"
+    );
+    assert!(reader.is_quiescent());
+    assert_eq!(reader.stats().accepted_frames, 2);
+    let mut tail = [0.0; 4];
+    assert_eq!(reader.read_interleaved(&mut tail), 2);
+    assert_eq!(tail, [1.0, 3.0, 2.0, 4.0]);
+    reader.start();
+    assert!(!reader.is_quiescent());
+    drop(recorder);
+    assert_eq!(reader.state(), RecorderState::Disconnected);
+    assert!(reader.is_quiescent());
+}
+
+#[test]
+fn quiescence_does_not_require_an_empty_queue_and_resets_after_start() {
+    let (mut recorder, mut reader) = recorder(1, settings(4)).unwrap();
+    assert!(!reader.is_quiescent());
+    observe::<f32>(&mut recorder, &[&[1.0, 2.0]]);
+    reader.stop();
+    assert!(reader.is_quiescent());
+    assert_eq!(reader.queued_frames(), 2);
+    reader.stop();
+    observe::<f32>(&mut recorder, &[&[9.0]]);
+    assert!(reader.is_quiescent());
+    reader.start();
+    assert!(!reader.is_quiescent());
+    observe::<f32>(&mut recorder, &[&[3.0]]);
+    drop(recorder);
+    assert!(reader.is_quiescent());
+    assert_eq!(reader.state(), RecorderState::Disconnected);
+    let mut tail = [0.0; 3];
+    assert_eq!(reader.read_interleaved(&mut tail), 3);
+    assert_eq!(tail, [1.0, 2.0, 3.0]);
+    reader.start();
+    reader.stop();
+    assert!(reader.is_quiescent());
+}
+
+#[test]
+fn quiescence_after_overflow_and_stopped_observer_returns() {
+    let (mut recorder, reader) = recorder(1, settings(1)).unwrap();
+    observe::<f64>(&mut recorder, &[&[1.0, 2.0]]);
+    reader.stop();
+    assert!(reader.is_quiescent());
+    observe::<f64>(&mut recorder, &[&[9.0]]);
+    assert!(reader.is_quiescent());
+    assert_eq!(reader.stats().dropped_frames, 2);
+    assert_eq!(reader.stats().accepted_frames, 0);
+}
+
+#[test]
+fn quiescence_is_restored_when_sample_conversion_unwinds() {
+    let (mut recorder, reader) = recorder(1, settings(4)).unwrap();
+    CONVERSION_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(|| panic!("injected sample conversion panic")));
+    });
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            observe::<BoundarySample>(&mut recorder, &[&[1.0]]);
+        }))
+        .is_err()
+    );
+    reader.stop();
+    assert!(reader.is_quiescent());
+}
 
 pub(super) fn settings(capacity_frames: usize) -> RecorderSettings {
     RecorderSettings { capacity_frames }

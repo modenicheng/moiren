@@ -2,7 +2,7 @@
 //! control side; the observer only converts and publishes complete audio blocks.
 use std::sync::{
     Arc,
-    atomic::{AtomicU8, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -66,9 +66,20 @@ pub struct RecorderStats {
 // Each counter has exactly one writer: the observer or the owning reader.
 struct RecorderControl {
     state: AtomicU8,
+    active: AtomicBool,
     accepted_frames: AtomicU64,
     read_frames: AtomicU64,
     dropped_frames: AtomicU64,
+}
+
+// Borrow the existing atomic; the audio thread never clones/drops an Arc here.
+// Clear on every return and unwind, after any queue commit and counter updates.
+struct ObserverActivity<'a>(&'a AtomicBool);
+
+impl Drop for ObserverActivity<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 pub struct Recorder {
@@ -106,6 +117,7 @@ pub fn recorder(
     let (tx, rx) = RingBuffer::new(samples);
     let control = Arc::new(RecorderControl {
         state: AtomicU8::new(RecorderState::Recording as u8),
+        active: AtomicBool::new(false),
         accepted_frames: AtomicU64::new(0),
         read_frames: AtomicU64::new(0),
         dropped_frames: AtomicU64::new(0),
@@ -139,18 +151,37 @@ impl RecorderReader {
         if !self.rx.is_abandoned() {
             self.control
                 .state
-                .store(RecorderState::Recording as u8, Ordering::Release);
+                .store(RecorderState::Recording as u8, Ordering::SeqCst);
         }
     }
 
     /// Pause capture without clearing queued frames. An in-flight observer call
     /// may still publish its complete block; this command does not wait for it.
+    /// Poll `is_quiescent()` before the final drain and file finalization.
     pub fn stop(&self) {
         if !self.rx.is_abandoned() {
             self.control
                 .state
-                .store(RecorderState::Stopped as u8, Ordering::Release);
+                .store(RecorderState::Stopped as u8, Ordering::SeqCst);
         }
+    }
+
+    /// Nonblocking query: capture is disabled and no observer can still publish
+    /// a block accepted before stop. Disconnection also satisfies this condition.
+    /// Queued frames may remain: after this returns true, drain them before
+    /// finalizing a recording. Calling `start()` invalidates quiescence.
+    pub fn is_quiescent(&self) -> bool {
+        if self.rx.is_abandoned() {
+            return true;
+        }
+        // In the SeqCst order, an observer that saw Recording before stop must
+        // have set active before both our Stopped read and active read. False
+        // therefore observes its exit (and publishes its queue/counter writes).
+        // An observer entering later sees Stopped and cannot publish. Acquire/
+        // Release alone on two separate atomics would allow both sides to miss
+        // each other's store. No start may intervene before finalization.
+        self.control.state.load(Ordering::SeqCst) != RecorderState::Recording as u8
+            && !self.control.active.load(Ordering::SeqCst)
     }
 
     pub fn is_recording(&self) -> bool {
@@ -218,7 +249,9 @@ impl<S: ProcessingSample> RtObserver<S> for Recorder {
         inputs: ReadPorts<'_, S>,
         _signals: crate::signal::ProcessSignals<'_>,
     ) {
-        if self.control.state.load(Ordering::Acquire) != RecorderState::Recording as u8 {
+        self.control.active.store(true, Ordering::SeqCst);
+        let _activity = ObserverActivity(&self.control.active);
+        if self.control.state.load(Ordering::SeqCst) != RecorderState::Recording as u8 {
             return;
         }
         let input = inputs.get(0).expect("validated recorder input");
