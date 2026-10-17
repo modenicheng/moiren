@@ -250,6 +250,20 @@ pub(crate) fn resolve(
                 parameter,
             })
         }
+        ParameterTarget::RackSlot {
+            node,
+            slot,
+            parameter,
+        } => {
+            // Slot IDs survive configuration edits; ProcessorIds do not survive
+            // recompilation. Always use this active plan's returned slot mapping.
+            bindings
+                .rack_slot(node, slot)
+                .map(|processor| ParameterKey {
+                    processor,
+                    parameter,
+                })
+        }
         ParameterTarget::Edge { edge, parameter } => {
             bindings.edge(edge).map(|keys| match parameter {
                 SendParameter::Gain => keys.gain,

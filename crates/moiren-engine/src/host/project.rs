@@ -48,6 +48,12 @@ pub enum ParameterTarget {
         node: NodeId,
         parameter: ParameterId,
     },
+    /// Logical slot identity; runtime ProcessorIds are resolved per active plan.
+    RackSlot {
+        node: NodeId,
+        slot: u32,
+        parameter: ParameterId,
+    },
     Edge {
         edge: EdgeId,
         parameter: SendParameter,
@@ -275,17 +281,22 @@ impl EngineProject {
                 candidate.strips.remove(&node.id());
             }
         }
-        let graph = &candidate.graph;
-        candidate
-            .parameters
-            .retain(|parameter| match parameter.target {
-                ParameterTarget::Node { node, .. } => {
-                    graph.get_node(node).is_ok() || self.graph.get_node(node).is_err()
-                }
-                ParameterTarget::Edge { edge, .. } => {
-                    graph.get_edge(edge).is_ok() || self.graph.get_edge(edge).is_err()
-                }
-            });
+        // Keep newly introduced invalid targets for validation, but remove old
+        // intent when its node, edge or active rack slot disappears. Moving the
+        // vector lets target checks borrow the complete control-side candidate.
+        let mut parameters = std::mem::take(&mut candidate.parameters);
+        parameters.retain(|parameter| match parameter.target {
+            ParameterTarget::Node { node, .. } => {
+                candidate.graph.get_node(node).is_ok() || self.graph.get_node(node).is_err()
+            }
+            ParameterTarget::RackSlot { .. } => {
+                candidate.target_exists(parameter.target) || !self.target_exists(parameter.target)
+            }
+            ParameterTarget::Edge { edge, .. } => {
+                candidate.graph.get_edge(edge).is_ok() || self.graph.get_edge(edge).is_err()
+            }
+        });
+        candidate.parameters = parameters;
         candidate.validate()?;
         *self = candidate;
         Ok(result)
@@ -294,8 +305,24 @@ impl EngineProject {
     pub fn target_exists(&self, target: ParameterTarget) -> bool {
         match target {
             ParameterTarget::Node { node, .. } => self.graph.get_node(node).is_ok(),
+            ParameterTarget::RackSlot { node, slot, .. } => self.rack_slot(node, slot).is_some(),
             ParameterTarget::Edge { edge, .. } => self.graph.get_edge(edge).is_ok(),
         }
+    }
+
+    fn rack_slot(&self, node: NodeId, slot: u32) -> Option<(usize, &crate::rack::RackSlot)> {
+        let graph_node = self.graph.get_node(node).ok()?;
+        if graph_node.kind() != NodeKind::Rack {
+            return None;
+        }
+        let NodeConfig::Rack(settings) = self.nodes.get(&node)? else {
+            return None;
+        };
+        let slot = settings
+            .slots
+            .iter()
+            .find(|candidate| candidate.id == slot && !candidate.bypass)?;
+        Some((graph_node.channels(), slot))
     }
 
     pub fn validate_parameter(
@@ -340,6 +367,19 @@ impl EngineProject {
                     .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0)),
                 _ => false,
             },
+            ParameterTarget::RackSlot {
+                node,
+                slot,
+                parameter,
+            } => self.rack_slot(node, slot).is_some_and(|(channels, slot)| {
+                slot.processor
+                    .checked_parameters(channels, ProcessorId(0))
+                    .is_ok_and(|specs| {
+                        specs
+                            .iter()
+                            .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0))
+                    })
+            }),
             ParameterTarget::Edge { edge, parameter } => {
                 self.graph.get_edge(edge).is_ok()
                     && match (parameter, value) {
@@ -380,12 +420,32 @@ impl EngineProject {
         }
     }
 
-    /// Effective desired values: node/edge configuration defaults overridden
+    /// Effective desired values: node/slot/edge configuration defaults overridden
     /// by explicitly recorded parameter intent. This allocating control-side
     /// query does not report instantaneous runtime values or apply parameters.
     pub fn parameter_values(&self) -> Vec<DesiredParameter> {
         let mut values = Vec::new();
         for (&node, config) in &self.nodes {
+            if let NodeConfig::Rack(settings) = config {
+                for slot in settings.slots.iter().filter(|slot| !slot.bypass) {
+                    let Some((channels, slot)) = self.rack_slot(node, slot.id) else {
+                        continue;
+                    };
+                    // Control-side only: use the same checked schema as lowering,
+                    // without allocating a kernel or leaking plan-local identities.
+                    if let Ok(specs) = slot.processor.checked_parameters(channels, ProcessorId(0)) {
+                        values.extend(specs.into_iter().map(|spec| DesiredParameter {
+                            target: ParameterTarget::RackSlot {
+                                node,
+                                slot: slot.id,
+                                parameter: spec.key.parameter,
+                            },
+                            value: spec.initial,
+                        }));
+                    }
+                }
+                continue;
+            }
             let specs = match config {
                 NodeConfig::Gain { initial } => {
                     vec![crate::processor::Gain::parameter(ProcessorId(0), *initial)]

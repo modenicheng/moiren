@@ -110,7 +110,10 @@ fn valid_channels(channels: usize) -> bool {
 }
 
 impl RackProcessor {
-    fn checked_parameters(
+    /// Non-RT schema query: validates settings without preparing DSP storage.
+    /// This allocates parameter metadata; `id` belongs to the caller's plan,
+    /// not to the stable rack slot identity.
+    pub fn checked_parameters(
         &self,
         channels: usize,
         id: ProcessorId,

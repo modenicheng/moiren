@@ -2,6 +2,7 @@ mod edits;
 mod lifecycle;
 mod parameters;
 mod project;
+mod rack;
 mod resources;
 mod signals;
 mod snapshots;
