@@ -9,6 +9,7 @@ mod allocation;
 mod compressor;
 mod nodes;
 mod observers;
+mod rack;
 mod rack_initial;
 mod reference;
 mod rendering;

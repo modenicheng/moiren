@@ -24,7 +24,7 @@ use crate::{
 pub(super) struct DraftOp {
     pub(super) processor: ProcessorId,
     pub(super) reads: Vec<(u16, usize)>,
-    pub(super) output: Option<usize>,
+    pub(super) outputs: Vec<(u16, usize)>,
 }
 pub(super) struct Builder<S: ProcessingSample> {
     frames: usize,
@@ -56,7 +56,7 @@ impl<S: ProcessingSample> Builder<S> {
         self.ops.push(DraftOp {
             processor,
             reads: vec![(0, source)],
-            output: Some(slot),
+            outputs: vec![(0, slot)],
         });
         Ok(slot)
     }
@@ -191,8 +191,8 @@ impl<S: ProcessingSample> Builder<S> {
                 }
                 self.processor(PassThrough)?
             }
-            // Nonempty racks have already emitted their individual slot operations.
-            NodeKind::Rack => self.processor(PassThrough)?,
+            // Rack lowering prepares the explicit multi-port boundary separately.
+            NodeKind::Rack => return Err(CompileError::MissingBinding { node }),
             NodeKind::Bus => self.processor(Bus)?,
         })
     }
@@ -228,7 +228,7 @@ pub(super) fn build<S: ProcessingSample>(
         for (index, port) in node.inputs().iter().enumerate() {
             let slot = if let Some(edge) = incoming.get(&port.id()) {
                 let source = if edge.params().tap == SendTap::PreFader {
-                    pre_fader[&edge.src()]
+                    pre_fader[&edge.src_port()]
                 } else {
                     outputs[&edge.src_port()]
                 };
@@ -243,7 +243,7 @@ pub(super) fn build<S: ProcessingSample>(
                 builder.ops.push(DraftOp {
                     processor,
                     reads: vec![(0, source)],
-                    output: Some(slot),
+                    outputs: vec![(0, slot)],
                 });
                 slot
             } else {
@@ -266,74 +266,104 @@ pub(super) fn build<S: ProcessingSample>(
             }
         }
         let binding = bindings.take(id);
-        if let Some(Binding::Rack(settings)) = &binding {
-            if !settings.valid_for(node.channels()) {
-                return Err(CompileError::BindingKind { node: id });
-            }
+        // Resolve widths before allocating kernels; slot identity remains stable,
+        // while ProcessorIds and buffer slots belong only to this prepared plan.
+        let rack_boundary = if let Some(Binding::Rack(settings)) = &binding {
+            let input_widths: Vec<_> = node.inputs().iter().map(|port| port.channels()).collect();
+            let output_widths: Vec<_> = node.outputs().iter().map(|port| port.channels()).collect();
+            let layout = settings
+                .resolve_layout(&input_widths, &output_widths)
+                .ok_or(CompileError::BindingKind { node: id })?;
+            let mut streams: Vec<_> = layout
+                .routes
+                .iter()
+                .map(|route| reads[usize::from(route.input_port)].1)
+                .collect();
+            // Never iterate routes here: slots on distinct streams must still
+            // execute in the single global order declared by RackSettings.
             for slot in settings.slots.iter().filter(|slot| !slot.bypass) {
+                let io = layout.slots[&slot.id];
                 let processor = ProcessorId(
                     u64::try_from(builder.instances.len())
                         .map_err(|_| CompileError::TooManyProcessors)?,
                 );
                 let (kernel, parameters) = crate::rack::prepare_slot::<S>(
                     &slot.processor,
-                    node.channels(),
+                    io.input_channels,
                     builder.processing_sr,
                     processor,
                 )
                 .map_err(|_| CompileError::BindingKind { node: id })?;
                 let prepared = builder.processor(BoundIo(kernel))?;
                 builder.params.extend(parameters);
-                let output = builder.slot(node.channels());
+                let output = builder.slot(io.output_channels);
                 builder.ops.push(DraftOp {
                     processor: prepared,
-                    reads: vec![(0, reads[0].1)],
-                    output: Some(output),
+                    reads: vec![(0, streams[io.route])],
+                    outputs: vec![(0, output)],
                 });
-                reads[0].1 = output;
+                streams[io.route] = output;
                 mapping.rack_slots.insert((id, slot.id), prepared);
             }
-        }
+            reads = streams
+                .into_iter()
+                .enumerate()
+                .map(|(port, slot)| (port as u16, slot))
+                .collect();
+            Some(builder.processor(crate::rack::RackRouting::new(&layout, &output_widths))?)
+        } else {
+            None
+        };
         let (binding, observer) = match binding {
             Some(Binding::Observed(kind, observer)) => {
                 (Some(Binding::Unmanaged(kind)), Some(observer))
             }
             binding => (binding, None),
         };
-        let processor = builder.node_processor(
-            id,
-            node.kind(),
-            node.channels(),
-            node.inputs().first().map_or(0, |port| port.channels()),
-            builder.processing_sr,
-            binding,
-        )?;
+        let processor = if let Some(processor) = rack_boundary {
+            processor
+        } else {
+            builder.node_processor(
+                id,
+                node.kind(),
+                node.channels(),
+                node.inputs().first().map_or(0, |port| port.channels()),
+                builder.processing_sr,
+                binding,
+            )?
+        };
         if node.kind() == NodeKind::Gain {
-            pre_fader.insert(id, reads[0].1);
+            pre_fader.insert(node.outputs()[0].id(), reads[0].1);
         }
         mapping.nodes.insert(id, processor);
-        let output = node.outputs().first().map(|port| {
-            let slot = builder.slot(port.channels());
-            outputs.insert(port.id(), slot);
-            slot
-        });
+        let writes: Vec<_> = node
+            .outputs()
+            .iter()
+            .enumerate()
+            .map(|(index, port)| {
+                let slot = builder.slot(port.channels());
+                outputs.insert(port.id(), slot);
+                (index as u16, slot)
+            })
+            .collect();
         builder.ops.push(DraftOp {
             processor,
             reads,
-            output,
+            outputs: writes.clone(),
         });
-        if let Some(raw) = output
-            && let Some(config) = strip
-        {
-            let before = raw;
-            let before = builder.strip(
-                before,
-                node.channels(),
-                crate::processor::StripConfig { gain: 1., ..config },
-            )?;
-            pre_fader.insert(id, before);
-            let after = builder.strip(raw, node.channels(), config)?;
-            outputs.insert(node.outputs()[0].id(), after);
+        // A strip is a node control shared across its output streams, but each
+        // stream retains its own width and pre-fader tap (never a NodeId alias).
+        for ((_, raw), port) in writes.into_iter().zip(node.outputs()) {
+            if let Some(config) = strip {
+                let before = builder.strip(
+                    raw,
+                    port.channels(),
+                    crate::processor::StripConfig { gain: 1., ..config },
+                )?;
+                pre_fader.insert(port.id(), before);
+                let after = builder.strip(raw, port.channels(), config)?;
+                outputs.insert(port.id(), after);
+            }
         }
         for port in node.outputs() {
             let Some(observers) = bindings.take_observers(port.id()) else {
@@ -370,9 +400,9 @@ pub(super) fn prepare_operations<S: ProcessingSample>(
                     slot: arena.slot(slot).expect("compiler allocated slot"),
                 })
                 .collect();
-            if let Some(slot) = op.output {
+            for (port, slot) in op.outputs {
                 access.push(PortAccess::Write {
-                    port: 0,
+                    port,
                     slot: arena.slot(slot).expect("compiler allocated slot"),
                 });
             }

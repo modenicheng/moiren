@@ -101,6 +101,7 @@ fn builtin_settings_cases() -> Vec<(NodeKind, BuiltinState)> {
                         },
                     },
                 ],
+                ..Default::default()
             }),
         ),
     ]

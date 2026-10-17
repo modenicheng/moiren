@@ -13,11 +13,122 @@ fn empty_rack_accepts_supported_channel_counts() {
 }
 
 #[test]
+fn rack_layout_reports_each_slots_real_width_and_rejects_bypassed_width_change() {
+    let rack = RackSettings {
+        slots: vec![
+            slot(
+                10,
+                RackProcessor::ChannelMapper(ChannelMapperSettings {
+                    matrix: vec![vec![1.0], vec![0.5]],
+                    ..Default::default()
+                }),
+            ),
+            slot(11, RackProcessor::Gain { initial: 2.0 }),
+        ],
+        routes: vec![RackRoute {
+            input_port: 0,
+            output_port: 0,
+            slots: vec![10, 11],
+        }],
+    };
+    let layout = rack.resolve_layout(&[1], &[2]).unwrap();
+    assert_eq!(layout.slots[&10].input_channels, 1);
+    assert_eq!(layout.slots[&10].output_channels, 2);
+    assert_eq!(layout.slots[&11].input_channels, 2);
+    assert_eq!(layout.slots[&11].output_channels, 2);
+    assert!(rack.valid_layout(&[1], &[2]));
+
+    let mut bypassed = rack.clone();
+    bypassed.slots[0].bypass = true;
+    assert!(bypassed.resolve_layout(&[1], &[2]).is_none());
+    assert!(bypassed.resolve_layout(&[1], &[1]).is_some());
+}
+
+#[test]
+fn rack_routes_are_one_to_one_and_assign_each_slot_once() {
+    let settings = RackSettings {
+        slots: vec![
+            slot(1, RackProcessor::Gain { initial: 1.0 }),
+            slot(2, RackProcessor::Gain { initial: 1.0 }),
+        ],
+        routes: vec![
+            RackRoute {
+                input_port: 0,
+                output_port: 0,
+                slots: vec![1],
+            },
+            RackRoute {
+                input_port: 0,
+                output_port: 1,
+                slots: vec![2],
+            },
+        ],
+    };
+    assert!(settings.resolve_layout(&[2], &[2, 2]).is_none());
+    let mut settings = settings;
+    settings.routes[1].input_port = 1;
+    assert!(settings.valid_layout(&[2, 2], &[2, 2]));
+    let valid = settings.clone();
+    settings.routes[1].output_port = 0;
+    assert!(!settings.valid_layout(&[2, 2], &[2, 2]));
+    settings = valid.clone();
+    settings.routes[1].slots = vec![1, 2];
+    assert!(!settings.valid_layout(&[2, 2], &[2, 2]));
+    settings = valid.clone();
+    settings.routes[1].slots.push(999);
+    assert!(!settings.valid_layout(&[2, 2], &[2, 2]));
+    settings = valid;
+    settings.routes[1].slots.clear();
+    assert!(settings.resolve_layout(&[2, 2], &[2, 2]).is_none());
+}
+
+#[test]
+fn upstream_width_edits_change_layout_without_changing_downstream_settings() {
+    let mut rack = RackSettings {
+        slots: vec![
+            slot(
+                10,
+                RackProcessor::ChannelMapper(ChannelMapperSettings {
+                    mapping: vec![0, 0],
+                    ..Default::default()
+                }),
+            ),
+            slot(11, RackProcessor::Delay(DelaySettings::default())),
+        ],
+        ..Default::default()
+    };
+    let old = rack.resolve_layout(&[1], &[2]).unwrap();
+    let settings = rack.slots[1].processor.clone();
+    rack.slots[0].processor = RackProcessor::ChannelMapper(ChannelMapperSettings {
+        mapping: vec![0, 0, 0],
+        ..Default::default()
+    });
+    let new = rack.resolve_layout(&[1], &[3]).unwrap();
+    assert_eq!(settings, rack.slots[1].processor);
+    assert_eq!(
+        (
+            old.slots[&11].input_channels,
+            old.slots[&11].output_channels
+        ),
+        (2, 2)
+    );
+    assert_eq!(
+        (
+            new.slots[&11].input_channels,
+            new.slots[&11].output_channels
+        ),
+        (3, 3)
+    );
+}
+
+#[test]
 fn slot_limit_and_stable_ids_include_bypassed_slots() {
     let mut rack = RackSettings {
         slots: (0..RackSettings::MAX_SLOTS as u32)
             .map(|id| slot(id, RackProcessor::Gain { initial: 1.0 }))
             .collect(),
+
+        ..Default::default()
     };
     assert!(rack.valid_for(2));
     rack.slots[1].id = u32::MAX;
@@ -295,6 +406,8 @@ fn config_types_support_serde_clone_debug_and_partial_eq() {
             .enumerate()
             .map(|(id, processor)| slot(id as u32, processor))
             .collect(),
+
+        ..Default::default()
     };
     assert_eq!(rack.clone(), rack);
 }

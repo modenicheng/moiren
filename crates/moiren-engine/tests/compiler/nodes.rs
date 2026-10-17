@@ -182,6 +182,8 @@ fn rack_lowering_runs_empty_and_active_chains_and_resolves_slot_parameters() {
                 processor: RackProcessor::Gain { initial: 0.5 },
             },
         ],
+
+        ..Default::default()
     };
     let (bindings, mut reader) = make_bindings(settings.clone());
     let mut compiled = compile(&graph, bindings, config()).unwrap();
@@ -218,6 +220,8 @@ fn rack_lowering_runs_empty_and_active_chains_and_resolves_slot_parameters() {
             },
             settings.slots[1].clone(),
         ],
+
+        ..Default::default()
     });
     let mut bypassed = compile(&graph, bindings, config()).unwrap();
     assert_eq!(bypassed.bindings.rack_slot(rack, 90), None);
@@ -244,6 +248,8 @@ fn rack_lowering_runs_empty_and_active_chains_and_resolves_slot_parameters() {
 
     let (bindings, mut reordered_reader) = make_bindings(RackSettings {
         slots: settings.slots.iter().rev().cloned().collect(),
+
+        ..Default::default()
     });
     let mut reordered = compile(&graph, bindings, config()).unwrap();
     let reordered_slot = reordered.bindings.rack_slot(rack, 90).unwrap();

@@ -8,7 +8,7 @@ pub enum GraphError {
     PortNotFound,
     #[error("no such edge in the graph")]
     EdgeNotFound,
-    #[error("port ID or per-node input index capacity exhausted")]
+    #[error("port ID or per-node port index capacity exhausted")]
     TooManyPorts,
     #[error("node ID capacity exhausted")]
     TooManyNodes,
@@ -24,9 +24,9 @@ pub enum GraphError {
     InputAlreadyConnected,
     #[error("the connection would create a cycle")]
     CycleDetected,
-    #[error("only Bus input ports can be added or removed")]
+    #[error("only Bus inputs and Rack inputs/outputs can be added or removed")]
     FixedPortLayout,
-    #[error("disconnect the input port before removing it")]
+    #[error("disconnect the port before removing it")]
     PortConnected,
     #[error("gain must be finite and nonnegative, pan must be finite in [-1, 1]")]
     InvalidSendParameters,

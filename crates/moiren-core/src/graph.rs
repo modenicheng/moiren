@@ -14,6 +14,7 @@ mod tests;
 
 // Prepared engine IO uses u16 port numbers; 0 through u16::MAX are usable.
 const MAX_INPUT_PORTS: usize = u16::MAX as usize + 1;
+const MAX_OUTPUT_PORTS: usize = u16::MAX as usize + 1;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct IdCounter {
@@ -130,7 +131,68 @@ impl LogicalGraph {
         Ok(id)
     }
 
-    /// Only Bus supports dynamic inputs; each must match its output channels.
+    /// Create independent Rack streams atomically. `channels()` describes the
+    /// primary output; routing and conversion are validated by the engine.
+    pub fn create_rack(
+        &mut self,
+        input_channels: &[usize],
+        output_channels: &[usize],
+    ) -> Result<NodeId, GraphError> {
+        if input_channels.is_empty() || output_channels.is_empty() {
+            return Err(GraphError::InvalidNodeLayout);
+        }
+        if input_channels
+            .iter()
+            .chain(output_channels)
+            .any(|&width| width == 0)
+        {
+            return Err(GraphError::InvalidChannelCount);
+        }
+        if input_channels.len() > MAX_INPUT_PORTS || output_channels.len() > MAX_OUTPUT_PORTS {
+            return Err(GraphError::TooManyPorts);
+        }
+        let next_node = self
+            .counts
+            .node
+            .checked_add(1)
+            .ok_or(GraphError::TooManyNodes)?;
+        let next_port = self
+            .counts
+            .port
+            .checked_add((input_channels.len() + output_channels.len()) as u64)
+            .ok_or(GraphError::TooManyPorts)?;
+        let id = NodeId(self.counts.node);
+        let mut port_id = self.counts.port;
+        let mut ports = |widths: &[usize], role| {
+            widths
+                .iter()
+                .map(|&channels| {
+                    let port = Port {
+                        id: PortId(port_id),
+                        channels,
+                        role,
+                    };
+                    port_id += 1;
+                    port
+                })
+                .collect()
+        };
+        let inputs = ports(input_channels, PortRole::Input);
+        let outputs = ports(output_channels, PortRole::Output);
+        self.nodes.push(Node {
+            id,
+            kind: NodeKind::Rack,
+            channels: output_channels[0],
+            inputs,
+            outputs,
+        });
+        self.counts.node = next_node;
+        self.counts.port = next_port;
+        Ok(id)
+    }
+
+    /// Bus inputs match its output; Rack inputs independently declare a stream
+    /// width, and routing remains an explicit Rack configuration concern.
     pub fn add_input_port(
         &mut self,
         node_id: NodeId,
@@ -145,10 +207,10 @@ impl LogicalGraph {
             .position(|n| n.id == node_id)
             .ok_or(GraphError::NodeNotFound)?;
         let node = &self.nodes[index];
-        if node.kind != NodeKind::Bus {
+        if !matches!(node.kind, NodeKind::Bus | NodeKind::Rack) {
             return Err(GraphError::FixedPortLayout);
         }
-        if node.channels != channels {
+        if node.kind == NodeKind::Bus && node.channels != channels {
             return Err(GraphError::ChannelMismatch);
         }
         if node.inputs.len() >= MAX_INPUT_PORTS {
@@ -169,6 +231,42 @@ impl LogicalGraph {
         Ok(id)
     }
 
+    /// Add a separately-addressable Rack output stream.
+    pub fn add_output_port(
+        &mut self,
+        node_id: NodeId,
+        channels: usize,
+    ) -> Result<PortId, GraphError> {
+        if channels == 0 {
+            return Err(GraphError::InvalidChannelCount);
+        }
+        let index = self
+            .nodes
+            .iter()
+            .position(|node| node.id == node_id)
+            .ok_or(GraphError::NodeNotFound)?;
+        let node = &self.nodes[index];
+        if node.kind != NodeKind::Rack {
+            return Err(GraphError::FixedPortLayout);
+        }
+        if node.outputs.len() >= MAX_OUTPUT_PORTS {
+            return Err(GraphError::TooManyPorts);
+        }
+        let next = self
+            .counts
+            .port
+            .checked_add(1)
+            .ok_or(GraphError::TooManyPorts)?;
+        let id = PortId(self.counts.port);
+        self.nodes[index].outputs.push(Port {
+            id,
+            channels,
+            role: PortRole::Output,
+        });
+        self.counts.port = next;
+        Ok(id)
+    }
+
     /// Disconnect first. Empty inputs otherwise survive disconnect for reuse.
     pub fn remove_input_port(
         &mut self,
@@ -176,7 +274,7 @@ impl LogicalGraph {
         port_id: PortId,
     ) -> Result<Port, GraphError> {
         let node = self.get_node(node_id)?;
-        if node.kind != NodeKind::Bus {
+        if !matches!(node.kind, NodeKind::Bus | NodeKind::Rack) {
             return Err(GraphError::FixedPortLayout);
         }
         let index = node
@@ -184,6 +282,9 @@ impl LogicalGraph {
             .iter()
             .position(|p| p.id == port_id)
             .ok_or(GraphError::PortNotFound)?;
+        if node.kind == NodeKind::Rack && node.inputs.len() == 1 {
+            return Err(GraphError::InvalidNodeLayout);
+        }
         if self.edges.iter().any(|e| e.dst_port == port_id) {
             return Err(GraphError::PortConnected);
         }
@@ -193,6 +294,37 @@ impl LogicalGraph {
             .find(|n| n.id == node_id)
             .expect("checked node");
         Ok(node.inputs.remove(index))
+    }
+
+    /// Disconnect first. Removing a Rack output with outgoing edges is rejected.
+    pub fn remove_output_port(
+        &mut self,
+        node_id: NodeId,
+        port_id: PortId,
+    ) -> Result<Port, GraphError> {
+        let node = self.get_node(node_id)?;
+        if node.kind != NodeKind::Rack {
+            return Err(GraphError::FixedPortLayout);
+        }
+        let index = node
+            .outputs
+            .iter()
+            .position(|port| port.id == port_id)
+            .ok_or(GraphError::PortNotFound)?;
+        if node.outputs.len() == 1 {
+            return Err(GraphError::InvalidNodeLayout);
+        }
+        if self.edges.iter().any(|edge| edge.src_port == port_id) {
+            return Err(GraphError::PortConnected);
+        }
+        let node = self
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == node_id)
+            .expect("checked node");
+        let removed = node.outputs.remove(index);
+        node.channels = node.outputs[0].channels;
+        Ok(removed)
     }
 
     /// Connect existing ports only. Gain is linear; no implicit conversion or
@@ -334,9 +466,14 @@ impl LogicalGraph {
             node.kind.validate_channels(node.channels)?;
             let (inputs, outputs) = node.kind.initial_ports();
             if !node_ids.insert(node.id)
-                || node.outputs.len() != outputs
-                || (node.kind != NodeKind::Bus && node.inputs.len() != inputs)
+                || (node.kind != NodeKind::Rack && node.outputs.len() != outputs)
+                || (node.kind != NodeKind::Bus
+                    && node.kind != NodeKind::Rack
+                    && node.inputs.len() != inputs)
                 || node.inputs.len() > MAX_INPUT_PORTS
+                || node.outputs.len() > MAX_OUTPUT_PORTS
+                || (node.kind == NodeKind::Rack
+                    && (node.inputs.is_empty() || node.outputs.is_empty()))
             {
                 return Err(GraphError::InvalidNodeLayout);
             }
@@ -349,7 +486,10 @@ impl LogicalGraph {
                         || port.role != role
                         || port.channels == 0
                         || (port.channels != node.channels
-                            && !(node.kind == NodeKind::ChannelMapper && role == PortRole::Input))
+                            && !matches!(
+                                (node.kind, role),
+                                (NodeKind::ChannelMapper, PortRole::Input) | (NodeKind::Rack, _)
+                            ))
                     {
                         return Err(GraphError::InvalidNodeLayout);
                     }

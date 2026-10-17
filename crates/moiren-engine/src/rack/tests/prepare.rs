@@ -264,6 +264,8 @@ fn nonlinear_chain_obeys_slot_order_and_bypass_in_both_precisions() {
                 slot(70, RackProcessor::Gain { initial: 2.0 }),
                 slot(3, limiter),
             ],
+
+            ..Default::default()
         };
         let samples = vec![vec![0.75, -0.75, 0.25]];
         assert_near(
@@ -307,6 +309,8 @@ fn mapper_and_pan_form_a_real_stereo_chain() {
                     },
                 ),
             ],
+
+            ..Default::default()
         };
         let samples = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
         assert_near(
@@ -346,6 +350,8 @@ fn weighted_mapping_processes_after_gain_with_signed_and_silent_rows() {
                     }),
                 ),
             ],
+
+            ..Default::default()
         };
         let samples = vec![vec![1.0, 2.0], vec![3.0, 4.0]];
         assert_near(
@@ -374,6 +380,8 @@ fn delay_state_is_preserved_across_chain_blocks() {
                 ),
                 slot(3, RackProcessor::Gain { initial: 0.25 }),
             ],
+
+            ..Default::default()
         };
         let samples = vec![vec![1.0, 0.0, 0.5, 0.0]];
         let split = render::<S>(&rack, &samples, &[1, 2, 1]);

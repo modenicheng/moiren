@@ -45,6 +45,8 @@ fn rack_project() -> (EngineProject, NodeId) {
         node,
         NodeConfig::Rack(RackSettings {
             slots: vec![gain_slot(90, 2.0), gain_slot(12, 0.5)],
+
+            ..Default::default()
         }),
     );
     let source = project.graph.get_node(input).unwrap().outputs()[0].id();
@@ -81,6 +83,8 @@ fn rack_parameter_defaults_include_active_slots_only() {
                     processor: RackProcessor::Gain { initial: 0.5 },
                 },
             ],
+
+            ..Default::default()
         }),
     );
     project.validate().unwrap();
@@ -130,9 +134,13 @@ fn rack_parameter_values_use_builtin_schemas_and_desired_overrides() {
             }
         })
         .collect();
-    project
-        .nodes
-        .insert(node, NodeConfig::Rack(RackSettings { slots }));
+    project.nodes.insert(
+        node,
+        NodeConfig::Rack(RackSettings {
+            slots,
+            ..Default::default()
+        }),
+    );
     project.validate().unwrap();
     assert_eq!(project.parameter_values(), expected);
     assert!(expected.contains(&DesiredParameter {
@@ -464,4 +472,57 @@ fn rack_slot_live_parameter_survives_structural_repreparation() {
         .unwrap();
     assert!(matches!(edit.wait(TIMEOUT), EditOutcome::Activated { .. }));
     wait_sample(&state, 0.125);
+}
+
+#[test]
+fn rack_slot_schema_uses_post_mapper_input_width_not_node_width() {
+    let mut project = EngineProject::default();
+    let node = project.graph.create_rack(&[1], &[1]).unwrap();
+    let slots = vec![
+        RackSlot {
+            id: 1,
+            bypass: false,
+            processor: RackProcessor::ChannelMapper(ChannelMapperSettings {
+                mapping: vec![0, 0],
+                ..Default::default()
+            }),
+        },
+        RackSlot {
+            id: 2,
+            bypass: false,
+            processor: RackProcessor::Pan {
+                initial: 0.25,
+                mono: false,
+                swap: true,
+            },
+        },
+        RackSlot {
+            id: 3,
+            bypass: false,
+            processor: RackProcessor::ChannelMapper(ChannelMapperSettings {
+                matrix: vec![vec![0.5, 0.5]],
+                ..Default::default()
+            }),
+        },
+    ];
+    project.nodes.insert(
+        node,
+        NodeConfig::Rack(RackSettings {
+            slots,
+            ..Default::default()
+        }),
+    );
+    project.validate().unwrap();
+    let target = slot_target(node, 2, Pan::POSITION);
+    project
+        .validate_parameter(target, ParamValue::Float(-0.5))
+        .unwrap();
+    assert!(project.parameter_values().contains(&DesiredParameter {
+        target,
+        value: ParamValue::Float(0.25)
+    }));
+    assert!(project.parameter_values().contains(&DesiredParameter {
+        target: slot_target(node, 2, Pan::SWAP),
+        value: ParamValue::Bool(true)
+    }));
 }

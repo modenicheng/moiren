@@ -1,4 +1,4 @@
-//! Control-side configuration for a linear, channel-preserving processor rack.
+//! Control-side configuration for ordered processor chains across Rack streams.
 //!
 //! The compiler expands active slots in vector order into its existing execution
 //! plan. Slot IDs survive reordering and bypass edits; they are configuration
@@ -15,16 +15,47 @@ use crate::{
 };
 use moiren_core::protocol::ProcessorId;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 mod prepare;
 pub use prepare::{PreparedRackSlot, prepare_slot};
+mod routing;
+pub(crate) use routing::RackRouting;
 
-/// An empty rack is a direct connection; otherwise each active slot consumes
-/// the preceding slot's output with the same channel width.
+/// Slots always execute in vector order. Explicit routes partition them into
+/// nonbranching chains; complex split/merge routing belongs in LogicalGraph.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RackSettings {
     pub slots: Vec<RackSlot>,
+    /// Empty retains the legacy input 0 -> all slots -> output 0 chain.
+    /// Other outputs are silent, not implicitly copied from the main stream.
+    pub routes: Vec<RackRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RackRoute {
+    /// Indices into the current Rack port lists, not persistent PortIds.
+    pub input_port: u16,
+    pub output_port: u16,
+    /// Stable slot membership only; order is defined by RackSettings::slots.
+    pub slots: Vec<u32>,
+}
+
+/// Allocating control-side resolution; never queried on the audio thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RackLayout {
+    pub slots: BTreeMap<u32, RackSlotLayout>,
+    pub routes: Vec<RackRoute>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RackSlotLayout {
+    pub input_channels: usize,
+    /// Bypassed slots preserve input width even for a width-changing mapper.
+    pub output_channels: usize,
+    pub route: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,17 +107,98 @@ impl RackSettings {
     /// Validate on the control side before expansion. Bypassed settings are
     /// checked too, so enabling a saved slot cannot reveal invalid settings.
     pub fn valid_for(&self, channels: usize) -> bool {
-        valid_channels(channels)
-            && self.slots.len() <= Self::MAX_SLOTS
-            && self.slots.iter().enumerate().all(|(index, slot)| {
-                !self.slots[..index]
-                    .iter()
-                    .any(|previous| previous.id == slot.id)
-                    && slot
-                        .processor
-                        .checked_parameters(channels, ProcessorId(0))
-                        .is_ok()
-            })
+        self.valid_layout(&[channels], &[channels])
+    }
+
+    pub fn valid_layout(&self, inputs: &[usize], outputs: &[usize]) -> bool {
+        self.resolve_layout(inputs, outputs).is_some()
+    }
+
+    /// Resolve each stable slot's actual IO for schema queries and reuse checks.
+    /// A caller must compare both widths before reusing a prepared kernel: an
+    /// upstream mapper edit can change IO without changing this slot's settings.
+    /// Bypassed settings are still checked at their actual incoming width.
+    pub fn resolve_layout(&self, inputs: &[usize], outputs: &[usize]) -> Option<RackLayout> {
+        if inputs.is_empty()
+            || outputs.is_empty()
+            || inputs.len() > u16::MAX as usize + 1
+            || outputs.len() > u16::MAX as usize + 1
+            || !inputs
+                .iter()
+                .chain(outputs)
+                .all(|&width| valid_channels(width))
+            || self.slots.len() > Self::MAX_SLOTS
+        {
+            return None;
+        }
+        let ids: BTreeSet<_> = self.slots.iter().map(|slot| slot.id).collect();
+        if ids.len() != self.slots.len() {
+            return None;
+        }
+        let routes = if self.routes.is_empty() {
+            vec![RackRoute {
+                input_port: 0,
+                output_port: 0,
+                slots: self.slots.iter().map(|slot| slot.id).collect(),
+            }]
+        } else {
+            self.routes.clone()
+        };
+        let mut used_inputs = BTreeSet::new();
+        let mut used_outputs = BTreeSet::new();
+        let mut assigned = BTreeSet::new();
+        let mut layout = RackLayout {
+            slots: BTreeMap::new(),
+            routes: Vec::new(),
+        };
+        for (index, route) in routes.into_iter().enumerate() {
+            let mut channels = *inputs.get(usize::from(route.input_port))?;
+            let expected = *outputs.get(usize::from(route.output_port))?;
+            if !used_inputs.insert(route.input_port) || !used_outputs.insert(route.output_port) {
+                return None;
+            }
+            for id in &route.slots {
+                if !ids.contains(id) || !assigned.insert(*id) {
+                    return None;
+                }
+            }
+            let mut ordered = Vec::new();
+            for slot in self
+                .slots
+                .iter()
+                .filter(|slot| route.slots.contains(&slot.id))
+            {
+                slot.processor
+                    .checked_parameters(channels, ProcessorId(0))
+                    .ok()?;
+                let output_channels = if slot.bypass {
+                    channels
+                } else {
+                    slot.processor.output_channels(channels).ok()?
+                };
+                layout.slots.insert(
+                    slot.id,
+                    RackSlotLayout {
+                        input_channels: channels,
+                        output_channels,
+                        route: index,
+                    },
+                );
+                channels = output_channels;
+                ordered.push(slot.id);
+            }
+            if channels != expected {
+                return None;
+            }
+            layout.routes.push(RackRoute {
+                slots: ordered,
+                ..route
+            });
+        }
+        if assigned.len() != self.slots.len() {
+            return None;
+        }
+        Some(layout)
     }
 }
 
@@ -110,6 +222,30 @@ fn valid_channels(channels: usize) -> bool {
 }
 
 impl RackProcessor {
+    /// Infer a leaf's output width from its static settings and actual input.
+    /// Only an explicit ChannelMapper can change width; no implicit conversion.
+    pub fn output_channels(&self, inputs: usize) -> Result<usize, ProcessorError> {
+        if !valid_channels(inputs) {
+            return Err(ProcessorError::InvalidIo);
+        }
+        let outputs = if let Self::ChannelMapper(settings) = self {
+            let outputs = if !settings.matrix.is_empty() {
+                settings.matrix.len()
+            } else if !settings.mapping.is_empty() {
+                settings.mapping.len()
+            } else {
+                inputs
+            };
+            if !settings.valid_layout(inputs, outputs) {
+                return Err(ProcessorError::InvalidIo);
+            }
+            outputs
+        } else {
+            inputs
+        };
+        Ok(outputs)
+    }
+
     /// Non-RT schema query: validates settings without preparing DSP storage.
     /// This allocates parameter metadata; `id` belongs to the caller's plan,
     /// not to the stable rack slot identity.
@@ -148,7 +284,7 @@ impl RackProcessor {
                 Delay::parameters(id, *settings).to_vec()
             }
             Self::ChannelMapper(settings) => {
-                if !settings.valid_for(channels) {
+                if !settings.valid_layout(channels, self.output_channels(channels)?) {
                     return Err(ProcessorError::InvalidIo);
                 }
                 Vec::new()

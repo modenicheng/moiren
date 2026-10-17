@@ -15,7 +15,8 @@ pub type PreparedRackSlot<S> = (Box<dyn RtProcessor<S>>, Vec<ParamSpec>);
 /// Prepare one leaf kernel and its parameter schema on the control side.
 ///
 /// The caller assigns a unique runtime ID, then binds each active slot's input
-/// to the previous output in the existing execution plan. Skip bypassed slots
+/// to the previous output on its resolved route. `channels` is the actual slot
+/// input width, not the enclosing node width. Skip bypassed slots
 /// before calling this function; stable slot IDs remain configuration identity.
 /// ChannelMapper requires separate buffers, so expansion must respect each
 /// kernel's IO contract rather than forcing every slot to process in place.
@@ -46,9 +47,11 @@ pub fn prepare_slot<S: ProcessingSample>(
             validate_delay_storage(*settings, channels, sample_rate)?;
             Box::new(Delay::new(channels, *settings, sample_rate)?)
         }
-        RackProcessor::ChannelMapper(settings) => {
-            Box::new(ChannelMapper::new(channels, settings.clone())?)
-        }
+        RackProcessor::ChannelMapper(settings) => Box::new(ChannelMapper::with_layout(
+            channels,
+            processor.output_channels(channels)?,
+            settings.clone(),
+        )?),
     };
     Ok((kernel, parameters))
 }

@@ -13,7 +13,7 @@ pub(super) fn push<S: ProcessingSample>(
     builder.ops.push(DraftOp {
         processor,
         reads: vec![(0, slot)],
-        output: None,
+        outputs: Vec::new(),
     });
     Ok(processor)
 }

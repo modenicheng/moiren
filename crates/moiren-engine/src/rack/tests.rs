@@ -14,6 +14,7 @@ fn slot(id: u32, processor: RackProcessor) -> RackSlot {
 fn rack(processor: RackProcessor) -> RackSettings {
     RackSettings {
         slots: vec![slot(0, processor)],
+        ..Default::default()
     }
 }
 

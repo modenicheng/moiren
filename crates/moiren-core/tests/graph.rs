@@ -44,6 +44,71 @@ fn channel_mapper_has_explicit_input_and_output_widths() {
 }
 
 #[test]
+fn rack_ports_allow_independent_widths_and_require_disconnect_before_removal() {
+    let mut graph = LogicalGraph::new();
+    let rack = graph.create_node(NodeKind::Rack, 2).unwrap();
+    let node = graph.get_node(rack).unwrap();
+    let main_input = node.inputs()[0].id();
+    let main_output = node.outputs()[0].id();
+    let sidechain = graph.add_input_port(rack, 1).unwrap();
+    let auxiliary = graph.add_output_port(rack, 4).unwrap();
+    assert_eq!(graph.get_port(main_input).unwrap().channels(), 2);
+    assert_eq!(graph.get_port(sidechain).unwrap().channels(), 1);
+    assert_eq!(graph.get_port(main_output).unwrap().channels(), 2);
+    assert_eq!(graph.get_port(auxiliary).unwrap().channels(), 4);
+    assert_eq!(
+        graph.remove_input_port(rack, sidechain).unwrap().id(),
+        sidechain
+    );
+    assert_eq!(
+        graph.remove_output_port(rack, auxiliary).unwrap().id(),
+        auxiliary
+    );
+    assert_eq!(graph.get_node(rack).unwrap().inputs()[0].id(), main_input);
+    assert_eq!(graph.get_node(rack).unwrap().outputs()[0].id(), main_output);
+    graph.validate().unwrap();
+}
+
+#[test]
+fn rack_ports_reject_zero_width_and_connected_removal() {
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 1).unwrap();
+    let rack = graph.create_node(NodeKind::Rack, 2).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 4).unwrap();
+    assert_eq!(
+        graph.add_input_port(rack, 0),
+        Err(GraphError::InvalidChannelCount)
+    );
+    assert_eq!(
+        graph.add_output_port(rack, 0),
+        Err(GraphError::InvalidChannelCount)
+    );
+    let input = graph.add_input_port(rack, 1).unwrap();
+    let output = graph.add_output_port(rack, 4).unwrap();
+    let source_port = graph.get_node(source).unwrap().outputs()[0].id();
+    let sink_port = graph.get_node(sink).unwrap().inputs()[0].id();
+    graph
+        .connect(source_port, input, SendParams::default())
+        .unwrap();
+    graph
+        .connect(output, sink_port, SendParams::default())
+        .unwrap();
+    assert_eq!(
+        graph.remove_input_port(rack, input),
+        Err(GraphError::PortConnected)
+    );
+    assert_eq!(
+        graph.remove_output_port(rack, output),
+        Err(GraphError::PortConnected)
+    );
+    assert_eq!(
+        graph.add_output_port(source, 1),
+        Err(GraphError::FixedPortLayout)
+    );
+    graph.validate().unwrap();
+}
+
+#[test]
 fn node_kinds_create_fixed_layouts_and_bus_starts_without_inputs() {
     let mut graph = LogicalGraph::new();
     for (kind, channels, inputs, outputs) in [
@@ -407,5 +472,39 @@ fn deep_chains_use_iterative_traversal_and_remain_reconnectable() {
     assert_eq!(graph.topological_order().unwrap(), nodes);
     graph.disconnect(edges[255]).unwrap();
     graph.connect(last, first, SendParams::default()).unwrap();
+    graph.validate().unwrap();
+}
+
+#[test]
+fn rack_layout_creation_and_last_port_removal_are_atomic() {
+    let mut graph = LogicalGraph::new();
+    for (inputs, outputs) in [
+        (&[][..], &[2][..]),
+        (&[1][..], &[][..]),
+        (&[0][..], &[2][..]),
+    ] {
+        let before = graph.clone();
+        assert!(graph.create_rack(inputs, outputs).is_err());
+        assert_eq!(graph, before);
+    }
+    let rack = graph.create_rack(&[1, 4], &[2, 8]).unwrap();
+    assert_eq!(graph.get_node(rack).unwrap().channels(), 2);
+    let input = graph.get_node(rack).unwrap().inputs()[1].id();
+    let output = graph.get_node(rack).unwrap().outputs()[0].id();
+    graph.remove_input_port(rack, input).unwrap();
+    graph.remove_output_port(rack, output).unwrap();
+    assert_eq!(graph.get_node(rack).unwrap().channels(), 8);
+    let input = graph.get_node(rack).unwrap().inputs()[0].id();
+    let output = graph.get_node(rack).unwrap().outputs()[0].id();
+    let before = graph.clone();
+    assert_eq!(
+        graph.remove_input_port(rack, input),
+        Err(GraphError::InvalidNodeLayout)
+    );
+    assert_eq!(
+        graph.remove_output_port(rack, output),
+        Err(GraphError::InvalidNodeLayout)
+    );
+    assert_eq!(graph, before);
     graph.validate().unwrap();
 }

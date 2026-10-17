@@ -235,7 +235,18 @@ impl EngineProject {
                 NodeConfig::SpectrumAnalyzer(settings) => {
                     settings.valid() && node.channels() <= 256
                 }
-                NodeConfig::Rack(settings) => settings.valid_for(node.channels()),
+                NodeConfig::Rack(settings) => settings.valid_layout(
+                    &node
+                        .inputs()
+                        .iter()
+                        .map(|port| port.channels())
+                        .collect::<Vec<_>>(),
+                    &node
+                        .outputs()
+                        .iter()
+                        .map(|port| port.channels())
+                        .collect::<Vec<_>>(),
+                ),
                 _ => true,
             };
             if !valid {
@@ -322,7 +333,19 @@ impl EngineProject {
             .slots
             .iter()
             .find(|candidate| candidate.id == slot && !candidate.bypass)?;
-        Some((graph_node.channels(), slot))
+        let layout = settings.resolve_layout(
+            &graph_node
+                .inputs()
+                .iter()
+                .map(|port| port.channels())
+                .collect::<Vec<_>>(),
+            &graph_node
+                .outputs()
+                .iter()
+                .map(|port| port.channels())
+                .collect::<Vec<_>>(),
+        )?;
+        Some((layout.slots.get(&slot.id)?.input_channels, slot))
     }
 
     pub fn validate_parameter(
