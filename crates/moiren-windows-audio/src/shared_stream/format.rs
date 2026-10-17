@@ -170,14 +170,7 @@ pub(crate) fn catalog_support(format: &FormatSnapshot, capture: bool) -> (Option
     };
     if (!float && !pcm)
         || (format.format_tag == EXTENSIBLE && usize::from(format.extra_bytes) < EXTENSION_BYTES)
-        || validate_layout(
-            info,
-            format.block_align,
-            format
-                .sample_rate
-                .saturating_mul(u32::from(format.block_align)),
-        )
-        .is_err()
+        || validate_layout(info, format.block_align, format.avg_bytes_per_sec).is_err()
     {
         return (Some(false), false);
     }

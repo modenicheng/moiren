@@ -28,6 +28,16 @@ fn catalog_marks_conversion_as_unverified_not_unsupported() {
 }
 
 #[test]
+fn catalog_rejects_a_mix_descriptor_with_inconsistent_byte_rate() {
+    let memory = test_mix(48_000, 2, 32, true);
+    let mut base = unsafe { memory.0.read_unaligned() };
+    base.nAvgBytesPerSec = 1;
+    let snapshot = crate::catalog::FormatSnapshot::from_base(base);
+
+    assert_eq!(catalog_support(&snapshot, false), (Some(false), false));
+}
+
+#[test]
 fn extensible_pcm_valid_bits_are_distinct_from_container_width() {
     for (valid_bits, extra, mask, supported) in [
         (24, 22, 3, true),
