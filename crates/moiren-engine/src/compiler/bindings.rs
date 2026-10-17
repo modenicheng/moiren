@@ -2,6 +2,7 @@
 use std::collections::{BTreeMap, btree_map::Entry};
 
 use moiren_core::graph::{LogicalGraph, NodeId, NodeKind, PortId, PortRole};
+use moiren_core::protocol::{ParamValue, ParameterId};
 
 use super::CompileError;
 use crate::{
@@ -46,6 +47,7 @@ pub(super) enum Binding<S: ProcessingSample> {
 pub struct NodeBindings<S: ProcessingSample> {
     pub(super) strips: BTreeMap<NodeId, crate::processor::StripConfig>,
     pub(super) observer_reuse: BTreeMap<NodeId, moiren_core::protocol::ProcessorId>,
+    pub(super) rack_initial: BTreeMap<(NodeId, u32, u32), ParamValue>,
     nodes: BTreeMap<NodeId, Binding<S>>,
     observers: BTreeMap<PortId, Vec<Box<dyn crate::processor::RtObserver<S>>>>,
     input_observers: BTreeMap<PortId, Vec<Box<dyn crate::processor::RtObserver<S>>>>,
@@ -60,6 +62,7 @@ impl<S: ProcessingSample> NodeBindings<S> {
         Self {
             strips: BTreeMap::new(),
             observer_reuse: BTreeMap::new(),
+            rack_initial: BTreeMap::new(),
             nodes: BTreeMap::new(),
             observers: BTreeMap::new(),
             input_observers: BTreeMap::new(),
@@ -72,6 +75,25 @@ impl<S: ProcessingSample> NodeBindings<S> {
 
     pub fn bind_strip(&mut self, node: NodeId, config: crate::processor::StripConfig) {
         self.strips.insert(node, config);
+    }
+
+    /// Set a slot's desired initial value before its plan can render. Stable
+    /// identities are resolved and domain-checked after rack expansion; this
+    /// does not change static kernel configuration or allocate on the RT path.
+    pub fn bind_rack_parameter(
+        &mut self,
+        node: NodeId,
+        slot: u32,
+        parameter: ParameterId,
+        value: ParamValue,
+    ) -> Result<(), CompileError> {
+        match self.rack_initial.entry((node, slot, parameter.0)) {
+            Entry::Vacant(entry) => {
+                entry.insert(value);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(CompileError::DuplicateBinding { node }),
+        }
     }
 
     /// Reuse a node's independent observer during compile_update. The caller

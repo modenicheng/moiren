@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, mem::size_of};
 
 use moiren_core::{
     graph::{EdgeId, GraphError, LogicalGraph, NodeId, SendTap},
-    protocol::{ParameterKey, ProcessorId},
+    protocol::{ParameterId, ParameterKey, ProcessorId},
 };
 use thiserror::Error;
 
@@ -174,12 +174,31 @@ fn compile_inner<S: ProcessingSample>(
         }
     }
     bindings.validate(graph)?;
-    let (builder, mapping) = plan::build(
+    let (mut builder, mapping) = plan::build(
         graph,
         &mut bindings,
         cfg.max_block_frames,
         cfg.processing_sr,
     )?;
+    for ((node, slot, parameter), value) in bindings.rack_initial {
+        let parameter = ParameterId(parameter);
+        let processor = mapping
+            .rack_slot(node, slot)
+            .ok_or(CompileError::BindingKind { node })?;
+        let spec = builder
+            .params
+            .iter_mut()
+            .find(|spec| {
+                spec.key
+                    == ParameterKey {
+                        processor,
+                        parameter,
+                    }
+            })
+            .filter(|spec| spec.accepts(value, 0))
+            .ok_or(CompileError::BindingKind { node })?;
+        spec.initial = value;
+    }
     let audio_bytes = builder.layouts.iter().try_fold(0usize, |total, layout| {
         layout
             .channels

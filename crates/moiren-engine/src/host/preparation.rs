@@ -331,6 +331,19 @@ fn prepare<S: ProcessingSample>(
         };
         result.map_err(|error| Diagnostic::Compile(error.to_string()))?;
     }
+    for parameter in &job.project.parameters {
+        if let ParameterTarget::RackSlot {
+            node,
+            slot,
+            parameter: id,
+        } = parameter.target
+        {
+            prepared
+                .bindings
+                .bind_rack_parameter(node, slot, id, parameter.value)
+                .map_err(|error| Diagnostic::Compile(error.to_string()))?;
+        }
+    }
     shared
         .signals
         .prepare_levels(&job.project, &signals, &mut prepared.bindings)

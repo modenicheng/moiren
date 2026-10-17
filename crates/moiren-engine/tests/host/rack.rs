@@ -411,3 +411,57 @@ fn rack_pending_slot_target_is_pruned_when_deleted_or_bypassed_before_activation
         );
     }
 }
+
+#[test]
+fn rack_slot_saved_parameter_is_prepared_before_initial_audio() {
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let (mut project, node) = rack_project();
+    project.parameters.push(DesiredParameter {
+        target: slot_target(node, 90, Gain::LEVEL),
+        value: ParamValue::Float(0.25),
+    });
+    let host = EngineHost::<f64>::open(HostConfig::default(), project, backend).unwrap();
+    wait(&host.observer(), |snapshot| {
+        snapshot.execution == ExecutionState::Running
+    });
+    wait_sample(&state, 0.125);
+}
+
+#[test]
+fn rack_slot_live_parameter_survives_structural_repreparation() {
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let (project, node) = rack_project();
+    let host = EngineHost::<f64>::open(HostConfig::default(), project, backend).unwrap();
+    wait(&host.observer(), |snapshot| {
+        snapshot.execution == ExecutionState::Running
+    });
+    let receipt = host
+        .control()
+        .parameter(
+            slot_target(node, 90, Gain::LEVEL),
+            ParamValue::Float(0.25),
+            ParameterTiming::NextBlock,
+            0,
+        )
+        .unwrap();
+    assert!(matches!(
+        receipt.wait(TIMEOUT),
+        ParameterOutcome::Applied(_)
+    ));
+    wait_sample(&state, 0.125);
+    let edit = host
+        .control()
+        .edit(move |project| {
+            rack_config(project, node).slots.push(RackSlot {
+                id: 999,
+                bypass: true,
+                processor: RackProcessor::Gain { initial: 1.0 },
+            });
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(edit.wait(TIMEOUT), EditOutcome::Activated { .. }));
+    wait_sample(&state, 0.125);
+}
