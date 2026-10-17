@@ -16,7 +16,9 @@ Graph 中的每个 Source、Sink 独立绑定音源或设备，多个输入可�
 
 Settings 中的 Compatible、Balanced、Low 保存期望的延迟档位，通过 Apply 生效。实际设备周期、队列和初始化 fallback 来自原生观测。请求 5 ms 不代表设备实际为 5 ms，队列帧数也不代表物理端到端时延。
 
-支持项目保存/加载、物理输入、进程树捕获、Gain、Balance/Mono/Swap、Bus、Compressor、发送参数和真实电平。正式 native 边界仍为 WASAPI Shared、双声道 graph、48 kHz 输出；物理输入接受 44.1/48 kHz 单/双声道 f32。
+后端节点支持 Input/Output、Gain、Balance/Mono/Swap、Bus、Compressor、EQ、Gate、Limiter、Delay、ChannelMapper、Recorder、Meter、SpectrumAnalyzer 和 Rack。Rack 支持独立多输入/多输出端口、显式无分支处理链和声道宽度转换；slot 参数通过稳定身份控制，兼容换图保留相容 slot 的 DSP 状态。桌面编辑入口尚未覆盖所有后端节点。
+
+正式 native 边界仍为 WASAPI Shared、双声道 IO、48 kHz 输出；中间 DSP 的端口宽度独立于原生 IO 限制。物理 endpoint 的有效 PCM/float mix format 可交由 Windows 转换成客户端格式，最终是否支持由设备初始化结果确认。
 
 ## 验证
 
@@ -42,13 +44,15 @@ cargo run --locked -p moiren-windows-audio --example routing_probe -- --output '
 - Process Loopback 是 Application Capture / Monitor；真正的逐应用 Redirect / Takeover 尚未解决。独占探针保持独立实验。
 - SRC 仍是线性插值基线。没有承诺专业重采样质量、多输出延迟补偿、物理端到端时延或长期无 XRUN。
 - 正式 Exclusive、ASIO、多通道、虚拟音频驱动、CLAP/VST3、Named Pipe 和远程控制仍属后续能力。
-- EQ/Gate/Limiter/Delay/Recorder 和标准 LUFS/True Peak 尚未补齐；PreFader 目前只支持 Gain 或已绑定 channel strip 的节点。
+- EQ 当前为单段 peaking band；Limiter 为零前视 sample-peak；Meter 提供 Sample Peak/RMS，标准 LUFS/True Peak 尚未实现。Recorder 使用有界队列，WAV 写入和 finalize 由控制侧调用者执行。
+- Rack 的内置 slot 为单输入流/单输出流，不包含插件 sidechain/multi-bus kernel。PreFader 支持 Gain 或已绑定 channel strip 的节点，并按各输出端口独立取 tap。
 
 ## 文档
 
 - [托管路由与低延迟](docs/designs/14-managed-routing-low-latency.md)
 - [本轮验证记录](docs/superpowers/plans/2026-10-16-managed-routing-low-latency-validation.md)
 - [EngineHost 所有权与更新](crates/moiren-engine/README.md)
+- [后端节点验收与能力边界](docs/validation/backend-nodes.md)
 - [Windows 音频后端、探针与硬件边界](crates/moiren-windows-audio/README.md)
 - [桌面应用与 CLI](crates/moiren-app/README.md)
 - [产品与路线图](docs/Moiren-PRD-Roadmap.md)（早期进度段落以当前实现和本轮验收记录为准）

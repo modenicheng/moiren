@@ -29,7 +29,7 @@ cargo run --locked -p moiren-engine --example managed_graph
 - The project contains the real `LogicalGraph`, node configuration, desired
   parameters and bounded processing configuration. `EngineControl::edit`
   validates and commits the complete transaction on the control worker.
-- `EngineControl::parameter` uses stable node/edge identities. Its receipt reports
+- `EngineControl::parameter` uses stable node/edge/Rack-slot identities. Its receipt reports
   application or rejection; graph activation does not acknowledge separate
   parameter commands that have not yet applied.
 - Graph revision, plan revision, owner generation, resource generation and epoch
@@ -81,3 +81,38 @@ Portable host/runtime tests cover startup/shutdown, transactions, coalescing,
 stale work, confirmation, parameters, resource recovery, signals, non-RT
 destruction and allocation tracking. Native hardware checks are separate ignored
 windows-audio tests with zero output gain.
+
+## Builtin nodes
+
+The host prepares Input/Output, Gain, stereo Balance/Mono/Swap, Bus, Compressor,
+EQ, Gate, Limiter, Delay, ChannelMapper, Recorder, Meter, SpectrumAnalyzer and
+Rack. DSP and graph compilation support both f32 and f64; native Windows IO
+has its own narrower format contract.
+
+Rack expands real leaf kernels into the existing plan. `create_rack` defines
+independent stream ports; `RackSettings::routes` assigns each slot to a
+nonbranching chain. Slots execute in vector order. `resolve_layout` reports
+each slot's actual input/output widths, including ChannelMapper changes and
+bypass. An empty routes list retains the original main-input/main-output chain.
+Unrouted outputs are silent. Route port indices must be updated when preceding
+ports are removed; slot IDs stay stable when slots move.
+
+`ParameterTarget::RackSlot` resolves its stable node/slot/parameter identity
+against the active plan. Saved desired values are prepared before the first
+audio block. Compatible updates retain unchanged, active slots with matching
+actual IO, including delay history, filter state and parameter ramps; changing
+static settings or bypass does not reuse the previous kernel. Low-level callers
+can request the same transfers with `UpdateReuse::rack_slots` and must assert
+static configuration compatibility themselves.
+
+`EngineObserver` exposes managed Meter/Recorder readers and typed level/spectrum
+subscriptions. Reader handles do not keep the host alive, and owner generations
+prevent an old handle from controlling a replacement owner's recorder. Recorder
+audio passes through a bounded SPSC queue; file writing and WAV finalization stay
+off RT. All observer and DSP storage is prepared before rendering.
+
+EQ is one peaking band. Limiter measures sample peaks without lookahead or
+oversampling. Meter reports Sample Peak/RMS, not LUFS or True Peak. Rack leaf
+kernels currently have one input stream and one output stream; plugin buses and
+plugin hosting are not implemented. See [backend acceptance](../../docs/validation/backend-nodes.md)
+for the precise scope and verification commands.
