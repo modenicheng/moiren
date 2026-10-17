@@ -139,7 +139,13 @@ impl EngineProject {
     pub fn validate(&self) -> Result<(), ProjectError> {
         self.graph.validate()?;
         for (&node, config) in &self.strips {
-            if !config.valid(self.graph.get_node(node)?.channels()) {
+            let graph_node = self.graph.get_node(node)?;
+            let ports = if graph_node.kind() == NodeKind::Sink {
+                graph_node.inputs()
+            } else {
+                graph_node.outputs()
+            };
+            if !ports.iter().all(|port| config.valid(port.channels())) {
                 return Err(ProjectError::InvalidProcessor(node));
             }
         }

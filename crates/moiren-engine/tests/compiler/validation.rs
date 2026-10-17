@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn rack_strip_invalid_auxiliary_channel_is_rejected_before_lowering() {
+    use moiren_engine::rack::RackSettings;
+    let mut graph = LogicalGraph::new();
+    let rack = graph.create_rack(&[2, 1], &[2, 1]).unwrap();
+    let mut bindings = NodeBindings::<f64>::new();
+    bindings.bind_rack(rack, RackSettings::default()).unwrap();
+    bindings.bind_strip(
+        rack,
+        StripConfig {
+            mode: ChannelMode::Solo(1),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(
+        compile(&graph, bindings, config()),
+        Err(CompileError::BindingKind { node }) if node == rack
+    ));
+}
+
+#[test]
 fn unsupported_send_semantics_are_rejected_instead_of_ignored() {
     let mut graph = LogicalGraph::new();
     let source = graph.create_node(NodeKind::Source, 1).unwrap();

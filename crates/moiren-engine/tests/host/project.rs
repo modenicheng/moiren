@@ -2,6 +2,47 @@ use moiren_core::graph::{LogicalGraph, NodeKind};
 use moiren_engine::host::{EngineProject, NodeConfig, ProjectError};
 
 #[test]
+fn rack_strip_channel_selection_must_fit_every_output() {
+    use moiren_engine::{
+        processor::{ChannelMode, StripConfig},
+        rack::{RackRoute, RackSettings},
+    };
+    let mut project = EngineProject::default();
+    let rack = project.graph.create_rack(&[2, 1], &[2, 1]).unwrap();
+    project.nodes.insert(
+        rack,
+        NodeConfig::Rack(RackSettings {
+            routes: vec![
+                RackRoute {
+                    input_port: 0,
+                    output_port: 0,
+                    slots: vec![],
+                },
+                RackRoute {
+                    input_port: 1,
+                    output_port: 1,
+                    slots: vec![],
+                },
+            ],
+            ..Default::default()
+        }),
+    );
+    project.strips.insert(
+        rack,
+        StripConfig {
+            mode: ChannelMode::Solo(1),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        project.validate(),
+        Err(ProjectError::InvalidProcessor(rack))
+    );
+    project.strips.get_mut(&rack).unwrap().mode = ChannelMode::Solo(0);
+    project.validate().unwrap();
+}
+
+#[test]
 fn project_rejects_missing_configuration_and_kind_mismatch() {
     let mut project = EngineProject::default();
     let node = project.graph.create_node(NodeKind::Gain, 1).unwrap();

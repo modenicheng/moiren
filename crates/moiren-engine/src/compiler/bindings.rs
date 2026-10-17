@@ -141,7 +141,15 @@ impl<S: ProcessingSample> NodeBindings<S> {
 
     pub(super) fn validate(&self, graph: &LogicalGraph) -> Result<(), CompileError> {
         for (&node, config) in &self.strips {
-            if !config.valid(graph.get_node(node)?.channels()) {
+            let graph_node = graph.get_node(node)?;
+            let ports = if graph_node.kind() == NodeKind::Sink {
+                graph_node.inputs()
+            } else {
+                graph_node.outputs()
+            };
+            // One node control is applied independently to every output stream.
+            // A channel selector must therefore be valid for all their widths.
+            if !ports.iter().all(|port| config.valid(port.channels())) {
                 return Err(CompileError::BindingKind { node });
             }
         }
