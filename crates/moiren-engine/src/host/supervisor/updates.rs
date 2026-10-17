@@ -33,6 +33,9 @@ impl<S: ProcessingSample> Supervisor<S> {
                 active.graph = candidate.graph;
                 self.structural_values
                     .retain(|(revision, _)| *revision > candidate.graph);
+                self.shared
+                    .signals
+                    .activate(active.owner_generation, &active.project);
                 let control = std::mem::replace(&mut active.control, candidate.control);
                 let graph = active.graph;
                 let plan = active.control.identity().0;
@@ -107,6 +110,9 @@ impl<S: ProcessingSample> Supervisor<S> {
                 self.shared
                     .signals
                     .install_readers(initial.owner_generation, initial.readers);
+                self.shared
+                    .signals
+                    .activate(initial.owner_generation, &completion.project);
                 self.active = Some(Active {
                     owner: initial.owner,
                     plans: initial.plans,
@@ -218,7 +224,9 @@ impl<S: ProcessingSample> Supervisor<S> {
     pub(super) fn schedule(&mut self) {
         if self.preparing.is_some()
             || self.pending.is_some()
-            || self.cleanup_inflight > self.config.cleanup_capacity - 3
+            // Reclaim retired/cancelled topic shapes before reserving another
+            // candidate. Bounded signal capacity must not depend on worker speed.
+            || self.cleanup_inflight != 0
             || self.fault.is_some()
             || self
                 .blocked
@@ -227,11 +235,9 @@ impl<S: ProcessingSample> Supervisor<S> {
         {
             return;
         }
-        if let Some(active) = &self.active {
-            if !active.confirmed || active.graph == self.desired {
-                return;
-            }
-        } else if self.cleanup_inflight != 0 {
+        if let Some(active) = &self.active
+            && (!active.confirmed || active.graph == self.desired)
+        {
             return;
         }
         let Some(plan_revision) = self.plan_revision.checked_add(1) else {

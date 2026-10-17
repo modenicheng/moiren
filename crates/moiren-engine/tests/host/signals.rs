@@ -1,10 +1,349 @@
 use super::support::*;
 use moiren_core::graph::{NodeKind, SendParams};
 use moiren_engine::{
-    host::*, meter::MeterSettings, processor::CompressorSettings, recorder::RecorderSettings,
+    host::*,
+    meter::MeterSettings,
+    processor::CompressorSettings,
+    rack::{RackRoute, RackSettings},
+    recorder::RecorderSettings,
     spectrum::SpectrumSettings,
 };
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
+};
+
+fn spectrum_project() -> (EngineProject, moiren_core::graph::NodeId) {
+    let (mut project, input, gain, output) = project();
+    project.graph.remove_node(gain).unwrap();
+    project.nodes.remove(&gain);
+    let spectrum = project
+        .graph
+        .create_node(NodeKind::SpectrumAnalyzer, 1)
+        .unwrap();
+    project.nodes.insert(
+        spectrum,
+        NodeConfig::SpectrumAnalyzer(SpectrumSettings {
+            fft_size: 16,
+            hop_frames: 16,
+        }),
+    );
+    let source = project.graph.get_node(input).unwrap().outputs()[0].id();
+    let destination = project.graph.get_node(output).unwrap().inputs()[0].id();
+    let spectrum_input = project.graph.get_node(spectrum).unwrap().inputs()[0].id();
+    let spectrum_output = project.graph.get_node(spectrum).unwrap().outputs()[0].id();
+    project
+        .graph
+        .connect(source, spectrum_input, SendParams::default())
+        .unwrap();
+    project
+        .graph
+        .connect(spectrum_output, destination, SendParams::default())
+        .unwrap();
+    (project, spectrum)
+}
+
+fn wait_spectrum(subscription: &mut ManagedSpectrumSubscription, fft_size: usize) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        if let Some(block) = subscription.subscriber.read_latest() {
+            assert_eq!(block.header().fft_size, fft_size);
+            assert_eq!(block.header().channels, 1);
+            assert_eq!(block.elements().len(), fft_size / 2 + 1);
+            return;
+        }
+        assert!(Instant::now() < deadline, "spectrum did not publish");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn wait_level(subscription: &mut ManagedLevelSubscription, channels: usize, peak: f32) {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        if let Some(block) = subscription.subscriber.read_latest() {
+            assert_eq!(block.elements().len(), channels);
+            assert!(
+                block
+                    .elements()
+                    .iter()
+                    .all(|level| (level.peak - peak).abs() < 1e-5)
+            );
+            return;
+        }
+        assert!(Instant::now() < deadline, "level did not publish");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn levels_follow_rack_port_identity_and_width_only_after_activation() {
+    // Equal widths still require different topics when the observed port changes.
+    for primary_channels in [2, 1] {
+        let (mut project, input, gain, output) = project();
+        project.graph.remove_node(gain).unwrap();
+        project.nodes.remove(&gain);
+        let rack = project
+            .graph
+            .create_rack(&[2, 1], &[primary_channels, 1])
+            .unwrap();
+        project.nodes.insert(
+            rack,
+            NodeConfig::Rack(RackSettings {
+                routes: vec![RackRoute {
+                    input_port: 1,
+                    output_port: 1,
+                    slots: vec![],
+                }],
+                ..Default::default()
+            }),
+        );
+        let source = project.graph.get_node(input).unwrap().outputs()[0].id();
+        let destination = project.graph.get_node(output).unwrap().inputs()[0].id();
+        let node = project.graph.get_node(rack).unwrap();
+        let rack_input = node.inputs()[1].id();
+        let unused_output = node.outputs()[0].id();
+        let rack_output = node.outputs()[1].id();
+        project
+            .graph
+            .connect(source, rack_input, SendParams::default())
+            .unwrap();
+        project
+            .graph
+            .connect(rack_output, destination, SendParams::default())
+            .unwrap();
+        let backend = FakeBackend::default();
+        let state = backend.0.clone();
+        let config = HostConfig {
+            signal_bindings: 4,
+            signals: moiren_signal::BusConfig {
+                max_topics: 4,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let host = EngineHost::<f64>::open(config, project, backend).unwrap();
+        let observer = host.observer();
+        let initial = wait(&observer, |snapshot| snapshot.active_revision == Some(1));
+        let mut old = observer.subscribe_level(rack).unwrap();
+        wait_level(&mut old, primary_channels, 0.0);
+        state.pause_audio.store(true, Ordering::SeqCst);
+        let edit = host
+            .control()
+            .edit(move |project| {
+                project.graph.remove_output_port(rack, unused_output)?;
+                let NodeConfig::Rack(settings) = project.nodes.get_mut(&rack).unwrap() else {
+                    unreachable!()
+                };
+                settings.routes[0].output_port = 0;
+                Ok(())
+            })
+            .unwrap();
+        wait(&observer, |snapshot| {
+            matches!(
+                snapshot.update,
+                UpdateState::Pending(_) | UpdateState::Blocked { .. }
+            )
+        });
+        assert!(
+            matches!(observer.snapshot().update, UpdateState::Pending(_)),
+            "{:?}",
+            observer.snapshot()
+        );
+        let during = observer.subscribe_level(rack).unwrap();
+        assert_eq!(
+            during.subscriber.status().publisher,
+            moiren_signal::PublisherStatus::Bound
+        );
+        assert_eq!(
+            old.subscriber.status().lifecycle,
+            moiren_signal::TopicLifecycle::Registered
+        );
+        state.pause_audio.store(false, Ordering::SeqCst);
+        assert!(matches!(edit.wait(TIMEOUT), EditOutcome::Activated { .. }));
+        assert_eq!(
+            observer.snapshot().owner_generation,
+            initial.owner_generation
+        );
+        let mut active = observer.subscribe_level(rack).unwrap();
+        wait_level(&mut active, 1, 1.0);
+        wait(&observer, |_| {
+            old.subscriber.status().lifecycle == moiren_signal::TopicLifecycle::Closed
+        });
+        assert_eq!(
+            during.subscriber.status().lifecycle,
+            moiren_signal::TopicLifecycle::Closed
+        );
+        drop(host);
+        assert_eq!(
+            active.subscriber.status().lifecycle,
+            moiren_signal::TopicLifecycle::Closed
+        );
+        assert!(observer.subscribe_level(rack).is_err());
+    }
+}
+
+#[test]
+fn cancelled_spectrum_resize_preserves_active_subscription_and_reclaims_candidate() {
+    let (project, spectrum) = spectrum_project();
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let config = HostConfig {
+        signal_bindings: 5,
+        signals: moiren_signal::BusConfig {
+            max_topics: 5,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let host = EngineHost::<f64>::open(config, project, backend).unwrap();
+    let observer = host.observer();
+    wait(&observer, |snapshot| snapshot.active_revision == Some(1));
+    let mut active = observer.subscribe_spectrum(spectrum).unwrap();
+    wait_spectrum(&mut active, 16);
+    state.pause_audio.store(true, Ordering::SeqCst);
+    let cancelled = host
+        .control()
+        .edit(move |project| {
+            project.nodes.insert(
+                spectrum,
+                NodeConfig::SpectrumAnalyzer(SpectrumSettings {
+                    fft_size: 32,
+                    hop_frames: 32,
+                }),
+            );
+            Ok(())
+        })
+        .unwrap();
+    wait(&observer, |snapshot| {
+        matches!(snapshot.update, UpdateState::Pending(_))
+    });
+    let replacement = host
+        .control()
+        .edit(move |project| {
+            project.nodes.insert(
+                spectrum,
+                NodeConfig::SpectrumAnalyzer(SpectrumSettings {
+                    fft_size: 16,
+                    hop_frames: 16,
+                }),
+            );
+            Ok(())
+        })
+        .unwrap();
+    wait(&observer, |snapshot| snapshot.desired_revision == 3);
+    assert!(matches!(
+        cancelled.outcome(),
+        EditOutcome::Superseded { .. }
+    ));
+    state.pause_audio.store(false, Ordering::SeqCst);
+    assert!(matches!(
+        replacement.wait(TIMEOUT),
+        EditOutcome::Activated { .. }
+    ));
+    assert_eq!(
+        active.subscriber.status().lifecycle,
+        moiren_signal::TopicLifecycle::Registered
+    );
+    wait_spectrum(&mut active, 16);
+    // A third shape needs the cancelled candidate's topic and host slot back.
+    let resize = host
+        .control()
+        .edit(move |project| {
+            project.nodes.insert(
+                spectrum,
+                NodeConfig::SpectrumAnalyzer(SpectrumSettings {
+                    fft_size: 64,
+                    hop_frames: 64,
+                }),
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        matches!(resize.wait(TIMEOUT), EditOutcome::Activated { .. }),
+        "{:?}",
+        observer.snapshot()
+    );
+    let mut next = observer.subscribe_spectrum(spectrum).unwrap();
+    wait_spectrum(&mut next, 64);
+}
+
+#[test]
+fn spectrum_resize_switches_topics_only_on_activation_and_reclaims_old_shapes() {
+    let (project, spectrum) = spectrum_project();
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    // Three level topics plus the active and candidate spectrum topics.
+    let config = HostConfig {
+        signal_bindings: 5,
+        signals: moiren_signal::BusConfig {
+            max_topics: 5,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let host = EngineHost::<f64>::open(config, project, backend).unwrap();
+    let observer = host.observer();
+    let initial = wait(&observer, |snapshot| snapshot.active_revision == Some(1));
+    let mut subscription = observer.subscribe_spectrum(spectrum).unwrap();
+    wait_spectrum(&mut subscription, 16);
+    for fft_size in [32, 64, 16] {
+        state.pause_audio.store(true, Ordering::SeqCst);
+        let edit = host
+            .control()
+            .edit(move |project| {
+                project.nodes.insert(
+                    spectrum,
+                    NodeConfig::SpectrumAnalyzer(SpectrumSettings {
+                        fft_size,
+                        hop_frames: fft_size,
+                    }),
+                );
+                Ok(())
+            })
+            .unwrap();
+        wait(&observer, |snapshot| {
+            matches!(snapshot.update, UpdateState::Pending(_))
+                || matches!(snapshot.update, UpdateState::Blocked { .. })
+        });
+        assert!(
+            matches!(observer.snapshot().update, UpdateState::Pending(_)),
+            "{:?}",
+            observer.snapshot()
+        );
+        let candidate_subscription = observer.subscribe_spectrum(spectrum).unwrap();
+        assert_eq!(
+            candidate_subscription.subscriber.status().publisher,
+            moiren_signal::PublisherStatus::Bound
+        );
+        assert_eq!(
+            subscription.subscriber.status().lifecycle,
+            moiren_signal::TopicLifecycle::Registered
+        );
+        state.pause_audio.store(false, Ordering::SeqCst);
+        assert!(matches!(edit.wait(TIMEOUT), EditOutcome::Activated { .. }));
+        assert_eq!(
+            observer.snapshot().owner_generation,
+            initial.owner_generation
+        );
+        let mut next = observer.subscribe_spectrum(spectrum).unwrap();
+        wait_spectrum(&mut next, fft_size);
+        wait(&observer, |_| {
+            subscription.subscriber.status().lifecycle == moiren_signal::TopicLifecycle::Closed
+        });
+        assert_eq!(
+            candidate_subscription.subscriber.status().lifecycle,
+            moiren_signal::TopicLifecycle::Closed
+        );
+        subscription = next;
+    }
+    drop(host);
+    assert_eq!(
+        subscription.subscriber.status().lifecycle,
+        moiren_signal::TopicLifecycle::Closed
+    );
+    assert!(observer.subscribe_spectrum(spectrum).is_err());
+}
 
 #[test]
 fn unrelated_updates_preserve_recorder_state_and_unread_queue() {

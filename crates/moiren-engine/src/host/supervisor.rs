@@ -176,6 +176,13 @@ impl<S: ProcessingSample> Supervisor<S> {
             self.retired();
             self.completions();
             self.owner_status();
+            // No candidate can still need a non-active shape. Prune before
+            // scheduling so bounded topic/host slots are available immediately.
+            if self.preparing.is_none() && self.pending.is_none() && self.cleanup_inflight == 0 {
+                self.shared
+                    .signals
+                    .prune(self.active.as_ref().map(|active| &active.project));
+            }
             let closing = self.closing();
             if closing
                 || self.fault.is_some()
@@ -220,13 +227,14 @@ impl<S: ProcessingSample> Supervisor<S> {
                 }
             }
             self.shared.signals.pump();
-            if self.preparing.is_none() && self.pending.is_none() && self.cleanup_inflight == 0 {
-                if let Some(active) = &self.active {
-                    self.shared.signals.prune(&active.project);
-                }
-                if !closing && !self.project.has_output() && self.active.is_none() {
-                    self.activate_edits(self.desired, None);
-                }
+            if self.preparing.is_none()
+                && self.pending.is_none()
+                && self.cleanup_inflight == 0
+                && !closing
+                && !self.project.has_output()
+                && self.active.is_none()
+            {
+                self.activate_edits(self.desired, None);
             }
             self.publish_snapshot();
             if closing

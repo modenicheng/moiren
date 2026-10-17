@@ -11,7 +11,7 @@ use crate::{
     recorder::{RecorderReader, RecorderStats},
     spectrum::{SpectrumSettings, SpectrumWindow},
 };
-use moiren_core::graph::NodeId;
+use moiren_core::graph::{NodeId, PortId};
 use moiren_signal::{
     BlockInit, Bus, HostControl, LatestBlock, LatestValue, PreparedPublisher, RtHost, Subscriber,
     Topic,
@@ -56,9 +56,7 @@ impl ManagedMeterReader {
             .slot
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let Some((generation, reader)) = slot.as_mut() else {
-            return None;
-        };
+        let (generation, reader) = slot.as_mut()?;
         (*generation == self.owner_generation)
             .then(|| reader.latest())
             .flatten()
@@ -114,9 +112,7 @@ impl ManagedRecorderReader {
             .slot
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let Some((generation, reader)) = slot.as_mut() else {
-            return None;
-        };
+        let (generation, reader) = slot.as_mut()?;
         (*generation == self.owner_generation).then(|| f(reader))
     }
 }
@@ -133,8 +129,12 @@ struct Directory {
     bus: Bus,
     generation: u64,
     topics: BTreeMap<NodeId, Topic<LatestValue<f32>>>,
-    levels: BTreeMap<NodeId, Topic<ManagedLevelTopic>>,
-    spectra: BTreeMap<NodeId, Topic<ManagedSpectrumTopic>>,
+    // Prepared/retired shapes coexist with the active shape until all plan
+    // leases retire. Preparation never changes the public subscription target.
+    levels: BTreeMap<(NodeId, PortId, usize), Topic<ManagedLevelTopic>>,
+    active_levels: BTreeMap<NodeId, Topic<ManagedLevelTopic>>,
+    spectra: BTreeMap<(NodeId, usize, usize), Topic<ManagedSpectrumTopic>>,
+    active_spectra: BTreeMap<NodeId, Topic<ManagedSpectrumTopic>>,
     meters: BTreeMap<NodeId, ReaderSlot<MeterReader>>,
     recorders: BTreeMap<NodeId, ReaderSlot<RecorderReader>>,
 }
@@ -149,7 +149,9 @@ impl SignalHub {
                 generation: 0,
                 topics: BTreeMap::new(),
                 levels: BTreeMap::new(),
+                active_levels: BTreeMap::new(),
                 spectra: BTreeMap::new(),
+                active_spectra: BTreeMap::new(),
                 meters: BTreeMap::new(),
                 recorders: BTreeMap::new(),
             }),
@@ -164,6 +166,8 @@ impl SignalHub {
             .directory
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        directory.active_levels.clear();
+        directory.active_spectra.clear();
         let topics = std::mem::take(&mut directory.topics);
         for topic in topics.into_values() {
             directory
@@ -204,10 +208,17 @@ impl SignalHub {
                 _ => node.outputs().first(),
             }
             .expect("validated IO port");
-            let topic = if let Some(topic) = directory.levels.get(&node.id()) {
+            let shape = (node.id(), port.id(), port.channels());
+            let topic = if let Some(topic) = directory.levels.get(&shape) {
                 topic.clone()
             } else {
-                let name = format!("owner/{}/node/{:?}/level", directory.generation, node.id());
+                let name = format!(
+                    "owner/{}/node/{:?}/level/{:?}/{}",
+                    directory.generation,
+                    node.id(),
+                    port.id(),
+                    port.channels()
+                );
                 let topic = directory
                     .bus
                     .register_latest_block(
@@ -223,11 +234,11 @@ impl SignalHub {
                                 peak: 0.0,
                                 rms: 0.0,
                             },
-                            capacity: node.channels(),
+                            capacity: port.channels(),
                         },
                     )
                     .map_err(|e| BackendError::Failed(e.to_string()))?;
-                directory.levels.insert(node.id(), topic.clone());
+                directory.levels.insert(shape, topic.clone());
                 topic
             };
             let publisher = host
@@ -241,7 +252,7 @@ impl SignalHub {
                 Some(NodeConfig::Meter(settings)) => settings.window_frames,
                 _ => 1536,
             };
-            let meter = SignalLevelMeter::new(node.channels(), window_frames, publisher)
+            let meter = SignalLevelMeter::new(port.channels(), window_frames, publisher)
                 .map_err(|e| BackendError::Failed(e.to_string()))?;
             match node.kind() {
                 moiren_core::graph::NodeKind::Sink => bindings.observe_input(port.id(), meter),
@@ -266,10 +277,14 @@ impl SignalHub {
         let capacity = channels
             .checked_mul(settings.bins_per_channel())
             .ok_or_else(|| BackendError::Failed("spectrum topic capacity overflow".into()))?;
-        let topic = if let Some(topic) = directory.spectra.get(&node) {
+        let shape = (node, channels, settings.fft_size);
+        let topic = if let Some(topic) = directory.spectra.get(&shape) {
             topic.clone()
         } else {
-            let name = format!("owner/{}/node/{node:?}/spectrum", directory.generation);
+            let name = format!(
+                "owner/{}/node/{node:?}/spectrum/{channels}/{}",
+                directory.generation, settings.fft_size
+            );
             let topic = directory
                 .bus
                 .register_latest_block(
@@ -288,7 +303,7 @@ impl SignalHub {
                     },
                 )
                 .map_err(|error| BackendError::Failed(error.to_string()))?;
-            directory.spectra.insert(node, topic.clone());
+            directory.spectra.insert(shape, topic.clone());
             topic
         };
         host.prepare(
@@ -308,7 +323,7 @@ impl SignalHub {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let topic = directory
-            .spectra
+            .active_spectra
             .get(&node)
             .cloned()
             .ok_or_else(|| "spectrum signal is not prepared".to_string())?;
@@ -330,6 +345,30 @@ impl SignalHub {
         install_slots(&mut directory.recorders, generation, &mut readers.recorders);
     }
 
+    pub(crate) fn activate(&self, generation: u64, project: &EngineProject) {
+        let mut directory = self.directory.lock().unwrap_or_else(|p| p.into_inner());
+        if directory.generation != generation {
+            return;
+        }
+        let mut levels = BTreeMap::new();
+        let mut spectra = BTreeMap::new();
+        for node in project.graph.nodes() {
+            let port = match node.kind() {
+                moiren_core::graph::NodeKind::Sink => node.inputs().first(),
+                _ => node.outputs().first(),
+            }
+            .expect("validated IO port");
+            let topic = &directory.levels[&(node.id(), port.id(), port.channels())];
+            levels.insert(node.id(), topic.clone());
+            if let Some(NodeConfig::SpectrumAnalyzer(settings)) = project.nodes.get(&node.id()) {
+                let topic = &directory.spectra[&(node.id(), node.channels(), settings.fft_size)];
+                spectra.insert(node.id(), topic.clone());
+            }
+        }
+        directory.active_levels = levels;
+        directory.active_spectra = spectra;
+    }
+
     pub(crate) fn clear_readers(&self, generation: u64) {
         let mut directory = self
             .directory
@@ -337,6 +376,10 @@ impl SignalHub {
             .unwrap_or_else(|poison| poison.into_inner());
         clear_generation(&mut directory.meters, generation);
         clear_generation(&mut directory.recorders, generation);
+        if directory.generation == generation {
+            directory.active_levels.clear();
+            directory.active_spectra.clear();
+        }
     }
 
     pub(crate) fn meter_reader(&self, node: NodeId) -> Result<ManagedMeterReader, String> {
@@ -385,7 +428,7 @@ impl SignalHub {
     pub(crate) fn subscribe_level(&self, node: NodeId) -> Result<ManagedLevelSubscription, String> {
         let mut directory = self.directory.lock().unwrap_or_else(|p| p.into_inner());
         let topic = directory
-            .levels
+            .active_levels
             .get(&node)
             .cloned()
             .ok_or("node level signal is not prepared")?;
@@ -457,7 +500,7 @@ impl SignalHub {
             copy_bytes: 1024 * 1024,
         });
     }
-    pub(crate) fn prune(&self, project: &EngineProject) {
+    pub(crate) fn prune(&self, project: Option<&EngineProject>) {
         let mut directory = self
             .directory
             .lock()
@@ -465,7 +508,12 @@ impl SignalHub {
         let removed: Vec<_> = directory
             .topics
             .iter()
-            .filter(|(node, _)| !matches!(project.nodes.get(node), Some(NodeConfig::Compressor(_))))
+            .filter(|(node, _)| {
+                !matches!(
+                    project.and_then(|p| p.nodes.get(node)),
+                    Some(NodeConfig::Compressor(_))
+                )
+            })
             .map(|(&node, topic)| (node, topic.clone()))
             .collect();
         for (node, topic) in removed {
@@ -476,36 +524,33 @@ impl SignalHub {
         let removed: Vec<_> = directory
             .spectra
             .iter()
-            .filter(|(node, _)| {
-                !matches!(
-                    project.nodes.get(node),
-                    Some(NodeConfig::SpectrumAnalyzer(_))
-                )
-            })
-            .map(|(&node, topic)| (node, topic.clone()))
+            .filter(|((node, _, _), topic)| directory.active_spectra.get(node) != Some(*topic))
+            .map(|(&shape, topic)| (shape, topic.clone()))
             .collect();
-        for (node, topic) in removed {
+        for (shape, topic) in removed {
             if directory.bus.unregister(&topic).is_ok() {
-                directory.spectra.remove(&node);
+                directory.spectra.remove(&shape);
             }
         }
         let removed: Vec<_> = directory
             .levels
             .iter()
-            .filter(|(node, _)| !project.nodes.contains_key(node))
-            .map(|(&node, topic)| (node, topic.clone()))
+            .filter(|((node, _, _), topic)| directory.active_levels.get(node) != Some(*topic))
+            .map(|(&shape, topic)| (shape, topic.clone()))
             .collect();
-        for (node, topic) in removed {
+        for (shape, topic) in removed {
             if directory.bus.unregister(&topic).is_ok() {
-                directory.levels.remove(&node);
+                directory.levels.remove(&shape);
             }
         }
-        prune_slots(&mut directory.meters, &project.nodes, |config| {
-            matches!(config, NodeConfig::Meter(_))
-        });
-        prune_slots(&mut directory.recorders, &project.nodes, |config| {
-            matches!(config, NodeConfig::Recorder(_))
-        });
+        if let Some(project) = project {
+            prune_slots(&mut directory.meters, &project.nodes, |config| {
+                matches!(config, NodeConfig::Meter(_))
+            });
+            prune_slots(&mut directory.recorders, &project.nodes, |config| {
+                matches!(config, NodeConfig::Recorder(_))
+            });
+        }
     }
 }
 
