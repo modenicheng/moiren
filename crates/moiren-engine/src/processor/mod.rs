@@ -9,7 +9,10 @@ use thiserror::Error;
 
 pub mod builtin;
 
-pub use builtin::{Bus, Compressor, CompressorSettings, Gain, Pan, Sum};
+pub use builtin::{
+    Bus, Compressor, CompressorSettings, Eq, EqSettings, Gain, Gate, GateSettings, Limiter,
+    LimiterSettings, Pan, Sum,
+};
 pub use builtin::{ChannelMode, StripConfig};
 
 #[cfg(test)]

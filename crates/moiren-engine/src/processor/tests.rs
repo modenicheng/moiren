@@ -12,6 +12,8 @@ const METER: ProcessorId = ProcessorId(2);
 
 mod compressor;
 mod contracts;
+mod dynamics;
+mod eq;
 mod gain;
 mod pan;
 mod sum;
