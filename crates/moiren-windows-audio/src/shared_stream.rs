@@ -4,6 +4,8 @@ use thiserror::Error;
 
 #[cfg(windows)]
 pub(crate) mod format;
+#[cfg(any(windows, test))]
+mod selection;
 #[cfg(windows)]
 mod wasapi;
 #[cfg(windows)]

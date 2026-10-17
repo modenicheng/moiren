@@ -19,11 +19,20 @@ process is never silently replaced. Explicit endpoints wait for their exact ID;
 
 The graph transport remains 48 kHz stereo f32. Supported native Shared formats
 retain the Client3 period path: render uses 48 kHz stereo f32, while capture
-also accepts 44.1 kHz and mono f32. Other valid PCM or float mix formats use the
-Windows Shared AUTOCONVERTPCM/SRC_DEFAULT_QUALITY path and are reported as conversion, including
-different rates, PCM bit depths, and multi-channel physical capture. The owner
-receives 48 kHz stereo f32 packets on converted streams, so conversion adds no
-real-time decoding, allocation, or resampling. Physical capture keeps its existing
+also accepts 44.1 kHz and mono f32. Other valid PCM or float mix formats with
+the same supported channel layout use the Windows Shared
+AUTOCONVERTPCM/SRC_DEFAULT_QUALITY path for rate/bit-depth conversion and report
+that conversion explicitly. Physical capture accepts mono or stereo; render
+requires a stereo endpoint. Multichannel capture and stereo-to-mono render are
+rejected before initialization, without an implicit downmix or channel mapper.
+Explicit channel masks must identify front-center mono (4) or front-left/right
+stereo (3); absent/zero masks retain conventional mono/stereo order. Other masks
+are rejected, including valid masks for other two-channel speaker pairs. The
+catalog marks these forbidden layouts unsupported rather than conversion candidates.
+Converted packets are 48 kHz f32 and retain the endpoint's one or two channels,
+so conversion adds no real-time decoding, allocation, or resampling. Catalog
+conversion candidates remain unverified until stream initialization succeeds.
+Physical capture keeps its existing
 native-layout handling and clock adaptation after this boundary; process capture
 keeps its existing fixed 48 kHz virtual path.
 Every output has its own sink; exactly one master drives Engine and bounded
@@ -85,8 +94,9 @@ cargo run --locked -p moiren-app -- render --endpoint '<reviewed render endpoint
 
 This opt-in command submits audible PCM from a compiler-prepared tone graph.
 The engine always submits 48 kHz stereo f32. A matching endpoint uses the native
-Client3 path; a valid endpoint with another rate, bit depth, PCM subtype, or
-channel count is opened through Windows Shared format conversion. The selector
+Client3 path; a valid stereo endpoint with another rate, bit depth or PCM
+subtype is opened through Windows Shared format conversion. Other channel
+counts or explicit masks other than front-left/right are rejected. The selector
 queries active render endpoints, without requiring capture or default devices.
 Per-endpoint errors remain visible; endpoint discovery marks conversion as a
 runtime compatibility requirement because catalog metadata alone cannot prove
@@ -195,9 +205,11 @@ cargo run --locked -p moiren-app -- monitor --input '<reviewed capture ID>' --ou
 `capture::start_capture` prepares a Shared stream on a dedicated COM owner,
 and returns `PreparedCapture { session, source, observer, sample_rate, channels }`.
 Supported native 44.1/48 kHz mono/stereo f32 retains its Client3 path; native mono
-is explicitly copied to both graph channels. Other valid PCM/float formats use
-Windows Shared conversion to 48 kHz stereo f32, including four-channel Realtek
-microphone arrays. The returned sample rate/channel count describes client
+is explicitly copied to both graph channels. Other valid mono/stereo PCM/float
+formats use Windows Shared conversion to 48 kHz f32, preserving channel count.
+Multichannel microphone arrays require an explicit channel-mapping path that
+is not implemented here; they are rejected rather than downmixed. The returned
+sample rate/channel count describes client
 packets, not the endpoint mix. The selector does not require a render/default
 endpoint. Conversion candidates have `format_supported: null` and
 `windows_conversion_required: true` until actual initialization verifies them.
@@ -213,8 +225,9 @@ frames before queue budgets are calculated. Optional period-query failures
 remain unknown rather than substituting a request or a guessed period.
 
 PCM 8/16/24/32-bit containers (including valid bits such as 24-in-32), float
-32/64-bit containers and 1..32-channel mix descriptors are validated before
-initialization. Windows/driver acceptance remains authoritative; this is not
+32/64-bit containers are validated before initialization. Descriptor validation
+does not authorize channel conversion: only the mono/stereo layouts and masks
+described above are admitted. Windows/driver acceptance remains authoritative; this is not
 Exclusive-mode format support or a bit-perfect output guarantee. Capture/render
 report schema versions are 7/8; the combined monitor report is version 7.
 

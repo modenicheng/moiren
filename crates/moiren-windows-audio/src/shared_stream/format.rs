@@ -15,29 +15,11 @@ const FLOAT: GUID = GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
 const PCM: GUID = GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71);
 const EXTENSION_BYTES: usize = size_of::<WAVEFORMATEXTENSIBLE>() - size_of::<WAVEFORMATEX>();
 
-impl SharedFormatInfo {
-    pub(crate) fn native_supported(self, capture: bool) -> bool {
-        self.floating_point
-            && self.container_bits == 32
-            && self.valid_bits.is_none_or(|bits| bits == 32)
-            && if capture {
-                [44_100, 48_000].contains(&self.sample_rate)
-                    && (1..=2).contains(&self.channels)
-                    && self.channel_mask.is_none_or(|mask| {
-                        mask == 0 || mask == if self.channels == 1 { 4 } else { 3 }
-                    })
-            } else {
-                self.sample_rate == 48_000
-                    && self.channels == 2
-                    && self.channel_mask.is_none_or(|mask| mask == 0 || mask == 3)
-            }
-    }
-}
-
 pub(crate) struct PreparedSharedFormat {
     native: TaskMemory<WAVEFORMATEX>,
     converted: WAVEFORMATEX,
     pub mix: SharedFormatInfo,
+    client: SharedFormatInfo,
     pub windows_auto_conversion: bool,
 }
 
@@ -74,12 +56,18 @@ impl PreparedSharedFormat {
             channel_mask,
             floating_point,
         };
-        validate_layout(mix, base.nBlockAlign, base.nAvgBytesPerSec)?;
+        if !mix.valid_layout(base.nBlockAlign, base.nAvgBytesPerSec) {
+            return Err(E_INVALIDARG.into());
+        }
+        let client = mix
+            .select_client(capture)
+            .ok_or_else(|| Error::from_hresult(E_INVALIDARG))?;
         Ok(Self {
             native,
-            converted: float_stereo_format(),
+            converted: float_format(client.channels),
             mix,
-            windows_auto_conversion: !mix.native_supported(capture),
+            client,
+            windows_auto_conversion: client != mix,
         })
     }
 
@@ -92,57 +80,20 @@ impl PreparedSharedFormat {
     }
 
     pub fn client(&self) -> SharedFormatInfo {
-        if self.windows_auto_conversion {
-            SharedFormatInfo {
-                sample_rate: 48_000,
-                channels: 2,
-                container_bits: 32,
-                valid_bits: None,
-                channel_mask: None,
-                floating_point: true,
-            }
-        } else {
-            self.mix
-        }
+        self.client
     }
 }
 
-pub(crate) fn float_stereo_format() -> WAVEFORMATEX {
+fn float_format(channels: u16) -> WAVEFORMATEX {
     WAVEFORMATEX {
         wFormatTag: 3,
-        nChannels: 2,
+        nChannels: channels,
         nSamplesPerSec: 48_000,
-        nAvgBytesPerSec: 384_000,
-        nBlockAlign: 8,
+        nAvgBytesPerSec: 48_000 * u32::from(channels) * 4,
+        nBlockAlign: channels * 4,
         wBitsPerSample: 32,
         cbSize: 0,
     }
-}
-
-fn validate_layout(info: SharedFormatInfo, align: u16, bytes_per_second: u32) -> Result<()> {
-    let valid_container = if info.floating_point {
-        [32, 64].contains(&info.container_bits)
-    } else {
-        [8, 16, 24, 32].contains(&info.container_bits)
-    };
-    let expected_align = info.channels.checked_mul(info.container_bits / 8);
-    if info.sample_rate == 0
-        || !(1..=32).contains(&info.channels)
-        || !valid_container
-        || info.valid_bits.is_some_and(|bits| {
-            bits == 0
-                || bits > info.container_bits
-                || (info.floating_point && bits != info.container_bits)
-        })
-        || info
-            .channel_mask
-            .is_some_and(|mask| mask != 0 && mask.count_ones() != u32::from(info.channels))
-        || expected_align != Some(align)
-        || info.sample_rate.checked_mul(u32::from(align)) != Some(bytes_per_second)
-    {
-        return Err(Error::from_hresult(E_INVALIDARG));
-    }
-    Ok(())
 }
 
 /// Discovery cannot confirm Windows conversion without opening a stream.
@@ -170,14 +121,14 @@ pub(crate) fn catalog_support(format: &FormatSnapshot, capture: bool) -> (Option
     };
     if (!float && !pcm)
         || (format.format_tag == EXTENSIBLE && usize::from(format.extra_bytes) < EXTENSION_BYTES)
-        || validate_layout(info, format.block_align, format.avg_bytes_per_sec).is_err()
+        || !info.valid_layout(format.block_align, format.avg_bytes_per_sec)
     {
         return (Some(false), false);
     }
-    if info.native_supported(capture) {
-        (Some(true), false)
-    } else {
-        (None, true)
+    match info.select_client(capture) {
+        None => (Some(false), false),
+        Some(client) if client == info => (Some(true), false),
+        Some(_) => (None, true),
     }
 }
 

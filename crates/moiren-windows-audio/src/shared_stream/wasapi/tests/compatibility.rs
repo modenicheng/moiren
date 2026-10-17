@@ -38,6 +38,50 @@ fn catalog_rejects_a_mix_descriptor_with_inconsistent_byte_rate() {
 }
 
 #[test]
+fn physical_capture_rejects_implicit_surround_downmix() {
+    for channels in [4, 6, 8] {
+        for float in [false, true] {
+            assert!(
+                PreparedSharedFormat::from_owned(test_mix(48_000, channels, 32, float), true)
+                    .is_err(),
+                "capture must reject {channels} channels instead of requesting stereo"
+            );
+        }
+    }
+}
+
+#[test]
+fn physical_render_requires_a_stereo_endpoint_layout() {
+    for channels in [1, 4, 6, 8] {
+        assert!(
+            PreparedSharedFormat::from_owned(test_mix(48_000, channels, 32, true), false).is_err(),
+            "stereo render must not implicitly map to {channels} endpoint channels"
+        );
+    }
+}
+
+#[test]
+fn catalog_marks_forbidden_channel_conversion_unsupported() {
+    for (capture, channels) in [(true, 4), (true, 6), (true, 8), (false, 1), (false, 6)] {
+        let memory = test_mix(48_000, channels, 32, true);
+        let snapshot =
+            crate::catalog::FormatSnapshot::from_base(unsafe { memory.0.read_unaligned() });
+        assert_eq!(catalog_support(&snapshot, capture), (Some(false), false));
+    }
+}
+
+#[test]
+fn converted_mono_capture_preserves_its_single_channel() {
+    let format = PreparedSharedFormat::from_owned(test_mix(22_050, 1, 16, false), true).unwrap();
+    assert!(format.windows_auto_conversion);
+    assert_eq!(format.client().channels, 1);
+    let client = unsafe { format.as_ptr().read_unaligned() };
+    assert_eq!({ client.nChannels }, 1);
+    assert_eq!({ client.nBlockAlign }, 4);
+    assert_eq!({ client.nAvgBytesPerSec }, 192_000);
+}
+
+#[test]
 fn extensible_pcm_valid_bits_are_distinct_from_container_width() {
     for (valid_bits, extra, mask, supported) in [
         (24, 22, 3, true),
@@ -46,6 +90,7 @@ fn extensible_pcm_valid_bits_are_distinct_from_container_width() {
         (33, 22, 3, false),
         (24, 21, 3, false),
         (24, 22, 4, false),
+        (24, 22, 0xc, false),
     ] {
         let memory = TaskMemory(
             unsafe { CoTaskMemAlloc(size_of::<WAVEFORMATEXTENSIBLE>()) }.cast::<WAVEFORMATEX>(),
@@ -72,6 +117,21 @@ fn extensible_pcm_valid_bits_are_distinct_from_container_width() {
                     dwChannelMask: mask,
                     SubFormat: GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71),
                 });
+        }
+        let mut snapshot =
+            crate::catalog::FormatSnapshot::from_base(unsafe { memory.0.read_unaligned() });
+        snapshot.valid_bits = Some(valid_bits);
+        snapshot.channel_mask = Some(mask);
+        snapshot.sub_format = Some("00000001-0000-0010-8000-00aa00389b71".into());
+        for capture in [false, true] {
+            assert_eq!(
+                catalog_support(&snapshot, capture),
+                if supported {
+                    (None, true)
+                } else {
+                    (Some(false), false)
+                }
+            );
         }
         let result = PreparedSharedFormat::from_owned(memory, true);
         assert_eq!(result.is_ok(), supported);

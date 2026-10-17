@@ -12,12 +12,11 @@ fn compatibility_selects_float_client_without_reinterpreting_native_pcm_or_array
     use super::super::format::{PreparedSharedFormat, test_mix};
     for capture in [false, true] {
         for (rate, channels, bits, float) in [
-            (22_050, 1, 8, false),
+            (22_050, 2, 8, false),
             (44_100, 2, 16, false),
             (48_000, 2, 24, false),
             (96_000, 2, 32, false),
             (192_000, 2, 32, true),
-            (48_000, 4, 32, true),
             (48_000, 2, 64, true),
         ] {
             let format =
