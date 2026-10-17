@@ -75,6 +75,7 @@ struct Supervisor<S: ProcessingSample> {
     edits: Vec<(u64, Arc<ReceiptCell<EditOutcome>>)>,
     router: Router,
     structural_values: Vec<(u64, ParameterTarget)>,
+    parameter_intent: u64,
 }
 
 pub(crate) fn spawn<S: ProcessingSample>(
@@ -138,6 +139,7 @@ pub(crate) fn spawn<S: ProcessingSample>(
         edits: Vec::new(),
         router: Router::default(),
         structural_values: Vec::new(),
+        parameter_intent: 0,
     };
     thread::Builder::new()
         .name("moiren-host-control".into())
@@ -158,6 +160,7 @@ impl<S: ProcessingSample> Supervisor<S> {
                 .active
                 .as_ref()
                 .map_or(0, |active| active.control.identity().0),
+            parameter_intent: self.parameter_intent,
         }
     }
     fn unavailable(&self) -> bool {

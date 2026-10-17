@@ -140,6 +140,7 @@ impl<S: ProcessingSample> Supervisor<S> {
                         continue;
                     }
                     if matches!(timing, ParameterTiming::NextBlock) {
+                        self.supersede_structural_value(target);
                         self.project.set_parameter(target, value);
                     }
                     self.router
@@ -185,6 +186,7 @@ impl<S: ProcessingSample> Supervisor<S> {
             if !previous_values.contains(&parameter)
                 && !self.router.has_target(parameter.target, parameter.value)
             {
+                self.supersede_structural_value(parameter.target);
                 match self.shared.next_parameter_id() {
                     Ok(id) => self.router.accept(
                         id,
@@ -197,6 +199,32 @@ impl<S: ProcessingSample> Supervisor<S> {
                     Err(error) => self.fault = Some(Diagnostic::Fault(error.to_string())),
                 }
             }
+        }
+    }
+
+    fn supersede_structural_value(&mut self, target: ParameterTarget) {
+        let before = self.structural_values.len();
+        self.structural_values
+            .retain(|(_, previous)| *previous != target);
+        if before == self.structural_values.len() {
+            return;
+        }
+        // A newer live command owns this parameter, including its ramp. A job
+        // already holding the old initial override must not activate afterward.
+        let Some(next) = self.parameter_intent.checked_add(1) else {
+            self.fault = Some(Diagnostic::Fault(
+                "parameter intent identity exhausted".into(),
+            ));
+            return;
+        };
+        self.parameter_intent = next;
+        if let Some((_, cancel)) = &self.preparing {
+            cancel.cancel();
+        }
+        if self.pending.is_some()
+            && let Some(active) = &mut self.active
+        {
+            active.plans.cancel_pending();
         }
     }
 

@@ -30,6 +30,7 @@ pub(crate) struct Basis {
     pub owner: u64,
     pub resources: u64,
     pub active_plan: u64,
+    pub parameter_intent: u64,
 }
 pub(crate) struct PrepareJob {
     pub basis: Basis,
