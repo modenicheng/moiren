@@ -152,6 +152,47 @@ impl CanvasWorld {
             let detail = match logical.kind() {
                 NodeKind::Source if state.source.is_none() => "Choose a source".into(),
                 NodeKind::Sink if state.output_endpoint_id.is_none() => "Choose an output".into(),
+                NodeKind::Eq => state.builtin.eq().map_or_else(
+                    || channels.clone(),
+                    |settings| {
+                        format!(
+                            "{:.0} Hz · {:+.1} dB",
+                            settings.frequency_hz, settings.gain_db
+                        )
+                    },
+                ),
+                NodeKind::Delay => state.builtin.delay().map_or_else(
+                    || channels.clone(),
+                    |settings| {
+                        format!(
+                            "{:.0} ms · {:.0}% wet",
+                            settings.delay_ms,
+                            settings.mix * 100.
+                        )
+                    },
+                ),
+                NodeKind::Recorder => state.builtin.recorder().map_or_else(
+                    || channels.clone(),
+                    |settings| format!("{} frame buffer", settings.capacity_frames),
+                ),
+                NodeKind::Meter => state.builtin.meter().map_or_else(
+                    || channels.clone(),
+                    |settings| format!("{} frame window", settings.window_frames),
+                ),
+                NodeKind::SpectrumAnalyzer => state.builtin.spectrum().map_or_else(
+                    || channels.clone(),
+                    |settings| format!("FFT {} · hop {}", settings.fft_size, settings.hop_frames),
+                ),
+                NodeKind::Rack => state.builtin.rack().map_or_else(
+                    || "Empty rack".into(),
+                    |settings| {
+                        format!(
+                            "{} stage{}",
+                            settings.slots.len(),
+                            if settings.slots.len() == 1 { "" } else { "s" }
+                        )
+                    },
+                ),
                 _ => format.unwrap_or(channels),
             };
             let (icon, tint) = match logical.kind() {
@@ -167,6 +208,11 @@ impl CanvasWorld {
                 ),
                 NodeKind::Sink => ("figma-output", theme::NODE_SINK),
                 NodeKind::Bus => ("figma-bus", theme::NODE_UTILITY),
+                NodeKind::Recorder => ("radio", theme::NODE_ANALYSIS),
+                NodeKind::Meter => ("activity", theme::NODE_ANALYSIS),
+                NodeKind::SpectrumAnalyzer => ("wave", theme::NODE_ANALYSIS),
+                NodeKind::Delay => ("clock", theme::NODE_DSP),
+                NodeKind::ChannelMapper | NodeKind::Rack => ("route", theme::NODE_UTILITY),
                 _ => ("figma-fader", theme::NODE_DSP),
             };
             let mut card = node(&key, &state.label, detail)

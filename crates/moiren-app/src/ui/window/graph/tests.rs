@@ -3,6 +3,7 @@ use gpui_kit::{
     AppContext, Bounds, Entity, Modifiers, MouseButton, PinchEvent, Pixels, Point, ScrollDelta,
     ScrollWheelEvent, TouchPhase, VisualTestContext, point, px, size,
 };
+use std::sync::Arc;
 
 use super::super::{Camera, ServiceRuntime, StudioShell, UiState, pages};
 use pages::graph_canvas::{CanvasFrame, CanvasWorld};
@@ -446,6 +447,233 @@ fn compressor_inspector_edits_only_its_selected_node_and_hides_on_other_selectio
     });
     render(cx);
     cx.update(|window, _| assert!(window.try_find("compressor-input-0").is_none()));
+    handle.request_exit();
+    runtime.join().unwrap();
+}
+
+#[gpui_kit::test]
+fn builtin_library_creation_opens_real_inspector_controls_and_updates_candidate_state(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use moiren_core::graph::NodeKind;
+
+    cx.update(gpui_kit::init);
+    let runtime = ServiceRuntime::spawn().unwrap();
+    let handle = runtime.handle();
+    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+
+    cx.update(|window, cx| window.click("add-Parametric EQ", cx));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let id = loop {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        render(cx);
+        let id = view.update(cx, |shell, cx| {
+            let state = shell.state.read(cx);
+            state
+                .snapshot
+                .graph
+                .graph
+                .nodes()
+                .iter()
+                .find(|node| node.kind() == NodeKind::Eq)
+                .map(|node| node.id())
+        });
+        if let Some(id) = id {
+            break id;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "node library must create an EQ node"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+
+    cx.update(|window, _| assert!(window.find("eq-frequency-up").visible()));
+    cx.update(|window, cx| window.click("eq-frequency-up", cx));
+    wait_for_graph(&view, cx, |graph| {
+        graph
+            .node(id)
+            .and_then(|node| node.builtin.eq())
+            .is_some_and(|settings| settings.frequency_hz == 1_100.)
+    });
+    view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph;
+        assert_eq!(graph.active_revision, None);
+        assert_eq!(
+            graph.node(id).unwrap().builtin.eq().unwrap().frequency_hz,
+            1_100.
+        );
+    });
+
+    handle.request_exit();
+    runtime.join().unwrap();
+}
+
+#[gpui_kit::test]
+fn channel_mapper_inspector_edits_a_weighted_matrix_candidate(cx: &mut gpui_kit::TestAppContext) {
+    use moiren_core::graph::NodeKind;
+
+    cx.update(gpui_kit::init);
+    let runtime = ServiceRuntime::spawn().unwrap();
+    let handle = runtime.handle();
+    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| {
+            shell
+                .node_search
+                .update(cx, |input, cx| input.set_value("channel", window, cx));
+        });
+    });
+    render(cx);
+    cx.update(|window, cx| window.click("add-Channel mapper", cx));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let id = loop {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        render(cx);
+        let id = view.update(cx, |shell, cx| {
+            let state = shell.state.read(cx);
+            state
+                .snapshot
+                .graph
+                .graph
+                .nodes()
+                .iter()
+                .find(|node| node.kind() == NodeKind::ChannelMapper)
+                .map(|node| node.id())
+        });
+        if let Some(id) = id {
+            break id;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "node library must create a channel mapper"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+
+    cx.update(|window, _| {
+        assert!(window.find("channel-map-edit-matrix").visible());
+    });
+    cx.update(|window, cx| window.click("channel-map-edit-matrix", cx));
+    wait_for_graph(&view, cx, |graph| {
+        graph
+            .node(id)
+            .and_then(|node| node.builtin.channel_mapper())
+            .is_some_and(|settings| settings.matrix == vec![vec![1.0, 0.0], vec![0.0, 1.0]])
+    });
+    cx.update(|window, _| {
+        assert!(
+            window
+                .try_find("channel-map-matrix-out-0-in-1-up")
+                .is_some()
+        );
+    });
+    cx.update(|window, cx| window.click("channel-map-matrix-out-0-in-1-up", cx));
+    wait_for_graph(&view, cx, |graph| {
+        graph
+            .node(id)
+            .and_then(|node| node.builtin.channel_mapper())
+            .is_some_and(|settings| settings.matrix[0][1] == 0.25)
+    });
+    view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph;
+        assert_eq!(graph.active_revision, None);
+        assert_eq!(
+            graph
+                .node(id)
+                .unwrap()
+                .builtin
+                .channel_mapper()
+                .unwrap()
+                .matrix[0][1],
+            0.25
+        );
+    });
+
+    handle.request_exit();
+    runtime.join().unwrap();
+}
+
+#[gpui_kit::test]
+fn graph_inspector_shows_candidate_runtime_boundary_for_selected_node(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let runtime = ServiceRuntime::spawn().unwrap();
+    let handle = runtime.handle();
+    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    view.update(cx, |shell, cx| {
+        let id = shell.state.read(cx).snapshot.graph.graph.nodes()[1].id();
+        shell.selected_node = Some(format!("{id:?}"));
+        cx.notify();
+    });
+    render(cx);
+    cx.update(|window, _| {
+        assert!(window.find("node-observation-status").visible());
+        assert!(window.find("node-observation-candidate").visible());
+    });
+
+    handle.request_exit();
+    runtime.join().unwrap();
+}
+
+#[gpui_kit::test]
+fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let runtime = ServiceRuntime::spawn().unwrap();
+    let handle = runtime.handle();
+    let mut snapshot = (*crate::ui::state::initial_snapshot(&handle).unwrap()).clone();
+    let node = snapshot.graph.graph.nodes()[1].id();
+    snapshot.phase = crate::service::SessionPhase::Running;
+    Arc::make_mut(&mut snapshot.graph).active_revision = Some(snapshot.graph.candidate_revision);
+    snapshot
+        .signal_topics
+        .node_levels
+        .insert(node, snapshot.signal_topics.tone_output.clone());
+    let topic = snapshot.signal_topics.node_levels[&node].clone();
+    let state = cx.new(|_| UiState::new(handle.clone(), Arc::new(snapshot)));
+    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    view.update(cx, |shell, cx| {
+        shell.selected_node = Some(format!("{node:?}"));
+        shell.node_meter_points.borrow_mut().clear();
+        assert!(shell.update_node_meters(true, cx));
+        cx.notify();
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while topic.business_subscribers() == 0 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    view.update(cx, |shell, cx| {
+        shell.selected_node = None;
+        shell.node_meter_points.borrow_mut().clear();
+        shell.update_node_meters(true, cx);
+        assert!(shell.node_meters.levels(node).is_none());
+    });
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| state.poll());
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while topic.business_subscribers() != 0 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
     handle.request_exit();
     runtime.join().unwrap();
 }

@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use moiren_engine::meter::signal::ChannelLevel;
+use moiren_engine::meter::signal::{AudioWindow, ChannelLevel};
 use moiren_signal::{PublisherStatus, Topic, TopicLifecycle};
 
 use crate::service::{
@@ -157,12 +157,12 @@ impl MeterSubscriptions {
             let mut publication = false;
             if let Some(subscription) = self.input_subscription.as_mut() {
                 publication |= subscription.poll(now);
-                self.input = subscription.levels;
+                self.input = stereo_levels(subscription.levels.as_deref());
                 self.input_status = subscription.status.clone();
             }
             if let Some(subscription) = self.output_subscription.as_mut() {
                 publication |= subscription.poll(now);
-                self.output = subscription.levels;
+                self.output = stereo_levels(subscription.levels.as_deref());
                 self.output_status = subscription.status.clone();
             }
             if publication {
@@ -208,8 +208,16 @@ fn ensure_subscription(
         .as_ref()
         .is_none_or(|current| current.topic != *topic)
     {
-        *subscription = Some(MeterSubscription::new(handle.clone(), topic.clone()));
+        *subscription = Some(MeterSubscription::new(handle.clone(), topic.clone(), 2));
     }
+}
+
+fn stereo_levels(levels: Option<&[ChannelLevel]>) -> Option<[ChannelLevel; 2]> {
+    let levels = levels?;
+    let [left, right] = levels else {
+        return None;
+    };
+    Some([*left, *right])
 }
 
 struct MeterSubscription {
@@ -218,7 +226,8 @@ struct MeterSubscription {
     sequence_fence: u64,
     last_delivery: Option<Instant>,
     last_window: Option<(u64, u64)>,
-    levels: Option<[ChannelLevel; 2]>,
+    levels: Option<Box<[ChannelLevel]>>,
+    channels: usize,
     status: MeterStatus,
 }
 
@@ -233,7 +242,7 @@ pub struct NodeMeters {
 struct ClipHold([bool; 2]);
 
 impl ClipHold {
-    fn observe(&mut self, levels: [ChannelLevel; 2]) {
+    fn observe(&mut self, levels: &[ChannelLevel]) {
         for (clip, level) in self.0.iter_mut().zip(levels) {
             *clip |= level.peak >= 1.;
         }
@@ -277,18 +286,27 @@ impl NodeMeters {
             let Some(topic) = snapshot.signal_topics.node_levels.get(id) else {
                 continue;
             };
-            let subscription = self
-                .subscriptions
-                .entry(*id)
-                .or_insert_with(|| MeterSubscription::new(self.handle.clone(), topic.clone()));
-            if subscription.topic != *topic {
-                *subscription = MeterSubscription::new(self.handle.clone(), topic.clone());
+            let Some(channels) = snapshot
+                .graph
+                .graph
+                .get_node(*id)
+                .ok()
+                .map(|node| node.channels())
+            else {
+                continue;
+            };
+            let subscription = self.subscriptions.entry(*id).or_insert_with(|| {
+                MeterSubscription::new(self.handle.clone(), topic.clone(), channels)
+            });
+            if subscription.topic != *topic || subscription.channels != channels {
+                *subscription =
+                    MeterSubscription::new(self.handle.clone(), topic.clone(), channels);
                 self.clips.remove(id);
             }
             let status = subscription.status.clone();
             let publication = subscription.poll(now);
             changed |= publication || subscription.status != status;
-            if publication && let Some(levels) = subscription.levels {
+            if publication && let Some(levels) = subscription.levels.as_deref() {
                 self.clips.entry(*id).or_default().observe(levels);
             }
         }
@@ -296,9 +314,21 @@ impl NodeMeters {
     }
 
     pub fn levels(&self, id: moiren_core::graph::NodeId) -> Option<[ChannelLevel; 2]> {
+        let levels: &[ChannelLevel; 2] = self.channel_levels(id)?.try_into().ok()?;
+        Some(*levels)
+    }
+
+    pub fn channel_levels(&self, id: moiren_core::graph::NodeId) -> Option<&[ChannelLevel]> {
         self.subscriptions
             .get(&id)
-            .and_then(|subscription| subscription.levels)
+            .and_then(|subscription| subscription.levels.as_deref())
+    }
+
+    pub fn status(&self, id: moiren_core::graph::NodeId) -> MeterStatus {
+        self.subscriptions
+            .get(&id)
+            .map(|subscription| subscription.status.clone())
+            .unwrap_or(MeterStatus::Waiting)
     }
 
     pub fn clips(&self, id: moiren_core::graph::NodeId) -> [bool; 2] {
@@ -311,7 +341,7 @@ impl NodeMeters {
 }
 
 impl MeterSubscription {
-    fn new(handle: AppHandle, topic: Topic<LevelTopic>) -> Self {
+    fn new(handle: AppHandle, topic: Topic<LevelTopic>, channels: usize) -> Self {
         Self {
             sequence_fence: topic.stats().attempts,
             visible: VisibleSignal::new(handle, topic.clone(), Default::default()),
@@ -319,6 +349,7 @@ impl MeterSubscription {
             last_delivery: None,
             last_window: None,
             levels: None,
+            channels,
             status: MeterStatus::Waiting,
         }
     }
@@ -361,23 +392,16 @@ impl MeterSubscription {
         if let Some(window) = subscriber.read_latest() {
             let header = window.header();
             let meta = window.meta();
-            let valid = meta.sequence > self.sequence_fence
-                && header.timeline_epoch != 0
-                && header.frame_end > header.frame_start
-                && header.sample_rate.is_finite()
-                && header.sample_rate > 0.0
-                && window.elements().len() == 2
-                && window.elements().iter().all(|level| {
-                    level.peak.is_finite()
-                        && level.peak >= 0.0
-                        && level.rms.is_finite()
-                        && level.rms >= 0.0
-                })
-                && self.last_window.is_none_or(|(epoch, end)| {
-                    epoch != header.timeline_epoch || header.frame_start >= end
-                });
+            let valid = valid_level_window(
+                self.channels,
+                meta.sequence,
+                self.sequence_fence,
+                *header,
+                window.elements(),
+                self.last_window,
+            );
             if valid {
-                self.levels = Some([window.elements()[0], window.elements()[1]]);
+                self.levels = Some(window.elements().to_vec().into_boxed_slice());
                 self.sequence_fence = meta.sequence;
                 self.last_window = Some((header.timeline_epoch, header.frame_end));
                 self.last_delivery = Some(now);
@@ -398,6 +422,28 @@ impl MeterSubscription {
     }
 }
 
+fn valid_level_window(
+    channels: usize,
+    sequence: u64,
+    sequence_fence: u64,
+    header: AudioWindow,
+    levels: &[ChannelLevel],
+    last_window: Option<(u64, u64)>,
+) -> bool {
+    sequence > sequence_fence
+        && channels > 0
+        && header.timeline_epoch != 0
+        && header.frame_end > header.frame_start
+        && header.sample_rate.is_finite()
+        && header.sample_rate > 0.0
+        && levels.len() == channels
+        && levels.iter().all(|level| {
+            level.peak.is_finite() && level.peak >= 0.0 && level.rms.is_finite() && level.rms >= 0.0
+        })
+        && last_window
+            .is_none_or(|(epoch, end)| epoch != header.timeline_epoch || header.frame_start >= end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,19 +451,19 @@ mod tests {
     #[test]
     fn clip_hold_retains_each_channel_until_explicit_reset() {
         let mut hold = ClipHold::default();
-        hold.observe([
+        hold.observe(&[
             ChannelLevel { peak: 1., rms: 0.5 },
             ChannelLevel {
                 peak: 0.9,
                 rms: 0.5,
             },
         ]);
-        hold.observe([
+        hold.observe(&[
             ChannelLevel { peak: 0., rms: 0. },
             ChannelLevel { peak: 0., rms: 0. },
         ]);
         assert_eq!(hold.0, [true, false]);
-        hold.observe([
+        hold.observe(&[
             ChannelLevel { peak: 0., rms: 0. },
             ChannelLevel {
                 peak: 1.1,
@@ -428,6 +474,42 @@ mod tests {
         hold = ClipHold::default();
         assert_eq!(hold.0, [false, false]);
     }
+
+    #[test]
+    fn node_level_windows_accept_the_graph_channel_width() {
+        let header = AudioWindow {
+            timeline_epoch: 7,
+            frame_start: 128,
+            frame_end: 256,
+            sample_rate: 48_000.0,
+        };
+        let mono = [ChannelLevel {
+            peak: 0.5,
+            rms: 0.25,
+        }];
+        let surround = [ChannelLevel {
+            peak: 0.5,
+            rms: 0.25,
+        }; 6];
+
+        assert!(valid_level_window(1, 2, 1, header, &mono, None));
+        assert!(valid_level_window(6, 2, 1, header, &surround, None));
+        assert!(!valid_level_window(2, 2, 1, header, &mono, None));
+        assert!(!valid_level_window(6, 2, 1, header, &surround[..2], None));
+    }
+
+    #[test]
+    fn node_meter_stereo_projection_requires_exactly_two_channels() {
+        let levels = [ChannelLevel {
+            peak: 0.5,
+            rms: 0.25,
+        }; 2];
+        let projected: &[ChannelLevel; 2] = levels.as_slice().try_into().unwrap();
+        assert_eq!(*projected, levels);
+        assert!(<[ChannelLevel; 2]>::try_from(&levels[..1]).is_err());
+        assert!(<[ChannelLevel; 2]>::try_from(&levels[..]).is_ok());
+    }
+
     use crate::service::{RunLimit, ServiceContext, ServiceMailbox, SessionSpec};
     use crate::tone::{ToneConfig, prepare_tone_with_signals};
     use moiren_engine::{boundary::AudioReader, runtime::Engine};

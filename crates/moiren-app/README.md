@@ -5,6 +5,7 @@
 - Graph、Mixer、Matrix、Devices 共用服务端的 LogicalGraph。Settings 从齿轮进入，返回时保留工作区与选择。
 - 在 Devices 选择下次启动的物理输入、应用音源与输出；选择不会替换当前活动会话。Graph 的 Session 面板也可选测试音。
 - Graph 添加、删除节点，Inspector 调参数与 Bus 输入；在 Matrix 选择端口交点并连接、断开或编辑路由增益。Apply 经 EngineHost 准备候选图；兼容更新保留原音频 owner，在引擎确认后显示活动 revision。设备或 IO 集合变化可以重建会话。
+- Node library 现在可创建 EQ、Gate、Limiter、Delay、Channel Mapper、Recorder、Meter、Spectrum Analyzer 和 Rack；Inspector 通过服务端候选图编辑真实配置。观察节点的 recording、metering 和 spectrum 资源会在 Apply 后由托管 host 准备，编辑期间保持 candidate 状态。
 - Mixer 的推子、Balance、Mute、Dim、Mono、Swap 提交真实音频请求，反馈区分 Requested、Accepted、Applied。Peak、RMS 仅显示对应节点的真实观测。
 - 项目菜单可打开、保存完整候选图和布局；加载不启动音频。密度和延迟档位偏好保存在用户配置目录，项目缺失设备仍保留稳定身份。
 

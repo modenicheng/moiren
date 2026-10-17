@@ -53,6 +53,69 @@ impl BuiltinState {
         }
     }
 
+    pub fn eq(&self) -> Option<&EqSettings> {
+        match self {
+            Self::Eq(settings) => Some(settings),
+            _ => None,
+        }
+    }
+
+    pub fn gate(&self) -> Option<&GateSettings> {
+        match self {
+            Self::Gate(settings) => Some(settings),
+            _ => None,
+        }
+    }
+
+    pub fn limiter(&self) -> Option<&LimiterSettings> {
+        match self {
+            Self::Limiter(settings) => Some(settings),
+            _ => None,
+        }
+    }
+
+    pub fn delay(&self) -> Option<&DelaySettings> {
+        match self {
+            Self::Delay(settings) => Some(settings),
+            _ => None,
+        }
+    }
+
+    pub fn channel_mapper(&self) -> Option<&ChannelMapperSettings> {
+        match self {
+            Self::ChannelMapper(settings) => Some(settings),
+            _ => None,
+        }
+    }
+
+    pub fn recorder(&self) -> Option<&RecorderSettings> {
+        match self {
+            Self::Recorder(settings) => Some(settings),
+            _ => None,
+        }
+    }
+
+    pub fn meter(&self) -> Option<&MeterSettings> {
+        match self {
+            Self::Meter(settings) => Some(settings),
+            _ => None,
+        }
+    }
+
+    pub fn spectrum(&self) -> Option<&SpectrumSettings> {
+        match self {
+            Self::SpectrumAnalyzer(settings) => Some(settings),
+            _ => None,
+        }
+    }
+
+    pub fn rack(&self) -> Option<&RackSettings> {
+        match self {
+            Self::Rack(settings) => Some(settings),
+            _ => None,
+        }
+    }
+
     pub(super) fn node_config(&self, kind: NodeKind) -> Result<Option<NodeConfig>, String> {
         let (expected, config) = match self.resolved(kind) {
             Self::None => return Ok(None),
