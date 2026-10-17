@@ -4,6 +4,7 @@ mod parameters;
 mod project;
 mod rack;
 mod rack_reuse;
+mod recording;
 mod resources;
 mod signals;
 mod snapshots;

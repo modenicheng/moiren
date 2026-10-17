@@ -1,6 +1,11 @@
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    io::{self, Seek, Write},
+    path::Path,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use crate::{
@@ -8,7 +13,10 @@ use crate::{
         LevelSnapshot, MeterReader,
         signal::{AudioWindow, ChannelLevel, SignalLevelMeter},
     },
-    recorder::{RecorderReader, RecorderStats},
+    recorder::{
+        RecorderReader, RecorderStats, RecordingSession, RecordingSource, WavRecording,
+        spawn_recording,
+    },
     spectrum::{SpectrumSettings, SpectrumWindow},
 };
 use moiren_core::graph::{NodeId, PortId};
@@ -67,7 +75,66 @@ impl ManagedMeterReader {
 /// that prepared its SPSC queue.
 pub struct ManagedRecorderReader {
     owner_generation: u64,
-    slot: ReaderSlot<RecorderReader>,
+    slot: ReaderSlot<RecorderEndpoint>,
+}
+
+struct RecorderEndpoint {
+    reader: Option<RecorderReader>,
+    alive: Arc<AtomicBool>,
+}
+
+impl From<RecorderReader> for RecorderEndpoint {
+    fn from(reader: RecorderReader) -> Self {
+        Self {
+            reader: Some(reader),
+            alive: Arc::new(AtomicBool::new(true)),
+        }
+    }
+}
+
+impl Drop for RecorderEndpoint {
+    fn drop(&mut self) {
+        // A worker owns the consumer while leased. Revocation never waits for
+        // file IO; the worker stops capture, drains and finalizes independently.
+        self.alive.store(false, Ordering::Release);
+    }
+}
+
+struct RecorderLease {
+    owner_generation: u64,
+    slot: ReaderSlot<RecorderEndpoint>,
+    alive: Arc<AtomicBool>,
+    reader: Option<RecorderReader>,
+}
+
+impl RecordingSource for RecorderLease {
+    fn reader(&mut self) -> &mut RecorderReader {
+        self.reader.as_mut().expect("lease owns the consumer")
+    }
+
+    fn is_active(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for RecorderLease {
+    fn drop(&mut self) {
+        let mut reader = self.reader.take();
+        {
+            let mut slot = self.slot.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((generation, endpoint)) = slot.as_mut()
+                && *generation == self.owner_generation
+                && Arc::ptr_eq(&endpoint.alive, &self.alive)
+                && endpoint.alive.load(Ordering::Acquire)
+                && endpoint.reader.is_none()
+            {
+                endpoint.reader = reader.take();
+            }
+        }
+        // A replaced endpoint must never receive the retired SPSC consumer.
+        // Reclaim it outside the slot lock; no lease owns the host or hub.
+        drop(reader);
+    }
 }
 
 impl ManagedRecorderReader {
@@ -107,13 +174,69 @@ impl ManagedRecorderReader {
         self.with_reader(|reader| reader.read_interleaved(samples))
     }
 
+    /// Record on a control-side worker with exclusive ownership of the queue.
+    /// `sample_rate` is the graph's processing sample rate, not the hardware
+    /// mix rate. Buffered complete frames are included. While leased, raw
+    /// reader queries return None and start/stop return false.
+    ///
+    /// A busy/stale claim fails before opening or truncating the destination.
+    /// WAV initialization errors return the reader without changing capture;
+    /// after worker startup, completion or failure returns it stopped.
+    pub fn record_wav(
+        &self,
+        path: impl AsRef<Path>,
+        sample_rate: u32,
+    ) -> io::Result<RecordingSession> {
+        let mut source = self.claim()?;
+        let wav = WavRecording::create(path, source.reader().channel_count(), sample_rate)?;
+        spawn_recording(source, wav)
+    }
+
+    /// Like `record_wav`, with an empty caller-owned seekable destination.
+    /// `sample_rate` must be the graph's processing rate, not a device mix rate.
+    /// All writer IO runs without holding the hub or reader slot lock.
+    pub fn record_with_writer<W: Write + Seek + Send + 'static>(
+        &self,
+        writer: W,
+        sample_rate: u32,
+    ) -> io::Result<RecordingSession> {
+        let mut source = self.claim()?;
+        let wav = WavRecording::from_writer(writer, source.reader().channel_count(), sample_rate)?;
+        spawn_recording(source, wav)
+    }
+
+    fn claim(&self) -> io::Result<RecorderLease> {
+        let mut slot = self.slot.lock().unwrap_or_else(|p| p.into_inner());
+        let (generation, endpoint) = slot
+            .as_mut()
+            .filter(|(generation, _)| *generation == self.owner_generation)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "recorder is not active"))?;
+        let reader = endpoint.reader.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "recorder consumer is already leased",
+            )
+        })?;
+        // Keep Some(generation, endpoint) installed: validated observer reuse
+        // retains that marker even while the consumer is on the WAV worker.
+        Ok(RecorderLease {
+            owner_generation: *generation,
+            slot: Arc::clone(&self.slot),
+            alive: Arc::clone(&endpoint.alive),
+            reader: Some(reader),
+        })
+    }
+
     fn with_reader<T>(&self, f: impl FnOnce(&mut RecorderReader) -> T) -> Option<T> {
         let mut slot = self
             .slot
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let (generation, reader) = slot.as_mut()?;
-        (*generation == self.owner_generation).then(|| f(reader))
+        let (generation, endpoint) = slot.as_mut()?;
+        if *generation != self.owner_generation {
+            return None;
+        }
+        endpoint.reader.as_mut().map(f)
     }
 }
 
@@ -136,7 +259,7 @@ struct Directory {
     spectra: BTreeMap<(NodeId, usize, usize), Topic<ManagedSpectrumTopic>>,
     active_spectra: BTreeMap<NodeId, Topic<ManagedSpectrumTopic>>,
     meters: BTreeMap<NodeId, ReaderSlot<MeterReader>>,
-    recorders: BTreeMap<NodeId, ReaderSlot<RecorderReader>>,
+    recorders: BTreeMap<NodeId, ReaderSlot<RecorderEndpoint>>,
 }
 pub(crate) struct SignalHub {
     directory: Mutex<Directory>,
@@ -342,7 +465,12 @@ impl SignalHub {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         install_slots(&mut directory.meters, generation, &mut readers.meters);
-        install_slots(&mut directory.recorders, generation, &mut readers.recorders);
+        let mut recorders = readers
+            .recorders
+            .into_iter()
+            .map(|(node, reader)| (node, reader.map(RecorderEndpoint::from)))
+            .collect();
+        install_slots(&mut directory.recorders, generation, &mut recorders);
     }
 
     pub(crate) fn activate(&self, generation: u64, project: &EngineProject) {
