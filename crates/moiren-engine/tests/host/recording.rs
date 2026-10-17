@@ -163,6 +163,7 @@ impl Drop for TemporaryFile {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "requires filesystem access outside Miri isolation")]
 fn busy_or_stale_recording_claim_does_not_truncate_destination() {
     let (project, recorder, _, _) = recording_project();
     let host =
@@ -225,6 +226,7 @@ fn failed_wav_initialization_returns_the_consumer_for_retry() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "requires filesystem access outside Miri isolation")]
 fn managed_record_wav_writes_and_finalizes_a_real_file() {
     let (project, recorder, _, _) = recording_project();
     let host =
@@ -629,7 +631,7 @@ fn old_lease_cannot_overwrite_replacement_endpoint_while_its_writer_is_blocked()
         if replace_owner {
             assert_eq!(old.channel_count(), None);
             assert!(
-                old.record_wav(TemporaryFile::new().0.clone(), 48_000)
+                old.record_with_writer(SharedWriter::default(), 48_000)
                     .is_err()
             );
         }
