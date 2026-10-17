@@ -147,7 +147,7 @@ impl WindowsBackend {
                 RenderOptions {
                     endpoint_id,
                     duration: SessionDuration::UntilStopped,
-                    shared_period: self.period(output.device),
+                    shared_period: self.period(output.device)?,
                     queue: self.config.render_queue,
                     latency_telemetry: self.config.telemetry,
                 },
@@ -218,7 +218,7 @@ impl WindowsBackend {
                         CaptureOptions {
                             endpoint_id,
                             duration: SessionDuration::UntilStopped,
-                            shared_period: self.period(input.device),
+                            shared_period: self.period(input.device)?,
                             latency_telemetry: self.config.telemetry,
                         },
                         stop.clone(),
@@ -377,12 +377,12 @@ impl WindowsBackend {
             })),
         })
     }
-    fn period(&self, device: DeviceOptions) -> SharedPeriodPolicy {
-        let mut period = super::profile::device_period(device);
+    fn period(&self, device: DeviceOptions) -> Result<SharedPeriodPolicy, BackendError> {
+        let mut period = super::profile::device_period(device)?;
         if period.desired_period_ms.is_none() {
             period.desired_period_ms = self.config.latency_profile.desired_period_ms();
         }
-        period
+        Ok(period)
     }
 }
 

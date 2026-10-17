@@ -130,17 +130,95 @@ impl NativeLatencyProfile {
 
 pub(super) fn device_period(
     device: moiren_engine::node::DeviceOptions,
-) -> crate::shared_stream::SharedPeriodPolicy {
-    crate::shared_stream::SharedPeriodPolicy {
-        desired_period_ms: device.period_frames.map(|frames| {
-            frames as f64 * 1000.0 / f64::from(device.hardware_sample_rate.unwrap_or(48_000))
-        }),
-    }
+) -> Result<crate::shared_stream::SharedPeriodPolicy, moiren_engine::host::BackendError> {
+    use moiren_engine::host::BackendError;
+    device
+        .validate()
+        .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+    let desired_period_ms = match (device.period_frames, device.hardware_sample_rate) {
+        (Some(frames), Some(rate)) => Some(frames as f64 * 1000.0 / f64::from(rate)),
+        (Some(_), None) => {
+            // Frame intent is in endpoint-rate units, not the graph's 48 kHz
+            // units. Reject ambiguity before any native resources are probed.
+            return Err(BackendError::Unsupported(
+                "period_frames requires hardware_sample_rate; set both or omit period_frames"
+                    .into(),
+            ));
+        }
+        (None, _) => None,
+    };
+    let period = crate::shared_stream::SharedPeriodPolicy { desired_period_ms };
+    period
+        .validate()
+        .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+    Ok(period)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn frame_period_conversion_uses_explicit_rate_without_a_48k_assumption() {
+        for (rate, frames) in [(44_100, 441), (48_000, 480), (96_000, 960)] {
+            let period = device_period(moiren_engine::node::DeviceOptions {
+                hardware_sample_rate: Some(rate),
+                period_frames: Some(frames),
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(period.desired_period_ms, Some(10.0));
+            assert_eq!(
+                crate::shared_stream::choose_shared_period(
+                    crate::shared_stream::SharedPeriodCaps {
+                        default_frames: frames as u32,
+                        fundamental_frames: 1,
+                        min_frames: 1,
+                        max_frames: frames as u32 * 2,
+                    },
+                    rate,
+                    period,
+                ),
+                Ok(frames as u32)
+            );
+        }
+    }
+
+    #[test]
+    fn no_frame_intent_leaves_profile_or_endpoint_period_available() {
+        for rate in [None, Some(44_100), Some(48_000), Some(96_000)] {
+            let period = device_period(moiren_engine::node::DeviceOptions {
+                hardware_sample_rate: rate,
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(period.desired_period_ms, None);
+        }
+        assert_eq!(NativeLatencyProfile::Compatible.desired_period_ms(), None);
+        assert_eq!(
+            NativeLatencyProfile::Balanced.desired_period_ms(),
+            Some(10.0)
+        );
+        assert_eq!(NativeLatencyProfile::Low.desired_period_ms(), Some(5.0));
+    }
+
+    #[test]
+    fn zero_rate_or_frame_period_is_rejected_before_conversion() {
+        for (rate, frames) in [
+            (Some(0), Some(441)),
+            (Some(44_100), Some(0)),
+            (Some(0), None),
+        ] {
+            assert!(
+                device_period(moiren_engine::node::DeviceOptions {
+                    hardware_sample_rate: rate,
+                    period_frames: frames,
+                    ..Default::default()
+                })
+                .is_err()
+            );
+        }
+    }
+
     #[test]
     fn relative_profiles_use_actual_period_and_reject_impossible_capacity() {
         let timing = NativeStreamTiming {

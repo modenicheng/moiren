@@ -41,6 +41,13 @@ and missing/multiple masters are rejected. Explicit hardware-rate intent is
 checked against the endpoint mix rate, not a converted client's rate. Shared
 mode never reconfigures that endpoint. Custom input budgets still require
 physical capture negotiation.
+`DeviceOptions::period_frames` requires an explicit `hardware_sample_rate`:
+frames are converted to desired milliseconds using that rate, never an assumed
+48 kHz graph rate. A frame period without a rate returns `Unsupported` before
+resource probing or owner creation. For example, 441 frames at 44.1 kHz requests
+10 ms. This is period intent, not an actual-period observation; Windows may
+negotiate a different period. Omitting both fields retains the latency profile
+or endpoint-default period policy.
 Both sides share one cancellation signal and activation gate. `Running` requires
 every native stream to acknowledge Start; a stream failure stops the linked owners.
 

@@ -64,12 +64,7 @@ pub fn validate_native_project(
                 "Windows owner supports Shared stereo graph IO".into(),
             ));
         }
-        device
-            .validate()
-            .map_err(|error| BackendError::Unsupported(error.to_string()))?;
-        super::profile::device_period(device)
-            .validate()
-            .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+        super::profile::device_period(device)?;
         if matches!(config, NodeConfig::Input(_)) && device.clock_role != ClockRole::Follower {
             return Err(BackendError::Unsupported(
                 "render is the master clock and capture inputs must follow it".into(),
@@ -204,6 +199,69 @@ mod tests {
                     stable_id: None,
                 });
             input.device.hardware_sample_rate = Some(rate);
+            project.nodes.insert(source, NodeConfig::Input(input));
+            validate_native_project(&project).unwrap();
+        }
+    }
+
+    #[test]
+    fn render_frame_period_without_rate_is_rejected_before_native_preparation() {
+        let mut project = EngineProject::default();
+        let sink = project.graph.create_node(NodeKind::Sink, 2).unwrap();
+        let mut config = output("render", ClockRole::Master);
+        if let NodeConfig::Output(output) = &mut config {
+            output.device.period_frames = Some(441);
+        }
+        project.nodes.insert(sink, config);
+        let result = validate_native_project(&project);
+        assert!(
+            matches!(result, Err(BackendError::Unsupported(ref message))
+                if message.contains("period_frames") && message.contains("hardware_sample_rate")),
+            "frame intent without a rate must fail clearly, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn capture_frame_period_without_rate_is_rejected_before_native_preparation() {
+        let mut project = EngineProject::default();
+        let sink = project.graph.create_node(NodeKind::Sink, 2).unwrap();
+        let source = project.graph.create_node(NodeKind::Source, 2).unwrap();
+        project
+            .nodes
+            .insert(sink, output("render", ClockRole::Master));
+        let mut input = crate::engine_backend::physical_input(EndpointSelector::PinnedEndpoint {
+            endpoint_id: "capture".into(),
+            stable_id: None,
+        });
+        input.device.period_frames = Some(441);
+        project.nodes.insert(source, NodeConfig::Input(input));
+        let result = validate_native_project(&project);
+        assert!(
+            matches!(result, Err(BackendError::Unsupported(ref message))
+                if message.contains("period_frames") && message.contains("hardware_sample_rate")),
+            "frame intent without a rate must fail clearly, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn physical_frame_period_with_explicit_rate_is_admitted() {
+        let mut project = EngineProject::default();
+        let sink = project.graph.create_node(NodeKind::Sink, 2).unwrap();
+        let source = project.graph.create_node(NodeKind::Source, 2).unwrap();
+        for (rate, frames) in [(44_100, 441), (48_000, 480), (96_000, 960)] {
+            let mut config = output("render", ClockRole::Master);
+            if let NodeConfig::Output(output) = &mut config {
+                output.device.hardware_sample_rate = Some(rate);
+                output.device.period_frames = Some(frames);
+            }
+            project.nodes.insert(sink, config);
+            let mut input =
+                crate::engine_backend::physical_input(EndpointSelector::PinnedEndpoint {
+                    endpoint_id: "capture".into(),
+                    stable_id: None,
+                });
+            input.device.hardware_sample_rate = Some(rate);
+            input.device.period_frames = Some(frames);
             project.nodes.insert(source, NodeConfig::Input(input));
             validate_native_project(&project).unwrap();
         }
