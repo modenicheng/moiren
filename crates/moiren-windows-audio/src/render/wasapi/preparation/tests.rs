@@ -372,7 +372,7 @@ fn trace_windows_and_event_allocation_survive_native_callback_unwind_to_joiner()
     assert_eq!(worker_frees, 0, "native unwind freed the event allocation");
     assert_eq!(joiner_frees, 0);
     let json = serde_json::to_value(&exit.report).unwrap();
-    assert_eq!(json["schema_version"], 7);
+    assert_eq!(json["schema_version"], 8);
     assert!(json.get("diagnostics_recorder").is_none());
     drop(exit);
     assert_eq!(diagnostic::event_allocation(), (pointer, 0, 1));

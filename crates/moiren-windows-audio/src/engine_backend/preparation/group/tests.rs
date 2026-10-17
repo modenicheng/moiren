@@ -25,6 +25,26 @@ fn timing() -> NativeStreamTiming {
         capacity_frames: 738,
     }
 }
+
+#[test]
+fn explicit_hardware_rate_compares_mix_not_converted_client_rate() {
+    use crate::shared_stream::{SharedFormatInfo, SharedPeriodReport};
+    let period = SharedPeriodReport {
+        mix_format: Some(SharedFormatInfo {
+            sample_rate: 96_000,
+            channels: 4,
+            container_bits: 32,
+            valid_bits: Some(24),
+            channel_mask: Some(0),
+            floating_point: false,
+        }),
+        windows_auto_conversion: true,
+        ..Default::default()
+    };
+    check_hardware_rate(Some(96_000), period, 48_000).unwrap();
+    check_hardware_rate(None, period, 48_000).unwrap();
+    assert!(check_hardware_rate(Some(48_000), period, 48_000).is_err());
+}
 fn report(diagnostics: &Diagnostics) -> serde_json::Value {
     serde_json::from_str(diagnostics.lock().unwrap().as_ref().unwrap()).unwrap()
 }

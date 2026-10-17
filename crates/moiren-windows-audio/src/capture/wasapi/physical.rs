@@ -15,10 +15,8 @@ use std::{
 use windows::{
     Win32::{
         Media::Audio::{
-            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            AUDCLNT_STREAMFLAGS_NOPERSIST, AudioCategory_Other, AudioClientProperties,
-            IAudioClient, IAudioClient2, IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator,
-            eCapture,
+            AudioCategory_Other, AudioClientProperties, IAudioClient, IAudioClient2,
+            IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator, eCapture,
         },
         System::Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance},
     },
@@ -61,42 +59,24 @@ fn owner(
         })
     })?;
     let memory = mix_format(&client)?;
-    // SAFETY: mix_format validated the owned packed native structure.
-    let base = unsafe { memory.0.read_unaligned() };
-    report.sample_rate = Some(base.nSamplesPerSec);
-    report.channels = Some(usize::from(base.nChannels));
+    // Packet lengths and bridge timing use the selected client descriptor,
+    // which can differ from the endpoint mix rate and microphone-array layout.
+    let base = memory.client();
+    report.sample_rate = Some(base.sample_rate);
+    report.channels = Some(usize::from(base.channels));
     let guid = api("CoCreateGuid(capture)", unsafe { CoCreateGuid() })?;
-    let client3 = crate::shared_stream::initialize_with_client3(
+    crate::shared_stream::initialize_shared(
         &client,
-        memory.0,
-        base.nSamplesPerSec,
+        &memory,
         options.shared_period,
-        Some(&guid),
+        &guid,
         &mut report.shared_period,
-    );
-    if let Err(error) = client3 {
-        if let Some(reason) = error.fallback_reason {
-            report.shared_period.fallback_reason = Some(reason);
-            api("Initialize(capture Shared fallback)", unsafe {
-                client.Initialize(
-                    AUDCLNT_SHAREMODE_SHARED,
-                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
-                    0,
-                    0,
-                    memory.0,
-                    Some(&guid),
-                )
-            })?;
-            report.shared_period.initialization_api =
-                Some(crate::shared_stream::SharedInitializationApi::LegacyClient);
-        } else {
-            return Err(CaptureError::Api {
-                stage: error.stage,
-                hresult: error.error.code().0,
-            });
-        }
-    }
-    crate::shared_stream::record_current_period(&client, &mut report.shared_period);
+    )
+    .map_err(|error| CaptureError::Api {
+        stage: error.stage,
+        hresult: error.error.code().0,
+    })?;
+    report.windows_auto_conversion = memory.windows_auto_conversion;
     api("SetEventHandle(capture)", unsafe {
         client.SetEventHandle(event.0)
     })?;
@@ -110,8 +90,8 @@ fn owner(
             stop,
             duration: options.duration,
             latency_telemetry: options.latency_telemetry,
-            sample_rate: base.nSamplesPerSec,
-            channels: usize::from(base.nChannels),
+            sample_rate: base.sample_rate,
+            channels: usize::from(base.channels),
         },
         preparation,
         report,

@@ -64,6 +64,9 @@ pub fn validate_native_project(
                 "Windows owner supports Shared stereo graph IO".into(),
             ));
         }
+        device
+            .validate()
+            .map_err(|error| BackendError::Unsupported(error.to_string()))?;
         super::profile::device_period(device)
             .validate()
             .map_err(|error| BackendError::Unsupported(error.to_string()))?;
@@ -95,25 +98,11 @@ pub fn validate_native_project(
                         ));
                     }
                 }
-                InputSource::Physical(_) => {
-                    if device
-                        .hardware_sample_rate
-                        .is_some_and(|rate| ![44_100, 48_000].contains(&rate))
-                    {
-                        return Err(BackendError::Unsupported(
-                            "capture supports 44.1/48kHz native f32".into(),
-                        ));
-                    }
-                }
+                InputSource::Physical(_) => {}
             },
-            NodeConfig::Output(output)
-                if !matches!(output.target, OutputTarget::Physical(_))
-                    || device
-                        .hardware_sample_rate
-                        .is_some_and(|rate| rate != 48_000) =>
-            {
+            NodeConfig::Output(output) if !matches!(output.target, OutputTarget::Physical(_)) => {
                 return Err(BackendError::Unsupported(
-                    "output requires physical 48kHz stereo f32".into(),
+                    "output requires a physical Shared endpoint".into(),
                 ));
             }
             _ => {}
@@ -195,6 +184,28 @@ mod tests {
             project.nodes.insert(a, NodeConfig::Input(input.clone()));
             project.nodes.insert(b, NodeConfig::Input(input));
             assert!(validate_native_project(&project).is_err());
+        }
+    }
+
+    #[test]
+    fn physical_mix_rate_requirements_allow_conversion_without_changing_graph_rate() {
+        let mut project = EngineProject::default();
+        let sink = project.graph.create_node(NodeKind::Sink, 2).unwrap();
+        let source = project.graph.create_node(NodeKind::Source, 2).unwrap();
+        for rate in [44_100, 48_000, 96_000, 192_000] {
+            let mut config = output("render", ClockRole::Master);
+            if let NodeConfig::Output(output) = &mut config {
+                output.device.hardware_sample_rate = Some(rate);
+            }
+            project.nodes.insert(sink, config);
+            let mut input =
+                crate::engine_backend::physical_input(EndpointSelector::PinnedEndpoint {
+                    endpoint_id: "capture".into(),
+                    stable_id: None,
+                });
+            input.device.hardware_sample_rate = Some(rate);
+            project.nodes.insert(source, NodeConfig::Input(input));
+            validate_native_project(&project).unwrap();
         }
     }
 }

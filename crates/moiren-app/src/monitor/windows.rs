@@ -235,7 +235,7 @@ impl MonitorSession {
         match (capture_report, render_report) {
             (Some(capture), Some(render)) => {
                 exit.report = Some(MonitorReport {
-                    schema_version: 6,
+                    schema_version: 7,
                     status: report_status(capture.status, render.status),
                     capture,
                     render,

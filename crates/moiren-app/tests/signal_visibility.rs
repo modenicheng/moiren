@@ -2,6 +2,20 @@ use moiren_app::service::{AppRequest, RequestId, ServiceMailbox, ServiceRuntime}
 use moiren_app::ui::signals::{PresentationDemand, PresentationRect, VisibleSignal};
 use std::time::{Duration, Instant};
 
+fn snapshot(
+    handle: &moiren_app::service::AppHandle,
+) -> std::sync::Arc<moiren_app::service::AppSnapshot> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(snapshot) = handle.try_snapshot() {
+            return snapshot;
+        }
+        // Publishing can briefly own the mutex; contention is not missing state.
+        assert!(Instant::now() < deadline, "service snapshot stayed busy");
+        std::thread::yield_now();
+    }
+}
+
 fn visible() -> PresentationDemand {
     PresentationDemand {
         window_visible: true,
@@ -87,12 +101,7 @@ fn persistent_visible_ticks_enqueue_only_one_subscription() {
 fn hide_show_between_audio_blocks_advances_real_demand_and_retains_analysis() {
     let runtime = ServiceRuntime::spawn().unwrap();
     let handle = runtime.handle();
-    let topic = handle
-        .try_snapshot()
-        .unwrap()
-        .signal_topics
-        .tone_output
-        .clone();
+    let topic = snapshot(&handle).signal_topics.tone_output.clone();
     let mut visible_signal = VisibleSignal::new(handle.clone(), topic.clone(), Default::default());
     visible_signal.update_demand(visible()).unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -133,12 +142,7 @@ fn hide_show_between_audio_blocks_advances_real_demand_and_retains_analysis() {
 fn each_hide_predicate_drops_only_ui_demand_and_keeps_analysis_generation() {
     let runtime = ServiceRuntime::spawn().unwrap();
     let handle = runtime.handle();
-    let topic = handle
-        .try_snapshot()
-        .unwrap()
-        .signal_topics
-        .tone_output
-        .clone();
+    let topic = snapshot(&handle).signal_topics.tone_output.clone();
     let mut ticket = handle
         .subscribe_topic(topic.clone(), Default::default())
         .unwrap();

@@ -3,9 +3,22 @@ use serde::Serialize;
 use thiserror::Error;
 
 #[cfg(windows)]
+pub(crate) mod format;
+#[cfg(windows)]
 mod wasapi;
 #[cfg(windows)]
-pub(crate) use wasapi::{initialize_with_client3, record_current_period};
+pub(crate) use wasapi::initialize_shared;
+
+/// Endpoint mix and client formats can differ on the Windows conversion path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SharedFormatInfo {
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub container_bits: u16,
+    pub valid_bits: Option<u16>,
+    pub channel_mask: Option<u32>,
+    pub floating_point: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SharedPeriodCaps {
@@ -28,6 +41,7 @@ pub enum SharedFallbackReason {
     Client3Unavailable,
     CapabilityQueryUnsupported,
     EnginePeriodLocked,
+    WindowsFormatConversion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -47,9 +61,16 @@ pub struct SharedInitializationFailure {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
 pub struct SharedPeriodReport {
+    pub mix_format: Option<SharedFormatInfo>,
+    pub client_format: Option<SharedFormatInfo>,
+    pub windows_auto_conversion: bool,
     pub desired_period_ms: Option<f64>,
     pub requested_period_frames: Option<u32>,
+    /// Period normalized to the client format's sample rate, rounded upward.
     pub actual_period_frames: Option<u32>,
+    /// Raw engine period, before normalization into client-rate frames.
+    pub engine_period_frames: Option<u32>,
+    pub engine_sample_rate: Option<u32>,
     pub caps: Option<SharedPeriodCaps>,
     pub initialization_api: Option<SharedInitializationApi>,
     pub fallback_reason: Option<SharedFallbackReason>,

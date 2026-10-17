@@ -44,7 +44,7 @@ pub enum RenderError {
     Gate(#[from] crate::GateError),
     #[error("render startup channel closed before preparation completed")]
     StartupLost,
-    #[error("only native 48 kHz stereo 32-bit float is supported by this render slice")]
+    #[error("render requires a valid PCM/float mix descriptor and a 48 kHz stereo f32 engine")]
     UnsupportedFormat,
     #[error("render requires an explicit nonempty endpoint ID without embedded NUL")]
     InvalidEndpoint,
@@ -372,6 +372,8 @@ pub struct RenderReport {
     pub native_mix_container_bits: Option<u16>,
     pub format_supported: bool,
     pub buffer_frames: Option<u32>,
+    /// Raw mix-rate engine period. SharedPeriodReport::actual_period_frames
+    /// is the corresponding client-rate period used for queue admission.
     pub engine_period_frames: Option<u32>,
     pub period_hresult: Option<i32>,
     pub stream_latency_100ns: Option<i64>,

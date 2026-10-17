@@ -74,7 +74,7 @@ fn target_exit_wakes_without_audio_and_stop_wins_all_signals() {
         Wake::Stop
     );
 }
-use super::{format::validate_format, packet::transfer_packet};
+use super::packet::transfer_packet;
 use crate::{
     clock_bridge::{ClockBridgeConfig, capture_bridge},
     owner::OwnedHandle,
@@ -115,56 +115,6 @@ fn linked_render_and_capture_stop_without_waiting_for_worker_cleanup() {
         wait(handle(&session.stop), audio.0, 100).unwrap(),
         Wake::Stop
     );
-}
-
-#[test]
-fn native_capture_format_requires_supported_rate_float_and_channel_order() {
-    let base = WAVEFORMATEX {
-        wFormatTag: 3,
-        nChannels: 2,
-        nSamplesPerSec: 48000,
-        nAvgBytesPerSec: 384000,
-        nBlockAlign: 8,
-        wBitsPerSample: 32,
-        cbSize: 0,
-    };
-    assert!(validate_format(base, true, Some(32), Some(3)).is_ok());
-    let mono = WAVEFORMATEX {
-        nChannels: 1,
-        nBlockAlign: 4,
-        nAvgBytesPerSec: 192000,
-        ..base
-    };
-    assert!(validate_format(mono, true, None, Some(4)).is_ok());
-    let rate = WAVEFORMATEX {
-        nSamplesPerSec: 44100,
-        nAvgBytesPerSec: 352800,
-        ..base
-    };
-    assert!(validate_format(rate, true, None, None).is_ok());
-    for bad in [
-        WAVEFORMATEX {
-            nSamplesPerSec: 96000,
-            ..base
-        },
-        WAVEFORMATEX {
-            nChannels: 6,
-            ..base
-        },
-        WAVEFORMATEX {
-            nBlockAlign: 4,
-            ..base
-        },
-        WAVEFORMATEX {
-            nAvgBytesPerSec: 1,
-            ..base
-        },
-    ] {
-        assert!(validate_format(bad, true, None, None).is_err());
-    }
-    assert!(validate_format(base, false, None, None).is_err());
-    assert!(validate_format(base, true, Some(24), None).is_err());
-    assert!(validate_format(base, true, Some(32), Some(12)).is_err());
 }
 
 #[implement(IAudioCaptureClient)]
@@ -291,10 +241,10 @@ fn prepared_capture_publishes_bridge_before_gate_and_cancel_never_runs() {
         let report = prepared.session.join().unwrap();
         assert_eq!(report.stream_started, !cancel);
         assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
-        assert_eq!(report.schema_version, 6);
+        assert_eq!(report.schema_version, 7);
         assert_eq!(report.requested_seconds, None);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 6);
+        assert_eq!(json["schema_version"], 7);
         assert_eq!(json["shared_period"]["requested_period_frames"], 240);
         assert_eq!(json["shared_period"]["actual_period_frames"], 336);
         assert!(json["requested_seconds"].is_null());
@@ -312,7 +262,7 @@ fn capture_preparation_failure_joins_owner_before_returning() {
         );
         let report = stream::finish(Err(CaptureError::UnsupportedFormat), &stop, &sender, report);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 6);
+        assert_eq!(json["schema_version"], 7);
         assert_eq!(json["requested_seconds"], 10.0);
         owner_exited.store(true, std::sync::atomic::Ordering::Release);
         report

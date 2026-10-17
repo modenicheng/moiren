@@ -3,6 +3,20 @@ use moiren_engine::boundary::{ConstantSource, RtAudioSource};
 
 #[cfg(windows)]
 #[test]
+fn cleanup_handoffs_do_not_embed_multiple_large_native_reports_on_the_stack() {
+    use moiren_app::monitor::{MonitorCleanupExit, MonitorOwnerExit};
+    assert!(
+        size_of::<MonitorCleanupExit>() < 16_384,
+        "cleanup alternatives must not embed full trace arrays"
+    );
+    assert!(
+        size_of::<MonitorOwnerExit>() < 8192,
+        "owner handoff must not embed full trace arrays"
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn cleanup_outcomes_preserve_renderer_when_capture_join_failed() {
     use moiren_app::monitor::{MonitorCleanupExit, MonitorError};
     use moiren_windows_audio::{capture::CaptureError, render::DemandRenderer};

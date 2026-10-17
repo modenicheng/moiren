@@ -11,6 +11,7 @@ pub enum MonitorPeriodFallback {
     Client3Unavailable,
     CapabilityQueryUnsupported,
     EnginePeriodLocked,
+    WindowsFormatConversion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +109,9 @@ impl MonitorPreparedDiagnostics {
                         SharedInitializationApi::Client3 => MonitorInitializationApi::Client3,
                     }),
                     period_fallback: period.fallback_reason.map(|reason| match reason {
+                        SharedFallbackReason::WindowsFormatConversion => {
+                            MonitorPeriodFallback::WindowsFormatConversion
+                        }
                         SharedFallbackReason::Client3Unavailable => {
                             MonitorPeriodFallback::Client3Unavailable
                         }

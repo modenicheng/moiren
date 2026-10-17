@@ -161,6 +161,11 @@ impl WindowsBackend {
                 self.config.latency_profile,
                 self.config.render_queue,
             )?;
+            group.check(group::check_hardware_rate(
+                output.device.hardware_sample_rate,
+                info.shared_period,
+                info.timing.sample_rate,
+            ))?;
             let master = output.device.clock_role == ClockRole::Master;
             streams.push(NativeStreamObservation {
                 node,

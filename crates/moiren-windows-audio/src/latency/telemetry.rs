@@ -102,12 +102,11 @@ pub struct TraceRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraceSnapshot {
-    records: [TraceRecord; TRACE_CAPACITY],
-    len: usize,
+    records: Box<[TraceRecord]>,
 }
 impl TraceSnapshot {
     pub fn records(&self) -> &[TraceRecord] {
-        &self.records[..self.len]
+        &self.records
     }
 }
 impl Serialize for TraceSnapshot {
@@ -138,7 +137,8 @@ pub struct LatencySnapshot {
 }
 
 /// One writer owns fixed storage. A full diagnostic trace never blocks, grows,
-/// or changes the audio transfer; independent snapshots copy this storage.
+/// or changes the audio transfer. Only non-RT snapshots copy valid records
+/// into owned storage, keeping nested owner/report handoffs small on Windows.
 pub struct LatencyRecorder {
     mode: TelemetryMode,
     previous_wake: Option<u64>,
@@ -151,7 +151,8 @@ pub struct LatencyRecorder {
     regressed_wakes: u64,
     trace_dropped: u64,
     counters_saturated: bool,
-    trace: TraceSnapshot,
+    trace: [TraceRecord; TRACE_CAPACITY],
+    trace_len: usize,
 }
 impl LatencyRecorder {
     pub fn new(mode: TelemetryMode) -> Self {
@@ -167,10 +168,8 @@ impl LatencyRecorder {
             regressed_wakes: 0,
             trace_dropped: 0,
             counters_saturated: false,
-            trace: TraceSnapshot {
-                records: [TraceRecord::default(); TRACE_CAPACITY],
-                len: 0,
-            },
+            trace: [TraceRecord::default(); TRACE_CAPACITY],
+            trace_len: 0,
         }
     }
     pub fn record(&mut self, observation: CallbackObservation) {
@@ -203,21 +202,22 @@ impl LatencyRecorder {
         }
         self.previous_wake = Some(wake);
         if self.mode == TelemetryMode::Trace {
-            if self.trace.len == TRACE_CAPACITY {
+            if self.trace_len == TRACE_CAPACITY {
                 increment(&mut self.trace_dropped, &mut self.counters_saturated);
             } else {
-                self.trace.records[self.trace.len] = TraceRecord {
+                self.trace[self.trace_len] = TraceRecord {
                     wake_qpc_100ns: wake,
                     demand_frames: observation.demand_frames,
                     padding_before_frames: observation.padding_before_frames,
                     submitted_frames: observation.submitted_frames,
                     callback_duration_100ns: duration,
                 };
-                self.trace.len += 1;
+                self.trace_len += 1;
             }
         }
     }
-    /// Call after streaming stops; quantile scans have no place in a callback.
+    /// Non-RT only, after streaming stops. Quantile scans and allocation of
+    /// valid trace records have no place in a callback; an empty trace is free.
     pub fn snapshot(&self) -> LatencySnapshot {
         LatencySnapshot {
             schema_version: 1,
@@ -237,7 +237,9 @@ impl LatencyRecorder {
                 || self.demand.saturated
                 || self.padding.saturated
                 || self.submitted.saturated,
-            trace: self.trace.clone(),
+            trace: TraceSnapshot {
+                records: self.trace[..self.trace_len].into(),
+            },
         }
     }
 }
@@ -260,7 +262,7 @@ mod tests {
         assert_eq!(snapshot.samples, u64::MAX);
         assert_eq!(snapshot.p99_upper_bound, None);
         let mut recorder = LatencyRecorder::new(TelemetryMode::Trace);
-        recorder.trace.len = TRACE_CAPACITY;
+        recorder.trace_len = TRACE_CAPACITY;
         recorder.trace_dropped = u64::MAX;
         recorder.record(CallbackObservation {
             wake_qpc_100ns: Some(1),

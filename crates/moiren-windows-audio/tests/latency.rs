@@ -56,6 +56,14 @@ fn callback(wake: u64, duration: u64) -> CallbackObservation {
 }
 
 #[test]
+fn report_snapshots_do_not_embed_full_trace_storage_in_every_owner_handoff() {
+    assert!(
+        size_of::<moiren_windows_audio::latency::LatencySnapshot>() < 2048,
+        "large inline traces multiply across capture/render cleanup stack frames"
+    );
+}
+
+#[test]
 fn qpc_conversion_uses_frequency_and_rejects_overflow() {
     assert_eq!(qpc_ticks_to_100ns(1, 3), Some(3_333_333));
     assert_eq!(qpc_ticks_to_100ns(48_000, 48_000), Some(10_000_000));
@@ -214,9 +222,10 @@ fn trace_overflow_keeps_audio_complete_without_allocation_or_deallocation() {
         );
         recorder.record(callback(100 + index as u64 * 100, 20));
     }
-    let snapshot = recorder.snapshot();
     TRACKING.with(|tracking| tracking.set(false));
     assert_eq!(ALLOCATIONS.with(Cell::get), (0, 0));
+    // Snapshot ownership is finalized off the audio path, after recording ends.
+    let snapshot = recorder.snapshot();
     assert_eq!(snapshot.trace.records().len(), TRACE_CAPACITY);
     assert_eq!(snapshot.trace_dropped, 17);
     assert_eq!(

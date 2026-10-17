@@ -17,14 +17,21 @@ executable selectors are ambiguous and return `Unsupported`; an exited/recycled
 process is never silently replaced. Explicit endpoints wait for their exact ID;
 `FollowDefault` retains its role and follows changes to the default identity.
 
-The supported transport has one 48 kHz stereo f32 Shared render master, additional
-Shared stereo follower outputs, and follower inputs. Every output consumes its
-own graph sink; only the master runs Engine. Bounded preallocated follower bridges
-adapt independent device clocks continuously. Duplicate resolved endpoints and
-missing/multiple masters are rejected. Physical capture supports existing
-44.1/48 kHz mono/stereo f32 negotiation and clock adaptation; process capture uses
-the existing 48 kHz process-tree path. Hardware rate/period requirements are
-checked, and custom input queue budgets require physical capture negotiation.
+The graph transport remains 48 kHz stereo f32. Supported native Shared formats
+retain the Client3 period path: render uses 48 kHz stereo f32, while capture
+also accepts 44.1 kHz and mono f32. Other valid PCM or float mix formats use the
+Windows Shared AUTOCONVERTPCM/SRC_DEFAULT_QUALITY path and are reported as conversion, including
+different rates, PCM bit depths, and multi-channel physical capture. The owner
+receives 48 kHz stereo f32 packets on converted streams, so conversion adds no
+real-time decoding, allocation, or resampling. Physical capture keeps its existing
+native-layout handling and clock adaptation after this boundary; process capture
+keeps its existing fixed 48 kHz virtual path.
+Every output has its own sink; exactly one master drives Engine and bounded
+follower bridges adapt independent device clocks. Duplicate resolved endpoints
+and missing/multiple masters are rejected. Explicit hardware-rate intent is
+checked against the endpoint mix rate, not a converted client's rate. Shared
+mode never reconfigures that endpoint. Custom input budgets still require
+physical capture negotiation.
 Both sides share one cancellation signal and activation gate. `Running` requires
 every native stream to acknowledge Start; a stream failure stops the linked owners.
 
@@ -77,10 +84,14 @@ cargo run --locked -p moiren-app -- render --endpoint '<reviewed render endpoint
 ```
 
 This opt-in command submits audible PCM from a compiler-prepared tone graph.
-Only native 48 kHz, stereo, f32 is supported; other formats are rejected before
-Start. The selector queries active render endpoints, without requiring capture
-or default devices. Per-endpoint errors remain visible; empty-ID diagnostics
-cannot be selected. No volumes, mute settings or default endpoints are changed.
+The engine always submits 48 kHz stereo f32. A matching endpoint uses the native
+Client3 path; a valid endpoint with another rate, bit depth, PCM subtype, or
+channel count is opened through Windows Shared format conversion. The selector
+queries active render endpoints, without requiring capture or default devices.
+Per-endpoint errors remain visible; endpoint discovery marks conversion as a
+runtime compatibility requirement because catalog metadata alone cannot prove
+that Initialize will accept the flags. No volumes, mute settings or default
+endpoints are changed.
 
 `render::DemandRenderer` owns exactly one Engine and its matching, initially
 drained output reader. The WASAPI owner prepares COM/services, audio and separate
@@ -181,13 +192,42 @@ cargo run --locked -p moiren-app -- render --list
 cargo run --locked -p moiren-app -- monitor --input '<reviewed capture ID>' --output '<reviewed render ID>' --seconds 10 --gain 0.05 --pan 0
 ```
 
-`capture::start_capture` prepares a native Shared stream on a dedicated COM owner,
+`capture::start_capture` prepares a Shared stream on a dedicated COM owner,
 and returns `PreparedCapture { session, source, observer, sample_rate, channels }`.
-The startup handshake rejects unsupported native formats before returning a
-prepared source. Only native 44.1/48 kHz mono/stereo f32 is accepted; mono is
-explicitly copied to both graph channels. The read-only capture selector does
-not require a render/default endpoint. Other formats appear as unsupported;
-the command never changes device format or system/session settings.
+Supported native 44.1/48 kHz mono/stereo f32 retains its Client3 path; native mono
+is explicitly copied to both graph channels. Other valid PCM/float formats use
+Windows Shared conversion to 48 kHz stereo f32, including four-channel Realtek
+microphone arrays. The returned sample rate/channel count describes client
+packets, not the endpoint mix. The selector does not require a render/default
+endpoint. Conversion candidates have `format_supported: null` and
+`windows_conversion_required: true` until actual initialization verifies them.
+The command never changes device format or system/session settings.
+
+Both capture and render reports carry `shared_period.mix_format`, `client_format`,
+`windows_auto_conversion`, initialization API and fallback reason. Conversion
+uses legacy Shared initialization, not a Client3 low-latency promise. Requested
+milliseconds remain intent; `requested_period_frames` and Client3 capabilities
+stay unknown on that path. Raw `engine_period_frames` / `engine_sample_rate` are
+separate from `actual_period_frames`, which is ceiling-normalized to client
+frames before queue budgets are calculated. Optional period-query failures
+remain unknown rather than substituting a request or a guessed period.
+
+PCM 8/16/24/32-bit containers (including valid bits such as 24-in-32), float
+32/64-bit containers and 1..32-channel mix descriptors are validated before
+initialization. Windows/driver acceptance remains authoritative; this is not
+Exclusive-mode format support or a bit-perfect output guarantee. Capture/render
+report schema versions are 7/8; the combined monitor report is version 7.
+
+When Windows SRC changes the capture rate, native device positions and client
+packet lengths have different frame units. Such streams do not infer position
+gaps, queued-frame age or capture/QPC rate from those incompatible clocks; native
+discontinuity flags still reset the bridge, and the inventory servo still
+adapts independent device clocks. Same-rate native/converted streams retain
+their position-based timing.
+
+Latency recorders keep fixed storage during callbacks. Final trace snapshots
+own only their valid entries and are allocated after Stop; this avoids copying
+full trace arrays through nested Windows cleanup frames. No PCM is saved.
 
 Every nonempty packet is released on its acquiring thread, including invalid
 packets and bridge overflow. SILENT needs no readable pointer, TIMESTAMP_ERROR

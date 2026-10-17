@@ -5,6 +5,92 @@ use windows::{
     core::HRESULT,
 };
 
+mod compatibility;
+
+#[test]
+fn compatibility_selects_float_client_without_reinterpreting_native_pcm_or_array_bytes() {
+    use super::super::format::{PreparedSharedFormat, test_mix};
+    for capture in [false, true] {
+        for (rate, channels, bits, float) in [
+            (22_050, 1, 8, false),
+            (44_100, 2, 16, false),
+            (48_000, 2, 24, false),
+            (96_000, 2, 32, false),
+            (192_000, 2, 32, true),
+            (48_000, 4, 32, true),
+            (48_000, 2, 64, true),
+        ] {
+            let format =
+                PreparedSharedFormat::from_owned(test_mix(rate, channels, bits, float), capture)
+                    .unwrap();
+            assert!(format.windows_auto_conversion);
+            assert_eq!(format.mix.sample_rate, rate);
+            assert_eq!(format.mix.channels, channels);
+            assert_eq!(format.mix.container_bits, bits);
+            let client = unsafe { format.as_ptr().read_unaligned() };
+            assert_eq!({ client.nSamplesPerSec }, 48_000);
+            assert_eq!({ client.nChannels }, 2);
+            assert_eq!({ client.wBitsPerSample }, 32);
+            assert_eq!({ client.wFormatTag }, 3);
+            assert_eq!({ client.nBlockAlign }, 8);
+        }
+    }
+}
+
+#[test]
+fn compatibility_preserves_native_44100_mono_capture_and_48000_stereo_render() {
+    use super::super::format::{PreparedSharedFormat, test_mix};
+    for (capture, rate, channels) in [(true, 44_100, 1), (true, 48_000, 2), (false, 48_000, 2)] {
+        let memory = test_mix(rate, channels, 32, true);
+        let pointer = memory.0;
+        let format = PreparedSharedFormat::from_owned(memory, capture).unwrap();
+        assert!(!format.windows_auto_conversion);
+        assert_eq!(format.as_ptr(), pointer.cast_const());
+    }
+}
+
+#[test]
+fn compatibility_rejects_invalid_mix_layouts_instead_of_using_conversion_to_hide_them() {
+    use super::super::format::{PreparedSharedFormat, test_mix};
+    for (rate, channels, bits) in [(0, 2, 32), (48_000, 0, 32), (48_000, 2, 20)] {
+        assert!(
+            PreparedSharedFormat::from_owned(test_mix(rate, channels, bits, false), true).is_err()
+        );
+    }
+    let memory = test_mix(48_000, 2, 32, true);
+    unsafe { (*memory.0).nBlockAlign = 4 };
+    assert!(PreparedSharedFormat::from_owned(memory, false).is_err());
+    let memory = test_mix(48_000, 2, 32, true);
+    unsafe { (*memory.0).nAvgBytesPerSec = 1 };
+    assert!(PreparedSharedFormat::from_owned(memory, false).is_err());
+    let memory = test_mix(48_000, 2, 32, true);
+    unsafe {
+        (*memory.0).wFormatTag = 0xfffe;
+        (*memory.0).cbSize = 0;
+    }
+    assert!(PreparedSharedFormat::from_owned(memory, true).is_err());
+    assert!(PreparedSharedFormat::from_owned(TaskMemory(std::ptr::null_mut()), true).is_err());
+}
+
+#[test]
+fn converted_periods_are_reported_in_client_frames_not_native_frames() {
+    let mut report = SharedPeriodReport::default();
+    record_period(960, 96_000, 48_000, &mut report).unwrap();
+    assert_eq!(report.actual_period_frames, Some(480));
+    assert_eq!(report.engine_period_frames, Some(960));
+    assert_eq!(report.engine_sample_rate, Some(96_000));
+    record_period(128, 44_100, 48_000, &mut report).unwrap();
+    assert_eq!(report.actual_period_frames, Some(140));
+    for (frames, engine_rate, client_rate) in [
+        (0, 48_000, 48_000),
+        (480, 0, 48_000),
+        (480, 48_000, 0),
+        (u32::MAX, 1, 48_000),
+    ] {
+        assert!(record_period(frames, engine_rate, client_rate, &mut report).is_err());
+    }
+}
+
 struct FakeClient3 {
     caps: Cell<SharedPeriodCaps>,
     query_error: Option<HRESULT>,

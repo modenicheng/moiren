@@ -23,7 +23,9 @@ pub enum CaptureError {
     InvalidEndpoint,
     #[error("capture duration must be between 1 and 600 seconds")]
     InvalidDuration,
-    #[error("capture supports only native 44.1/48 kHz mono/stereo 32-bit float")]
+    #[error(
+        "invalid or unsupported capture mix descriptor; Shared compatibility requires a valid PCM/float format"
+    )]
     UnsupportedFormat,
     #[error("invalid native capture packet pointer or frame count")]
     InvalidPacket,
@@ -125,7 +127,7 @@ pub struct CaptureReport {
 impl CaptureReport {
     pub(crate) fn new(source: CaptureSource, duration: SessionDuration) -> Self {
         Self {
-            schema_version: 6,
+            schema_version: 7,
             input_queue: None,
             latency: crate::latency::LatencyRecorder::new(crate::latency::TelemetryMode::Disabled)
                 .snapshot(),

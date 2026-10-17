@@ -29,6 +29,24 @@ pub(super) struct PreparationGroup {
     failed_captures: Vec<CaptureReport>,
     failure: Option<String>,
 }
+
+pub(super) fn check_hardware_rate(
+    requested: Option<u32>,
+    period: crate::shared_stream::SharedPeriodReport,
+    client_rate: u32,
+) -> Result<(), BackendError> {
+    // Hardware intent constrains the endpoint mix, never Windows' converted
+    // client packets. Shared mode must not reconfigure the system endpoint.
+    let mix_rate = period
+        .mix_format
+        .map_or(client_rate, |format| format.sample_rate);
+    if requested.is_some_and(|rate| rate != mix_rate) {
+        return Err(BackendError::Unsupported(
+            "endpoint mix rate differs from requested hardware rate".into(),
+        ));
+    }
+    Ok(())
+}
 impl PreparationGroup {
     pub(super) fn new(stop: StopSignal, diagnostics: Diagnostics) -> Self {
         Self {
@@ -96,11 +114,11 @@ impl PreparationGroup {
             .last()
             .expect("registered native capture")
             .info();
-        if requested_rate.is_some_and(|rate| rate != info.timing.sample_rate) {
-            return self.check(Err(BackendError::Unsupported(
-                "capture mix rate differs from requested hardware rate".into(),
-            )));
-        }
+        self.check(check_hardware_rate(
+            requested_rate,
+            info.shared_period,
+            info.timing.sample_rate,
+        ))?;
         let input = self
             .check(
                 profile

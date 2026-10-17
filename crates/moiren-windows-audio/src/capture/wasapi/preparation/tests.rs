@@ -29,6 +29,88 @@ fn input() -> PreparedInputQueue {
         modeled_minimum_frames: Some(914),
     }
 }
+
+#[test]
+fn converted_capture_uses_client_packets_without_inferring_native_position_gaps() {
+    use crate::{
+        clock_bridge::CapturePacket,
+        shared_stream::{SharedFormatInfo, SharedPeriodReport},
+        stats::{DISCONTINUITY, SILENT},
+    };
+    for deferred in [false, true] {
+        let stop = StopSignal::new().unwrap();
+        let mut report = report();
+        report.shared_period = SharedPeriodReport {
+            mix_format: Some(SharedFormatInfo {
+                sample_rate: 96_000,
+                channels: 2,
+                container_bits: 32,
+                valid_bits: None,
+                channel_mask: None,
+                floating_point: true,
+            }),
+            windows_auto_conversion: true,
+            ..Default::default()
+        };
+        let native_timing = NativeStreamTiming {
+            sample_rate: 96_000,
+            ..timing()
+        };
+        assert!(client_position_clock(native_timing, report.shared_period));
+        let (mut ingress, _source, observer) = if deferred {
+            let (tx, rx) = mpsc::sync_channel(1);
+            let prepared = start_native_owner(stop, move |stop, preparation, _| {
+                let ingress = preparation
+                    .prepare(timing(), 2, &stop, &mut report, None)
+                    .unwrap();
+                // Return the producer only in this test so both bridge setup paths
+                // can exercise identical packets without touching a real device.
+                tx.send(ingress).unwrap();
+                preparation.finish(Ok(CaptureStatus::Stopped), &stop, report)
+            })
+            .unwrap();
+            let capture = prepared.attach(input()).unwrap();
+            let ingress = rx.recv().unwrap();
+            capture.session.join().unwrap();
+            (ingress, capture.source, capture.observer)
+        } else {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let ingress = CapturePreparation::Immediate(sender)
+                .prepare(timing(), 2, &stop.event, &mut report, None)
+                .unwrap();
+            let startup = receiver.recv().unwrap().unwrap();
+            (ingress, startup.source, startup.observer)
+        };
+        // Client frames advance by 480, native positions by 960. Their ratio
+        // must not create a discontinuity on every otherwise continuous packet.
+        for index in 0..3 {
+            ingress
+                .push_packet(
+                    &[],
+                    CapturePacket {
+                        frames: 480,
+                        flags: SILENT,
+                        device_position_frames: index * 960,
+                        qpc_100ns: 1_000_000 + index * 100_000,
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(observer.snapshot().discontinuities, 0);
+        ingress
+            .push_packet(
+                &[],
+                CapturePacket {
+                    frames: 480,
+                    flags: SILENT | DISCONTINUITY,
+                    device_position_frames: 2880,
+                    qpc_100ns: 1_300_000,
+                },
+            )
+            .unwrap();
+        assert_eq!(observer.snapshot().discontinuities, 1);
+    }
+}
 pub(super) fn fake_prepared(
     stop: StopSignal,
     gate: ActivationGate,

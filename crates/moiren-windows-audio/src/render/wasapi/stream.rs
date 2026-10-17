@@ -23,10 +23,9 @@ use std::{
 use windows::{
     Win32::{
         Media::Audio::{
-            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            AUDCLNT_STREAMFLAGS_NOPERSIST, AudioCategory_Other, AudioClientProperties,
-            IAudioClient, IAudioClient2, IAudioClock, IAudioRenderClient, IAudioSessionControl,
-            IAudioSessionControl2, IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator, eRender,
+            AudioCategory_Other, AudioClientProperties, IAudioClient, IAudioClient2, IAudioClock,
+            IAudioRenderClient, IAudioSessionControl, IAudioSessionControl2, IMMDeviceEnumerator,
+            IMMEndpoint, MMDeviceEnumerator, eRender,
         },
         System::{
             Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance},
@@ -38,7 +37,7 @@ use windows::{
 
 // Optional metadata cannot prevent an otherwise supported stream from starting.
 fn record_optional_properties(client: &IAudioClient, report: &mut RenderReport) {
-    report.engine_period_frames = report.shared_period.actual_period_frames;
+    report.engine_period_frames = report.shared_period.engine_period_frames;
     report.period_hresult = report.shared_period.actual_period_hresult;
     let ducking_result = unsafe { client.GetService::<IAudioSessionControl>() }
         .and_then(|s| s.cast::<IAudioSessionControl2>())
@@ -103,7 +102,7 @@ impl NativeRender {
     pub(super) fn timing(&self, report: &RenderReport) -> crate::latency::NativeStreamTiming {
         crate::latency::NativeStreamTiming {
             sample_rate: SAMPLE_RATE,
-            period_frames: report.engine_period_frames,
+            period_frames: report.shared_period.actual_period_frames,
             capacity_frames: self.capacity,
         }
     }
@@ -144,37 +143,18 @@ pub(super) fn with_native<ResultValue>(
     })?;
     let memory = mix_format(&client, report)?;
     let session_guid = api("CoCreateGuid(session)", unsafe { CoCreateGuid() })?;
-    let client3 = crate::shared_stream::initialize_with_client3(
+    crate::shared_stream::initialize_shared(
         &client,
-        memory.0,
-        SAMPLE_RATE,
+        &memory,
         options.shared_period,
-        Some(&session_guid),
+        &session_guid,
         &mut report.shared_period,
-    );
-    if let Err(error) = client3 {
-        if let Some(reason) = error.fallback_reason {
-            report.shared_period.fallback_reason = Some(reason);
-            api("Initialize(Shared fallback)", unsafe {
-                client.Initialize(
-                    AUDCLNT_SHAREMODE_SHARED,
-                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST,
-                    0,
-                    0,
-                    memory.0,
-                    Some(&session_guid),
-                )
-            })?;
-            report.shared_period.initialization_api =
-                Some(crate::shared_stream::SharedInitializationApi::LegacyClient);
-        } else {
-            return Err(RenderError::Api {
-                stage: error.stage,
-                hresult: error.error.code().0,
-            });
-        }
-    }
-    crate::shared_stream::record_current_period(&client, &mut report.shared_period);
+    )
+    .map_err(|error| RenderError::Api {
+        stage: error.stage,
+        hresult: error.error.code().0,
+    })?;
+    report.format_supported = true;
     api("SetEventHandle", unsafe { client.SetEventHandle(event.0) })?;
     let capacity = api("GetBufferSize", unsafe { client.GetBufferSize() })?;
     writable_frames(capacity, 0)?;
@@ -461,7 +441,7 @@ pub(super) fn run_owner_with(
 }
 pub(super) fn new_report(options: &RenderOptions) -> RenderReport {
     RenderReport {
-        schema_version: 7,
+        schema_version: 8,
         queue: None,
         latency: LatencyRecorder::new(options.latency_telemetry).snapshot(),
         diagnostics: super::super::RenderDiagnosticsSnapshot {
@@ -668,7 +648,7 @@ pub(super) mod diagnostic_tests {
             unreachable!()
         }
         fn GetService(&self, _: *const GUID, _: *mut *mut std::ffi::c_void) -> WinResult<()> {
-            unreachable!()
+            Err(windows::Win32::Foundation::E_NOINTERFACE.into())
         }
     }
     #[implement(IAudioRenderClient)]
@@ -701,6 +681,35 @@ pub(super) mod diagnostic_tests {
             endpoint_id: "fake-diagnostic-render".into(),
             duration: crate::SessionDuration::For(Duration::from_secs(1)),
         }
+    }
+    #[test]
+    fn converted_render_keeps_raw_period_but_admits_queues_in_client_frames() {
+        let mut report = new_report(&options());
+        report.shared_period.engine_period_frames = Some(960);
+        report.shared_period.engine_sample_rate = Some(96_000);
+        report.shared_period.actual_period_frames = Some(480);
+        let event = OwnedHandle::event().unwrap();
+        let native = NativeRender {
+            client: DiagnosticClient {
+                audio: event.0,
+                padding: 0,
+                fail_start: false,
+            }
+            .into(),
+            render: DiagnosticRender {
+                data: std::cell::UnsafeCell::new([0.0; 8]),
+                submissions: Cell::new(0),
+                failure: Failure::None,
+            }
+            .into(),
+            event,
+            capacity: 960,
+            clock: None,
+        };
+        record_optional_properties(&native.client, &mut report);
+        assert_eq!(report.engine_period_frames, Some(960));
+        assert_eq!(native.timing(&report).sample_rate, 48_000);
+        assert_eq!(native.timing(&report).period_frames, Some(480));
     }
     pub(crate) fn run(
         options: &RenderOptions,

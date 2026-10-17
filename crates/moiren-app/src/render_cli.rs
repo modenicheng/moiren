@@ -3,7 +3,7 @@ use crate::tone::{ToneConfig, ToneError};
 use std::collections::BTreeSet;
 use thiserror::Error;
 
-pub const RENDER_HELP: &str = "Moiren test-tone output\nUsage:\n  moiren-app render --list\n  moiren-app render --endpoint <ID> [--seconds 1..600] [--frequency Hz] [--gain 0..1] [--pan -1..1]\nDefaults: 10 seconds, 440 Hz, gain 0.05, centered stereo. Native 48 kHz stereo f32 Shared only.";
+pub const RENDER_HELP: &str = "Moiren test-tone output\nUsage:\n  moiren-app render --list\n  moiren-app render --endpoint <ID> [--seconds 1..600] [--frequency Hz] [--gain 0..1] [--pan -1..1]\nDefaults: 10 seconds, 440 Hz, gain 0.05, centered stereo. Engine format: 48 kHz stereo f32; valid endpoint mix formats use Windows Shared conversion when needed.";
 
 #[derive(Debug)]
 pub enum RenderCommand {

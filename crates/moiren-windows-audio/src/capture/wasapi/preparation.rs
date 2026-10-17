@@ -51,14 +51,15 @@ impl PreparedNativeCapture {
         input: PreparedInputQueue,
     ) -> Result<PreparedCapture, Box<CaptureAttachFailure>> {
         let attachment = (|| {
-            let (ingress, source, observer) = capture_bridge_with_clock(
-                ClockBridgeConfig::with_prepared_input(
-                    self.info.timing.sample_rate,
-                    self.info.channels,
-                    input,
-                ),
-                self.info.age_clock,
-            )?;
+            let mut config = ClockBridgeConfig::with_prepared_input(
+                self.info.timing.sample_rate,
+                self.info.channels,
+                input,
+            );
+            config.detect_position_gaps =
+                client_position_clock(self.info.timing, self.info.shared_period);
+            let (ingress, source, observer) =
+                capture_bridge_with_clock(config, self.info.age_clock)?;
             api("Send capture bridge", self.bridge.send((ingress, input)))?;
             self.attached
                 .recv()
@@ -80,6 +81,18 @@ impl PreparedNativeCapture {
             }
         }
     }
+}
+
+fn client_position_clock(
+    timing: NativeStreamTiming,
+    period: crate::shared_stream::SharedPeriodReport,
+) -> bool {
+    // GetBuffer positions remain in endpoint/device frames through Windows SRC,
+    // while packet lengths are client frames. Do not infer gaps, age or rate
+    // from incompatible units; driver flags and the inventory servo still work.
+    period
+        .mix_format
+        .is_none_or(|mix| mix.sample_rate == timing.sample_rate)
 }
 pub(super) enum CapturePreparation {
     Immediate(mpsc::SyncSender<Result<Startup, CaptureError>>),
@@ -105,7 +118,8 @@ impl CapturePreparation {
                         input_sample_rate: timing.sample_rate,
                         input_channels: channels,
                         detect_position_gaps: report.source
-                            == crate::capture::CaptureSource::Physical,
+                            == crate::capture::CaptureSource::Physical
+                            && client_position_clock(timing, report.shared_period),
                         ..ClockBridgeConfig::default()
                     },
                     age_clock,

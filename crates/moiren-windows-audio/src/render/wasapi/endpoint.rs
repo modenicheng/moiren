@@ -3,11 +3,8 @@ use serde::Serialize;
 
 use super::api;
 use crate::{
-    catalog,
-    owner::Apartment,
-    render::{CHANNELS, RenderError, SAMPLE_RATE},
+    catalog, owner::Apartment, render::RenderError, shared_stream::format::catalog_support,
 };
-use windows::Win32::Media::Multimedia::WAVE_FORMAT_IEEE_FLOAT;
 
 #[derive(Debug, Serialize)]
 pub struct RenderEndpoint {
@@ -16,6 +13,8 @@ pub struct RenderEndpoint {
     pub sample_rate: Option<u32>,
     pub channels: Option<u16>,
     pub format_supported: Option<bool>,
+    /// Requires an actual Shared Initialize; catalog inspection is not proof.
+    pub windows_conversion_required: bool,
     pub errors: Vec<String>,
 }
 /// Read-only catalog; does not choose a default endpoint or modify sessions.
@@ -30,25 +29,17 @@ pub(super) fn project_render_endpoints(snapshot: catalog::CatalogSnapshot) -> Ve
         .into_iter()
         .filter(|e| e.flow == "render")
         .map(|e| {
-            let supported = e.mix_format.as_ref().map(|f| {
-                let float = f.format_tag == WAVE_FORMAT_IEEE_FLOAT as u16
-                    || f.sub_format.as_ref().is_some_and(|g| {
-                        g.eq_ignore_ascii_case("00000003-0000-0010-8000-00aa00389b71")
-                    });
-                float
-                    && f.sample_rate == SAMPLE_RATE
-                    && f.channels == CHANNELS as u16
-                    && f.container_bits == 32
-                    && f.block_align == 8
-                    && f.valid_bits.is_none_or(|bits| bits == 32)
-                    && f.channel_mask.is_none_or(|mask| mask == 0 || mask == 3)
-            });
+            let (supported, windows_conversion_required) = e
+                .mix_format
+                .as_ref()
+                .map_or((None, false), |format| catalog_support(format, false));
             RenderEndpoint {
                 endpoint_id: e.id,
                 name: e.name,
                 sample_rate: e.mix_format.as_ref().map(|f| f.sample_rate),
                 channels: e.mix_format.as_ref().map(|f| f.channels),
                 format_supported: supported,
+                windows_conversion_required,
                 errors: e
                     .errors
                     .into_iter()
@@ -66,6 +57,7 @@ pub(super) fn project_render_endpoints(snapshot: catalog::CatalogSnapshot) -> Ve
             sample_rate: None,
             channels: None,
             format_supported: None,
+            windows_conversion_required: false,
             errors: vec![format!("{}: {}", error.stage, error.hresult)],
         });
     }

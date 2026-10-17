@@ -1,5 +1,5 @@
 use super::*;
-use super::{endpoint::project_render_endpoints, format::validate_format, packet::submit};
+use super::{endpoint::project_render_endpoints, packet::submit};
 use crate::{catalog, owner::OwnedHandle};
 use std::{
     cell::{RefCell, UnsafeCell},
@@ -102,59 +102,6 @@ fn stop_wakes_without_any_audio_event_and_takes_priority() {
         SetEvent(audio.0).unwrap();
     }
     assert_eq!(wait(handle(&stop), audio.0, 100).unwrap(), Wake::Stop);
-}
-#[test]
-fn native_format_validation_rejects_conversion_and_bad_layouts() {
-    let base = WAVEFORMATEX {
-        wFormatTag: 3,
-        nChannels: 2,
-        nSamplesPerSec: 48000,
-        nAvgBytesPerSec: 384000,
-        nBlockAlign: 8,
-        wBitsPerSample: 32,
-        cbSize: 0,
-    };
-    assert!(validate_format(base, true, None, None).is_ok());
-    assert!(validate_format(base, true, Some(32), Some(3)).is_ok());
-    for bad in [
-        WAVEFORMATEX {
-            nSamplesPerSec: 44100,
-            ..base
-        },
-        WAVEFORMATEX {
-            nChannels: 1,
-            ..base
-        },
-        WAVEFORMATEX {
-            nBlockAlign: 4,
-            ..base
-        },
-        WAVEFORMATEX {
-            wBitsPerSample: 24,
-            ..base
-        },
-        WAVEFORMATEX {
-            nAvgBytesPerSec: 192000,
-            ..base
-        },
-    ] {
-        assert_eq!(
-            validate_format(bad, true, None, None),
-            Err(RenderError::UnsupportedFormat)
-        );
-    }
-    assert_eq!(
-        validate_format(base, false, None, None),
-        Err(RenderError::UnsupportedFormat)
-    );
-    assert_eq!(
-        validate_format(base, true, Some(24), None),
-        Err(RenderError::UnsupportedFormat)
-    );
-    assert_eq!(
-        validate_format(base, true, Some(32), Some(12)),
-        Err(RenderError::UnsupportedFormat)
-    );
 }
 #[implement(IAudioRenderClient)]
 struct FakeRender {
@@ -390,7 +337,7 @@ fn prepared_render_waits_before_dsp_and_returns_renderer_to_joiner() {
         assert_eq!(exit.renderer.timeline(), u64::from(!cancel));
         assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
         let json = serde_json::to_value(&exit.report).unwrap();
-        assert_eq!(json["schema_version"], 7);
+        assert_eq!(json["schema_version"], 8);
         assert_eq!(json["diagnostics"]["enabled"], false);
         assert_eq!(json["shared_period"]["requested_period_frames"], 240);
         assert_eq!(json["shared_period"]["actual_period_frames"], 336);
@@ -447,7 +394,7 @@ fn post_ready_failure_returns_unstarted_renderer_and_finite_report() {
     assert!(!exit.report.stream_started);
     assert_eq!(exit.renderer.timeline(), 0);
     let json = serde_json::to_value(&exit.report).unwrap();
-    assert_eq!(json["schema_version"], 7);
+    assert_eq!(json["schema_version"], 8);
     assert_eq!(json["diagnostics"]["events"], serde_json::json!([]));
     assert_eq!(json["requested_seconds"], 10.0);
     assert!(rx.try_recv().is_err());
