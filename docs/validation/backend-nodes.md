@@ -55,6 +55,18 @@ live values surviving recompilation, Delay history surviving ProcessorId
 migration, changed IO/configuration/bypass preventing inappropriate reuse, and
 Recorder queues surviving unrelated edits.
 
+Structural edits can replace selected prepared parameter values while retaining
+kernel history. Newer live intent invalidates a preparing or published initial
+override so that a running ramp remains authoritative. Stale candidate rejection
+does not block the replacement preparation. Spectrum FFT-size changes and level
+port/width changes reserve separate topics; public subscriptions select the new
+shape only after activation. Retired shapes are reclaimed after their leases.
+
+Signal shape updates need enough topic and memory capacity for both active and
+candidate shapes. Subsequent preparation waits for cleanup to make capacity
+available, which can add update latency. Existing subscriptions to an old shape
+close after retirement; consumers subscribe again to receive the new shape.
+
 ## Verification
 
 Run from the integration worktree:
@@ -69,6 +81,20 @@ cargo clippy --locked --workspace --all-targets --target-dir target-focused -- -
 Tests do not open audio devices by default. Hardware tests remain separate and
 ignored. A successful portable suite does not qualify a specific audio device,
 latency profile or driver for continuous realtime use.
+
+Local verification on 2026-10-17 passed formatting, all-target workspace checking
+and strict all-target workspace Clippy. The final workspace rerun passed 913
+tests, with three hardware tests ignored and three long clock tests filtered.
+Those three tests had passed earlier in this same run, before the final host-only
+fixes; no Windows clock code changed afterward. They are:
+
+- `clock_control_prepared_low_inventory_handles_rate_phase_order_and_lateness`
+- `clock_faults_joint_queue_handles_bursts_stalls_and_pause_recovery`
+- `clock_startup_joint_queue_matrix_handles_staggered_owners`
+
+The final engine suites include 99 library tests, 40 compiler tests, 61 host
+tests and 60 runtime tests. Render allocation regressions check allocation,
+reallocation and deallocation separately. No hardware tests ran in this delivery.
 
 ## Remaining platform and product work
 
