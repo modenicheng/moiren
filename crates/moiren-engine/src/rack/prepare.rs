@@ -9,6 +9,9 @@ use crate::{
 };
 use moiren_core::protocol::ProcessorId;
 
+/// A prepared slot owns its kernel and the schema used for plan-local control.
+pub type PreparedRackSlot<S> = (Box<dyn RtProcessor<S>>, Vec<ParamSpec>);
+
 /// Prepare one leaf kernel and its parameter schema on the control side.
 ///
 /// The caller assigns a unique runtime ID, then binds each active slot's input
@@ -27,7 +30,7 @@ pub fn prepare_slot<S: ProcessingSample>(
     channels: usize,
     sample_rate: f64,
     id: ProcessorId,
-) -> Result<(Box<dyn RtProcessor<S>>, Vec<ParamSpec>), ProcessorError> {
+) -> Result<PreparedRackSlot<S>, ProcessorError> {
     if !sample_rate.is_finite() || sample_rate <= 0.0 {
         return Err(ProcessorError::InvalidIo);
     }

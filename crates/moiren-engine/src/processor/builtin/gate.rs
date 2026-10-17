@@ -112,16 +112,14 @@ impl Gate {
         }
     }
 
-    fn process_frame(
-        &mut self,
-        peak: f64,
-        threshold_db: f64,
-        attack_ms: f64,
-        release_ms: f64,
-        hold_ms: f64,
-        range_db: f64,
-        sample_rate: f64,
-    ) -> f64 {
+    fn process_frame(&mut self, peak: f64, settings: GateSettings, sample_rate: f64) -> f64 {
+        let GateSettings {
+            threshold_db,
+            attack_ms,
+            release_ms,
+            hold_ms,
+            range_db,
+        } = settings;
         let sample_rate = Self::sample_rate(sample_rate);
         if !self.initialized {
             self.gain = Self::gain(range_db);
@@ -215,11 +213,13 @@ impl<S: ProcessingSample> RtProcessor<S> for Gate {
                     });
                     let gain = self.process_frame(
                         peak,
-                        threshold.sample(frame),
-                        attack.sample(frame),
-                        release.sample(frame),
-                        hold.sample(frame),
-                        range.sample(frame),
+                        GateSettings {
+                            threshold_db: threshold.sample(frame),
+                            attack_ms: attack.sample(frame),
+                            release_ms: release.sample(frame),
+                            hold_ms: hold.sample(frame),
+                            range_db: range.sample(frame),
+                        },
                         ctx.processing_sr,
                     );
                     for channel in 0..input.channel_count() {
@@ -236,11 +236,13 @@ impl<S: ProcessingSample> RtProcessor<S> for Gate {
                     });
                     let gain = self.process_frame(
                         peak,
-                        threshold.sample(frame),
-                        attack.sample(frame),
-                        release.sample(frame),
-                        hold.sample(frame),
-                        range.sample(frame),
+                        GateSettings {
+                            threshold_db: threshold.sample(frame),
+                            attack_ms: attack.sample(frame),
+                            release_ms: release.sample(frame),
+                            hold_ms: hold.sample(frame),
+                            range_db: range.sample(frame),
+                        },
                         ctx.processing_sr,
                     );
                     for channel in block.channels_mut() {

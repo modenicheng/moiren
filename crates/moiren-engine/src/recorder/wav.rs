@@ -118,7 +118,9 @@ impl<W: Write + Seek> WavRecording<W> {
             }
             let used_bytes = read * self.channels * 4;
             for (destination, &sample) in self.byte_scratch[..used_bytes]
-                .chunks_exact_mut(4)
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
                 .zip(&self.scratch[..read * self.channels])
             {
                 destination.copy_from_slice(&sample.to_le_bytes());

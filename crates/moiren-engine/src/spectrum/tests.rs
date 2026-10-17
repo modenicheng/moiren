@@ -283,7 +283,7 @@ fn assert_channel_tones<S: ProcessingSample>() {
         }
     );
     assert_eq!(read.elements().len(), 3 * 33);
-    for (channel, bins) in read.elements().chunks_exact(33).enumerate() {
+    for (channel, bins) in read.elements().as_chunks::<33>().0.iter().enumerate() {
         if channel == 2 {
             assert!(bins.iter().all(|&value| value == 0.0));
             continue;

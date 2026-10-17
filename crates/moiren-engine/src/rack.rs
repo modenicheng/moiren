@@ -17,7 +17,7 @@ use moiren_core::protocol::ProcessorId;
 use serde::{Deserialize, Serialize};
 
 mod prepare;
-pub use prepare::prepare_slot;
+pub use prepare::{PreparedRackSlot, prepare_slot};
 
 /// An empty rack is a direct connection; otherwise each active slot consumes
 /// the preceding slot's output with the same channel width.
