@@ -9,7 +9,10 @@ use thiserror::Error;
 use crate::{
     compiler::CompileConfig,
     node::{InputConfig, IoConfigError, OutputConfig},
-    processor::{Compressor, CompressorSettings},
+    processor::{
+        Compressor, CompressorSettings, Delay, DelaySettings, Eq as EqProcessor, EqSettings, Gate,
+        GateSettings, Limiter, LimiterSettings,
+    },
     runtime::EngineConfig,
 };
 
@@ -20,6 +23,15 @@ pub enum NodeConfig {
     Gain { initial: f64 },
     Pan { initial: f64 },
     Compressor(CompressorSettings),
+    Eq(EqSettings),
+    Gate(GateSettings),
+    Limiter(LimiterSettings),
+    Delay(DelaySettings),
+    ChannelMapper,
+    Recorder,
+    Meter,
+    SpectrumAnalyzer,
+    Rack,
     Bus,
 }
 
@@ -152,6 +164,15 @@ impl EngineProject {
                 NodeConfig::Gain { .. } => NodeKind::Gain,
                 NodeConfig::Pan { .. } => NodeKind::Pan,
                 NodeConfig::Compressor(_) => NodeKind::Compressor,
+                NodeConfig::Eq(_) => NodeKind::Eq,
+                NodeConfig::Gate(_) => NodeKind::Gate,
+                NodeConfig::Limiter(_) => NodeKind::Limiter,
+                NodeConfig::Delay(_) => NodeKind::Delay,
+                NodeConfig::ChannelMapper => NodeKind::ChannelMapper,
+                NodeConfig::Recorder => NodeKind::Recorder,
+                NodeConfig::Meter => NodeKind::Meter,
+                NodeConfig::SpectrumAnalyzer => NodeKind::SpectrumAnalyzer,
+                NodeConfig::Rack => NodeKind::Rack,
                 NodeConfig::Bus => NodeKind::Bus,
             };
             if kind != node.kind() {
@@ -184,6 +205,18 @@ impl EngineProject {
                         .iter()
                         .all(|spec| spec.accepts(spec.initial, 0))
                 }
+                NodeConfig::Eq(settings) => EqProcessor::parameters(ProcessorId(0), *settings)
+                    .iter()
+                    .all(|spec| spec.accepts(spec.initial, 0)),
+                NodeConfig::Gate(settings) => Gate::parameters(ProcessorId(0), *settings)
+                    .iter()
+                    .all(|spec| spec.accepts(spec.initial, 0)),
+                NodeConfig::Limiter(settings) => Limiter::parameters(ProcessorId(0), *settings)
+                    .iter()
+                    .all(|spec| spec.accepts(spec.initial, 0)),
+                NodeConfig::Delay(settings) => Delay::parameters(ProcessorId(0), *settings)
+                    .iter()
+                    .all(|spec| spec.accepts(spec.initial, 0)),
                 _ => true,
             };
             if !valid {
@@ -276,6 +309,22 @@ impl EngineProject {
                         .iter()
                         .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0))
                 }
+                Some(NodeConfig::Eq(settings)) => {
+                    EqProcessor::parameters(ProcessorId(0), *settings)
+                        .iter()
+                        .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0))
+                }
+                Some(NodeConfig::Gate(settings)) => Gate::parameters(ProcessorId(0), *settings)
+                    .iter()
+                    .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0)),
+                Some(NodeConfig::Limiter(settings)) => {
+                    Limiter::parameters(ProcessorId(0), *settings)
+                        .iter()
+                        .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0))
+                }
+                Some(NodeConfig::Delay(settings)) => Delay::parameters(ProcessorId(0), *settings)
+                    .iter()
+                    .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0)),
                 _ => false,
             },
             ParameterTarget::Edge { edge, parameter } => {
@@ -333,6 +382,16 @@ impl EngineProject {
                 }
                 NodeConfig::Compressor(settings) => {
                     Compressor::parameters(ProcessorId(0), *settings).to_vec()
+                }
+                NodeConfig::Eq(settings) => {
+                    EqProcessor::parameters(ProcessorId(0), *settings).to_vec()
+                }
+                NodeConfig::Gate(settings) => Gate::parameters(ProcessorId(0), *settings).to_vec(),
+                NodeConfig::Limiter(settings) => {
+                    Limiter::parameters(ProcessorId(0), *settings).to_vec()
+                }
+                NodeConfig::Delay(settings) => {
+                    Delay::parameters(ProcessorId(0), *settings).to_vec()
                 }
                 _ => Vec::new(),
             };

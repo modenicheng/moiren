@@ -162,7 +162,12 @@ fn compile_inner<S: ProcessingSample>(
         }
     }
     bindings.validate(graph)?;
-    let (builder, mapping) = plan::build(graph, &mut bindings, cfg.max_block_frames)?;
+    let (builder, mapping) = plan::build(
+        graph,
+        &mut bindings,
+        cfg.max_block_frames,
+        cfg.processing_sr,
+    )?;
     let audio_bytes = builder.layouts.iter().try_fold(0usize, |total, layout| {
         layout
             .channels

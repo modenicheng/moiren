@@ -48,8 +48,17 @@ pub enum GraphNodeKind {
     Sink,
     Gain,
     Compressor,
+    Eq,
+    Gate,
+    Limiter,
+    Delay,
     Bus,
     Pan,
+    ChannelMapper,
+    Recorder,
+    Meter,
+    SpectrumAnalyzer,
+    Rack,
 }
 
 impl From<NodeKind> for GraphNodeKind {
@@ -59,8 +68,17 @@ impl From<NodeKind> for GraphNodeKind {
             NodeKind::Sink => Self::Sink,
             NodeKind::Gain => Self::Gain,
             NodeKind::Compressor => Self::Compressor,
+            NodeKind::Eq => Self::Eq,
+            NodeKind::Gate => Self::Gate,
+            NodeKind::Limiter => Self::Limiter,
+            NodeKind::Delay => Self::Delay,
             NodeKind::Bus => Self::Bus,
             NodeKind::Pan => Self::Pan,
+            NodeKind::ChannelMapper => Self::ChannelMapper,
+            NodeKind::Recorder => Self::Recorder,
+            NodeKind::Meter => Self::Meter,
+            NodeKind::SpectrumAnalyzer => Self::SpectrumAnalyzer,
+            NodeKind::Rack => Self::Rack,
         }
     }
 }
@@ -72,8 +90,17 @@ impl From<GraphNodeKind> for NodeKind {
             GraphNodeKind::Sink => Self::Sink,
             GraphNodeKind::Gain => Self::Gain,
             GraphNodeKind::Compressor => Self::Compressor,
+            GraphNodeKind::Eq => Self::Eq,
+            GraphNodeKind::Gate => Self::Gate,
+            GraphNodeKind::Limiter => Self::Limiter,
+            GraphNodeKind::Delay => Self::Delay,
             GraphNodeKind::Bus => Self::Bus,
             GraphNodeKind::Pan => Self::Pan,
+            GraphNodeKind::ChannelMapper => Self::ChannelMapper,
+            GraphNodeKind::Recorder => Self::Recorder,
+            GraphNodeKind::Meter => Self::Meter,
+            GraphNodeKind::SpectrumAnalyzer => Self::SpectrumAnalyzer,
+            GraphNodeKind::Rack => Self::Rack,
         }
     }
 }

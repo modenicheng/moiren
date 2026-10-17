@@ -61,8 +61,7 @@ where
         ]
     };
     let io = arena.prepare_io(&accesses).unwrap();
-    let (_, mut parameters) =
-        parameter_channel(specs, 1, 1, 4, frames as u64 + 1).unwrap();
+    let (_, mut parameters) = parameter_channel(specs, 1, 1, 4, frames as u64 + 1).unwrap();
     let bindings = parameters.bindings(PROCESSOR);
     assert_eq!(processor.validate_io(&io), Ok(()));
     assert_eq!(
@@ -120,7 +119,7 @@ fn gate_threshold_hold_and_range_are_block_continuous_in_both_precisions() {
             hold_ms: 1.0,
             range_db: -40.0,
         };
-        let samples = vec![vec![0.0, 0.5, 0.0, 0.0, 0.0, 0.5, 0.0]];
+        let samples = vec![vec![0.0, 0.5, 0.0, 0.05, 0.0, 0.5, 0.0]];
         for in_place in [false, true] {
             let whole = render::<S, _>(
                 Gate::new(),
@@ -139,7 +138,8 @@ fn gate_threshold_hold_and_range_are_block_continuous_in_both_precisions() {
             assert_eq!(whole, split);
             assert!((whole[0][0] - 0.0).abs() < 1e-6);
             assert!((whole[0][1] - 0.5).abs() < 1e-6);
-            assert!((whole[0][2] - 0.005).abs() < 1e-6);
+            assert!((whole[0][2] - 0.0).abs() < 1e-6);
+            assert!((whole[0][3] - 0.0005).abs() < 1e-6);
             assert!((whole[0][5] - 0.5).abs() < 1e-6);
         }
     }
@@ -186,7 +186,12 @@ fn limiter_caps_linked_peaks_in_both_precisions_and_variable_blocks() {
             assert_eq!(whole, split);
             assert!((whole[0][1] - threshold).abs() < 2e-6);
             assert!((whole[1][2] - threshold).abs() < 2e-6);
-            assert!(whole.iter().flatten().all(|sample| sample.abs() <= threshold + 2e-6));
+            assert!(
+                whole
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.abs() <= threshold + 2e-6)
+            );
         }
     }
     check::<f32>();
@@ -197,7 +202,6 @@ fn limiter_caps_linked_peaks_in_both_precisions_and_variable_blocks() {
 fn limiter_input_gain_automation_continues_across_variable_blocks() {
     fn check<S: ProcessingSample>() {
         use moiren_core::protocol::{ApplyAt, ParameterRequest, ReplyCode};
-        let samples = vec![vec![0.25; 4]];
         let mut arena = BufferArena::<S>::new(
             &[BufferSlotLayout {
                 channels: 1,
@@ -226,7 +230,10 @@ fn limiter_input_gain_automation_continues_across_variable_blocks() {
             .unwrap();
         let io = arena
             .prepare_io(&[
-                PortAccess::Read { port: 0, slot: input },
+                PortAccess::Read {
+                    port: 0,
+                    slot: input,
+                },
                 PortAccess::Write {
                     port: 0,
                     slot: output,
@@ -294,7 +301,10 @@ fn limiter_input_gain_automation_continues_across_variable_blocks() {
             start += count;
         }
         let read = arena
-            .prepare_io(&[PortAccess::Read { port: 0, slot: output }])
+            .prepare_io(&[PortAccess::Read {
+                port: 0,
+                slot: output,
+            }])
             .unwrap();
         let actual = arena
             .with_io(&read, 0..4, |io| {

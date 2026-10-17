@@ -160,6 +160,15 @@ fn default_label(kind: NodeKind) -> &'static str {
         NodeKind::Pan => "Balance",
         NodeKind::Bus => "Bus",
         NodeKind::Compressor => "Compressor",
+        NodeKind::Eq => "EQ",
+        NodeKind::Gate => "Gate",
+        NodeKind::Limiter => "Limiter",
+        NodeKind::Delay => "Delay",
+        NodeKind::ChannelMapper => "Channel Mapper",
+        NodeKind::Recorder => "Recorder",
+        NodeKind::Meter => "Meter",
+        NodeKind::SpectrumAnalyzer => "Spectrum Analyzer",
+        NodeKind::Rack => "Rack",
     }
 }
 impl ServiceGraph {

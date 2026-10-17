@@ -9,9 +9,10 @@ use thiserror::Error;
 
 pub mod builtin;
 
+pub(crate) use builtin::PassThrough;
 pub use builtin::{
-    Bus, Compressor, CompressorSettings, Eq, EqSettings, Gain, Gate, GateSettings, Limiter,
-    LimiterSettings, Pan, Sum,
+    Bus, ChannelMapper, ChannelMapperSettings, Compressor, CompressorSettings, Delay,
+    DelaySettings, Eq, EqSettings, Gain, Gate, GateSettings, Limiter, LimiterSettings, Pan, Sum,
 };
 pub use builtin::{ChannelMode, StripConfig};
 

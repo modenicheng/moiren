@@ -1,5 +1,5 @@
-use super::MAX_CHANNELS;
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
+use super::MAX_CHANNELS;
 use crate::{
     buffer::{PreparedIo, ProcessIo},
     control::{ParamDomain, ParamSpec, ProcessParameters},
@@ -34,7 +34,7 @@ struct EqState {
 
 /// One linked-free parametric peaking band. State is kept per channel so the
 /// filter remains safe for in-place processing without a temporary buffer.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Eq {
     states: [EqState; MAX_CHANNELS],
 }
@@ -107,6 +107,14 @@ impl Eq {
     }
 }
 
+impl Default for Eq {
+    fn default() -> Self {
+        Self {
+            states: std::array::from_fn(|_| EqState::default()),
+        }
+    }
+}
+
 impl<S: ProcessingSample> RtProcessor<S> for Eq {
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
         let channels = io.input_channels(0).ok_or(ProcessorError::InvalidIo)?;
@@ -171,8 +179,11 @@ impl<S: ProcessingSample> RtProcessor<S> for Eq {
                             q.sample(frame),
                             ctx.processing_sr,
                         );
-                        destination[frame] =
-                            Self::process_sample(&mut self.states[channel], source[frame], coefficients);
+                        destination[frame] = Self::process_sample(
+                            &mut self.states[channel],
+                            source[frame],
+                            coefficients,
+                        );
                     }
                 }
             }
@@ -187,11 +198,8 @@ impl<S: ProcessingSample> RtProcessor<S> for Eq {
                             q.sample(frame),
                             ctx.processing_sr,
                         );
-                        *sample = Self::process_sample(
-                            &mut self.states[channel],
-                            *sample,
-                            coefficients,
-                        );
+                        *sample =
+                            Self::process_sample(&mut self.states[channel], *sample, coefficients);
                     }
                 }
             }

@@ -48,9 +48,27 @@ pub enum NodeKind {
     Gain,
     /// Linked peak compressor with one input and output of matching width.
     Compressor,
+    /// One parametric peaking EQ band.
+    Eq,
+    /// Linked peak downward expander/gate.
+    Gate,
+    /// Zero-latency linked peak limiter.
+    Limiter,
+    /// Stateful delay line with one input and output.
+    Delay,
     Bus,
     /// Stereo balance with one stereo input and output.
     Pan,
+    /// Static channel routing/mixing matrix.
+    ChannelMapper,
+    /// Pass-through node whose prepared backend may consume recorded blocks.
+    Recorder,
+    /// Pass-through node with a level measurement tap.
+    Meter,
+    /// Pass-through node with a spectrum measurement tap.
+    SpectrumAnalyzer,
+    /// Linear chain of built-in processors.
+    Rack,
 }
 
 impl NodeKind {
@@ -64,7 +82,18 @@ impl NodeKind {
         match self {
             Self::Source | Self::Bus => (0, 1),
             Self::Sink => (1, 0),
-            Self::Gain | Self::Pan | Self::Compressor => (1, 1),
+            Self::Gain
+            | Self::Pan
+            | Self::Compressor
+            | Self::Eq
+            | Self::Gate
+            | Self::Limiter
+            | Self::Delay
+            | Self::ChannelMapper
+            | Self::Recorder
+            | Self::Meter
+            | Self::SpectrumAnalyzer
+            | Self::Rack => (1, 1),
         }
     }
 }

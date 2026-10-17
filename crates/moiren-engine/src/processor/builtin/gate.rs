@@ -1,5 +1,5 @@
-use super::MAX_CHANNELS;
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
+use super::MAX_CHANNELS;
 use crate::{
     buffer::{PreparedIo, ProcessIo},
     control::{ParamDomain, ParamSpec, ProcessParameters},
@@ -194,7 +194,9 @@ impl<S: ProcessingSample> RtProcessor<S> for Gate {
         params: ProcessParameters<'_>,
         _signals: crate::signal::ProcessSignals<'_>,
     ) {
-        let threshold = params.float(Self::THRESHOLD).expect("validated gate threshold");
+        let threshold = params
+            .float(Self::THRESHOLD)
+            .expect("validated gate threshold");
         let attack = params.float(Self::ATTACK).expect("validated gate attack");
         let release = params.float(Self::RELEASE).expect("validated gate release");
         let hold = params.float(Self::HOLD).expect("validated gate hold");
@@ -207,9 +209,9 @@ impl<S: ProcessingSample> RtProcessor<S> for Gate {
                 let input = inputs.get(0).expect("validated gate input");
                 let mut output = outputs.get_mut(0).expect("validated gate output");
                 for frame in 0..input.frames() {
-                    let peak = input
-                        .channels()
-                        .fold(0.0_f64, |peak, channel| peak.max(channel[frame].to_f64().abs()));
+                    let peak = input.channels().fold(0.0_f64, |peak, channel| {
+                        peak.max(channel[frame].to_f64().abs())
+                    });
                     let gain = self.process_frame(
                         peak,
                         threshold.sample(frame),

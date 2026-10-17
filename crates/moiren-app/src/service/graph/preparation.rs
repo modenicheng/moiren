@@ -1,7 +1,7 @@
 use super::*;
 use moiren_engine::{
     compiler::{CompileError, NodeBindings},
-    processor::CompressorSettings,
+    processor::{CompressorSettings, DelaySettings, EqSettings, GateSettings, LimiterSettings},
 };
 
 impl GraphPreparation {
@@ -19,7 +19,7 @@ impl GraphPreparation {
                 DeviceOptions, EndpointSelector, InputConfig, InputSource, OutputConfig,
                 OutputTarget,
             },
-            processor::{Gain, Pan},
+            processor::{DelaySettings, EqSettings, Gain, GateSettings, LimiterSettings, Pan},
         };
         self.primary_io_nodes()?;
         let mut project = EngineProject {
@@ -107,6 +107,15 @@ impl GraphPreparation {
                 NodeKind::Gain => NodeConfig::Gain { initial: 1.0 },
                 NodeKind::Pan => NodeConfig::Pan { initial: 0.0 },
                 NodeKind::Compressor => NodeConfig::Compressor(CompressorSettings::default()),
+                NodeKind::Eq => NodeConfig::Eq(EqSettings::default()),
+                NodeKind::Gate => NodeConfig::Gate(GateSettings::default()),
+                NodeKind::Limiter => NodeConfig::Limiter(LimiterSettings::default()),
+                NodeKind::Delay => NodeConfig::Delay(DelaySettings::default()),
+                NodeKind::ChannelMapper => NodeConfig::ChannelMapper,
+                NodeKind::Recorder => NodeConfig::Recorder,
+                NodeKind::Meter => NodeConfig::Meter,
+                NodeKind::SpectrumAnalyzer => NodeConfig::SpectrumAnalyzer,
+                NodeKind::Rack => NodeConfig::Rack,
                 NodeKind::Bus => NodeConfig::Bus,
             };
             project.nodes.insert(node.id(), config);
@@ -280,6 +289,17 @@ impl GraphPreparation {
                         state.compressor.settings()
                     }),
                 )?,
+                NodeKind::Eq => bindings.bind_eq(node.id(), EqSettings::default())?,
+                NodeKind::Gate => bindings.bind_gate(node.id(), GateSettings::default())?,
+                NodeKind::Limiter => {
+                    bindings.bind_limiter(node.id(), LimiterSettings::default())?
+                }
+                NodeKind::Delay => bindings.bind_delay(node.id(), DelaySettings::default())?,
+                NodeKind::ChannelMapper
+                | NodeKind::Recorder
+                | NodeKind::Meter
+                | NodeKind::SpectrumAnalyzer
+                | NodeKind::Rack => bindings.bind_utility(node.id())?,
                 NodeKind::Source | NodeKind::Sink | NodeKind::Bus => {}
             }
         }

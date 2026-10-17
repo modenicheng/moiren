@@ -48,7 +48,11 @@ impl Limiter {
     }
 
     pub fn parameters(id: ProcessorId, settings: LimiterSettings) -> [ParamSpec; 3] {
-        let values = [settings.threshold_db, settings.release_ms, settings.input_gain_db];
+        let values = [
+            settings.threshold_db,
+            settings.release_ms,
+            settings.input_gain_db,
+        ];
         std::array::from_fn(|index| {
             let (min, max) = Self::DOMAINS[index];
             ParamSpec {

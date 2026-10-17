@@ -23,7 +23,12 @@ fn render<S: ProcessingSample>(chunks: &[usize], in_place: bool) -> Vec<f64> {
             let ProcessIo::Separate { mut outputs, .. } = io else {
                 panic!()
             };
-            for (index, sample) in outputs.get_mut(0).unwrap().channel_mut(0).iter_mut().enumerate()
+            for (index, sample) in outputs
+                .get_mut(0)
+                .unwrap()
+                .channel_mut(0)
+                .iter_mut()
+                .enumerate()
             {
                 *sample = S::from_f64(f64::from(index == 0));
             }

@@ -8,7 +8,10 @@ use crate::{
     boundary::{RtAudioSink, RtAudioSource, SinkAdapter, SourceAdapter},
     buffer::{PreparedIo, ProcessIo},
     control::ProcessParameters,
-    processor::{CompressorSettings, ProcessContext, ProcessorError, ProcessorRole, RtProcessor},
+    processor::{
+        CompressorSettings, DelaySettings, EqSettings, GateSettings, LimiterSettings,
+        ProcessContext, ProcessorError, ProcessorRole, RtProcessor,
+    },
     sample::ProcessingSample,
 };
 
@@ -28,6 +31,11 @@ pub(super) enum Binding<S: ProcessingSample> {
         CompressorSettings,
         Option<moiren_signal::PreparedPublisher<moiren_signal::LatestValue<f32>>>,
     ),
+    Eq(EqSettings),
+    Gate(GateSettings),
+    Limiter(LimiterSettings),
+    Delay(DelaySettings),
+    Utility,
 }
 
 /// Prepared backend ownership and initial DSP values, separate from editable
@@ -106,6 +114,18 @@ impl<S: ProcessingSample> NodeBindings<S> {
                 }
                 (NodeKind::Gain, Binding::Gain(_)) | (NodeKind::Pan, Binding::Pan { .. }) => true,
                 (NodeKind::Compressor, Binding::Compressor(_, _)) => true,
+                (NodeKind::Eq, Binding::Eq(_))
+                | (NodeKind::Gate, Binding::Gate(_))
+                | (NodeKind::Limiter, Binding::Limiter(_))
+                | (NodeKind::Delay, Binding::Delay(_))
+                | (
+                    NodeKind::ChannelMapper
+                    | NodeKind::Recorder
+                    | NodeKind::Meter
+                    | NodeKind::SpectrumAnalyzer
+                    | NodeKind::Rack,
+                    Binding::Utility,
+                ) => true,
                 _ => false,
             };
             if !valid {
@@ -200,6 +220,30 @@ impl<S: ProcessingSample> NodeBindings<S> {
         publisher: moiren_signal::PreparedPublisher<moiren_signal::LatestValue<f32>>,
     ) -> Result<(), CompileError> {
         self.insert(node, Binding::Compressor(settings, Some(publisher)))
+    }
+
+    pub fn bind_eq(&mut self, node: NodeId, settings: EqSettings) -> Result<(), CompileError> {
+        self.insert(node, Binding::Eq(settings))
+    }
+    pub fn bind_gate(&mut self, node: NodeId, settings: GateSettings) -> Result<(), CompileError> {
+        self.insert(node, Binding::Gate(settings))
+    }
+    pub fn bind_limiter(
+        &mut self,
+        node: NodeId,
+        settings: LimiterSettings,
+    ) -> Result<(), CompileError> {
+        self.insert(node, Binding::Limiter(settings))
+    }
+    pub fn bind_delay(
+        &mut self,
+        node: NodeId,
+        settings: DelaySettings,
+    ) -> Result<(), CompileError> {
+        self.insert(node, Binding::Delay(settings))
+    }
+    pub fn bind_utility(&mut self, node: NodeId) -> Result<(), CompileError> {
+        self.insert(node, Binding::Utility)
     }
 
     pub fn observe_output(

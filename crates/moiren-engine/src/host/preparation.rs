@@ -208,6 +208,83 @@ fn prepare<S: ProcessingSample>(
                     shared.signals.prepare(node, &signals).map_err(fail)?,
                 )
             }
+            NodeConfig::Eq(settings) => {
+                let mut settings = *settings;
+                settings.frequency_hz = float(initial(
+                    crate::processor::Eq::FREQUENCY,
+                    ParamValue::Float(settings.frequency_hz),
+                ));
+                settings.gain_db = float(initial(
+                    crate::processor::Eq::GAIN,
+                    ParamValue::Float(settings.gain_db),
+                ));
+                settings.q = float(initial(
+                    crate::processor::Eq::Q,
+                    ParamValue::Float(settings.q),
+                ));
+                prepared.bindings.bind_eq(node, settings)
+            }
+            NodeConfig::Gate(settings) => {
+                let mut settings = *settings;
+                settings.threshold_db = float(initial(
+                    crate::processor::Gate::THRESHOLD,
+                    ParamValue::Float(settings.threshold_db),
+                ));
+                settings.attack_ms = float(initial(
+                    crate::processor::Gate::ATTACK,
+                    ParamValue::Float(settings.attack_ms),
+                ));
+                settings.release_ms = float(initial(
+                    crate::processor::Gate::RELEASE,
+                    ParamValue::Float(settings.release_ms),
+                ));
+                settings.hold_ms = float(initial(
+                    crate::processor::Gate::HOLD,
+                    ParamValue::Float(settings.hold_ms),
+                ));
+                settings.range_db = float(initial(
+                    crate::processor::Gate::RANGE,
+                    ParamValue::Float(settings.range_db),
+                ));
+                prepared.bindings.bind_gate(node, settings)
+            }
+            NodeConfig::Limiter(settings) => {
+                let mut settings = *settings;
+                settings.threshold_db = float(initial(
+                    crate::processor::Limiter::THRESHOLD,
+                    ParamValue::Float(settings.threshold_db),
+                ));
+                settings.release_ms = float(initial(
+                    crate::processor::Limiter::RELEASE,
+                    ParamValue::Float(settings.release_ms),
+                ));
+                settings.input_gain_db = float(initial(
+                    crate::processor::Limiter::INPUT_GAIN,
+                    ParamValue::Float(settings.input_gain_db),
+                ));
+                prepared.bindings.bind_limiter(node, settings)
+            }
+            NodeConfig::Delay(settings) => {
+                let mut settings = *settings;
+                settings.delay_ms = float(initial(
+                    crate::processor::Delay::DELAY,
+                    ParamValue::Float(settings.delay_ms),
+                ));
+                settings.feedback = float(initial(
+                    crate::processor::Delay::FEEDBACK,
+                    ParamValue::Float(settings.feedback),
+                ));
+                settings.mix = float(initial(
+                    crate::processor::Delay::MIX,
+                    ParamValue::Float(settings.mix),
+                ));
+                prepared.bindings.bind_delay(node, settings)
+            }
+            NodeConfig::ChannelMapper
+            | NodeConfig::Recorder
+            | NodeConfig::Meter
+            | NodeConfig::SpectrumAnalyzer
+            | NodeConfig::Rack => prepared.bindings.bind_utility(node),
             _ => unreachable!(),
         };
         result.map_err(|error| Diagnostic::Compile(error.to_string()))?;

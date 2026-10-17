@@ -13,7 +13,10 @@ use super::{
 use crate::{
     buffer::{BufferArena, BufferError, BufferSlotLayout, PortAccess},
     control::ParamSpec,
-    processor::{Bus, Compressor, Gain, Pan, RtProcessor},
+    processor::{
+        Bus, ChannelMapper, ChannelMapperSettings, Compressor, Delay, Eq, Gain, Gate, Limiter, Pan,
+        PassThrough, RtProcessor,
+    },
     runtime::{OpSpec, ProcessorInstance},
     sample::ProcessingSample,
 };
@@ -25,6 +28,7 @@ pub(super) struct DraftOp {
 }
 pub(super) struct Builder<S: ProcessingSample> {
     frames: usize,
+    processing_sr: f64,
     pub(super) layouts: Vec<BufferSlotLayout>,
     pub(super) instances: Vec<ProcessorInstance<S>>,
     pub(super) params: Vec<ParamSpec>,
@@ -70,6 +74,8 @@ impl<S: ProcessingSample> Builder<S> {
         &mut self,
         node: NodeId,
         kind: NodeKind,
+        channels: usize,
+        processing_sr: f64,
         binding: Option<Binding<S>>,
     ) -> Result<ProcessorId, CompileError> {
         Ok(match kind {
@@ -128,6 +134,55 @@ impl<S: ProcessingSample> Builder<S> {
                     .extend(Compressor::parameters(processor, settings));
                 processor
             }
+            NodeKind::Eq => {
+                let settings = match binding {
+                    Some(Binding::Eq(settings)) => settings,
+                    _ => Default::default(),
+                };
+                let processor = self.processor(Eq::new())?;
+                self.params.extend(Eq::parameters(processor, settings));
+                processor
+            }
+            NodeKind::Gate => {
+                let settings = match binding {
+                    Some(Binding::Gate(settings)) => settings,
+                    _ => Default::default(),
+                };
+                let processor = self.processor(Gate::new())?;
+                self.params.extend(Gate::parameters(processor, settings));
+                processor
+            }
+            NodeKind::Limiter => {
+                let settings = match binding {
+                    Some(Binding::Limiter(settings)) => settings,
+                    _ => Default::default(),
+                };
+                let processor = self.processor(Limiter::new())?;
+                self.params.extend(Limiter::parameters(processor, settings));
+                processor
+            }
+            NodeKind::Delay => {
+                let settings = match binding {
+                    Some(Binding::Delay(settings)) => settings,
+                    _ => Default::default(),
+                };
+                let processor = self.processor(
+                    Delay::new(channels, settings, processing_sr)
+                        .map_err(|_| CompileError::BindingKind { node })?,
+                )?;
+                self.params.extend(Delay::parameters(processor, settings));
+                processor
+            }
+            NodeKind::ChannelMapper => self.processor(
+                ChannelMapper::new(channels, ChannelMapperSettings::default())
+                    .map_err(|_| CompileError::BindingKind { node })?,
+            )?,
+            NodeKind::Recorder | NodeKind::Meter | NodeKind::SpectrumAnalyzer | NodeKind::Rack => {
+                if !matches!(binding, Some(Binding::Utility) | None) {
+                    return Err(CompileError::BindingKind { node });
+                }
+                self.processor(PassThrough)?
+            }
             NodeKind::Bus => self.processor(Bus)?,
         })
     }
@@ -137,6 +192,7 @@ pub(super) fn build<S: ProcessingSample>(
     graph: &LogicalGraph,
     bindings: &mut NodeBindings<S>,
     frames: usize,
+    processing_sr: f64,
 ) -> Result<(Builder<S>, CompiledBindings), CompileError> {
     let incoming: BTreeMap<_, _> = graph.edges().iter().map(|e| (e.dst_port(), e)).collect();
     let mut outputs = BTreeMap::new();
@@ -147,6 +203,7 @@ pub(super) fn build<S: ProcessingSample>(
     };
     let mut builder = Builder {
         frames,
+        processing_sr,
         layouts: Vec::new(),
         instances: Vec::new(),
         params: Vec::new(),
@@ -196,7 +253,13 @@ pub(super) fn build<S: ProcessingSample>(
                 }
             }
         }
-        let processor = builder.node_processor(id, node.kind(), bindings.take(id))?;
+        let processor = builder.node_processor(
+            id,
+            node.kind(),
+            node.channels(),
+            builder.processing_sr,
+            bindings.take(id),
+        )?;
         if node.kind() == NodeKind::Gain {
             pre_fader.insert(id, reads[0].1);
         }
