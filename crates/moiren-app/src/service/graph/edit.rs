@@ -3,6 +3,22 @@ use super::*;
 pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Result<(), String> {
     let graph = &mut next.graph;
     match edit {
+        GraphEdit::SetBuiltin { node, state } => {
+            let (kind, input_channels, output_channels) = {
+                let topology = graph.get_node(node).map_err(|error| error.to_string())?;
+                (
+                    topology.kind(),
+                    topology.inputs().first().map_or(0, |port| port.channels()),
+                    topology.channels(),
+                )
+            };
+            state.validate(kind, input_channels, output_channels)?;
+            next.nodes
+                .iter_mut()
+                .find(|entry| entry.id == node)
+                .ok_or("Node missing")?
+                .builtin = state.resolved(kind);
+        }
         GraphEdit::SetCompressor {
             node,
             parameter,
@@ -40,6 +56,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 swap: false,
                 mixer: super::MixerState::default(),
                 compressor: super::CompressorState::default(),
+                builtin: super::BuiltinState::for_kind(kind),
                 source: None,
                 output_endpoint_id: None,
             });

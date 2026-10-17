@@ -75,6 +75,7 @@ impl<S: ProcessingSample> Builder<S> {
         node: NodeId,
         kind: NodeKind,
         channels: usize,
+        input_channels: usize,
         processing_sr: f64,
         binding: Option<Binding<S>>,
     ) -> Result<ProcessorId, CompileError> {
@@ -174,15 +175,24 @@ impl<S: ProcessingSample> Builder<S> {
                 processor
             }
             NodeKind::ChannelMapper => self.processor(
-                ChannelMapper::new(channels, ChannelMapperSettings::default())
-                    .map_err(|_| CompileError::BindingKind { node })?,
+                ChannelMapper::with_layout(
+                    input_channels,
+                    channels,
+                    match binding {
+                        Some(Binding::ChannelMapper(settings)) => settings,
+                        _ => ChannelMapperSettings::default(),
+                    },
+                )
+                .map_err(|_| CompileError::BindingKind { node })?,
             )?,
-            NodeKind::Recorder | NodeKind::Meter | NodeKind::SpectrumAnalyzer | NodeKind::Rack => {
-                if !matches!(binding, Some(Binding::Utility) | None) {
-                    return Err(CompileError::BindingKind { node });
+            NodeKind::Recorder | NodeKind::Meter | NodeKind::SpectrumAnalyzer => {
+                if !matches!(binding, Some(Binding::Unmanaged(_))) {
+                    return Err(CompileError::MissingBinding { node });
                 }
                 self.processor(PassThrough)?
             }
+            // Nonempty racks have already emitted their individual slot operations.
+            NodeKind::Rack => self.processor(PassThrough)?,
             NodeKind::Bus => self.processor(Bus)?,
         })
     }
@@ -200,6 +210,7 @@ pub(super) fn build<S: ProcessingSample>(
     let mut mapping = CompiledBindings {
         nodes: BTreeMap::new(),
         edges: BTreeMap::new(),
+        rack_slots: BTreeMap::new(),
     };
     let mut builder = Builder {
         frames,
@@ -253,12 +264,48 @@ pub(super) fn build<S: ProcessingSample>(
                 }
             }
         }
+        let binding = bindings.take(id);
+        if let Some(Binding::Rack(settings)) = &binding {
+            if !settings.valid_for(node.channels()) {
+                return Err(CompileError::BindingKind { node: id });
+            }
+            for slot in settings.slots.iter().filter(|slot| !slot.bypass) {
+                let processor = ProcessorId(
+                    u64::try_from(builder.instances.len())
+                        .map_err(|_| CompileError::TooManyProcessors)?,
+                );
+                let (kernel, parameters) = crate::rack::prepare_slot::<S>(
+                    &slot.processor,
+                    node.channels(),
+                    builder.processing_sr,
+                    processor,
+                )
+                .map_err(|_| CompileError::BindingKind { node: id })?;
+                let prepared = builder.processor(BoundIo(kernel))?;
+                builder.params.extend(parameters);
+                let output = builder.slot(node.channels());
+                builder.ops.push(DraftOp {
+                    processor: prepared,
+                    reads: vec![(0, reads[0].1)],
+                    output: Some(output),
+                });
+                reads[0].1 = output;
+                mapping.rack_slots.insert((id, slot.id), prepared);
+            }
+        }
+        let (binding, observer) = match binding {
+            Some(Binding::Observed(kind, observer)) => {
+                (Some(Binding::Unmanaged(kind)), Some(observer))
+            }
+            binding => (binding, None),
+        };
         let processor = builder.node_processor(
             id,
             node.kind(),
             node.channels(),
+            node.inputs().first().map_or(0, |port| port.channels()),
             builder.processing_sr,
-            bindings.take(id),
+            binding,
         )?;
         if node.kind() == NodeKind::Gain {
             pre_fader.insert(id, reads[0].1);
@@ -295,6 +342,13 @@ pub(super) fn build<S: ProcessingSample>(
             for observer in observers {
                 super::observers::push(&mut builder, observer, slot)?;
             }
+        }
+        if let Some(observer) = observer {
+            let port = node
+                .outputs()
+                .first()
+                .ok_or(CompileError::BindingKind { node: id })?;
+            super::observers::push(&mut builder, observer, outputs[&port.id()])?;
         }
     }
     Ok((builder, mapping))

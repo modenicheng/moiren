@@ -20,8 +20,8 @@ mod windows;
 pub use backend::*;
 pub use driver::BackendDriver;
 pub use graph::{
-    CompressorParameter, CompressorState, GraphEdit, GraphNodeState, GraphPreparation,
-    GraphSnapshot, MixerState, ServiceGraph,
+    BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphNodeState,
+    GraphPreparation, GraphSnapshot, MixerState, ServiceGraph,
 };
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;

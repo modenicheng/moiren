@@ -78,6 +78,12 @@ pub trait RtProcessor<S: ProcessingSample>: Send {
 
 /// An observer has no writable audio capability, not even an unused output.
 pub trait RtObserver<S: ProcessingSample>: Send {
+    fn state_type_id(&self) -> std::any::TypeId
+    where
+        Self: 'static,
+    {
+        std::any::TypeId::of::<Self>()
+    }
     fn validate_inputs(&self, io: &PreparedIo) -> Result<(), ProcessorError>;
     fn observe(
         &mut self,
@@ -91,6 +97,12 @@ pub trait RtObserver<S: ProcessingSample>: Send {
 }
 
 impl<S: ProcessingSample, O: RtObserver<S> + ?Sized> RtObserver<S> for Box<O> {
+    fn state_type_id(&self) -> std::any::TypeId
+    where
+        Self: 'static,
+    {
+        (**self).state_type_id()
+    }
     fn validate_inputs(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
         (**self).validate_inputs(io)
     }
@@ -109,6 +121,12 @@ impl<S: ProcessingSample, O: RtObserver<S> + ?Sized> RtObserver<S> for Box<O> {
 
 pub struct Observer<O>(pub O);
 impl<S: ProcessingSample, O: RtObserver<S>> RtProcessor<S> for Observer<O> {
+    fn state_type_id(&self) -> std::any::TypeId
+    where
+        Self: 'static,
+    {
+        self.0.state_type_id()
+    }
     fn role(&self) -> ProcessorRole {
         ProcessorRole::Observer
     }

@@ -1,8 +1,5 @@
 use super::*;
-use moiren_engine::{
-    compiler::{CompileError, NodeBindings},
-    processor::{CompressorSettings, DelaySettings, EqSettings, GateSettings, LimiterSettings},
-};
+use moiren_engine::compiler::{CompileError, NodeBindings};
 
 impl GraphPreparation {
     /// Translate resource intent for every IO node. The first stable sink owns
@@ -19,7 +16,7 @@ impl GraphPreparation {
                 DeviceOptions, EndpointSelector, InputConfig, InputSource, OutputConfig,
                 OutputTarget,
             },
-            processor::{DelaySettings, EqSettings, Gain, GateSettings, LimiterSettings, Pan},
+            processor::{Gain, Pan},
         };
         self.primary_io_nodes()?;
         let mut project = EngineProject {
@@ -106,16 +103,19 @@ impl GraphPreparation {
                 }
                 NodeKind::Gain => NodeConfig::Gain { initial: 1.0 },
                 NodeKind::Pan => NodeConfig::Pan { initial: 0.0 },
-                NodeKind::Compressor => NodeConfig::Compressor(CompressorSettings::default()),
-                NodeKind::Eq => NodeConfig::Eq(EqSettings::default()),
-                NodeKind::Gate => NodeConfig::Gate(GateSettings::default()),
-                NodeKind::Limiter => NodeConfig::Limiter(LimiterSettings::default()),
-                NodeKind::Delay => NodeConfig::Delay(DelaySettings::default()),
-                NodeKind::ChannelMapper => NodeConfig::ChannelMapper,
-                NodeKind::Recorder => NodeConfig::Recorder,
-                NodeKind::Meter => NodeConfig::Meter,
-                NodeKind::SpectrumAnalyzer => NodeConfig::SpectrumAnalyzer,
-                NodeKind::Rack => NodeConfig::Rack,
+                NodeKind::Compressor => NodeConfig::Compressor(state.compressor.settings()),
+                NodeKind::Eq
+                | NodeKind::Gate
+                | NodeKind::Limiter
+                | NodeKind::Delay
+                | NodeKind::ChannelMapper
+                | NodeKind::Recorder
+                | NodeKind::Meter
+                | NodeKind::SpectrumAnalyzer
+                | NodeKind::Rack => state
+                    .builtin
+                    .node_config(node.kind())?
+                    .ok_or_else(|| format!("missing settings for {:?} node", node.kind()))?,
                 NodeKind::Bus => NodeConfig::Bus,
             };
             project.nodes.insert(node.id(), config);
@@ -151,9 +151,6 @@ impl GraphPreparation {
     }
     pub fn primary_io_nodes(&self) -> Result<(NodeId, NodeId), String> {
         self.validate_state()?;
-        if self.graph.nodes().iter().any(|node| node.channels() != 2) {
-            return Err("当前设备桥仅支持双声道节点".into());
-        }
         let source = self
             .graph
             .nodes()
@@ -192,6 +189,11 @@ impl GraphPreparation {
                 .iter()
                 .find(|state| state.id == node.id())
                 .expect("unique state");
+            state.builtin.validate(
+                node.kind(),
+                node.inputs().first().map_or(0, |port| port.channels()),
+                node.channels(),
+            )?;
             if node.kind() != NodeKind::Pan && (state.mono || state.swap) {
                 return Err("Mono 和 Swap 只能用于 Balance 节点".into());
             }
@@ -247,7 +249,9 @@ impl GraphPreparation {
         if sources.len() != 1 || sinks.len() != 1 {
             return Err("当前音频驱动需要 1 个输入节点和 1 个输出节点；多设备图尚未实现".into());
         }
-        if self.graph.nodes().iter().any(|node| node.channels() != 2) {
+        if self.graph.get_node(sources[0].id()).unwrap().channels() != 2
+            || self.graph.get_node(sinks[0].id()).unwrap().channels() != 2
+        {
             return Err("当前设备桥仅支持双声道节点".into());
         }
         Ok((sources[0].id(), sinks[0].id()))
@@ -270,37 +274,65 @@ impl GraphPreparation {
         &self,
         bindings: &mut NodeBindings<f32>,
     ) -> Result<(), CompileError> {
+        // This legacy route cannot return a recorder reader or prepare a typed
+        // spectrum publisher. Reject before consuming any existing bindings.
+        for node in self.graph.nodes() {
+            match node.kind() {
+                NodeKind::Recorder => return Err(CompileError::BindingKind { node: node.id() }),
+                NodeKind::Meter => {}
+                NodeKind::SpectrumAnalyzer => return Err(CompileError::SignalsRequireHost),
+                _ => {}
+            }
+            let state = self
+                .nodes
+                .iter()
+                .find(|state| state.id == node.id())
+                .ok_or(CompileError::BindingKind { node: node.id() })?;
+            state
+                .builtin
+                .validate(
+                    node.kind(),
+                    node.inputs().first().map_or(0, |port| port.channels()),
+                    node.channels(),
+                )
+                .map_err(|_| CompileError::BindingKind { node: node.id() })?;
+        }
         for (node, config) in self.mixer_configs() {
             bindings.bind_strip(node, config);
         }
         for node in self.graph.nodes() {
-            let state = self.nodes.iter().find(|state| state.id == node.id());
+            let state = self
+                .nodes
+                .iter()
+                .find(|state| state.id == node.id())
+                .expect("validated node state");
             match node.kind() {
-                NodeKind::Gain => bindings.bind_gain(node.id(), state.map_or(1.0, |s| s.gain))?,
-                NodeKind::Pan => bindings.bind_pan_with_stereo(
-                    node.id(),
-                    state.map_or(0.0, |s| s.pan),
-                    state.is_some_and(|s| s.mono),
-                    state.is_some_and(|s| s.swap),
-                )?,
-                NodeKind::Compressor => bindings.bind_compressor(
-                    node.id(),
-                    state.map_or_else(CompressorSettings::default, |state| {
-                        state.compressor.settings()
-                    }),
-                )?,
-                NodeKind::Eq => bindings.bind_eq(node.id(), EqSettings::default())?,
-                NodeKind::Gate => bindings.bind_gate(node.id(), GateSettings::default())?,
-                NodeKind::Limiter => {
-                    bindings.bind_limiter(node.id(), LimiterSettings::default())?
+                NodeKind::Gain => bindings.bind_gain(node.id(), state.gain)?,
+                NodeKind::Pan => {
+                    bindings.bind_pan_with_stereo(node.id(), state.pan, state.mono, state.swap)?
                 }
-                NodeKind::Delay => bindings.bind_delay(node.id(), DelaySettings::default())?,
-                NodeKind::ChannelMapper
-                | NodeKind::Recorder
-                | NodeKind::Meter
-                | NodeKind::SpectrumAnalyzer
-                | NodeKind::Rack => bindings.bind_utility(node.id())?,
-                NodeKind::Source | NodeKind::Sink | NodeKind::Bus => {}
+                NodeKind::Compressor => {
+                    bindings.bind_compressor(node.id(), state.compressor.settings())?
+                }
+                _ => match state.builtin.resolved(node.kind()) {
+                    BuiltinState::Eq(settings) => bindings.bind_eq(node.id(), settings)?,
+                    BuiltinState::Gate(settings) => bindings.bind_gate(node.id(), settings)?,
+                    BuiltinState::Limiter(settings) => {
+                        bindings.bind_limiter(node.id(), settings)?
+                    }
+                    BuiltinState::Delay(settings) => bindings.bind_delay(node.id(), settings)?,
+                    BuiltinState::ChannelMapper(settings) => {
+                        bindings.bind_channel_mapper(node.id(), settings)?;
+                    }
+                    BuiltinState::Rack(settings) => bindings.bind_rack(node.id(), settings)?,
+                    BuiltinState::Meter(settings) => {
+                        let _reader = bindings.bind_meter(node.id(), settings)?;
+                    }
+                    BuiltinState::None => {}
+                    BuiltinState::Recorder(_) | BuiltinState::SpectrumAnalyzer(_) => {
+                        unreachable!("managed utilities rejected before binding")
+                    }
+                },
             }
         }
         Ok(())

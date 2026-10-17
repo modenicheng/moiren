@@ -8,6 +8,7 @@ moiren-core = { path = "../moiren-core" }
 moiren-signal = { path = "../moiren-signal" }
 rtrb = "=0.4.0"
 thiserror = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
 anyhow = { workspace = true }

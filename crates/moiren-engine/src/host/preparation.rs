@@ -280,11 +280,30 @@ fn prepare<S: ProcessingSample>(
                 ));
                 prepared.bindings.bind_delay(node, settings)
             }
-            NodeConfig::ChannelMapper
-            | NodeConfig::Recorder
-            | NodeConfig::Meter
-            | NodeConfig::SpectrumAnalyzer
-            | NodeConfig::Rack => prepared.bindings.bind_utility(node),
+            NodeConfig::ChannelMapper(settings) => prepared
+                .bindings
+                .bind_channel_mapper(node, settings.clone()),
+            NodeConfig::Recorder(settings) => prepared
+                .bindings
+                .bind_recorder(
+                    node,
+                    job.project
+                        .graph
+                        .get_node(node)
+                        .map_err(|e| Diagnostic::Compile(e.to_string()))?
+                        .channels(),
+                    *settings,
+                )
+                .map(|_| ()),
+            NodeConfig::Meter(settings) => {
+                prepared.bindings.bind_meter(node, *settings).map(|_| ())
+            }
+            NodeConfig::SpectrumAnalyzer(_settings) => {
+                return Err(Diagnostic::Compile(format!(
+                    "SpectrumAnalyzer node {node:?} requires a managed signal publisher"
+                )));
+            }
+            NodeConfig::Rack(settings) => prepared.bindings.bind_rack(node, settings.clone()),
             _ => unreachable!(),
         };
         result.map_err(|error| Diagnostic::Compile(error.to_string()))?;

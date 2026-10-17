@@ -115,6 +115,21 @@ impl LogicalGraph {
         Ok(id)
     }
 
+    /// Explicit conversion boundary: `channels()` is the output width, while
+    /// the sole input port carries the independently validated source width.
+    pub fn create_channel_mapper(
+        &mut self,
+        input_channels: usize,
+        output_channels: usize,
+    ) -> Result<NodeId, GraphError> {
+        if input_channels == 0 {
+            return Err(GraphError::InvalidChannelCount);
+        }
+        let id = self.create_node(NodeKind::ChannelMapper, output_channels)?;
+        self.nodes.last_mut().expect("created mapper").inputs[0].channels = input_channels;
+        Ok(id)
+    }
+
     /// Only Bus supports dynamic inputs; each must match its output channels.
     pub fn add_input_port(
         &mut self,
@@ -332,7 +347,9 @@ impl LogicalGraph {
                 for port in ports {
                     if !port_ids.insert(port.id)
                         || port.role != role
-                        || port.channels != node.channels
+                        || port.channels == 0
+                        || (port.channels != node.channels
+                            && !(node.kind == NodeKind::ChannelMapper && role == PortRole::Input))
                     {
                         return Err(GraphError::InvalidNodeLayout);
                     }

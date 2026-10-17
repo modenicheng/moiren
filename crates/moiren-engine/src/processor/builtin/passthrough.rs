@@ -5,9 +5,8 @@ use crate::{
     sample::ProcessingSample,
 };
 
-/// Utility nodes use the same copy kernel until their control-side observer or
-/// recorder binding is attached. Keeping this as a processor preserves graph
-/// ordering and the one-in/one-out contract without doing side effects on RT.
+/// Audio continuity for explicitly bound measurement nodes and rack boundaries.
+/// Their side effects execute as separate prepared read-only operations.
 pub struct PassThrough;
 
 impl<S: ProcessingSample> RtProcessor<S> for PassThrough {

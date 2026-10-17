@@ -4,7 +4,7 @@ use moiren_core::graph::{LogicalGraph, NodeId, NodeKind, SendParams, SendTap};
 use serde::{Deserialize, Serialize};
 
 use super::{PersistenceError, SourceDocument, model::validate_identity};
-use crate::service::{CompressorState, GraphNodeState, GraphSnapshot, MixerState};
+use crate::service::{BuiltinState, CompressorState, GraphNodeState, GraphSnapshot, MixerState};
 
 const MAX_PROJECT_NODES: usize = 4096;
 const MAX_PROJECT_EDGES: usize = 32768;
@@ -23,12 +23,18 @@ pub struct GraphDocument {
 #[serde(deny_unknown_fields)]
 pub struct GraphNodeDocument {
     #[serde(default)]
+    pub builtin: BuiltinState,
+    #[serde(default)]
     pub compressor: CompressorState,
     #[serde(default)]
     pub mixer: MixerState,
     pub id: u64,
     pub kind: GraphNodeKind,
     pub channels: usize,
+    /// Only channel mappers have an input width independent of `channels`.
+    /// Absence retains the equal-width layout of older documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_channels: Option<usize>,
     pub input_count: usize,
     pub label: String,
     pub gain: f64,
@@ -153,6 +159,8 @@ impl GraphDocument {
                     id: ids[&node.id()],
                     kind: node.kind().into(),
                     channels: node.channels(),
+                    input_channels: (node.kind() == NodeKind::ChannelMapper)
+                        .then(|| node.inputs()[0].channels()),
                     input_count: node.inputs().len(),
                     label: state.label.clone(),
                     gain: state.gain,
@@ -161,6 +169,7 @@ impl GraphDocument {
                     swap: state.swap,
                     mixer: state.mixer,
                     compressor: state.compressor,
+                    builtin: state.builtin.resolved(node.kind()),
                     source: state.source.as_ref().map(Into::into),
                     output_endpoint_id: state.output_endpoint_id.clone(),
                 })
@@ -232,10 +241,21 @@ impl GraphDocument {
                     "duplicate document node ID",
                 ));
             }
-            if node.channels > 256 || node.input_count > MAX_PROJECT_PORTS {
+            if node.channels > 256
+                || node
+                    .input_channels
+                    .is_some_and(|channels| channels == 0 || channels > 256)
+                || node.input_count > MAX_PROJECT_PORTS
+            {
                 return Err(PersistenceError::invalid(
                     &field,
                     "channels exceed 256 or input count exceeds 65536",
+                ));
+            }
+            if node.kind != GraphNodeKind::ChannelMapper && node.input_channels.is_some() {
+                return Err(PersistenceError::invalid(
+                    &field,
+                    "only a channel mapper may declare an independent input width",
                 ));
             }
             total_ports = total_ports
@@ -289,9 +309,16 @@ impl GraphDocument {
                     ));
                 }
             }
-            let id = graph
-                .create_node(node.kind.into(), node.channels)
-                .map_err(|error| PersistenceError::invalid(&field, error.to_string()))?;
+            let input_channels = node.input_channels.unwrap_or(node.channels);
+            node.builtin
+                .validate(node.kind.into(), input_channels, node.channels)
+                .map_err(|error| PersistenceError::invalid(format!("{field}.builtin"), error))?;
+            let id = if node.kind == GraphNodeKind::ChannelMapper {
+                graph.create_channel_mapper(input_channels, node.channels)
+            } else {
+                graph.create_node(node.kind.into(), node.channels)
+            }
+            .map_err(|error| PersistenceError::invalid(&field, error.to_string()))?;
             if node.kind == GraphNodeKind::Bus {
                 for _ in 0..node.input_count {
                     graph
@@ -368,6 +395,7 @@ impl GraphDocument {
                 swap: node.swap,
                 mixer: node.mixer,
                 compressor: node.compressor,
+                builtin: node.builtin.resolved(node.kind.into()),
                 source: node.source.as_ref().map(SourceDocument::to_selection),
                 output_endpoint_id: node.output_endpoint_id.clone(),
             })

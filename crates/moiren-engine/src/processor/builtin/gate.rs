@@ -7,7 +7,8 @@ use crate::{
 };
 use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct GateSettings {
     pub threshold_db: f64,
     pub attack_ms: f64,

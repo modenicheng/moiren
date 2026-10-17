@@ -6,7 +6,8 @@ use crate::{
 };
 use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct DelaySettings {
     pub delay_ms: f64,
     pub feedback: f64,

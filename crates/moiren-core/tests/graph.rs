@@ -9,6 +9,41 @@ fn output(graph: &LogicalGraph, node: NodeId) -> PortId {
 }
 
 #[test]
+fn channel_mapper_has_explicit_input_and_output_widths() {
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 6).unwrap();
+    let mapper = graph.create_channel_mapper(6, 2).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
+    assert_eq!(graph.get_node(mapper).unwrap().channels(), 2);
+    assert_eq!(graph.get_port(input(&graph, mapper)).unwrap().channels(), 6);
+    graph
+        .connect(
+            output(&graph, source),
+            input(&graph, mapper),
+            Default::default(),
+        )
+        .unwrap();
+    graph
+        .connect(
+            output(&graph, mapper),
+            input(&graph, sink),
+            Default::default(),
+        )
+        .unwrap();
+    graph.validate().unwrap();
+    assert_eq!(
+        graph.add_input_port(mapper, 6),
+        Err(GraphError::FixedPortLayout)
+    );
+    let before = graph.clone();
+    assert_eq!(
+        graph.create_channel_mapper(0, 2),
+        Err(GraphError::InvalidChannelCount)
+    );
+    assert_eq!(graph, before);
+}
+
+#[test]
 fn node_kinds_create_fixed_layouts_and_bus_starts_without_inputs() {
     let mut graph = LogicalGraph::new();
     for (kind, channels, inputs, outputs) in [

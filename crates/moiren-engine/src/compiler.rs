@@ -86,6 +86,7 @@ pub struct SendParameterKeys {
 pub struct CompiledBindings {
     nodes: BTreeMap<NodeId, ProcessorId>,
     edges: BTreeMap<EdgeId, SendParameterKeys>,
+    rack_slots: BTreeMap<(NodeId, u32), ProcessorId>,
 }
 impl CompiledBindings {
     pub fn node(&self, node: NodeId) -> Option<ProcessorId> {
@@ -93,6 +94,10 @@ impl CompiledBindings {
     }
     pub fn edge(&self, edge: EdgeId) -> Option<SendParameterKeys> {
         self.edges.get(&edge).copied()
+    }
+    /// Stable slot identity resolved to this plan's processor and parameter keys.
+    pub fn rack_slot(&self, node: NodeId, slot: u32) -> Option<ProcessorId> {
+        self.rack_slots.get(&(node, slot)).copied()
     }
 }
 

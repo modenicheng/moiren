@@ -8,7 +8,8 @@ use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
 use moiren_signal::{ErasedBinding, LatestValue, PreparedPublisher, PublisherHandle};
 
 /// Initial control-side values. Gains, threshold and knee are dB; times are ms.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct CompressorSettings {
     pub input_gain_db: f64,
     pub threshold_db: f64,

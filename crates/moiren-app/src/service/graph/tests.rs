@@ -1,6 +1,77 @@
 use super::*;
 
 #[test]
+fn builtin_settings_default_by_kind_and_invalid_edits_are_atomic() {
+    use moiren_engine::processor::{ChannelMapperSettings, EqSettings};
+
+    let mut service = ServiceGraph::default();
+    for kind in [
+        NodeKind::Eq,
+        NodeKind::Gate,
+        NodeKind::Limiter,
+        NodeKind::Delay,
+        NodeKind::ChannelMapper,
+        NodeKind::Recorder,
+        NodeKind::Meter,
+        NodeKind::SpectrumAnalyzer,
+        NodeKind::Rack,
+    ] {
+        service
+            .edit(GraphEdit::AddNode { kind, channels: 2 })
+            .unwrap();
+    }
+
+    let snapshot = service.snapshot();
+    for node in snapshot.graph.nodes().iter().skip(4) {
+        assert_eq!(
+            snapshot.node(node.id()).unwrap().builtin,
+            BuiltinState::for_kind(node.kind())
+        );
+    }
+
+    let eq = snapshot
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Eq)
+        .unwrap()
+        .id();
+    let before = service.snapshot();
+    for invalid in [
+        BuiltinState::Eq(EqSettings {
+            q: 0.0,
+            ..EqSettings::default()
+        }),
+        BuiltinState::ChannelMapper(ChannelMapperSettings::default()),
+    ] {
+        assert!(
+            service
+                .edit(GraphEdit::SetBuiltin {
+                    node: eq,
+                    state: invalid,
+                })
+                .is_err()
+        );
+        assert_eq!(
+            service.snapshot().candidate_revision,
+            before.candidate_revision
+        );
+        assert_eq!(service.snapshot().nodes, before.nodes);
+    }
+
+    service
+        .edit(GraphEdit::SetBuiltin {
+            node: eq,
+            state: BuiltinState::None,
+        })
+        .unwrap();
+    assert_eq!(
+        service.snapshot().node(eq).unwrap().builtin,
+        BuiltinState::for_kind(NodeKind::Eq)
+    );
+}
+
+#[test]
 fn compressor_edits_are_node_local_and_reject_invalid_domains_transactionally() {
     let mut service = ServiceGraph::default();
     for _ in 0..2 {

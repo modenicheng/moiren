@@ -2,10 +2,12 @@
 //! only validated transactions replace the candidate and native startup confirms it.
 use super::{InputSelection, RunLimit, SessionGeneration, SessionSpec};
 use moiren_core::graph::{EdgeId, GraphError, LogicalGraph, NodeId, NodeKind, PortId, SendParams};
+mod builtin;
 mod compressor;
 mod edit;
 mod mixer;
 mod preparation;
+pub use builtin::BuiltinState;
 pub use compressor::{CompressorParameter, CompressorState};
 use edit::edit_candidate;
 pub use mixer::MixerState;
@@ -20,6 +22,7 @@ pub struct GraphNodeState {
     pub swap: bool,
     pub mixer: MixerState,
     pub compressor: CompressorState,
+    pub builtin: BuiltinState,
     pub source: Option<InputSelection>,
     pub output_endpoint_id: Option<String>,
 }
@@ -42,6 +45,10 @@ impl GraphSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphEdit {
+    SetBuiltin {
+        node: NodeId,
+        state: BuiltinState,
+    },
     SetCompressor {
         node: NodeId,
         parameter: CompressorParameter,
@@ -133,6 +140,7 @@ impl Default for ServiceGraph {
                 swap: false,
                 mixer: MixerState::default(),
                 compressor: CompressorState::default(),
+                builtin: BuiltinState::for_kind(node.kind()),
                 source: (node.kind() == NodeKind::Source).then_some(InputSelection::Tone {
                     frequency_hz: 440.0,
                 }),

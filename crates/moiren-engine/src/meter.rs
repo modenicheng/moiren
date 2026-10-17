@@ -9,6 +9,24 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 pub mod signal;
 
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MeterSettings {
+    pub window_frames: usize,
+}
+impl Default for MeterSettings {
+    fn default() -> Self {
+        Self {
+            window_frames: 1536,
+        }
+    }
+}
+impl MeterSettings {
+    pub fn valid(self) -> bool {
+        (1..=1_048_576).contains(&self.window_frames)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct LevelSnapshot {
     pub timeline_epoch: u64,

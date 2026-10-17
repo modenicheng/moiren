@@ -4519,6 +4519,7 @@ dependencies = [
  "moiren-core",
  "moiren-signal",
  "rtrb",
+ "serde",
  "thiserror 2.0.21",
 ]
 

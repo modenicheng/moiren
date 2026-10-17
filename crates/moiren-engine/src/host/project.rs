@@ -10,8 +10,8 @@ use crate::{
     compiler::CompileConfig,
     node::{InputConfig, IoConfigError, OutputConfig},
     processor::{
-        Compressor, CompressorSettings, Delay, DelaySettings, Eq as EqProcessor, EqSettings, Gate,
-        GateSettings, Limiter, LimiterSettings,
+        ChannelMapperSettings, Compressor, CompressorSettings, Delay, DelaySettings,
+        Eq as EqProcessor, EqSettings, Gate, GateSettings, Limiter, LimiterSettings,
     },
     runtime::EngineConfig,
 };
@@ -27,11 +27,11 @@ pub enum NodeConfig {
     Gate(GateSettings),
     Limiter(LimiterSettings),
     Delay(DelaySettings),
-    ChannelMapper,
-    Recorder,
-    Meter,
-    SpectrumAnalyzer,
-    Rack,
+    ChannelMapper(ChannelMapperSettings),
+    Recorder(crate::recorder::RecorderSettings),
+    Meter(crate::meter::MeterSettings),
+    SpectrumAnalyzer(crate::spectrum::SpectrumSettings),
+    Rack(crate::rack::RackSettings),
     Bus,
 }
 
@@ -168,11 +168,11 @@ impl EngineProject {
                 NodeConfig::Gate(_) => NodeKind::Gate,
                 NodeConfig::Limiter(_) => NodeKind::Limiter,
                 NodeConfig::Delay(_) => NodeKind::Delay,
-                NodeConfig::ChannelMapper => NodeKind::ChannelMapper,
-                NodeConfig::Recorder => NodeKind::Recorder,
-                NodeConfig::Meter => NodeKind::Meter,
-                NodeConfig::SpectrumAnalyzer => NodeKind::SpectrumAnalyzer,
-                NodeConfig::Rack => NodeKind::Rack,
+                NodeConfig::ChannelMapper(_) => NodeKind::ChannelMapper,
+                NodeConfig::Recorder(_) => NodeKind::Recorder,
+                NodeConfig::Meter(_) => NodeKind::Meter,
+                NodeConfig::SpectrumAnalyzer(_) => NodeKind::SpectrumAnalyzer,
+                NodeConfig::Rack(_) => NodeKind::Rack,
                 NodeConfig::Bus => NodeKind::Bus,
             };
             if kind != node.kind() {
@@ -214,9 +214,22 @@ impl EngineProject {
                 NodeConfig::Limiter(settings) => Limiter::parameters(ProcessorId(0), *settings)
                     .iter()
                     .all(|spec| spec.accepts(spec.initial, 0)),
-                NodeConfig::Delay(settings) => Delay::parameters(ProcessorId(0), *settings)
-                    .iter()
-                    .all(|spec| spec.accepts(spec.initial, 0)),
+                NodeConfig::Delay(settings) => {
+                    settings.max_delay_ms.is_finite()
+                        && (0.0..=60_000.0).contains(&settings.max_delay_ms)
+                        && Delay::parameters(ProcessorId(0), *settings)
+                            .iter()
+                            .all(|spec| spec.accepts(spec.initial, 0))
+                }
+                NodeConfig::ChannelMapper(settings) => {
+                    settings.valid_layout(node.inputs()[0].channels(), node.outputs()[0].channels())
+                }
+                NodeConfig::Recorder(settings) => settings.valid() && node.channels() <= 256,
+                NodeConfig::Meter(settings) => settings.valid() && node.channels() <= 256,
+                NodeConfig::SpectrumAnalyzer(settings) => {
+                    settings.valid() && node.channels() <= 256
+                }
+                NodeConfig::Rack(settings) => settings.valid_for(node.channels()),
                 _ => true,
             };
             if !valid {

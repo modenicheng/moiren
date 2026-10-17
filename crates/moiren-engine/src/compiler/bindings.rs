@@ -9,8 +9,8 @@ use crate::{
     buffer::{PreparedIo, ProcessIo},
     control::ProcessParameters,
     processor::{
-        CompressorSettings, DelaySettings, EqSettings, GateSettings, LimiterSettings,
-        ProcessContext, ProcessorError, ProcessorRole, RtProcessor,
+        ChannelMapperSettings, CompressorSettings, DelaySettings, EqSettings, GateSettings,
+        LimiterSettings, ProcessContext, ProcessorError, ProcessorRole, RtProcessor,
     },
     sample::ProcessingSample,
 };
@@ -35,7 +35,10 @@ pub(super) enum Binding<S: ProcessingSample> {
     Gate(GateSettings),
     Limiter(LimiterSettings),
     Delay(DelaySettings),
-    Utility,
+    ChannelMapper(ChannelMapperSettings),
+    Rack(crate::rack::RackSettings),
+    Observed(NodeKind, Box<dyn crate::processor::RtObserver<S>>),
+    Unmanaged(NodeKind),
 }
 
 /// Prepared backend ownership and initial DSP values, separate from editable
@@ -118,14 +121,10 @@ impl<S: ProcessingSample> NodeBindings<S> {
                 | (NodeKind::Gate, Binding::Gate(_))
                 | (NodeKind::Limiter, Binding::Limiter(_))
                 | (NodeKind::Delay, Binding::Delay(_))
-                | (
-                    NodeKind::ChannelMapper
-                    | NodeKind::Recorder
-                    | NodeKind::Meter
-                    | NodeKind::SpectrumAnalyzer
-                    | NodeKind::Rack,
-                    Binding::Utility,
-                ) => true,
+                | (NodeKind::ChannelMapper, Binding::ChannelMapper(_))
+                | (NodeKind::Rack, Binding::Rack(_)) => true,
+                (kind, Binding::Unmanaged(expected)) => kind == *expected,
+                (kind, Binding::Observed(expected, _)) => kind == *expected,
                 _ => false,
             };
             if !valid {
@@ -242,8 +241,56 @@ impl<S: ProcessingSample> NodeBindings<S> {
     ) -> Result<(), CompileError> {
         self.insert(node, Binding::Delay(settings))
     }
-    pub fn bind_utility(&mut self, node: NodeId) -> Result<(), CompileError> {
-        self.insert(node, Binding::Utility)
+    pub fn bind_channel_mapper(
+        &mut self,
+        node: NodeId,
+        settings: ChannelMapperSettings,
+    ) -> Result<(), CompileError> {
+        self.insert(node, Binding::ChannelMapper(settings))
+    }
+    pub fn bind_rack(
+        &mut self,
+        node: NodeId,
+        settings: crate::rack::RackSettings,
+    ) -> Result<(), CompileError> {
+        self.insert(node, Binding::Rack(settings))
+    }
+    pub fn bind_meter(
+        &mut self,
+        node: NodeId,
+        settings: crate::meter::MeterSettings,
+    ) -> Result<crate::meter::MeterReader, CompileError> {
+        if !settings.valid() {
+            return Err(CompileError::BindingKind { node });
+        }
+        let (meter, reader) = crate::meter::level_meter(settings.window_frames as u64, 8)
+            .map_err(|_| CompileError::BindingKind { node })?;
+        self.insert(node, Binding::Observed(NodeKind::Meter, Box::new(meter)))?;
+        Ok(reader)
+    }
+    pub fn bind_recorder(
+        &mut self,
+        node: NodeId,
+        channels: usize,
+        settings: crate::recorder::RecorderSettings,
+    ) -> Result<crate::recorder::RecorderReader, CompileError> {
+        let (recorder, reader) = crate::recorder::recorder(channels, settings)
+            .map_err(|_| CompileError::BindingKind { node })?;
+        self.insert(
+            node,
+            Binding::Observed(NodeKind::Recorder, Box::new(recorder)),
+        )?;
+        Ok(reader)
+    }
+    pub fn bind_spectrum(
+        &mut self,
+        node: NodeId,
+        analyzer: crate::spectrum::SignalSpectrumAnalyzer,
+    ) -> Result<(), CompileError> {
+        self.insert(
+            node,
+            Binding::Observed(NodeKind::SpectrumAnalyzer, Box::new(analyzer)),
+        )
     }
 
     pub fn observe_output(

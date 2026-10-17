@@ -5,11 +5,295 @@ use std::{
 };
 
 use moiren_core::graph::{NodeKind, SendParams, SendTap};
+use moiren_engine::{
+    host::NodeConfig,
+    meter::MeterSettings,
+    processor::{ChannelMapperSettings, DelaySettings, EqSettings, GateSettings, LimiterSettings},
+    rack::{RackProcessor, RackSettings, RackSlot},
+    recorder::RecorderSettings,
+    spectrum::SpectrumSettings,
+};
 
 use super::*;
-use crate::service::{GraphEdit, InputSelection, RunLimit, ServiceGraph, SessionSpec};
+use crate::service::{
+    BuiltinState, GraphEdit, InputSelection, RunLimit, ServiceGraph, SessionSpec,
+};
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+fn builtin_settings_cases() -> Vec<(NodeKind, BuiltinState)> {
+    vec![
+        (
+            NodeKind::Eq,
+            BuiltinState::Eq(EqSettings {
+                frequency_hz: 2345.0,
+                gain_db: -3.0,
+                q: 2.5,
+            }),
+        ),
+        (
+            NodeKind::Gate,
+            BuiltinState::Gate(GateSettings {
+                threshold_db: -35.0,
+                attack_ms: 3.0,
+                release_ms: 250.0,
+                hold_ms: 30.0,
+                range_db: -60.0,
+            }),
+        ),
+        (
+            NodeKind::Limiter,
+            BuiltinState::Limiter(LimiterSettings {
+                threshold_db: -4.0,
+                release_ms: 200.0,
+                input_gain_db: 3.0,
+            }),
+        ),
+        (
+            NodeKind::Delay,
+            BuiltinState::Delay(DelaySettings {
+                delay_ms: 375.0,
+                feedback: 0.4,
+                mix: 0.3,
+                max_delay_ms: 1500.0,
+            }),
+        ),
+        (
+            NodeKind::ChannelMapper,
+            BuiltinState::ChannelMapper(ChannelMapperSettings {
+                mapping: vec![1, 0],
+                ..Default::default()
+            }),
+        ),
+        (
+            NodeKind::Recorder,
+            BuiltinState::Recorder(RecorderSettings {
+                capacity_frames: 1234,
+            }),
+        ),
+        (
+            NodeKind::Meter,
+            BuiltinState::Meter(MeterSettings { window_frames: 777 }),
+        ),
+        (
+            NodeKind::SpectrumAnalyzer,
+            BuiltinState::SpectrumAnalyzer(SpectrumSettings {
+                fft_size: 256,
+                hop_frames: 64,
+            }),
+        ),
+        (
+            NodeKind::Rack,
+            BuiltinState::Rack(RackSettings {
+                slots: vec![
+                    RackSlot {
+                        id: 47,
+                        bypass: true,
+                        processor: RackProcessor::Gain { initial: 0.75 },
+                    },
+                    RackSlot {
+                        id: 9,
+                        bypass: false,
+                        processor: RackProcessor::Pan {
+                            initial: -0.25,
+                            mono: true,
+                            swap: false,
+                        },
+                    },
+                ],
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn builtin_settings_persist_and_reach_engine_project_without_loss() {
+    let mut service = ServiceGraph::default();
+    for (kind, state) in builtin_settings_cases() {
+        service
+            .edit(GraphEdit::AddNode { kind, channels: 2 })
+            .unwrap();
+        let node = service.snapshot().graph.nodes().last().unwrap().id();
+        service.edit(GraphEdit::SetBuiltin { node, state }).unwrap();
+    }
+    let sink = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Sink)
+        .unwrap()
+        .id();
+    service
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "output".into(),
+        })
+        .unwrap();
+
+    let dir = TestDirectory::new();
+    let path = dir.file("builtins.moiren");
+    let document = ProjectDocument::from_graph("Builtins", &service.snapshot()).unwrap();
+    save_project(&path, &document).unwrap();
+    let decoded = load_project(&path).unwrap();
+    assert_eq!(decoded, document);
+    let (graph, nodes) = decoded.graph.unwrap().restore().unwrap();
+    let mut restored = ServiceGraph::default();
+    restored.replace(graph, nodes).unwrap();
+
+    let snapshot = restored.snapshot();
+    let project = restored.preparation().engine_project(256).unwrap();
+    for (kind, expected_state) in builtin_settings_cases() {
+        let node = snapshot
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == kind)
+            .unwrap();
+        assert_eq!(snapshot.node(node.id()).unwrap().builtin, expected_state);
+        let expected_config = match expected_state {
+            BuiltinState::Eq(settings) => NodeConfig::Eq(settings),
+            BuiltinState::Gate(settings) => NodeConfig::Gate(settings),
+            BuiltinState::Limiter(settings) => NodeConfig::Limiter(settings),
+            BuiltinState::Delay(settings) => NodeConfig::Delay(settings),
+            BuiltinState::ChannelMapper(settings) => NodeConfig::ChannelMapper(settings),
+            BuiltinState::Recorder(settings) => NodeConfig::Recorder(settings),
+            BuiltinState::Meter(settings) => NodeConfig::Meter(settings),
+            BuiltinState::SpectrumAnalyzer(settings) => NodeConfig::SpectrumAnalyzer(settings),
+            BuiltinState::Rack(settings) => NodeConfig::Rack(settings),
+            BuiltinState::None => unreachable!("fixture has explicit settings"),
+        };
+        assert_eq!(project.nodes[&node.id()], expected_config);
+    }
+}
+
+#[test]
+fn legacy_graph_documents_default_builtin_state_on_restore() {
+    let mut service = ServiceGraph::default();
+    for (kind, _) in builtin_settings_cases() {
+        service
+            .edit(GraphEdit::AddNode { kind, channels: 2 })
+            .unwrap();
+    }
+    let document = GraphDocument::from_snapshot(&service.snapshot()).unwrap();
+    let mut legacy = serde_json::to_value(document).unwrap();
+    for node in legacy["nodes"].as_array_mut().unwrap() {
+        node.as_object_mut().unwrap().remove("builtin");
+        node.as_object_mut().unwrap().remove("input_channels");
+    }
+    let legacy: GraphDocument = serde_json::from_value(legacy).unwrap();
+    assert!(
+        legacy
+            .nodes
+            .iter()
+            .all(|node| node.builtin == BuiltinState::None)
+    );
+    let (graph, nodes) = legacy.restore().unwrap();
+    for node in graph.nodes() {
+        assert_eq!(
+            nodes
+                .iter()
+                .find(|state| state.id == node.id())
+                .unwrap()
+                .builtin,
+            BuiltinState::for_kind(node.kind())
+        );
+    }
+    let mut restored = ServiceGraph::default();
+    restored.replace(graph, nodes).unwrap();
+    assert_eq!(restored.snapshot().active_revision, None);
+}
+
+#[test]
+fn channel_mapper_persistence_preserves_matrix_and_distinct_widths() {
+    let mut service = ServiceGraph::default();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::ChannelMapper,
+            channels: 2,
+        })
+        .unwrap();
+    let mut document = GraphDocument::from_snapshot(&service.snapshot()).unwrap();
+    let mapper = document
+        .nodes
+        .iter_mut()
+        .find(|node| node.kind == GraphNodeKind::ChannelMapper)
+        .unwrap();
+    mapper.input_channels = Some(3);
+    mapper.builtin = BuiltinState::ChannelMapper(ChannelMapperSettings {
+        matrix: vec![vec![0.5, 0.0, 0.25], vec![0.0, 0.75, -0.5]],
+        ..Default::default()
+    });
+    let decoded: GraphDocument =
+        serde_json::from_slice(&serde_json::to_vec(&document).unwrap()).unwrap();
+    let (graph, nodes) = decoded.restore().unwrap();
+    let mapper = graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::ChannelMapper)
+        .unwrap();
+    assert_eq!(mapper.inputs()[0].channels(), 3);
+    assert_eq!(mapper.channels(), 2);
+    service.replace(graph, nodes).unwrap();
+    assert_eq!(
+        GraphDocument::from_snapshot(&service.snapshot()).unwrap(),
+        document
+    );
+
+    let mut invalid = document.clone();
+    invalid
+        .nodes
+        .iter_mut()
+        .find(|node| node.kind == GraphNodeKind::ChannelMapper)
+        .unwrap()
+        .input_channels = Some(0);
+    assert!(invalid.restore().is_err());
+    let mut invalid = document.clone();
+    invalid
+        .nodes
+        .iter_mut()
+        .find(|node| node.kind == GraphNodeKind::ChannelMapper)
+        .unwrap()
+        .input_channels = Some(257);
+    assert!(invalid.restore().is_err());
+    let mut invalid = document;
+    invalid.nodes[0].input_channels = Some(2);
+    assert!(invalid.restore().is_err());
+}
+
+#[test]
+fn invalid_builtin_documents_and_replacements_leave_candidate_unchanged() {
+    let mut service = ServiceGraph::default();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Eq,
+            channels: 2,
+        })
+        .unwrap();
+    let document = GraphDocument::from_snapshot(&service.snapshot()).unwrap();
+    for builtin in [
+        BuiltinState::Eq(EqSettings {
+            q: 0.0,
+            ..Default::default()
+        }),
+        BuiltinState::ChannelMapper(ChannelMapperSettings::default()),
+    ] {
+        let mut invalid = document.clone();
+        invalid.nodes.last_mut().unwrap().builtin = builtin.clone();
+        assert!(invalid.restore().is_err());
+
+        let preparation = service.preparation();
+        let mut nodes = preparation.nodes;
+        nodes.last_mut().unwrap().builtin = builtin;
+        let before = service.snapshot();
+        assert!(service.replace(preparation.graph, nodes).is_err());
+        assert_eq!(service.snapshot(), before);
+    }
+
+    let mut invalid = serde_json::to_value(document).unwrap();
+    invalid["nodes"][4]["builtin"] = serde_json::json!({ "kind": "unknown_processor" });
+    assert!(serde_json::from_value::<GraphDocument>(invalid).is_err());
+}
 
 #[test]
 fn compressor_properties_restore_and_prepare_the_saved_values() {
