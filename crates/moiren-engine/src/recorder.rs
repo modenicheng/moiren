@@ -15,7 +15,11 @@ use crate::{
 };
 
 mod wav;
-pub use wav::WavRecording;
+pub use wav::{
+    RecordingError, RecordingSession, RecordingState, RecordingStatus, RecordingSummary,
+    WavRecording,
+};
+pub(crate) use wav::{RecordingSource, spawn_recording};
 
 #[cfg(test)]
 mod tests;

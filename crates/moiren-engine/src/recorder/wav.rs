@@ -6,12 +6,19 @@ use std::{
 
 use super::{MAX_CHANNELS, RecorderReader};
 
+mod worker;
+pub use worker::{
+    RecordingError, RecordingSession, RecordingState, RecordingStatus, RecordingSummary,
+};
+pub(crate) use worker::{RecordingSource, spawn_recording};
+
 const DRAIN_CHUNK_FRAMES: usize = 4096;
 const RIFF_PREFIX_BYTES: u64 = 50;
 const MAX_DATA_BYTES: u64 = u32::MAX as u64 - RIFF_PREFIX_BYTES;
 
-/// Control-side IEEE float32 WAV output. Stop capture, drain any remaining
-/// frames, then call `finish` to patch lengths and report flush errors. Dropping
+/// Control-side IEEE float32 WAV output. Stop capture, wait for the reader's
+/// `is_quiescent`, drain the tail, then call `finish` to patch lengths and report
+/// flush errors. `RecorderReader::record_wav` manages these steps. Dropping
 /// this helper does not finalize a file or conceal a failed finalization.
 pub struct WavRecording<W: Write + Seek = BufWriter<File>> {
     writer: W,
