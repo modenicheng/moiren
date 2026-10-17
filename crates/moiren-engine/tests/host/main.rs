@@ -3,6 +3,7 @@ mod lifecycle;
 mod parameters;
 mod project;
 mod rack;
+mod rack_reuse;
 mod resources;
 mod signals;
 mod snapshots;

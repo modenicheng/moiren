@@ -23,6 +23,7 @@ fn rack_parameter_initial_is_rendered_before_control_events() {
                     bypass: false,
                     processor: RackProcessor::Gain { initial: 2.0 },
                 }],
+                ..Default::default()
             },
         )
         .unwrap();

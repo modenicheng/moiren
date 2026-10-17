@@ -249,6 +249,7 @@ impl<S: ProcessingSample> Supervisor<S> {
         let mut reuse = Vec::new();
         let mut edge_reuse = Vec::new();
         let mut observer_reuse = Vec::new();
+        let mut rack_reuse = Vec::new();
         if let Some(active) = &self.active {
             for node in self.project.graph.nodes() {
                 if active
@@ -276,6 +277,7 @@ impl<S: ProcessingSample> Supervisor<S> {
                     edge_reuse.push((edge.id(), keys.gain.processor));
                 }
             }
+            rack_reuse = reusable_rack_slots(&active.project, &self.project, &active.bindings);
         }
         let basis = self.basis();
         let cancel = CancellationToken::default();
@@ -287,6 +289,7 @@ impl<S: ProcessingSample> Supervisor<S> {
             reuse,
             edge_reuse,
             observer_reuse,
+            rack_reuse,
             active: self.active.as_ref().map(|active| active.snapshot.clone()),
             signals: self.active.as_ref().map(|active| active.signals.clone()),
             cancel: cancel.clone(),
@@ -295,5 +298,133 @@ impl<S: ProcessingSample> Supervisor<S> {
             .try_send(job)
             .unwrap_or_else(|_| unreachable!("one reserved preparation slot"));
         self.preparing = Some((basis, cancel));
+    }
+}
+
+/// A stable slot keeps its state even if unrelated edits renumber processors.
+/// Widths come from the resolved chain: an upstream mapper can change a slot's
+/// IO without changing that slot's settings or the enclosing Rack's main width.
+fn reusable_rack_slots(
+    active: &EngineProject,
+    desired: &EngineProject,
+    bindings: &CompiledBindings,
+) -> Vec<(
+    (moiren_core::graph::NodeId, u32),
+    moiren_core::protocol::ProcessorId,
+)> {
+    let mut reuse = Vec::new();
+    for (&node, config) in &desired.nodes {
+        let (NodeConfig::Rack(new), Some(NodeConfig::Rack(old))) =
+            (config, active.nodes.get(&node))
+        else {
+            continue;
+        };
+        let resolve = |project: &EngineProject, settings: &crate::rack::RackSettings| {
+            let graph_node = project.graph.get_node(node).ok()?;
+            settings.resolve_layout(
+                &graph_node
+                    .inputs()
+                    .iter()
+                    .map(|port| port.channels())
+                    .collect::<Vec<_>>(),
+                &graph_node
+                    .outputs()
+                    .iter()
+                    .map(|port| port.channels())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let (Some(previous), Some(next)) = (resolve(active, old), resolve(desired, new)) else {
+            continue;
+        };
+        for slot in new.slots.iter().filter(|slot| !slot.bypass) {
+            let Some(old_slot) = old
+                .slots
+                .iter()
+                .find(|old| old.id == slot.id && !old.bypass)
+            else {
+                continue;
+            };
+            let (Some(old_io), Some(new_io)) =
+                (previous.slots.get(&slot.id), next.slots.get(&slot.id))
+            else {
+                continue;
+            };
+            if old_slot.processor == slot.processor
+                && old_io.input_channels == new_io.input_channels
+                && old_io.output_channels == new_io.output_channels
+                && let Some(processor) = bindings.rack_slot(node, slot.id)
+            {
+                reuse.push(((node, slot.id), processor));
+            }
+        }
+    }
+    reuse
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        compiler::{self, NodeBindings},
+        processor::DelaySettings,
+        rack::{RackProcessor, RackSettings, RackSlot},
+    };
+
+    fn rack_project(channels: usize) -> (EngineProject, moiren_core::graph::NodeId) {
+        let mut project = EngineProject::default();
+        let node = project.graph.create_rack(&[channels], &[channels]).unwrap();
+        project.nodes.insert(
+            node,
+            NodeConfig::Rack(RackSettings {
+                slots: vec![RackSlot {
+                    id: 42,
+                    bypass: false,
+                    processor: RackProcessor::Delay(DelaySettings::default()),
+                }],
+                ..Default::default()
+            }),
+        );
+        (project, node)
+    }
+
+    #[test]
+    fn rack_reuse_requires_unchanged_config_active_slot_and_actual_io() {
+        let (active, node) = rack_project(1);
+        let NodeConfig::Rack(settings) = &active.nodes[&node] else {
+            unreachable!()
+        };
+        let mut bindings = NodeBindings::<f64>::new();
+        bindings.bind_rack(node, settings.clone()).unwrap();
+        let compiled = compiler::compile(
+            &active.graph,
+            bindings,
+            active.processing.compile_config(1, 1),
+        )
+        .unwrap();
+        let retained = reusable_rack_slots(&active, &active, &compiled.bindings);
+        assert_eq!(
+            retained,
+            vec![((node, 42), compiled.bindings.rack_slot(node, 42).unwrap())]
+        );
+
+        let (different_width, _) = rack_project(2);
+        assert!(reusable_rack_slots(&active, &different_width, &compiled.bindings).is_empty());
+        for bypass in [false, true] {
+            let mut changed = active.clone();
+            let NodeConfig::Rack(settings) = changed.nodes.get_mut(&node).unwrap() else {
+                unreachable!()
+            };
+            if bypass {
+                settings.slots[0].bypass = true;
+            } else {
+                settings.slots[0].processor = RackProcessor::Delay(DelaySettings {
+                    max_delay_ms: 42.0,
+                    ..Default::default()
+                });
+            }
+            assert!(reusable_rack_slots(&active, &changed, &compiled.bindings).is_empty());
+            assert!(reusable_rack_slots(&changed, &active, &compiled.bindings).is_empty());
+        }
     }
 }

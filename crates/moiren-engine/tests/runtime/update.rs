@@ -87,6 +87,86 @@ fn samples(reader: &mut AudioReader<f64>, expected: &[f64]) {
 }
 
 #[test]
+fn rack_delay_history_survives_processor_id_migration_without_rt_heap_work() {
+    use moiren_engine::{
+        processor::DelaySettings,
+        rack::{RackProcessor, RackSettings, RackSlot},
+    };
+
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 1).unwrap();
+    let rack = graph.create_node(NodeKind::Rack, 1).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 1).unwrap();
+    let upstream = connect(&mut graph, source, rack);
+    connect(&mut graph, rack, sink);
+    let settings = RackSettings {
+        slots: vec![RackSlot {
+            id: 90,
+            bypass: false,
+            processor: RackProcessor::Delay(DelaySettings {
+                delay_ms: 4.0 * 1_000.0 / 48_000.0,
+                max_delay_ms: 1.0,
+                ..Default::default()
+            }),
+        }],
+        ..Default::default()
+    };
+    let (writer, mut output) = audio_bridge(1, 32, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_source(source, Counter(1.0)).unwrap();
+    bindings.bind_rack(rack, settings.clone()).unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    let mut active = compile(&graph, bindings, config(1)).unwrap();
+    let mut plans = active.engine.enable_plan_switching(1).unwrap();
+    let (result, heap) = super::allocation::track_heap(|| active.engine.render(2));
+    result.unwrap();
+    assert_eq!(heap, (0, 0, 0));
+    samples(&mut output, &[0.0, 0.0]);
+
+    graph.disconnect(upstream).unwrap();
+    let added = graph.create_node(NodeKind::Gain, 1).unwrap();
+    connect(&mut graph, source, added);
+    connect(&mut graph, added, rack);
+    let mut bindings = NodeBindings::new();
+    bindings.bind_gain(added, 1.0).unwrap();
+    bindings.bind_rack(rack, settings).unwrap();
+    let reuse = [source, rack, sink].map(|node| (node, active.bindings.node(node).unwrap()));
+    let update = compile_update_with_reuse(
+        &graph,
+        bindings,
+        config(2),
+        &active.engine.plan_snapshot(),
+        UpdateReuse {
+            nodes: &reuse,
+            edges: &[],
+            rack_slots: &[((rack, 90), active.bindings.rack_slot(rack, 90).unwrap())],
+        },
+        None,
+    )
+    .unwrap();
+    assert_ne!(
+        active.bindings.rack_slot(rack, 90).unwrap(),
+        update.bindings.rack_slot(rack, 90).unwrap()
+    );
+    plans.publish(update.plan).unwrap();
+    let (result, heap) = super::allocation::track_heap(|| active.engine.render(2));
+    result.unwrap();
+    assert_eq!(heap, (0, 0, 0));
+    samples(&mut output, &[0.0, 0.0]);
+    assert!(matches!(
+        plans.poll_retired().unwrap().outcome(),
+        RetireOutcome::Replaced {
+            active_revision: 2,
+            ..
+        }
+    ));
+    let (result, heap) = super::allocation::track_heap(|| active.engine.render(2));
+    result.unwrap();
+    assert_eq!(heap, (0, 0, 0));
+    samples(&mut output, &[1.0, 2.0]);
+}
+
+#[test]
 fn observer_reuse_preserves_meter_window_and_recorder_queue_without_rt_heap_work() {
     use moiren_engine::{meter::MeterSettings, recorder::RecorderSettings};
 
@@ -349,6 +429,7 @@ fn unrelated_topology_update_preserves_an_active_send_ramp() {
         UpdateReuse {
             nodes: &reuse,
             edges: &[(edge, target.processor)],
+            rack_slots: &[],
         },
         None,
     )

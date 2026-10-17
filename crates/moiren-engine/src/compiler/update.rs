@@ -29,6 +29,9 @@ pub struct CompiledUpdate<S: ProcessingSample> {
 pub struct UpdateReuse<'a> {
     pub nodes: &'a [(NodeId, ProcessorId)],
     pub edges: &'a [(EdgeId, ProcessorId)],
+    /// Stable Rack slot identities; callers assert unchanged static settings
+    /// and actual slot IO, just as they do for top-level processor reuse.
+    pub rack_slots: &'a [((NodeId, u32), ProcessorId)],
 }
 
 /// Non-RT only. Every reused IO node must be absent from `bindings`: its
@@ -50,6 +53,7 @@ pub fn compile_update<S: ProcessingSample>(
         UpdateReuse {
             nodes: reuse,
             edges: &[],
+            rack_slots: &[],
         },
         host,
     )
@@ -97,6 +101,15 @@ pub fn compile_update_with_reuse<S: ProcessingSample>(
         mappings.push(ProcessorReuse {
             old: previous,
             new: target.gain.processor,
+        });
+    }
+    for &((node, slot), previous) in reuse.rack_slots {
+        mappings.push(ProcessorReuse {
+            old: previous,
+            new: compiled
+                .bindings
+                .rack_slot(node, slot)
+                .ok_or(PlanSwapError::MissingProcessor)?,
         });
     }
     for (node, previous) in observer_reuse {

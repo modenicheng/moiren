@@ -38,6 +38,7 @@ pub(crate) struct PrepareJob {
     pub project: EngineProject,
     pub reuse: Vec<(NodeId, ProcessorId)>,
     pub edge_reuse: Vec<(EdgeId, ProcessorId)>,
+    pub rack_reuse: Vec<((NodeId, u32), ProcessorId)>,
     pub observer_reuse: Vec<(NodeId, ProcessorId)>,
     pub active: Option<PlanSnapshot>,
     pub signals: Option<moiren_signal::HostControl>,
@@ -394,6 +395,7 @@ fn prepare<S: ProcessingSample>(
             compiler::UpdateReuse {
                 nodes: &job.reuse,
                 edges: &job.edge_reuse,
+                rack_slots: &job.rack_reuse,
             },
             Some(&signals),
         )
