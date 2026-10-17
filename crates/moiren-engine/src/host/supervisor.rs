@@ -13,6 +13,7 @@ use super::{
     parameters::Router,
     preparation::{self, Basis, Completion, PrepareJob, Ready},
     retirement::{self, Cleanup, Reclaimed},
+    signals::PreparedReaders,
     *,
 };
 use crate::{
@@ -35,6 +36,7 @@ struct Active<S: ProcessingSample> {
     project: EngineProject,
     graph: u64,
     signals: moiren_signal::HostControl,
+    owner_generation: u64,
     confirmed: bool,
 }
 struct Candidate {
@@ -43,6 +45,7 @@ struct Candidate {
     snapshot: PlanSnapshot,
     project: EngineProject,
     graph: u64,
+    readers: PreparedReaders,
 }
 struct Supervisor<S: ProcessingSample> {
     config: HostConfig,
@@ -296,15 +299,20 @@ impl<S: ProcessingSample> Supervisor<S> {
         let Some(active) = self.active.take() else {
             return;
         };
+        let pending = self.pending.take();
         let mut controls = vec![active.control];
-        if let Some(pending) = self.pending.take() {
+        let pending_readers = pending.map(|pending| {
             controls.push(pending.control);
-        }
+            pending.readers
+        });
         self.cleanup(Cleanup::Owner {
             owner: active.owner,
             plans: active.plans,
             controls,
             signals: active.signals,
+            owner_generation: active.owner_generation,
+            signal_hub: Arc::clone(&self.shared.signals),
+            pending_readers,
         });
     }
 }

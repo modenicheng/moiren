@@ -1,12 +1,25 @@
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
-use crate::meter::signal::{AudioWindow, ChannelLevel, SignalLevelMeter};
+use crate::{
+    meter::{
+        LevelSnapshot, MeterReader,
+        signal::{AudioWindow, ChannelLevel, SignalLevelMeter},
+    },
+    recorder::{RecorderReader, RecorderStats},
+    spectrum::{SpectrumSettings, SpectrumWindow},
+};
 use moiren_core::graph::NodeId;
 use moiren_signal::{
     BlockInit, Bus, HostControl, LatestBlock, LatestValue, PreparedPublisher, RtHost, Subscriber,
     Topic,
 };
+
 pub type ManagedLevelTopic = LatestBlock<AudioWindow, ChannelLevel>;
+pub type ManagedSpectrumTopic = LatestBlock<SpectrumWindow, f32>;
+
 pub struct ManagedLevelSubscription {
     pub owner_generation: u64,
     pub subscriber: Subscriber<ManagedLevelTopic>,
@@ -19,11 +32,111 @@ pub struct ManagedSignalSubscription {
     pub subscriber: Subscriber<LatestValue<f32>>,
 }
 
+pub struct ManagedSpectrumSubscription {
+    pub owner_generation: u64,
+    pub subscriber: Subscriber<ManagedSpectrumTopic>,
+}
+
+type ReaderSlot<T> = Arc<Mutex<Option<(u64, T)>>>;
+
+/// Control-side handle to a meter reader. It becomes stale when its owner is
+/// replaced, and never exposes the reader to the realtime thread.
+pub struct ManagedMeterReader {
+    owner_generation: u64,
+    slot: ReaderSlot<MeterReader>,
+}
+
+impl ManagedMeterReader {
+    pub fn owner_generation(&self) -> u64 {
+        self.owner_generation
+    }
+
+    pub fn latest(&mut self) -> Option<LevelSnapshot> {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Some((generation, reader)) = slot.as_mut() else {
+            return None;
+        };
+        (*generation == self.owner_generation)
+            .then(|| reader.latest())
+            .flatten()
+    }
+}
+
+/// Control-side handle to a recorder endpoint, tied to the owner generation
+/// that prepared its SPSC queue.
+pub struct ManagedRecorderReader {
+    owner_generation: u64,
+    slot: ReaderSlot<RecorderReader>,
+}
+
+impl ManagedRecorderReader {
+    pub fn owner_generation(&self) -> u64 {
+        self.owner_generation
+    }
+
+    pub fn channel_count(&self) -> Option<usize> {
+        self.with_reader(|reader| reader.channel_count())
+    }
+
+    pub fn capacity_frames(&self) -> Option<usize> {
+        self.with_reader(|reader| reader.capacity_frames())
+    }
+
+    pub fn start(&self) -> bool {
+        self.with_reader(|reader| reader.start()).is_some()
+    }
+
+    pub fn stop(&self) -> bool {
+        self.with_reader(|reader| reader.stop()).is_some()
+    }
+
+    pub fn is_recording(&self) -> Option<bool> {
+        self.with_reader(|reader| reader.is_recording())
+    }
+
+    pub fn stats(&self) -> Option<RecorderStats> {
+        self.with_reader(|reader| reader.stats())
+    }
+
+    pub fn queued_frames(&self) -> Option<usize> {
+        self.with_reader(|reader| reader.queued_frames())
+    }
+
+    pub fn read_interleaved(&mut self, samples: &mut [f32]) -> Option<usize> {
+        self.with_reader(|reader| reader.read_interleaved(samples))
+    }
+
+    fn with_reader<T>(&self, f: impl FnOnce(&mut RecorderReader) -> T) -> Option<T> {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let Some((generation, reader)) = slot.as_mut() else {
+            return None;
+        };
+        (*generation == self.owner_generation).then(|| f(reader))
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct PreparedReaders {
+    // None explicitly retains an existing endpoint after validated observer
+    // reuse; absence removes it. Never replace a retained recording queue.
+    pub meters: BTreeMap<NodeId, Option<MeterReader>>,
+    pub recorders: BTreeMap<NodeId, Option<RecorderReader>>,
+}
+
 struct Directory {
     bus: Bus,
     generation: u64,
     topics: BTreeMap<NodeId, Topic<LatestValue<f32>>>,
     levels: BTreeMap<NodeId, Topic<ManagedLevelTopic>>,
+    spectra: BTreeMap<NodeId, Topic<ManagedSpectrumTopic>>,
+    meters: BTreeMap<NodeId, ReaderSlot<MeterReader>>,
+    recorders: BTreeMap<NodeId, ReaderSlot<RecorderReader>>,
 }
 pub(crate) struct SignalHub {
     directory: Mutex<Directory>,
@@ -36,6 +149,9 @@ impl SignalHub {
                 generation: 0,
                 topics: BTreeMap::new(),
                 levels: BTreeMap::new(),
+                spectra: BTreeMap::new(),
+                meters: BTreeMap::new(),
+                recorders: BTreeMap::new(),
             }),
         })
     }
@@ -62,6 +178,14 @@ impl SignalHub {
                 .unregister(&topic)
                 .map_err(|error| BackendError::Failed(error.to_string()))?;
         }
+        for topic in std::mem::take(&mut directory.spectra).into_values() {
+            directory
+                .bus
+                .unregister(&topic)
+                .map_err(|error| BackendError::Failed(error.to_string()))?;
+        }
+        clear_slots(&mut directory.meters);
+        clear_slots(&mut directory.recorders);
         directory
             .bus
             .create_host(capacity)
@@ -113,7 +237,11 @@ impl SignalHub {
                         .map_err(|e| BackendError::Failed(e.to_string()))?,
                 )
                 .map_err(|e| BackendError::Failed(e.to_string()))?;
-            let meter = SignalLevelMeter::new(node.channels(), 1536, publisher)
+            let window_frames = match project.nodes.get(&node.id()) {
+                Some(NodeConfig::Meter(settings)) => settings.window_frames,
+                _ => 1536,
+            };
+            let meter = SignalLevelMeter::new(node.channels(), window_frames, publisher)
                 .map_err(|e| BackendError::Failed(e.to_string()))?;
             match node.kind() {
                 moiren_core::graph::NodeKind::Sink => bindings.observe_input(port.id(), meter),
@@ -122,6 +250,137 @@ impl SignalHub {
             .map_err(|e| BackendError::Failed(e.to_string()))?;
         }
         Ok(())
+    }
+
+    pub(crate) fn prepare_spectrum(
+        &self,
+        node: NodeId,
+        channels: usize,
+        settings: SpectrumSettings,
+        host: &HostControl,
+    ) -> Result<PreparedPublisher<ManagedSpectrumTopic>, BackendError> {
+        let mut directory = self
+            .directory
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let capacity = channels
+            .checked_mul(settings.bins_per_channel())
+            .ok_or_else(|| BackendError::Failed("spectrum topic capacity overflow".into()))?;
+        let topic = if let Some(topic) = directory.spectra.get(&node) {
+            topic.clone()
+        } else {
+            let name = format!("owner/{}/node/{node:?}/spectrum", directory.generation);
+            let topic = directory
+                .bus
+                .register_latest_block(
+                    &name,
+                    BlockInit {
+                        header: SpectrumWindow {
+                            timeline_epoch: 0,
+                            frame_start: 0,
+                            frame_end: 0,
+                            sample_rate: 0.0,
+                            fft_size: settings.fft_size,
+                            channels,
+                        },
+                        element: 0.0_f32,
+                        capacity,
+                    },
+                )
+                .map_err(|error| BackendError::Failed(error.to_string()))?;
+            directory.spectra.insert(node, topic.clone());
+            topic
+        };
+        host.prepare(
+            &topic,
+            host.new_binding()
+                .map_err(|error| BackendError::Failed(error.to_string()))?,
+        )
+        .map_err(|error| BackendError::Failed(error.to_string()))
+    }
+
+    pub(crate) fn subscribe_spectrum(
+        &self,
+        node: NodeId,
+    ) -> Result<ManagedSpectrumSubscription, String> {
+        let mut directory = self
+            .directory
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let topic = directory
+            .spectra
+            .get(&node)
+            .cloned()
+            .ok_or_else(|| "spectrum signal is not prepared".to_string())?;
+        Ok(ManagedSpectrumSubscription {
+            owner_generation: directory.generation,
+            subscriber: directory
+                .bus
+                .subscribe(&topic, Default::default())
+                .map_err(|error| error.to_string())?,
+        })
+    }
+
+    pub(crate) fn install_readers(&self, generation: u64, mut readers: PreparedReaders) {
+        let mut directory = self
+            .directory
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        install_slots(&mut directory.meters, generation, &mut readers.meters);
+        install_slots(&mut directory.recorders, generation, &mut readers.recorders);
+    }
+
+    pub(crate) fn clear_readers(&self, generation: u64) {
+        let mut directory = self
+            .directory
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        clear_generation(&mut directory.meters, generation);
+        clear_generation(&mut directory.recorders, generation);
+    }
+
+    pub(crate) fn meter_reader(&self, node: NodeId) -> Result<ManagedMeterReader, String> {
+        let directory = self
+            .directory
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let slot = directory
+            .meters
+            .get(&node)
+            .cloned()
+            .ok_or_else(|| "meter reader is not prepared".to_string())?;
+        let owner_generation = slot
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+            .map(|(generation, _)| *generation)
+            .ok_or_else(|| "meter reader is not active".to_string())?;
+        Ok(ManagedMeterReader {
+            owner_generation,
+            slot,
+        })
+    }
+
+    pub(crate) fn recorder_reader(&self, node: NodeId) -> Result<ManagedRecorderReader, String> {
+        let directory = self
+            .directory
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let slot = directory
+            .recorders
+            .get(&node)
+            .cloned()
+            .ok_or_else(|| "recorder reader is not prepared".to_string())?;
+        let owner_generation = slot
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+            .map(|(generation, _)| *generation)
+            .ok_or_else(|| "recorder reader is not active".to_string())?;
+        Ok(ManagedRecorderReader {
+            owner_generation,
+            slot,
+        })
     }
     pub(crate) fn subscribe_level(&self, node: NodeId) -> Result<ManagedLevelSubscription, String> {
         let mut directory = self.directory.lock().unwrap_or_else(|p| p.into_inner());
@@ -186,6 +445,7 @@ impl SignalHub {
                 .map_err(|error| error.to_string())?,
         })
     }
+
     pub(crate) fn pump(&self) {
         let mut directory = self
             .directory
@@ -214,6 +474,22 @@ impl SignalHub {
             }
         }
         let removed: Vec<_> = directory
+            .spectra
+            .iter()
+            .filter(|(node, _)| {
+                !matches!(
+                    project.nodes.get(node),
+                    Some(NodeConfig::SpectrumAnalyzer(_))
+                )
+            })
+            .map(|(&node, topic)| (node, topic.clone()))
+            .collect();
+        for (node, topic) in removed {
+            if directory.bus.unregister(&topic).is_ok() {
+                directory.spectra.remove(&node);
+            }
+        }
+        let removed: Vec<_> = directory
             .levels
             .iter()
             .filter(|(node, _)| !project.nodes.contains_key(node))
@@ -224,5 +500,75 @@ impl SignalHub {
                 directory.levels.remove(&node);
             }
         }
+        prune_slots(&mut directory.meters, &project.nodes, |config| {
+            matches!(config, NodeConfig::Meter(_))
+        });
+        prune_slots(&mut directory.recorders, &project.nodes, |config| {
+            matches!(config, NodeConfig::Recorder(_))
+        });
     }
+}
+
+fn install_slots<T>(
+    slots: &mut BTreeMap<NodeId, ReaderSlot<T>>,
+    generation: u64,
+    readers: &mut BTreeMap<NodeId, Option<T>>,
+) {
+    let active_nodes: std::collections::BTreeSet<_> = readers.keys().copied().collect();
+    for (node, reader) in std::mem::take(readers) {
+        let Some(reader) = reader else {
+            debug_assert!(slots.get(&node).is_some_and(|slot| {
+                slot.lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .as_ref()
+                    .is_some_and(|(owner, _)| *owner == generation)
+            }));
+            continue;
+        };
+        let slot = slots
+            .entry(node)
+            .or_insert_with(|| Arc::new(Mutex::new(None)));
+        *slot.lock().unwrap_or_else(|poison| poison.into_inner()) = Some((generation, reader));
+    }
+    slots.retain(|node, slot| {
+        if active_nodes.contains(node) {
+            return true;
+        }
+        *slot.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
+        false
+    });
+}
+
+fn clear_slots<T>(slots: &mut BTreeMap<NodeId, ReaderSlot<T>>) {
+    for slot in slots.values() {
+        *slot.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
+    }
+    slots.clear();
+}
+
+fn clear_generation<T>(slots: &mut BTreeMap<NodeId, ReaderSlot<T>>, generation: u64) {
+    slots.retain(|_, slot| {
+        let mut value = slot.lock().unwrap_or_else(|poison| poison.into_inner());
+        if value
+            .as_ref()
+            .is_some_and(|(owner, _)| *owner == generation)
+        {
+            *value = None;
+        }
+        value.is_some()
+    });
+}
+
+fn prune_slots<T>(
+    slots: &mut BTreeMap<NodeId, ReaderSlot<T>>,
+    nodes: &BTreeMap<NodeId, NodeConfig>,
+    keep: impl Fn(&NodeConfig) -> bool,
+) {
+    slots.retain(|node, slot| {
+        if nodes.get(node).is_some_and(&keep) {
+            return true;
+        }
+        *slot.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
+        false
+    });
 }

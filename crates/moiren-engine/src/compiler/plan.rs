@@ -209,6 +209,7 @@ pub(super) fn build<S: ProcessingSample>(
     let mut pre_fader = BTreeMap::new();
     let mut mapping = CompiledBindings {
         nodes: BTreeMap::new(),
+        observers: BTreeMap::new(),
         edges: BTreeMap::new(),
         rack_slots: BTreeMap::new(),
     };
@@ -348,7 +349,8 @@ pub(super) fn build<S: ProcessingSample>(
                 .outputs()
                 .first()
                 .ok_or(CompileError::BindingKind { node: id })?;
-            super::observers::push(&mut builder, observer, outputs[&port.id()])?;
+            let processor = super::observers::push(&mut builder, observer, outputs[&port.id()])?;
+            mapping.observers.insert(id, processor);
         }
     }
     Ok((builder, mapping))

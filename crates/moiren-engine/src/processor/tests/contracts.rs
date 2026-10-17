@@ -62,7 +62,7 @@ fn observer_requires_read_only_io_and_delegates_input_validation_and_audio() {
     let b = arena.slot(1).unwrap();
     let input = PortAccess::Read { port: 0, slot: a };
     let output = PortAccess::Write { port: 0, slot: b };
-    let (meter, mut reader) = level_meter(1, 1).unwrap();
+    let (meter, mut reader) = level_meter(4, 1).unwrap();
     let mut observer = Observer(meter);
     assert_eq!(RtProcessor::<f64>::role(&observer), ProcessorRole::Observer);
     for ports in [

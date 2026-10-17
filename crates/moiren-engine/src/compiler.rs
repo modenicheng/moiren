@@ -85,10 +85,17 @@ pub struct SendParameterKeys {
 /// submitting parameters with that plan's revision/epoch.
 pub struct CompiledBindings {
     nodes: BTreeMap<NodeId, ProcessorId>,
+    observers: BTreeMap<NodeId, ProcessorId>,
     edges: BTreeMap<EdgeId, SendParameterKeys>,
     rack_slots: BTreeMap<(NodeId, u32), ProcessorId>,
 }
 impl CompiledBindings {
+    /// The independent observer owned by a Meter, Recorder or SpectrumAnalyzer
+    /// node, distinct from its pass-through audio processor.
+    pub fn observer(&self, node: NodeId) -> Option<ProcessorId> {
+        self.observers.get(&node).copied()
+    }
+
     pub fn node(&self, node: NodeId) -> Option<ProcessorId> {
         self.nodes.get(&node).copied()
     }

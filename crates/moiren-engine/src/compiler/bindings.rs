@@ -45,6 +45,7 @@ pub(super) enum Binding<S: ProcessingSample> {
 /// topology. All methods and all destruction are control-side operations.
 pub struct NodeBindings<S: ProcessingSample> {
     pub(super) strips: BTreeMap<NodeId, crate::processor::StripConfig>,
+    pub(super) observer_reuse: BTreeMap<NodeId, moiren_core::protocol::ProcessorId>,
     nodes: BTreeMap<NodeId, Binding<S>>,
     observers: BTreeMap<PortId, Vec<Box<dyn crate::processor::RtObserver<S>>>>,
     input_observers: BTreeMap<PortId, Vec<Box<dyn crate::processor::RtObserver<S>>>>,
@@ -58,6 +59,7 @@ impl<S: ProcessingSample> NodeBindings<S> {
     pub fn new() -> Self {
         Self {
             strips: BTreeMap::new(),
+            observer_reuse: BTreeMap::new(),
             nodes: BTreeMap::new(),
             observers: BTreeMap::new(),
             input_observers: BTreeMap::new(),
@@ -70,6 +72,23 @@ impl<S: ProcessingSample> NodeBindings<S> {
 
     pub fn bind_strip(&mut self, node: NodeId, config: crate::processor::StripConfig) {
         self.strips.insert(node, config);
+    }
+
+    /// Reuse a node's independent observer during compile_update. The caller
+    /// asserts unchanged configuration; the swap validates its DSP/IO schema.
+    /// Retain the original reader rather than the newly prepared placeholder's.
+    pub fn bind_observer_reuse(
+        &mut self,
+        node: NodeId,
+        previous: moiren_core::protocol::ProcessorId,
+    ) -> Result<(), CompileError> {
+        match self.observer_reuse.entry(node) {
+            Entry::Vacant(entry) => {
+                entry.insert(previous);
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(CompileError::DuplicateBinding { node }),
+        }
     }
 
     pub(super) fn bind_reused_io(

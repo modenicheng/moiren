@@ -87,6 +87,71 @@ fn samples(reader: &mut AudioReader<f64>, expected: &[f64]) {
 }
 
 #[test]
+fn observer_reuse_preserves_meter_window_and_recorder_queue_without_rt_heap_work() {
+    use moiren_engine::{meter::MeterSettings, recorder::RecorderSettings};
+
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 1).unwrap();
+    let meter = graph.create_node(NodeKind::Meter, 1).unwrap();
+    let recorder = graph.create_node(NodeKind::Recorder, 1).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 1).unwrap();
+    connect(&mut graph, source, meter);
+    connect(&mut graph, meter, recorder);
+    connect(&mut graph, recorder, sink);
+    let (writer, _output) = audio_bridge(1, 32, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_source(source, Counter(1.0)).unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    let settings = MeterSettings { window_frames: 4 };
+    let mut meter_reader = bindings.bind_meter(meter, settings).unwrap();
+    let recording = RecorderSettings {
+        capacity_frames: 32,
+    };
+    let mut recorder_reader = bindings.bind_recorder(recorder, 1, recording).unwrap();
+    let mut active = compile(&graph, bindings, config(1)).unwrap();
+    let (result, counts) = super::allocation::track_heap(|| active.engine.render(3));
+    result.unwrap();
+    assert_eq!(counts, (0, 0, 0));
+    assert!(meter_reader.latest().is_none());
+    recorder_reader.stop();
+    let before = recorder_reader.stats();
+    let basis = active.engine.plan_snapshot();
+    let mut plans = active.engine.enable_plan_switching(4).unwrap();
+    let mut bindings = NodeBindings::new();
+    let _placeholder_meter = bindings.bind_meter(meter, settings).unwrap();
+    let _placeholder_recorder = bindings.bind_recorder(recorder, 1, recording).unwrap();
+    for node in [meter, recorder] {
+        bindings
+            .bind_observer_reuse(node, active.bindings.observer(node).unwrap())
+            .unwrap();
+    }
+    let reuse: Vec<_> = [source, meter, recorder, sink]
+        .into_iter()
+        .map(|node| (node, active.bindings.node(node).unwrap()))
+        .collect();
+    let update = compile_update(&graph, bindings, config(2), &basis, &reuse, None).unwrap();
+    plans.publish(update.plan).unwrap();
+    let (result, counts) = super::allocation::track_heap(|| active.engine.render(5));
+    result.unwrap();
+    assert_eq!(counts, (0, 0, 0));
+    let snapshot = meter_reader.latest().unwrap();
+    assert_eq!(
+        (snapshot.samples, snapshot.end_frame, snapshot.peak),
+        (4, 8, 8.0)
+    );
+    assert_eq!(recorder_reader.stats(), before);
+    let mut tail = [0.0; 3];
+    assert_eq!(recorder_reader.read_interleaved(&mut tail), 3);
+    assert_eq!(tail, [1.0, 2.0, 3.0]);
+    recorder_reader.start();
+    let (result, counts) = super::allocation::track_heap(|| active.engine.render(8));
+    result.unwrap();
+    assert_eq!(counts, (0, 0, 0));
+    assert_eq!(recorder_reader.queued_frames(), 8);
+    drop(plans.poll_retired().unwrap());
+}
+
+#[test]
 fn update_reserves_live_io_and_preserves_source_sink_and_ramp_without_rt_heap_work() {
     let (mut graph, [source, gain, sink], mut active, mut output) = initial();
     let basis = active.engine.plan_snapshot();

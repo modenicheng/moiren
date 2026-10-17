@@ -93,7 +93,7 @@ fn sum_render<S: ProcessingSample>(input_count: usize) {
         port: 0,
         slot: output,
     });
-    let (meter, mut reader) = level_meter(1, 1).unwrap();
+    let (meter, mut reader) = level_meter(4, 2).unwrap();
     let resources = RtResources::<S>::new(vec![
         ProcessorInstance::new(PROCESSOR, Sum),
         ProcessorInstance::new(METER, Observer(meter)),
@@ -129,7 +129,7 @@ fn sum_render<S: ProcessingSample>(input_count: usize) {
     .unwrap();
     let mut engine = Engine::new(plan, resources, parameters).unwrap();
     let level = 0.25 * input_count as f64;
-    for frames in [4, 3] {
+    for frames in [4, 4] {
         engine.render(frames).unwrap();
         let snapshot = reader.latest().unwrap();
         assert_eq!(snapshot.channels, 2);

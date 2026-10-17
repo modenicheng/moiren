@@ -8,7 +8,11 @@ use std::{
 
 use moiren_core::protocol::ControlReply;
 
-use super::{BackendError, BackendOwner, Shared, preparation::Ready};
+use super::{
+    BackendError, BackendOwner, Shared,
+    preparation::Ready,
+    signals::{PreparedReaders, SignalHub},
+};
 use crate::{
     control::ControlPort,
     runtime::{PlanControlPort, PreparedPlan, RetiredPlan},
@@ -21,9 +25,15 @@ pub(crate) enum Cleanup<S: ProcessingSample> {
         plans: PlanControlPort<S>,
         controls: Vec<ControlPort>,
         signals: moiren_signal::HostControl,
+        owner_generation: u64,
+        signal_hub: Arc<SignalHub>,
+        pending_readers: Option<PreparedReaders>,
     },
     Retired(RetiredPlan<S>, ControlPort),
-    Discard(Ready<S>),
+    Discard {
+        ready: Ready<S>,
+        signal_hub: Arc<SignalHub>,
+    },
 }
 pub(crate) struct Reclaimed {
     pub replies: Vec<ControlReply>,
@@ -87,9 +97,14 @@ fn reclaim<S: ProcessingSample>(job: Cleanup<S>) -> Reclaimed {
             mut plans,
             mut controls,
             signals,
+            owner_generation,
+            signal_hub,
+            pending_readers,
         } => {
             owner.cancel();
             let returned = owner.stop_and_join();
+            signal_hub.clear_readers(owner_generation);
+            drop(pending_readers);
             let mut engine = returned.engine;
             while let Some(mut plan) = engine.take_pending_plan() {
                 if let Some(control) = controls
@@ -132,16 +147,30 @@ fn reclaim<S: ProcessingSample>(job: Cleanup<S>) -> Reclaimed {
             retire(&mut plan, &mut control, &mut replies);
             None
         }
-        Cleanup::Discard(Ready::Initial(initial)) => {
+        Cleanup::Discard {
+            ready: Ready::Initial(initial),
+            signal_hub,
+        } => {
             return reclaim(Cleanup::Owner {
                 owner: initial.owner,
                 plans: initial.plans,
                 controls: vec![initial.control],
                 signals: initial.signals,
+                owner_generation: initial.owner_generation,
+                signal_hub,
+                pending_readers: Some(initial.readers),
             });
         }
-        Cleanup::Discard(Ready::Update(mut update)) => {
+        Cleanup::Discard {
+            ready:
+                Ready::Update {
+                    mut update,
+                    readers,
+                },
+            signal_hub: _,
+        } => {
             candidate(&mut update.plan, &mut update.control, &mut replies);
+            drop(readers);
             None
         }
     };

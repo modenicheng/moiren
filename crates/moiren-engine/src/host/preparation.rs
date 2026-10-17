@@ -15,11 +15,13 @@ use moiren_core::{
 use super::{
     BackendError, BackendOwner, CancellationToken, Diagnostic, EngineBackend, EngineProject,
     HostConfig, NodeConfig, ParameterTarget, PrepareMode, PrepareRequest, SendParameter, Shared,
+    signals::PreparedReaders,
 };
 use crate::{
     compiler::{self, CompiledBindings, CompiledUpdate},
     runtime::{PlanControlPort, PlanSnapshot},
     sample::ProcessingSample,
+    spectrum::SignalSpectrumAnalyzer,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +38,7 @@ pub(crate) struct PrepareJob {
     pub project: EngineProject,
     pub reuse: Vec<(NodeId, ProcessorId)>,
     pub edge_reuse: Vec<(EdgeId, ProcessorId)>,
+    pub observer_reuse: Vec<(NodeId, ProcessorId)>,
     pub active: Option<PlanSnapshot>,
     pub signals: Option<moiren_signal::HostControl>,
     pub cancel: CancellationToken,
@@ -47,10 +50,15 @@ pub(crate) struct Initial<S: ProcessingSample> {
     pub bindings: CompiledBindings,
     pub snapshot: PlanSnapshot,
     pub signals: moiren_signal::HostControl,
+    pub readers: PreparedReaders,
+    pub owner_generation: u64,
 }
 pub(crate) enum Ready<S: ProcessingSample> {
     Initial(Initial<S>),
-    Update(CompiledUpdate<S>),
+    Update {
+        update: CompiledUpdate<S>,
+        readers: PreparedReaders,
+    },
 }
 pub(crate) struct Completion<S: ProcessingSample> {
     pub basis: Basis,
@@ -119,6 +127,7 @@ fn prepare<S: ProcessingSample>(
             (signals, Some(rt_host))
         }
     };
+    let mut readers = PreparedReaders::default();
     let mode = if job.active.is_some() {
         PrepareMode::Update
     } else {
@@ -294,14 +303,28 @@ fn prepare<S: ProcessingSample>(
                         .channels(),
                     *settings,
                 )
-                .map(|_| ()),
+                .map(|reader| {
+                    readers.recorders.insert(node, Some(reader));
+                }),
             NodeConfig::Meter(settings) => {
-                prepared.bindings.bind_meter(node, *settings).map(|_| ())
+                prepared.bindings.bind_meter(node, *settings).map(|reader| {
+                    readers.meters.insert(node, Some(reader));
+                })
             }
-            NodeConfig::SpectrumAnalyzer(_settings) => {
-                return Err(Diagnostic::Compile(format!(
-                    "SpectrumAnalyzer node {node:?} requires a managed signal publisher"
-                )));
+            NodeConfig::SpectrumAnalyzer(settings) => {
+                let channels = job
+                    .project
+                    .graph
+                    .get_node(node)
+                    .map_err(|e| Diagnostic::Compile(e.to_string()))?
+                    .channels();
+                let publisher = shared
+                    .signals
+                    .prepare_spectrum(node, channels, *settings, &signals)
+                    .map_err(fail)?;
+                SignalSpectrumAnalyzer::new(channels, *settings, publisher)
+                    .map_err(|_| compiler::CompileError::BindingKind { node })
+                    .and_then(|analyzer| prepared.bindings.bind_spectrum(node, analyzer))
             }
             NodeConfig::Rack(settings) => prepared.bindings.bind_rack(node, settings.clone()),
             _ => unreachable!(),
@@ -344,7 +367,13 @@ fn prepare<S: ProcessingSample>(
                 "compatible preparation replaced the native transport".into(),
             ));
         }
-        compiler::compile_update_with_reuse(
+        for &(node, processor) in &job.observer_reuse {
+            prepared
+                .bindings
+                .bind_observer_reuse(node, processor)
+                .map_err(|error| Diagnostic::Compile(error.to_string()))?;
+        }
+        let update = compiler::compile_update_with_reuse(
             &graph,
             prepared.bindings,
             compile_config,
@@ -355,8 +384,18 @@ fn prepare<S: ProcessingSample>(
             },
             Some(&signals),
         )
-        .map(Ready::Update)
-        .map_err(|error| Diagnostic::Compile(error.to_string()))
+        .map_err(|error| Diagnostic::Compile(error.to_string()))?;
+        // Only a successfully validated observer transfer may keep its original
+        // reader. Placeholder endpoints are reclaimed here, never on RT.
+        for &(node, _) in &job.observer_reuse {
+            if let Some(reader) = readers.meters.get_mut(&node) {
+                *reader = None;
+            }
+            if let Some(reader) = readers.recorders.get_mut(&node) {
+                *reader = None;
+            }
+        }
+        Ok(Ready::Update { update, readers })
     } else {
         let transport = prepared
             .transport
@@ -390,6 +429,8 @@ fn prepare<S: ProcessingSample>(
             bindings: compiled.bindings,
             snapshot,
             signals,
+            readers,
+            owner_generation: job.basis.owner,
         }))
     }
 }

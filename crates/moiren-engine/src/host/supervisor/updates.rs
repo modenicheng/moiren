@@ -24,6 +24,9 @@ impl<S: ProcessingSample> Supervisor<S> {
                 if active_revision != candidate.control.identity().0 {
                     self.fault = Some(Diagnostic::Fault("retirement revision mismatch".into()));
                 }
+                self.shared
+                    .signals
+                    .install_readers(self.owner_generation, candidate.readers);
                 active.bindings = candidate.bindings;
                 active.snapshot = candidate.snapshot;
                 active.project = candidate.project;
@@ -39,7 +42,9 @@ impl<S: ProcessingSample> Supervisor<S> {
                 if candidate.graph == self.desired && !self.closing() {
                     self.blocked = Some((self.basis(), Diagnostic::Compile(error.to_string())));
                 }
-                candidate.control
+                drop(candidate.readers);
+                self.cleanup(Cleanup::Retired(retired, candidate.control));
+                return;
             }
         };
         self.cleanup(Cleanup::Retired(retired, control));
@@ -59,7 +64,10 @@ impl<S: ProcessingSample> Supervisor<S> {
             && self.project.has_output();
         if !eligible {
             if let Ok(ready) = completion.result {
-                self.cleanup(Cleanup::Discard(ready));
+                self.cleanup(Cleanup::Discard {
+                    ready,
+                    signal_hub: Arc::clone(&self.shared.signals),
+                });
             }
             return;
         }
@@ -78,16 +86,25 @@ impl<S: ProcessingSample> Supervisor<S> {
                     .unwrap_or_else(|poison| poison.into_inner());
                 if shared.closing.load(Ordering::Acquire) {
                     drop(gate);
-                    self.cleanup(Cleanup::Discard(Ready::Initial(initial)));
+                    self.cleanup(Cleanup::Discard {
+                        ready: Ready::Initial(initial),
+                        signal_hub: Arc::clone(&self.shared.signals),
+                    });
                     return;
                 }
                 if let Err(error) = initial.owner.activate() {
                     drop(gate);
                     self.blocked = Some((completion.basis, Diagnostic::Backend(error)));
-                    self.cleanup(Cleanup::Discard(Ready::Initial(initial)));
+                    self.cleanup(Cleanup::Discard {
+                        ready: Ready::Initial(initial),
+                        signal_hub: Arc::clone(&self.shared.signals),
+                    });
                     return;
                 }
                 drop(gate);
+                self.shared
+                    .signals
+                    .install_readers(initial.owner_generation, initial.readers);
                 self.active = Some(Active {
                     owner: initial.owner,
                     plans: initial.plans,
@@ -97,11 +114,12 @@ impl<S: ProcessingSample> Supervisor<S> {
                     project: completion.project,
                     graph: completion.basis.graph,
                     signals: initial.signals,
+                    owner_generation: completion.basis.owner,
                     confirmed: false,
                 });
                 self.blocked = None;
             }
-            Ok(Ready::Update(update)) => {
+            Ok(Ready::Update { update, readers }) => {
                 let snapshot = update.plan.snapshot();
                 let active = self
                     .active
@@ -115,6 +133,7 @@ impl<S: ProcessingSample> Supervisor<S> {
                             snapshot,
                             project: completion.project,
                             graph: completion.basis.graph,
+                            readers,
                         });
                         self.blocked = None;
                     }
@@ -123,14 +142,18 @@ impl<S: ProcessingSample> Supervisor<S> {
                             completion.basis,
                             Diagnostic::Compile(failure.reason.to_string()),
                         ));
-                        self.cleanup(Cleanup::Discard(Ready::Update(
-                            crate::compiler::CompiledUpdate {
-                                plan: failure.plan,
-                                control: update.control,
-                                bindings: update.bindings,
-                                stats: update.stats,
+                        self.cleanup(Cleanup::Discard {
+                            ready: Ready::Update {
+                                update: crate::compiler::CompiledUpdate {
+                                    plan: failure.plan,
+                                    control: update.control,
+                                    bindings: update.bindings,
+                                    stats: update.stats,
+                                },
+                                readers,
                             },
-                        )));
+                            signal_hub: Arc::clone(&self.shared.signals),
+                        });
                     }
                 }
             }
@@ -225,6 +248,7 @@ impl<S: ProcessingSample> Supervisor<S> {
         }
         let mut reuse = Vec::new();
         let mut edge_reuse = Vec::new();
+        let mut observer_reuse = Vec::new();
         if let Some(active) = &self.active {
             for node in self.project.graph.nodes() {
                 if active
@@ -236,6 +260,9 @@ impl<S: ProcessingSample> Supervisor<S> {
                     && let Some(processor) = active.bindings.node(node.id())
                 {
                     reuse.push((node.id(), processor));
+                    if let Some(observer) = active.bindings.observer(node.id()) {
+                        observer_reuse.push((node.id(), observer));
+                    }
                 }
             }
             for edge in self.project.graph.edges() {
@@ -259,6 +286,7 @@ impl<S: ProcessingSample> Supervisor<S> {
             project: self.project.clone(),
             reuse,
             edge_reuse,
+            observer_reuse,
             active: self.active.as_ref().map(|active| active.snapshot.clone()),
             signals: self.active.as_ref().map(|active| active.signals.clone()),
             cancel: cancel.clone(),

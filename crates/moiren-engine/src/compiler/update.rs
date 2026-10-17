@@ -65,6 +65,7 @@ pub fn compile_update_with_reuse<S: ProcessingSample>(
     reuse: UpdateReuse<'_>,
     host: Option<&moiren_signal::HostControl>,
 ) -> Result<CompiledUpdate<S>, UpdateCompileError> {
+    let observer_reuse = std::mem::take(&mut bindings.observer_reuse);
     for &(node, previous) in reuse.nodes {
         let kind = graph.get_node(node).map_err(CompileError::from)?.kind();
         if matches!(kind, NodeKind::Source | NodeKind::Sink) {
@@ -96,6 +97,15 @@ pub fn compile_update_with_reuse<S: ProcessingSample>(
         mappings.push(ProcessorReuse {
             old: previous,
             new: target.gain.processor,
+        });
+    }
+    for (node, previous) in observer_reuse {
+        mappings.push(ProcessorReuse {
+            old: previous,
+            new: compiled
+                .bindings
+                .observer(node)
+                .ok_or(PlanSwapError::MissingProcessor)?,
         });
     }
     let plan = PreparedPlan::new(compiled.engine)?.with_reuse(basis, &mappings)?;
