@@ -68,8 +68,10 @@ fn assert_wav(destination: &Destination, expected: &[f32]) {
         expected.len() * 4
     );
     let samples: Vec<f32> = bytes[58..]
-        .chunks_exact(4)
-        .map(|sample| f32::from_le_bytes(sample.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|sample| f32::from_le_bytes(*sample))
         .collect();
     assert_eq!(samples, expected);
 }

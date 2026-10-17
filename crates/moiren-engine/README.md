@@ -111,6 +111,20 @@ prevent an old handle from controlling a replacement owner's recorder. Recorder
 audio passes through a bounded SPSC queue; file writing and WAV finalization stay
 off RT. All observer and DSP storage is prepared before rendering.
 
+`ManagedRecorderReader::record_wav(path, processing_rate)` leases the only queue
+consumer to a dedicated file worker. `RecordingSession::status` reports written
+and dropped frames, lifecycle and IO errors. `stop` requests shutdown;
+`finish` waits for an in-flight audio block, drains the tail and finalizes the
+IEEE-f32 WAV. Drop also stops and joins, but use `finish` to observe errors.
+While leased, raw reader operations and additional recording claims cannot
+consume the queue. Compatible graph updates retain the session; removing or
+reconfiguring its Recorder, replacing the owner or closing the host revokes it
+and automatically finalizes the old file without keeping audio alive. A slow
+destination can cause whole-block queue drops and delay joining its file worker;
+host shutdown does not join that worker. WAV remains limited to RIFF's 32-bit
+lengths. Custom seekable writers use `record_with_writer`; low-level readers
+offer the same worker API by consuming their reader.
+
 EQ is one peaking band. Limiter measures sample peaks without lookahead or
 oversampling. Meter reports Sample Peak/RMS, not LUFS or True Peak. Rack leaf
 kernels currently have one input stream and one output stream; plugin buses and

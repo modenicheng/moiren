@@ -18,7 +18,7 @@ Settings 中的 Compatible、Balanced、Low 保存期望的延迟档位，通过
 
 后端节点支持 Input/Output、Gain、Balance/Mono/Swap、Bus、Compressor、EQ、Gate、Limiter、Delay、ChannelMapper、Recorder、Meter、SpectrumAnalyzer 和 Rack。Rack 支持独立多输入/多输出端口、显式无分支处理链和声道宽度转换；slot 参数通过稳定身份控制，兼容换图保留相容 slot 的 DSP 状态。桌面编辑入口尚未覆盖所有后端节点。
 
-正式 native 边界仍为 WASAPI Shared、双声道 IO、48 kHz 输出；中间 DSP 的端口宽度独立于原生 IO 限制。物理 endpoint 的有效 PCM/float mix format 可交由 Windows 转换成客户端格式，最终是否支持由设备初始化结果确认。
+正式 native 边界仍为 WASAPI Shared、双声道 IO、48 kHz 输出；中间 DSP 的端口宽度独立于原生 IO 限制。物理 endpoint 的常规 mono/stereo 输入和 stereo 输出可使用 Windows PCM/float 格式转换，保持声道宽度；多声道、mono 输出或非常规声道 mask 会明确拒绝，避免图前隐式下混或重新解释声道。最终是否支持由设备初始化结果确认。
 
 ## 验证
 
@@ -44,7 +44,7 @@ cargo run --locked -p moiren-windows-audio --example routing_probe -- --output '
 - Process Loopback 是 Application Capture / Monitor；真正的逐应用 Redirect / Takeover 尚未解决。独占探针保持独立实验。
 - SRC 仍是线性插值基线。没有承诺专业重采样质量、多输出延迟补偿、物理端到端时延或长期无 XRUN。
 - 正式 Exclusive、ASIO、多通道、虚拟音频驱动、CLAP/VST3、Named Pipe 和远程控制仍属后续能力。
-- EQ 当前为单段 peaking band；Limiter 为零前视 sample-peak；Meter 提供 Sample Peak/RMS，标准 LUFS/True Peak 尚未实现。Recorder 使用有界队列，WAV 写入和 finalize 由控制侧调用者执行。
+- EQ 当前为单段 peaking band；Limiter 为零前视 sample-peak；Meter 提供 Sample Peak/RMS，标准 LUFS/True Peak 尚未实现。Recorder 使用有界队列，托管文件线程自动排空和 finalize；慢磁盘造成的整块丢帧、写入失败和最终完成状态可查询。
 - Rack 的内置 slot 为单输入流/单输出流，不包含插件 sidechain/multi-bus kernel。PreFader 支持 Gain 或已绑定 channel strip 的节点，并按各输出端口独立取 tap。
 
 ## 文档
