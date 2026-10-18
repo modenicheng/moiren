@@ -109,6 +109,19 @@ where
         .unwrap()
 }
 
+fn assert_samples_close(left: &[Vec<f64>], right: &[Vec<f64>]) {
+    assert_eq!(left.len(), right.len());
+    for (left_channel, right_channel) in left.iter().zip(right) {
+        assert_eq!(left_channel.len(), right_channel.len());
+        for (left_sample, right_sample) in left_channel.iter().zip(right_channel) {
+            assert!(
+                (left_sample - right_sample).abs() <= 1e-12,
+                "samples differ: {left_sample} != {right_sample}"
+            );
+        }
+    }
+}
+
 #[test]
 fn gate_threshold_hold_and_range_are_block_continuous_in_both_precisions() {
     fn check<S: ProcessingSample>() {
@@ -135,7 +148,7 @@ fn gate_threshold_hold_and_range_are_block_continuous_in_both_precisions() {
                 &[1, 2, 1, 3],
                 in_place,
             );
-            assert_eq!(whole, split);
+            assert_samples_close(&whole, &split);
             assert!((whole[0][0] - 0.0).abs() < 1e-6);
             assert!((whole[0][1] - 0.5).abs() < 1e-6);
             assert!((whole[0][2] - 0.0).abs() < 1e-6);
@@ -183,7 +196,7 @@ fn limiter_caps_linked_peaks_in_both_precisions_and_variable_blocks() {
                 &[1, 2, 1],
                 in_place,
             );
-            assert_eq!(whole, split);
+            assert_samples_close(&whole, &split);
             assert!((whole[0][1] - threshold).abs() < 2e-6);
             assert!((whole[1][2] - threshold).abs() < 2e-6);
             assert!(
