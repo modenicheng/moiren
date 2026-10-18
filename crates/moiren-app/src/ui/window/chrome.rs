@@ -42,7 +42,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                     Page::Matrix => ActionIcon::Matrix,
                     Page::Devices => ActionIcon::Devices,
                 })
-                .active(!shell.settings_open && shell.presentation.page == page)
+                .active(shell.presentation.page == page)
                 .on_click(move |_, _, cx| this.update(cx, |shell, cx| shell.set_page(page, cx))),
         );
     }
@@ -128,11 +128,9 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 .child(
                     IconButton::new("open-settings", "Settings", ActionIcon::Settings).on_click({
                         let this = this.clone();
-                        move |_, _, cx| {
+                        move |_, window, cx| {
                             this.update(cx, |shell, cx| {
-                                shell.settings_open = !shell.settings_open;
-                                shell.project_menu = false;
-                                cx.notify();
+                                shell.open_settings(window, cx);
                             })
                         }
                     }),

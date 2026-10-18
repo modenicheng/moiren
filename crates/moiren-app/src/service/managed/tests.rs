@@ -13,6 +13,229 @@ struct Rig {
 }
 
 #[test]
+fn asio_automatic_startup_stays_idle_until_a_driver_is_explicitly_bound() {
+    let mut rig = Rig::new();
+    rig.c.audio_settings.backend = AudioBackend::Asio;
+    rig.driver.automatic_startup = true;
+    let catalog = DeviceCatalog {
+        inputs: vec![DeviceRow {
+            endpoint_id: "wasapi-input".into(),
+            name: "Microphone".into(),
+        }],
+        outputs: vec![DeviceRow {
+            endpoint_id: "wasapi-output".into(),
+            name: "Speakers".into(),
+        }],
+        default_input_endpoint_id: Some("wasapi-input".into()),
+        default_output_endpoint_id: Some("wasapi-output".into()),
+        asio_drivers: vec![
+            DeviceRow {
+                endpoint_id: "asio:{first}".into(),
+                name: "First".into(),
+            },
+            DeviceRow {
+                endpoint_id: "asio:{second}".into(),
+                name: "Second".into(),
+            },
+        ],
+        ..Default::default()
+    };
+    rig.driver
+        .queue()
+        .port()
+        .try_reserve()
+        .unwrap()
+        .send_or_dispose(Completion::Catalog(Ok(catalog)), drop);
+    rig.tick();
+    assert!(rig.driver.owner.is_none());
+    assert!(!rig.driver.automatic_startup);
+    assert_eq!(rig.c.core.phase(), SessionPhase::Idle);
+    assert_eq!(rig.state.prepares.load(Ordering::SeqCst), 0);
+    assert!(
+        rig.c
+            .graph
+            .snapshot()
+            .nodes
+            .iter()
+            .all(|node| node.output_endpoint_id.is_none())
+    );
+    rig.request(AppRequest::EditGraph(GraphEdit::BindSource {
+        node: rig.node(NodeKind::Source),
+        source: InputSelection::Physical {
+            endpoint_id: "asio:{second}".into(),
+        },
+    }));
+    rig.request(AppRequest::EditGraph(GraphEdit::BindOutput {
+        node: rig.node(NodeKind::Sink),
+        endpoint_id: "asio:{second}".into(),
+    }));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|rig| rig.c.core.phase() == SessionPhase::Running);
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        rig.c.core.desired().unwrap().output_endpoint_id,
+        "asio:{second}"
+    );
+}
+
+#[test]
+fn audio_settings_are_draft_until_apply_and_restart_reaps_previous_owner() {
+    let mut rig = Rig::new();
+    rig.start();
+    assert_eq!(rig.c.active_audio_settings, Some(AudioSettings::default()));
+    let first_generation = rig.c.core.generation();
+    let mut settings = AudioSettings::default();
+    settings.processing.sample_rate = 96_000;
+    settings.processing.block_frames = 512;
+    rig.request(AppRequest::SetAudioSettings(settings.clone()));
+    rig.tick();
+    assert_eq!(rig.c.audio_settings, settings);
+    assert_eq!(rig.c.active_audio_settings, Some(AudioSettings::default()));
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+    rig.request(AppRequest::ApplyGraph);
+    rig.tick();
+    assert_eq!(rig.c.active_audio_settings, None);
+    rig.wait(|r| r.c.active_audio_settings.as_ref() == Some(&settings));
+    assert_eq!(rig.c.active_latency_profile, None);
+    assert_ne!(rig.c.core.generation(), first_generation);
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 2);
+    assert_eq!(rig.state.stops.load(Ordering::SeqCst), 1);
+    rig.request(AppRequest::Stop);
+    assert_eq!(rig.c.active_audio_settings, None);
+    rig.wait(|r| r.driver.is_drained());
+}
+
+#[test]
+fn settings_draft_after_apply_does_not_change_the_configuration_being_applied() {
+    let mut rig = Rig::new();
+    rig.start();
+    let mut applied = AudioSettings::default();
+    applied.processing.sample_rate = 96_000;
+    let mut draft = applied.clone();
+    draft.processing.sample_rate = 44_100;
+    rig.request(AppRequest::SetAudioSettings(applied.clone()));
+    rig.request(AppRequest::ApplyGraph);
+    rig.request(AppRequest::SetAudioSettings(draft.clone()));
+    rig.wait(|r| r.c.active_audio_settings.as_ref() == Some(&applied));
+    assert_eq!(rig.c.audio_settings, draft);
+    for _ in 0..5 {
+        rig.tick();
+    }
+    assert_eq!(rig.c.active_audio_settings, Some(applied));
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn invalid_audio_settings_preserve_requested_and_running_configuration() {
+    let mut rig = Rig::new();
+    rig.start();
+    let mut settings = AudioSettings::default();
+    settings.input.buffer_frames = Some(96);
+    rig.request(AppRequest::SetAudioSettings(settings));
+    assert_eq!(rig.c.audio_settings, AudioSettings::default());
+    assert_eq!(rig.c.active_audio_settings, Some(AudioSettings::default()));
+    assert!(rig.c.graph.snapshot().last_error.is_some());
+    assert_eq!(rig.c.core.phase(), SessionPhase::Running);
+}
+
+#[test]
+fn start_session_block_size_matches_requested_and_confirmed_processing() {
+    let mut rig = Rig::new();
+    rig.request(AppRequest::Start(SessionSpec {
+        source: InputSelection::Tone {
+            frequency_hz: 440.0,
+        },
+        output_endpoint_id: "output".into(),
+        limit: RunLimit::UntilStopped,
+        gain: 1.0,
+        pan: 0.0,
+        max_block_frames: 512,
+    }));
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
+    assert_eq!(rig.c.audio_settings.processing.block_frames, 512);
+    assert_eq!(
+        rig.c
+            .active_audio_settings
+            .as_ref()
+            .unwrap()
+            .processing
+            .block_frames,
+        512
+    );
+    assert_eq!(rig.c.core.desired().unwrap().max_block_frames, 512);
+    assert_eq!(
+        rig.driver
+            .owner
+            .as_ref()
+            .unwrap()
+            .observer
+            .read()
+            .desired
+            .processing
+            .engine
+            .max_block_frames,
+        512
+    );
+}
+
+#[test]
+fn f32_only_factory_reports_unsupported_precision_without_opening_a_host() {
+    let mut rig = Rig::new();
+    rig.request(AppRequest::EditGraph(GraphEdit::BindOutput {
+        node: rig.node(NodeKind::Sink),
+        endpoint_id: "output".into(),
+    }));
+    let mut settings = AudioSettings::default();
+    settings.processing.precision = ProcessingPrecision::F64;
+    rig.request(AppRequest::SetAudioSettings(settings));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Failed);
+    assert_eq!(rig.c.active_audio_settings, None);
+    assert!(rig.c.graph.snapshot().last_error.unwrap().contains("f64"));
+    assert_eq!(rig.state.prepares.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn f64_settings_open_the_f64_host_and_retire_on_precision_change() {
+    let mut rig = Rig::new();
+    rig.request(AppRequest::EditGraph(GraphEdit::BindOutput {
+        node: rig.node(NodeKind::Sink),
+        endpoint_id: "output".into(),
+    }));
+    let backend = FakeBackend(rig.state.clone());
+    rig.driver = ManagedDriver::new(|_| {
+        Err(host::BackendError::Unsupported(
+            "f32 should not be selected".into(),
+        ))
+    })
+    .with_f64_factory(move |_| Ok(Box::new(backend.clone())));
+    let mut settings = AudioSettings::default();
+    settings.processing.precision = ProcessingPrecision::F64;
+    settings.processing.sample_rate = 44_100;
+    rig.request(AppRequest::SetAudioSettings(settings.clone()));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
+    let owner = rig.driver.owner.as_ref().unwrap();
+    assert!(matches!(owner.host, AudioHost::F64(_)));
+    assert_eq!(
+        owner
+            .observer
+            .read()
+            .desired
+            .processing
+            .engine
+            .processing_sr,
+        44_100.0
+    );
+    assert_eq!(rig.c.active_audio_settings, Some(settings));
+    rig.request(AppRequest::SetAudioSettings(AudioSettings::default()));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Failed);
+    assert_eq!(rig.state.stops.load(Ordering::SeqCst), 1);
+    assert_eq!(rig.c.active_audio_settings, None);
+}
+
+#[test]
 fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
     let mut rig = Rig::new();
     rig.start();

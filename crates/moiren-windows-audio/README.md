@@ -90,7 +90,39 @@ cargo test --locked -p moiren-windows-audio --test engine_backend -- --ignored -
 The examples enumerate active endpoints and audio sessions, capture an explicitly
 selected process tree, or probe explicit physical endpoints. Physical capture
 reads microphone statistics; physical render submits SILENT frames. Neither
-example saves PCM, changes volume/mute/defaults, or opens Exclusive mode.
+example saves PCM or changes volume/mute/defaults. The separate `exclusive_probe`
+below explicitly opens Exclusive mode.
+
+## Exclusive occupation / process capture experiment
+
+```powershell
+cargo run --locked -p moiren-windows-audio --example w00_probe -- --list
+cargo run --locked -p moiren-windows-audio --example exclusive_probe -- --pid <PID> --endpoint '<render endpoint ID>' --seconds 3
+```
+
+Keep the selected application playing through that endpoint for the entire run.
+This temporarily interrupts **all shared playback on that endpoint**. The probe
+does not modify endpoint settings, volume, mute, or defaults. Exclusive access
+and shared-stream preemption must already be allowed by the device settings.
+It negotiates a supported native Exclusive format and submits silence; it never
+falls back to Shared. Driver rejection is reported with stage and HRESULT.
+
+One process-tree capture client remains active across `baseline`, `exclusive`,
+and `released`. Each phase discards 500 ms of transition data, then measures
+`--seconds` (1..60, default 3). JSON includes RMS, peak, signal frames,
+discontinuities, Exclusive callbacks, and both Stop results. Only signal above
+1e-5 over at least 80% of wall-clock time counts as sustained evidence. Exit 0
+means signal was observed during Exclusive with a valid baseline; exit 2 means
+no sustained signal or an inconclusive baseline; exit 1 means an API/lifecycle
+failure. JSON is emitted only after owners stop and join. No PCM is saved.
+
+This is a diagnostic experiment, not a managed-backend output mode. Successful
+capture alone does not establish selective application takeover, suppression of
+physical sound, recovery, or compatibility with other capture software. Verify
+that the PID really renders to the chosen endpoint and assess the released
+window separately. Windows can disconnect shared sessions when Exclusive mode
+overrides them, so applications may stop, retry, or move to another endpoint.
+See the [experiment and results](../../docs/superpowers/plans/2026-10-15-exclusive-loopback.md).
 
 ## First Engine-backed Shared output
 

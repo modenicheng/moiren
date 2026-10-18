@@ -5,22 +5,40 @@ impl ServiceDriver for ManagedDriver {
     fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
         match request {
             AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
+            AppRequest::SetAudioSettings(settings) => {
+                c.set_audio_settings(settings);
+            }
             AppRequest::RefreshCatalog => self.refresh = true,
             AppRequest::Start(spec) => {
                 self.automatic_startup = false;
+                let mut settings = c.audio_settings.clone();
+                let Ok(block_frames) = u32::try_from(spec.max_block_frames) else {
+                    c.graph
+                        .record_error("processing block size is out of range");
+                    return;
+                };
+                settings.processing.block_frames = block_frames;
+                if let Err(error) = settings.validate() {
+                    c.graph.record_error(error);
+                    return;
+                }
                 if let Err(error) = c.graph.configure_session(&spec) {
                     c.graph.record_error(error);
                 } else if c.core.managed_desired(spec).is_ok() {
+                    c.audio_settings = settings;
+                    self.apply_audio_settings = Some(c.audio_settings.clone());
                     self.apply = true;
                 }
             }
             AppRequest::ApplyGraph => {
                 self.automatic_startup = false;
+                self.apply_audio_settings = Some(c.audio_settings.clone());
                 self.apply = true;
             }
             AppRequest::Stop => {
                 self.automatic_startup = false;
                 self.apply = false;
+                self.apply_audio_settings = None;
                 let _ = c.core.stop();
                 self.retire(c);
             }
@@ -77,6 +95,11 @@ impl ServiceDriver for ManagedDriver {
             match completion {
                 Completion::Reaped(generation) => {
                     self.cleaning -= 1;
+                    log::info!(
+                        target: "moiren::audio::service",
+                        "audio owner reaped: generation={generation:?} cleaning={}",
+                        self.cleaning,
+                    );
                     c.core.owner_reaped(generation);
                 }
                 Completion::Catalog(result) => {
@@ -85,15 +108,25 @@ impl ServiceDriver for ManagedDriver {
                         Ok(catalog) => {
                             c.catalog = Arc::new(catalog);
                             c.catalog_error = None;
-                            if self.automatic_startup
-                                && let Some(spec) = startup::default_session(&c.catalog)
-                            {
+                            if self.automatic_startup {
                                 self.automatic_startup = false;
-                                let _ = c.graph.configure_session(&spec);
-                                self.apply = true;
+                                if let Some(spec) = startup::default_session_for_backend(
+                                    &c.catalog,
+                                    c.audio_settings.backend,
+                                ) {
+                                    let _ = c.graph.configure_session(&spec);
+                                    self.apply_audio_settings = Some(c.audio_settings.clone());
+                                    self.apply = true;
+                                }
                             }
                         }
-                        Err(error) => c.catalog_error = Some(error.to_string()),
+                        Err(error) => {
+                            log::error!(
+                                target: "moiren::audio::catalog",
+                                "audio device catalog refresh failed: {error}"
+                            );
+                            c.catalog_error = Some(error.to_string());
+                        }
                     }
                 }
             }
@@ -147,6 +180,25 @@ impl ServiceDriver for ManagedDriver {
                     generation: owner.generation,
                     observation,
                 });
+            c.professional_observations = self
+                .professional_observations
+                .as_ref()
+                .and_then(|handle| {
+                    handle
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                        .and_then(|value| value.snapshot())
+                })
+                .filter(|observation| {
+                    observation.running
+                        && observation.owner_generation == snapshot.state.owner_generation
+                        && snapshot.state.execution == ExecutionState::Running
+                })
+                .map(|observation| ProfessionalSessionObservations {
+                    generation: owner.generation,
+                    observation,
+                });
         }
         let running = snapshot.state.execution == ExecutionState::Running;
         let error = if snapshot.state.execution == ExecutionState::WaitingForResources {
@@ -161,10 +213,33 @@ impl ServiceDriver for ManagedDriver {
         } else {
             None
         };
+        if let Some(error) = error.as_deref()
+            && c.core.error() != Some(error)
+        {
+            log::error!(
+                target: "moiren::audio::service",
+                "audio owner reported a backend fault: generation={} state={:?} fault={error}",
+                owner.generation.0,
+                snapshot.state.execution
+            );
+        }
         c.core.managed_execution(owner.generation, running, error);
         if running {
-            c.active_latency_profile = Some(owner.profile);
+            // Professional streams use their explicit buffer configuration.
+            // The saved latency preset belongs only to the legacy default path.
+            c.active_latency_profile =
+                (owner.audio_settings == AudioSettings::default()).then_some(owner.profile);
+            c.active_audio_settings = Some(owner.audio_settings.clone());
             if owner.started.is_none() {
+                log::info!(
+                    target: "moiren::audio::service",
+                    "audio owner started: generation={} backend={} processing_rate={} precision={:?} block_frames={}",
+                    owner.generation.0,
+                    owner.audio_settings.backend.title(),
+                    owner.audio_settings.processing.sample_rate,
+                    owner.audio_settings.processing.precision,
+                    owner.audio_settings.processing.block_frames
+                );
                 owner.started = Some(Instant::now());
             }
             // An old confirmation still describes valid playback, but must not
@@ -178,6 +253,7 @@ impl ServiceDriver for ManagedDriver {
             }
         } else {
             c.active_latency_profile = None;
+            c.active_audio_settings = None;
             c.graph.stopped();
         }
         if let UpdateState::Blocked { reason, .. } = &snapshot.state.update {
@@ -342,6 +418,7 @@ impl ServiceDriver for ManagedDriver {
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
         self.exiting = true;
         self.apply = false;
+        self.apply_audio_settings = None;
         self.retire(c);
     }
     fn is_drained(&self) -> bool {

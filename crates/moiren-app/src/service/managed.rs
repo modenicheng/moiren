@@ -15,29 +15,50 @@ mod parameters;
 #[cfg(test)]
 mod tests;
 
-type Factory = dyn Fn(AudioLatencyProfile) -> Result<Box<dyn EngineBackend<f32>>, host::BackendError>
+type Factory<S> = dyn Fn(AudioLatencyProfile, &AudioSettings) -> Result<Box<dyn EngineBackend<S>>, host::BackendError>
     + Send
     + Sync;
-struct Backend(Box<dyn EngineBackend<f32>>);
-impl EngineBackend<f32> for Backend {
+struct Backend<S: moiren_engine::sample::ProcessingSample>(Box<dyn EngineBackend<S>>);
+impl<S: moiren_engine::sample::ProcessingSample> EngineBackend<S> for Backend<S> {
     fn prepare(
         &self,
         request: host::PrepareRequest<'_>,
         cancel: &host::CancellationToken,
-    ) -> Result<host::PreparedBackend<f32>, host::BackendError> {
+    ) -> Result<host::PreparedBackend<S>, host::BackendError> {
         self.0.prepare(request, cancel)
     }
     fn poll_resource(&self) -> Option<host::ResourceEvent> {
         self.0.poll_resource()
     }
 }
+/// Only the lifecycle owner is sample-typed; control and observations are shared
+/// across precisions. Dropping either variant still happens on the cleanup worker.
+enum AudioHost {
+    F32(EngineHost<f32>),
+    F64(EngineHost<f64>),
+}
+impl AudioHost {
+    fn control(&self) -> EngineControl {
+        match self {
+            Self::F32(host) => host.control(),
+            Self::F64(host) => host.control(),
+        }
+    }
+    fn observer(&self) -> EngineObserver {
+        match self {
+            Self::F32(host) => host.observer(),
+            Self::F64(host) => host.observer(),
+        }
+    }
+}
 struct Owner {
-    host: EngineHost<f32>,
+    host: AudioHost,
     control: EngineControl,
     observer: EngineObserver,
     generation: SessionGeneration,
     document: u64,
     profile: AudioLatencyProfile,
+    audio_settings: AudioSettings,
     active_revision: (u64, u64),
     /// The Apply whose matching ACKs established `active_revision`.
     active_apply_id: u64,
@@ -73,7 +94,8 @@ enum Completion {
 }
 
 pub struct ManagedDriver {
-    factory: Arc<Factory>,
+    factory: Arc<Factory<f32>>,
+    f64_factory: Option<Arc<Factory<f64>>>,
     catalog_backend: Option<Arc<dyn BackendAdapter>>,
     host_config: HostConfig,
     owner: Option<Owner>,
@@ -90,10 +112,15 @@ pub struct ManagedDriver {
     automatic_startup: bool,
     exiting: bool,
     apply: bool,
+    apply_audio_settings: Option<AudioSettings>,
     meters: Option<meters::MeterBridge>,
     #[cfg(windows)]
     observations: Option<
         Arc<std::sync::Mutex<Option<moiren_windows_audio::engine_backend::NativeObservations>>>,
+    >,
+    #[cfg(windows)]
+    professional_observations: Option<
+        Arc<std::sync::Mutex<Option<moiren_windows_audio::professional::ProfessionalObservations>>>,
     >,
 }
 impl ManagedDriver {
@@ -104,7 +131,8 @@ impl ManagedDriver {
         + 'static,
     ) -> Self {
         Self {
-            factory: Arc::new(factory),
+            factory: Arc::new(move |profile, _| factory(profile)),
+            f64_factory: None,
             catalog_backend: None,
             host_config: HostConfig {
                 max_nodes: 4096,
@@ -131,10 +159,25 @@ impl ManagedDriver {
             automatic_startup: false,
             exiting: false,
             apply: false,
+            apply_audio_settings: None,
             meters: None,
             #[cfg(windows)]
             observations: None,
+            #[cfg(windows)]
+            professional_observations: None,
         }
+    }
+    /// The original constructor remains an f32 factory for native observation
+    /// and lifecycle tests; an f64 request requires an actual typed backend.
+    pub fn with_f64_factory(
+        mut self,
+        factory: impl Fn(AudioLatencyProfile) -> Result<Box<dyn EngineBackend<f64>>, host::BackendError>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.f64_factory = Some(Arc::new(move |profile, _| factory(profile)));
+        self
     }
     pub fn with_catalog(mut self, backend: Arc<dyn BackendAdapter>) -> Self {
         self.catalog_backend = Some(backend);
@@ -148,16 +191,38 @@ impl ManagedDriver {
     #[cfg(windows)]
     pub fn windows() -> Self {
         let observations = Arc::new(std::sync::Mutex::new(None));
+        let professional_observations = Arc::new(std::sync::Mutex::new(None));
         let publisher = observations.clone();
-        let mut driver = Self::new(move |profile| {
+        let professional_publisher = professional_observations.clone();
+        let f64_publisher = professional_observations.clone();
+        let mut driver = Self::new(|_| unreachable!("Windows factory replaced before use"))
+            .with_catalog(Arc::new(WindowsBackend::default()));
+        driver.factory = Arc::new(move |profile, settings| {
+            if settings != &AudioSettings::default() {
+                let backend =
+                    moiren_windows_audio::professional::ProfessionalBackend::<f32>::new()?;
+                *publisher.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                *professional_publisher
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = Some(backend.observations());
+                return Ok(Box::new(backend));
+            }
             let backend = moiren_windows_audio::engine_backend::WindowsBackend::new(
                 profile.windows_backend_config(),
             )?;
             *publisher.lock().unwrap_or_else(|p| p.into_inner()) = Some(backend.observations());
+            *professional_publisher
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = None;
             Ok(Box::new(backend))
-        })
-        .with_catalog(Arc::new(WindowsBackend::default()));
+        });
+        driver.f64_factory = Some(Arc::new(move |_, _| {
+            let backend = moiren_windows_audio::professional::ProfessionalBackend::<f64>::new()?;
+            *f64_publisher.lock().unwrap_or_else(|p| p.into_inner()) = Some(backend.observations());
+            Ok(Box::new(backend))
+        }));
         driver.observations = Some(observations);
+        driver.professional_observations = Some(professional_observations);
         driver
     }
     fn queue(&mut self) -> &CompletionQueue<Completion> {

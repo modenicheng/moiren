@@ -9,11 +9,26 @@ use model::{StripDrag, gain_db, reorder};
 
 impl StudioShell {
     pub(super) fn update_node_meters(&mut self, visible: bool, cx: &App) -> bool {
-        let nodes = if visible {
+        let mut nodes = if visible {
             self.node_meter_points.borrow().clone()
         } else {
             Default::default()
         };
+        if visible
+            && self.inspector_open
+            && let Some(selected) = self.selected_node.as_deref()
+            && let Some(id) = self
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .nodes
+                .iter()
+                .find(|node| format!("{:?}", node.id) == selected)
+                .map(|node| node.id)
+        {
+            nodes.insert(id);
+        }
         self.node_meters
             .update(&self.state.read(cx).snapshot, &nodes)
     }

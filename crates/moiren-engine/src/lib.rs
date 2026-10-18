@@ -1,5 +1,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 //! Realtime execution, non-RT compilation and managed hosts; transports live outside.
+pub mod audio_config;
 pub mod boundary;
 pub mod buffer;
 pub mod compiler;

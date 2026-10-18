@@ -13,6 +13,9 @@ pub(crate) struct SessionGraph {
     pub output: NodeId,
 }
 
+// Native monitor/tone sessions are Windows-only, while the routing helpers
+// remain available to portable service tests.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) struct PreparedSessionGraph {
     pub compiled: CompiledGraph<f32>,
     pub output: AudioReader<f32>,
@@ -21,6 +24,7 @@ pub(crate) struct PreparedSessionGraph {
 
 /// Device ownership is prepared elsewhere. This function consumes the exact
 /// service candidate and binds every DSP node on a non-RT preparation worker.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn prepare_routing(
     routing: &crate::service::GraphPreparation,
     source: impl RtAudioSource<f32> + 'static,

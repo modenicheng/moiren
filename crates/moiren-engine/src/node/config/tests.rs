@@ -9,6 +9,7 @@ fn options() -> DeviceOptions {
         hardware_sample_rate: Some(48_000),
         period_frames: Some(128),
         clock_role: ClockRole::Follower,
+        ..Default::default()
     }
 }
 

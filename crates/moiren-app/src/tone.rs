@@ -66,6 +66,7 @@ struct SineSource {
     step: f64,
 }
 
+#[cfg(windows)]
 pub(crate) fn prepare_routed_tone(
     config: ToneConfig,
     routing: &crate::service::GraphPreparation,

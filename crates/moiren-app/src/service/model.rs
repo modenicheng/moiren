@@ -74,6 +74,7 @@ pub enum DispatchError {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppRequest {
     SetLatencyProfile(super::AudioLatencyProfile),
+    SetAudioSettings(super::AudioSettings),
     EditGraph(super::GraphEdit),
     ReplaceGraph {
         graph: moiren_core::graph::LogicalGraph,
@@ -103,6 +104,10 @@ pub struct ProcessRow {
 pub struct DeviceCatalog {
     pub inputs: Vec<DeviceRow>,
     pub outputs: Vec<DeviceRow>,
+    /// Native ASIO drivers use stable IDs accepted by the professional backend.
+    pub asio_drivers: Vec<DeviceRow>,
+    /// ASIO discovery can fail independently of usable WASAPI endpoints.
+    pub asio_error: Option<String>,
     pub processes: Vec<ProcessRow>,
     pub default_input_endpoint_id: Option<String>,
     pub default_output_endpoint_id: Option<String>,
@@ -129,8 +134,12 @@ pub struct RequestId(pub u64);
 pub struct AppSnapshot {
     #[cfg(windows)]
     pub native_observations: Option<NativeSessionObservations>,
+    #[cfg(windows)]
+    pub professional_observations: Option<ProfessionalSessionObservations>,
     pub latency_profile: super::AudioLatencyProfile,
     pub active_latency_profile: Option<super::AudioLatencyProfile>,
+    pub audio_settings: super::AudioSettings,
+    pub active_audio_settings: Option<super::AudioSettings>,
     pub graph: Arc<super::GraphSnapshot>,
     pub monitor_latency: Option<MonitorLatencyStatus>,
     pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
@@ -153,6 +162,13 @@ pub struct AppSnapshot {
 pub struct NativeSessionObservations {
     pub generation: SessionGeneration,
     pub observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone)]
+pub struct ProfessionalSessionObservations {
+    pub generation: SessionGeneration,
+    pub observation: moiren_windows_audio::professional::ProfessionalObservationSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq)]

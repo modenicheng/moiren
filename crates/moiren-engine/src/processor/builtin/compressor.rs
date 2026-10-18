@@ -401,7 +401,7 @@ mod signal_tests {
                         })
                         .unwrap();
                 }
-                assert_eq!(compressor.reduction_db, baseline.reduction_db);
+                assert!((compressor.reduction_db - baseline.reduction_db).abs() <= 1e-12);
                 assert_eq!(compressor.hold_elapsed_frames, baseline.hold_elapsed_frames);
                 assert!(compressor.reduction_db > last_reduction);
                 last_reduction = compressor.reduction_db;

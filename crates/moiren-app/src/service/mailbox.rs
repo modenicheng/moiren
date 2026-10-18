@@ -39,6 +39,9 @@ impl AppHandle {
         }
         match &request {
             AppRequest::Start(spec) => spec.validate()?,
+            AppRequest::SetAudioSettings(settings) => settings
+                .validate()
+                .map_err(|_| DispatchError::InvalidConfig)?,
             AppRequest::SetGainPan { gain, pan } if !model::valid_gain_pan(*gain, *pan) => {
                 return Err(DispatchError::InvalidConfig);
             }
@@ -178,6 +181,30 @@ impl ServiceMailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invalid_audio_settings_do_not_enter_queue_or_consume_request_id() {
+        let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
+        let mut settings = AudioSettings::default();
+        for invalid_rate in [0, 32_000, 192_000] {
+            settings.processing.sample_rate = invalid_rate;
+            assert_eq!(
+                handle.try_request_tracked(AppRequest::SetAudioSettings(settings.clone())),
+                Err(DispatchError::InvalidConfig)
+            );
+            assert_eq!(mailbox.try_request(), None);
+        }
+        settings.processing.sample_rate = 48_000;
+        settings.output.buffer_frames = Some(65);
+        assert_eq!(
+            handle.try_request(AppRequest::SetAudioSettings(settings)),
+            Err(DispatchError::InvalidConfig)
+        );
+        assert_eq!(
+            handle.try_request_tracked(AppRequest::SetAudioSettings(AudioSettings::default())),
+            Ok(RequestId(1))
+        );
+    }
+
     #[test]
     fn lock_and_queue_busy_do_not_consume_ids_and_retry_keeps_enqueue_order() {
         let (handle, mailbox) = ServiceMailbox::new(std::thread::current());

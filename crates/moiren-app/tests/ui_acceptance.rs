@@ -107,7 +107,7 @@ fn window_smoke_options_valid(cx: &mut gpui_kit::TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn production_navigation_opens_every_workspace_and_settings_returns_to_matrix(
+fn production_navigation_opens_every_workspace_and_settings_overlays_matrix(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let runtime = ServiceRuntime::spawn().unwrap();
@@ -151,8 +151,15 @@ fn production_navigation_opens_every_workspace_and_settings_returns_to_matrix(
         assert!(window.find("disconnect-route").visible());
         window.click("open-settings", cx);
         assert!(window.find("settings-page").visible());
-        assert!(window.try_find("matrix-page").is_none());
+        assert!(window.find("settings-dialog").visible());
+        assert!(window.find("settings-backdrop").visible());
+        assert!(
+            window.try_find("matrix-page").is_some(),
+            "Settings overlays the existing workspace"
+        );
+        assert_eq!(page.read(cx).page, Page::Matrix);
         window.click("close-settings", cx);
+        assert!(window.try_find("settings-dialog").is_none());
         assert!(window.find("matrix-page").visible());
         assert!(
             window.find("disconnect-route").visible(),

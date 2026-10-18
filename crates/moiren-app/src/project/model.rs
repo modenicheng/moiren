@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use moiren_engine::audio_config::{AudioSettings, ProcessingSettings};
 use serde::{Deserialize, Serialize};
 
 use super::{GraphDocument, PersistenceError};
@@ -17,6 +18,10 @@ pub struct ProjectDocument {
     pub session: Option<SessionDocument>,
     #[serde(default)]
     pub graph: Option<GraphDocument>,
+    /// Processing travels with a project; hardware defaults and device overrides
+    /// remain local user preferences so moving a project cannot rebind devices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing: Option<ProcessingSettings>,
     #[serde(default)]
     pub layout: ProjectLayout,
 }
@@ -28,6 +33,7 @@ impl ProjectDocument {
             name: name.into(),
             session: Some(session.into()),
             graph: None,
+            processing: None,
             layout: ProjectLayout::default(),
         }
     }
@@ -43,6 +49,7 @@ impl ProjectDocument {
             name: name.into(),
             session: None,
             graph: Some(GraphDocument::from_snapshot(graph)?),
+            processing: None,
             layout: ProjectLayout::default(),
         };
         document.validate()?;
@@ -50,10 +57,20 @@ impl ProjectDocument {
     }
 
     pub fn session_spec(&self) -> Result<Option<SessionSpec>, PersistenceError> {
-        self.session
+        let mut session = self
+            .session
             .as_ref()
             .map(SessionDocument::to_spec)
-            .transpose()
+            .transpose()?;
+        if let (Some(session), Some(processing)) = (&mut session, self.processing) {
+            processing
+                .validate()
+                .map_err(|error| PersistenceError::invalid("processing", error.to_string()))?;
+            // Old documents store the block size on the session. Explicit
+            // project processing is authoritative when both forms are present.
+            session.max_block_frames = processing.block_frames as usize;
+        }
+        Ok(session)
     }
 
     pub fn validate(&self) -> Result<(), PersistenceError> {
@@ -80,6 +97,11 @@ impl ProjectDocument {
         }
         if let Some(graph) = &self.graph {
             graph.to_graph()?;
+        }
+        if let Some(processing) = self.processing {
+            processing
+                .validate()
+                .map_err(|error| PersistenceError::invalid("processing", error.to_string()))?;
         }
         self.layout.validate()?;
         if let Some(graph) = &self.graph {
@@ -365,6 +387,7 @@ pub struct AppPreferences {
     pub appearance: Appearance,
     /// Requested for the next audio apply/start, not a measured device result.
     pub latency_profile: AudioLatencyProfile,
+    pub audio: AudioSettings,
     pub restore_last_project: bool,
     pub last_project_path: Option<std::path::PathBuf>,
 }
@@ -376,6 +399,7 @@ impl Default for AppPreferences {
             density: UiDensity::Comfortable,
             appearance: Appearance::Dark,
             latency_profile: AudioLatencyProfile::Compatible,
+            audio: AudioSettings::default(),
             restore_last_project: false,
             last_project_path: None,
         }
@@ -390,6 +414,9 @@ impl AppPreferences {
                 version: self.version,
             });
         }
+        self.audio
+            .validate()
+            .map_err(|error| PersistenceError::invalid("audio", error.to_string()))?;
         if let Some(path) = &self.last_project_path
             && (path.as_os_str().is_empty() || path.to_string_lossy().contains('\0'))
         {

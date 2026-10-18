@@ -162,6 +162,19 @@ fn render(command: RenderCommand) -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
+    if let Err(error) = moiren_app::logging::initialize() {
+        eprintln!("Moiren file logging unavailable: {error}");
+    } else if let Some(path) = moiren_app::logging::log_path() {
+        log::info!(target: "moiren::app", "file logging initialized: {}", path.display());
+    }
+    let result = run();
+    if let Err(error) = &result {
+        log::error!(target: "moiren::app", "application exited with an error: {error:#}");
+    }
+    result
+}
+
+fn run() -> anyhow::Result<()> {
     let mut config = AppConfig::default();
     let mut args = std::env::args().skip(1).peekable();
     if args.peek().is_some_and(|arg| arg == "monitor") {

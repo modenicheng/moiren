@@ -291,6 +291,10 @@ impl BackendAdapter for WindowsBackend {
     fn catalog(&self) -> Result<DeviceCatalog, BackendError> {
         let native = catalog_snapshot().map_err(|e| BackendError::new("catalog", e))?;
         let mut result = DeviceCatalog::default();
+        update_asio_catalog(
+            &mut result,
+            moiren_windows_audio::professional::asio::list_drivers(),
+        );
         let mut pids = BTreeSet::new();
         for endpoint in native.endpoints {
             for process in endpoint.sessions {
@@ -334,6 +338,31 @@ impl BackendAdapter for WindowsBackend {
         Ok(result)
     }
 }
+fn update_asio_catalog(
+    catalog: &mut DeviceCatalog,
+    result: Result<
+        Vec<moiren_windows_audio::professional::asio::AsioDriver>,
+        moiren_engine::host::BackendError,
+    >,
+) {
+    match result {
+        Ok(drivers) => {
+            catalog.asio_drivers = drivers
+                .into_iter()
+                .map(|driver| DeviceRow {
+                    endpoint_id: format!("asio:{}", driver.id),
+                    name: driver.name,
+                })
+                .collect();
+            catalog.asio_error = None;
+        }
+        Err(error) => {
+            catalog.asio_drivers.clear();
+            catalog.asio_error = Some(error.to_string());
+        }
+    }
+}
+
 struct PreparedToneSession {
     render: PreparedRenderSession,
     control: ControlPort,
@@ -604,5 +633,54 @@ fn retire(
     while let Some(reply) = control.poll_applied() {
         assert!(replies.len() < 64, "bounded accepted ledger");
         replies.push(reply);
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    #[test]
+    fn asio_discovery_failure_preserves_wasapi_catalog() {
+        let endpoint = DeviceRow {
+            endpoint_id: "wasapi-render".into(),
+            name: "Speaker".into(),
+        };
+        let mut catalog = DeviceCatalog {
+            outputs: vec![endpoint.clone()],
+            default_output_endpoint_id: Some(endpoint.endpoint_id.clone()),
+            ..Default::default()
+        };
+        update_asio_catalog(
+            &mut catalog,
+            Err(moiren_engine::host::BackendError::Unsupported(
+                "ASIO requires a 64-bit process".into(),
+            )),
+        );
+        assert_eq!(catalog.outputs, vec![endpoint]);
+        assert_eq!(
+            catalog.default_output_endpoint_id.as_deref(),
+            Some("wasapi-render")
+        );
+        assert!(catalog.asio_drivers.is_empty());
+        assert!(catalog.asio_error.unwrap().contains("64-bit"));
+    }
+
+    #[test]
+    fn asio_discovery_uses_stable_driver_id_and_clears_previous_error() {
+        let mut catalog = DeviceCatalog {
+            asio_error: Some("old discovery failure".into()),
+            ..Default::default()
+        };
+        update_asio_catalog(
+            &mut catalog,
+            Ok(vec![moiren_windows_audio::professional::asio::AsioDriver {
+                id: "{stable-clsid}".into(),
+                name: "Driver".into(),
+            }]),
+        );
+        assert_eq!(catalog.asio_drivers[0].endpoint_id, "asio:{stable-clsid}");
+        assert_eq!(catalog.asio_drivers[0].name, "Driver");
+        assert_eq!(catalog.asio_error, None);
     }
 }

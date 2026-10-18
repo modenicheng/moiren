@@ -1,5 +1,7 @@
 //! Control-side IO intent. These values never open devices or own audio buffers.
+use crate::audio_config::{AudioBackend, SampleFormat};
 use crate::boundary::{CaptureIntent, ClockRole};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[cfg(test)]
@@ -23,7 +25,8 @@ pub enum EndpointSelector {
     FollowDefault(DefaultDeviceRole),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DeviceMode {
     #[default]
     Shared,
@@ -33,8 +36,10 @@ pub enum DeviceMode {
 /// Desired hardware settings, not negotiated format or a promise of support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DeviceOptions {
+    pub backend: AudioBackend,
     pub mode: DeviceMode,
     pub hardware_sample_rate: Option<u32>,
+    pub sample_format: SampleFormat,
     pub period_frames: Option<usize>,
     pub clock_role: ClockRole,
 }

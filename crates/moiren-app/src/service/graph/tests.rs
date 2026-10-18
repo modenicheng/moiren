@@ -138,6 +138,221 @@ fn compressor_edits_are_node_local_and_reject_invalid_domains_transactionally() 
 use moiren_engine::boundary::ConstantSource;
 
 #[test]
+fn default_legacy_project_does_not_constrain_endpoint_mix_rates() {
+    use crate::service::AudioSettings;
+    use moiren_engine::host::NodeConfig;
+    let mut service = ServiceGraph::default();
+    let (source, _, _, sink) = ids(&service);
+    service
+        .edit(GraphEdit::BindSource {
+            node: source,
+            source: InputSelection::Physical {
+                endpoint_id: "native-44100-capture".into(),
+            },
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "native-render".into(),
+        })
+        .unwrap();
+    let preparation = service.preparation();
+    let project = preparation.engine_project(256).unwrap();
+    let NodeConfig::Input(input) = &project.nodes[&source] else {
+        panic!("input");
+    };
+    let NodeConfig::Output(output) = &project.nodes[&sink] else {
+        panic!("output");
+    };
+    assert_eq!(input.device.hardware_sample_rate, None);
+    assert_eq!(output.device.hardware_sample_rate, None);
+    let mut settings = AudioSettings::default();
+    settings.processing.sample_rate = 96_000;
+    let professional = preparation
+        .configured_engine_project(256, &settings)
+        .unwrap();
+    let NodeConfig::Input(input) = &professional.nodes[&source] else {
+        panic!("input");
+    };
+    let NodeConfig::Output(output) = &professional.nodes[&sink] else {
+        panic!("output");
+    };
+    assert_eq!(input.device.hardware_sample_rate, Some(96_000));
+    assert_eq!(output.device.hardware_sample_rate, Some(96_000));
+}
+
+#[test]
+fn configured_project_resolves_each_endpoint_and_preserves_clock_roles() {
+    use crate::service::{AudioBackend, AudioSettings, SampleFormat, StreamSettings};
+    use moiren_engine::{
+        boundary::ClockRole,
+        host::NodeConfig,
+        node::{DeviceMode, InputSource},
+    };
+    let mut service = ServiceGraph::default();
+    let (source, _, _, sink) = ids(&service);
+    service
+        .edit(GraphEdit::BindSource {
+            node: source,
+            source: InputSelection::Physical {
+                endpoint_id: "capture".into(),
+            },
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "render".into(),
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Sink,
+            channels: 2,
+        })
+        .unwrap();
+    let second = service.snapshot().graph.nodes()[4].id();
+    service
+        .edit(GraphEdit::BindOutput {
+            node: second,
+            endpoint_id: "follower".into(),
+        })
+        .unwrap();
+    let mut settings = AudioSettings {
+        backend: AudioBackend::Asio,
+        ..AudioSettings::default()
+    };
+    settings.processing.sample_rate = 88_200;
+    settings.input = StreamSettings {
+        sample_rate: Some(44_100),
+        format: SampleFormat::Pcm16,
+        buffer_frames: Some(128),
+        mode: DeviceMode::Exclusive,
+    };
+    settings.output.format = SampleFormat::Float32;
+    let input_override = StreamSettings {
+        sample_rate: Some(96_000),
+        format: SampleFormat::Pcm24,
+        buffer_frames: Some(512),
+        mode: DeviceMode::Exclusive,
+    };
+    let output_override = StreamSettings {
+        sample_rate: Some(48_000),
+        format: SampleFormat::Pcm32,
+        buffer_frames: Some(1024),
+        mode: DeviceMode::Exclusive,
+    };
+    settings
+        .input_overrides
+        .insert("capture".into(), input_override);
+    settings
+        .output_overrides
+        .insert("render".into(), output_override);
+    let preparation = service.preparation();
+    let project = preparation
+        .configured_engine_project(256, &settings)
+        .unwrap();
+    assert_eq!(project.processing.engine.processing_sr, 88_200.0);
+    assert_eq!(project.processing.engine.max_block_frames, 256);
+    let NodeConfig::Input(input) = &project.nodes[&source] else {
+        panic!("physical input");
+    };
+    assert!(matches!(input.source, InputSource::Physical(_)));
+    assert_eq!(
+        input.device,
+        input_override.device_options(AudioBackend::Asio, 88_200, ClockRole::Follower)
+    );
+    for (node, stream, role) in [
+        (sink, output_override, ClockRole::Master),
+        (second, settings.output, ClockRole::Follower),
+    ] {
+        let NodeConfig::Output(output) = &project.nodes[&node] else {
+            panic!("physical output");
+        };
+        assert_eq!(
+            output.device,
+            stream.device_options(AudioBackend::Asio, 88_200, role)
+        );
+    }
+    settings.input_overrides.remove("capture");
+    let reset = preparation
+        .configured_engine_project(256, &settings)
+        .unwrap();
+    let NodeConfig::Input(input) = &reset.nodes[&source] else {
+        panic!("physical input");
+    };
+    assert_eq!(
+        input.device,
+        settings
+            .input
+            .device_options(AudioBackend::Asio, 88_200, ClockRole::Follower)
+    );
+}
+
+#[test]
+fn process_capture_and_software_tone_do_not_inherit_physical_stream_options() {
+    use crate::service::{AudioBackend, AudioSettings, SampleFormat, StreamSettings};
+    use moiren_engine::{host::NodeConfig, node::DeviceMode};
+    let mut service = ServiceGraph::default();
+    let (source, _, _, sink) = ids(&service);
+    service
+        .edit(GraphEdit::BindOutput {
+            node: sink,
+            endpoint_id: "render".into(),
+        })
+        .unwrap();
+    let mut settings = AudioSettings {
+        backend: AudioBackend::Asio,
+        ..AudioSettings::default()
+    };
+    settings.processing.sample_rate = 44_100;
+    settings.input = StreamSettings {
+        mode: DeviceMode::Exclusive,
+        sample_rate: Some(96_000),
+        format: SampleFormat::Pcm24,
+        buffer_frames: Some(64),
+    };
+    for selection in [
+        InputSelection::Process {
+            pid: 42,
+            creation_time_100ns: 7,
+        },
+        InputSelection::Tone {
+            frequency_hz: 440.0,
+        },
+    ] {
+        let process = matches!(selection, InputSelection::Process { .. });
+        service
+            .edit(GraphEdit::BindSource {
+                node: source,
+                source: selection,
+            })
+            .unwrap();
+        let project = service
+            .preparation()
+            .configured_engine_project(256, &settings)
+            .unwrap();
+        assert_eq!(project.processing.engine.processing_sr, 44_100.0);
+        let NodeConfig::Input(input) = &project.nodes[&source] else {
+            panic!("input");
+        };
+        assert_eq!(input.device.backend, AudioBackend::Wasapi);
+        assert_eq!(input.device.mode, DeviceMode::Shared);
+        assert_eq!(input.device.period_frames, None);
+        assert_eq!(input.device.hardware_sample_rate, process.then_some(48_000));
+        assert_eq!(
+            input.device.sample_format,
+            if process {
+                SampleFormat::Float32
+            } else {
+                SampleFormat::Native
+            }
+        );
+    }
+}
+
+#[test]
 fn managed_project_translates_every_io_and_stereo_parameter() {
     use moiren_core::protocol::ParamValue;
     use moiren_engine::host::{NodeConfig, ParameterTarget};

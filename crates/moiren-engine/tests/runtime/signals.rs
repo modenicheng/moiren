@@ -1448,5 +1448,8 @@ fn meter_and_compressor_demand_transitions_keep_full_dsp_and_zero_heap_work() {
     assert_eq!(reduction.stats().attempts, 3);
     let mut samples = [0.0; 32];
     audio.read_interleaved(&mut samples).unwrap();
-    assert_eq!(samples, [expected; 32]);
+    // Independent powf evaluations can differ by a few rounding bits.
+    for sample in samples {
+        assert!((sample - expected).abs() <= 1e-12);
+    }
 }

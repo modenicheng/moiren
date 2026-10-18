@@ -21,6 +21,102 @@ use crate::service::{
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn audio_defaults_and_directional_overrides_round_trip_without_active_state() {
+    use moiren_engine::{
+        audio_config::{AudioBackend, ProcessingPrecision, SampleFormat},
+        node::DeviceMode,
+    };
+    let directory = TestDirectory::new();
+    let path = directory.file("audio-preferences.json");
+    let mut preferences = AppPreferences::default();
+    preferences.audio.backend = AudioBackend::Asio;
+    preferences.audio.processing.sample_rate = 96_000;
+    preferences.audio.processing.precision = ProcessingPrecision::F64;
+    preferences.audio.input.buffer_frames = Some(128);
+    let mut output = preferences.audio.output;
+    output.sample_rate = Some(88_200);
+    output.format = SampleFormat::Pcm24;
+    output.mode = DeviceMode::Exclusive;
+    output.buffer_frames = Some(512);
+    preferences
+        .audio
+        .output_overrides
+        .insert("{stable-endpoint}".into(), output);
+    save_preferences_at(&path, &preferences).unwrap();
+    let restored = load_preferences_at(&path).unwrap();
+    assert_eq!(restored, preferences);
+    assert_eq!(
+        restored.audio.effective_input("{stable-endpoint}"),
+        restored.audio.input
+    );
+    assert_eq!(restored.audio.effective_output("{stable-endpoint}"), output);
+    let document: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert!(document.get("active_audio_settings").is_none());
+}
+
+#[test]
+fn invalid_audio_preferences_do_not_replace_a_valid_file() {
+    let directory = TestDirectory::new();
+    let path = directory.file("preferences.json");
+    save_preferences_at(&path, &AppPreferences::default()).unwrap();
+    let original = fs::read(&path).unwrap();
+    let mut preferences = AppPreferences::default();
+    preferences.audio.output.buffer_frames = Some(480);
+    assert!(save_preferences_at(&path, &preferences).is_err());
+    assert_eq!(fs::read(path).unwrap(), original);
+}
+
+#[test]
+fn old_preferences_inherit_audio_defaults_and_projects_persist_processing_only() {
+    use moiren_engine::audio_config::{AudioSettings, ProcessingPrecision};
+    let directory = TestDirectory::new();
+    let path = directory.file("preferences.json");
+    fs::write(&path, br#"{"version":1,"density":"compact"}"#).unwrap();
+    assert_eq!(
+        load_preferences_at(&path).unwrap().audio,
+        AudioSettings::default()
+    );
+    let mut document =
+        ProjectDocument::from_graph("96k project", &ServiceGraph::default().snapshot()).unwrap();
+    let mut processing = AudioSettings::default().processing;
+    processing.sample_rate = 96_000;
+    processing.precision = ProcessingPrecision::F64;
+    document.processing = Some(processing);
+    let project_path = directory.file("project.moiren");
+    save_project(&project_path, &document).unwrap();
+    assert_eq!(
+        load_project(&project_path).unwrap().processing,
+        Some(processing)
+    );
+    let mut old = serde_json::to_value(document).unwrap();
+    old.as_object_mut().unwrap().remove("processing");
+    let restored: ProjectDocument = serde_json::from_value(old).unwrap();
+    assert_eq!(restored.processing, None);
+    restored.validate().unwrap();
+}
+
+#[test]
+fn project_processing_block_takes_precedence_over_legacy_session_block() {
+    let spec = session(InputSelection::Tone {
+        frequency_hz: 440.0,
+    });
+    let mut document = ProjectDocument::new("Processing settings", &spec);
+    assert_eq!(
+        document.session_spec().unwrap().unwrap().max_block_frames,
+        512
+    );
+    document.processing = Some(moiren_engine::audio_config::ProcessingSettings {
+        block_frames: 1024,
+        ..Default::default()
+    });
+    assert_eq!(
+        document.session_spec().unwrap().unwrap().max_block_frames,
+        1024
+    );
+    assert_eq!(document.session.as_ref().unwrap().max_block_frames, 512);
+}
+
 fn builtin_settings_cases() -> Vec<(NodeKind, BuiltinState)> {
     vec![
         (
