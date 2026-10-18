@@ -2,6 +2,7 @@ use moiren_app::{
     service::*,
     ui::{Page, SelectionState, WindowPresentation},
 };
+use std::time::{Duration, Instant};
 
 #[test]
 fn pure_presentation_hide_and_recreate_leaves_idle_service_untouched() {
@@ -15,7 +16,16 @@ fn pure_presentation_hide_and_recreate_leaves_idle_service_untouched() {
     let mut replacement = WindowPresentation::default();
     replacement.show();
     assert!(replacement.visible && !replacement.minimized);
-    assert_eq!(handle.try_snapshot().unwrap().phase, SessionPhase::Idle);
+    // Reads are intentionally nonblocking and may race the service publisher.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let snapshot = loop {
+        if let Some(snapshot) = handle.try_snapshot() {
+            break snapshot;
+        }
+        assert!(Instant::now() < deadline, "service snapshot stayed busy");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(snapshot.phase, SessionPhase::Idle);
     handle.request_exit();
     runtime.join().unwrap();
 }
