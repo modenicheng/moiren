@@ -13,6 +13,9 @@ moiren-engine = { path = "../../../../moiren-engine" }
 moiren-windows-audio = { path = "../../.." }
 rtrb = "=0.4.0"
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
+
 [[test]]
 name = "professional_rt"
 path = "../rt_tests.rs"

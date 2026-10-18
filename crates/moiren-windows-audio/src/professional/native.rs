@@ -21,6 +21,25 @@ pub struct NativeStreamStats {
     pub write_calls: u64,
     pub written_frames: u64,
     pub zero_writes: u64,
+    pub callbacks: u64,
+    pub capture_dropped_frames: u64,
+    /// Frames zero-filled by a native callback, including startup starvation.
+    pub render_silent_frames: u64,
+}
+
+/// Driver-reported hardware frames, not measured end-to-end latency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeLatency {
+    pub input_frames: u32,
+    pub output_frames: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeRecoveryRequest {
+    Reset,
+    Resync,
+    SampleRateChanged,
+    BufferSizeChanged,
 }
 
 /// No Send bound: COM/driver objects must remain on their opening thread.
@@ -36,6 +55,17 @@ pub trait NativeStream {
     fn write(&mut self, input: &[StereoFrame]) -> Result<usize, BackendError>;
     fn stats(&self) -> NativeStreamStats {
         NativeStreamStats::default()
+    }
+    fn driver_latency(&self) -> Option<NativeLatency> {
+        None
+    }
+    fn recovery_request(&self) -> Option<NativeRecoveryRequest> {
+        None
+    }
+    /// Owner-only final release after stop. ASIO must surface dispose failures
+    /// before a resource event can authorize opening a replacement session.
+    fn release(&mut self) -> Result<(), BackendError> {
+        Ok(())
     }
 }
 

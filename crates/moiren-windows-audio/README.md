@@ -1,5 +1,11 @@
 # Moiren Windows audio
 
+Professional settings use `professional::ProfessionalBackend` for WASAPI
+Shared/Exclusive and a single stereo ASIO driver, with f32/f64 processing.
+ASIO capability queries, native callback diagnostics, bounded notification
+recovery and finite opt-in probes are documented in the
+[ASIO v1 acceptance record](../../docs/validation/asio-v1.md).
+
 This crate contains Engine-backed Shared capture/render paths and independent,
 opt-in W00 probes. It does not yet implement the complete W01–W17 backend contracts.
 

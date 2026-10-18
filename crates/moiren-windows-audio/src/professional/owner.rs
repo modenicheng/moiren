@@ -4,6 +4,7 @@ use super::{
     bridge::{refill, unsupported},
     native::{NativeStream, NativeStreamInfo, StereoFrame},
     observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
+    recovery::RecoveryTicket,
     resample::StereoResampler,
 };
 use moiren_core::graph::NodeId;
@@ -45,7 +46,11 @@ pub(super) struct RunState {
     active: AtomicBool,
     gate: Condvar,
     mutex: Mutex<()>,
-    failure: Mutex<Option<BackendError>>,
+    failure: Mutex<Option<Failure>>,
+}
+struct Failure {
+    error: BackendError,
+    recovery: Option<RecoveryTicket>,
 }
 impl RunState {
     pub fn cancel(&self) {
@@ -54,10 +59,19 @@ impl RunState {
         self.gate.notify_all();
     }
     fn fail(&self, error: BackendError) {
-        self.failure
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get_or_insert(error);
+        self.record_failure(error, None);
+    }
+    fn record_failure(&self, error: BackendError, recovery: Option<RecoveryTicket>) {
+        let mut failure = self.failure.lock().unwrap_or_else(|p| p.into_inner());
+        // Another stream's terminal fault must not be hidden by a recoverable
+        // ASIO candidate. A panic also dominates terminal faults from other
+        // workers/auxiliaries, regardless of their completion order.
+        if failure.as_ref().is_none_or(|old| {
+            error == BackendError::WorkerPanicked || (old.recovery.is_some() && recovery.is_none())
+        }) {
+            *failure = Some(Failure { error, recovery });
+        }
+        drop(failure);
         self.cancel();
     }
     fn await_activation(&self) -> bool {
@@ -156,6 +170,7 @@ pub(super) struct WorkerRequest<S: ProcessingSample> {
     pub engine_rate: u32,
     pub capacity: usize,
     pub master: bool,
+    pub recovery: Option<RecoveryTicket>,
 }
 
 /// Startup allocates buffers and negotiates native metadata before returning.
@@ -230,6 +245,9 @@ fn native_owner<S: ProcessingSample>(
         }
     };
     let info = stream.info();
+    request
+        .counters
+        .publish_native(stream.stats(), stream.driver_latency());
     log::debug!(
         target: "moiren::audio::professional",
         "native stream negotiated: master={} rate={} format={:?} channels={} buffer_frames={}",
@@ -322,6 +340,9 @@ fn native_owner<S: ProcessingSample>(
             }
             // Waiting belongs to the native owner, outside Engine::render.
             stream.wait(Duration::from_millis(10))?;
+            request
+                .counters
+                .publish_native(stream.stats(), stream.driver_latency());
         }
         Ok(())
     }));
@@ -331,15 +352,51 @@ fn native_owner<S: ProcessingSample>(
     if let Some(engine) = engine {
         request.slot.put(engine);
     }
-    let failure = match result {
-        Ok(Ok(())) => match stopped {
-            Ok(Ok(())) => None,
-            Ok(Err(error)) => Some(error),
-            Err(_) => Some(BackendError::WorkerPanicked),
-        },
-        Ok(Err(error)) => Some(error),
-        Err(_) => Some(BackendError::WorkerPanicked),
-    };
+    let notification = catch_unwind(AssertUnwindSafe(|| {
+        request
+            .counters
+            .publish_native(stream.stats(), stream.driver_latency());
+        stream.recovery_request()
+    }));
+    let recoverable = matches!(&result, Ok(Err(error)) if *error != BackendError::WorkerPanicked)
+        && matches!(&stopped, Ok(Ok(())))
+        && matches!(&notification, Ok(Some(_)));
+    let released = catch_unwind(AssertUnwindSafe(|| stream.release()));
+    // Final Drop releases the apartment/lease as well as the IASIO reference.
+    // No replacement may open until both release and destruction have finished.
+    let dropped = catch_unwind(AssertUnwindSafe(|| drop(stream)));
+    let recovery = (recoverable && matches!(&released, Ok(Ok(()))) && dropped.is_ok())
+        .then_some(request.recovery)
+        .flatten();
+    let mut failure = None;
+    for (phase, outcome) in [
+        ("run", result.unwrap_or(Err(BackendError::WorkerPanicked))),
+        ("stop", stopped.unwrap_or(Err(BackendError::WorkerPanicked))),
+        (
+            "observation",
+            notification
+                .map(|_| ())
+                .map_err(|_| BackendError::WorkerPanicked),
+        ),
+        (
+            "release",
+            released.unwrap_or(Err(BackendError::WorkerPanicked)),
+        ),
+        ("drop", dropped.map_err(|_| BackendError::WorkerPanicked)),
+    ] {
+        if let Err(error) = outcome {
+            // Keep every concrete terminal diagnostic even when a later cleanup
+            // error wins. No non-panic error may ever downgrade WorkerPanicked.
+            log::error!(
+                target: "moiren::audio::professional",
+                "native {phase} failed: master={} error={error:?}",
+                request.master,
+            );
+            if failure != Some(BackendError::WorkerPanicked) {
+                failure = Some(error);
+            }
+        }
+    }
     log::debug!(
         target: "moiren::audio::professional",
         "native stream stopped: master={} failure={:?}",
@@ -347,7 +404,9 @@ fn native_owner<S: ProcessingSample>(
         failure,
     );
     if let Some(error) = failure {
-        request.state.fail(error);
+        // This is only a candidate: another worker's Stop/Drop or auxiliary
+        // Join can still make the entire transport terminal during retirement.
+        request.state.record_failure(error, recovery);
     }
 }
 
@@ -528,16 +587,25 @@ impl<S: ProcessingSample> Transport<S> {
         );
         self.state.cancel();
         for auxiliary in &self.auxiliaries {
-            auxiliary.cancel();
+            if catch_unwind(AssertUnwindSafe(|| auxiliary.cancel())).is_err() {
+                self.state.fail(BackendError::WorkerPanicked);
+            }
         }
         for worker in &mut self.workers {
             if let Err(error) = worker.join() {
                 self.state.fail(error);
             }
         }
-        for auxiliary in &mut self.auxiliaries {
-            if let Err(error) = auxiliary.join() {
+        for mut auxiliary in self.auxiliaries.drain(..) {
+            if let Err(error) = catch_unwind(AssertUnwindSafe(|| auxiliary.join()))
+                .unwrap_or(Err(BackendError::WorkerPanicked))
+            {
                 self.state.fail(error);
+            }
+            // Auxiliaries may own native leases too. Their destruction must be
+            // included in authorization, not deferred to Transport::drop.
+            if catch_unwind(AssertUnwindSafe(|| drop(auxiliary))).is_err() {
+                self.state.fail(BackendError::WorkerPanicked);
             }
         }
         self.observations.clear(self.generation);
@@ -619,27 +687,53 @@ impl<S: ProcessingSample> BackendOwner<S> for Owner<S> {
     fn cancel(&self) {
         self.transport.state.cancel();
         for auxiliary in &self.transport.auxiliaries {
-            auxiliary.cancel();
+            if catch_unwind(AssertUnwindSafe(|| auxiliary.cancel())).is_err() {
+                self.transport.state.fail(BackendError::WorkerPanicked);
+            }
         }
         self.transport.observations.clear(self.transport.generation);
     }
     fn status(&self) -> OwnerStatus {
         let transport = &self.transport;
-        if let Some(error) = transport
+        // A chained if-let scrutinee keeps its mutex temporary alive through
+        // the body. Cancel may record an auxiliary panic into this same state.
+        let failure = transport
             .state
             .failure
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clone()
-        {
+            .as_ref()
+            .map(|failure| failure.error.clone());
+        if failure.is_some() {
             self.cancel();
+            let error = transport
+                .state
+                .failure
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .expect("failure remains recorded until stop_and_join")
+                .error
+                .clone();
             return OwnerStatus::Failed(error);
         }
         if transport.auxiliaries.iter().any(|a| a.finished()) {
-            self.cancel();
-            return OwnerStatus::Failed(BackendError::ResourceUnavailable(
+            // A sibling native notification must not turn an unexpectedly
+            // finished process capture into a recoverable transport.
+            transport.state.fail(BackendError::ResourceUnavailable(
                 "process capture stopped".into(),
             ));
+            self.cancel();
+            let error = transport
+                .state
+                .failure
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .expect("finished auxiliary records a terminal failure")
+                .error
+                .clone();
+            return OwnerStatus::Failed(error);
         }
         if transport
             .workers
@@ -671,6 +765,14 @@ impl<S: ProcessingSample> BackendOwner<S> for Owner<S> {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take();
+        // EngineHost calls Owner::cancel for internal failure retirement too;
+        // its explicit cancellation token, not the shared stop flag, fences
+        // user cancellation. Only the final aggregate may spend the ticket.
+        let error = error.and_then(|failure| {
+            let authorized = !self.cancellation.is_cancelled()
+                && failure.recovery.is_some_and(|ticket| ticket.request());
+            (!authorized).then_some(failure.error)
+        });
         OwnerReturn { engine, error }
     }
 }

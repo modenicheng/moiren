@@ -359,6 +359,26 @@ impl UiState {
                             stream.dropped_frames, stream.silent_frames,
                         ),
                     ));
+                    if stream.requested.backend == crate::service::AudioBackend::Asio {
+                        rows.push((
+                            format!("{prefix}: ASIO callback counters"),
+                            format!("{} callbacks; capture dropped {} / render silence {} frames (includes startup)", stream.native_callbacks, stream.native_dropped_frames, stream.native_silent_frames),
+                        ));
+                        rows.push((
+                            format!("{prefix}: driver-reported latency"),
+                            stream
+                                .driver_latency
+                                .map(|latency| {
+                                    format!(
+                                        "Input {} / output {} frames; excludes application queues",
+                                        latency.input_frames, latency.output_frames
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    "Unavailable (not measured round-trip latency)".into()
+                                }),
+                        ));
+                    }
                 }
                 return rows;
             }
@@ -1128,6 +1148,15 @@ mod tests {
                     },
                     dropped_frames: 9,
                     silent_frames: 11,
+                    native_callbacks: 100,
+                    native_dropped_frames: 3,
+                    native_silent_frames: 5,
+                    driver_latency: Some(
+                        moiren_windows_audio::professional::native::NativeLatency {
+                            input_frames: 32,
+                            output_frames: 64,
+                        },
+                    ),
                 }],
             },
         });
@@ -1148,6 +1177,21 @@ mod tests {
             .1;
         assert!(mode.contains("driver owns mode"));
         assert!(!mode.contains("Shared"));
+        let native = &rows
+            .iter()
+            .find(|(key, _)| key.contains("ASIO callback counters"))
+            .unwrap()
+            .1;
+        assert!(native.contains("100 callbacks"));
+        assert!(native.contains("dropped 3 / render silence 5"));
+        assert!(native.contains("startup"));
+        let latency = &rows
+            .iter()
+            .find(|(key, _)| key.contains("driver-reported latency"))
+            .unwrap()
+            .1;
+        assert!(latency.contains("Input 32 / output 64 frames"));
+        assert!(latency.contains("excludes application queues"));
         Arc::make_mut(&mut state.snapshot).generation = SessionGeneration(8);
         assert!(
             !state

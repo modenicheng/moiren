@@ -59,6 +59,7 @@ dependencies = [
  "moiren-engine",
  "moiren-windows-audio",
  "rtrb",
+ "windows",
 ]
 
 [[package]]

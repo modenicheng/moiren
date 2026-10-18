@@ -10,6 +10,13 @@
 
 use moiren_engine::host::BackendError;
 
+mod capabilities;
+
+pub use capabilities::{
+    AsioBufferCapabilities, AsioCapabilities, AsioChannel, AsioLatencies, AsioRateSupport,
+    AsioSampleType, query_capabilities,
+};
+
 #[cfg(any(all(windows, target_pointer_width = "64"), test))]
 mod abi;
 #[cfg(any(all(windows, target_pointer_width = "64"), test))]
@@ -28,7 +35,7 @@ mod stream;
 #[cfg(all(windows, target_pointer_width = "64"))]
 pub use stream::AsioStream;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct AsioDriver {
     /// Canonical registry CLSID, including braces; never an enumeration index.
     pub id: String,

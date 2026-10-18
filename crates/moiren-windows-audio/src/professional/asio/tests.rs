@@ -432,6 +432,136 @@ fn registered_driver_discovery_is_registry_only_and_returns_stable_unique_clsids
 }
 
 #[test]
+fn notifications_preserve_request_until_teardown_and_stop_errors_are_terminal() {
+    use super::super::super::native::{NativeLatency, NativeRecoveryRequest};
+    let _serial = callback::TEST_SERIAL.lock().unwrap();
+    for (selector, expected) in [
+        (3, NativeRecoveryRequest::Reset),
+        (5, NativeRecoveryRequest::Resync),
+        (4, NativeRecoveryRequest::BufferSizeChanged),
+        (0, NativeRecoveryRequest::SampleRateChanged),
+    ] {
+        let events = Events::default();
+        let mut stream = configured(Failure::None, events.clone()).unwrap();
+        stream.start().unwrap();
+        assert_eq!(
+            stream.driver_latency(),
+            Some(NativeLatency {
+                input_frames: 32,
+                output_frames: 64
+            })
+        );
+        let callbacks = unsafe { &*mock(stream.driver().raw()).callback };
+        unsafe {
+            if selector == 0 {
+                (callbacks.sample_rate_changed)(44100.0);
+            } else {
+                (callbacks.message)(selector, 0, ptr::null_mut(), ptr::null_mut());
+            }
+        }
+        assert!(stream.wait(Duration::ZERO).is_err());
+        assert_eq!(stream.recovery_request(), Some(expected));
+        stream.stop().unwrap();
+        stream.release().unwrap();
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["init", "create", "start", "stop", "dispose", "release"]
+        );
+    }
+    let mut stream = configured(Failure::Stop, Events::default()).unwrap();
+    stream.start().unwrap();
+    let callbacks = unsafe { &*mock(stream.driver().raw()).callback };
+    unsafe {
+        (callbacks.message)(3, 0, ptr::null_mut(), ptr::null_mut());
+    }
+    assert!(stream.stop().is_err());
+    assert_eq!(stream.recovery_request(), None);
+}
+
+#[test]
+fn owner_wait_dispatches_driver_sta_messages_without_audio_thread_work() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use windows::{
+        Win32::{
+            Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+            UI::WindowsAndMessaging::*,
+        },
+        core::w,
+    };
+    static DISPATCHED: AtomicUsize = AtomicUsize::new(0);
+    unsafe extern "system" fn procedure(
+        window: HWND,
+        message: u32,
+        w: WPARAM,
+        l: LPARAM,
+    ) -> LRESULT {
+        if message == WM_APP + 21 {
+            DISPATCHED.fetch_add(1, Ordering::Relaxed);
+            return LRESULT(0);
+        }
+        unsafe { DefWindowProcW(window, message, w, l) }
+    }
+    let _serial = callback::TEST_SERIAL.lock().unwrap();
+    let class = w!("STATIC");
+    let window = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            class,
+            w!(""),
+            WINDOW_STYLE::default(),
+            0,
+            0,
+            0,
+            0,
+            Some(HWND_MESSAGE),
+            None,
+            None,
+            None,
+        )
+    }
+    .unwrap();
+    unsafe {
+        SetWindowLongPtrW(window, GWLP_WNDPROC, procedure as *const () as isize);
+    }
+    let mut stream = configured(Failure::None, Events::default()).unwrap();
+    stream.start().unwrap();
+    unsafe { PostMessageW(Some(window), WM_APP + 21, WPARAM(0), LPARAM(0)) }.unwrap();
+    stream.wait(Duration::ZERO).unwrap(); // Both capture and audio wake are ready.
+    let with_capture = DISPATCHED.load(Ordering::Relaxed);
+    stream.read(&mut [[0.0; 2]; 64]).unwrap();
+    stream.wait(Duration::ZERO).unwrap(); // Consume synchronous startup wake.
+    unsafe { PostMessageW(Some(window), WM_APP + 21, WPARAM(0), LPARAM(0)) }.unwrap();
+    stream.wait(Duration::from_millis(10)).unwrap();
+    let dispatched = DISPATCHED.load(Ordering::Relaxed);
+    for _ in 0..3 {
+        unsafe {
+            PostMessageW(Some(window), WM_APP + 21, WPARAM(0), LPARAM(0)).unwrap();
+            windows::Win32::System::Threading::SetEvent(stream.event.0).unwrap();
+        }
+        stream.wait(Duration::ZERO).unwrap();
+    }
+    let with_audio_event = DISPATCHED.load(Ordering::Relaxed);
+    for _ in 0..65 {
+        unsafe { PostMessageW(Some(window), WM_APP + 21, WPARAM(0), LPARAM(0)) }.unwrap();
+    }
+    let mut flood_batches = Vec::new();
+    for _ in 0..3 {
+        unsafe { windows::Win32::System::Threading::SetEvent(stream.event.0) }.unwrap();
+        stream.wait(Duration::ZERO).unwrap();
+        flood_batches.push(DISPATCHED.load(Ordering::Relaxed));
+    }
+    stream.stop().unwrap();
+    stream.close().unwrap();
+    unsafe {
+        DestroyWindow(window).unwrap();
+    }
+    assert_eq!(with_capture, 1, "capture backlog must not starve STA work");
+    assert_eq!(dispatched, 2);
+    assert_eq!(with_audio_event, 5, "audio wake must not starve STA work");
+    assert_eq!(flood_batches, [37, 69, 70], "32-message budget per wait");
+}
+
+#[test]
 #[ignore = "machine-specific registry inventory; does not open drivers or play audio"]
 fn local_registry_contains_fl_studio_and_realtek_exact_clsids() {
     let drivers = super::super::list_drivers().unwrap();

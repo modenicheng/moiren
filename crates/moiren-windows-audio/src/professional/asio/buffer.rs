@@ -49,8 +49,10 @@ impl BufferSizes {
                     frames.is_multiple_of(self.min as u32)
                         && (frames / self.min as u32).is_power_of_two()
                 }
-                // A zero granularity denotes a single fixed size.
-                0 => self.min == self.max && requested == self.min,
+                // Some drivers (FL Studio ASIO) report zero with a variable
+                // range. Only the explicitly reported preferred size is safe
+                // to admit without inventing a step or substituting a request.
+                0 => requested == self.preferred,
                 step if step > 0 => (requested - self.min) % step == 0,
                 _ => false,
             };
@@ -129,7 +131,7 @@ mod tests {
         };
         assert!(fixed.validate(256).is_ok());
         assert!(fixed.validate(128).is_err());
-        assert!(BufferSizes { max: 512, ..fixed }.validate(256).is_err());
+        assert!(BufferSizes { max: 512, ..fixed }.validate(512).is_err());
         assert!(BufferSizes { min: -1, ..fixed }.validate(256).is_err());
     }
 
@@ -190,5 +192,22 @@ mod tests {
         assert_eq!(doubled.resolve(0).unwrap(), 192);
         assert!(doubled.resolve(128).is_err());
         assert!(doubled.resolve(256).is_err());
+    }
+
+    #[test]
+    fn zero_granularity_range_admits_only_driver_reported_preferred_size() {
+        // Actual FL Studio ASIO metadata observed on 2026-10-18. Zero does not
+        // describe the variable range's stepping; do not invent valid sizes.
+        let sizes = BufferSizes {
+            min: 256,
+            max: 4096,
+            preferred: 512,
+            granularity: 0,
+        };
+        assert_eq!(sizes.resolve(0).unwrap(), 512);
+        assert_eq!(sizes.resolve(512).unwrap(), 512);
+        for frames in [256, 1024, 2048, 4096] {
+            assert!(sizes.resolve(frames).is_err());
+        }
     }
 }

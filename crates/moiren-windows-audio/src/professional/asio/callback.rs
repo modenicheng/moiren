@@ -6,10 +6,11 @@ use std::{
     cell::UnsafeCell,
     ffi::c_void,
     ptr,
-    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 use windows::Win32::Foundation::HANDLE;
 
+use super::super::native::{NativeRecoveryRequest, NativeStreamStats};
 use super::{BackendError, abi, sample::Frame};
 
 static EXCLUSIVE: AtomicBool = AtomicBool::new(false);
@@ -126,6 +127,9 @@ pub(super) struct Context {
     data: UnsafeCell<Data>,
     copying: AtomicBool,
     fault: AtomicU32,
+    callbacks: AtomicU64,
+    capture_dropped: AtomicU64,
+    render_silent: AtomicU64,
     pub latency_changed: AtomicBool,
     sample_rate: u32,
     event: HANDLE,
@@ -137,6 +141,9 @@ impl Context {
             data: UnsafeCell::new(data),
             copying: AtomicBool::new(false),
             fault: AtomicU32::new(0),
+            callbacks: AtomicU64::new(0),
+            capture_dropped: AtomicU64::new(0),
+            render_silent: AtomicU64::new(0),
             latency_changed: AtomicBool::new(false),
             sample_rate,
             event,
@@ -146,6 +153,10 @@ impl Context {
     /// Called only while detached and with every previous reader retired.
     pub fn prepare(&mut self) {
         self.fault.store(0, Ordering::Relaxed);
+        self.callbacks.store(0, Ordering::Relaxed);
+        self.capture_dropped.store(0, Ordering::Relaxed);
+        self.render_silent.store(0, Ordering::Relaxed);
+        self.latency_changed.store(false, Ordering::Relaxed);
         self.data.get_mut().discard_first_input = true;
     }
 
@@ -171,6 +182,25 @@ impl Context {
         Err(BackendError::ResourceUnavailable(format!(
             "ASIO {reason}; stop and reopen the stream"
         )))
+    }
+
+    pub fn recovery_request(&self) -> Option<NativeRecoveryRequest> {
+        match self.fault.load(Ordering::Acquire) {
+            RATE_CHANGED => Some(NativeRecoveryRequest::SampleRateChanged),
+            RESET_REQUEST => Some(NativeRecoveryRequest::Reset),
+            RESYNC_REQUEST => Some(NativeRecoveryRequest::Resync),
+            BUFFER_CHANGED => Some(NativeRecoveryRequest::BufferSizeChanged),
+            _ => None,
+        }
+    }
+
+    pub fn stats(&self) -> NativeStreamStats {
+        NativeStreamStats {
+            callbacks: self.callbacks.load(Ordering::Relaxed),
+            capture_dropped_frames: self.capture_dropped.load(Ordering::Relaxed),
+            render_silent_frames: self.render_silent.load(Ordering::Relaxed),
+            ..Default::default()
+        }
     }
 
     fn fail(&self, fault: u32) {
@@ -207,35 +237,44 @@ impl Context {
         // SAFETY: copying is the unique audio callback gate. The owner never
         // accesses Data while published; message callbacks touch atomics only.
         let data = unsafe { &mut *self.data.get() };
+        self.callbacks.fetch_add(1, Ordering::Relaxed);
         let index = index as usize;
         if !data.discard_first_input
             && let Some(input) = data.input.as_mut()
-            && input.slots() >= data.frames
         {
-            for frame_index in 0..data.frames {
-                let mut frame = Frame::default();
-                for (channel_index, channel) in data.inputs.iter().enumerate() {
-                    if let Some(channel) = channel {
-                        // SAFETY: the driver allocated two complete buffers,
-                        // validated before publication and disposed after retire.
-                        unsafe {
-                            ptr::copy_nonoverlapping(
-                                channel.buffers[index].add(frame_index * channel.bytes),
-                                frame.samples[channel_index].as_mut_ptr(),
-                                channel.bytes,
-                            );
+            if input.slots() < data.frames {
+                self.capture_dropped
+                    .fetch_add(data.frames as u64, Ordering::Relaxed);
+            } else {
+                for frame_index in 0..data.frames {
+                    let mut frame = Frame::default();
+                    for (channel_index, channel) in data.inputs.iter().enumerate() {
+                        if let Some(channel) = channel {
+                            // SAFETY: the driver allocated two complete buffers,
+                            // validated before publication and disposed after retire.
+                            unsafe {
+                                ptr::copy_nonoverlapping(
+                                    channel.buffers[index].add(frame_index * channel.bytes),
+                                    frame.samples[channel_index].as_mut_ptr(),
+                                    channel.bytes,
+                                );
+                            }
                         }
                     }
+                    // The consumer can only free slots since the capacity check.
+                    let _ = input.push(frame);
                 }
-                // The consumer can only free slots since the capacity check.
-                let _ = input.push(frame);
             }
         }
         data.discard_first_input = false;
         if let Some(output) = data.output.as_mut() {
+            let mut silent = 0;
             // Underrun writes native zeroes, never replays stale device memory.
             for frame_index in 0..data.frames {
-                let frame = output.pop().unwrap_or_default();
+                let frame = output.pop().unwrap_or_else(|_| {
+                    silent += 1;
+                    Frame::default()
+                });
                 for (channel_index, channel) in data.outputs.iter().enumerate() {
                     if let Some(channel) = channel {
                         // SAFETY: same validated, live buffer bounds as above.
@@ -249,6 +288,7 @@ impl Context {
                     }
                 }
             }
+            self.render_silent.fetch_add(silent, Ordering::Relaxed);
         }
         self.copying.store(false, Ordering::Release);
         self.signal();
@@ -294,7 +334,11 @@ unsafe extern "C" fn message(
         SELECTOR_SUPPORTED => {
             return i32::from(matches!(
                 value,
-                ENGINE_VERSION | RESET_SELECTOR | RESYNC_SELECTOR | SUPPORTS_TIME_INFO
+                ENGINE_VERSION
+                    | RESET_SELECTOR
+                    | RESYNC_SELECTOR
+                    | SUPPORTS_TIME_INFO
+                    | LATENCIES_CHANGED_SELECTOR
             ));
         }
         ENGINE_VERSION => return 2,
@@ -395,6 +439,10 @@ mod tests {
         assert_eq!(capture_rx.slots(), 4);
         unsafe { buffer_switch(0, 1) };
         assert_eq!(capture_rx.slots(), 4);
+        let stats = context.stats();
+        assert_eq!(stats.callbacks, 5);
+        assert_eq!(stats.capture_dropped_frames, 2);
+        assert_eq!(stats.render_silent_frames, 9);
         assert_eq!(&capture_rx.pop().unwrap().samples[0][..2], &[1, 2]);
         assert_eq!(&capture_rx.pop().unwrap().samples[0][..2], &[3, 4]);
         assert_eq!(&capture_rx.pop().unwrap().samples[0][..2], &[5, 6]);
@@ -421,6 +469,9 @@ mod tests {
         });
         context.check().unwrap();
         context.prepare();
+        assert_eq!(context.stats().callbacks, 0);
+        assert_eq!(context.stats().capture_dropped_frames, 0);
+        assert_eq!(context.stats().render_silent_frames, 0);
         unsafe {
             lease.publish(&context);
             sample_rate_changed(44100.0);
@@ -444,5 +495,50 @@ mod tests {
         }
         drop(lease);
         assert!(Exclusive::acquire().is_ok());
+    }
+
+    #[test]
+    fn notification_recovery_is_typed_and_latency_support_is_advertised() {
+        use super::super::super::native::NativeRecoveryRequest;
+        let event = unsafe { CreateEventW(None, false, false, None) }.unwrap();
+        let mut context = Context::new(
+            Data {
+                input: None,
+                output: None,
+                inputs: [None; 2],
+                outputs: [None; 2],
+                frames: 2,
+                discard_first_input: true,
+            },
+            48000,
+            event,
+        );
+        for (fault, request) in [
+            (RATE_CHANGED, NativeRecoveryRequest::SampleRateChanged),
+            (RESET_REQUEST, NativeRecoveryRequest::Reset),
+            (RESYNC_REQUEST, NativeRecoveryRequest::Resync),
+            (BUFFER_CHANGED, NativeRecoveryRequest::BufferSizeChanged),
+        ] {
+            context.prepare();
+            context.fail(fault);
+            assert_eq!(context.recovery_request(), Some(request));
+        }
+        for fault in [REENTRANT, BAD_INDEX, EVENT_FAILED] {
+            context.prepare();
+            context.fail(fault);
+            assert_eq!(context.recovery_request(), None);
+        }
+        unsafe {
+            assert_eq!(
+                message(
+                    SELECTOR_SUPPORTED,
+                    LATENCIES_CHANGED_SELECTOR,
+                    ptr::null_mut(),
+                    ptr::null_mut()
+                ),
+                1
+            );
+            CloseHandle(event).unwrap();
+        }
     }
 }

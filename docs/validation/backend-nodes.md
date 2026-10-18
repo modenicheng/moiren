@@ -1,5 +1,9 @@
 # Backend node acceptance
 
+For the later professional ASIO transport and FL Studio ASIO validation, see
+[ASIO v1 acceptance](asio-v1.md). The integration-branch record below is historical;
+it is not the current native-backend feature inventory.
+
 This record describes the backend node implementation on the
 `feat/backend-complete-local` integration branch. UI editing and new frontend
 bindings are outside this change. The implementation worktree lives at

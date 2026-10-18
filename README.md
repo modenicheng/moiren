@@ -42,8 +42,8 @@ cargo run --locked -p moiren-windows-audio --example routing_probe -- --output '
 ## 当前边界
 
 - Process Loopback 是 Application Capture / Monitor；真正的逐应用 Redirect / Takeover 尚未解决。独占探针保持独立实验。
-- SRC 仍是线性插值基线。没有承诺专业重采样质量、多输出延迟补偿、物理端到端时延或长期无 XRUN。
-- 正式 Exclusive、ASIO、多通道、虚拟音频驱动、CLAP/VST3、Named Pipe 和远程控制仍属后续能力。
+- ProfessionalBackend 已接入 WASAPI Shared/Exclusive 和单驱动立体声 ASIO，支持 f32/f64 Engine；专业路径使用预计算 windowed-sinc SRC，旧 Clock Bridge 路径仍保留原有算法。没有承诺多输出延迟补偿、物理端到端时延或长期无 XRUN。
+- ASIO 已有能力查询、原生回调诊断和有界通知恢复；FL Studio ASIO 能力查询成功，但持续 IO 与正常停止验收尚未通过，不代表原生声卡已验证。任意多通道路由、多 ASIO 驱动并用、虚拟音频驱动、CLAP/VST3、Named Pipe 和远程控制仍属后续能力。
 - EQ 当前为单段 peaking band；Limiter 为零前视 sample-peak；Meter 提供 Sample Peak/RMS，标准 LUFS/True Peak 尚未实现。Recorder 使用有界队列，托管文件线程自动排空和 finalize；慢磁盘造成的整块丢帧、写入失败和最终完成状态可查询。
 - Rack 的内置 slot 为单输入流/单输出流，不包含插件 sidechain/multi-bus kernel。PreFader 支持 Gain 或已绑定 channel strip 的节点，并按各输出端口独立取 tap。
 

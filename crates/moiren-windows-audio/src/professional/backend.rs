@@ -5,6 +5,7 @@ use super::{
     native::{NativeStreamInfo, canonical_asio_driver_id},
     observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
     owner::{AuxiliaryOwner, StreamFactory, Transport, WorkerRequest, spawn},
+    recovery::RecoveryMonitor,
     resample::StereoResampler,
     wasapi::{WasapiOptions, WasapiStream, resolve_endpoint},
 };
@@ -25,12 +26,14 @@ use std::{marker::PhantomData, sync::Arc};
 
 pub struct ProfessionalBackend<S: ProcessingSample> {
     observations: ProfessionalObservations,
+    recovery: RecoveryMonitor,
     marker: PhantomData<S>,
 }
 impl<S: ProcessingSample> ProfessionalBackend<S> {
     pub fn new() -> Result<Self, BackendError> {
         Ok(Self {
             observations: ProfessionalObservations::default(),
+            recovery: RecoveryMonitor::default(),
             marker: PhantomData,
         })
     }
@@ -188,6 +191,9 @@ fn validate(request: &PrepareRequest<'_>) -> Result<u32, BackendError> {
 }
 
 impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
+    fn poll_resource(&self) -> Option<moiren_engine::host::ResourceEvent> {
+        self.recovery.poll()
+    }
     fn prepare(
         &self,
         request: PrepareRequest<'_>,
@@ -364,6 +370,20 @@ impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
                 "direct ASIO hosts one driver session at a time",
             ));
         }
+        let asio_configurations: Vec<_> = groups
+            .iter()
+            .filter(|group| group.backend == AudioBackend::Asio)
+            .flat_map(|group| group.input.iter().chain(&group.output))
+            .map(|direction| {
+                (
+                    direction.node,
+                    request.project.nodes[&direction.node].clone(),
+                )
+            })
+            .collect();
+        let recovery = self
+            .recovery
+            .register(request.owner_generation, asio_configurations, rate);
         for group in groups {
             if cancel.is_cancelled() {
                 return Err(BackendError::Cancelled);
@@ -392,6 +412,7 @@ impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
                 engine_rate: rate,
                 capacity,
                 master: group.master(),
+                recovery: (group.backend == AudioBackend::Asio).then(|| recovery.clone()),
             };
             log::info!(
                 target: "moiren::audio::professional",
@@ -499,6 +520,10 @@ fn observation(
         actual,
         dropped_frames: 0,
         silent_frames: 0,
+        native_callbacks: 0,
+        native_dropped_frames: 0,
+        native_silent_frames: 0,
+        driver_latency: None,
     }
 }
 
@@ -610,6 +635,10 @@ fn prepare_process<S: ProcessingSample>(
             },
             dropped_frames: 0,
             silent_frames: 0,
+            native_callbacks: 0,
+            native_dropped_frames: 0,
+            native_silent_frames: 0,
+            driver_latency: None,
         },
         Arc::default(),
     ));

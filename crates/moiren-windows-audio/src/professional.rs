@@ -13,6 +13,8 @@ mod bridge;
 mod observations;
 #[cfg(windows)]
 mod owner;
+#[cfg(any(windows, test))]
+mod recovery;
 #[cfg(windows)]
 pub mod wasapi;
 

@@ -1,10 +1,16 @@
 use std::{ptr, sync::atomic::Ordering, time::Duration};
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
-    System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject},
+    System::Threading::{CreateEventW, ResetEvent},
+    UI::WindowsAndMessaging::{
+        DispatchMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE,
+        PeekMessageW, QS_ALLINPUT, TranslateMessage,
+    },
 };
 
-use super::super::native::{NativeStream, NativeStreamInfo};
+use super::super::native::{
+    NativeLatency, NativeRecoveryRequest, NativeStream, NativeStreamInfo, NativeStreamStats,
+};
 use super::{
     AsioOptions, BackendError, abi,
     buffer::{BufferSizes, validate_options},
@@ -30,6 +36,20 @@ impl Drop for Event {
     }
 }
 
+fn dispatch_owner_messages(remaining: &mut usize) {
+    let mut message = MSG::default();
+    while *remaining != 0 {
+        if !unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+            break;
+        }
+        *remaining -= 1;
+        unsafe {
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
 pub struct AsioStream {
     driver: Option<Driver>,
     // Kept until final driver Release; neither the driver nor this stream is Send.
@@ -45,6 +65,7 @@ pub struct AsioStream {
     buffers: Vec<abi::BufferInfo>,
     buffers_attempted: bool,
     started: bool,
+    terminal: bool,
     info: NativeStreamInfo,
     latencies: Option<(u32, u32)>,
 }
@@ -83,8 +104,11 @@ impl AsioStream {
             )));
         }
         let apartment = Apartment::new()?;
+        log::debug!(target: "moiren::audio::asio", "stream stage=CoCreateInstance enter");
         let driver = Driver::open(&clsid)?;
+        log::debug!(target: "moiren::audio::asio", "stream stage=CoCreateInstance exit; init enter");
         driver.initialize()?;
+        log::debug!(target: "moiren::audio::asio", "stream stage=init exit; configure enter");
         Self::configure(options, lease, Some(apartment), driver)
     }
 
@@ -108,6 +132,7 @@ impl AsioStream {
             buffers: Vec::with_capacity(4),
             buffers_attempted: false,
             started: false,
+            terminal: false,
             info: NativeStreamInfo {
                 sample_rate: options.sample_rate,
                 format: moiren_engine::audio_config::SampleFormat::Native,
@@ -133,7 +158,9 @@ impl AsioStream {
         // SDK ABI. Every output pointer targets initialized owner-thread memory.
         unsafe {
             driver.check("canSampleRate", (vt.can_sample_rate)(raw, rate))?;
+            log::debug!(target: "moiren::audio::asio", "stream stage=setSampleRate enter rate={rate}");
             driver.check("setSampleRate", (vt.set_sample_rate)(raw, rate))?;
+            log::debug!(target: "moiren::audio::asio", "stream stage=setSampleRate exit");
         }
         self.verify_rate()?;
         let mut sizes = BufferSizes {
@@ -185,6 +212,7 @@ impl AsioStream {
         let raw = driver.raw();
         let create = driver.vtable().create_buffers;
         self.buffers_attempted = true;
+        log::debug!(target: "moiren::audio::asio", "stream stage=createBuffers enter frames={}", self.info.buffer_frames);
         let code = unsafe {
             create(
                 raw,
@@ -196,6 +224,7 @@ impl AsioStream {
             )
         };
         self.driver().check("createBuffers", code)?;
+        log::debug!(target: "moiren::audio::asio", "stream stage=createBuffers exit");
         // Re-query after preparation: use actual types, not the initial hints.
         self.query_encodings()?;
         self.verify_rate()?;
@@ -395,6 +424,34 @@ impl NativeStream for AsioStream {
         self.info
     }
 
+    fn stats(&self) -> NativeStreamStats {
+        self.context
+            .as_ref()
+            .map_or_else(NativeStreamStats::default, |context| context.stats())
+    }
+
+    fn driver_latency(&self) -> Option<NativeLatency> {
+        self.latencies
+            .map(|(input_frames, output_frames)| NativeLatency {
+                input_frames,
+                output_frames,
+            })
+    }
+
+    fn recovery_request(&self) -> Option<NativeRecoveryRequest> {
+        if self.terminal {
+            None
+        } else {
+            self.context
+                .as_ref()
+                .and_then(|context| context.recovery_request())
+        }
+    }
+
+    fn release(&mut self) -> Result<(), BackendError> {
+        self.shutdown()
+    }
+
     fn start(&mut self) -> Result<(), BackendError> {
         if self.started {
             return self.check();
@@ -409,9 +466,12 @@ impl NativeStream for AsioStream {
         // retirement. start may synchronously invoke callbacks before returning.
         unsafe { self.lease.publish(context) };
         self.started = true; // A failed start must still get stop during cleanup.
+        log::debug!(target: "moiren::audio::asio", "stream stage=start enter");
         let driver = self.driver();
         let code = unsafe { (driver.vtable().start)(driver.raw()) };
+        log::debug!(target: "moiren::audio::asio", "stream stage=start exit code={code}");
         if let Err(error) = driver.check("start", code) {
+            self.terminal = true;
             self.lease.detach();
             let _ = self.stop();
             return Err(error);
@@ -429,8 +489,13 @@ impl NativeStream for AsioStream {
             return Ok(());
         }
         let driver = self.driver();
+        log::debug!(target: "moiren::audio::asio", "stream stage=stop enter");
         let code = unsafe { (driver.vtable().stop)(driver.raw()) };
-        driver.check("stop", code)?;
+        log::debug!(target: "moiren::audio::asio", "stream stage=stop exit code={code}");
+        if let Err(error) = driver.check("stop", code) {
+            self.terminal = true;
+            return Err(error);
+        }
         self.started = false;
         if let Some(capture) = self.capture.as_mut() {
             while capture.pop().is_ok() {}
@@ -448,6 +513,13 @@ impl NativeStream for AsioStream {
                 "ASIO stream has not been started".into(),
             ));
         }
+        // IASIO is apartment-bound. Service STA work even when capture or the
+        // audio event is always ready. Share one budget across both dispatch
+        // points; third-party window procedures can still take unbounded time.
+        // This is owner-side work, never callback or Engine::render work.
+        let mut message_budget = 32;
+        dispatch_owner_messages(&mut message_budget);
+        self.check()?;
         if self
             .context
             .as_ref()
@@ -464,20 +536,36 @@ impl NativeStream for AsioStream {
         }
         // Round up sub-millisecond waits; never accidentally map a finite
         // duration to INFINITE (u32::MAX).
-        let milliseconds = timeout
-            .as_nanos()
-            .div_ceil(1_000_000)
-            .min(u128::from(u32::MAX - 1)) as u32;
-        let result = unsafe { WaitForSingleObject(self.event.0, milliseconds) };
-        self.check()?;
-        match result {
+        let milliseconds = if message_budget < 32 {
+            0 // Return control promptly after servicing a message batch.
+        } else {
+            timeout
+                .as_nanos()
+                .div_ceil(1_000_000)
+                .min(u128::from(u32::MAX - 1)) as u32
+        };
+        let result = unsafe {
+            MsgWaitForMultipleObjectsEx(
+                Some(&[self.event.0]),
+                milliseconds,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
+        };
+        // Preserve a failed wait's last-error before dispatch calls can change
+        // it. New messages also get service when the audio handle wins the wait.
+        let ready = match result {
             WAIT_OBJECT_0 => Ok(true),
             WAIT_TIMEOUT => Ok(false),
+            result if result.0 == WAIT_OBJECT_0.0 + 1 => Ok(true),
             _ => Err(BackendError::Failed(format!(
                 "ASIO event wait failed: {}",
                 windows::core::Error::from_thread()
             ))),
-        }
+        };
+        dispatch_owner_messages(&mut message_budget);
+        self.check()?;
+        ready.map(|ready| ready || message_budget < 32)
     }
 
     fn read(&mut self, output: &mut [[f64; 2]]) -> Result<usize, BackendError> {

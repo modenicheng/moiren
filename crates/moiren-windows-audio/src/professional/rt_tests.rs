@@ -27,12 +27,19 @@ use std::{
     thread::ThreadId,
     time::{Duration, Instant},
 };
+#[cfg(windows)]
+#[path = "asio_rt_tests.rs"]
+mod asio_rt;
 #[path = "bridge.rs"]
 mod bridge;
 #[path = "observations.rs"]
 mod observations;
 #[path = "owner.rs"]
 mod owner;
+#[path = "recovery.rs"]
+mod recovery;
+#[path = "recovery_host_tests.rs"]
+mod recovery_host_tests;
 use bridge::{RingSink, RingSource, Tone};
 use native::{NativeStream, NativeStreamInfo, StereoFrame};
 use observations::{Counters, ProfessionalObservations};
@@ -73,7 +80,7 @@ fn measured<T>(f: impl FnOnce() -> T) -> T {
     value
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Failure {
     None,
     Start,
@@ -82,12 +89,42 @@ enum Failure {
     Stop,
     PanicWrite,
     PanicStop,
+    Recover,
+    RecoverStop,
+    RecoverRelease,
+    Combined(Faults),
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Effect {
+    #[default]
+    Ok,
+    Error,
+    Panic,
+}
+impl Effect {
+    fn apply(self, phase: &str) -> Result<(), BackendError> {
+        match self {
+            Self::Ok => Ok(()),
+            Self::Error => Err(BackendError::Failed(format!("injected {phase} failure"))),
+            Self::Panic => panic!("injected {phase} panic"),
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default)]
+struct Faults {
+    run: Effect,
+    stop: Effect,
+    observation: Effect,
+    release: Effect,
+    drop: Effect,
 }
 #[derive(Default)]
 struct Probe {
     starts: AtomicUsize,
     stops: AtomicUsize,
     written: AtomicUsize,
+    releases: AtomicUsize,
+    drops: AtomicUsize,
 }
 struct FakeNative {
     info: NativeStreamInfo,
@@ -108,21 +145,54 @@ impl NativeStream for FakeNative {
     }
     fn stop(&mut self) -> Result<(), BackendError> {
         self.probe.stops.fetch_add(1, Ordering::Relaxed);
+        if let Failure::Combined(faults) = self.failure {
+            return faults.stop.apply("stop");
+        }
         assert!(
             !matches!(self.failure, Failure::PanicStop),
             "fake Stop panic"
         );
-        if matches!(self.failure, Failure::Stop) {
+        if matches!(self.failure, Failure::Stop | Failure::RecoverStop) {
             return Err(injected());
         }
         Ok(())
     }
     fn wait(&mut self, _: Duration) -> Result<bool, BackendError> {
-        if matches!(self.failure, Failure::Wait) {
+        if let Failure::Combined(faults) = self.failure {
+            faults.run.apply("run")?;
+        }
+        if matches!(
+            self.failure,
+            Failure::Wait | Failure::Recover | Failure::RecoverStop | Failure::RecoverRelease
+        ) {
             return Err(injected());
         }
         std::thread::yield_now();
         Ok(true)
+    }
+    fn recovery_request(&self) -> Option<native::NativeRecoveryRequest> {
+        if let Failure::Combined(faults) = self.failure {
+            // Observation itself can panic; Result errors are only meaningful
+            // for run/stop/release, which have fallible native contracts.
+            assert_ne!(faults.observation, Effect::Panic, "observation panic");
+            return Some(native::NativeRecoveryRequest::Reset);
+        }
+        matches!(
+            self.failure,
+            Failure::Recover | Failure::RecoverStop | Failure::RecoverRelease
+        )
+        .then_some(native::NativeRecoveryRequest::Reset)
+    }
+    fn release(&mut self) -> Result<(), BackendError> {
+        self.probe.releases.fetch_add(1, Ordering::Relaxed);
+        if let Failure::Combined(faults) = self.failure {
+            return faults.release.apply("release");
+        }
+        if matches!(self.failure, Failure::RecoverRelease) {
+            Err(injected())
+        } else {
+            Ok(())
+        }
     }
     fn read(&mut self, _: &mut [StereoFrame]) -> Result<usize, BackendError> {
         Ok(0)
@@ -138,6 +208,14 @@ impl NativeStream for FakeNative {
         let count = input.len().min(self.partial);
         self.probe.written.fetch_add(count, Ordering::Relaxed);
         Ok(count)
+    }
+}
+impl Drop for FakeNative {
+    fn drop(&mut self) {
+        self.probe.drops.fetch_add(1, Ordering::Relaxed);
+        if let Failure::Combined(faults) = self.failure {
+            assert_ne!(faults.drop, Effect::Panic, "native Drop panic");
+        }
     }
 }
 fn injected() -> BackendError {
@@ -361,6 +439,10 @@ fn observation_snapshot_exposes_native_metadata_fields() {
         actual: info(),
         dropped_frames: 3,
         silent_frames: 5,
+        native_callbacks: 0,
+        native_dropped_frames: 0,
+        native_silent_frames: 0,
+        driver_latency: None,
     };
     assert_eq!(observation.node, node);
     assert!(observation.input);
@@ -390,6 +472,19 @@ fn capture_queue_and_servo_are_allocation_free_with_startup_silence() {
 fn transport<S: ProcessingSample>(
     failure: Failure,
     panic: bool,
+) -> (
+    Box<Transport<S>>,
+    CompiledGraph<S>,
+    mpsc::Receiver<ThreadId>,
+    Arc<Probe>,
+) {
+    transport_with_recovery(failure, panic, None)
+}
+
+fn transport_with_recovery<S: ProcessingSample>(
+    failure: Failure,
+    panic: bool,
+    recovery: Option<recovery::RecoveryTicket>,
 ) -> (
     Box<Transport<S>>,
     CompiledGraph<S>,
@@ -429,6 +524,7 @@ fn transport<S: ProcessingSample>(
             engine_rate: 96000,
             capacity: 4096,
             master: true,
+            recovery,
         },
         &CancellationToken::default(),
     )
@@ -436,6 +532,350 @@ fn transport<S: ProcessingSample>(
     transport.workers.push(worker);
     transport.sinks.push(output);
     (transport, compiled, released, probe)
+}
+
+#[test]
+fn recoverable_notifications_are_published_only_after_owner_cleanup() {
+    let mut graph = LogicalGraph::new();
+    let node = graph.create_node(NodeKind::Sink, 2).unwrap();
+    let config = moiren_engine::host::NodeConfig::Output(
+        moiren_windows_audio::engine_backend::physical_output(
+            moiren_engine::node::EndpointSelector::FollowDefault(
+                moiren_engine::node::DefaultDeviceRole::Multimedia,
+            ),
+        ),
+    );
+    for failure in [
+        Failure::Recover,
+        Failure::RecoverStop,
+        Failure::RecoverRelease,
+    ] {
+        let monitor = recovery::RecoveryMonitor::default();
+        let ticket = monitor.register(3, vec![(node, config.clone())], 96000);
+        let (transport, compiled, released, probe) =
+            transport_with_recovery::<f64>(failure, false, Some(ticket));
+        let owner = transport
+            .attach(
+                compiled.engine,
+                &compiled.bindings,
+                CancellationToken::default(),
+            )
+            .unwrap_or_else(|_| panic!("attach"));
+        owner.activate().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut failed = false;
+        while Instant::now() < deadline {
+            assert!(monitor.poll().is_none(), "worker must not publish recovery");
+            if matches!(owner.status(), OwnerStatus::Failed(_)) {
+                failed = true;
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(
+            failed,
+            "notification must report Failed to trigger retirement"
+        );
+        assert!(monitor.poll().is_none());
+        assert_eq!(probe.stops.load(Ordering::Acquire), 1);
+        assert_eq!(probe.releases.load(Ordering::Acquire), 1);
+        assert_eq!(probe.drops.load(Ordering::Acquire), 1);
+        // Real EngineHost retirement calls cancel even for internal failures.
+        // That wakeup is not explicit cancellation of the owner's token.
+        owner.cancel();
+        let returned = owner.stop_and_join();
+        if matches!(failure, Failure::Recover) {
+            let event = monitor.poll().expect("cleanup should schedule one reopen");
+            assert_eq!(event.node, node);
+            assert_eq!(event.configuration, config);
+            assert!(event.available);
+        } else {
+            assert!(monitor.poll().is_none(), "teardown error must be terminal");
+        }
+        assert_eq!(
+            returned.error.is_none(),
+            matches!(failure, Failure::Recover)
+        );
+        assert!(released.try_recv().is_err());
+        drop(returned);
+        assert_eq!(released.recv().unwrap(), std::thread::current().id());
+    }
+}
+
+#[test]
+fn deferred_recovery_respects_explicit_cancellation_and_rejected_tickets() {
+    for cancel_after_failure in [false, true] {
+        for exhaust_ticket in [false, true] {
+            let mut graph = LogicalGraph::new();
+            let node = graph.create_node(NodeKind::Sink, 2).unwrap();
+            let config = moiren_engine::host::NodeConfig::Output(
+                moiren_windows_audio::engine_backend::physical_output(
+                    moiren_engine::node::EndpointSelector::FollowDefault(
+                        moiren_engine::node::DefaultDeviceRole::Multimedia,
+                    ),
+                ),
+            );
+            let monitor = recovery::RecoveryMonitor::default();
+            let ticket = monitor.register(3, vec![(node, config)], 96000);
+            if exhaust_ticket {
+                assert!(ticket.request());
+                assert!(monitor.poll().is_some());
+            }
+            let (transport, compiled, released, _) =
+                transport_with_recovery::<f64>(Failure::Recover, false, Some(ticket));
+            let cancel = CancellationToken::default();
+            let owner = transport
+                .attach(compiled.engine, &compiled.bindings, cancel.clone())
+                .unwrap_or_else(|_| panic!("attach"));
+            owner.activate().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !matches!(owner.status(), OwnerStatus::Failed(_)) {
+                assert!(Instant::now() < deadline, "candidate not reported");
+                std::thread::yield_now();
+            }
+            assert!(monitor.poll().is_none());
+            if cancel_after_failure {
+                cancel.cancel();
+            }
+            owner.cancel();
+            let returned = owner.stop_and_join();
+            let authorized = !cancel_after_failure && !exhaust_ticket;
+            assert_eq!(returned.error, (!authorized).then(injected));
+            assert_eq!(monitor.poll().is_some(), authorized);
+            assert!(released.try_recv().is_err());
+            drop(returned);
+            assert_eq!(
+                released.recv_timeout(Duration::from_secs(2)).unwrap(),
+                std::thread::current().id()
+            );
+        }
+    }
+}
+
+#[test]
+fn wait_error_with_stop_panic_keeps_worker_panicked() {
+    assert_combined_faults(
+        Faults {
+            run: Effect::Error,
+            stop: Effect::Panic,
+            ..Default::default()
+        },
+        false,
+    );
+}
+
+#[test]
+fn native_panic_with_release_error_keeps_worker_panicked() {
+    assert_combined_faults(
+        Faults {
+            run: Effect::Panic,
+            release: Effect::Error,
+            ..Default::default()
+        },
+        false,
+    );
+}
+
+#[test]
+fn dsp_panic_with_release_error_keeps_worker_panicked() {
+    assert_combined_faults(
+        Faults {
+            release: Effect::Error,
+            ..Default::default()
+        },
+        true,
+    );
+}
+
+struct PanicCancelAuxiliary {
+    finished: bool,
+}
+
+impl owner::AuxiliaryOwner for PanicCancelAuxiliary {
+    fn activate(&self) -> Result<(), BackendError> {
+        Ok(())
+    }
+    fn cancel(&self) {
+        panic!("injected auxiliary cancel panic");
+    }
+    fn running(&self) -> bool {
+        true
+    }
+    fn finished(&self) -> bool {
+        self.finished
+    }
+    fn join(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn native_failure_and_auxiliary_cancel_panic_do_not_deadlock_status() {
+    for failure in [Failure::Wait, Failure::Recover] {
+        assert_cancel_panic(failure, false);
+    }
+}
+
+#[test]
+fn finished_auxiliary_cancel_panic_keeps_panic_dominance() {
+    assert_cancel_panic(Failure::None, true);
+}
+
+fn assert_cancel_panic(failure: Failure, finished: bool) {
+    let (mut transport, compiled, released, probe) = transport::<f64>(failure, false);
+    transport
+        .auxiliaries
+        .push(Box::new(PanicCancelAuxiliary { finished }));
+    let owner = transport
+        .attach(
+            compiled.engine,
+            &compiled.bindings,
+            CancellationToken::default(),
+        )
+        .unwrap_or_else(|_| panic!("attach"));
+    owner.activate().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !finished && probe.drops.load(Ordering::Acquire) == 0 {
+        assert!(Instant::now() < deadline, "native failure was not reached");
+        std::thread::yield_now();
+    }
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let control = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            let status = owner.status();
+            if matches!(status, OwnerStatus::Failed(_)) {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "native failure was not recorded");
+            std::thread::yield_now();
+        };
+        sender
+            .send((status, owner.stop_and_join()))
+            .unwrap_or_else(|_| panic!("test receiver dropped"));
+    });
+    let (status, returned) = receiver
+        .recv_timeout(Duration::from_secs(3))
+        .expect("status/cleanup deadlocked after auxiliary cancel panic");
+    control.join().unwrap();
+    assert_eq!(status, OwnerStatus::Failed(BackendError::WorkerPanicked));
+    assert_eq!(returned.error, Some(BackendError::WorkerPanicked));
+    assert!(released.try_recv().is_err());
+    drop(returned);
+    assert_eq!(
+        released.recv_timeout(Duration::from_secs(2)).unwrap(),
+        std::thread::current().id()
+    );
+}
+
+#[test]
+fn combined_native_and_dsp_faults_keep_panic_dominance_and_control_side_engine_drop() {
+    for dsp_panic in [false, true] {
+        for run in [Effect::Ok, Effect::Error, Effect::Panic] {
+            for stop in [Effect::Ok, Effect::Error, Effect::Panic] {
+                for observation in [Effect::Ok, Effect::Panic] {
+                    for release in [Effect::Ok, Effect::Error, Effect::Panic] {
+                        for native_drop in [Effect::Ok, Effect::Panic] {
+                            assert_combined_faults(
+                                Faults {
+                                    run,
+                                    stop,
+                                    observation,
+                                    release,
+                                    drop: native_drop,
+                                },
+                                dsp_panic,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn assert_combined_faults(faults: Faults, dsp_panic: bool) {
+    let mut graph = LogicalGraph::new();
+    let node = graph.create_node(NodeKind::Sink, 2).unwrap();
+    let config = moiren_engine::host::NodeConfig::Output(
+        moiren_windows_audio::engine_backend::physical_output(
+            moiren_engine::node::EndpointSelector::FollowDefault(
+                moiren_engine::node::DefaultDeviceRole::Multimedia,
+            ),
+        ),
+    );
+    let monitor = recovery::RecoveryMonitor::default();
+    let ticket = monitor.register(3, vec![(node, config)], 96000);
+    let (transport, compiled, released, probe) =
+        transport_with_recovery::<f64>(Failure::Combined(faults), dsp_panic, Some(ticket));
+    let owner = transport
+        .attach(
+            compiled.engine,
+            &compiled.bindings,
+            CancellationToken::default(),
+        )
+        .unwrap_or_else(|_| panic!("attach"));
+    owner.activate().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    if !dsp_panic && faults.run == Effect::Ok {
+        while probe.written.load(Ordering::Acquire) == 0 {
+            assert!(Instant::now() < deadline, "no render progress: {faults:?}");
+            std::thread::yield_now();
+        }
+        owner.cancel();
+    }
+    let panic = dsp_panic
+        || [
+            faults.run,
+            faults.stop,
+            faults.observation,
+            faults.release,
+            faults.drop,
+        ]
+        .contains(&Effect::Panic);
+    let expected = if panic {
+        Some(BackendError::WorkerPanicked)
+    } else if faults.release == Effect::Error {
+        Some(Effect::Error.apply("release").unwrap_err())
+    } else if faults.stop == Effect::Error {
+        Some(Effect::Error.apply("stop").unwrap_err())
+    } else if faults.run == Effect::Error {
+        Some(Effect::Error.apply("run").unwrap_err())
+    } else {
+        None
+    };
+    if let Some(error) = &expected {
+        loop {
+            if let OwnerStatus::Failed(actual) = owner.status() {
+                assert_eq!(&actual, error, "{faults:?}, DSP panic={dsp_panic}");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "failure not reported: {faults:?}"
+            );
+            std::thread::yield_now();
+        }
+    }
+    assert!(monitor.poll().is_none(), "worker must never publish");
+    assert!(released.try_recv().is_err(), "worker dropped Engine");
+    owner.cancel();
+    let returned = owner.stop_and_join();
+    let recoverable = !panic
+        && faults.run == Effect::Error
+        && faults.stop == Effect::Ok
+        && faults.release == Effect::Ok;
+    assert_eq!(returned.error, if recoverable { None } else { expected });
+    assert_eq!(monitor.poll().is_some(), recoverable);
+    assert_eq!(probe.stops.load(Ordering::Acquire), 1);
+    assert_eq!(probe.releases.load(Ordering::Acquire), 1);
+    assert_eq!(probe.drops.load(Ordering::Acquire), 1);
+    assert!(released.try_recv().is_err());
+    drop(returned);
+    assert_eq!(
+        released.recv_timeout(Duration::from_secs(2)).unwrap(),
+        std::thread::current().id()
+    );
 }
 
 #[test]
