@@ -8,6 +8,14 @@ impl GraphPreparation {
         &self,
         max_block_frames: usize,
     ) -> Result<moiren_engine::host::EngineProject, String> {
+        self.configured_engine_project(max_block_frames, &crate::service::AudioSettings::default())
+    }
+
+    pub fn configured_engine_project(
+        &self,
+        max_block_frames: usize,
+        settings: &crate::service::AudioSettings,
+    ) -> Result<moiren_engine::host::EngineProject, String> {
         use moiren_core::protocol::ParamValue;
         use moiren_engine::{
             boundary::{CaptureIntent, ClockRole},
@@ -18,12 +26,19 @@ impl GraphPreparation {
             },
             processor::{Gain, Pan},
         };
+        settings.validate().map_err(|error| error.to_string())?;
+        // The legacy default backend negotiates native Shared mix rates and
+        // adapts capture to 48 kHz itself. Keep its unspecified hardware intent;
+        // every professional configuration resolves explicit processing intent.
+        let legacy_defaults = settings == &crate::service::AudioSettings::default();
         self.primary_io_nodes()?;
         let mut project = EngineProject {
             graph: self.graph.clone(),
             ..EngineProject::default()
         };
+        project.processing.engine.processing_sr = f64::from(settings.processing.sample_rate);
         project.processing.engine.max_block_frames = max_block_frames;
+        project.processing.control_horizon_frames = u64::from(settings.processing.sample_rate);
         project.strips.extend(self.mixer_configs());
         let master = self
             .graph
@@ -46,11 +61,19 @@ impl GraphPreparation {
                 .expect("validated node state");
             let config = match node.kind() {
                 NodeKind::Source => {
+                    let mut device = DeviceOptions::default();
                     let source = match state.source.as_ref().ok_or("输入节点尚未绑定音源")?
                     {
                         InputSelection::Physical { endpoint_id } => {
                             if !inputs.insert(format!("physical:{endpoint_id}")) {
                                 return Err("多个输入节点绑定了同一物理设备".into());
+                            }
+                            if !legacy_defaults {
+                                device = settings.effective_input(endpoint_id).device_options(
+                                    settings.backend,
+                                    settings.processing.sample_rate,
+                                    ClockRole::Follower,
+                                );
                             }
                             InputSource::Physical(pinned(endpoint_id))
                         }
@@ -65,6 +88,11 @@ impl GraphPreparation {
                             if !inputs.insert(executable.clone()) {
                                 return Err("多个输入节点绑定了同一应用音源".into());
                             }
+                            // Process loopback owns a fixed WASAPI Shared float
+                            // stream. Physical input defaults cannot turn it
+                            // into an exclusive or ASIO capture endpoint.
+                            device.hardware_sample_rate = Some(48_000);
+                            device.sample_format = crate::service::SampleFormat::Float32;
                             InputSource::Application {
                                 executable,
                                 intent: CaptureIntent::PassiveTap,
@@ -77,7 +105,7 @@ impl GraphPreparation {
                     NodeConfig::Input(InputConfig {
                         source,
                         channels: node.channels(),
-                        device: DeviceOptions::default(),
+                        device,
                     })
                 }
                 NodeKind::Sink => {
@@ -88,16 +116,25 @@ impl GraphPreparation {
                     if !endpoints.insert(endpoint.clone()) {
                         return Err("多个输出节点绑定了同一设备".into());
                     }
+                    let clock_role = if Some(node.id()) == master {
+                        ClockRole::Master
+                    } else {
+                        ClockRole::Follower
+                    };
                     NodeConfig::Output(OutputConfig {
                         target: OutputTarget::Physical(pinned(endpoint)),
                         channels: node.channels(),
-                        device: DeviceOptions {
-                            clock_role: if Some(node.id()) == master {
-                                ClockRole::Master
-                            } else {
-                                ClockRole::Follower
-                            },
-                            ..DeviceOptions::default()
+                        device: if legacy_defaults {
+                            DeviceOptions {
+                                clock_role,
+                                ..DeviceOptions::default()
+                            }
+                        } else {
+                            settings.effective_output(endpoint).device_options(
+                                settings.backend,
+                                settings.processing.sample_rate,
+                                clock_role,
+                            )
                         },
                     })
                 }

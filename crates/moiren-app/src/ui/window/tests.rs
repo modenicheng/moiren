@@ -239,7 +239,6 @@ fn app_quit_drains_delayed_preference_chain_and_restores_latest_profile(
     view.update(cx, |shell, cx| {
         shell.preferences = project::AppPreferences::default();
         shell.preferences_path = Some(path.clone());
-        shell.settings_open = true;
         // A parked predecessor deterministically delays the first actual save
         // without blocking the UI executor or relying on filesystem speed.
         shell.preference_save = Some(cx.background_executor().spawn(async move {
@@ -256,10 +255,11 @@ fn app_quit_drains_delayed_preference_chain_and_restores_latest_profile(
         }));
         cx.notify();
     });
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("latency-balanced", cx);
-        window.click("latency-low", cx);
+    view.update(cx, |shell, cx| {
+        shell.preferences.latency_profile = AudioLatencyProfile::Balanced;
+        shell.save_preferences(cx);
+        shell.preferences.latency_profile = AudioLatencyProfile::Low;
+        shell.save_preferences(cx);
     });
     cx.run_until_parked();
     let quitting = view.update(cx, |shell, _| {
@@ -307,122 +307,6 @@ fn app_quit_drains_delayed_preference_chain_and_restores_latest_profile(
     handle.request_exit();
     runtime.join().unwrap();
     std::fs::remove_file(&path).unwrap();
-    std::fs::remove_dir(&directory).unwrap();
-}
-
-#[gpui_kit::test]
-fn settings_profile_actions_reach_service_and_persist_last_choice(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    use crate::{project, service::AudioLatencyProfile};
-    cx.update(gpui_kit::init);
-    let runtime = ServiceRuntime::spawn().unwrap();
-    let handle = runtime.handle();
-    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
-    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
-    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
-    let directory = std::env::temp_dir().join(format!(
-        "moiren-latency-ui-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let path = directory.join("preferences.json");
-    view.update(cx, |shell, cx| {
-        shell.preferences = project::AppPreferences::default();
-        shell.preferences_path = Some(path.clone());
-        shell.settings_open = true;
-        cx.notify();
-    });
-    for (id, expected) in [
-        ("latency-balanced", AudioLatencyProfile::Balanced),
-        ("latency-low", AudioLatencyProfile::Low),
-        ("latency-compatible", AudioLatencyProfile::Compatible),
-    ] {
-        cx.update(|window, cx| {
-            window.render_frame(cx);
-            window.click(id, cx);
-        });
-        cx.run_until_parked();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            let consumed = view.update(cx, |shell, cx| {
-                shell.state.update(cx, |state, _| state.poll());
-                let state = shell.state.read(cx);
-                !state.pending_request && state.snapshot.latency_profile == expected
-            });
-            if consumed {
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        assert_eq!(
-            project::load_preferences_at(&path).unwrap().latency_profile,
-            expected
-        );
-        view.update(cx, |shell, cx| {
-            assert_eq!(shell.project_message.as_deref(), Some("Preferences saved"));
-            assert_eq!(
-                shell.state.read(cx).snapshot.phase,
-                crate::service::SessionPhase::Idle
-            );
-            assert_eq!(shell.state.read(cx).snapshot.active_latency_profile, None);
-        });
-    }
-    // Both writes are queued before the executor runs; their order must survive
-    // background filesystem work, rather than depending on task scheduling.
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("latency-balanced", cx);
-        window.click("latency-low", cx);
-    });
-    cx.run_until_parked();
-    assert_eq!(
-        project::load_preferences_at(&path).unwrap().latency_profile,
-        AudioLatencyProfile::Low
-    );
-    let blocked_path = directory.join("blocked");
-    std::fs::write(&blocked_path, b"a file cannot be a configuration directory").unwrap();
-    view.update(cx, |shell, cx| {
-        shell.preferences_path = Some(blocked_path.join("preferences.json"));
-        shell.save_preferences(cx);
-    });
-    cx.run_until_parked();
-    view.update(cx, |shell, cx| {
-        assert!(
-            shell
-                .project_message
-                .as_deref()
-                .unwrap()
-                .starts_with("Could not save preferences:")
-        );
-        shell.preferences_path = Some(path.clone());
-        shell.save_preferences(cx);
-    });
-    cx.run_until_parked();
-    view.update(cx, |shell, _| {
-        assert_eq!(shell.project_message.as_deref(), Some("Preferences saved"))
-    });
-    handle.request_exit();
-    runtime.join().unwrap();
-    cx.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("latency-compatible", cx);
-    });
-    cx.run_until_parked();
-    view.update(cx, |shell, cx| {
-        assert_eq!(shell.preferences.latency_profile, AudioLatencyProfile::Low);
-        assert!(shell.state.read(cx).dispatch_error.is_some());
-    });
-    assert_eq!(
-        project::load_preferences_at(&path).unwrap().latency_profile,
-        AudioLatencyProfile::Low
-    );
-    std::fs::remove_file(&path).unwrap();
-    std::fs::remove_file(&blocked_path).unwrap();
     std::fs::remove_dir(&directory).unwrap();
 }
 
@@ -482,4 +366,600 @@ fn graph_wire_selection_shows_connection_properties_without_selecting_node(
     });
     handle.request_exit();
     runtime.join().unwrap();
+}
+
+fn settings_test_path(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir()
+        .join(format!(
+            "moiren-settings-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+        .join("preferences.json")
+}
+
+fn settle_settings(view: &gpui_kit::Entity<StudioShell>, cx: &mut gpui_kit::VisualTestContext) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        cx.update(|window, cx| window.render_frame(cx));
+        cx.run_until_parked();
+        if view.update(cx, |shell, _| !shell.settings.busy()) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "settings transaction did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn settings_modal_blocks_graph_input_and_restores_workspace_and_focus(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let runtime = ServiceRuntime::spawn().unwrap();
+    let handle = runtime.handle();
+    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+    view.update(cx, |shell, cx| {
+        shell.camera.pan_x = 123.;
+        shell.camera.pan_y = 87.;
+        shell.camera.zoom = 0.89;
+        shell.camera.adjusted = true;
+        shell.selected_node = Some(format!(
+            "{:?}",
+            shell.state.read(cx).snapshot.graph.graph.nodes()[1].id()
+        ));
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+        window.render_frame(cx);
+        assert!(window.find("settings-dialog").visible());
+        assert!(
+            window.find("graph-page").visible(),
+            "workspace remains mounted"
+        );
+        assert!(
+            window.find("settings-save").visible(),
+            "footer stays visible"
+        );
+        window.press("delete", cx);
+        for _ in 0..80 {
+            window.press("tab", cx);
+        }
+        window.scroll(
+            "settings-scroll",
+            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-160.))),
+            cx,
+        );
+    });
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| {
+            assert!(
+                shell.settings.focus.contains_focused(window, cx),
+                "Tab remains inside modal"
+            );
+            assert_eq!(shell.state.read(cx).snapshot.graph.graph.nodes().len(), 4);
+            assert!(shell.selected_node.is_some());
+            assert_eq!(
+                (shell.camera.pan_x, shell.camera.pan_y, shell.camera.zoom),
+                (123., 87., 0.89)
+            );
+        });
+        window.press("escape", cx);
+        assert!(window.try_find("settings-dialog").is_none());
+        view.update(cx, |shell, cx| {
+            assert_eq!(shell.presentation.page, pages::Page::Graph);
+            assert!(!shell.settings_open);
+            assert!(!shell.settings.focus.contains_focused(window, cx));
+        });
+        window.click("open-settings", cx);
+        window.click_at("settings-backdrop", point(px(8.), px(8.)), cx);
+        assert!(window.try_find("settings-dialog").is_none());
+        assert_eq!(window.find("tab-graph").selected(), Some(true));
+        window.click("open-settings", cx);
+        // A click at the underlying tab is a backdrop dismissal only.
+        window.click("tab-mixer", cx);
+        assert_eq!(window.find("tab-graph").selected(), Some(true));
+        assert!(window.try_find("settings-dialog").is_none());
+        window.click("open-settings", cx);
+        window.click("close-settings", cx);
+        assert!(window.try_find("settings-dialog").is_none());
+    });
+    handle.request_exit();
+    runtime.join().unwrap();
+}
+
+#[gpui_kit::test]
+fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use moiren_engine::audio_config::{AudioBackend, ProcessingPrecision};
+    cx.update(gpui_kit::init);
+    let runtime = ServiceRuntime::spawn().unwrap();
+    let handle = runtime.handle();
+    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let path = settings_test_path("draft");
+    view.update(cx, |shell, cx| {
+        shell.preferences = crate::project::AppPreferences::default();
+        shell.preferences_path = Some(path.clone());
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(1000.)));
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+        window.render_frame(cx);
+        assert!(window.find("settings-dialog").visible());
+        window.click("processing-rate-0", cx);
+        window.render_frame(cx);
+        window.click("processing-precision-1", cx);
+        window.render_frame(cx);
+        window.click("processing-buffer-6", cx);
+        window.render_frame(cx);
+        window.click("audio-backend-1", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("default-input-mode-0").is_none());
+        assert!(window.try_find("default-input-format-0").is_none());
+        assert!(window.try_find("settings-restart").is_none());
+    });
+    view.update(cx, |shell, cx| {
+        assert!(shell.settings.global.dirty());
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .audio_settings
+                .processing
+                .sample_rate,
+            48_000
+        );
+        assert_eq!(shell.preferences.audio.processing.sample_rate, 48_000);
+        assert!(!shell.state.read(cx).pending_request);
+    });
+    assert!(!path.exists());
+    cx.update(|window, cx| window.click("settings-save", cx));
+    settle_settings(&view, cx);
+    view.update(cx, |shell, cx| {
+        let state = shell.state.read(cx);
+        assert_eq!(state.snapshot.phase, crate::service::SessionPhase::Idle);
+        assert!(state.snapshot.active_audio_settings.is_none());
+        assert_eq!(state.snapshot.audio_settings.backend, AudioBackend::Asio);
+        assert_eq!(
+            state.snapshot.audio_settings.processing.precision,
+            ProcessingPrecision::F64
+        );
+        assert_eq!(state.snapshot.audio_settings.processing.block_frames, 4096);
+        assert!(!shell.settings.global.dirty());
+        assert_eq!(shell.project_message.as_deref(), Some("Preferences saved"));
+    });
+    assert_eq!(
+        crate::project::load_preferences_at(&path)
+            .unwrap()
+            .audio
+            .processing
+            .sample_rate,
+        44_100
+    );
+    cx.update(|window, cx| {
+        window.click("settings-appearance", cx);
+        window.click("density-1", cx);
+        window.click("settings-save", cx);
+    });
+    settle_settings(&view, cx);
+    assert_eq!(
+        crate::project::load_preferences_at(&path).unwrap().density,
+        crate::project::UiDensity::Compact
+    );
+    handle.request_exit();
+    runtime.join().unwrap();
+    cx.update(|window, cx| {
+        window.click("density-0", cx);
+        window.click("settings-save", cx);
+    });
+    view.update(cx, |shell, _| {
+        assert!(shell.settings.global.error.is_some());
+        assert!(shell.settings.global.dirty());
+        assert_eq!(shell.density, super::Density::Compact);
+    });
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[gpui_kit::test]
+fn device_inspection_and_overrides_are_independent_from_candidate_bindings(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use super::settings::{Direction, Editor};
+    cx.update(gpui_kit::init);
+    let runtime = ServiceRuntime::spawn().unwrap();
+    let handle = runtime.handle();
+    let mut snapshot = (*crate::ui::state::initial_snapshot(&handle).unwrap()).clone();
+    std::sync::Arc::make_mut(&mut snapshot.catalog)
+        .outputs
+        .push(crate::service::DeviceRow {
+            endpoint_id: "output-a".into(),
+            name: "Studio output".into(),
+        });
+    let state = cx.new(|_| UiState::new(handle.clone(), std::sync::Arc::new(snapshot)));
+    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let path = settings_test_path("device");
+    view.update(cx, |shell, cx| {
+        shell.preferences_path = Some(path.clone());
+        shell.set_page(pages::Page::Devices, cx);
+    });
+    let before = view.update(cx, |shell, cx| {
+        shell.state.read(cx).selection.output_id.clone()
+    });
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(1000.)));
+        window.render_frame(cx);
+        window.click("inspect-output-a", cx);
+        window.click("device-override", cx);
+        window.click("device-output-rate-4", cx);
+        window.click("device-output-format-2", cx);
+        window.click("device-settings-save", cx);
+    });
+    settle_settings(&view, cx);
+    view.update(cx, |shell, cx| {
+        assert_eq!(shell.state.read(cx).selection.output_id, before);
+        assert_eq!(
+            shell.state.read(cx).snapshot.phase,
+            crate::service::SessionPhase::Idle
+        );
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .audio_settings
+                .output_overrides["output-a"]
+                .sample_rate,
+            Some(96_000)
+        );
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .audio_settings
+                .output_overrides["output-a"]
+                .format,
+            moiren_engine::audio_config::SampleFormat::Pcm24
+        );
+        assert!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .audio_settings
+                .input_overrides
+                .is_empty()
+        );
+        // Dirty device A, then save a global default and an unrelated override.
+        super::settings::device_stream_mut(
+            &mut shell.settings.device.audio,
+            Direction::Output,
+            "output-a",
+        )
+        .buffer_frames = Some(128);
+        shell.settings.global = shell.current_settings_draft(cx);
+        shell.settings.global.audio.output.sample_rate = Some(88_200);
+        super::settings::device_stream_mut(
+            &mut shell.settings.global.audio,
+            Direction::Input,
+            "input-b",
+        )
+        .buffer_frames = Some(512);
+        shell.save_audio_settings(Editor::Global, false, cx);
+    });
+    settle_settings(&view, cx);
+    view.update(cx, |shell, cx| {
+        shell.save_audio_settings(Editor::Device, false, cx)
+    });
+    settle_settings(&view, cx);
+    let saved = crate::project::load_preferences_at(&path).unwrap();
+    assert_eq!(saved.audio.output.sample_rate, Some(88_200));
+    assert_eq!(
+        saved.audio.output_overrides["output-a"].buffer_frames,
+        Some(128)
+    );
+    assert_eq!(
+        saved.audio.input_overrides["input-b"].buffer_frames,
+        Some(512)
+    );
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("device-use-defaults", cx);
+        window.click("device-settings-save", cx);
+    });
+    settle_settings(&view, cx);
+    let saved = crate::project::load_preferences_at(&path).unwrap();
+    assert!(!saved.audio.output_overrides.contains_key("output-a"));
+    assert_eq!(saved.audio.effective_output("output-a"), saved.audio.output);
+    assert!(saved.audio.input_overrides.contains_key("input-b"));
+    handle.request_exit();
+    runtime.join().unwrap();
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+struct SettingsConfirmationDriver {
+    log: std::sync::Arc<std::sync::Mutex<Vec<crate::service::AppRequest>>>,
+    confirm: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    initialized: bool,
+    awaiting: bool,
+}
+
+impl crate::service::ServiceDriver for SettingsConfirmationDriver {
+    fn request(
+        &mut self,
+        context: &mut crate::service::ServiceContext,
+        _: &mut crate::service::JobPool,
+        request: crate::service::AppRequest,
+    ) {
+        use crate::service::AppRequest;
+        self.log.lock().unwrap().push(request.clone());
+        match request {
+            AppRequest::SetAudioSettings(settings) => {
+                context.set_audio_settings(settings);
+            }
+            AppRequest::SetLatencyProfile(profile) => context.latency_profile = profile,
+            AppRequest::ApplyGraph => {
+                if self.fail.load(std::sync::atomic::Ordering::Acquire) {
+                    context
+                        .graph
+                        .record_error("Device format rejected by test driver");
+                } else {
+                    let revision = context.graph.snapshot().candidate_revision;
+                    context.graph.preparing(context.core.generation(), revision);
+                    self.awaiting = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn poll(
+        &mut self,
+        context: &mut crate::service::ServiceContext,
+        _: &mut crate::service::JobPool,
+        _: crate::service::RoundBudget,
+    ) {
+        if !self.initialized {
+            self.initialized = true;
+            let spec = crate::service::SessionSpec {
+                source: crate::service::InputSelection::Tone { frequency_hz: 440. },
+                output_endpoint_id: "fixture-output".into(),
+                limit: crate::service::RunLimit::UntilStopped,
+                gain: 0.,
+                pan: 0.,
+                max_block_frames: 256,
+            };
+            context.graph.configure_session(&spec).unwrap();
+            let generation = context.core.start(spec).unwrap();
+            assert!(context.core.activated(generation));
+            assert!(context.core.owner_started(generation));
+            let revision = context.graph.snapshot().candidate_revision;
+            context.graph.preparing(generation, revision);
+            context.graph.running(generation, revision);
+            context.active_audio_settings = Some(context.audio_settings.clone());
+            context.active_latency_profile = if context.audio_settings == Default::default() {
+                Some(context.latency_profile)
+            } else {
+                None
+            };
+        }
+        if self.awaiting && self.confirm.load(std::sync::atomic::Ordering::Acquire) {
+            self.awaiting = false;
+            let revision = context.graph.snapshot().candidate_revision;
+            context.graph.running(context.core.generation(), revision);
+            context.active_audio_settings = Some(context.audio_settings.clone());
+            context.active_latency_profile = if context.audio_settings == Default::default() {
+                Some(context.latency_profile)
+            } else {
+                None
+            };
+        }
+    }
+
+    fn begin_exit(
+        &mut self,
+        context: &mut crate::service::ServiceContext,
+        _: &mut crate::service::JobPool,
+    ) {
+        if let Some(generation) = context.core.owner_generation() {
+            context.core.owner_reaped(generation);
+        }
+    }
+
+    fn is_drained(&self) -> bool {
+        true
+    }
+}
+
+#[gpui_kit::test]
+fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::{AppRequest, AudioLatencyProfile};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    cx.update(gpui_kit::init);
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let confirm = Arc::new(AtomicBool::new(false));
+    let fail = Arc::new(AtomicBool::new(false));
+    let runtime = ServiceRuntime::spawn_with_driver(SettingsConfirmationDriver {
+        log: log.clone(),
+        confirm: confirm.clone(),
+        fail: fail.clone(),
+        initialized: false,
+        awaiting: false,
+    })
+    .unwrap();
+    let handle = runtime.handle();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let snapshot = loop {
+        if let Some(snapshot) = handle.try_snapshot()
+            && snapshot.phase == crate::service::SessionPhase::Running
+        {
+            break snapshot;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let path = settings_test_path("restart");
+    view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+        window.render_frame(cx);
+        window.click("processing-rate-3", cx);
+        window.render_frame(cx);
+        window.click("settings-save", cx);
+    });
+    settle_settings(&view, cx);
+    assert!(
+        !log.lock()
+            .unwrap()
+            .iter()
+            .any(|request| matches!(request, AppRequest::ApplyGraph))
+    );
+    view.update(cx, |shell, cx| {
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .active_audio_settings
+                .as_ref()
+                .unwrap()
+                .processing
+                .sample_rate,
+            48_000
+        );
+        shell.settings.global.profile = AudioLatencyProfile::Balanced;
+    });
+    cx.update(|window, cx| {
+        window.click("processing-rate-0", cx);
+        window.click("settings-restart", cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+        });
+        cx.update(|window, cx| window.render_frame(cx));
+        if log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| matches!(request, AppRequest::ApplyGraph))
+        {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let requests = log.lock().unwrap().clone();
+    assert!(
+        matches!(&requests[requests.len()-3], AppRequest::SetAudioSettings(settings) if settings.processing.sample_rate == 44_100)
+    );
+    assert_eq!(
+        requests[requests.len() - 2],
+        AppRequest::SetLatencyProfile(AudioLatencyProfile::Balanced)
+    );
+    assert_eq!(requests[requests.len() - 1], AppRequest::ApplyGraph);
+    view.update(cx, |shell, cx| {
+        assert!(shell.settings.global.pending.is_some());
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .active_audio_settings
+                .as_ref()
+                .unwrap()
+                .processing
+                .sample_rate,
+            48_000
+        );
+        assert_eq!(shell.preferences.audio.processing.sample_rate, 96_000);
+    });
+    confirm.store(true, Ordering::Release);
+    settle_settings(&view, cx);
+    assert_eq!(
+        crate::project::load_preferences_at(&path)
+            .unwrap()
+            .audio
+            .processing
+            .sample_rate,
+        44_100
+    );
+    fail.store(true, Ordering::Release);
+    cx.update(|window, cx| {
+        window.click("processing-rate-3", cx);
+        window.click("settings-restart", cx);
+    });
+    settle_settings(&view, cx);
+    view.update(cx, |shell, cx| {
+        assert!(shell.settings.global.dirty());
+        assert_eq!(shell.settings.global.audio.processing.sample_rate, 96_000);
+        assert!(
+            shell
+                .settings
+                .global
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Device format rejected")
+        );
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .active_audio_settings
+                .as_ref()
+                .unwrap()
+                .processing
+                .sample_rate,
+            44_100
+        );
+        assert_eq!(shell.preferences.audio.processing.sample_rate, 44_100);
+    });
+    assert_eq!(
+        crate::project::load_preferences_at(&path)
+            .unwrap()
+            .audio
+            .processing
+            .sample_rate,
+        44_100
+    );
+    handle.request_exit();
+    runtime.join().unwrap();
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }

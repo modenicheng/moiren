@@ -137,6 +137,7 @@ fn large_graph_fit_camera_round_trips_through_project_storage() {
         },
     );
     let mut document = ProjectDocument {
+        processing: None,
         version: PROJECT_VERSION,
         name: "Large graph layout".into(),
         session: None,

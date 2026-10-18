@@ -106,6 +106,7 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
 pub struct StudioShell {
     state: Entity<UiState>,
     settings_open: bool,
+    settings: settings::SettingsEditor,
     project_menu: bool,
     sidebar_open: bool,
     inspector_open: bool,
@@ -253,9 +254,11 @@ impl StudioShell {
             crate::project::UiDensity::Compact => Density::Compact,
             _ => Density::Comfortable,
         };
+        let settings = settings::SettingsEditor::new(&preferences, cx);
         let mut shell = Self {
             state,
             settings_open: false,
+            settings,
             project_menu: false,
             sidebar_open: true,
             inspector_open: true,
@@ -367,7 +370,6 @@ impl StudioShell {
                         shell.finish_project_load(cx);
                         let visible = shell.presentation.visible
                             && !shell.presentation.minimized
-                            && !shell.settings_open
                             && matches!(shell.presentation.page, Page::Graph | Page::Mixer);
                         let points = shell.meter_points.get();
                         let meter_changed = shell.meters.update_points(
@@ -487,6 +489,8 @@ mod tests;
 
 impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.finish_settings_save(cx);
+        self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
         self.sync_node_name(window, cx);
         self.sync_mixer_controls(window, cx);
@@ -501,9 +505,8 @@ impl Render for StudioShell {
             self.inspector_open = !compact;
         }
         self.compact = compact;
-        let visible = window.is_visible()
-            && !self.settings_open
-            && matches!(self.presentation.page, Page::Graph | Page::Mixer);
+        let visible =
+            window.is_visible() && matches!(self.presentation.page, Page::Graph | Page::Mixer);
         self.refresh_observation_nodes(cx);
         self.meter_points.set((false, false));
         self.node_meter_points.borrow_mut().clear();
@@ -540,6 +543,27 @@ impl Render for StudioShell {
                 .or(state.snapshot.catalog_error.as_ref())
                 .cloned()
         };
+        let error_strip = error.map(|error| {
+            let log_path = crate::logging::log_path()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "Application file logging is unavailable".into());
+            div()
+                .id("error-strip")
+                .flex_none()
+                .px(px(theme::SPACE_4))
+                .py(px(theme::SPACE_2))
+                .bg(theme::soft(theme::DANGER))
+                .text_color(theme::DANGER)
+                .text_size(px(theme::TEXT_SM))
+                .child(error)
+                .child(
+                    div()
+                        .pt(px(2.))
+                        .text_color(theme::TEXT)
+                        .child(format!("Diagnostics: {log_path}")),
+                )
+                .gpui_test_observe()
+        });
         div()
             .id("studio-shell")
             .relative()
@@ -552,32 +576,18 @@ impl Render for StudioShell {
             .font_family(theme::FONT_UI)
             .text_size(px(theme::TEXT_MD))
             .child(chrome::toolbar(self, cx))
-            .when_some(error, |view, error| {
-                view.child(
-                    div()
-                        .id("error-strip")
-                        .flex_none()
-                        .px(px(theme::SPACE_4))
-                        .py(px(theme::SPACE_2))
-                        .bg(theme::soft(theme::DANGER))
-                        .text_color(theme::DANGER)
-                        .text_size(px(theme::TEXT_SM))
-                        .child(error)
-                        .gpui_test_observe(),
-                )
-            })
-            .child(if self.settings_open {
-                settings::page(self, cx)
-            } else {
-                match self.presentation.page {
-                    Page::Graph => graph::render_graph_page(self, cx),
-                    Page::Mixer => mixer::page(self, cx),
-                    Page::Matrix => matrix::page(self, cx),
-                    Page::Devices => devices::page(self, cx),
-                }
+            .when_some(error_strip, |view, error_strip| view.child(error_strip))
+            .child(match self.presentation.page {
+                Page::Graph => graph::render_graph_page(self, cx),
+                Page::Mixer => mixer::page(self, cx),
+                Page::Matrix => matrix::page(self, cx),
+                Page::Devices => devices::page(self, cx),
             })
             .child(chrome::statusbar(self.state.read(cx)).gpui_test_observe())
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
+            .when(self.settings_open, |v| {
+                v.child(settings::overlay(self, window, cx))
+            })
     }
 }
 

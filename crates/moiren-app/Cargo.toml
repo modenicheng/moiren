@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = { workspace = true }
+flexi_logger = { workspace = true }
+log = { workspace = true }
 gpui-kit = "0.7.3"
 moiren-core = { path = "../moiren-core" }
 moiren-engine = { path = "../moiren-engine" }

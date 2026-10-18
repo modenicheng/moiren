@@ -1,0 +1,18 @@
+[package]
+name = "moiren-professional-rt-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+log = "0.4"
+moiren-core = { path = "../../../../moiren-core" }
+moiren-engine = { path = "../../../../moiren-engine" }
+moiren-windows-audio = { path = "../../.." }
+rtrb = "=0.4.0"
+
+[[test]]
+name = "professional_rt"
+path = "../rt_tests.rs"

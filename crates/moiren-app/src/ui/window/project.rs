@@ -146,6 +146,63 @@ mod tests {
             assert!(shell.pending_project.is_none());
         });
     }
+
+    #[gpui_kit::test]
+    fn project_processing_restores_without_starting_or_replacing_device_defaults(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use moiren_engine::audio_config::{ProcessingPrecision, ProcessingSettings, SampleFormat};
+
+        cx.update(gpui_kit::init);
+        let runtime = ServiceRuntime::spawn().unwrap();
+        let handle = runtime.handle();
+        let initial = crate::ui::state::initial_snapshot(&handle).unwrap();
+        let mut snapshot = (*initial).clone();
+        snapshot.audio_settings.output.format = SampleFormat::Pcm24;
+        snapshot.audio_settings.input.buffer_frames = Some(512);
+        let hardware_defaults = snapshot.audio_settings.clone();
+        let mut document = ProjectDocument::from_graph("96k template", &snapshot.graph).unwrap();
+        let processing = ProcessingSettings {
+            sample_rate: 96_000,
+            precision: ProcessingPrecision::F64,
+            block_frames: 1024,
+        };
+        document.processing = Some(processing);
+        let state = cx.new(|_| UiState::new(handle.clone(), std::sync::Arc::new(snapshot)));
+        let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+        view.update(cx, |shell, cx| {
+            shell.apply_project_presentation(&document, cx).unwrap();
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let done = view.update(cx, |shell, cx| {
+                shell.state.update(cx, |state, _| state.poll());
+                shell.state.read(cx).snapshot.audio_settings.processing == processing
+            });
+            if done {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        view.update(cx, |shell, cx| {
+            let state = shell.state.read(cx);
+            assert_eq!(state.max_block_frames, 1024);
+            assert_eq!(
+                state.snapshot.audio_settings.output,
+                hardware_defaults.output
+            );
+            assert_eq!(state.snapshot.audio_settings.input, hardware_defaults.input);
+            assert!(state.snapshot.active_audio_settings.is_none());
+            assert_eq!(state.snapshot.phase, crate::service::SessionPhase::Idle);
+            assert_eq!(
+                shell.project_document(cx).unwrap().processing,
+                Some(processing)
+            );
+        });
+        handle.request_exit();
+        runtime.join().unwrap();
+    }
 }
 
 impl StudioShell {
@@ -157,6 +214,7 @@ impl StudioShell {
         let mut document =
             ProjectDocument::from_graph(self.project_name.clone(), &state.snapshot.graph)?;
         document.session = state.candidate_config().as_ref().map(Into::into);
+        document.processing = Some(state.snapshot.audio_settings.processing);
         document.layout.camera_x = self.camera.pan_x;
         document.layout.camera_y = self.camera.pan_y;
         document.layout.zoom = self.camera.zoom;
@@ -367,6 +425,26 @@ impl StudioShell {
         document: &ProjectDocument,
         cx: &mut Context<Self>,
     ) -> Result<(), crate::project::PersistenceError> {
+        if let Some(processing) = document.processing {
+            processing
+                .validate()
+                .map_err(|error| crate::project::PersistenceError::Invalid {
+                    field: "processing".into(),
+                    reason: error.to_string(),
+                })?;
+            let mut audio = self.state.read(cx).snapshot.audio_settings.clone();
+            audio.processing = processing;
+            self.state
+                .update(cx, |state, _| {
+                    state
+                        .try_dispatch(AppRequest::SetAudioSettings(audio))
+                        .map(|_| state.max_block_frames = processing.block_frames as usize)
+                })
+                .map_err(|error| crate::project::PersistenceError::Invalid {
+                    field: "service request".into(),
+                    reason: format!("{error:?}"),
+                })?;
+        }
         self.node_positions.clear();
         self.pending_node_spawn = None;
         self.node_name_selection = None;

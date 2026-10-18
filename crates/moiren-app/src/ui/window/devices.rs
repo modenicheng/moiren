@@ -2,6 +2,8 @@ use super::*;
 use crate::ui::state::{SourceMode, output_name, source_name};
 use controls::*;
 
+mod overrides;
+
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DeviceTab {
     Inputs,
@@ -15,6 +17,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
     let catalog = &snapshot.catalog;
+    let asio = snapshot.audio_settings.backend == moiren_engine::audio_config::AudioBackend::Asio;
     let mut tabs = div().flex().items_center().gap(px(6.));
     for (id, title, tab) in [
         ("devices-inputs", "Inputs", DeviceTab::Inputs),
@@ -30,6 +33,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 } else {
                     ButtonVariant::Ghost
                 })
+                .disabled(asio && tab == DeviceTab::Applications)
                 .on_click(move |_, _, cx| {
                     this.update(cx, |s, cx| {
                         s.device_tab = tab;
@@ -50,17 +54,41 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
     match shell.device_tab {
         DeviceTab::Inputs | DeviceTab::Outputs => {
             let input = shell.device_tab == DeviceTab::Inputs;
-            let rows = if input {
+            let available = if asio {
+                &catalog.asio_drivers
+            } else if input {
                 &catalog.inputs
             } else {
                 &catalog.outputs
             };
-            if rows.is_empty() {
-                list = list.child(heading("No devices available")).child(label(
-                    "Refresh to discover connected Windows audio endpoints.",
-                ));
+            let mut rows = available.clone();
+            let saved = if input {
+                &shell.settings.device.audio.input_overrides
+            } else {
+                &shell.settings.device.audio.output_overrides
+            };
+            for id in saved.keys() {
+                if !rows.iter().any(|row| &row.endpoint_id == id) {
+                    rows.push(crate::service::DeviceRow {
+                        endpoint_id: id.clone(),
+                        name: "Unavailable device (saved override)".into(),
+                    });
+                }
             }
-            for row in rows {
+            if rows.is_empty() {
+                list = list
+                    .child(heading("No devices available"))
+                    .child(label(if asio {
+                        "Refresh to discover installed ASIO drivers."
+                    } else {
+                        "Refresh to discover connected Windows audio endpoints."
+                    }));
+            }
+            for row in &rows {
+                let present = available
+                    .iter()
+                    .any(|entry| entry.endpoint_id == row.endpoint_id);
+                let inspected = shell.selected_device.as_ref() == Some(&row.endpoint_id);
                 let selected = if input {
                     state.selection.input_id.as_ref() == Some(&row.endpoint_id)
                 } else {
@@ -76,14 +104,16 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 let id = row.endpoint_id.clone();
                 list = list.child(
                     div()
+                        .id(SharedString::from(format!("device-row-{id}")))
                         .flex()
+                        .flex_wrap()
                         .items_center()
                         .gap(px(12.))
                         .p(px(12.))
                         .rounded(px(theme::RADIUS_MD))
                         .bg(theme::SURFACE)
                         .border_1()
-                        .border_color(if selected {
+                        .border_color(if inspected {
                             theme::PRIMARY
                         } else {
                             theme::BORDER
@@ -97,7 +127,25 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                 .gap(px(4.))
                                 .child(heading(row.name.clone())),
                         )
-                        .when(default, |v| v.child(badge("Default", theme::TEXT_MUTED)))
+                        .when(!present, |v| v.child(badge("Unavailable", theme::WARNING)))
+                        .when(saved.contains_key(&id), |v| {
+                            v.child(badge("Override", theme::PRIMARY))
+                        })
+                        .when(default && !asio, |v| {
+                            v.child(badge("Default", theme::TEXT_MUTED))
+                        })
+                        .child(
+                            button(SharedString::from(format!("inspect-{id}")), "Configure")
+                                .on_click({
+                                    let this = cx.entity();
+                                    let id = id.clone();
+                                    move |_, _, cx| {
+                                        this.update(cx, |shell, cx| {
+                                            shell.inspect_device(id.clone(), cx)
+                                        })
+                                    }
+                                }),
+                        )
                         .when(active, |v| v.child(badge("Active", theme::SUCCESS)))
                         .child(
                             button(
@@ -108,10 +156,9 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                     "Use next start"
                                 },
                             )
+                            .disabled(!present || state.pending_request)
                             .on_click(move |_, _, cx| {
                                 this.update(cx, |s, cx| {
-                                    s.selected_device = Some(id.clone());
-                                    s.inspector_open = true;
                                     s.state.update(cx, |state, _| {
                                         if input {
                                             state.selection.input_id = Some(id.clone());
@@ -125,15 +172,19 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                     cx.notify();
                                 })
                             }),
-                        ),
+                        )
+                        .gpui_test_observe(),
                 );
             }
         }
         DeviceTab::Applications => {
+            if asio {
+                list = list.child(label("Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources."));
+            }
             if catalog.processes.is_empty() {
                 list=list.child(heading("No capturable applications")).child(label("Start an application that plays audio, then refresh. Protected applications may be unavailable."));
             }
-            for process in &catalog.processes {
+            for process in catalog.processes.iter().filter(|_| !asio) {
                 let key = (process.pid, process.creation_time_100ns);
                 let this = cx.entity();
                 list = list.child(
@@ -250,6 +301,21 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         }),
                 ),
         )
+        .when_some(catalog.asio_error.clone(), |view, error| {
+            view.child(
+                div()
+                    .id("devices-asio-error")
+                    .flex_none()
+                    .px(px(16.))
+                    .py(px(8.))
+                    .bg(theme::soft(theme::DANGER))
+                    .text_color(theme::DANGER)
+                    .child(format!(
+                        "ASIO discovery failed: {error}. Refresh devices to retry."
+                    ))
+                    .gpui_test_observe(),
+            )
+        })
         .child(
             div()
                 .flex()
@@ -258,7 +324,15 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .p(px(16.))
                 .gap(px(16.))
                 .child(list)
-                .when(shell.inspector_open, |v| v.child(inspector)),
+                .when(shell.inspector_open, |v| {
+                    if matches!(shell.device_tab, DeviceTab::Inputs | DeviceTab::Outputs)
+                        && shell.selected_device.is_some()
+                    {
+                        v.child(overrides::inspector(shell, cx))
+                    } else {
+                        v.child(inspector)
+                    }
+                }),
         )
         .gpui_test_observe()
         .into_any_element()

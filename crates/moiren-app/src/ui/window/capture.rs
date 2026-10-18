@@ -104,14 +104,18 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         }
                         eprintln!("Capture {}: {result:?}", path.display());
                     }
+                    // Inspect a real catalog row without binding resources or
+                    // submitting any audio request. The override stays a draft.
                     shell.update(cx, |s, cx| {
-                        s.settings_open = true;
-                        cx.notify();
+                        let id = s.state.read(cx).snapshot.catalog.outputs.first()
+                            .map(|row| row.endpoint_id.clone());
+                        if let Some(id) = id {
+                            s.inspect_device(id.clone(), cx);
+                            settings::device_stream_mut(&mut s.settings.device.audio, settings::Direction::Output, &id);
+                        }
                     });
-                    cx.background_executor()
-                        .timer(Duration::from_millis(100))
-                        .await;
-                    let path = directory.join(format!("{name}-settings.png"));
+                    cx.background_executor().timer(Duration::from_millis(100)).await;
+                    let path = directory.join(format!("{name}-device-override.png"));
                     let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
                         window.draw(cx).clear(cx);
                         window.render_to_image()?.save(&path)?;
@@ -121,6 +125,33 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                     eprintln!("Capture {}: {result:?}", path.display());
+                    let _ = window.update(cx, |_, window, cx| {
+                        shell.update(cx, |s, cx| {
+                            s.set_page(Page::Graph, cx);
+                            s.open_settings(window, cx);
+                        });
+                    });
+                    for (suffix, section) in [
+                        ("settings", settings::Section::Audio),
+                        ("settings-appearance", settings::Section::Appearance),
+                        ("settings-diagnostics", settings::Section::Diagnostics),
+                    ] {
+                        shell.update(cx, |s, cx| {
+                            s.settings.section = section;
+                            cx.notify();
+                        });
+                        cx.background_executor().timer(Duration::from_millis(100)).await;
+                        let path = directory.join(format!("{name}-{suffix}.png"));
+                        let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
+                            window.draw(cx).clear(cx);
+                            window.render_to_image()?.save(&path)?;
+                            Ok(())
+                        });
+                        if !matches!(result, Ok(Ok(()))) {
+                            capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        eprintln!("Capture {}: {result:?}", path.display());
+                    }
                 }
                 shell.update(cx, |shell, cx| {
                     shell.set_page(Page::Graph, cx);

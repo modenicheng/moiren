@@ -1,6 +1,7 @@
 //! Application ownership and offline IO orchestration.
 #![deny(unsafe_code)]
 
+pub mod logging;
 pub mod monitor;
 pub mod monitor_cli;
 pub mod project;

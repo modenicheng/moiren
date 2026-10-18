@@ -12,6 +12,8 @@ mod managed;
 mod model;
 mod parameters;
 mod recovery;
+#[cfg(test)]
+mod settings_tests;
 mod signal_preparation;
 mod signals;
 mod startup;
@@ -25,6 +27,7 @@ pub use graph::{
 };
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;
+pub use moiren_engine::audio_config::*;
 pub use signal_preparation::{SignalPreparation, SignalPreparationError};
 pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
 #[cfg(windows)]
@@ -40,8 +43,15 @@ pub enum ServiceStartError {
 pub fn start_service() -> Result<ServiceRuntime, ServiceStartError> {
     #[cfg(windows)]
     {
-        ServiceRuntime::spawn_with_driver(ManagedDriver::windows().with_automatic_startup())
-            .map_err(ServiceStartError::WorkerSpawn)
+        // Automatic catalog/startup can run before the UI is constructed. Seed
+        // saved machine-local audio intent before the service starts polling.
+        let preferences = crate::project::load_preferences().unwrap_or_default();
+        ServiceRuntime::spawn_with_settings(
+            ManagedDriver::windows().with_automatic_startup(),
+            preferences.audio,
+            preferences.latency_profile,
+        )
+        .map_err(ServiceStartError::WorkerSpawn)
     }
     #[cfg(not(windows))]
     {
@@ -85,8 +95,12 @@ impl Default for RoundBudget {
 pub struct ServiceContext {
     #[cfg(windows)]
     pub native_observations: Option<NativeSessionObservations>,
+    #[cfg(windows)]
+    pub professional_observations: Option<ProfessionalSessionObservations>,
     pub latency_profile: AudioLatencyProfile,
     pub active_latency_profile: Option<AudioLatencyProfile>,
+    pub audio_settings: AudioSettings,
+    pub active_audio_settings: Option<AudioSettings>,
     pub graph: ServiceGraph,
     pub monitor_latency: Option<MonitorLatencyStatus>,
     pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
@@ -103,8 +117,12 @@ impl Default for ServiceContext {
         Self {
             #[cfg(windows)]
             native_observations: None,
+            #[cfg(windows)]
+            professional_observations: None,
             latency_profile: AudioLatencyProfile::default(),
             active_latency_profile: None,
+            audio_settings: AudioSettings::default(),
+            active_audio_settings: None,
             graph: ServiceGraph::default(),
             monitor_latency: None,
             monitor_diagnostics: None,
@@ -129,6 +147,17 @@ impl Drop for DeferredPermit {
     }
 }
 impl ServiceContext {
+    /// A complete draft replaces the requested configuration atomically. The
+    /// running owner keeps its own snapshot until an explicit Apply or Start.
+    pub(crate) fn set_audio_settings(&mut self, settings: AudioSettings) -> bool {
+        if let Err(error) = settings.validate() {
+            self.graph.record_error(error);
+            return false;
+        }
+        self.audio_settings = settings;
+        true
+    }
+
     /// Refusal preserves ownership; callers must retain an owned session job.
     pub fn try_defer(
         &mut self,
@@ -203,6 +232,9 @@ impl ServiceDriver for CoreDriver {
             AppRequest::SetGainPan { gain, pan } => c.control.pending_gain_pan = Some((gain, pan)),
             AppRequest::RefreshCatalog => {}
             AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
+            AppRequest::SetAudioSettings(settings) => {
+                c.set_audio_settings(settings);
+            }
             AppRequest::EditGraph(edit) => {
                 let _ = c.graph.edit(edit);
             }
@@ -225,8 +257,19 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
                 && c.core.owner_generation() == Some(value.generation)
                 && c.core.generation() == value.generation
         }),
+        #[cfg(windows)]
+        professional_observations: c.professional_observations.clone().filter(|value| {
+            c.core.phase() == SessionPhase::Running
+                && c.core.owner_generation() == Some(value.generation)
+                && c.core.generation() == value.generation
+        }),
         latency_profile: c.latency_profile,
         active_latency_profile: c.active_latency_profile,
+        audio_settings: c.audio_settings.clone(),
+        active_audio_settings: c.active_audio_settings.clone().filter(|_| {
+            c.core.phase() == SessionPhase::Running
+                && c.core.owner_generation() == Some(c.core.generation())
+        }),
         graph: Arc::new(c.graph.snapshot()),
         monitor_latency: c.monitor_latency.clone(),
         monitor_diagnostics: c.monitor_diagnostics.filter(|diagnostics| {
@@ -258,13 +301,31 @@ impl ServiceRuntime {
     pub fn spawn() -> io::Result<Self> {
         Self::spawn_with_driver(CoreDriver)
     }
-    pub fn spawn_with_driver(mut driver: impl ServiceDriver) -> io::Result<Self> {
+    pub fn spawn_with_driver(driver: impl ServiceDriver) -> io::Result<Self> {
+        Self::spawn_with_settings(
+            driver,
+            AudioSettings::default(),
+            AudioLatencyProfile::default(),
+        )
+    }
+    fn spawn_with_settings(
+        mut driver: impl ServiceDriver,
+        audio_settings: AudioSettings,
+        latency_profile: AudioLatencyProfile,
+    ) -> io::Result<Self> {
+        audio_settings
+            .validate()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let mut pool = JobPool::new()?;
         let (hand_tx, hand_rx) = mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("app-service".into())
             .spawn(move || {
-                let mut c = ServiceContext::default();
+                let mut c = ServiceContext {
+                    audio_settings,
+                    latency_profile,
+                    ..ServiceContext::default()
+                };
                 let (handle, mailbox) =
                     ServiceMailbox::with_snapshot(thread::current(), snapshot(&c));
                 if hand_tx.send(handle).is_err() {

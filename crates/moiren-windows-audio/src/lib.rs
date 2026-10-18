@@ -7,6 +7,7 @@ mod duration;
 pub mod engine_backend;
 pub mod latency;
 pub mod process_loopback;
+pub mod professional;
 pub mod render;
 pub mod shared_stream;
 pub mod stats;
@@ -19,6 +20,9 @@ pub use session::{Activation, ActivationGate, GateError, StopSignal};
 
 #[cfg(windows)]
 pub mod probe;
+
+#[cfg(windows)]
+pub mod exclusive_probe;
 
 #[cfg(windows)]
 pub mod physical;

@@ -364,7 +364,20 @@ impl ServiceDriver for BackendDriver {
     fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
         match request {
             AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
+            AppRequest::SetAudioSettings(settings) => {
+                if c.set_audio_settings(settings) && c.audio_settings != AudioSettings::default() {
+                    c.graph.record_error(
+                        "legacy audio driver cannot apply professional audio settings; use the managed engine driver",
+                    );
+                }
+            }
             AppRequest::Start(spec) => {
+                if c.audio_settings != AudioSettings::default() {
+                    c.graph.record_error(
+                        "legacy audio driver cannot apply professional audio settings; use the managed engine driver",
+                    );
+                    return;
+                }
                 if let Err(error) = c.graph.configure_session(&spec) {
                     c.graph.record_error(error);
                     return;
@@ -380,6 +393,7 @@ impl ServiceDriver for BackendDriver {
                 }
             }
             AppRequest::Stop => {
+                c.active_audio_settings = None;
                 if c.core.stop().is_ok() {
                     self.desired_graph = None;
                     c.graph.stopped();
@@ -501,6 +515,11 @@ impl ServiceDriver for BackendDriver {
                 Ok(()) => self.candidate_identity_matches_session = false,
                 Err(error) => c.graph.record_error(error),
             },
+            AppRequest::ApplyGraph if c.audio_settings != AudioSettings::default() => {
+                c.graph.record_error(
+                    "legacy audio driver cannot apply professional audio settings; use the managed engine driver",
+                );
+            }
             AppRequest::ApplyGraph => match c.graph.session_spec(c.core.desired()) {
                 Ok(spec) => match c.core.start(spec) {
                     Ok(_) => {
@@ -712,6 +731,7 @@ impl ServiceDriver for BackendDriver {
             let finished = owner.session.is_finished();
             if !stale && !finished && started == StartedState::Running {
                 c.core.owner_started(owner.generation);
+                c.active_audio_settings = Some(AudioSettings::default());
                 c.graph
                     .running(owner.generation, owner.credits.graph_revision);
             }
@@ -724,6 +744,7 @@ impl ServiceDriver for BackendDriver {
                 );
             }
             if stale || finished || started == StartedState::Failed {
+                c.active_audio_settings = None;
                 c.graph.stopped();
                 let owner = self.active.take().expect("observed owner");
                 c.core.owner_stopping(owner.generation);
@@ -768,6 +789,7 @@ impl ServiceDriver for BackendDriver {
     }
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
         self.exiting = true;
+        c.active_audio_settings = None;
         c.graph.clear_pending();
         c.graph.stopped();
         self.refresh = false;

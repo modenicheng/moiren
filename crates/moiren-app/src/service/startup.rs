@@ -1,6 +1,19 @@
-use super::{DeviceCatalog, InputSelection, RunLimit, SessionSpec};
+use super::{AudioBackend, DeviceCatalog, InputSelection, RunLimit, SessionSpec};
 
 pub(super) fn default_session(catalog: &DeviceCatalog) -> Option<SessionSpec> {
+    default_session_for_backend(catalog, AudioBackend::Wasapi)
+}
+
+/// WASAPI owns system defaults; ASIO has no safe default driver binding in the
+/// preferences, so automatic startup remains idle until a stable driver row is
+/// selected explicitly.
+pub(super) fn default_session_for_backend(
+    catalog: &DeviceCatalog,
+    backend: AudioBackend,
+) -> Option<SessionSpec> {
+    if backend == AudioBackend::Asio {
+        return None;
+    }
     let input = catalog.default_input_endpoint_id.as_ref()?;
     let output = catalog.default_output_endpoint_id.as_ref()?;
     if !catalog.inputs.iter().any(|row| row.endpoint_id == *input)
@@ -55,6 +68,12 @@ mod tests {
                 endpoint_id: "input".into()
             }
         );
+    }
+
+    #[test]
+    fn asio_never_uses_wasapi_defaults_for_automatic_startup() {
+        assert!(default_session_for_backend(&catalog(), AudioBackend::Asio).is_none());
+        assert!(default_session_for_backend(&catalog(), AudioBackend::Wasapi).is_some());
     }
 
     #[test]
