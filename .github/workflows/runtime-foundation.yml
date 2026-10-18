@@ -40,7 +40,12 @@ jobs:
       - run: cargo +stable run --locked -p moiren-engine --example logical_graph
       - run: cargo +stable run --locked -p moiren-engine --example managed_graph
       - run: cargo +stable run --locked -p moiren-app -- --gain 0.25
-  miri:
+  miri_suites:
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [moiren-core, moiren-engine, moiren-signal]
+        model: [stacked, tree]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -49,7 +54,15 @@ jobs:
       - run: rustup toolchain install nightly --profile minimal --component miri
       - run: cargo +nightly miri setup
       # Miri covers the portable RT contracts; native GPUI/GTK is tested above.
-      - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine -p moiren-signal
-      - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine -p moiren-signal
+      - run: cargo +nightly miri test --locked --no-fail-fast -p ${{ matrix.package }}
         env:
-          MIRIFLAGS: '-Zmiri-tree-borrows'
+          MIRIFLAGS: ${{ matrix.model == 'tree' && '-Zmiri-tree-borrows' || '' }}
+  miri:
+    if: always()
+    needs: miri_suites
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every Miri suite
+        env:
+          MIRI_RESULT: ${{ needs.miri_suites.result }}
+        run: test "$MIRI_RESULT" = success
