@@ -64,6 +64,16 @@ impl<S: ProcessingSample> Supervisor<S> {
                                     }
                                 }
                                 self.desired = revision;
+                                // Observing the new revision or a superseded receipt
+                                // must also observe cancellation of the old candidate.
+                                if let Some((_, cancel)) = &self.preparing {
+                                    cancel.cancel();
+                                }
+                                if self.pending.is_some()
+                                    && let Some(active) = &mut self.active
+                                {
+                                    active.plans.cancel_pending();
+                                }
                                 for (_, previous) in self.edits.drain(..) {
                                     previous.set(EditOutcome::Superseded {
                                         by_graph_revision: revision,
@@ -75,14 +85,6 @@ impl<S: ProcessingSample> Supervisor<S> {
                                     graph_revision: revision,
                                 });
                                 self.edits.push((revision, receipt));
-                                if let Some((_, cancel)) = &self.preparing {
-                                    cancel.cancel();
-                                }
-                                if self.pending.is_some()
-                                    && let Some(active) = &mut self.active
-                                {
-                                    active.plans.cancel_pending();
-                                }
                             } else {
                                 self.project = previous;
                                 self.fault =
