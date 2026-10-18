@@ -19,9 +19,19 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgtk-3-dev libfontconfig1-dev libxkbcommon-x11-dev \
+            libwayland-dev libvulkan-dev libxdo-dev
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - run: cargo +stable check --locked --workspace --all-targets
       - run: cargo +stable test --locked --workspace
+      - name: Test headless desktop UI
+        if: runner.os == 'Windows'
+        run: cargo +stable test --locked -p moiren-app --features gpui-test
       - if: always()
         run: cargo +stable clippy --locked --workspace --all-targets -- -D warnings
       - if: always()
@@ -29,7 +39,7 @@ jobs:
       - run: cargo +stable run --locked -p moiren-engine --example offline
       - run: cargo +stable run --locked -p moiren-engine --example logical_graph
       - run: cargo +stable run --locked -p moiren-engine --example managed_graph
-      - run: cargo +stable run --locked -p moiren-app
+      - run: cargo +stable run --locked -p moiren-app -- --gain 0.25
   miri:
     runs-on: ubuntu-latest
     steps:
@@ -38,7 +48,8 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install nightly --profile minimal --component miri
       - run: cargo +nightly miri setup
-      - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine -p moiren-app
-      - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine -p moiren-app
+      # Miri covers the portable RT contracts; native GPUI/GTK is tested above.
+      - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine -p moiren-signal
+      - run: cargo +nightly miri test --locked -p moiren-core -p moiren-engine -p moiren-signal
         env:
           MIRIFLAGS: '-Zmiri-tree-borrows'
