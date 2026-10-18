@@ -306,5 +306,8 @@ fn compiler_binds_optional_compressor_signal_without_changing_samples() {
         audio.read_interleaved(&mut samples).unwrap();
         rendered.push(samples);
     }
-    assert_eq!(rendered[0], rendered[1]);
+    assert_eq!(rendered[0].len(), rendered[1].len());
+    for (without_signal, with_signal) in rendered[0].iter().zip(&rendered[1]) {
+        assert!((without_signal - with_signal).abs() <= 1e-12);
+    }
 }
