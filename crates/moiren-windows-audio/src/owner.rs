@@ -3,7 +3,9 @@ use std::{marker::PhantomData, rc::Rc};
 use windows::{
     Win32::{
         Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
-        Media::Audio::{IAudioCaptureClient, IAudioClient},
+        Media::Audio::{
+            AUDCLNT_BUFFERFLAGS_SILENT, IAudioCaptureClient, IAudioClient, IAudioRenderClient,
+        },
         System::{
             Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize},
             Threading::{
@@ -57,21 +59,77 @@ impl Drop for Streaming<'_> {
     }
 }
 
-pub(crate) struct PacketLease<'a> {
-    pub client: &'a IAudioCaptureClient,
-    pub frames: u32,
-    pub released: bool,
+/// WASAPI packet release call for one lease. The render client takes
+/// AUDCLNT_BUFFERFLAGS_* flags; the capture client returns packets by frame
+/// count alone and has no flags parameter, so its implementation ignores
+/// `flags`.
+pub(crate) trait LeaseClient {
+    fn release_packet(&self, frames: u32, flags: u32) -> Result<()>;
 }
-impl PacketLease<'_> {
-    pub fn release(mut self) -> Result<()> {
-        self.released = true;
-        unsafe { self.client.ReleaseBuffer(self.frames) }
+
+impl LeaseClient for IAudioCaptureClient {
+    fn release_packet(&self, frames: u32, _flags: u32) -> Result<()> {
+        unsafe { self.ReleaseBuffer(frames) }
     }
 }
-impl Drop for PacketLease<'_> {
+
+impl LeaseClient for IAudioRenderClient {
+    fn release_packet(&self, frames: u32, flags: u32) -> Result<()> {
+        unsafe { self.ReleaseBuffer(frames, flags) }
+    }
+}
+
+/// What Drop returns for a lease abandoned without `release`. Each transport
+/// states its own fallback semantics; there is deliberately no shared default.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LeaseFallback {
+    /// Capture: the whole packet is returned by its frame count. The capture
+    /// ReleaseBuffer API carries no flags; the read stays fully accounted.
+    CapturePacket,
+    /// Professional render: the reserved frames are returned flagged
+    /// AUDCLNT_BUFFERFLAGS_SILENT, so a submission aborted by validation plays
+    /// silence instead of unwritten buffer memory.
+    RenderSilent,
+    /// Shared-mode render cancellation: an empty packet (zero frames, no
+    /// flags) is returned; no part of an abandoned submission is used.
+    RenderEmpty,
+}
+
+/// One RAII release-buffer lease shared by the WASAPI transports. GetBuffer
+/// hands a packet out, `release` returns it on the owner thread, and Drop
+/// applies the transport's [`LeaseFallback`] if control flow escaped without
+/// an explicit release.
+pub(crate) struct PacketLease<'a, C: LeaseClient> {
+    client: &'a C,
+    frames: u32,
+    released: bool,
+    fallback: LeaseFallback,
+}
+impl<'a, C: LeaseClient> PacketLease<'a, C> {
+    pub fn new(client: &'a C, frames: u32, fallback: LeaseFallback) -> Self {
+        Self {
+            client,
+            frames,
+            released: false,
+            fallback,
+        }
+    }
+    /// Owner-thread release of the complete packet. Render submits the
+    /// written frames with no flags; capture returns the read frame count.
+    pub fn release(mut self) -> Result<()> {
+        self.released = true;
+        self.client.release_packet(self.frames, 0)
+    }
+}
+impl<C: LeaseClient> Drop for PacketLease<'_, C> {
     fn drop(&mut self) {
         if !self.released {
-            let _ = unsafe { self.client.ReleaseBuffer(self.frames) };
+            let (frames, flags) = match self.fallback {
+                LeaseFallback::CapturePacket => (self.frames, 0),
+                LeaseFallback::RenderSilent => (self.frames, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32),
+                LeaseFallback::RenderEmpty => (0, 0),
+            };
+            let _ = self.client.release_packet(frames, flags);
         }
     }
 }

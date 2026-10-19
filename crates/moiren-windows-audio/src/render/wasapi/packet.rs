@@ -1,28 +1,11 @@
 //! A render packet is released even when validation aborts the submission.
 use super::api;
-use crate::render::{CHANNELS, RenderError};
+use crate::{
+    owner::{LeaseFallback, PacketLease},
+    render::{CHANNELS, RenderError},
+};
 use windows::Win32::{Foundation::E_POINTER, Media::Audio::IAudioRenderClient};
 
-struct RenderLease<'a> {
-    client: &'a IAudioRenderClient,
-    active: bool,
-}
-impl RenderLease<'_> {
-    fn release(mut self, frames: u32) -> Result<(), RenderError> {
-        self.active = false;
-        api("ReleaseBuffer(render)", unsafe {
-            self.client.ReleaseBuffer(frames, 0)
-        })
-    }
-}
-impl Drop for RenderLease<'_> {
-    fn drop(&mut self) {
-        if self.active {
-            // Shared mode cancellation: no part of an abandoned packet is used.
-            let _ = unsafe { self.client.ReleaseBuffer(0, 0) };
-        }
-    }
-}
 pub(super) fn submit(client: &IAudioRenderClient, samples: &[f32]) -> Result<(), RenderError> {
     if samples.is_empty() {
         return Ok(());
@@ -33,10 +16,7 @@ pub(super) fn submit(client: &IAudioRenderClient, samples: &[f32]) -> Result<(),
     let frames =
         u32::try_from(samples.len() / CHANNELS).map_err(|_| RenderError::InvalidSamples)?;
     let data = api("GetBuffer(render)", unsafe { client.GetBuffer(frames) })?;
-    let lease = RenderLease {
-        client,
-        active: true,
-    };
+    let lease = PacketLease::new(client, frames, LeaseFallback::RenderEmpty);
     if data.is_null() {
         return Err(RenderError::Api {
             stage: "null render buffer",
@@ -53,5 +33,5 @@ pub(super) fn submit(client: &IAudioRenderClient, samples: &[f32]) -> Result<(),
             std::mem::size_of_val(samples),
         );
     }
-    lease.release(frames)
+    api("ReleaseBuffer(render)", lease.release())
 }

@@ -2,7 +2,7 @@
 use super::{CaptureReport, PacketRecord, activation::activate};
 use crate::{
     catalog::ApiFailure,
-    owner::{Mmcss, OwnedHandle, PacketLease, Process, Streaming},
+    owner::{LeaseFallback, Mmcss, OwnedHandle, PacketLease, Process, Streaming},
     stats::{CaptureStats, SILENT, analyze_f32},
 };
 use std::time::{Duration, Instant};
@@ -116,11 +116,7 @@ pub(super) fn capture(process: &Process, report: &mut CaptureReport) -> Result<(
                     break;
                 }
                 report.last_stage = "packet validation / statistics";
-                let lease = PacketLease {
-                    client: &service,
-                    frames,
-                    released: false,
-                };
+                let lease = PacketLease::new(&service, frames, LeaseFallback::CapturePacket);
                 if frames > buffer_frames {
                     return Err(windows::core::Error::from_hresult(E_UNEXPECTED));
                 }

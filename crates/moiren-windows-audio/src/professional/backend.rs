@@ -40,10 +40,6 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
     pub fn observations(&self) -> ProfessionalObservations {
         self.observations.clone()
     }
-    /// Alias for callers that distinguish native settings from legacy timing.
-    pub fn stream_observations(&self) -> ProfessionalObservations {
-        self.observations()
-    }
 }
 
 #[derive(Clone)]

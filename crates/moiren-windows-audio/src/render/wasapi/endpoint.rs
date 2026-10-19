@@ -2,9 +2,7 @@
 use serde::Serialize;
 
 use super::api;
-use crate::{
-    catalog, owner::Apartment, render::RenderError, shared_stream::format::catalog_support,
-};
+use crate::{catalog, owner::Apartment, render::RenderError};
 
 #[derive(Debug, Serialize)]
 pub struct RenderEndpoint {
@@ -17,6 +15,19 @@ pub struct RenderEndpoint {
     pub windows_conversion_required: bool,
     pub errors: Vec<String>,
 }
+impl From<catalog::EndpointRow> for RenderEndpoint {
+    fn from(row: catalog::EndpointRow) -> Self {
+        Self {
+            endpoint_id: row.endpoint_id,
+            name: row.name,
+            sample_rate: row.sample_rate,
+            channels: row.channels,
+            format_supported: row.format_supported,
+            windows_conversion_required: row.windows_conversion_required,
+            errors: row.errors,
+        }
+    }
+}
 /// Read-only catalog; does not choose a default endpoint or modify sessions.
 pub fn list_render_endpoints() -> Result<Vec<RenderEndpoint>, RenderError> {
     let _apartment = api("CoInitializeEx(catalog)", Apartment::new())?;
@@ -24,42 +35,10 @@ pub fn list_render_endpoints() -> Result<Vec<RenderEndpoint>, RenderError> {
     Ok(project_render_endpoints(snapshot))
 }
 pub(super) fn project_render_endpoints(snapshot: catalog::CatalogSnapshot) -> Vec<RenderEndpoint> {
-    let mut endpoints: Vec<_> = snapshot
-        .endpoints
+    // The render snapshot can carry foreign-flow entries: keep only render
+    // endpoints and judge mix formats with the render support direction.
+    catalog::endpoint_rows(snapshot, Some("render"), false)
         .into_iter()
-        .filter(|e| e.flow == "render")
-        .map(|e| {
-            let (supported, windows_conversion_required) = e
-                .mix_format
-                .as_ref()
-                .map_or((None, false), |format| catalog_support(format, false));
-            RenderEndpoint {
-                endpoint_id: e.id,
-                name: e.name,
-                sample_rate: e.mix_format.as_ref().map(|f| f.sample_rate),
-                channels: e.mix_format.as_ref().map(|f| f.channels),
-                format_supported: supported,
-                windows_conversion_required,
-                errors: e
-                    .errors
-                    .into_iter()
-                    .map(|error| format!("{}: {}", error.stage, error.hresult))
-                    .collect(),
-            }
-        })
-        .collect();
-    // A device that failed before its ID was read cannot be selected, but its
-    // original failure must remain visible alongside usable endpoints.
-    for error in snapshot.errors {
-        endpoints.push(RenderEndpoint {
-            endpoint_id: String::new(),
-            name: None,
-            sample_rate: None,
-            channels: None,
-            format_supported: None,
-            windows_conversion_required: false,
-            errors: vec![format!("{}: {}", error.stage, error.hresult)],
-        });
-    }
-    endpoints
+        .map(RenderEndpoint::from)
+        .collect()
 }

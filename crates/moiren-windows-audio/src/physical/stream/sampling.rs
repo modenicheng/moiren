@@ -2,7 +2,7 @@
 use super::{unexpected, write_silence};
 use crate::{
     clock::ClockPoint,
-    owner::PacketLease,
+    owner::{LeaseFallback, PacketLease},
     physical::{DemandRecord, EndpointReport},
     probe::PacketRecord,
     stats::{CaptureStats, SILENT, analyze_f32},
@@ -100,11 +100,7 @@ pub(super) fn capture_packets(
         if frames == 0 {
             break;
         }
-        let lease = PacketLease {
-            client: capture,
-            frames,
-            released: false,
-        };
+        let lease = PacketLease::new(capture, frames, LeaseFallback::CapturePacket);
         report.last_stage = "capture packet validation";
         if frames > capacity || (flags & SILENT == 0 && data.is_null()) {
             return Err(unexpected());

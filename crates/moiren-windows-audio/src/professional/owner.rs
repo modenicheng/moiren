@@ -1,7 +1,7 @@
 //! Native workers park before activation. The master borrows Engine during the
 //! unwind boundary, then returns it through a control-only handoff after Stop.
 use super::{
-    bridge::{refill, unsupported},
+    bridge::{FollowerServo, refill, unsupported},
     native::{NativeStream, NativeStreamInfo, StereoFrame},
     observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
     recovery::RecoveryTicket,
@@ -420,15 +420,14 @@ pub(super) struct Pump {
     offset: usize,
     counters: Arc<Counters>,
     master: bool,
-    target: usize,
-    correction: f64,
+    servo: FollowerServo,
     max_engine_frames: usize,
 }
 impl Pump {
     fn ready_to_start(&self) -> bool {
         self.render
             .as_ref()
-            .is_none_or(|rx| rx.slots() >= self.target)
+            .is_none_or(|rx| rx.slots() >= self.servo.target())
     }
     pub(super) fn new(
         capture: Option<Producer<StereoFrame>>,
@@ -447,6 +446,10 @@ impl Pump {
         } else {
             None
         };
+        // Two native periods expressed in engine-rate frames prime the
+        // follower's start; the u64 form keeps the frame math truncating.
+        let period_frames = (u64::from(info.buffer_frames) * u64::from(engine_rate)
+            / u64::from(info.sample_rate)) as usize;
         Ok(Self {
             capture,
             render,
@@ -457,12 +460,7 @@ impl Pump {
             offset: 0,
             counters,
             master,
-            target: ((u64::from(info.buffer_frames) * u64::from(engine_rate)
-                / u64::from(info.sample_rate)) as usize
-                * 2)
-            .max(64)
-            .min(capacity / 2),
-            correction: 0.0,
+            servo: FollowerServo::new(FollowerServo::start_target(period_frames, capacity)),
             max_engine_frames: (u64::from(info.buffer_frames) * u64::from(engine_rate))
                 .div_ceil(u64::from(info.sample_rate)) as usize
                 + 64,
@@ -502,11 +500,7 @@ impl Pump {
                 let mut rendered = 0usize;
                 if !self.master {
                     let queued = rx.slots() + src.queued_frames();
-                    let desired = ((queued as f64 - self.target as f64) / self.target as f64
-                        * 500.0)
-                        .clamp(-2000.0, 2000.0);
-                    self.correction += (desired - self.correction) * 0.01;
-                    src.set_correction_ppm(self.correction);
+                    src.set_correction_ppm(self.servo.observe(queued));
                 }
                 while self.pending < self.output.len() {
                     refill(src, rx);

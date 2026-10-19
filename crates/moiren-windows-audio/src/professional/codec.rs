@@ -23,6 +23,10 @@ pub struct SampleCodec {
 }
 
 impl SampleCodec {
+    /// Convenience constructor for the canonical layouts used by the test
+    /// harnesses; production builds negotiate via [`SampleCodec::with_layout`]
+    /// from the native format descriptor.
+    #[cfg(test)]
     pub fn new(format: SampleFormat, channels: usize) -> Result<Self, CodecError> {
         let bits = match format {
             SampleFormat::Pcm16 => 16,

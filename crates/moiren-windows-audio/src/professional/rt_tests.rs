@@ -14,7 +14,7 @@ use moiren_engine::{
 };
 #[cfg(windows)]
 use moiren_windows_audio::clock_bridge;
-use moiren_windows_audio::professional::{codec, native, resample};
+use moiren_windows_audio::professional::native;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -32,6 +32,8 @@ use std::{
 mod asio_rt;
 #[path = "bridge.rs"]
 mod bridge;
+#[path = "codec.rs"]
+mod codec;
 #[path = "observations.rs"]
 mod observations;
 #[path = "owner.rs"]
@@ -40,6 +42,8 @@ mod owner;
 mod recovery;
 #[path = "recovery_host_tests.rs"]
 mod recovery_host_tests;
+#[path = "resample.rs"]
+mod resample;
 use bridge::{RingSink, RingSource, Tone};
 use native::{NativeStream, NativeStreamInfo, StereoFrame};
 use observations::{Counters, ProfessionalObservations};

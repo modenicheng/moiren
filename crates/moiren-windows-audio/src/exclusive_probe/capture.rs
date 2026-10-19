@@ -1,7 +1,7 @@
 //! The same process client remains active across occupation and release.
 use super::WindowReport;
 use crate::{
-    owner::{OwnedHandle, PacketLease, Process},
+    owner::{LeaseFallback, OwnedHandle, PacketLease, Process},
     process_loopback::{activation::activate, capture_format},
     stats::{CaptureStats, SILENT, analyze_f32},
 };
@@ -101,11 +101,7 @@ impl Loopback {
                     )
                 }
                 .context("GetBuffer(process loopback)")?;
-                let lease = PacketLease {
-                    client: &self.service,
-                    frames,
-                    released: false,
-                };
+                let lease = PacketLease::new(&self.service, frames, LeaseFallback::CapturePacket);
                 anyhow::ensure!(frames <= self.capacity, "capture packet exceeds capacity");
                 let silent = flags & SILENT != 0;
                 anyhow::ensure!(

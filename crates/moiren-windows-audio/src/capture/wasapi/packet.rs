@@ -3,7 +3,7 @@ use super::api;
 use crate::{
     capture::CaptureError,
     clock_bridge::{CaptureIngress, CapturePacket},
-    owner::PacketLease,
+    owner::{LeaseFallback, PacketLease},
     stats::SILENT,
 };
 use windows::Win32::Media::Audio::IAudioCaptureClient;
@@ -34,11 +34,7 @@ pub(super) fn transfer_packet(
     if frames == 0 {
         return Ok(CaptureTransfer::default());
     }
-    let lease = PacketLease {
-        client,
-        frames,
-        released: false,
-    };
+    let lease = PacketLease::new(client, frames, LeaseFallback::CapturePacket);
     if frames > capacity || (flags & SILENT == 0 && data.is_null()) {
         return Err(CaptureError::InvalidPacket);
     }

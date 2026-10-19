@@ -1,4 +1,7 @@
-use crate::owner::{Process, TaskMemory, take_string};
+use crate::{
+    owner::{Process, TaskMemory, take_string},
+    shared_stream::format::catalog_support,
+};
 use serde::Serialize;
 use std::{
     collections::hash_map::DefaultHasher,
@@ -107,6 +110,72 @@ pub struct CatalogSnapshot {
     pub defaults: Vec<DefaultEndpoint>,
     pub endpoints: Vec<EndpointSnapshot>,
     pub errors: Vec<ApiFailure>,
+}
+
+/// One projected endpoint row shared by the capture and render listings.
+#[derive(Debug)]
+pub(crate) struct EndpointRow {
+    pub endpoint_id: String,
+    pub name: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u16>,
+    pub format_supported: Option<bool>,
+    pub windows_conversion_required: bool,
+    pub errors: Vec<String>,
+}
+
+/// Project a catalog snapshot into endpoint rows.
+///
+/// `flow` keeps only one direction's endpoints: the render snapshot can carry
+/// foreign-flow entries and passes `Some("render")`; the capture snapshot is
+/// already capture-only and passes `None`. `capture` is the `catalog_support`
+/// direction flag used to judge each mix format.
+pub(crate) fn endpoint_rows(
+    snapshot: CatalogSnapshot,
+    flow: Option<&str>,
+    capture: bool,
+) -> Vec<EndpointRow> {
+    let mut rows: Vec<_> = snapshot
+        .endpoints
+        .into_iter()
+        .filter(|endpoint| flow.is_none_or(|flow| endpoint.flow == flow))
+        .map(|endpoint| {
+            let (supported, windows_conversion_required) = endpoint
+                .mix_format
+                .as_ref()
+                .map_or((None, false), |format| catalog_support(format, capture));
+            EndpointRow {
+                endpoint_id: endpoint.id,
+                name: endpoint.name,
+                sample_rate: endpoint
+                    .mix_format
+                    .as_ref()
+                    .map(|format| format.sample_rate),
+                channels: endpoint.mix_format.as_ref().map(|format| format.channels),
+                format_supported: supported,
+                windows_conversion_required,
+                errors: endpoint
+                    .errors
+                    .into_iter()
+                    .map(|error| format!("{}: {}", error.stage, error.hresult))
+                    .collect(),
+            }
+        })
+        .collect();
+    // A device that failed before its ID was read cannot be selected, but its
+    // original failure must remain visible alongside usable endpoints.
+    for error in snapshot.errors {
+        rows.push(EndpointRow {
+            endpoint_id: String::new(),
+            name: None,
+            sample_rate: None,
+            channels: None,
+            format_supported: None,
+            windows_conversion_required: false,
+            errors: vec![format!("{}: {}", error.stage, error.hresult)],
+        });
+    }
+    rows
 }
 /// Worker-side COM apartment is released before this owned DTO returns.
 pub fn owned_snapshot() -> Result<CatalogSnapshot> {

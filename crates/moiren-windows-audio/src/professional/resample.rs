@@ -9,6 +9,10 @@ const TAPS: usize = 32;
 const HALF: usize = TAPS / 2;
 const PHASES: usize = 256;
 
+/// Accepted magnitude of a drift correction, in ppm. The follower servos clip
+/// their desired correction to the same bound enforced here.
+pub(super) const CORRECTION_PPM_LIMIT: f64 = 2000.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[error("SRC rates must be 8..384 kHz, and capacity must be 64..1048576 frames")]
 pub struct ResampleError;
@@ -63,9 +67,6 @@ impl StereoResampler {
         })
     }
 
-    pub fn capacity(&self) -> usize {
-        self.frames.len()
-    }
     pub fn queued_frames(&self) -> usize {
         self.len.saturating_sub(self.position.floor() as usize)
     }
@@ -75,7 +76,8 @@ impl StereoResampler {
 
     /// Positive correction consumes source faster to reduce queue occupancy.
     pub fn set_correction_ppm(&mut self, ppm: f64) {
-        self.step = self.nominal_step * (1.0 + finite(ppm).clamp(-2000.0, 2000.0) * 1e-6);
+        self.step = self.nominal_step
+            * (1.0 + finite(ppm).clamp(-CORRECTION_PPM_LIMIT, CORRECTION_PPM_LIMIT) * 1e-6);
     }
 
     pub fn push_frame(&mut self, frame: StereoFrame) -> bool {
@@ -88,6 +90,9 @@ impl StereoResampler {
         true
     }
 
+    /// Bulk push exists for the test harnesses' packetized feeds; production
+    /// paths refill frame-by-frame via [`StereoResampler::push_frame`].
+    #[cfg(test)]
     pub fn push(&mut self, input: &[StereoFrame]) -> usize {
         let frames = input.len().min(self.free_frames());
         for &frame in &input[..frames] {

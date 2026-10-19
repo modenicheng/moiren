@@ -1,5 +1,9 @@
 //! Complete stereo frames cross bounded SPSC rings. Only graph boundaries cast S.
-use super::{native::StereoFrame, observations::Counters, resample::StereoResampler};
+use super::{
+    native::StereoFrame,
+    observations::Counters,
+    resample::{CORRECTION_PPM_LIMIT, StereoResampler},
+};
 use moiren_engine::{
     boundary::{BoundaryReport, RtAudioSink, RtAudioSource},
     buffer::{AudioBlock, AudioBlockMut},
@@ -40,12 +44,56 @@ impl<S: ProcessingSample> RtAudioSink<S> for RingSink<S> {
     }
 }
 
+/// Proportional gain: ppm of desired correction per unit of relative queue
+/// deviation from the target.
+const FOLLOWER_GAIN_PPM: f64 = 500.0;
+/// Low-pass factor applied to the desired correction on every observation.
+const FOLLOWER_SMOOTHING: f64 = 0.01;
+
+/// Drift servo shared by the follower bridges on both sides of the rings: the
+/// engine-side [`RingSource`] and the native-side pump in `owner.rs`. It
+/// measures queue occupancy against a fixed startup target and low-passes a
+/// ppm correction for the SRC. Pure arithmetic: no allocation, locking or
+/// clock reads on the audio path.
+pub(super) struct FollowerServo {
+    /// Engine-rate frames the follower wants queued (two native periods).
+    target: usize,
+    /// Low-passed correction in ppm.
+    correction: f64,
+}
+
+impl FollowerServo {
+    /// Startup target in engine-rate frames: two periods, floored at 64
+    /// frames and capped at half the ring capacity.
+    pub(super) fn start_target(period: usize, capacity: usize) -> usize {
+        (period * 2).max(64).min(capacity / 2)
+    }
+    pub(super) fn new(target: usize) -> Self {
+        Self {
+            target,
+            correction: 0.0,
+        }
+    }
+    /// Priming/fullness watermark the follower waits for before starting.
+    pub(super) fn target(&self) -> usize {
+        self.target
+    }
+    /// Feed the current queued frame depth; returns the smoothed correction
+    /// in ppm for `StereoResampler::set_correction_ppm`.
+    pub(super) fn observe(&mut self, queued: usize) -> f64 {
+        let desired = ((queued as f64 - self.target as f64) / self.target as f64
+            * FOLLOWER_GAIN_PPM)
+            .clamp(-CORRECTION_PPM_LIMIT, CORRECTION_PPM_LIMIT);
+        self.correction += (desired - self.correction) * FOLLOWER_SMOOTHING;
+        self.correction
+    }
+}
+
 pub(super) struct RingSource<S: ProcessingSample> {
     rx: Consumer<StereoFrame>,
     src: StereoResampler,
-    target: usize,
+    servo: FollowerServo,
     primed: bool,
-    correction: f64,
     counters: Arc<Counters>,
     marker: PhantomData<S>,
 }
@@ -62,9 +110,8 @@ impl<S: ProcessingSample> RingSource<S> {
         Ok(Self {
             rx,
             src: StereoResampler::new(native_rate, engine_rate, capacity).map_err(unsupported)?,
-            target: (period * 2).max(64).min(capacity / 2),
+            servo: FollowerServo::new(FollowerServo::start_target(period, capacity)),
             primed: false,
-            correction: 0.0,
             counters,
             marker: PhantomData,
         })
@@ -76,13 +123,10 @@ impl<S: ProcessingSample> RtAudioSource<S> for RingSource<S> {
     }
     fn read(&mut self, _: &ProcessContext, mut output: AudioBlockMut<'_, S>) -> BoundaryReport {
         let queued = self.rx.slots() + self.src.queued_frames();
-        if !self.primed && queued >= self.target {
+        if !self.primed && queued >= self.servo.target() {
             self.primed = true;
         }
-        let desired = ((queued as f64 - self.target as f64) / self.target as f64 * 500.0)
-            .clamp(-2000.0, 2000.0);
-        self.correction += (desired - self.correction) * 0.01;
-        self.src.set_correction_ppm(self.correction);
+        self.src.set_correction_ppm(self.servo.observe(queued));
         let mut transferred = 0;
         for i in 0..output.frames() {
             let frame = if self.primed {

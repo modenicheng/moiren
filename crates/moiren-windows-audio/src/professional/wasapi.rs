@@ -5,7 +5,7 @@ use super::{
     codec::SampleCodec,
     native::{NativeStream, NativeStreamInfo, NativeStreamStats, StereoFrame},
 };
-use crate::owner::{Apartment, OwnedHandle, PacketLease, TaskMemory};
+use crate::owner::{Apartment, LeaseFallback, OwnedHandle, PacketLease, TaskMemory};
 use moiren_engine::{
     audio_config::{BUFFER_SIZES, SampleFormat},
     host::BackendError,
@@ -571,11 +571,7 @@ impl NativeStream for WasapiStream {
             api("GetBuffer(capture)", unsafe {
                 capture.GetBuffer(&mut data, &mut frames, &mut flags, None, None)
             })?;
-            let lease = PacketLease {
-                client: capture,
-                frames,
-                released: false,
-            };
+            let lease = PacketLease::new(capture, frames, LeaseFallback::CapturePacket);
             if frames > self.info.buffer_frames {
                 return Err(unsupported("capture packet exceeds negotiated buffer"));
             }
@@ -634,11 +630,7 @@ impl NativeStream for WasapiStream {
         let data = api("GetBuffer(render)", unsafe {
             render.GetBuffer(count as u32)
         })?;
-        let mut lease = RenderLease {
-            render,
-            frames: count as u32,
-            released: false,
-        };
+        let lease = PacketLease::new(render, count as u32, LeaseFallback::RenderSilent);
         if data.is_null() {
             return Err(unsupported("render packet has a null data pointer"));
         }
@@ -648,10 +640,7 @@ impl NativeStream for WasapiStream {
         self.codec
             .encode(&input[..count], bytes)
             .map_err(unsupported)?;
-        lease.released = true;
-        api("ReleaseBuffer(render)", unsafe {
-            render.ReleaseBuffer(count as u32, 0)
-        })?;
+        api("ReleaseBuffer(render)", lease.release())?;
         self.render_ready = false;
         self.stats.write_calls += 1;
         self.stats.written_frames += count as u64;
@@ -664,21 +653,6 @@ impl NativeStream for WasapiStream {
 impl Drop for WasapiStream {
     fn drop(&mut self) {
         let _ = self.stop();
-    }
-}
-struct RenderLease<'a> {
-    render: &'a IAudioRenderClient,
-    frames: u32,
-    released: bool,
-}
-impl Drop for RenderLease<'_> {
-    fn drop(&mut self) {
-        if !self.released {
-            let _ = unsafe {
-                self.render
-                    .ReleaseBuffer(self.frames, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32)
-            };
-        }
     }
 }
 
