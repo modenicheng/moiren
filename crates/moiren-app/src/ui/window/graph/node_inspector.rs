@@ -4,7 +4,7 @@ use controls::*;
 use moiren_core::graph::NodeKind;
 use moiren_engine::{
     meter::MeterSettings,
-    processor::{ChannelMapperSettings, EqSettings},
+    processor::{ChannelMapperSettings, DelaySettings, EqSettings, GateSettings, LimiterSettings},
     rack::{RackProcessor, RackSettings, RackSlot},
     recorder::RecorderSettings,
     spectrum::SpectrumSettings,
@@ -22,6 +22,18 @@ struct BuiltinStep<F> {
     build: F,
 }
 
+/// Field descriptor driving the table-driven builtin step rows; `set` applies
+/// one field's new value, replacing the implicit per-index match protocol.
+struct BuiltinFieldSpec<S> {
+    key: &'static str,
+    label_text: &'static str,
+    value: f64,
+    min: f64,
+    max: f64,
+    step: f64,
+    set: fn(&mut S, f64),
+}
+
 const MAX_MATRIX_EDITOR_CHANNELS: usize = 8;
 
 pub(in crate::ui::window) fn inspector(
@@ -30,10 +42,12 @@ pub(in crate::ui::window) fn inspector(
 ) -> AnyElement {
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
-    let selected =
-        snapshot.graph.graph.nodes().iter().find(|node| {
-            shell.selected_node.as_deref() == Some(format!("{:?}", node.id()).as_str())
-        });
+    let selected = snapshot
+        .graph
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| shell.selected_node == Some(node.id()));
     let mut view = panel("graph-inspector").child(heading("Inspector"));
     let Some(node) = selected else {
         return view
@@ -507,52 +521,13 @@ fn builtin_controls(
             view = view
                 .child(heading("Gate"))
                 .child(label("Linked downward expander"));
-            for (key, label_text, value, min, max, step, update) in [
-                (
-                    "threshold",
-                    "Threshold",
-                    settings.threshold_db,
-                    -120.,
-                    0.,
-                    1.,
-                    0,
-                ),
-                ("attack", "Attack", settings.attack_ms, 0., 5_000., 5., 1),
-                (
-                    "release",
-                    "Release",
-                    settings.release_ms,
-                    0.,
-                    5_000.,
-                    10.,
-                    2,
-                ),
-                ("hold", "Hold", settings.hold_ms, 0., 5_000., 10., 3),
-                ("range", "Range", settings.range_db, -120., 0., 1., 4),
-            ] {
-                let entry = *settings;
-                view = view.child(builtin_step(
-                    BuiltinStep {
-                        key: format!("gate-{key}"),
-                        label_text,
-                        value,
-                        suffix: "",
-                        min,
-                        max,
-                        step,
-                        node: id,
-                        build: move |value| {
-                            let mut next = entry;
-                            match update {
-                                0 => next.threshold_db = value,
-                                1 => next.attack_ms = value,
-                                2 => next.release_ms = value,
-                                3 => next.hold_ms = value,
-                                _ => next.range_db = value,
-                            }
-                            crate::service::BuiltinState::Gate(next)
-                        },
-                    },
+            for field in gate_fields(*settings) {
+                view = view.child(builtin_field_step(
+                    "gate",
+                    *settings,
+                    field,
+                    crate::service::BuiltinState::Gate,
+                    id,
                     cx,
                 ));
             }
@@ -561,56 +536,13 @@ fn builtin_controls(
             view = view
                 .child(heading("Limiter"))
                 .child(label("Zero-latency peak limiter"));
-            for (key, label_text, value, min, max, step, update) in [
-                (
-                    "threshold",
-                    "Threshold",
-                    settings.threshold_db,
-                    -60.,
-                    0.,
-                    1.,
-                    0,
-                ),
-                (
-                    "release",
-                    "Release",
-                    settings.release_ms,
-                    0.,
-                    5_000.,
-                    10.,
-                    1,
-                ),
-                (
-                    "input-gain",
-                    "Input gain",
-                    settings.input_gain_db,
-                    -60.,
-                    60.,
-                    1.,
-                    2,
-                ),
-            ] {
-                let entry = *settings;
-                view = view.child(builtin_step(
-                    BuiltinStep {
-                        key: format!("limiter-{key}"),
-                        label_text,
-                        value,
-                        suffix: "",
-                        min,
-                        max,
-                        step,
-                        node: id,
-                        build: move |value| {
-                            let mut next = entry;
-                            match update {
-                                0 => next.threshold_db = value,
-                                1 => next.release_ms = value,
-                                _ => next.input_gain_db = value,
-                            }
-                            crate::service::BuiltinState::Limiter(next)
-                        },
-                    },
+            for field in limiter_fields(*settings) {
+                view = view.child(builtin_field_step(
+                    "limiter",
+                    *settings,
+                    field,
+                    crate::service::BuiltinState::Limiter,
+                    id,
                     cx,
                 ));
             }
@@ -619,48 +551,13 @@ fn builtin_controls(
             view = view
                 .child(heading("Delay"))
                 .child(label("Bounded feedback delay"));
-            for (key, label_text, value, min, max, step, update) in [
-                (
-                    "time",
-                    "Time",
-                    settings.delay_ms,
-                    0.,
-                    settings.max_delay_ms,
-                    10.,
-                    0,
-                ),
-                (
-                    "feedback",
-                    "Feedback",
-                    settings.feedback,
-                    -0.999,
-                    0.999,
-                    0.05,
-                    1,
-                ),
-                ("mix", "Wet mix", settings.mix, 0., 1., 0.05, 2),
-            ] {
-                let entry = *settings;
-                view = view.child(builtin_step(
-                    BuiltinStep {
-                        key: format!("delay-{key}"),
-                        label_text,
-                        value,
-                        suffix: "",
-                        min,
-                        max,
-                        step,
-                        node: id,
-                        build: move |value| {
-                            let mut next = entry;
-                            match update {
-                                0 => next.delay_ms = value,
-                                1 => next.feedback = value,
-                                _ => next.mix = value,
-                            }
-                            crate::service::BuiltinState::Delay(next)
-                        },
-                    },
+            for field in delay_fields(*settings) {
+                view = view.child(builtin_field_step(
+                    "delay",
+                    *settings,
+                    field,
+                    crate::service::BuiltinState::Delay,
+                    id,
                     cx,
                 ));
             }
@@ -934,6 +831,151 @@ fn matrix_cell_edit(
     }
 }
 
+fn gate_fields(settings: GateSettings) -> [BuiltinFieldSpec<GateSettings>; 5] {
+    [
+        BuiltinFieldSpec {
+            key: "threshold",
+            label_text: "Threshold",
+            value: settings.threshold_db,
+            min: -120.,
+            max: 0.,
+            step: 1.,
+            set: |next, value| next.threshold_db = value,
+        },
+        BuiltinFieldSpec {
+            key: "attack",
+            label_text: "Attack",
+            value: settings.attack_ms,
+            min: 0.,
+            max: 5_000.,
+            step: 5.,
+            set: |next, value| next.attack_ms = value,
+        },
+        BuiltinFieldSpec {
+            key: "release",
+            label_text: "Release",
+            value: settings.release_ms,
+            min: 0.,
+            max: 5_000.,
+            step: 10.,
+            set: |next, value| next.release_ms = value,
+        },
+        BuiltinFieldSpec {
+            key: "hold",
+            label_text: "Hold",
+            value: settings.hold_ms,
+            min: 0.,
+            max: 5_000.,
+            step: 10.,
+            set: |next, value| next.hold_ms = value,
+        },
+        BuiltinFieldSpec {
+            key: "range",
+            label_text: "Range",
+            value: settings.range_db,
+            min: -120.,
+            max: 0.,
+            step: 1.,
+            set: |next, value| next.range_db = value,
+        },
+    ]
+}
+
+fn limiter_fields(settings: LimiterSettings) -> [BuiltinFieldSpec<LimiterSettings>; 3] {
+    [
+        BuiltinFieldSpec {
+            key: "threshold",
+            label_text: "Threshold",
+            value: settings.threshold_db,
+            min: -60.,
+            max: 0.,
+            step: 1.,
+            set: |next, value| next.threshold_db = value,
+        },
+        BuiltinFieldSpec {
+            key: "release",
+            label_text: "Release",
+            value: settings.release_ms,
+            min: 0.,
+            max: 5_000.,
+            step: 10.,
+            set: |next, value| next.release_ms = value,
+        },
+        BuiltinFieldSpec {
+            key: "input-gain",
+            label_text: "Input gain",
+            value: settings.input_gain_db,
+            min: -60.,
+            max: 60.,
+            step: 1.,
+            set: |next, value| next.input_gain_db = value,
+        },
+    ]
+}
+
+fn delay_fields(settings: DelaySettings) -> [BuiltinFieldSpec<DelaySettings>; 3] {
+    [
+        BuiltinFieldSpec {
+            key: "time",
+            label_text: "Time",
+            value: settings.delay_ms,
+            min: 0.,
+            max: settings.max_delay_ms,
+            step: 10.,
+            set: |next, value| next.delay_ms = value,
+        },
+        BuiltinFieldSpec {
+            key: "feedback",
+            label_text: "Feedback",
+            value: settings.feedback,
+            min: -0.999,
+            max: 0.999,
+            step: 0.05,
+            set: |next, value| next.feedback = value,
+        },
+        BuiltinFieldSpec {
+            key: "mix",
+            label_text: "Wet mix",
+            value: settings.mix,
+            min: 0.,
+            max: 1.,
+            step: 0.05,
+            set: |next, value| next.mix = value,
+        },
+    ]
+}
+
+/// One table-driven step row for a `Copy` settings struct; `wrap` rebuilds the
+/// [`BuiltinState`] variant after `set` applies the field's new value.
+fn builtin_field_step<S: Copy + 'static>(
+    prefix: &str,
+    settings: S,
+    field: BuiltinFieldSpec<S>,
+    wrap: fn(S) -> crate::service::BuiltinState,
+    node: moiren_core::graph::NodeId,
+    cx: &Context<StudioShell>,
+) -> impl IntoElement {
+    let set = field.set;
+    builtin_step(
+        BuiltinStep {
+            key: format!("{prefix}-{}", field.key),
+            label_text: field.label_text,
+            value: field.value,
+            suffix: "",
+            min: field.min,
+            max: field.max,
+            step: field.step,
+            node,
+            build: move |value| {
+                let mut next = settings;
+                set(&mut next, value);
+                wrap(next)
+            },
+        },
+        cx,
+    )
+}
+
 fn builtin_step(
     spec: BuiltinStep<impl Fn(f64) -> crate::service::BuiltinState + Clone + 'static>,
     cx: &Context<StudioShell>,
@@ -964,38 +1006,46 @@ fn builtin_step(
                 .flex()
                 .items_center()
                 .gap(px(4.))
-                .child(button(format!("{key}-down"), "−").on_click({
-                    let this = this.clone();
-                    let build = build_down;
-                    move |_, _, cx| {
-                        this.update(cx, |shell, cx| {
-                            shell.state.update(cx, |state, _| {
-                                state.dispatch(AppRequest::EditGraph(GraphEdit::SetBuiltin {
-                                    node,
-                                    state: build((value - step).clamp(min, max)),
-                                }))
-                            });
-                            cx.notify();
-                        })
-                    }
-                }))
+                .child(step_button(
+                    format!("{key}-down"),
+                    "−",
+                    this.clone(),
+                    node,
+                    build_down,
+                    (value - step).clamp(min, max),
+                ))
                 .child(detail("", format!("{value:.2} {suffix}")))
-                .child(button(format!("{key}-up"), "+").on_click({
-                    let this = this.clone();
-                    let build = build_up;
-                    move |_, _, cx| {
-                        this.update(cx, |shell, cx| {
-                            shell.state.update(cx, |state, _| {
-                                state.dispatch(AppRequest::EditGraph(GraphEdit::SetBuiltin {
-                                    node,
-                                    state: build((value + step).clamp(min, max)),
-                                }))
-                            });
-                            cx.notify();
-                        })
-                    }
-                })),
+                .child(step_button(
+                    format!("{key}-up"),
+                    "+",
+                    this,
+                    node,
+                    build_up,
+                    (value + step).clamp(min, max),
+                )),
         )
+}
+
+/// The shared ± step button: dispatches `build(next)` as one SetBuiltin edit.
+fn step_button(
+    key: String,
+    text: &'static str,
+    this: Entity<StudioShell>,
+    node: moiren_core::graph::NodeId,
+    build: impl Fn(f64) -> crate::service::BuiltinState + 'static,
+    next: f64,
+) -> impl IntoElement {
+    button(key, text).on_click(move |_, _, cx| {
+        this.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::SetBuiltin {
+                    node,
+                    state: build(next),
+                }))
+            });
+            cx.notify();
+        })
+    })
 }
 
 impl StudioShell {
@@ -1007,7 +1057,7 @@ impl StudioShell {
         if self.node_name_selection == self.selected_node {
             return;
         }
-        self.node_name_selection = self.selected_node.clone();
+        self.node_name_selection = self.selected_node;
         let label = self
             .state
             .read(cx)
@@ -1015,7 +1065,7 @@ impl StudioShell {
             .graph
             .nodes
             .iter()
-            .find(|entry| self.selected_node.as_deref() == Some(format!("{:?}", entry.id).as_str()))
+            .find(|entry| Some(entry.id) == self.selected_node)
             .map(|entry| entry.label.clone())
             .unwrap_or_default();
         self.node_name

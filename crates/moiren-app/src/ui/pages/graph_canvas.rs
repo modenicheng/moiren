@@ -103,7 +103,7 @@ impl CanvasWorld {
     /// The service snapshot is the only topology authority. Positions are presentation only.
     pub fn positioned(
         snapshot: &AppSnapshot,
-        positions: &std::collections::HashMap<String, (f32, f32)>,
+        positions: &std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
     ) -> Self {
         use moiren_core::graph::NodeKind;
         let graph = &snapshot.graph;
@@ -127,7 +127,7 @@ impl CanvasWorld {
             let row = rows.entry(level).or_insert(0usize);
             let key = format!("{id:?}");
             let position = positions
-                .get(&key)
+                .get(&id)
                 .copied()
                 .unwrap_or((32. + level as f32 * 330., 80. + *row as f32 * 170.));
             *row += 1;
@@ -237,8 +237,8 @@ impl CanvasWorld {
             .edges()
             .iter()
             .filter_map(|edge| {
-                let a = nodes.iter().find(|n| n.id == format!("{:?}", edge.src()))?;
-                let b = nodes.iter().find(|n| n.id == format!("{:?}", edge.dst()))?;
+                let a = nodes.iter().find(|n| n.node_id == Some(edge.src()))?;
+                let b = nodes.iter().find(|n| n.node_id == Some(edge.dst()))?;
                 let input = graph
                     .graph
                     .get_node(edge.dst())

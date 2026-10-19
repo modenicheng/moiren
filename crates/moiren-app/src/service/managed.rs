@@ -18,19 +18,6 @@ mod tests;
 type Factory<S> = dyn Fn(AudioLatencyProfile, &AudioSettings) -> Result<Box<dyn EngineBackend<S>>, host::BackendError>
     + Send
     + Sync;
-struct Backend<S: moiren_engine::sample::ProcessingSample>(Box<dyn EngineBackend<S>>);
-impl<S: moiren_engine::sample::ProcessingSample> EngineBackend<S> for Backend<S> {
-    fn prepare(
-        &self,
-        request: host::PrepareRequest<'_>,
-        cancel: &host::CancellationToken,
-    ) -> Result<host::PreparedBackend<S>, host::BackendError> {
-        self.0.prepare(request, cancel)
-    }
-    fn poll_resource(&self) -> Option<host::ResourceEvent> {
-        self.0.poll_resource()
-    }
-}
 /// Only the lifecycle owner is sample-typed; control and observations are shared
 /// across precisions. Dropping either variant still happens on the cleanup worker.
 enum AudioHost {

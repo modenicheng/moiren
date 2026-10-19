@@ -163,7 +163,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             2 => (480., 35.),
                             _ => (810. + index.saturating_sub(3) as f32 * 250., 175.),
                         };
-                        shell.node_positions.insert(format!("{id:?}"), position);
+                        shell.node_positions.insert(*id, position);
                     }
                     cx.notify();
                 });
@@ -212,7 +212,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             .nodes()
                             .iter()
                             .find(|node| node.kind() == moiren_core::graph::NodeKind::Gain)
-                            .map(|node| format!("{:?}", node.id()));
+                            .map(|node| node.id());
                         shell.selected_node = gain;
                         shell.selected_route = None;
                         if name == "connection-inspector" {
@@ -253,9 +253,9 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         .nodes()
                         .iter()
                         .find(|node| node.kind() == moiren_core::graph::NodeKind::Compressor)
-                        .map(|node| format!("{:?}", node.id()));
-                    if let Some(key) = &shell.selected_node {
-                        shell.node_positions.insert(key.clone(), (480., 370.));
+                        .map(|node| node.id());
+                    if let Some(key) = shell.selected_node {
+                        shell.node_positions.insert(key, (480., 370.));
                     }
                     shell.camera = Camera::default();
                     cx.notify();
@@ -310,7 +310,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     let ids = graph.nodes().iter().map(|node| node.id()).collect::<Vec<_>>();
                     for (index, id) in ids.iter().enumerate() {
                         shell.node_positions.insert(
-                            format!("{id:?}"),
+                            *id,
                             (40. + (index % 4) as f32 * 330., 120. + (index / 4) as f32 * 190.),
                         );
                     }

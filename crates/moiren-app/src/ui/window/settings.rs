@@ -368,7 +368,10 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             "Unsaved edits stay in the Audio draft until Save or Restart Audio.",
         ))
         .child(div().mt(px(12.)).child(heading("Active session")))
-        .child(detail("State", state.phase_text()));
+        .child(detail(
+            "State",
+            crate::ui::presentation::phase_text(snapshot),
+        ));
     if let Some(active) = snapshot
         .active_audio_settings
         .as_ref()
@@ -389,10 +392,13 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         view = view.child(label("No active audio configuration"));
     }
     view = view.child(heading("Actual native timing"));
-    for (key, value) in state.native_timing_rows() {
+    for (key, value) in crate::ui::presentation::native_timing_rows(snapshot) {
         view = view.child(detail(&key, value));
     }
-    view.child(label(state.control_feedback()))
+    view.child(label(crate::ui::presentation::control_feedback(
+        snapshot,
+        state.pending_request,
+    )))
         .child(detail("Catalog", format!("{} inputs / {} outputs / {} ASIO drivers / {} applications",
             snapshot.catalog.inputs.len(), snapshot.catalog.outputs.len(), snapshot.catalog.asio_drivers.len(), snapshot.catalog.processes.len())))
         .when_some(snapshot.catalog.asio_error.clone(), |view, error| view.child(

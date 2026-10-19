@@ -140,7 +140,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                     settings::stream_summary(active.backend, active_stream),
                 ))
                 .child(label("Observed session timing"));
-            for (key, value) in state.native_timing_rows() {
+            for (key, value) in crate::ui::presentation::native_timing_rows(snapshot) {
                 content = content.child(detail(&key, value));
             }
         } else {

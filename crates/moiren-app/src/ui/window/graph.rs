@@ -38,12 +38,11 @@ impl StudioShell {
         let graph = &self.state.read(cx).snapshot.graph.graph;
         let edit = self
             .selected_node
-            .as_ref()
             .and_then(|selected| {
                 graph
                     .nodes()
                     .iter()
-                    .find(|node| format!("{:?}", node.id()) == *selected)
+                    .find(|node| node.id() == selected)
                     .map(|node| crate::service::GraphEdit::RemoveNode(node.id()))
             })
             .or_else(|| {
@@ -83,7 +82,9 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
     }
     let world = std::sync::Arc::new(projected);
     let camera = shell.camera;
-    let selected = shell.selected_node.clone();
+    // The canvas view identifies nodes by their Debug id string; this is the
+    // single NodeId -> canvas-id conversion on the render path.
+    let selected = shell.selected_node.map(|id| format!("{id:?}"));
     let selected_wire = shell.selected_route.and_then(|ports| {
         state
             .snapshot
@@ -115,17 +116,23 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                 if shell.begin_pointer_session(window) {
                     return;
                 }
-                shell.selected_node = Some(id.to_string());
+                // Reverse of the render-path conversion: resolve the canvas id
+                // back to its NodeId through the same projected world.
+                let Some(node) = nodes.nodes.iter().find(|node| node.id == id) else {
+                    return;
+                };
+                let Some(node_id) = node.node_id else {
+                    return;
+                };
+                shell.selected_node = Some(node_id);
                 shell.selected_route = None;
-                if let Some(node) = nodes.nodes.iter().find(|node| node.id == id) {
-                    shell
-                        .node_positions
-                        .entry(id.to_string())
-                        .or_insert((node.x, node.y));
-                }
+                shell
+                    .node_positions
+                    .entry(node_id)
+                    .or_insert((node.x, node.y));
                 let pos = window.mouse_position();
                 shell.camera.adjusted = true;
-                shell.node_drag = Some((id.into(), f32::from(pos.x), f32::from(pos.y)));
+                shell.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
                 if shell.compact {
                     shell.inspector_open = true;
                     shell.sidebar_open = false;
@@ -159,7 +166,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                     }
                     return;
                 }
-                if let Some((id, gx, gy)) = shell.node_drag.clone() {
+                if let Some((id, gx, gy)) = shell.node_drag {
                     shell.camera.adjusted = true;
                     let delta = shell.camera.canvas_delta_to_world((
                         f32::from(position.x) - gx,
@@ -263,10 +270,12 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                         if !shell.begin_pointer_session(window) {
                             shell.camera.adjusted = true;
                             for node in &nodes.nodes {
-                                shell
-                                    .node_positions
-                                    .entry(node.id.clone())
-                                    .or_insert((node.x, node.y));
+                                if let Some(node_id) = node.node_id {
+                                    shell
+                                        .node_positions
+                                        .entry(node_id)
+                                        .or_insert((node.x, node.y));
+                                }
                             }
                             shell.connection_drag = Some(ConnectionDrag { port, cursor });
                             cx.notify();

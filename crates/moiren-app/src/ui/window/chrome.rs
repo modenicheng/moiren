@@ -212,9 +212,9 @@ pub(super) fn statusbar(state: &UiState) -> Stateful<Div> {
                 .flex()
                 .items_center()
                 .gap(px(theme::SPACE_3))
-                .child(badge(state.phase_text(), color))
+                .child(badge(crate::ui::presentation::phase_text(snapshot), color))
                 .when(running || !snapshot.elapsed.is_zero(), |view| {
-                    view.child(label(state.elapsed_text()))
+                    view.child(label(crate::ui::presentation::elapsed_text(snapshot)))
                 })
                 .when(!format.is_empty(), |view| view.child(label(format))),
         )

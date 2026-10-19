@@ -232,8 +232,7 @@ impl ManagedDriver {
         match settings.processing.precision {
             ProcessingPrecision::F32 => {
                 let backend = (self.factory)(profile, settings)?;
-                EngineHost::open(self.host_config.clone(), project, Backend(backend))
-                    .map(AudioHost::F32)
+                EngineHost::open(self.host_config.clone(), project, backend).map(AudioHost::F32)
             }
             ProcessingPrecision::F64 => {
                 let factory = self.f64_factory.as_ref().ok_or_else(|| {
@@ -242,8 +241,7 @@ impl ManagedDriver {
                     )
                 })?;
                 let backend = factory(profile, settings)?;
-                EngineHost::open(self.host_config.clone(), project, Backend(backend))
-                    .map(AudioHost::F64)
+                EngineHost::open(self.host_config.clone(), project, backend).map(AudioHost::F64)
             }
         }
         .map_err(|error| host::BackendError::Failed(error.to_string()))

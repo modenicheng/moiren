@@ -110,10 +110,7 @@ mod tests {
         view.update(cx, |shell, cx| {
             assert_eq!(shell.project_name, "Sparse template");
             let source = shell.state.read(cx).snapshot.graph.graph.nodes()[0].id();
-            assert_eq!(
-                shell.node_positions.get(&format!("{source:?}")),
-                Some(&(-80., 120.))
-            );
+            assert_eq!(shell.node_positions.get(&source), Some(&(-80., 120.)));
             assert!(!shell.project_busy);
             assert!(shell.state.read(cx).selection.output_id.is_none());
         });
@@ -135,14 +132,15 @@ mod tests {
         handle.request_exit();
         runtime.join().unwrap();
         view.update(cx, |shell, cx| {
-            shell.node_positions.insert("original".into(), (10., 20.));
+            let original = shell.state.read(cx).snapshot.graph.graph.nodes()[0].id();
+            shell.node_positions.insert(original, (10., 20.));
             assert!(
                 shell
                     .stage_project(document, "Rejected.moiren.json".into(), cx)
                     .is_err()
             );
             assert_eq!(shell.project_name, "Untitled session");
-            assert_eq!(shell.node_positions.get("original"), Some(&(10., 20.)));
+            assert_eq!(shell.node_positions.get(&original), Some(&(10., 20.)));
             assert!(shell.pending_project.is_none());
         });
     }
@@ -242,7 +240,7 @@ impl StudioShell {
             Page::Devices => WorkspaceDocument::Devices,
         };
         for (index, node) in state.snapshot.graph.graph.nodes().iter().enumerate() {
-            if let Some(&(x, y)) = self.node_positions.get(&format!("{:?}", node.id())) {
+            if let Some(&(x, y)) = self.node_positions.get(&node.id()) {
                 document.layout.nodes.push(crate::project::NodeLayout {
                     node_id: index as u64,
                     x,
@@ -462,8 +460,7 @@ impl StudioShell {
                 .collect();
             for position in &document.layout.nodes {
                 if let Some(id) = restored.node_ids.get(&position.node_id) {
-                    self.node_positions
-                        .insert(format!("{id:?}"), (position.x, position.y));
+                    self.node_positions.insert(*id, (position.x, position.y));
                 }
             }
         }

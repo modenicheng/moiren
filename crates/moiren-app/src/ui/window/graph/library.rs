@@ -117,12 +117,12 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
             state.snapshot.graph.nodes.len()
         )));
     for entry in &state.snapshot.graph.nodes {
-        let key = format!("{:?}", entry.id);
-        let selected = shell.selected_node.as_ref() == Some(&key);
+        let id = entry.id;
+        let selected = shell.selected_node == Some(id);
         let this = cx.entity();
         session = session.child(
             button(
-                SharedString::from(format!("locate-{key}")),
+                SharedString::from(format!("locate-{id:?}")),
                 entry.label.clone(),
             )
             .variant(if selected {
@@ -132,7 +132,7 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
             })
             .on_click(move |_, _, cx| {
                 this.update(cx, |shell, cx| {
-                    shell.selected_node = Some(key.clone());
+                    shell.selected_node = Some(id);
                     shell.selected_route = None;
                     shell.inspector_open = true;
                     if shell.compact {
@@ -259,9 +259,8 @@ impl StudioShell {
             return;
         };
         let id = entry.id;
-        let key = format!("{id:?}");
-        self.node_positions.insert(key.clone(), pending.position);
-        self.selected_node = Some(key);
+        self.node_positions.insert(id, pending.position);
+        self.selected_node = Some(id);
         self.selected_route = None;
         self.inspector_open = true;
         if self.compact {

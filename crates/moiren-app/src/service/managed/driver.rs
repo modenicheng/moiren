@@ -88,6 +88,45 @@ impl ServiceDriver for ManagedDriver {
         }
     }
     fn poll(&mut self, c: &mut ServiceContext, pool: &mut JobPool, budget: RoundBudget) {
+        self.poll_completions(c, budget);
+        self.poll_catalog(pool);
+        if self.apply {
+            self.apply(c);
+        }
+        let Some(owner) = self.owner.as_ref() else {
+            return;
+        };
+        let snapshot = owner.observer.read();
+        self.poll_observations(c, &snapshot, owner.generation);
+        self.poll_execution(c, &snapshot);
+        self.poll_edits(c);
+        self.poll_parameters(c);
+        self.pump_parameters(c, budget);
+        self.finish_apply_confirmation(c, &snapshot);
+        self.poll_meters(c);
+        self.poll_run_limit(c);
+    }
+    fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
+        self.exiting = true;
+        self.apply = false;
+        self.apply_audio_settings = None;
+        self.retire(c);
+    }
+    fn is_drained(&self) -> bool {
+        self.owner.is_none()
+            && self.cleaning == 0
+            && !self.catalog.is_running()
+            && self
+                .completions
+                .as_ref()
+                .is_none_or(|q| q.outstanding() == 0)
+    }
+}
+
+impl ManagedDriver {
+    /// Drain owner-reaping and catalog-refresh completions from the cleanup
+    /// worker.
+    fn poll_completions(&mut self, c: &mut ServiceContext, budget: RoundBudget) {
         for _ in 0..budget.completions {
             let Some(completion) = self.queue().try_recv() else {
                 break;
@@ -134,6 +173,9 @@ impl ServiceDriver for ManagedDriver {
                 }
             }
         }
+    }
+    /// Kick a catalog refresh when the refresh interval elapsed.
+    fn poll_catalog(&mut self, pool: &mut JobPool) {
         let completions = self
             .completions
             .get_or_insert_with(|| CompletionQueue::new(thread::current()));
@@ -144,54 +186,69 @@ impl ServiceDriver for ManagedDriver {
             pool,
             Completion::Catalog,
         );
-        if self.apply {
-            self.apply(c);
-        }
+    }
+    /// Publish native and professional observations, filtered by the running
+    /// owner generation.
+    #[cfg(windows)]
+    fn poll_observations(
+        &mut self,
+        c: &mut ServiceContext,
+        snapshot: &host::ProjectSnapshot,
+        generation: SessionGeneration,
+    ) {
+        // Write-side stale guard shared by the native and professional
+        // publishers: an observation counts only while its own owner
+        // generation still runs.
+        let fresh = |running: bool, owner_generation: u64| {
+            running
+                && owner_generation == snapshot.state.owner_generation
+                && snapshot.state.execution == ExecutionState::Running
+        };
+        c.native_observations = self
+            .observations
+            .as_ref()
+            .and_then(|handle| {
+                handle
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .and_then(|value| value.snapshot())
+            })
+            .filter(|observation| fresh(observation.running, observation.owner_generation))
+            .map(|observation| NativeSessionObservations {
+                generation,
+                observation,
+            });
+        c.professional_observations = self
+            .professional_observations
+            .as_ref()
+            .and_then(|handle| {
+                handle
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .and_then(|value| value.snapshot())
+            })
+            .filter(|observation| fresh(observation.running, observation.owner_generation))
+            .map(|observation| ProfessionalSessionObservations {
+                generation,
+                observation,
+            });
+    }
+    #[cfg(not(windows))]
+    fn poll_observations(
+        &mut self,
+        _c: &mut ServiceContext,
+        _snapshot: &host::ProjectSnapshot,
+        _generation: SessionGeneration,
+    ) {
+    }
+    /// Project execution state, faults, the active latency profile, and
+    /// settled-revision confirmations into the service context.
+    fn poll_execution(&mut self, c: &mut ServiceContext, snapshot: &host::ProjectSnapshot) {
         let Some(owner) = self.owner.as_mut() else {
             return;
         };
-        let snapshot = owner.observer.read();
-        #[cfg(windows)]
-        {
-            // Write-side stale guard shared by the native and professional
-            // publishers: an observation counts only while its own owner
-            // generation still runs.
-            let fresh = |running: bool, owner_generation: u64| {
-                running
-                    && owner_generation == snapshot.state.owner_generation
-                    && snapshot.state.execution == ExecutionState::Running
-            };
-            c.native_observations = self
-                .observations
-                .as_ref()
-                .and_then(|handle| {
-                    handle
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .as_ref()
-                        .and_then(|value| value.snapshot())
-                })
-                .filter(|observation| fresh(observation.running, observation.owner_generation))
-                .map(|observation| NativeSessionObservations {
-                    generation: owner.generation,
-                    observation,
-                });
-            c.professional_observations = self
-                .professional_observations
-                .as_ref()
-                .and_then(|handle| {
-                    handle
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .as_ref()
-                        .and_then(|value| value.snapshot())
-                })
-                .filter(|observation| fresh(observation.running, observation.owner_generation))
-                .map(|observation| ProfessionalSessionObservations {
-                    generation: owner.generation,
-                    observation,
-                });
-        }
         let running = snapshot.state.execution == ExecutionState::Running;
         let error = if snapshot.state.execution == ExecutionState::WaitingForResources {
             match &snapshot.state.update {
@@ -256,6 +313,13 @@ impl ServiceDriver for ManagedDriver {
             c.graph
                 .preparation_failed(owner.generation, format!("{:?}", snapshot.state.fault));
         }
+    }
+    /// Retire finished host edits and establish the parameter-ACK barrier for
+    /// newly activated applies.
+    fn poll_edits(&mut self, c: &mut ServiceContext) {
+        let Some(owner) = self.owner.as_mut() else {
+            return;
+        };
         let mut confirmed = Vec::new();
         self.edits.retain(|edit| match edit.receipt.outcome() {
             EditOutcome::Activated { graph_revision, .. } => {
@@ -304,6 +368,10 @@ impl ServiceDriver for ManagedDriver {
                 c.graph.clear_pending();
             }
         }
+    }
+    /// Retire finished parameter submissions; a failed or closed confirmation
+    /// tears down the current ACK barrier.
+    fn poll_parameters(&mut self, c: &mut ServiceContext) {
         let mut parameter_failed = false;
         self.parameters
             .retain(|pending| match pending.receipt.outcome() {
@@ -334,6 +402,13 @@ impl ServiceDriver for ManagedDriver {
             self.confirmation_values.clear();
             c.graph.clear_pending();
         }
+    }
+    /// Submit pending parameter values to the running owner within the round
+    /// budget, then publish queue-depth counters.
+    fn pump_parameters(&mut self, c: &mut ServiceContext, budget: RoundBudget) {
+        let Some(owner) = self.owner.as_mut() else {
+            return;
+        };
         for _ in 0..budget.applied.min(32) {
             if self.parameters.len() == 64 {
                 break;
@@ -375,6 +450,17 @@ impl ServiceDriver for ManagedDriver {
         }
         c.control.pending_node_parameters = self.unsent.len();
         c.control.accepted_pending = self.parameters.len();
+    }
+    /// Resolve the parameter-ACK barrier once every confirmation value has been
+    /// accepted; this is the point an Apply becomes the active revision.
+    fn finish_apply_confirmation(
+        &mut self,
+        c: &mut ServiceContext,
+        snapshot: &host::ProjectSnapshot,
+    ) {
+        let Some(owner) = self.owner.as_mut() else {
+            return;
+        };
         if !self.parameters.iter().any(|pending| {
             pending.confirmation.is_some() && pending.confirmation == self.confirm_parameters
         }) && self.confirmation_values.is_empty()
@@ -389,13 +475,27 @@ impl ServiceDriver for ManagedDriver {
         {
             owner.active_revision = (host_revision, revision);
             owner.active_apply_id = id;
-            if running && snapshot.state.active_revision == Some(host_revision) {
+            if snapshot.state.execution == ExecutionState::Running
+                && snapshot.state.active_revision == Some(host_revision)
+            {
                 c.graph.confirmed(owner.generation, revision);
             }
         }
+    }
+    /// Pump the meter bridge from the owner's observer.
+    fn poll_meters(&mut self, c: &mut ServiceContext) {
+        let Some(owner) = self.owner.as_ref() else {
+            return;
+        };
         if let Some(meters) = &mut self.meters {
             meters.poll(c, &owner.observer);
         }
+    }
+    /// Stop and retire the owner once the requested run limit elapsed.
+    fn poll_run_limit(&mut self, c: &mut ServiceContext) {
+        let Some(owner) = self.owner.as_ref() else {
+            return;
+        };
         if let Some(spec) = c.core.desired()
             && let RunLimit::Seconds(seconds) = spec.limit
             && owner
@@ -406,20 +506,5 @@ impl ServiceDriver for ManagedDriver {
             self.retire(c);
             self.apply = false;
         }
-    }
-    fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
-        self.exiting = true;
-        self.apply = false;
-        self.apply_audio_settings = None;
-        self.retire(c);
-    }
-    fn is_drained(&self) -> bool {
-        self.owner.is_none()
-            && self.cleaning == 0
-            && !self.catalog.is_running()
-            && self
-                .completions
-                .as_ref()
-                .is_none_or(|q| q.outstanding() == 0)
     }
 }

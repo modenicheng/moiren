@@ -54,6 +54,7 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
     });
     let weak = cx.update(|cx| {
         let weak = desktop.read(cx).shell.clone().unwrap();
+        let test_node = state.read(cx).snapshot.graph.graph.nodes()[0].id();
         weak.update(cx, |shell, _| {
             shell.presentation.page = pages::Page::Mixer;
             shell.camera.pan_x = 84.0;
@@ -61,9 +62,7 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
             shell.inspector_open = true;
             shell.device_tab = super::devices::DeviceTab::Inputs;
             shell.selected_device = Some("selected-input".into());
-            shell
-                .node_positions
-                .insert("test-node".into(), (12.0, 34.0));
+            shell.node_positions.insert(test_node, (12.0, 34.0));
             shell.project_name = "Keep candidate".into();
             shell.mixer.width = 210.;
             shell.mixer.dock_width = 410.;
@@ -95,10 +94,11 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
             .update(cx, |_, window, cx| window.render_frame(cx))
             .unwrap();
         reopened
-            .update(cx, |shell, _| {
+            .update(cx, |shell, cx| {
+                let test_node = state.read(cx).snapshot.graph.graph.nodes()[0].id();
                 assert_eq!(shell.presentation.page, pages::Page::Mixer);
                 assert_eq!(shell.camera.pan_x, 84.0);
-                assert_eq!(shell.node_positions.get("test-node"), Some(&(12.0, 34.0)));
+                assert_eq!(shell.node_positions.get(&test_node), Some(&(12.0, 34.0)));
                 assert_eq!(shell.project_name, "Keep candidate");
                 assert_eq!(shell.mixer.width, 210.);
                 assert_eq!(shell.mixer.dock_width, 410.);
@@ -421,10 +421,7 @@ fn settings_modal_blocks_graph_input_and_restores_workspace_and_focus(
         shell.camera.pan_y = 87.;
         shell.camera.zoom = 0.89;
         shell.camera.adjusted = true;
-        shell.selected_node = Some(format!(
-            "{:?}",
-            shell.state.read(cx).snapshot.graph.graph.nodes()[1].id()
-        ));
+        shell.selected_node = Some(shell.state.read(cx).snapshot.graph.graph.nodes()[1].id());
     });
     cx.update(|window, cx| {
         window.render_frame(cx);

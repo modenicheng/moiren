@@ -5,6 +5,7 @@ mod branding;
 mod component_gallery;
 pub mod monitoring;
 mod pages;
+pub mod presentation;
 mod scroll_policy;
 mod state;
 mod theme;

@@ -224,14 +224,14 @@ fn graph_delete_keeps_selection_when_the_service_cannot_queue_it(
     let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
     cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
     let frame = canvas_frame(&view, cx);
-    let selected = frame.world.nodes[1].id.clone();
+    let selected = frame.world.nodes[1].node_id.expect("projected node id");
     cx.simulate_click(node_position(&frame, 1), Modifiers::default());
     render(cx);
     handle.request_exit();
     runtime.join().unwrap();
     cx.simulate_keystrokes("backspace");
     view.update(cx, |shell, cx| {
-        assert_eq!(shell.selected_node.as_ref(), Some(&selected));
+        assert_eq!(shell.selected_node, Some(selected));
         assert_eq!(shell.state.read(cx).snapshot.graph.nodes.len(), 4);
         assert!(shell.state.read(cx).dispatch_error.is_some());
     });
@@ -388,7 +388,7 @@ fn compressor_inspector_edits_only_its_selected_node_and_hides_on_other_selectio
         std::thread::sleep(std::time::Duration::from_millis(1));
     };
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(format!("{id:?}"));
+        shell.selected_node = Some(id);
         shell.inspector_open = true;
         cx.notify();
     });
@@ -442,7 +442,7 @@ fn compressor_inspector_edits_only_its_selected_node_and_hides_on_other_selectio
             .find(|node| node.kind() == NodeKind::Gain)
             .unwrap()
             .id();
-        shell.selected_node = Some(format!("{gain:?}"));
+        shell.selected_node = Some(gain);
         cx.notify();
     });
     render(cx);
@@ -618,7 +618,7 @@ fn graph_inspector_shows_candidate_runtime_boundary_for_selected_node(
     cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
     view.update(cx, |shell, cx| {
         let id = shell.state.read(cx).snapshot.graph.graph.nodes()[1].id();
-        shell.selected_node = Some(format!("{id:?}"));
+        shell.selected_node = Some(id);
         cx.notify();
     });
     render(cx);
@@ -649,7 +649,7 @@ fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_ki
     let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
     cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
     view.update(cx, |shell, cx| {
-        shell.selected_node = Some(format!("{node:?}"));
+        shell.selected_node = Some(node);
         shell.node_meter_points.borrow_mut().clear();
         assert!(shell.update_node_meters(true, cx));
         cx.notify();
@@ -734,11 +734,8 @@ fn node_library_native_drop_uses_camera_world_position_and_opens_only_node_prope
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     view.update(cx, |shell, cx| {
-        let key = shell
-            .selected_node
-            .as_ref()
-            .expect("created node is selected");
-        let position = shell.node_positions[key];
+        let key = shell.selected_node.expect("created node is selected");
+        let position = shell.node_positions[&key];
         assert_close(position.0, expected.0);
         assert_close(position.1, expected.1);
         assert!(shell.selected_route.is_none());
@@ -776,7 +773,7 @@ fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
         cx.notify();
     });
     let frame = canvas_frame(&view, cx);
-    let id = frame.world.nodes[0].id.clone();
+    let id = frame.world.nodes[0].node_id.expect("projected node id");
     let start = node_position(&frame, 0);
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     let finish = start + point(px(89.), px(-44.5));
@@ -790,7 +787,7 @@ fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
         frame.wires[0].points[0].0 + 89.,
     );
     view.update(cx, |shell, _| {
-        assert_eq!(shell.selected_node.as_ref(), Some(&id));
+        assert_eq!(shell.selected_node, Some(id));
         assert!(shell.node_drag.is_none());
         assert_eq!(shell.camera, frame.camera);
     });
@@ -826,9 +823,7 @@ fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
     }
     let start = node_position(&fitted, 0);
     cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    view.update(cx, |shell, _| {
-        assert_eq!(shell.selected_node.as_ref(), Some(&id))
-    });
+    view.update(cx, |shell, _| assert_eq!(shell.selected_node, Some(id)));
     cx.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
     handle.request_exit();
     runtime.join().unwrap();
@@ -858,7 +853,7 @@ fn graph_curved_wire_click_after_fit_selects_real_edge_without_changing_topology
             .unwrap();
         for (index, id) in nodes.iter().enumerate() {
             shell.node_positions.insert(
-                format!("{id:?}"),
+                *id,
                 (
                     80. + index as f32 * 230.,
                     if index % 2 == 0 { 50. } else { 520. },
@@ -912,7 +907,7 @@ fn graph_panning_preserves_node_or_wire_selection_and_inspector_visibility(
             for mode in 0..4 {
                 let selection = view.update(cx, |shell, cx| {
                     let graph = &shell.state.read(cx).snapshot.graph.graph;
-                    let node = format!("{:?}", graph.nodes()[1].id());
+                    let node = graph.nodes()[1].id();
                     let edge = &graph.edges()[0];
                     let route = (edge.src_port(), edge.dst_port());
                     shell.selected_node = (!wire_selected).then_some(node);
@@ -927,7 +922,7 @@ fn graph_panning_preserves_node_or_wire_selection_and_inspector_visibility(
                         adjusted: true,
                     };
                     cx.notify();
-                    (shell.selected_node.clone(), shell.selected_route)
+                    (shell.selected_node, shell.selected_route)
                 });
                 let frame = canvas_frame(&view, cx);
                 let start = match mode {
@@ -942,20 +937,14 @@ fn graph_panning_preserves_node_or_wire_selection_and_inspector_visibility(
                 };
                 cx.simulate_mouse_down(start, button, Modifiers::default());
                 view.update(cx, |shell, _| {
-                    assert_eq!(
-                        (shell.selected_node.clone(), shell.selected_route),
-                        selection
-                    );
+                    assert_eq!((shell.selected_node, shell.selected_route), selection);
                     assert_eq!(shell.inspector_open, inspector_open);
                 });
                 let end = start + point(px(28.), px(18.));
                 cx.simulate_mouse_move(end, Some(button), Modifiers::default());
                 cx.simulate_mouse_up(end, button, Modifiers::default());
                 view.update(cx, |shell, _| {
-                    assert_eq!(
-                        (shell.selected_node.clone(), shell.selected_route),
-                        selection
-                    );
+                    assert_eq!((shell.selected_node, shell.selected_route), selection);
                     assert_eq!(shell.inspector_open, inspector_open);
                     assert_close(shell.camera.pan_x, 88.);
                     assert_close(shell.camera.pan_y, 98.);

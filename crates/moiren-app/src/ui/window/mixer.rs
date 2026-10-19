@@ -16,18 +16,17 @@ impl StudioShell {
         };
         if visible
             && self.inspector_open
-            && let Some(selected) = self.selected_node.as_deref()
-            && let Some(id) = self
+            && let Some(selected) = self.selected_node
+            && self
                 .state
                 .read(cx)
                 .snapshot
                 .graph
                 .nodes
                 .iter()
-                .find(|node| format!("{:?}", node.id) == selected)
-                .map(|node| node.id)
+                .any(|node| node.id == selected)
         {
-            nodes.insert(id);
+            nodes.insert(selected);
         }
         self.node_meters
             .update(&self.state.read(cx).snapshot, &nodes)
@@ -188,8 +187,7 @@ fn strip(
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
     let id = entry.id;
-    let key = format!("{id:?}");
-    let selected = shell.selected_node.as_ref() == Some(&key);
+    let selected = shell.selected_node == Some(id);
     let color = match kind {
         NodeKind::Source => theme::NODE_SOURCE,
         NodeKind::Sink => theme::NODE_SINK,
@@ -209,7 +207,7 @@ fn strip(
             let this = cx.entity();
             move |_, _, cx| {
                 this.update(cx, |shell, cx| {
-                    shell.selected_node = Some(key.clone());
+                    shell.selected_node = Some(id);
                     shell.inspector_open = true;
                     cx.notify();
                 })
