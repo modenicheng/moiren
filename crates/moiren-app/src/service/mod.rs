@@ -23,7 +23,7 @@ pub use backend::*;
 pub use driver::BackendDriver;
 pub use graph::{
     BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphNodeState,
-    GraphPreparation, GraphSnapshot, MixerState, ServiceGraph,
+    GraphPreparation, GraphSnapshot, MixerState, ServiceGraph, validate_node_state,
 };
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;
@@ -158,6 +158,16 @@ impl ServiceContext {
         true
     }
 
+    /// Stale-observation guard shared by every snapshot projection: a value is
+    /// published only while the Running phase is owned by its own generation.
+    /// The UI's display-level fallback mirrors this shape without the owner
+    /// identity, which is not published.
+    fn fresh(&self, generation: SessionGeneration) -> bool {
+        self.core.phase() == SessionPhase::Running
+            && self.core.owner_generation() == Some(generation)
+            && self.core.generation() == generation
+    }
+
     /// Refusal preserves ownership; callers must retain an owned session job.
     pub fn try_defer(
         &mut self,
@@ -252,31 +262,27 @@ impl ServiceDriver for CoreDriver {
 pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
     AppSnapshot {
         #[cfg(windows)]
-        native_observations: c.native_observations.clone().filter(|value| {
-            c.core.phase() == SessionPhase::Running
-                && c.core.owner_generation() == Some(value.generation)
-                && c.core.generation() == value.generation
-        }),
+        native_observations: c
+            .native_observations
+            .clone()
+            .filter(|value| c.fresh(value.generation)),
         #[cfg(windows)]
-        professional_observations: c.professional_observations.clone().filter(|value| {
-            c.core.phase() == SessionPhase::Running
-                && c.core.owner_generation() == Some(value.generation)
-                && c.core.generation() == value.generation
-        }),
+        professional_observations: c
+            .professional_observations
+            .clone()
+            .filter(|value| c.fresh(value.generation)),
         latency_profile: c.latency_profile,
         active_latency_profile: c.active_latency_profile,
         audio_settings: c.audio_settings.clone(),
-        active_audio_settings: c.active_audio_settings.clone().filter(|_| {
-            c.core.phase() == SessionPhase::Running
-                && c.core.owner_generation() == Some(c.core.generation())
-        }),
+        active_audio_settings: c
+            .active_audio_settings
+            .clone()
+            .filter(|_| c.fresh(c.core.generation())),
         graph: Arc::new(c.graph.snapshot()),
         monitor_latency: c.monitor_latency.clone(),
-        monitor_diagnostics: c.monitor_diagnostics.filter(|diagnostics| {
-            c.core.phase() == SessionPhase::Running
-                && c.core.generation() == diagnostics.generation
-                && c.core.owner_generation() == Some(diagnostics.generation)
-        }),
+        monitor_diagnostics: c
+            .monitor_diagnostics
+            .filter(|diagnostics| c.fresh(diagnostics.generation)),
         consumed_request_id: RequestId::default(),
         generation: c.core.generation(),
         phase: c.core.phase(),

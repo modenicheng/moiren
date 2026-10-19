@@ -1,4 +1,5 @@
 use super::*;
+use crate::service::GraphSnapshot;
 use std::collections::BTreeMap;
 
 pub(in crate::ui::window) struct MixerPresentation {
@@ -39,6 +40,49 @@ pub(super) fn linear_gain(value: f32) -> f64 {
     }
 }
 
+/// Builds the real-time edit for a slider's new value from the current
+/// snapshot; None when the target vanished since the slider was created.
+type SliderEdit = Box<dyn Fn(f32, &GraphSnapshot) -> Option<AppRequest>>;
+
+/// Slider construction and value sync shared by the fader (node) and send
+/// (edge) columns; only the current-value lookup and edit construction differ.
+fn sync_sliders<K: Ord + Clone>(
+    window: &mut Window,
+    cx: &mut Context<StudioShell>,
+    sliders: &mut BTreeMap<K, Entity<base::slider::SliderState>>,
+    rows: Vec<(K, f32, SliderEdit)>,
+) {
+    for (id, value, edit) in rows {
+        let slider = sliders.entry(id).or_insert_with(|| {
+            let slider = cx.new(|_| {
+                base::slider::SliderState::new()
+                    .min(-60.)
+                    .max(24.)
+                    .step(0.1)
+                    .default_value(value)
+            });
+            cx.subscribe(
+                &slider,
+                move |shell, _, event: &base::slider::SliderEvent, cx| {
+                    if let base::slider::SliderEvent::Change(value) = event {
+                        shell.state.update(cx, |state, _| {
+                            if let Some(edit) = edit(value.end(), &state.snapshot.graph) {
+                                state.dispatch(edit);
+                            }
+                        });
+                        cx.notify();
+                    }
+                },
+            )
+            .detach();
+            slider
+        });
+        if slider.read(cx).value().end() != value {
+            slider.update(cx, |state, cx| state.set_value(value, window, cx));
+        }
+    }
+}
+
 impl StudioShell {
     pub(in crate::ui::window) fn sync_mixer_controls(
         &mut self,
@@ -55,81 +99,54 @@ impl StudioShell {
             if !self.mixer.order.contains(&node.id) {
                 self.mixer.order.push(node.id);
             }
-            let id = node.id;
-            let value = gain_db(node.mixer.gain);
-            let slider = self.mixer.faders.entry(id).or_insert_with(|| {
-                let slider = cx.new(|_| {
-                    base::slider::SliderState::new()
-                        .min(-60.)
-                        .max(24.)
-                        .step(0.1)
-                        .default_value(value)
-                });
-                cx.subscribe(
-                    &slider,
-                    move |shell, _, event: &base::slider::SliderEvent, cx| {
-                        if let base::slider::SliderEvent::Change(value) = event {
-                            shell.state.update(cx, |state, _| {
-                                if let Some(node) = state.snapshot.graph.node(id) {
-                                    let mixer = MixerState {
-                                        gain: linear_gain(value.end()),
-                                        ..node.mixer
-                                    };
-                                    state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
-                                        node: id,
-                                        state: mixer,
-                                    }));
-                                }
-                            });
-                            cx.notify();
-                        }
-                    },
-                )
-                .detach();
-                slider
-            });
-            if slider.read(cx).value().end() != value {
-                slider.update(cx, |state, cx| state.set_value(value, window, cx));
-            }
         }
-        for edge in graph.graph.edges() {
-            let id = edge.id();
-            let value = gain_db(edge.params().gain);
-            let slider = self.mixer.sends.entry(id).or_insert_with(|| {
-                let slider = cx.new(|_| {
-                    base::slider::SliderState::new()
-                        .min(-60.)
-                        .max(24.)
-                        .step(0.1)
-                        .default_value(value)
-                });
-                cx.subscribe(
-                    &slider,
-                    move |shell, _, event: &base::slider::SliderEvent, cx| {
-                        if let base::slider::SliderEvent::Change(value) = event {
-                            shell.state.update(cx, |state, _| {
-                                if let Ok(edge) = state.snapshot.graph.graph.get_edge(id) {
-                                    let params = SendParams {
-                                        gain: linear_gain(value.end()),
-                                        ..*edge.params()
-                                    };
-                                    state.dispatch(AppRequest::EditGraph(GraphEdit::SetSend {
-                                        edge: id,
-                                        params,
-                                    }));
-                                }
-                            });
-                            cx.notify();
-                        }
-                    },
+        let faders = graph
+            .nodes
+            .iter()
+            .map(|node| {
+                let id = node.id;
+                (
+                    id,
+                    gain_db(node.mixer.gain),
+                    Box::new(move |value: f32, graph: &GraphSnapshot| {
+                        graph.node(id).map(|node| {
+                            AppRequest::EditGraph(GraphEdit::SetMixer {
+                                node: id,
+                                state: MixerState {
+                                    gain: linear_gain(value),
+                                    ..node.mixer
+                                },
+                            })
+                        })
+                    }) as SliderEdit,
                 )
-                .detach();
-                slider
-            });
-            if slider.read(cx).value().end() != value {
-                slider.update(cx, |state, cx| state.set_value(value, window, cx));
-            }
-        }
+            })
+            .collect();
+        sync_sliders(window, cx, &mut self.mixer.faders, faders);
+        let sends = graph
+            .graph
+            .edges()
+            .iter()
+            .map(|edge| {
+                let id = edge.id();
+                (
+                    id,
+                    gain_db(edge.params().gain),
+                    Box::new(move |value: f32, graph: &GraphSnapshot| {
+                        graph.graph.get_edge(id).ok().map(|edge| {
+                            AppRequest::EditGraph(GraphEdit::SetSend {
+                                edge: id,
+                                params: SendParams {
+                                    gain: linear_gain(value),
+                                    ..*edge.params()
+                                },
+                            })
+                        })
+                    }) as SliderEdit,
+                )
+            })
+            .collect();
+        sync_sliders(window, cx, &mut self.mixer.sends, sends);
     }
 }
 

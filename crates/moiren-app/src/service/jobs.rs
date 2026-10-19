@@ -1,4 +1,4 @@
-use super::DispatchError;
+use super::{BackendAdapter, BackendError, DeviceCatalog, DispatchError};
 use std::{
     io,
     sync::{
@@ -216,4 +216,64 @@ impl<T> Drop for CompletionPermit<T> {
 pub struct JobResult<T> {
     pub generation: super::SessionGeneration,
     pub value: T,
+}
+/// Shared catalog-refresh job shape for both audio drivers: reserve a
+/// completion credit, query the backend off-thread, and track exactly one
+/// in-flight refresh. A refused submission releases its credit immediately;
+/// only an admitted job flips `running`. The completion consumer owns the
+/// driver-specific result handling (including any automatic-startup retry).
+pub struct CatalogRefresher {
+    requested: bool,
+    running: bool,
+}
+
+impl CatalogRefresher {
+    pub fn new(requested: bool) -> Self {
+        Self {
+            requested,
+            running: false,
+        }
+    }
+    pub fn request(&mut self) {
+        self.requested = true;
+    }
+    pub fn cancel(&mut self) {
+        self.requested = false;
+    }
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+    /// Mark the in-flight refresh as consumed; call once per completion.
+    pub fn finished(&mut self) {
+        self.running = false;
+    }
+    pub fn poll<T: Send + 'static>(
+        &mut self,
+        exiting: bool,
+        backend: Option<&Arc<dyn BackendAdapter>>,
+        queue: &CompletionQueue<T>,
+        pool: &mut JobPool,
+        wrap: impl Fn(Result<DeviceCatalog, BackendError>) -> T + Send + 'static,
+    ) {
+        if exiting || !self.requested || self.running {
+            return;
+        }
+        let Some(backend) = backend else {
+            return;
+        };
+        let Ok(credit) = queue.port().try_reserve() else {
+            return;
+        };
+        let backend = backend.clone();
+        let job: Job = Box::new(move || {
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| backend.catalog()))
+                    .unwrap_or_else(|_| Err(BackendError::new("catalog", "backend panicked")));
+            credit.send_or_dispose(wrap(result), drop);
+        });
+        if pool.try_submit_owned(JobPriority::Prepare, job).is_ok() {
+            self.running = true;
+            self.requested = false;
+        }
+    }
 }

@@ -14,6 +14,22 @@ pub enum InputSelection {
     Process { pid: u32, creation_time_100ns: u64 },
     Tone { frequency_hz: f64 },
 }
+impl InputSelection {
+    /// The source-domain half of [`SessionSpec::validate`]; graph candidates
+    /// use it directly instead of constructing a throwaway spec.
+    pub fn validate(&self) -> Result<(), DispatchError> {
+        let source_valid = match self {
+            InputSelection::Physical { endpoint_id } => endpoint_valid(endpoint_id),
+            InputSelection::Process { pid, .. } => *pid != 0,
+            InputSelection::Tone { frequency_hz } => {
+                frequency_hz.is_finite() && *frequency_hz > 0.0 && *frequency_hz < 24000.0
+            }
+        };
+        source_valid
+            .then_some(())
+            .ok_or(DispatchError::InvalidConfig)
+    }
+}
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionSpec {
     pub source: InputSelection,
@@ -25,15 +41,8 @@ pub struct SessionSpec {
 }
 impl SessionSpec {
     pub fn validate(&self) -> Result<(), DispatchError> {
-        let source_valid = match &self.source {
-            InputSelection::Physical { endpoint_id } => endpoint_valid(endpoint_id),
-            InputSelection::Process { pid, .. } => *pid != 0,
-            InputSelection::Tone { frequency_hz } => {
-                frequency_hz.is_finite() && *frequency_hz > 0.0 && *frequency_hz < 24000.0
-            }
-        };
-        if !source_valid
-            || !endpoint_valid(&self.output_endpoint_id)
+        self.source.validate()?;
+        if !endpoint_valid(&self.output_endpoint_id)
             || !valid_gain_pan(self.gain, self.pan)
             || !(1..=4096).contains(&self.max_block_frames)
             || matches!(self.limit,RunLimit::Seconds(n) if !(1..=600).contains(&n))

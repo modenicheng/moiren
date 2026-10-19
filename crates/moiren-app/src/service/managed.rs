@@ -107,8 +107,7 @@ pub struct ManagedDriver {
     confirmation_values: VecDeque<(ParameterTarget, ParamValue)>,
     document: u64,
     cleaning: usize,
-    refresh: bool,
-    catalog_running: bool,
+    catalog: CatalogRefresher,
     automatic_startup: bool,
     exiting: bool,
     apply: bool,
@@ -154,8 +153,7 @@ impl ManagedDriver {
             confirmation_values: VecDeque::new(),
             document: 0,
             cleaning: 0,
-            refresh: false,
-            catalog_running: false,
+            catalog: CatalogRefresher::new(false),
             automatic_startup: false,
             exiting: false,
             apply: false,
@@ -181,7 +179,7 @@ impl ManagedDriver {
     }
     pub fn with_catalog(mut self, backend: Arc<dyn BackendAdapter>) -> Self {
         self.catalog_backend = Some(backend);
-        self.refresh = true;
+        self.catalog.request();
         self
     }
     pub fn with_automatic_startup(mut self) -> Self {

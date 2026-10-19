@@ -3,8 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use moiren_core::graph::{LogicalGraph, NodeId, NodeKind, SendParams, SendTap};
 use serde::{Deserialize, Serialize};
 
-use super::{PersistenceError, SourceDocument, model::validate_identity};
-use crate::service::{BuiltinState, CompressorState, GraphNodeState, GraphSnapshot, MixerState};
+use super::{PersistenceError, SourceDocument};
+use crate::service::{
+    BuiltinState, CompressorState, GraphNodeState, GraphSnapshot, MixerState, validate_node_state,
+};
 
 const MAX_PROJECT_NODES: usize = 4096;
 const MAX_PROJECT_EDGES: usize = 32768;
@@ -267,48 +269,6 @@ impl GraphDocument {
                     "total port count exceeds 65536",
                 ));
             }
-            if node.label.trim().is_empty() || node.label.len() > 256 || node.label.contains('\0') {
-                return Err(PersistenceError::invalid(
-                    &field,
-                    "label must contain 1 to 256 bytes without NUL",
-                ));
-            }
-            if !node.compressor.valid()
-                || !node.mixer.valid(node.channels)
-                || !node.gain.is_finite()
-                || !(0.0..=16.0).contains(&node.gain)
-                || !node.pan.is_finite()
-                || !(-1.0..=1.0).contains(&node.pan)
-            {
-                return Err(PersistenceError::invalid(
-                    &field,
-                    "node parameters must be finite and within their engine domains",
-                ));
-            }
-            if node.kind != GraphNodeKind::Pan && (node.mono || node.swap) {
-                return Err(PersistenceError::invalid(
-                    &field,
-                    "only a balance node may enable mono or swap",
-                ));
-            }
-            if let Some(source) = &node.source {
-                source.validate()?;
-                if node.kind != GraphNodeKind::Source {
-                    return Err(PersistenceError::invalid(
-                        &field,
-                        "only a source node may bind an input",
-                    ));
-                }
-            }
-            if let Some(output) = &node.output_endpoint_id {
-                validate_identity(output, &field)?;
-                if node.kind != GraphNodeKind::Sink {
-                    return Err(PersistenceError::invalid(
-                        &field,
-                        "only a sink node may bind an output",
-                    ));
-                }
-            }
             let input_channels = node.input_channels.unwrap_or(node.channels);
             node.builtin
                 .validate(node.kind.into(), input_channels, node.channels)
@@ -331,6 +291,23 @@ impl GraphDocument {
                     "input count does not match the node kind",
                 ));
             }
+            // Node-state domains come from the single service source; the
+            // document layer only contributes its field-path context.
+            let state = GraphNodeState {
+                id,
+                label: node.label.clone(),
+                gain: node.gain,
+                pan: node.pan,
+                mono: node.mono,
+                swap: node.swap,
+                mixer: node.mixer,
+                compressor: node.compressor,
+                builtin: node.builtin.clone(),
+                source: node.source.as_ref().map(SourceDocument::to_selection),
+                output_endpoint_id: node.output_endpoint_id.clone(),
+            };
+            validate_node_state(&state, node.kind.into(), input_channels, node.channels)
+                .map_err(|error| PersistenceError::invalid(&field, error))?;
             node_ids.insert(node.id, id);
         }
         for (index, edge) in self.edges.iter().enumerate() {

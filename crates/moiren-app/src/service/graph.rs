@@ -2,6 +2,8 @@
 //! only validated transactions replace the candidate and native startup confirms it.
 use super::{InputSelection, RunLimit, SessionGeneration, SessionSpec};
 use moiren_core::graph::{EdgeId, GraphError, LogicalGraph, NodeId, NodeKind, PortId, SendParams};
+use moiren_core::protocol::ParamValue;
+use moiren_engine::host::ParameterTarget;
 mod builtin;
 mod compressor;
 mod edit;
@@ -178,6 +180,97 @@ fn default_label(kind: NodeKind) -> &'static str {
         NodeKind::SpectrumAnalyzer => "Spectrum Analyzer",
         NodeKind::Rack => "Rack",
     }
+}
+/// Real-time parameter intent derived from a graph edit. This mapping is the
+/// single canonical source for every driver: the managed driver submits all
+/// values through engine control, while the legacy driver admits only the
+/// single node-addressed values its fixed session chain can address and must
+/// explicitly ignore the edge-targeted `SetSend` values.
+pub(crate) fn edit_parameter_values(edit: &GraphEdit) -> Vec<(ParameterTarget, ParamValue)> {
+    use moiren_engine::{
+        host::SendParameter,
+        processor::{Gain, Pan},
+    };
+    let node = |node, parameter, value| vec![(ParameterTarget::Node { node, parameter }, value)];
+    match edit {
+        GraphEdit::SetCompressor {
+            node: id,
+            parameter,
+            value,
+        } => node(*id, parameter.id(), ParamValue::Float(*value)),
+        GraphEdit::SetGain { node: id, gain } => node(*id, Gain::LEVEL, ParamValue::Float(*gain)),
+        GraphEdit::SetPan { node: id, pan } => node(*id, Pan::POSITION, ParamValue::Float(*pan)),
+        GraphEdit::SetMono { node: id, mono } => node(*id, Pan::MONO, ParamValue::Bool(*mono)),
+        GraphEdit::SetSwap { node: id, swap } => node(*id, Pan::SWAP, ParamValue::Bool(*swap)),
+        GraphEdit::SetSend { edge, params } => vec![
+            (
+                ParameterTarget::Edge {
+                    edge: *edge,
+                    parameter: SendParameter::Gain,
+                },
+                ParamValue::Float(params.gain),
+            ),
+            (
+                ParameterTarget::Edge {
+                    edge: *edge,
+                    parameter: SendParameter::Pan,
+                },
+                ParamValue::Float(params.pan),
+            ),
+            (
+                ParameterTarget::Edge {
+                    edge: *edge,
+                    parameter: SendParameter::Mute,
+                },
+                ParamValue::Bool(params.mute),
+            ),
+        ],
+        _ => Vec::new(),
+    }
+}
+/// Single source for per-node candidate-state domains. Every layer that
+/// admits graph state — candidate edits, session preparation, and project
+/// documents — routes through here; callers keep their own location context
+/// for error reporting but never restate the rules or their messages.
+pub fn validate_node_state(
+    state: &GraphNodeState,
+    kind: NodeKind,
+    input_channels: usize,
+    channels: usize,
+) -> Result<(), String> {
+    state.builtin.validate(kind, input_channels, channels)?;
+    if kind != NodeKind::Pan && (state.mono || state.swap) {
+        return Err("Mono 和 Swap 只能用于 Balance 节点".into());
+    }
+    if !state.compressor.valid() {
+        return Err("Compressor 参数超出有效范围".into());
+    }
+    if !state.mixer.valid(channels) {
+        return Err("Mixer 增益或声道模式无效".into());
+    }
+    if state.label.trim().is_empty() || state.label.len() > 256 || state.label.contains('\0') {
+        return Err("节点名称不能为空且最多 256 字节".into());
+    }
+    if !state.gain.is_finite() || !(0.0..=16.0).contains(&state.gain) {
+        return Err("Gain 节点增益必须为 0..16 的有限值".into());
+    }
+    if !state.pan.is_finite() || !(-1.0..=1.0).contains(&state.pan) {
+        return Err("Balance 节点位置必须为 -1..1 的有限值".into());
+    }
+    if let Some(source) = &state.source {
+        if kind != NodeKind::Source {
+            return Err("只有输入节点可以绑定音源".into());
+        }
+        source
+            .validate()
+            .map_err(|_| "输入音源配置无效".to_string())?;
+    }
+    if let Some(output) = &state.output_endpoint_id
+        && (kind != NodeKind::Sink || output.is_empty() || output.contains('\0'))
+    {
+        return Err("只有输出节点可以绑定有效设备".into());
+    }
+    Ok(())
 }
 impl ServiceGraph {
     pub fn snapshot(&self) -> GraphSnapshot {

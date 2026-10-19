@@ -8,7 +8,7 @@ impl ServiceDriver for ManagedDriver {
             AppRequest::SetAudioSettings(settings) => {
                 c.set_audio_settings(settings);
             }
-            AppRequest::RefreshCatalog => self.refresh = true,
+            AppRequest::RefreshCatalog => self.catalog.request(),
             AppRequest::Start(spec) => {
                 self.automatic_startup = false;
                 let mut settings = c.audio_settings.clone();
@@ -54,7 +54,7 @@ impl ServiceDriver for ManagedDriver {
                 }
             }
             AppRequest::EditGraph(edit) => {
-                let values = Self::parameter_edit(&edit);
+                let values = graph::edit_parameter_values(&edit);
                 if c.graph.edit(edit).is_ok() {
                     for (target, value) in values {
                         self.submit_parameter(c, target, value);
@@ -75,7 +75,7 @@ impl ServiceDriver for ManagedDriver {
                             pan,
                         },
                     ] {
-                        let values = Self::parameter_edit(&edit);
+                        let values = graph::edit_parameter_values(&edit);
                         if c.graph.edit(edit).is_ok() {
                             for (target, value) in values {
                                 self.submit_parameter(c, target, value);
@@ -103,7 +103,7 @@ impl ServiceDriver for ManagedDriver {
                     c.core.owner_reaped(generation);
                 }
                 Completion::Catalog(result) => {
-                    self.catalog_running = false;
+                    self.catalog.finished();
                     match result {
                         Ok(catalog) => {
                             c.catalog = Arc::new(catalog);
@@ -118,6 +118,9 @@ impl ServiceDriver for ManagedDriver {
                                     self.apply_audio_settings = Some(c.audio_settings.clone());
                                     self.apply = true;
                                 }
+                                // Known divergence: managed automatic startup
+                                // does not retry after an unusable catalog;
+                                // the legacy driver retries every second.
                             }
                         }
                         Err(error) => {
@@ -131,27 +134,16 @@ impl ServiceDriver for ManagedDriver {
                 }
             }
         }
-        if self.refresh
-            && !self.catalog_running
-            && !self.exiting
-            && let Some(backend) = self.catalog_backend.clone()
-            && let Ok(permit) = self.queue().port().try_reserve()
-            && pool
-                .try_submit(
-                    JobPriority::Prepare,
-                    Box::new(move || {
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            backend.catalog()
-                        }))
-                        .unwrap_or_else(|_| Err(BackendError::new("catalog", "backend panicked")));
-                        permit.send_or_dispose(Completion::Catalog(result), drop);
-                    }),
-                )
-                .is_ok()
-        {
-            self.catalog_running = true;
-            self.refresh = false;
-        }
+        let completions = self
+            .completions
+            .get_or_insert_with(|| CompletionQueue::new(thread::current()));
+        self.catalog.poll(
+            self.exiting,
+            self.catalog_backend.as_ref(),
+            completions,
+            pool,
+            Completion::Catalog,
+        );
         if self.apply {
             self.apply(c);
         }
@@ -161,6 +153,14 @@ impl ServiceDriver for ManagedDriver {
         let snapshot = owner.observer.read();
         #[cfg(windows)]
         {
+            // Write-side stale guard shared by the native and professional
+            // publishers: an observation counts only while its own owner
+            // generation still runs.
+            let fresh = |running: bool, owner_generation: u64| {
+                running
+                    && owner_generation == snapshot.state.owner_generation
+                    && snapshot.state.execution == ExecutionState::Running
+            };
             c.native_observations = self
                 .observations
                 .as_ref()
@@ -171,11 +171,7 @@ impl ServiceDriver for ManagedDriver {
                         .as_ref()
                         .and_then(|value| value.snapshot())
                 })
-                .filter(|observation| {
-                    observation.running
-                        && observation.owner_generation == snapshot.state.owner_generation
-                        && snapshot.state.execution == ExecutionState::Running
-                })
+                .filter(|observation| fresh(observation.running, observation.owner_generation))
                 .map(|observation| NativeSessionObservations {
                     generation: owner.generation,
                     observation,
@@ -190,11 +186,7 @@ impl ServiceDriver for ManagedDriver {
                         .as_ref()
                         .and_then(|value| value.snapshot())
                 })
-                .filter(|observation| {
-                    observation.running
-                        && observation.owner_generation == snapshot.state.owner_generation
-                        && snapshot.state.execution == ExecutionState::Running
-                })
+                .filter(|observation| fresh(observation.running, observation.owner_generation))
                 .map(|observation| ProfessionalSessionObservations {
                     generation: owner.generation,
                     observation,
@@ -424,7 +416,7 @@ impl ServiceDriver for ManagedDriver {
     fn is_drained(&self) -> bool {
         self.owner.is_none()
             && self.cleaning == 0
-            && !self.catalog_running
+            && !self.catalog.is_running()
             && self
                 .completions
                 .as_ref()

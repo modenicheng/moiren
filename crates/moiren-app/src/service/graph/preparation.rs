@@ -229,46 +229,12 @@ impl GraphPreparation {
                 .iter()
                 .find(|state| state.id == node.id())
                 .expect("unique state");
-            state.builtin.validate(
+            validate_node_state(
+                state,
                 node.kind(),
                 node.inputs().first().map_or(0, |port| port.channels()),
                 node.channels(),
             )?;
-            if node.kind() != NodeKind::Pan && (state.mono || state.swap) {
-                return Err("Mono 和 Swap 只能用于 Balance 节点".into());
-            }
-            if !state.compressor.valid()
-                || !state.mixer.valid(node.channels())
-                || state.label.trim().is_empty()
-                || state.label.len() > 256
-                || state.label.contains('\0')
-                || !state.gain.is_finite()
-                || !(0.0..=16.0).contains(&state.gain)
-                || !state.pan.is_finite()
-                || !(-1.0..=1.0).contains(&state.pan)
-            {
-                return Err("节点名称或参数无效".into());
-            }
-            if let Some(source) = &state.source {
-                if node.kind() != NodeKind::Source {
-                    return Err("只有输入节点可以绑定音源".into());
-                }
-                SessionSpec {
-                    source: source.clone(),
-                    output_endpoint_id: "validation".into(),
-                    limit: RunLimit::UntilStopped,
-                    gain: 1.0,
-                    pan: 0.0,
-                    max_block_frames: 256,
-                }
-                .validate()
-                .map_err(|e| format!("{e:?}"))?;
-            }
-            if let Some(output) = &state.output_endpoint_id
-                && (node.kind() != NodeKind::Sink || output.is_empty() || output.contains('\0'))
-            {
-                return Err("只有输出节点可以绑定有效设备".into());
-            }
         }
         Ok(())
     }

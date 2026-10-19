@@ -15,6 +15,10 @@ struct SessionCredits {
     completion: CompletionPermit<Completion>,
     signals: SignalPreparation,
 }
+/// The legacy driver cannot honor professional audio settings; every refusal
+/// shares one message so the recovery hint never drifts.
+const PROFESSIONAL_SETTINGS_UNSUPPORTED: &str =
+    "legacy audio driver cannot apply professional audio settings; use the managed engine driver";
 enum Completion {
     Prepared {
         generation: SessionGeneration,
@@ -65,8 +69,7 @@ pub struct BackendDriver {
     pending_prepare: Option<Job>,
     active: Option<Owner>,
     cleaning: usize,
-    catalog_running: bool,
-    refresh: bool,
+    catalog: CatalogRefresher,
     automatic_startup: bool,
     startup_retry_at: Option<Instant>,
     exiting: bool,
@@ -87,8 +90,7 @@ impl BackendDriver {
             pending_prepare: None,
             active: None,
             cleaning: 0,
-            catalog_running: false,
-            refresh: true,
+            catalog: CatalogRefresher::new(true),
             automatic_startup: false,
             startup_retry_at: None,
             exiting: false,
@@ -127,6 +129,25 @@ impl BackendDriver {
         {
             c.core.start_failed(*g, error);
         }
+    }
+    /// Ownership-transfer block shared by Start and ApplyGraph: the candidate
+    /// becomes the desired topology and all startup bookkeeping resets.
+    fn session_started(&mut self, c: &mut ServiceContext) {
+        self.candidate_identity_matches_session = true;
+        c.graph.clear_pending();
+        self.desired_graph = Some(c.graph.preparation());
+        self.automatic_startup = false;
+        self.startup_retry_at = None;
+        c.monitor_latency = None;
+        self.parameters.clear_intent(&mut c.control);
+    }
+    /// Bookkeeping reset shared by Stop and begin_exit, after each has dropped
+    /// its own session-specific state.
+    fn session_stopped(&mut self, c: &mut ServiceContext) {
+        c.graph.clear_pending();
+        self.automatic_startup = false;
+        self.startup_retry_at = None;
+        self.parameters.clear_intent(&mut c.control);
     }
     fn cleanup(
         &mut self,
@@ -278,26 +299,16 @@ impl BackendDriver {
         }
     }
     fn catalog(&mut self, pool: &mut JobPool) {
-        if self.exiting || !self.refresh || self.catalog_running {
-            return;
-        }
-        let Ok(credit) = self.queue().port().try_reserve() else {
-            return;
-        };
-        let backend = self.backend.clone();
-        let job: Job = Box::new(move || {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| backend.catalog()))
-                    .unwrap_or_else(|_| Err(BackendError::new("catalog", "backend panicked")));
-            credit.send_or_dispose(Completion::Catalog(result), drop);
-        });
-        match pool.try_submit_owned(JobPriority::Prepare, job) {
-            Ok(()) => {
-                self.catalog_running = true;
-                self.refresh = false;
-            }
-            Err((_, job)) => drop(job),
-        }
+        let completions = self
+            .completions
+            .get_or_insert_with(|| CompletionQueue::new(thread::current()));
+        self.catalog.poll(
+            self.exiting,
+            Some(&self.backend),
+            completions,
+            pool,
+            Completion::Catalog,
+        );
     }
     fn failure_generation(c: &ServiceContext, owner: SessionGeneration) -> SessionGeneration {
         c.monitor_latency
@@ -366,16 +377,12 @@ impl ServiceDriver for BackendDriver {
             AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
             AppRequest::SetAudioSettings(settings) => {
                 if c.set_audio_settings(settings) && c.audio_settings != AudioSettings::default() {
-                    c.graph.record_error(
-                        "legacy audio driver cannot apply professional audio settings; use the managed engine driver",
-                    );
+                    c.graph.record_error(PROFESSIONAL_SETTINGS_UNSUPPORTED);
                 }
             }
             AppRequest::Start(spec) => {
                 if c.audio_settings != AudioSettings::default() {
-                    c.graph.record_error(
-                        "legacy audio driver cannot apply professional audio settings; use the managed engine driver",
-                    );
+                    c.graph.record_error(PROFESSIONAL_SETTINGS_UNSUPPORTED);
                     return;
                 }
                 if let Err(error) = c.graph.configure_session(&spec) {
@@ -383,13 +390,7 @@ impl ServiceDriver for BackendDriver {
                     return;
                 }
                 if c.core.start(spec).is_ok() {
-                    self.candidate_identity_matches_session = true;
-                    c.graph.clear_pending();
-                    self.desired_graph = Some(c.graph.preparation());
-                    self.automatic_startup = false;
-                    self.startup_retry_at = None;
-                    c.monitor_latency = None;
-                    self.parameters.clear_intent(&mut c.control);
+                    self.session_started(c);
                 }
             }
             AppRequest::Stop => {
@@ -397,44 +398,19 @@ impl ServiceDriver for BackendDriver {
                 if c.core.stop().is_ok() {
                     self.desired_graph = None;
                     c.graph.stopped();
-                    c.graph.clear_pending();
-                    self.automatic_startup = false;
-                    self.startup_retry_at = None;
-                    self.parameters.clear_intent(&mut c.control);
+                    self.session_stopped(c);
                 }
             }
-            AppRequest::RefreshCatalog => self.refresh = true,
+            AppRequest::RefreshCatalog => self.catalog.request(),
             AppRequest::EditGraph(edit) => {
-                let parameter = match edit {
-                    GraphEdit::SetCompressor {
-                        node,
-                        parameter,
-                        value,
-                    } => Some((
-                        node,
-                        parameter.id(),
-                        moiren_core::protocol::ParamValue::Float(value),
-                    )),
-                    GraphEdit::SetGain { node, gain } => Some((
-                        node,
-                        moiren_engine::processor::Gain::LEVEL,
-                        moiren_core::protocol::ParamValue::Float(gain),
-                    )),
-                    GraphEdit::SetPan { node, pan } => Some((
-                        node,
-                        moiren_engine::processor::Pan::POSITION,
-                        moiren_core::protocol::ParamValue::Float(pan),
-                    )),
-                    GraphEdit::SetMono { node, mono } => Some((
-                        node,
-                        moiren_engine::processor::Pan::MONO,
-                        moiren_core::protocol::ParamValue::Bool(mono),
-                    )),
-                    GraphEdit::SetSwap { node, swap } => Some((
-                        node,
-                        moiren_engine::processor::Pan::SWAP,
-                        moiren_core::protocol::ParamValue::Bool(swap),
-                    )),
+                // The legacy session exposes only node-addressed control
+                // bindings. Edge-targeted values (SetSend) stay candidate-only
+                // until the next Apply; the managed driver consumes the full
+                // canonical mapping.
+                let parameter = match graph::edit_parameter_values(&edit).as_slice() {
+                    [(moiren_engine::host::ParameterTarget::Node { node, parameter }, value)] => {
+                        Some((*node, *parameter, *value))
+                    }
                     _ => None,
                 };
                 if c.graph.edit(edit).is_ok()
@@ -516,21 +492,11 @@ impl ServiceDriver for BackendDriver {
                 Err(error) => c.graph.record_error(error),
             },
             AppRequest::ApplyGraph if c.audio_settings != AudioSettings::default() => {
-                c.graph.record_error(
-                    "legacy audio driver cannot apply professional audio settings; use the managed engine driver",
-                );
+                c.graph.record_error(PROFESSIONAL_SETTINGS_UNSUPPORTED);
             }
             AppRequest::ApplyGraph => match c.graph.session_spec(c.core.desired()) {
                 Ok(spec) => match c.core.start(spec) {
-                    Ok(_) => {
-                        self.candidate_identity_matches_session = true;
-                        c.graph.clear_pending();
-                        self.desired_graph = Some(c.graph.preparation());
-                        self.automatic_startup = false;
-                        self.startup_retry_at = None;
-                        c.monitor_latency = None;
-                        self.parameters.clear_intent(&mut c.control);
-                    }
+                    Ok(_) => self.session_started(c),
                     Err(error) => c.graph.record_error(format!("{error:?}")),
                 },
                 Err(error) => c.graph.record_error(error),
@@ -579,7 +545,7 @@ impl ServiceDriver for BackendDriver {
     fn poll(&mut self, c: &mut ServiceContext, pool: &mut JobPool, budget: RoundBudget) {
         if self.automatic_startup && self.startup_retry_at.is_some_and(|at| Instant::now() >= at) {
             self.startup_retry_at = None;
-            self.refresh = true;
+            self.catalog.request();
         }
         if let Some(job) = self.refused_cleanup.take()
             && let Err((_, job)) = c.try_defer(JobPriority::Cleanup, job)
@@ -662,7 +628,7 @@ impl ServiceDriver for BackendDriver {
                     }
                 }
                 Completion::Catalog(result) => {
-                    self.catalog_running = false;
+                    self.catalog.finished();
                     match result {
                         Ok(catalog) => {
                             c.catalog = Arc::new(catalog);
@@ -674,6 +640,10 @@ impl ServiceDriver for BackendDriver {
                                     self.automatic_startup = false;
                                     self.request(c, pool, AppRequest::Start(spec));
                                 } else {
+                                    // Known divergence: only the legacy driver
+                                    // retries automatic startup (1 s cadence)
+                                    // until a usable catalog appears; managed
+                                    // startup does not retry.
                                     self.startup_retry_at =
                                         Some(Instant::now() + Duration::from_secs(1));
                                 }
@@ -790,12 +760,9 @@ impl ServiceDriver for BackendDriver {
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
         self.exiting = true;
         c.active_audio_settings = None;
-        c.graph.clear_pending();
         c.graph.stopped();
-        self.refresh = false;
-        self.automatic_startup = false;
-        self.startup_retry_at = None;
-        self.parameters.clear_intent(&mut c.control);
+        self.catalog.cancel();
+        self.session_stopped(c);
         self.cancel_prepare(c);
     }
     fn is_drained(&self) -> bool {
@@ -807,7 +774,7 @@ impl ServiceDriver for BackendDriver {
             && self.active.is_none()
             && self.cleaning == 0
             && self.refused_cleanup.is_none()
-            && !self.catalog_running
+            && !self.catalog.is_running()
             && self
                 .completions
                 .as_ref()

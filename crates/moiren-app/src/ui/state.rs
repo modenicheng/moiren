@@ -8,17 +8,17 @@ use std::sync::Arc;
 
 use crate::service::{
     AppHandle, AppRequest, AppSnapshot, AudioBackend, DeviceCatalog, DeviceRow, InputSelection,
-    RequestId, RunLimit, SessionPhase, SessionSpec,
+    RequestId, RunLimit, SessionGeneration, SessionPhase, SessionSpec,
 };
 
-fn input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> &[DeviceRow] {
+pub(crate) fn input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> &[DeviceRow] {
     match backend {
         AudioBackend::Wasapi => &catalog.inputs,
         AudioBackend::Asio => &catalog.asio_drivers,
     }
 }
 
-fn output_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> &[DeviceRow] {
+pub(crate) fn output_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> &[DeviceRow] {
     match backend {
         AudioBackend::Wasapi => &catalog.outputs,
         AudioBackend::Asio => &catalog.asio_drivers,
@@ -135,6 +135,18 @@ impl SelectionState {
                 }),
         }
     }
+}
+
+/// Display-level stale guard mirroring the service's write-side filter. The
+/// owner identity is not published to the UI, so this deliberately checks only
+/// phase, generation, and the observation's own running flag.
+fn fresh_observation(
+    phase: SessionPhase,
+    generation: SessionGeneration,
+    status_generation: SessionGeneration,
+    running: bool,
+) -> bool {
+    phase == SessionPhase::Running && generation == status_generation && running
 }
 
 /// Root gpui entity: owns the service handle and the latest projected state.
@@ -295,9 +307,12 @@ impl UiState {
                     .professional_observations
                     .as_ref()
                     .filter(|status| {
-                        self.snapshot.phase == SessionPhase::Running
-                            && status.generation == self.snapshot.generation
-                            && status.observation.running
+                        fresh_observation(
+                            self.snapshot.phase,
+                            self.snapshot.generation,
+                            status.generation,
+                            status.observation.running,
+                        )
                     })
             {
                 let mut rows = Vec::new();
@@ -383,9 +398,12 @@ impl UiState {
                 return rows;
             }
             if let Some(status) = self.snapshot.native_observations.as_ref().filter(|status| {
-                self.snapshot.phase == SessionPhase::Running
-                    && status.generation == self.snapshot.generation
-                    && status.observation.running
+                fresh_observation(
+                    self.snapshot.phase,
+                    self.snapshot.generation,
+                    status.generation,
+                    status.observation.running,
+                )
             }) {
                 let mut rows = Vec::new();
                 for (index, stream) in status.observation.streams.iter().enumerate() {
@@ -542,23 +560,55 @@ impl UiState {
         }
     }
 
-    /// Saving keeps stable identities even when a device temporarily vanishes.
-    pub fn candidate_config(&self) -> Option<SessionSpec> {
-        let source = match self.source_mode {
-            SourceMode::Tone => InputSelection::Tone {
-                frequency_hz: self.tone_frequency,
-            },
-            SourceMode::Input => InputSelection::Physical {
-                endpoint_id: self.selection.input_id.clone()?,
-            },
-            SourceMode::Application => {
-                let (pid, creation_time_100ns) = self.selection.process_key?;
-                InputSelection::Process {
-                    pid,
-                    creation_time_100ns,
-                }
+    /// Adopt a restored source: the selection identity, the derived mode, and
+    /// the tone frequency always move together.
+    fn apply_source(&mut self, source: InputSelection) {
+        self.source_mode = match source {
+            InputSelection::Tone { frequency_hz } => {
+                self.tone_frequency = frequency_hz;
+                SourceMode::Tone
+            }
+            InputSelection::Physical { endpoint_id } => {
+                self.selection.input_id = Some(endpoint_id);
+                self.selection.input_initialized = true;
+                SourceMode::Input
+            }
+            InputSelection::Process {
+                pid,
+                creation_time_100ns,
+            } => {
+                self.selection.process_key = Some((pid, creation_time_100ns));
+                SourceMode::Application
             }
         };
+    }
+
+    /// The candidate source the current mode and selection describe; None
+    /// while a required identity is still missing.
+    fn current_selection(&self) -> Option<InputSelection> {
+        match self.source_mode {
+            SourceMode::Tone => Some(InputSelection::Tone {
+                frequency_hz: self.tone_frequency,
+            }),
+            SourceMode::Input => self
+                .selection
+                .input_id
+                .clone()
+                .map(|endpoint_id| InputSelection::Physical { endpoint_id }),
+            SourceMode::Application => {
+                self.selection
+                    .process_key
+                    .map(|(pid, creation_time_100ns)| InputSelection::Process {
+                        pid,
+                        creation_time_100ns,
+                    })
+            }
+        }
+    }
+
+    /// Saving keeps stable identities even when a device temporarily vanishes.
+    pub fn candidate_config(&self) -> Option<SessionSpec> {
+        let source = self.current_selection()?;
         let spec = SessionSpec {
             source,
             output_endpoint_id: self.selection.output_id.clone()?,
@@ -599,24 +649,7 @@ impl UiState {
 
     fn sync_graph_resources(&mut self, source: Option<InputSelection>, output: Option<String>) {
         if let Some(source) = source {
-            self.source_mode = match source {
-                InputSelection::Tone { frequency_hz } => {
-                    self.tone_frequency = frequency_hz;
-                    SourceMode::Tone
-                }
-                InputSelection::Physical { endpoint_id } => {
-                    self.selection.input_id = Some(endpoint_id);
-                    self.selection.input_initialized = true;
-                    SourceMode::Input
-                }
-                InputSelection::Process {
-                    pid,
-                    creation_time_100ns,
-                } => {
-                    self.selection.process_key = Some((pid, creation_time_100ns));
-                    SourceMode::Application
-                }
-            };
+            self.apply_source(source);
         }
         if let Some(output) = output {
             self.selection.output_id = Some(output);
@@ -646,24 +679,13 @@ impl UiState {
         self.selection.input_initialized = true;
         self.selection.output_initialized = true;
         self.selection.output_id = output;
-        self.source_mode = match source {
-            Some(InputSelection::Tone { frequency_hz }) => {
-                self.tone_frequency = frequency_hz;
-                SourceMode::Tone
-            }
-            Some(InputSelection::Physical { endpoint_id }) => {
-                self.selection.input_id = Some(endpoint_id);
-                SourceMode::Input
-            }
-            Some(InputSelection::Process {
-                pid,
-                creation_time_100ns,
-            }) => {
-                self.selection.process_key = Some((pid, creation_time_100ns));
-                SourceMode::Application
-            }
-            None => SourceMode::Input,
-        };
+        // A graph-only template has no persisted source intent; absent input
+        // selection is a deliberate empty state, not an uninitialized one.
+        if let Some(source) = source {
+            self.apply_source(source);
+        } else {
+            self.source_mode = SourceMode::Input;
+        }
         let (gain, pan) = primary_parameters(&self.snapshot);
         self.gain = gain;
         self.pan = pan;
@@ -720,24 +742,7 @@ impl UiState {
     }
 
     pub fn restore_candidate(&mut self, spec: &SessionSpec) {
-        self.source_mode = match &spec.source {
-            InputSelection::Tone { frequency_hz } => {
-                self.tone_frequency = *frequency_hz;
-                SourceMode::Tone
-            }
-            InputSelection::Physical { endpoint_id } => {
-                self.selection.input_id = Some(endpoint_id.clone());
-                self.selection.input_initialized = true;
-                SourceMode::Input
-            }
-            InputSelection::Process {
-                pid,
-                creation_time_100ns,
-            } => {
-                self.selection.process_key = Some((*pid, *creation_time_100ns));
-                SourceMode::Application
-            }
-        };
+        self.apply_source(spec.source.clone());
         self.selection.output_id = Some(spec.output_endpoint_id.clone());
         self.selection.output_initialized = true;
         self.gain = spec.gain;
@@ -750,24 +755,7 @@ impl UiState {
 
     /// Resource selection edits the candidate bindings, never the active owner.
     pub fn bind_candidate_resources(&mut self) {
-        let source = match self.source_mode {
-            SourceMode::Tone => Some(InputSelection::Tone {
-                frequency_hz: self.tone_frequency,
-            }),
-            SourceMode::Input => self
-                .selection
-                .input_id
-                .clone()
-                .map(|endpoint_id| InputSelection::Physical { endpoint_id }),
-            SourceMode::Application => {
-                self.selection
-                    .process_key
-                    .map(|(pid, creation_time_100ns)| InputSelection::Process {
-                        pid,
-                        creation_time_100ns,
-                    })
-            }
-        };
+        let source = self.current_selection();
         use moiren_core::graph::NodeKind;
         let input = self
             .snapshot

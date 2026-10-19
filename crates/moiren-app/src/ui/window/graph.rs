@@ -18,6 +18,22 @@ pub(super) struct ConnectionDrag {
 }
 
 impl StudioShell {
+    /// Shared pointer-session preamble for canvas hit targets: cancel any
+    /// in-flight drag or click first; under the hand tool the pointer instead
+    /// becomes a pan grab. Returns true when the hand tool consumed the event.
+    fn begin_pointer_session(&mut self, window: &mut Window) -> bool {
+        self.node_drag = None;
+        self.pan_grab = None;
+        self.background_click = None;
+        if self.hand_tool {
+            let position = window.mouse_position();
+            self.pan_grab = Some((f32::from(position.x), f32::from(position.y)));
+            true
+        } else {
+            false
+        }
+    }
+
     fn delete_graph_selection(&mut self, cx: &mut Context<Self>) {
         let graph = &self.state.read(cx).snapshot.graph.graph;
         let edit = self
@@ -96,12 +112,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
         let this = this.clone();
         move |id: &str, window: &mut Window, cx: &mut App| {
             this.update(cx, |shell, cx| {
-                shell.pan_grab = None;
-                shell.background_click = None;
-                shell.node_drag = None;
-                if shell.hand_tool {
-                    let pos = window.mouse_position();
-                    shell.pan_grab = Some((f32::from(pos.x), f32::from(pos.y)));
+                if shell.begin_pointer_session(window) {
                     return;
                 }
                 shell.selected_node = Some(id.to_string());
@@ -249,14 +260,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                 let nodes = world.clone();
                 move |(port, cursor), window, cx| {
                     this.update(cx, |shell, cx| {
-                        shell.node_drag = None;
-                        shell.pan_grab = None;
-                        shell.background_click = None;
-                        if shell.hand_tool {
-                            let position = window.mouse_position();
-                            shell.pan_grab = Some((f32::from(position.x), f32::from(position.y)));
-                        }
-                        if !shell.hand_tool {
+                        if !shell.begin_pointer_session(window) {
                             shell.camera.adjusted = true;
                             for node in &nodes.nodes {
                                 shell
@@ -340,12 +344,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                 let this = this.clone();
                 move |id, window, cx| {
                     this.update(cx, |shell, cx| {
-                        shell.node_drag = None;
-                        shell.pan_grab = None;
-                        shell.background_click = None;
-                        if shell.hand_tool {
-                            let pos = window.mouse_position();
-                            shell.pan_grab = Some((f32::from(pos.x), f32::from(pos.y)));
+                        if shell.begin_pointer_session(window) {
                             return;
                         }
                         shell.selected_route = shell
@@ -405,18 +404,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                         .flex()
                         .gap(px(8.))
                         .child(controls::apply(shell, cx))
-                        .child(controls::button("toggle-inspector", "Inspector").on_click({
-                            let this = this.clone();
-                            move |_, _, cx| {
-                                this.update(cx, |s, cx| {
-                                    s.inspector_open = !s.inspector_open;
-                                    if s.compact {
-                                        s.sidebar_open = false;
-                                    }
-                                    cx.notify();
-                                })
-                            }
-                        })),
+                        .child(controls::inspector_toggle("toggle-inspector", cx)),
                 ),
         )
         .child(

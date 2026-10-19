@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::state::{SourceMode, output_name, source_name};
+use crate::ui::state::{SourceMode, input_rows, output_name, output_rows, source_name};
 use controls::*;
 
 mod overrides;
@@ -54,14 +54,12 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
     match shell.device_tab {
         DeviceTab::Inputs | DeviceTab::Outputs => {
             let input = shell.device_tab == DeviceTab::Inputs;
-            let available = if asio {
-                &catalog.asio_drivers
-            } else if input {
-                &catalog.inputs
+            let available = if input {
+                input_rows(catalog, snapshot.audio_settings.backend)
             } else {
-                &catalog.outputs
+                output_rows(catalog, snapshot.audio_settings.backend)
             };
-            let mut rows = available.clone();
+            let mut rows = available.to_vec();
             let saved = if input {
                 &shell.settings.device.audio.input_overrides
             } else {
@@ -284,7 +282,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .justify_between()
                 .px(px(16.))
                 .child(tabs)
-                .child(inspector_toggle(cx))
+                .child(inspector_toggle("toggle-details", cx))
                 .child(
                     button("refresh-devices", "Refresh devices")
                         .disabled(state.pending_request)

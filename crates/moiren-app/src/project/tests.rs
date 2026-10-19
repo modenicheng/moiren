@@ -908,6 +908,6 @@ fn monitor_controls_on_non_balance_nodes_are_rejected_during_project_load() {
             .restore()
             .unwrap_err()
             .to_string()
-            .contains("only a balance node")
+            .contains("Mono 和 Swap 只能用于 Balance 节点")
     );
 }

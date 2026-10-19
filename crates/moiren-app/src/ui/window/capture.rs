@@ -46,6 +46,19 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
             .expect("capture window");
             shell.update(cx, |s, cx| s.spawn_poll(cx));
             cx.spawn(async move |cx| {
+                // Shared screenshot block: draw the current frame, save it, and
+                // flag the run as failed without aborting the remaining pages.
+                let capture = |cx: &mut AsyncApp, path: std::path::PathBuf| {
+                    let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
+                        window.draw(cx).clear(cx);
+                        window.render_to_image()?.save(&path)?;
+                        Ok(())
+                    });
+                    if !matches!(result, Ok(Ok(()))) {
+                        capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    eprintln!("Capture {}: {result:?}", path.display());
+                };
                 cx.background_executor()
                     .timer(Duration::from_millis(1200))
                     .await;
@@ -92,17 +105,13 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                                 );
                             });
                         }
-                        let path =
-                            directory.join(format!("{name}-{}.png", page.title().to_lowercase()));
-                        let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
-                            window.draw(cx).clear(cx);
-                            window.render_to_image()?.save(&path)?;
-                            Ok(())
-                        });
-                        if !matches!(result, Ok(Ok(()))) {
-                            capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        eprintln!("Capture {}: {result:?}", path.display());
+                        capture(
+                            cx,
+                            directory.join(format!(
+                                "{name}-{}.png",
+                                page.title().to_lowercase()
+                            )),
+                        );
                     }
                     // Inspect a real catalog row without binding resources or
                     // submitting any audio request. The override stays a draft.
@@ -115,16 +124,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         }
                     });
                     cx.background_executor().timer(Duration::from_millis(100)).await;
-                    let path = directory.join(format!("{name}-device-override.png"));
-                    let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
-                        window.draw(cx).clear(cx);
-                        window.render_to_image()?.save(&path)?;
-                        Ok(())
-                    });
-                    if !matches!(result, Ok(Ok(()))) {
-                        capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    eprintln!("Capture {}: {result:?}", path.display());
+                    capture(cx, directory.join(format!("{name}-device-override.png")));
                     let _ = window.update(cx, |_, window, cx| {
                         shell.update(cx, |s, cx| {
                             s.set_page(Page::Graph, cx);
@@ -141,16 +141,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             cx.notify();
                         });
                         cx.background_executor().timer(Duration::from_millis(100)).await;
-                        let path = directory.join(format!("{name}-{suffix}.png"));
-                        let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
-                            window.draw(cx).clear(cx);
-                            window.render_to_image()?.save(&path)?;
-                            Ok(())
-                        });
-                        if !matches!(result, Ok(Ok(()))) {
-                            capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        eprintln!("Capture {}: {result:?}", path.display());
+                        capture(cx, directory.join(format!("{name}-{suffix}.png")));
                     }
                 }
                 shell.update(cx, |shell, cx| {
@@ -198,16 +189,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     cx.background_executor()
                         .timer(Duration::from_millis(120))
                         .await;
-                    let path = directory.join(format!("{name}.png"));
-                    let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
-                        window.draw(cx).clear(cx);
-                        window.render_to_image()?.save(&path)?;
-                        Ok(())
-                    });
-                    if !matches!(result, Ok(Ok(()))) {
-                        capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    eprintln!("Capture {}: {result:?}", path.display());
+                    capture(cx, directory.join(format!("{name}.png")));
                 }
                 let _ = window.update(cx, |_, window, _| window.resize(size(px(1440.), px(900.))));
                 for (name, page, strip_width) in [
@@ -244,16 +226,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     cx.background_executor()
                         .timer(Duration::from_millis(120))
                         .await;
-                    let path = directory.join(format!("{name}.png"));
-                    let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
-                        window.draw(cx).clear(cx);
-                        window.render_to_image()?.save(&path)?;
-                        Ok(())
-                    });
-                    if !matches!(result, Ok(Ok(()))) {
-                        capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    eprintln!("Capture {}: {result:?}", path.display());
+                    capture(cx, directory.join(format!("{name}.png")));
                 }
                 shell.update(cx, |shell, cx| {
                     shell.state.update(cx, |state, _| {
@@ -290,16 +263,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 cx.background_executor()
                     .timer(Duration::from_millis(150))
                     .await;
-                let path = directory.join("compressor-inspector.png");
-                let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
-                    window.draw(cx).clear(cx);
-                    window.render_to_image()?.save(&path)?;
-                    Ok(())
-                });
-                if !matches!(result, Ok(Ok(()))) {
-                    capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                eprintln!("Capture {}: {result:?}", path.display());
+                capture(cx, directory.join("compressor-inspector.png"));
                 for kind in [
                     moiren_core::graph::NodeKind::Source,
                     moiren_core::graph::NodeKind::Bus,
@@ -355,16 +319,7 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 cx.background_executor()
                     .timer(Duration::from_millis(150))
                     .await;
-                let path = directory.join("node-families.png");
-                let result = window.update(cx, |_, window, cx| -> anyhow::Result<()> {
-                    window.draw(cx).clear(cx);
-                    window.render_to_image()?.save(&path)?;
-                    Ok(())
-                });
-                if !matches!(result, Ok(Ok(()))) {
-                    capture_failure.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                eprintln!("Capture {}: {result:?}", path.display());
+                capture(cx, directory.join("node-families.png"));
                 cx.update(|cx| cx.quit());
             })
             .detach();
