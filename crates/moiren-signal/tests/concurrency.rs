@@ -9,6 +9,8 @@ use std::{
 
 use moiren_signal::{BlockInit, Bus, BusConfig, PublishOutcome, PumpBudget, SubscriptionOptions};
 
+mod common;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Frame {
     sequence_echo: u64,
@@ -128,14 +130,7 @@ fn producer_pump_and_independent_subscribers_preserve_pairs_with_held_guard() {
         pump_start.wait();
         for expected in 1..=MESSAGES {
             assert_eq!(published_rx.recv().unwrap(), expected);
-            let mut drained = false;
-            for _ in 0..8 {
-                if !bus.pump(pump_budget()).has_pending {
-                    drained = true;
-                    break;
-                }
-            }
-            assert!(drained, "finite ingress did not drain within its budget");
+            common::pump_until_settled(&mut bus, pump_budget());
             drained_tx.send(expected).unwrap();
         }
         done_rx.recv().unwrap();

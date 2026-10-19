@@ -1,3 +1,7 @@
+// Single owner of the counting-allocator semantics. This file is compiled
+// into the library's unit-test binary (`#[cfg(test)] mod test_alloc`) and is
+// textually included by `tests/allocation.rs`, which compiles the library
+// without `cfg(test)` and therefore cannot import it. Keep it self-contained.
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -9,6 +13,9 @@ pub(crate) struct Counts {
     free: usize,
 }
 thread_local! { static PROBE: Cell<Option<Counts>> = const { Cell::new(None) }; }
+// Frees tracking is consumed only by unit tests inside the library; it stays
+// dead in the integration binary that includes this file.
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) struct Frees {
     pub(crate) events: [Option<(usize, std::thread::ThreadId)>; 256],
@@ -56,6 +63,7 @@ unsafe impl GlobalAlloc for Allocator {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn frees(operation: impl FnOnce()) -> Frees {
     struct Stop;
     impl Drop for Stop {

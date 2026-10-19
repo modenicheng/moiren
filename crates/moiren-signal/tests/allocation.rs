@@ -1,78 +1,13 @@
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    cell::Cell,
-};
-
 use moiren_signal::{
     BlockInit, Bus, BusConfig, PublishOutcome, PumpBudget, SubscriptionOptions, WriteError,
 };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Counts {
-    alloc: usize,
-    realloc: usize,
-    dealloc: usize,
-}
+mod common;
 
-thread_local! {
-    static ACTIVE: Cell<bool> = const { Cell::new(false) };
-    static COUNTS: Cell<Counts> = const {
-        Cell::new(Counts {
-            alloc: 0,
-            realloc: 0,
-            dealloc: 0,
-        })
-    };
-}
-
-struct CountingAllocator;
-
-fn record(kind: usize) {
-    ACTIVE.with(|active| {
-        if active.get() {
-            COUNTS.with(|counts| {
-                let mut value = counts.get();
-                match kind {
-                    0 => value.alloc += 1,
-                    1 => value.realloc += 1,
-                    _ => value.dealloc += 1,
-                }
-                counts.set(value);
-            });
-        }
-    });
-}
-
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        record(0);
-        // SAFETY: The system allocator receives the original valid layout.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        record(1);
-        // SAFETY: The system allocator receives the original pointer and layout.
-        unsafe { System.realloc(pointer, layout, size) }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        record(2);
-        // SAFETY: The system allocator owns this pointer and layout.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
-
-fn measure(operation: impl FnOnce()) -> Counts {
-    COUNTS.with(|counts| counts.set(Counts::default()));
-    ACTIVE.with(|active| active.set(true));
-    operation();
-    ACTIVE.with(|active| active.set(false));
-    COUNTS.with(Cell::get)
-}
+// The counting allocator is shared verbatim with the library's unit-test
+// binary: integration tests cannot import `#[cfg(test)]` items, so this file
+// textually includes the single owner of the counting semantics.
+include!("../src/test_alloc.rs");
 
 fn budget() -> PumpBudget {
     PumpBudget {
@@ -188,11 +123,7 @@ fn rt_publication_and_activation_paths_do_not_allocate() {
         }),
         Counts::default()
     );
-    for _ in 0..8 {
-        if !bus.pump(budget()).has_pending {
-            break;
-        }
-    }
+    common::pump_until_settled(&mut bus, budget());
     assert_eq!(latest_reader.read_latest().unwrap().value, 2);
     assert_eq!(block_reader.read_latest().unwrap().elements(), &[9, 9]);
     assert_eq!(stream_reader.next().unwrap().elements(), &[17]);
@@ -258,10 +189,6 @@ fn rt_publication_and_activation_paths_do_not_allocate() {
         }),
         Counts::default()
     );
-    for _ in 0..8 {
-        if !bus.pump(budget()).has_pending {
-            break;
-        }
-    }
+    common::pump_until_settled(&mut bus, budget());
     assert_eq!(latest_reader.read_latest().unwrap().value, 4);
 }

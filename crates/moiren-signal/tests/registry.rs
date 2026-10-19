@@ -2,7 +2,10 @@ use moiren_signal::{
     BlockInit, Bus, BusConfig, LatestBlock, LatestValue, LookupError, RegisterError, StreamBlock,
     StreamValue,
 };
-use std::num::NonZeroU32;
+use std::{
+    num::NonZeroU32,
+    sync::{Arc, atomic::Ordering},
+};
 
 mod allocations {
     use std::{
@@ -166,13 +169,61 @@ mod allocations {
 #[global_allocator]
 static ALLOCATOR: allocations::Allocator = allocations::Allocator;
 
+/// A worker thread parked inside the allocator on a gate's target
+/// deallocation. Dropping the guard (including during a panic unwind) resumes
+/// the worker so `thread::scope` can join it.
+struct ParkedDrop<'scope, T> {
+    gate: Arc<allocations::DeallocationGate>,
+    worker: Option<std::thread::ScopedJoinHandle<'scope, T>>,
+}
+
+impl<T> ParkedDrop<'_, T> {
+    fn resume_and_join(mut self) -> T {
+        self.gate.resume.store(true, Ordering::Release);
+        let worker = self.worker.take().expect("worker handle consumed once");
+        worker.join().expect("gated drop worker panicked")
+    }
+}
+
+impl<T> Drop for ParkedDrop<'_, T> {
+    fn drop(&mut self) {
+        // Unblock the worker even if a regression assertion panics before
+        // `resume_and_join`; `thread::scope` joins it during unwind.
+        self.gate.resume.store(true, Ordering::Release);
+    }
+}
+
+/// Spawns `operation` on `scope` with the gate's target deallocation parked
+/// inside the allocator, then waits (deadline-bounded) until the worker is
+/// parked on it. Regression assertions may run between this call and
+/// [`ParkedDrop::resume_and_join`]: the observed state is exactly the
+/// mid-`Drop` state the gate freezes.
+fn spawn_parked_drop<'scope, 'env: 'scope, T>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    gate: &Arc<allocations::DeallocationGate>,
+    stuck: &str,
+    operation: impl FnOnce() -> T + Send + 'scope,
+) -> ParkedDrop<'scope, T>
+where
+    T: Send + 'scope,
+{
+    let worker_gate = Arc::clone(gate);
+    let worker = scope.spawn(move || allocations::pause_deallocation(worker_gate, operation));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !gate.reached.load(Ordering::Acquire) {
+        assert!(std::time::Instant::now() < deadline, "{stuck}");
+        std::thread::yield_now();
+    }
+    ParkedDrop {
+        gate: Arc::clone(gate),
+        worker: Some(worker),
+    }
+}
+
 fn assert_concurrent_receiver_drop_stays_budgeted<P: moiren_signal::Shape>(
     register: impl Fn(&mut Bus) -> moiren_signal::Topic<P>,
 ) {
-    use std::{
-        sync::{Arc, atomic::Ordering},
-        time::{Duration, Instant},
-    };
+    use std::sync::atomic::Ordering;
 
     let mut measure = Bus::new(BusConfig::default()).unwrap();
     let topic = register(&mut measure);
@@ -202,28 +253,9 @@ fn assert_concurrent_receiver_drop_stays_budgeted<P: moiren_signal::Shape>(
     let gate = Arc::new(allocations::DeallocationGate::new(receiver.pointer));
 
     let replacement = std::thread::scope(|scope| {
-        struct Resume(Arc<allocations::DeallocationGate>);
-        impl Drop for Resume {
-            fn drop(&mut self) {
-                self.0.resume.store(true, Ordering::Release);
-            }
-        }
-        // Unblock the Drop thread even if a regression assertion panics.
-        let _resume = Resume(Arc::clone(&gate));
-        let worker_gate = Arc::clone(&gate);
-        let worker = scope.spawn(move || {
-            allocations::pause_deallocation(worker_gate, || {
-                allocations::measure(|| drop(subscriber)).1
-            })
+        let worker = spawn_parked_drop(scope, &gate, "receiver Drop never reached dealloc", || {
+            allocations::measure(|| drop(subscriber)).1
         });
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !gate.reached.load(Ordering::Acquire) {
-            assert!(
-                Instant::now() < deadline,
-                "receiver Drop never reached dealloc"
-            );
-            std::thread::yield_now();
-        }
 
         let (replacement, probe) =
             allocations::measure(|| bus.subscribe(&topic, Default::default()).unwrap());
@@ -253,8 +285,7 @@ fn assert_concurrent_receiver_drop_stays_budgeted<P: moiren_signal::Shape>(
         );
         assert!(live <= limit as isize);
 
-        gate.resume.store(true, Ordering::Release);
-        let dropped = worker.join().unwrap();
+        let dropped = worker.resume_and_join();
         assert!(dropped.bytes <= -(receiver.size as isize));
         assert_eq!(
             dropped.bytes,
@@ -397,12 +428,8 @@ fn unregister_and_final_topic_release_refund_only_actual_released_allocations() 
 
 #[test]
 fn final_state_and_reservation_deallocation_stay_charged_until_allocator_returns() {
-    use std::{
-        sync::{Arc, atomic::Ordering},
-        time::{Duration, Instant},
-    };
     for reservation in [false, true] {
-        let mut bus = Bus::new(Default::default()).unwrap();
+        let mut bus = Bus::new(BusConfig::default()).unwrap();
         let baseline = bus.budget_used();
         let (topic, prepared) =
             allocations::measure(|| bus.register_latest_value("final", 7_u32).unwrap());
@@ -425,31 +452,18 @@ fn final_state_and_reservation_deallocation_stay_charged_until_allocator_returns
         let gate = Arc::new(allocations::DeallocationGate::new(target));
         let before = bus.budget_used();
         std::thread::scope(|scope| {
-            struct Resume(Arc<allocations::DeallocationGate>);
-            impl Drop for Resume {
-                fn drop(&mut self) {
-                    self.0.resume.store(true, Ordering::Release);
-                }
-            }
-            let _resume = Resume(Arc::clone(&gate));
-            let worker_gate = Arc::clone(&gate);
-            let worker =
-                scope.spawn(move || allocations::pause_deallocation(worker_gate, || drop(topic)));
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while !gate.reached.load(Ordering::Acquire) {
-                assert!(
-                    Instant::now() < deadline,
-                    "final deallocation never reached allocator"
-                );
-                std::thread::yield_now();
-            }
+            let worker = spawn_parked_drop(
+                scope,
+                &gate,
+                "final deallocation never reached allocator",
+                || drop(topic),
+            );
             assert_eq!(
                 bus.budget_used(),
                 before,
                 "no refund before actual final allocation release"
             );
-            gate.resume.store(true, Ordering::Release);
-            worker.join().unwrap();
+            worker.resume_and_join();
         });
         assert_eq!(bus.budget_used(), baseline);
     }
@@ -457,11 +471,7 @@ fn final_state_and_reservation_deallocation_stay_charged_until_allocator_returns
 
 #[test]
 fn closed_receiver_box_deallocation_does_not_refund_its_live_reservation() {
-    use std::{
-        sync::{Arc, atomic::Ordering},
-        time::{Duration, Instant},
-    };
-    let mut bus = Bus::new(Default::default()).unwrap();
+    let mut bus = Bus::new(BusConfig::default()).unwrap();
     let baseline = bus.budget_used();
     let topic = bus
         .register_stream_block(
@@ -485,31 +495,18 @@ fn closed_receiver_box_deallocation_does_not_refund_its_live_reservation() {
     drop(topic);
     let before = bus.budget_used();
     std::thread::scope(|scope| {
-        struct Resume(Arc<allocations::DeallocationGate>);
-        impl Drop for Resume {
-            fn drop(&mut self) {
-                self.0.resume.store(true, Ordering::Release);
-            }
-        }
-        let _resume = Resume(Arc::clone(&gate));
-        let worker_gate = Arc::clone(&gate);
-        let worker =
-            scope.spawn(move || allocations::pause_deallocation(worker_gate, || drop(subscriber)));
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !gate.reached.load(Ordering::Acquire) {
-            assert!(
-                Instant::now() < deadline,
-                "closed receiver never reached dealloc"
-            );
-            std::thread::yield_now();
-        }
+        let worker = spawn_parked_drop(
+            scope,
+            &gate,
+            "closed receiver never reached dealloc",
+            || drop(subscriber),
+        );
         assert_eq!(
             bus.budget_used(),
             before,
             "receiver reservation survives its box deallocator"
         );
-        gate.resume.store(true, Ordering::Release);
-        worker.join().unwrap();
+        worker.resume_and_join();
     });
     assert_eq!(bus.budget_used(), baseline);
 }
@@ -732,10 +729,6 @@ fn stream_subscription_budget_boundary_and_rejections_allocate_nothing() {
 
 #[test]
 fn retiring_receiver_keeps_its_sender_slot_until_drop_completes() {
-    use std::{
-        sync::{Arc, atomic::Ordering},
-        time::{Duration, Instant},
-    };
     let mut bus = Bus::new(BusConfig::default()).unwrap();
     let topic = bus.register_latest_value("latest", 99_u32).unwrap();
     let subscribers: Vec<_> = (0..63)
@@ -750,25 +743,9 @@ fn retiring_receiver_keeps_its_sender_slot_until_drop_completes() {
     let gate = Arc::new(allocations::DeallocationGate::new(receiver.pointer));
     let before = bus.budget_used();
     std::thread::scope(|scope| {
-        struct Resume(Arc<allocations::DeallocationGate>);
-        impl Drop for Resume {
-            fn drop(&mut self) {
-                self.0.resume.store(true, Ordering::Release);
-            }
-        }
-        let _resume = Resume(Arc::clone(&gate));
-        let worker_gate = Arc::clone(&gate);
-        let worker = scope.spawn(move || {
-            allocations::pause_deallocation(worker_gate, || drop(subscriber));
+        let worker = spawn_parked_drop(scope, &gate, "receiver Drop never reached dealloc", || {
+            drop(subscriber)
         });
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !gate.reached.load(Ordering::Acquire) {
-            assert!(
-                Instant::now() < deadline,
-                "receiver Drop never reached dealloc"
-            );
-            std::thread::yield_now();
-        }
         let (attempt, probe) = allocations::measure(|| bus.subscribe(&topic, Default::default()));
         assert!(matches!(
             attempt,
@@ -776,8 +753,7 @@ fn retiring_receiver_keeps_its_sender_slot_until_drop_completes() {
         ));
         assert_eq!(probe.count, 0);
         assert_eq!(bus.budget_used(), before);
-        gate.resume.store(true, Ordering::Release);
-        worker.join().unwrap();
+        worker.resume_and_join();
     });
     // Once deallocation completes, the same fixed slot and full old credit may
     // be reused. No in-progress Drop may set a stale flag for this replacement.

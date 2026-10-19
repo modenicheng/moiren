@@ -34,14 +34,21 @@ fn settled_pump_reports_no_pending_work_in_the_same_call() {
     assert_eq!(reader.read_latest().unwrap().value, 1);
 }
 
-fn pump_all(bus: &mut Bus) {
-    for _ in 0..1000 {
+/// Unit-test-side copy of the settle-pump contract; integration tests keep a
+/// parallel `pump_until_settled` in `tests/common/mod.rs` because they cannot
+/// import `#[cfg(test)]` items. Bounded passes plus an over-limit panic so a
+/// runaway dispatch loop fails instead of hanging.
+fn pump_until_settled(bus: &mut Bus) {
+    for _ in 0..SETTLE_PASSES {
         if !bus.pump(budget(128, 128, usize::MAX)).has_pending {
             return;
         }
     }
-    panic!("pump did not settle");
+    panic!("pump did not settle within {SETTLE_PASSES} passes");
 }
+
+/// Maximum pump passes before a non-settling bus is reported as a defect.
+const SETTLE_PASSES: usize = 1000;
 
 #[test]
 fn latest_fanout_charges_source_and_each_copy_and_preserves_snapshot() {
@@ -79,7 +86,7 @@ fn latest_fanout_charges_source_and_each_copy_and_preserves_snapshot() {
     let report = bus.pump(budget(1, 1, bytes));
     assert_eq!(report.copy_bytes, bytes);
     assert_eq!(third.read_latest().unwrap().value, 1);
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     assert_eq!(first.read_latest().unwrap().value, 2);
     assert_eq!(second.read_latest().unwrap().value, 2);
     assert_eq!(third.read_latest().unwrap().value, 2);
@@ -130,7 +137,7 @@ fn oversized_message_retries_without_starving_a_small_topic() {
     assert!(report.copy_bytes <= small_bytes * 2);
     assert_eq!(small_reader.next().unwrap().value, 5);
     assert!(large_reader.read_latest().is_none());
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     let read = large_reader.read_latest().unwrap();
     assert_eq!(*read.header(), 7);
     assert_eq!(read.elements(), [9; 20]);
@@ -166,7 +173,7 @@ fn newer_late_seed_never_regresses_during_old_fanout_or_slot_reuse() {
     bus.pump(budget(2, 2, bytes * 2));
     assert_eq!(last.read_latest().unwrap().value, 1);
     assert_eq!(late.read_latest(), None);
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     assert_eq!(first.read_latest().unwrap().value, 2);
     assert_eq!(last.read_latest().unwrap().value, 2);
     assert_eq!(late.read_latest(), None);
@@ -203,13 +210,13 @@ fn stream_cleanup_and_fenced_slots_are_paid_and_bounded_at_large_depth() {
         999
     );
     assert_eq!(late.next(), None);
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     bus.stream_storage_mut::<_, ValueSlot<()>>(&topic)
         .unwrap()
         .endpoint()
         .publish(())
         .unwrap();
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     assert_eq!(late.next().unwrap().meta.sequence, 1001);
 }
 
@@ -252,7 +259,7 @@ fn round_robin_stream_loss_is_local_and_last_full_is_observable() {
         bus.pump(budget(1, 1, bytes));
     }
     assert_eq!(observer.read_latest().unwrap().value, 7);
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     assert_eq!(slow.stats().delivered, 1);
     assert_eq!(slow.stats().overflow_drops, 1);
     assert_eq!(fast.stats().delivered, 2);
@@ -307,7 +314,7 @@ fn stream_snapshot_fence_and_replacement_are_each_one_paid_operation() {
             .count_ones(),
         61
     );
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     assert_eq!(replacement.next(), None);
     assert!(
         fenced
@@ -319,7 +326,7 @@ fn stream_snapshot_fence_and_replacement_are_each_one_paid_operation() {
         .endpoint()
         .publish(())
         .unwrap();
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     assert_eq!(replacement.next().unwrap().meta.sequence, 2);
     assert!(
         fenced
@@ -379,7 +386,7 @@ fn stream_required_bytes_retain_ingress_and_source_staging_releases_rt_pool() {
     assert_eq!((*held.header(), held.elements()), (7, &[8, 9][..]));
     bus.pump(budget(1, 1, bytes));
     assert_eq!(second.next().unwrap().elements(), [8, 9]);
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     assert_eq!(second.next().unwrap().elements(), [11]);
     assert_eq!(held.elements(), [8, 9]);
     drop(held);
@@ -407,7 +414,7 @@ fn actual_unregister_preserves_old_guards_and_separates_closed_from_empty() {
                 .endpoint()
                 .publish_slice(7, &[8, 9])
                 .unwrap();
-            pump_all(&mut bus);
+            pump_until_settled(&mut bus);
             let held = subscriber.next().unwrap();
             let before = bus.budget_used();
             bus.unregister(&topic).unwrap();
@@ -430,7 +437,7 @@ fn actual_unregister_preserves_old_guards_and_separates_closed_from_empty() {
             *write.header_mut() = 7;
             write.elements_mut().copy_from_slice(&[8, 9]);
             write.commit(2).unwrap();
-            pump_all(&mut bus);
+            pump_until_settled(&mut bus);
             let held = subscriber.read_latest().unwrap();
             bus.unregister(&topic).unwrap();
             assert_eq!((*held.header(), held.elements()), (7, &[8, 9][..]));
@@ -480,7 +487,7 @@ fn no_publisher_preserves_snapshots_fifo_and_sequence_continuity() {
         .state
         .publisher_bound
         .store(false, std::sync::atomic::Ordering::Release);
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     assert_eq!(
         latest_reader.status().publisher,
         crate::PublisherStatus::NoPublisher
@@ -511,7 +518,7 @@ fn no_publisher_preserves_snapshots_fifo_and_sequence_continuity() {
         .endpoint()
         .publish(10)
         .unwrap();
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     assert_eq!(latest_reader.read_latest().unwrap().meta.sequence, 2);
     assert_eq!(stream_reader.next().unwrap().meta.sequence, 2);
 }
@@ -548,13 +555,13 @@ fn subscriber_and_ingress_statistics_saturate_independently() {
     lease.overflow_drops.store(u64::MAX, Ordering::Relaxed);
     storage.endpoint().publish(1).unwrap();
     storage.endpoint().publish(2).unwrap();
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     bus.stream_storage_mut::<_, ValueSlot<u32>>(&topic)
         .unwrap()
         .endpoint()
         .publish(3)
         .unwrap();
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     assert_eq!(
         topic.stats(),
         crate::TopicStats {
@@ -660,7 +667,7 @@ fn receiver_draining_after_full_observation_cannot_cause_an_uncharged_copy() {
         .endpoint()
         .publish(1)
         .unwrap();
-    pump_all(&mut bus);
+    pump_until_settled(&mut bus);
     bus.stream_storage_mut::<_, ValueSlot<u32>>(&topic)
         .unwrap()
         .endpoint()
