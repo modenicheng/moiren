@@ -4,23 +4,30 @@ use super::{
     wait_target,
 };
 use crate::ActivationGate;
+use crate::negotiation::{OpenedSharedClient, SharedOpenStages, open_shared_client};
 use crate::{
     capture::{CaptureError, CaptureOptions, CaptureReport, CaptureSource, CaptureStatus},
-    owner::{Apartment, OwnedHandle},
+    owner::Apartment,
 };
 use std::{
     os::windows::io::OwnedHandle as StdHandle,
     sync::{Arc, atomic::AtomicBool, mpsc::SyncSender},
 };
-use windows::{
-    Win32::{
-        Media::Audio::{
-            AudioCategory_Other, AudioClientProperties, IAudioClient, IAudioClient2,
-            IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator, eCapture,
-        },
-        System::Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance},
-    },
-    core::{HSTRING, Interface},
+
+/// Historic stage labels for the shared open sequence; the text is observable
+/// in failure reports.
+const OPEN_STAGES: SharedOpenStages = SharedOpenStages {
+    enumerator: "CoCreateInstance(capture)",
+    device: "GetDevice(capture pinned)",
+    endpoint: "IMMEndpoint(capture)",
+    data_flow: "GetDataFlow(capture)",
+    event: "CreateEvent(capture audio)",
+    activate: "Activate(capture)",
+    client2: "IAudioClient2(capture)",
+    client_properties: "SetClientProperties(capture)",
+    mix_format: "GetMixFormat(capture)",
+    session_guid: "CoCreateGuid(capture)",
+    set_event: "SetEventHandle(capture)",
 };
 
 fn owner(
@@ -36,50 +43,37 @@ fn owner(
     }
     // Reverse declaration order releases stream/services/client before apartment.
     let _apartment = api("CoInitializeEx(capture)", Apartment::new())?;
-    let enumerator: IMMDeviceEnumerator = api("CoCreateInstance(capture)", unsafe {
-        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-    })?;
-    let device = api("GetDevice(capture pinned)", unsafe {
-        enumerator.GetDevice(&HSTRING::from(&options.endpoint_id))
-    })?;
-    let endpoint: IMMEndpoint = api("IMMEndpoint(capture)", device.cast())?;
-    if api("GetDataFlow(capture)", unsafe { endpoint.GetDataFlow() })? != eCapture {
-        return Err(CaptureError::InvalidEndpoint);
-    }
-    let event = api("CreateEvent(capture audio)", OwnedHandle::event())?;
-    let client: IAudioClient = api("Activate(capture)", unsafe {
-        device.Activate(CLSCTX_ALL, None)
-    })?;
-    let client2: IAudioClient2 = api("IAudioClient2(capture)", client.cast())?;
-    api("SetClientProperties(capture)", unsafe {
-        client2.SetClientProperties(&AudioClientProperties {
-            cbSize: size_of::<AudioClientProperties>() as u32,
-            eCategory: AudioCategory_Other,
-            ..Default::default()
-        })
-    })?;
-    let memory = mix_format(&client)?;
-    // Packet lengths and bridge timing use the selected client descriptor,
-    // which can differ from the endpoint mix rate and microphone-array layout.
-    let base = memory.client();
-    report.sample_rate = Some(base.sample_rate);
-    report.channels = Some(usize::from(base.channels));
-    let guid = api("CoCreateGuid(capture)", unsafe { CoCreateGuid() })?;
-    crate::shared_stream::initialize_shared(
-        &client,
-        &memory,
-        options.shared_period,
-        &guid,
-        &mut report.shared_period,
-    )
-    .map_err(|error| CaptureError::Api {
-        stage: error.stage,
-        hresult: error.error.code().0,
-    })?;
-    report.windows_auto_conversion = memory.windows_auto_conversion;
-    api("SetEventHandle(capture)", unsafe {
-        client.SetEventHandle(event.0)
-    })?;
+    let (opened, client_format) = open_shared_client(
+        OPEN_STAGES,
+        &options.endpoint_id,
+        true,
+        report,
+        |report, memory| -> Result<_, CaptureError> {
+            let format = mix_format(memory)?;
+            // Packet lengths and bridge timing use the selected client descriptor,
+            // which can differ from the endpoint mix rate and microphone-array layout.
+            let base = format.client();
+            report.sample_rate = Some(base.sample_rate);
+            report.channels = Some(usize::from(base.channels));
+            Ok((format, (base.sample_rate, usize::from(base.channels))))
+        },
+        |report, client, format, guid| -> Result<(), CaptureError> {
+            crate::shared_stream::initialize_shared(
+                client,
+                format,
+                options.shared_period,
+                guid,
+                &mut report.shared_period,
+            )
+            .map_err(|error| CaptureError::Api {
+                stage: error.stage,
+                hresult: error.error.code().0,
+            })?;
+            report.windows_auto_conversion = format.windows_auto_conversion;
+            Ok(())
+        },
+    )?;
+    let OpenedSharedClient { client, event, .. } = opened;
     stream::run_prepared(
         stream::StreamInput {
             client: &client,
@@ -90,8 +84,8 @@ fn owner(
             stop,
             duration: options.duration,
             latency_telemetry: options.latency_telemetry,
-            sample_rate: base.sample_rate,
-            channels: usize::from(base.channels),
+            sample_rate: client_format.0,
+            channels: client_format.1,
         },
         preparation,
         report,

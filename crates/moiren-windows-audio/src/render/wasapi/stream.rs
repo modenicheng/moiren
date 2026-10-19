@@ -1,6 +1,7 @@
 //! All COM objects stay on the worker; preparation precedes the event loop.
 use super::{RenderOwnerExit, Wake, api, format::mix_format, handle, packet::submit, wait};
 use crate::latency::{CallbackObservation, LatencyRecorder, clock::QpcClock};
+use crate::negotiation::{OpenedSharedClient, SharedOpenStages, open_shared_client};
 use crate::render::SampleRenderer;
 use crate::{Activation, ActivationGate};
 use crate::{
@@ -23,16 +24,28 @@ use std::{
 use windows::{
     Win32::{
         Media::Audio::{
-            AudioCategory_Other, AudioClientProperties, IAudioClient, IAudioClient2, IAudioClock,
-            IAudioRenderClient, IAudioSessionControl, IAudioSessionControl2, IMMDeviceEnumerator,
-            IMMEndpoint, MMDeviceEnumerator, eRender,
+            IAudioClient, IAudioClock, IAudioRenderClient, IAudioSessionControl,
+            IAudioSessionControl2,
         },
-        System::{
-            Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance},
-            Threading::{AvSetMmThreadCharacteristicsW, SetEvent},
-        },
+        System::Threading::{AvSetMmThreadCharacteristicsW, SetEvent},
     },
-    core::{HSTRING, Interface},
+    core::Interface,
+};
+
+/// Historic stage labels for the shared open sequence; the text is observable
+/// in failure reports.
+const OPEN_STAGES: SharedOpenStages = SharedOpenStages {
+    enumerator: "CoCreateInstance(MMDeviceEnumerator)",
+    device: "GetDevice(pinned)",
+    endpoint: "IMMEndpoint",
+    data_flow: "GetDataFlow",
+    event: "CreateEvent(audio)",
+    activate: "Activate(IAudioClient)",
+    client2: "IAudioClient2",
+    client_properties: "SetClientProperties",
+    mix_format: "GetMixFormat",
+    session_guid: "CoCreateGuid(session)",
+    set_event: "SetEventHandle",
 };
 
 // Optional metadata cannot prevent an otherwise supported stream from starting.
@@ -119,43 +132,31 @@ pub(super) fn with_native<ResultValue>(
     // Declaration order keeps all COM services/client and event handles alive
     // through Stop, then releases them before CoUninitialize on this thread.
     let _apartment = api("CoInitializeEx(render)", Apartment::new())?;
-    let enumerator: IMMDeviceEnumerator = api("CoCreateInstance(MMDeviceEnumerator)", unsafe {
-        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-    })?;
-    let device = api("GetDevice(pinned)", unsafe {
-        enumerator.GetDevice(&HSTRING::from(&options.endpoint_id))
-    })?;
-    let endpoint: IMMEndpoint = api("IMMEndpoint", device.cast())?;
-    if api("GetDataFlow", unsafe { endpoint.GetDataFlow() })? != eRender {
-        return Err(RenderError::InvalidEndpoint);
-    }
-    let event = api("CreateEvent(audio)", OwnedHandle::event())?;
-    let client: IAudioClient = api("Activate(IAudioClient)", unsafe {
-        device.Activate(CLSCTX_ALL, None)
-    })?;
-    let client2: IAudioClient2 = api("IAudioClient2", client.cast())?;
-    api("SetClientProperties", unsafe {
-        client2.SetClientProperties(&AudioClientProperties {
-            cbSize: size_of::<AudioClientProperties>() as u32,
-            eCategory: AudioCategory_Other,
-            ..Default::default()
-        })
-    })?;
-    let memory = mix_format(&client, report)?;
-    let session_guid = api("CoCreateGuid(session)", unsafe { CoCreateGuid() })?;
-    crate::shared_stream::initialize_shared(
-        &client,
-        &memory,
-        options.shared_period,
-        &session_guid,
-        &mut report.shared_period,
-    )
-    .map_err(|error| RenderError::Api {
-        stage: error.stage,
-        hresult: error.error.code().0,
-    })?;
-    report.format_supported = true;
-    api("SetEventHandle", unsafe { client.SetEventHandle(event.0) })?;
+    let (opened, ()) = open_shared_client(
+        OPEN_STAGES,
+        &options.endpoint_id,
+        false,
+        report,
+        |report, memory| -> Result<_, RenderError> {
+            mix_format(memory, report).map(|format| (format, ()))
+        },
+        |report, client, format, guid| -> Result<(), RenderError> {
+            crate::shared_stream::initialize_shared(
+                client,
+                format,
+                options.shared_period,
+                guid,
+                &mut report.shared_period,
+            )
+            .map_err(|error| RenderError::Api {
+                stage: error.stage,
+                hresult: error.error.code().0,
+            })?;
+            report.format_supported = true;
+            Ok(())
+        },
+    )?;
+    let OpenedSharedClient { client, event, .. } = opened;
     let capacity = api("GetBufferSize", unsafe { client.GetBufferSize() })?;
     writable_frames(capacity, 0)?;
     report.buffer_frames = Some(capacity);

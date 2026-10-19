@@ -1,19 +1,14 @@
 //! Owner-held descriptors; conversion changes the client format, never the
 //! interpretation of a native driver buffer after Start.
 use super::SharedFormatInfo;
+use crate::negotiation::{
+    EXTENSIBLE_TAG, EXTENSION_BYTES, SUBFORMAT_FLOAT, SUBFORMAT_PCM, parse_descriptor,
+};
 use crate::{catalog::FormatSnapshot, owner::TaskMemory};
 use windows::{
-    Win32::{
-        Foundation::E_INVALIDARG,
-        Media::Audio::{WAVEFORMATEX, WAVEFORMATEXTENSIBLE},
-    },
-    core::{Error, GUID, Result},
+    Win32::{Foundation::E_INVALIDARG, Media::Audio::WAVEFORMATEX},
+    core::{Error, Result},
 };
-
-const EXTENSIBLE: u16 = 0xfffe;
-const FLOAT: GUID = GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
-const PCM: GUID = GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71);
-const EXTENSION_BYTES: usize = size_of::<WAVEFORMATEXTENSIBLE>() - size_of::<WAVEFORMATEX>();
 
 pub(crate) struct PreparedSharedFormat {
     native: TaskMemory<WAVEFORMATEX>,
@@ -28,33 +23,23 @@ impl PreparedSharedFormat {
         if native.0.is_null() {
             return Err(E_INVALIDARG.into());
         }
-        // SAFETY: GetMixFormat owns the base plus cbSize bytes. Copy packed
-        // fields before inspecting the extension, without alignment assumptions.
-        let base = unsafe { native.0.read_unaligned() };
-        let mut valid_bits = None;
-        let mut channel_mask = None;
-        let floating_point = match base.wFormatTag {
-            1 => false,
-            3 => true,
-            EXTENSIBLE if usize::from(base.cbSize) >= EXTENSION_BYTES => {
-                let extended = unsafe { native.0.cast::<WAVEFORMATEXTENSIBLE>().read_unaligned() };
-                valid_bits = Some(unsafe { extended.Samples.wValidBitsPerSample });
-                channel_mask = Some(extended.dwChannelMask);
-                let sub = extended.SubFormat;
-                if sub != FLOAT && sub != PCM {
-                    return Err(E_INVALIDARG.into());
-                }
-                sub == FLOAT
-            }
-            _ => return Err(E_INVALIDARG.into()),
-        };
+        // SAFETY: GetMixFormat owns the base plus cbSize bytes. The kernel
+        // parse copies packed fields before inspecting the extension, without
+        // alignment assumptions.
+        let parsed = unsafe { parse_descriptor(native.0) }
+            .map_err(|_| windows::core::Error::from(E_INVALIDARG))?;
+        let sub_format = parsed.sub_format();
+        if sub_format != SUBFORMAT_FLOAT && sub_format != SUBFORMAT_PCM {
+            return Err(E_INVALIDARG.into());
+        }
+        let base = parsed.base();
         let mix = SharedFormatInfo {
             sample_rate: base.nSamplesPerSec,
             channels: base.nChannels,
             container_bits: base.wBitsPerSample,
-            valid_bits,
-            channel_mask,
-            floating_point,
+            valid_bits: parsed.valid_bits(),
+            channel_mask: parsed.channel_mask(),
+            floating_point: sub_format == SUBFORMAT_FLOAT,
         };
         if !mix.valid_layout(base.nBlockAlign, base.nAvgBytesPerSec) {
             return Err(E_INVALIDARG.into());
@@ -100,13 +85,13 @@ fn float_format(channels: u16) -> WAVEFORMATEX {
 /// None means a valid descriptor that still requires initialization testing.
 pub(crate) fn catalog_support(format: &FormatSnapshot, capture: bool) -> (Option<bool>, bool) {
     let float = format.format_tag == 3
-        || (format.format_tag == EXTENSIBLE
+        || (format.format_tag == EXTENSIBLE_TAG
             && format
                 .sub_format
                 .as_ref()
                 .is_some_and(|s| s.eq_ignore_ascii_case("00000003-0000-0010-8000-00aa00389b71")));
     let pcm = format.format_tag == 1
-        || (format.format_tag == EXTENSIBLE
+        || (format.format_tag == EXTENSIBLE_TAG
             && format
                 .sub_format
                 .as_ref()
@@ -120,7 +105,8 @@ pub(crate) fn catalog_support(format: &FormatSnapshot, capture: bool) -> (Option
         floating_point: float,
     };
     if (!float && !pcm)
-        || (format.format_tag == EXTENSIBLE && usize::from(format.extra_bytes) < EXTENSION_BYTES)
+        || (format.format_tag == EXTENSIBLE_TAG
+            && usize::from(format.extra_bytes) < EXTENSION_BYTES)
         || !info.valid_layout(format.block_align, format.avg_bytes_per_sec)
     {
         return (Some(false), false);

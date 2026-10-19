@@ -1,4 +1,5 @@
 use crate::{
+    negotiation::{StageError, friendly_name},
     owner::{Process, TaskMemory, take_string},
     shared_stream::format::catalog_support,
 };
@@ -9,12 +10,8 @@ use std::{
 };
 use windows::{
     Win32::{
-        Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
         Media::Audio::{Endpoints::IAudioEndpointVolume, *},
-        System::{
-            Com::{CLSCTX_ALL, CoCreateInstance, STGM_READ},
-            Variant::VT_LPWSTR,
-        },
+        System::Com::{CLSCTX_ALL, CoCreateInstance},
     },
     core::{Interface, Result},
 };
@@ -26,10 +23,19 @@ pub struct ApiFailure {
 }
 impl ApiFailure {
     pub fn new(stage: &str, error: windows::core::Error) -> Self {
+        Self::from_hresult(stage, error.code().0)
+    }
+    /// The shared stage+HRESULT shape (kernel `StageError`).
+    fn from_hresult(stage: &str, hresult: i32) -> Self {
         Self {
             stage: stage.to_owned(),
-            hresult: format!("0x{:08X}", error.code().0 as u32),
+            hresult: format!("0x{:08X}", hresult as u32),
         }
+    }
+}
+impl From<StageError> for ApiFailure {
+    fn from(failure: StageError) -> Self {
+        Self::from_hresult(failure.stage, failure.hresult)
     }
 }
 fn record<T>(stage: &str, errors: &mut Vec<ApiFailure>, value: Result<T>) -> Option<T> {
@@ -181,21 +187,6 @@ pub(crate) fn endpoint_rows(
 pub fn owned_snapshot() -> Result<CatalogSnapshot> {
     let _apartment = crate::owner::Apartment::new()?;
     snapshot()
-}
-
-fn friendly_name(device: &IMMDevice) -> Result<String> {
-    unsafe {
-        let store = device.OpenPropertyStore(STGM_READ)?;
-        // windows 0.62 owns this returned PROPVARIANT and clears it on Drop.
-        let property = store.GetValue(&PKEY_Device_FriendlyName)?;
-        let value = &property.Anonymous.Anonymous;
-        if value.vt != VT_LPWSTR {
-            return Err(windows::core::Error::from_hresult(
-                windows::Win32::Foundation::E_UNEXPECTED,
-            ));
-        }
-        Ok(value.Anonymous.pwszVal.to_string()?)
-    }
 }
 
 fn sessions(device: &IMMDevice) -> Result<Vec<SessionSnapshot>> {

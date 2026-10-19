@@ -5,6 +5,11 @@ use super::{
     codec::SampleCodec,
     native::{NativeStream, NativeStreamInfo, NativeStreamStats, StereoFrame},
 };
+use crate::negotiation::{
+    EnginePeriodicityPolicy, EnginePeriods, LegacySharedInit, SUBFORMAT_FLOAT, SUBFORMAT_PCM,
+    StageError, client3_rejects_format, friendly_name, initialize_legacy_shared, parse_descriptor,
+    shared_engine_periods,
+};
 use crate::owner::{Apartment, LeaseFallback, OwnedHandle, PacketLease, TaskMemory};
 use moiren_engine::{
     audio_config::{BUFFER_SIZES, SampleFormat},
@@ -14,31 +19,15 @@ use moiren_engine::{
 use std::{ptr, time::Duration};
 use windows::{
     Win32::{
-        Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
-        Foundation::{E_NOINTERFACE, E_NOTIMPL, S_OK, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{S_OK, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Media::Audio::*,
         System::{
-            Com::{CLSCTX_ALL, CoCreateInstance, STGM_READ},
+            Com::{CLSCTX_ALL, CoCreateInstance},
             Threading::WaitForSingleObject,
-            Variant::VT_LPWSTR,
         },
     },
-    core::{GUID, HSTRING, Interface},
+    core::{HSTRING, Interface},
 };
-
-const PCM: GUID = GUID::from_u128(0x00000001_0000_0010_8000_00aa00389b71);
-const FLOAT: GUID = GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
-
-fn friendly_name(device: &IMMDevice) -> Option<String> {
-    unsafe {
-        let store = device.OpenPropertyStore(STGM_READ).ok()?;
-        let property = store.GetValue(&PKEY_Device_FriendlyName).ok()?;
-        let value = &property.Anonymous.Anonymous;
-        (value.vt == VT_LPWSTR)
-            .then(|| value.Anonymous.pwszVal.to_string().ok())
-            .flatten()
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct WasapiOptions {
@@ -48,19 +37,32 @@ pub struct WasapiOptions {
     pub input: bool,
 }
 
-fn api<T>(stage: &str, result: windows::core::Result<T>) -> Result<T, BackendError> {
+/// D4: professional's PERIODICITY_LOCKED policy — an explicit Shared period
+/// is exact-or-fail, so the HRESULT surfaces instead of retrying with the
+/// engine's current period. The legacy shared stack retries exactly once;
+/// see `negotiation::EnginePeriodicityPolicy`. The assertion keeps this
+/// stack pinned to the documented policy at compile time.
+const PERIODICITY_POLICY: EnginePeriodicityPolicy = EnginePeriodicityPolicy::ExactPeriod;
+const _: () = assert!(matches!(
+    PERIODICITY_POLICY,
+    EnginePeriodicityPolicy::ExactPeriod
+));
+
+fn api<T>(stage: &'static str, result: windows::core::Result<T>) -> Result<T, BackendError> {
     result.map_err(|error| {
-        let hresult = error.code().0 as u32;
-        let message = format!("{stage}: HRESULT 0x{hresult:08X}");
-        if matches!(
-            error.code(),
-            AUDCLNT_E_UNSUPPORTED_FORMAT
-                | AUDCLNT_E_INVALID_DEVICE_PERIOD
-                | AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED
-                | AUDCLNT_E_BUFFER_SIZE_ERROR
-        ) {
+        let failure = StageError::new(stage, error);
+        let message = format!(
+            "{}: HRESULT 0x{:08X}",
+            failure.stage, failure.hresult as u32
+        );
+        let code = failure.hresult;
+        if code == AUDCLNT_E_UNSUPPORTED_FORMAT.0
+            || code == AUDCLNT_E_INVALID_DEVICE_PERIOD.0
+            || code == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED.0
+            || code == AUDCLNT_E_BUFFER_SIZE_ERROR.0
+        {
             BackendError::Unsupported(message)
-        } else if error.code() == AUDCLNT_E_DEVICE_IN_USE {
+        } else if code == AUDCLNT_E_DEVICE_IN_USE.0 {
             BackendError::ResourceUnavailable(format!(
                 "{message}; the endpoint is already owned by another exclusive stream"
             ))
@@ -169,7 +171,9 @@ impl WasapiStream {
         let device = api("GetDevice", unsafe {
             enumerator.GetDevice(&HSTRING::from(&options.endpoint_id))
         })?;
-        let endpoint_name = friendly_name(&device).unwrap_or_else(|| "<unknown>".into());
+        let endpoint_name = friendly_name(&device)
+            .ok()
+            .unwrap_or_else(|| "<unknown>".into());
         let endpoint: IMMEndpoint = api("IMMEndpoint", device.cast())?;
         if api("GetDataFlow", unsafe { endpoint.GetDataFlow() })?
             != if options.input { eCapture } else { eRender }
@@ -367,7 +371,10 @@ impl WasapiStream {
             } else {
                 let client3: Option<IAudioClient3> = match client.cast() {
                     Ok(client3) => Some(client3),
-                    Err(error) if shared_client3_fallback(error.code()) => {
+                    // The professional stack applies the kernel rejection
+                    // matrix to this interface query as well; the legacy
+                    // shared stack falls back on E_NOINTERFACE alone.
+                    Err(error) if client3_rejects_format(error.code()) => {
                         log::warn!(
                             target: "moiren::audio::wasapi",
                             "WASAPI Client3 unavailable for exact Shared period; using compatibility initialization: endpoint={:?} hresult=0x{:08X} requested_frames={}",
@@ -385,18 +392,19 @@ impl WasapiStream {
                     Err(error) => return api("IAudioClient3(exact period)", Err(error)),
                 };
                 if let Some(client3) = client3 {
-                    let (mut default, mut fundamental, mut minimum, mut maximum) = (0, 0, 0, 0);
+                    // SAFETY: format is the locally owned selected descriptor,
+                    // valid for this query.
                     let capabilities = unsafe {
-                        client3.GetSharedModeEnginePeriod(
-                            &format.Format,
-                            &mut default,
-                            &mut fundamental,
-                            &mut minimum,
-                            &mut maximum,
-                        )
+                        shared_engine_periods(&client3, std::ptr::from_ref(&format.Format))
                     };
                     match capabilities {
-                        Ok(()) => {
+                        Ok(periods) => {
+                            let EnginePeriods {
+                                default_frames: default,
+                                fundamental_frames: fundamental,
+                                min_frames: minimum,
+                                max_frames: maximum,
+                            } = periods;
                             log::info!(
                                 target: "moiren::audio::wasapi",
                                 "WASAPI shared period capabilities: endpoint={:?} name={:?} direction={} rate={} default_frames={} fundamental_frames={} minimum_frames={} maximum_frames={} requested_frames={}",
@@ -419,6 +427,12 @@ impl WasapiStream {
                                     "requested Shared period {period} is outside {minimum}..{maximum} or not a multiple of {fundamental}"
                                 )));
                             }
+                            // D4: an explicit Shared period is a hard contract
+                            // here (out-of-range periods are rejected above,
+                            // never rounded), so PERIODICITY_LOCKED surfaces
+                            // instead of retrying with the engine period
+                            // (PERIODICITY_POLICY; the legacy shared stack
+                            // retries exactly once).
                             api("InitializeSharedAudioStream", unsafe {
                                 client3.InitializeSharedAudioStream(
                                     AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
@@ -428,7 +442,7 @@ impl WasapiStream {
                                 )
                             })?;
                         }
-                        Err(error) if shared_client3_fallback(error.code()) => {
+                        Err(error) if client3_rejects_format(error.code()) => {
                             log::warn!(
                                 target: "moiren::audio::wasapi",
                                 "WASAPI Client3 rejected the Shared format; using compatibility initialization: endpoint={:?} hresult=0x{:08X} requested_frames={}",
@@ -698,21 +712,23 @@ fn initialize_exclusive(
 fn initialize_shared_legacy(
     client: &IAudioClient,
     format: &WAVEFORMATEX,
-    stage: &str,
+    stage: &'static str,
 ) -> Result<(), BackendError> {
-    let flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+    // D4: professional keeps Windows' default persisted-session behavior
+    // (no NOPERSIST) and always converts between its fixed client format and
+    // the endpoint mix; the legacy shared stack passes its own combination.
+    // SAFETY: format is the caller's live descriptor for this call.
     api(stage, unsafe {
-        client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 0, 0, format, None)
+        initialize_legacy_shared(
+            client,
+            std::ptr::from_ref(format),
+            None,
+            LegacySharedInit {
+                auto_convert: true,
+                nopersist: false,
+            },
+        )
     })
-}
-
-fn shared_client3_fallback(code: windows::core::HRESULT) -> bool {
-    matches!(
-        code,
-        E_NOINTERFACE | E_NOTIMPL | AUDCLNT_E_UNSUPPORTED_FORMAT
-    )
 }
 
 fn same_format(left: &WAVEFORMATEXTENSIBLE, right: &WAVEFORMATEXTENSIBLE) -> bool {
@@ -781,26 +797,20 @@ fn wave_format(
         } else {
             0
         },
-        SubFormat: if float { FLOAT } else { PCM },
+        SubFormat: if float {
+            SUBFORMAT_FLOAT
+        } else {
+            SUBFORMAT_PCM
+        },
     })
 }
 fn descriptor(pointer: *const WAVEFORMATEX) -> Result<WAVEFORMATEXTENSIBLE, BackendError> {
-    let base = unsafe { pointer.read_unaligned() };
-    let result = match base.wFormatTag {
-        0xfffe
-            if usize::from(base.cbSize)
-                >= size_of::<WAVEFORMATEXTENSIBLE>() - size_of::<WAVEFORMATEX>() =>
-        unsafe { pointer.cast::<WAVEFORMATEXTENSIBLE>().read_unaligned() },
-        1 | 3 => WAVEFORMATEXTENSIBLE {
-            Format: base,
-            Samples: WAVEFORMATEXTENSIBLE_0 {
-                wValidBitsPerSample: base.wBitsPerSample,
-            },
-            dwChannelMask: 0,
-            SubFormat: if base.wFormatTag == 3 { FLOAT } else { PCM },
-        },
-        _ => return Err(unsupported("unsupported native mix descriptor")),
-    };
+    // SAFETY: GetMixFormat owns a complete base+cbSize allocation. The
+    // kernel parse copies packed fields by value; no reference to an
+    // unaligned native field escapes.
+    let result = unsafe { parse_descriptor(pointer) }
+        .map_err(|_| unsupported("unsupported native mix descriptor"))?
+        .into_extensible();
     codec_for(&result)?;
     Ok(result)
 }
@@ -817,13 +827,13 @@ fn codec_for(format: &WAVEFORMATEXTENSIBLE) -> Result<(SampleFormat, SampleCodec
         valid
     };
     let sub_format = format.SubFormat;
-    let sample = if sub_format == FLOAT {
+    let sample = if sub_format == SUBFORMAT_FLOAT {
         match base.wBitsPerSample {
             32 => SampleFormat::Float32,
             64 => SampleFormat::Float64,
             _ => return Err(unsupported("unsupported floating-point descriptor")),
         }
-    } else if sub_format == PCM {
+    } else if sub_format == SUBFORMAT_PCM {
         match valid {
             16 if base.wBitsPerSample == 16 => SampleFormat::Pcm16,
             24 => SampleFormat::Pcm24,

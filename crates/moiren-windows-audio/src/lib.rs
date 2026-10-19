@@ -41,3 +41,6 @@ mod owner;
 
 #[cfg(windows)]
 mod preparation;
+
+#[cfg(windows)]
+pub(crate) mod negotiation;

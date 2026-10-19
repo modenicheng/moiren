@@ -4,20 +4,26 @@ use super::{
     SharedInitializationStage, SharedPeriodCaps, SharedPeriodPolicy, SharedPeriodReport,
     choose_shared_period,
 };
+use crate::negotiation::{
+    EnginePeriodicityPolicy, LegacySharedInit, client3_rejects_format, initialize_legacy_shared,
+    periodicity_locked_retry, shared_engine_periods,
+};
 use crate::owner::TaskMemory;
 use windows::{
     Win32::{
         Foundation::{E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL, E_POINTER},
         Media::Audio::{
-            AUDCLNT_E_ENGINE_FORMAT_LOCKED, AUDCLNT_E_ENGINE_PERIODICITY_LOCKED,
-            AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            AUDCLNT_STREAMFLAGS_NOPERSIST, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioClient,
+            AUDCLNT_E_ENGINE_FORMAT_LOCKED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioClient,
             IAudioClient3, WAVEFORMATEX,
         },
     },
     core::{Error, GUID, Interface},
 };
+
+/// D4: this stack's PERIODICITY_LOCKED policy — retry exactly once with the
+/// engine's current period; the professional stack is exact-or-fail (see
+/// `crate::negotiation::EnginePeriodicityPolicy`).
+const PERIODICITY_POLICY: EnginePeriodicityPolicy = EnginePeriodicityPolicy::EnginePeriodRetry;
 
 #[derive(Debug)]
 pub(crate) struct SharedClient3Error {
@@ -36,14 +42,15 @@ fn failure(
         stage,
         hresult: hresult.0,
     });
-    let fallback_reason = match (stage, hresult) {
-        (SharedInitializationStage::InterfaceQuery, E_NOINTERFACE) => {
+    let fallback_reason = match stage {
+        // The interface query falls back on a missing Client3 alone; the
+        // kernel rejection matrix covers the capability-query set.
+        SharedInitializationStage::InterfaceQuery if hresult == E_NOINTERFACE => {
             Some(SharedFallbackReason::Client3Unavailable)
         }
-        (
-            SharedInitializationStage::Capabilities,
-            E_NOINTERFACE | E_NOTIMPL | AUDCLNT_E_UNSUPPORTED_FORMAT,
-        ) => Some(SharedFallbackReason::CapabilityQueryUnsupported),
+        SharedInitializationStage::Capabilities if client3_rejects_format(hresult) => {
+            Some(SharedFallbackReason::CapabilityQueryUnsupported)
+        }
         _ => None,
     };
     SharedClient3Error {
@@ -74,24 +81,16 @@ struct NativeClient3<'client> {
 
 impl Client3Api for NativeClient3<'_> {
     fn capabilities(&self) -> Result<SharedPeriodCaps, Error> {
-        let mut caps = SharedPeriodCaps {
-            default_frames: 0,
-            fundamental_frames: 0,
-            min_frames: 0,
-            max_frames: 0,
-        };
         // The owner retains its validated format and configured client through
         // preparation. This query follows SetClientProperties for each stream.
-        unsafe {
-            self.client.GetSharedModeEnginePeriod(
-                self.format,
-                &mut caps.default_frames,
-                &mut caps.fundamental_frames,
-                &mut caps.min_frames,
-                &mut caps.max_frames,
-            )?;
-        }
-        Ok(caps)
+        // SAFETY: the owner-held descriptor is complete for this query.
+        let periods = unsafe { shared_engine_periods(self.client, self.format)? };
+        Ok(SharedPeriodCaps {
+            default_frames: periods.default_frames,
+            fundamental_frames: periods.fundamental_frames,
+            min_frames: periods.min_frames,
+            max_frames: periods.max_frames,
+        })
     }
 
     fn initialize(&self, period: u32) -> Result<(), Error> {
@@ -139,6 +138,7 @@ fn initialize_client3(
     api: &impl Client3Api,
     sample_rate: u32,
     policy: SharedPeriodPolicy,
+    locked_policy: EnginePeriodicityPolicy,
     report: &mut SharedPeriodReport,
 ) -> Result<(), SharedClient3Error> {
     let caps = api
@@ -154,9 +154,10 @@ fn initialize_client3(
     })?;
     report.requested_period_frames = Some(period);
     if let Err(error) = api.initialize(period) {
-        let locked = error.code() == AUDCLNT_E_ENGINE_PERIODICITY_LOCKED;
         let initial_failure = failure(SharedInitializationStage::Initialization, error, report);
-        if !locked {
+        // Only PERIODICITY_LOCKED may retry, and only under this stack's D4
+        // policy; every other initialization failure stays terminal.
+        if !periodicity_locked_retry(locked_policy, initial_failure.error.code()) {
             return Err(initial_failure);
         }
         let current = match api.current_period() {
@@ -204,6 +205,7 @@ fn initialize_with_client3(
         },
         sample_rate,
         policy,
+        PERIODICITY_POLICY,
         report,
     )
 }
@@ -220,11 +222,10 @@ pub(crate) fn initialize_shared(
     report.windows_auto_conversion = format.windows_auto_conversion;
     report.desired_period_ms = policy.desired_period_ms;
     let rate = format.client().sample_rate;
-    let mut flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST;
-    if format.windows_auto_conversion {
+    let auto_convert = format.windows_auto_conversion;
+    if auto_convert {
         // Client3 does not accept conversion flags. Keep the native low-latency
         // path separate rather than silently changing its format or retry rules.
-        flags |= AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
         report.fallback_reason = Some(SharedFallbackReason::WindowsFormatConversion);
     } else {
         match initialize_with_client3(
@@ -247,14 +248,19 @@ pub(crate) fn initialize_shared(
     }
     // IsFormatSupported does not account for AUTOCONVERTPCM; Initialize is
     // authoritative. Never swallow invalidation, permissions or device-in-use.
+    // D4: this stack opts out of persisted session state and requests Windows
+    // conversion only when the client format differs from the endpoint mix;
+    // the professional stack passes its own combination.
+    // SAFETY: the descriptor is the owner-held allocation behind `format`.
     unsafe {
-        client.Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            flags,
-            0,
-            0,
+        initialize_legacy_shared(
+            client,
             format.as_ptr(),
             Some(session_guid),
+            LegacySharedInit {
+                auto_convert,
+                nopersist: true,
+            },
         )
     }
     .map_err(|error| SharedClient3Error {

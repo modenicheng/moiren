@@ -38,10 +38,25 @@ pub use endpoint::{RenderEndpoint, list_render_endpoints};
 mod tests;
 
 fn api<T>(stage: &'static str, result: windows::core::Result<T>) -> Result<T, RenderError> {
-    result.map_err(|error| RenderError::Api {
-        stage,
-        hresult: error.code().0,
-    })
+    crate::negotiation::stage(stage, result).map_err(RenderError::from)
+}
+
+impl From<crate::negotiation::StageError> for RenderError {
+    fn from(failure: crate::negotiation::StageError) -> Self {
+        RenderError::Api {
+            stage: failure.stage,
+            hresult: failure.hresult,
+        }
+    }
+}
+
+impl From<crate::negotiation::OpenSharedError> for RenderError {
+    fn from(failure: crate::negotiation::OpenSharedError) -> Self {
+        match failure {
+            crate::negotiation::OpenSharedError::Stage(stage) => stage.into(),
+            crate::negotiation::OpenSharedError::WrongDirection => RenderError::InvalidEndpoint,
+        }
+    }
 }
 fn handle(value: &StdHandle) -> HANDLE {
     HANDLE(value.as_raw_handle())

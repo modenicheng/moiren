@@ -1,7 +1,9 @@
 use super::*;
 use std::cell::{Cell, RefCell};
 use windows::{
-    Win32::Media::Audio::{AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_E_INVALID_DEVICE_PERIOD},
+    Win32::Media::Audio::{
+        AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_E_INVALID_DEVICE_PERIOD, AUDCLNT_E_UNSUPPORTED_FORMAT,
+    },
     core::HRESULT,
 };
 
@@ -165,7 +167,14 @@ fn period_locked_negotiates_the_existing_engine_period_once() {
     api.initialization_error =
         Some(windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_PERIODICITY_LOCKED);
     let mut report = SharedPeriodReport::default();
-    initialize_client3(&api, 48_000, SharedPeriodPolicy::default(), &mut report).unwrap();
+    initialize_client3(
+        &api,
+        48_000,
+        SharedPeriodPolicy::default(),
+        PERIODICITY_POLICY,
+        &mut report,
+    )
+    .unwrap();
     assert_eq!(
         *api.operations.borrow(),
         ["capabilities", "initialize", "current_period", "initialize"]
@@ -188,7 +197,14 @@ fn period_locked_never_retries_an_invalid_or_unchanged_current_period() {
         api.current_period.set(period);
         let mut report = SharedPeriodReport::default();
         assert!(
-            initialize_client3(&api, 48_000, SharedPeriodPolicy::default(), &mut report).is_err()
+            initialize_client3(
+                &api,
+                48_000,
+                SharedPeriodPolicy::default(),
+                PERIODICITY_POLICY,
+                &mut report
+            )
+            .is_err()
         );
         assert_eq!(
             *api.operations.borrow(),
@@ -205,9 +221,40 @@ fn period_locked_retry_failure_preserves_the_actual_device_error() {
         Some(windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_PERIODICITY_LOCKED);
     api.retry_error = Some(AUDCLNT_E_DEVICE_INVALIDATED);
     let mut report = SharedPeriodReport::default();
-    let failure =
-        initialize_client3(&api, 48_000, SharedPeriodPolicy::default(), &mut report).unwrap_err();
+    let failure = initialize_client3(
+        &api,
+        48_000,
+        SharedPeriodPolicy::default(),
+        PERIODICITY_POLICY,
+        &mut report,
+    )
+    .unwrap_err();
     assert_eq!(failure.error.code(), AUDCLNT_E_DEVICE_INVALIDATED);
+    assert!(report.initialization_api.is_none());
+    assert!(report.fallback_reason.is_none());
+}
+
+#[test]
+fn exact_period_policy_surfaces_periodicity_locked_without_retrying() {
+    // D4: the professional stack's policy must never retry through this
+    // shared branch; the parameter is what keeps both contracts honest.
+    let mut api = FakeClient3::new();
+    api.initialization_error =
+        Some(windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_PERIODICITY_LOCKED);
+    let mut report = SharedPeriodReport::default();
+    let failure = initialize_client3(
+        &api,
+        48_000,
+        SharedPeriodPolicy::default(),
+        crate::negotiation::EnginePeriodicityPolicy::ExactPeriod,
+        &mut report,
+    )
+    .unwrap_err();
+    assert_eq!(
+        failure.error.code(),
+        windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_PERIODICITY_LOCKED
+    );
+    assert_eq!(*api.operations.borrow(), ["capabilities", "initialize"]);
     assert!(report.initialization_api.is_none());
     assert!(report.fallback_reason.is_none());
 }
@@ -223,8 +270,14 @@ fn locked_period_query_or_format_failure_never_retries_initialization() {
             Some(windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_PERIODICITY_LOCKED);
         api.current_error = Some(query_error);
         let mut report = SharedPeriodReport::default();
-        let failure = initialize_client3(&api, 48_000, SharedPeriodPolicy::default(), &mut report)
-            .unwrap_err();
+        let failure = initialize_client3(
+            &api,
+            48_000,
+            SharedPeriodPolicy::default(),
+            PERIODICITY_POLICY,
+            &mut report,
+        )
+        .unwrap_err();
         assert_eq!(
             failure.error.code(),
             windows::Win32::Media::Audio::AUDCLNT_E_ENGINE_PERIODICITY_LOCKED
@@ -242,7 +295,14 @@ fn locked_period_query_or_format_failure_never_retries_initialization() {
 fn queries_current_capabilities_before_initializing_each_stream() {
     let api = FakeClient3::new();
     let mut report = SharedPeriodReport::default();
-    initialize_client3(&api, 48_000, SharedPeriodPolicy::default(), &mut report).unwrap();
+    initialize_client3(
+        &api,
+        48_000,
+        SharedPeriodPolicy::default(),
+        PERIODICITY_POLICY,
+        &mut report,
+    )
+    .unwrap();
     assert_eq!(*api.operations.borrow(), ["capabilities", "initialize"]);
     assert_eq!(api.requested.get(), Some(240));
     assert_eq!(
@@ -259,6 +319,7 @@ fn queries_current_capabilities_before_initializing_each_stream() {
         &api,
         48_000,
         SharedPeriodPolicy::default(),
+        PERIODICITY_POLICY,
         &mut second_report,
     )
     .unwrap();
@@ -322,8 +383,14 @@ fn query_and_policy_failures_never_attempt_initialization() {
     let mut api = FakeClient3::new();
     api.query_error = Some(E_NOTIMPL);
     let mut report = SharedPeriodReport::default();
-    let error =
-        initialize_client3(&api, 48_000, SharedPeriodPolicy::default(), &mut report).unwrap_err();
+    let error = initialize_client3(
+        &api,
+        48_000,
+        SharedPeriodPolicy::default(),
+        PERIODICITY_POLICY,
+        &mut report,
+    )
+    .unwrap_err();
     assert_eq!(
         error.fallback_reason,
         Some(SharedFallbackReason::CapabilityQueryUnsupported)
@@ -336,8 +403,14 @@ fn query_and_policy_failures_never_attempt_initialization() {
         ..api.caps.get()
     });
     let mut report = SharedPeriodReport::default();
-    let error =
-        initialize_client3(&api, 48_000, SharedPeriodPolicy::default(), &mut report).unwrap_err();
+    let error = initialize_client3(
+        &api,
+        48_000,
+        SharedPeriodPolicy::default(),
+        PERIODICITY_POLICY,
+        &mut report,
+    )
+    .unwrap_err();
     assert!(error.fallback_reason.is_none());
     assert_eq!(
         report.client3_failure.unwrap().stage,
@@ -352,8 +425,14 @@ fn initialization_failure_preserves_request_without_retrying_or_claiming_success
     let mut api = FakeClient3::new();
     api.initialization_error = Some(AUDCLNT_E_INVALID_DEVICE_PERIOD);
     let mut report = SharedPeriodReport::default();
-    let error =
-        initialize_client3(&api, 48_000, SharedPeriodPolicy::default(), &mut report).unwrap_err();
+    let error = initialize_client3(
+        &api,
+        48_000,
+        SharedPeriodPolicy::default(),
+        PERIODICITY_POLICY,
+        &mut report,
+    )
+    .unwrap_err();
     assert!(error.fallback_reason.is_none());
     assert_eq!(*api.operations.borrow(), ["capabilities", "initialize"]);
     assert_eq!(report.requested_period_frames, Some(240));

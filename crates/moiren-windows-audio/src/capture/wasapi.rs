@@ -33,10 +33,25 @@ pub(crate) fn api<T>(
     stage: &'static str,
     result: windows::core::Result<T>,
 ) -> Result<T, CaptureError> {
-    result.map_err(|error| CaptureError::Api {
-        stage,
-        hresult: error.code().0,
-    })
+    crate::negotiation::stage(stage, result).map_err(CaptureError::from)
+}
+
+impl From<crate::negotiation::StageError> for CaptureError {
+    fn from(failure: crate::negotiation::StageError) -> Self {
+        CaptureError::Api {
+            stage: failure.stage,
+            hresult: failure.hresult,
+        }
+    }
+}
+
+impl From<crate::negotiation::OpenSharedError> for CaptureError {
+    fn from(failure: crate::negotiation::OpenSharedError) -> Self {
+        match failure {
+            crate::negotiation::OpenSharedError::Stage(stage) => stage.into(),
+            crate::negotiation::OpenSharedError::WrongDirection => CaptureError::InvalidEndpoint,
+        }
+    }
 }
 pub(crate) fn handle(value: &StdHandle) -> HANDLE {
     HANDLE(value.as_raw_handle())
