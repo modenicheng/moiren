@@ -127,6 +127,21 @@ pub trait EngineBackend<S: ProcessingSample>: Send + Sync + 'static {
     }
 }
 
+/// Lets type-erased backends flow into `EngineHost::open(impl EngineBackend)`
+/// without each caller wrapping them in a forwarding newtype.
+impl<S: ProcessingSample> EngineBackend<S> for Box<dyn EngineBackend<S>> {
+    fn prepare(
+        &self,
+        request: PrepareRequest<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<PreparedBackend<S>, BackendError> {
+        (**self).prepare(request, cancel)
+    }
+    fn poll_resource(&self) -> Option<ResourceEvent> {
+        (**self).poll_resource()
+    }
+}
+
 pub struct PreparedBackend<S: ProcessingSample> {
     pub bindings: NodeBindings<S>,
     pub transport: Option<Box<dyn PreparedTransport<S>>>,
