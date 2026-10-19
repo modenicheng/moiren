@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use crate::{
     PumpBudget, PumpReport,
     lifecycle::{StateHandle, increment},
-    storage::{LatestStorage, Payload, StreamStorage},
+    storage::{LatestStorage, Payload, StreamStorage, retire_sender},
 };
 
 #[derive(Default)]
@@ -83,15 +83,16 @@ impl<S: Payload> Dispatch for LatestStorage<S> {
                 return false;
             }
             let index = self.fanout.retired_slot(retired);
-            self.senders[index] = None;
-            self.occupied &= !(1 << index);
-            self.fanout.recipients &= !(1 << index);
+            retire_sender(
+                &mut self.senders,
+                &mut self.occupied,
+                &mut self.fanout.recipients,
+                &self.state.retired_receivers,
+                index,
+            );
             if self.fanout.recipients == 0 {
                 self.fanout.active = false;
             }
-            self.state
-                .retired_receivers
-                .fetch_and(!(1 << index), Ordering::Relaxed);
             return true;
         }
         if !self.fanout.active {
@@ -184,12 +185,13 @@ impl<S: Payload> Dispatch for StreamStorage<S> {
             {
                 return true;
             }
-            self.senders[index] = None;
-            self.occupied &= !(1 << index);
-            self.fanout.recipients &= !(1 << index);
-            self.state
-                .retired_receivers
-                .fetch_and(!(1 << index), Ordering::Relaxed);
+            retire_sender(
+                &mut self.senders,
+                &mut self.occupied,
+                &mut self.fanout.recipients,
+                &self.state.retired_receivers,
+                index,
+            );
             if self.fanout.recipients == 0 {
                 self.finish_dispatch();
             }
@@ -220,11 +222,7 @@ impl<S: Payload> Dispatch for StreamStorage<S> {
         let demand = self.state.demand.snapshot();
         let sender = self.senders[index].as_mut().expect("snapshotted sender");
         let lease = sender.lease.upgrade();
-        let eligible = lease.is_some()
-            && demand.active
-            && meta.activation_generation == demand.generation
-            && meta.activation_generation == sender.generation
-            && meta.sequence > sender.fence;
+        let eligible = lease.is_some() && sender.eligible(meta, &demand);
         let full = eligible && sender.writer.ready.is_full();
         let bytes = if eligible && !full {
             source.copy_bytes()
@@ -241,8 +239,7 @@ impl<S: Payload> Dispatch for StreamStorage<S> {
         }
         self.fanout.recipients &= !(1 << index);
         if full {
-            sender.drops = sender.drops.saturating_add(1);
-            increment(&lease.expect("eligible full receiver").overflow_drops);
+            sender.record_drop(&lease.expect("eligible full receiver"));
         } else if eligible {
             self.deliver_to(index);
         }

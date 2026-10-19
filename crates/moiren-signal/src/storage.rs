@@ -4,10 +4,16 @@
 //! must clone this template rather than copying any concurrently modified slot.
 
 use crate::{
-    PublicationMeta, budget::Charge, dispatcher::Fanout, lifecycle::StateHandle,
+    DemandSnapshot, PublicationMeta,
+    budget::Charge,
+    dispatcher::Fanout,
+    lifecycle::{StateHandle, increment},
     subscriber::SubscriptionLease,
 };
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{
+    Arc, Mutex, Weak,
+    atomic::{AtomicU64, Ordering},
+};
 
 pub(crate) struct LatestSender<S: Clone + Send> {
     pub(crate) input: triple_buffer::Input<S>,
@@ -179,6 +185,21 @@ pub(crate) struct StreamSender<S> {
 }
 
 impl<S> StreamSender<S> {
+    /// Stream delivery eligibility: active demand of the sender's activation
+    /// generation and a sequence this receiver has not fenced yet. Callers
+    /// check lease liveness separately (upgrade success or strong count).
+    pub(crate) fn eligible(&self, meta: PublicationMeta, demand: &DemandSnapshot) -> bool {
+        demand.active
+            && meta.activation_generation == demand.generation
+            && meta.activation_generation == self.generation
+            && meta.sequence > self.fence
+    }
+    /// One dropped delivery: mirrors it on the sender-local counter and on
+    /// the shared lease statistics the subscriber observes.
+    pub(crate) fn record_drop(&mut self, lease: &SubscriptionLease) {
+        self.drops = self.drops.saturating_add(1);
+        increment(&lease.overflow_drops);
+    }
     /// Queue endpoints are handed back after the receiver box releases its
     /// loan, so each step frees one owner and final destructors see empty rings.
     pub(crate) fn retire_one(&mut self) -> bool {
@@ -198,6 +219,43 @@ impl<S> StreamSender<S> {
         }
         true
     }
+}
+
+/// Detaches the sender at `index` from the physical slot directory. This is
+/// the first half of every retirement; the completion-bit clear below must
+/// never run before it.
+pub(crate) fn detach_sender<S>(
+    senders: &mut [Option<S>; 64],
+    occupied: &mut u64,
+    recipients: &mut u64,
+    index: usize,
+) {
+    senders[index] = None;
+    *occupied &= !(1 << index);
+    *recipients &= !(1 << index);
+}
+
+/// Retires the sender at `index`: detaches the slot, then clears its
+/// completion bit.
+///
+/// Race invariant (see tests/registry.rs
+/// `retiring_receiver_keeps_its_sender_slot_until_drop_completes`): a
+/// receiver's Drop sets `retired_receivers[index]` with Release only after
+/// its box deallocation completes, and the serialized Bus observes it with
+/// Acquire before reclaiming. The bit is cleared with Relaxed strictly after
+/// the slot is detached from senders/occupied/fanout.recipients and before
+/// its identity is handed to a replacement receiver, so no in-progress Drop
+/// can set a stale flag for the replacement: once deallocation completes,
+/// the same fixed slot and full old credit may be reused.
+pub(crate) fn retire_sender<S>(
+    senders: &mut [Option<S>; 64],
+    occupied: &mut u64,
+    recipients: &mut u64,
+    retired_receivers: &AtomicU64,
+    index: usize,
+) {
+    detach_sender(senders, occupied, recipients, index);
+    retired_receivers.fetch_and(!(1 << index), Ordering::Relaxed);
 }
 
 /// Preparation only. The remaining slot is placed in the ingress writer spare

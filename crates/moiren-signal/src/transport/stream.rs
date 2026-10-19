@@ -2,6 +2,7 @@
 
 use crate::{
     DemandSnapshot, PublicationMeta, PublishError, PublishOutcome, WriteError, WriteUnavailable,
+    error::flatten_write_error,
     sequence::Sequence,
     storage::Payload,
     storage::{BlockSlot, PoolWriter, StreamStorage, ValueSlot},
@@ -60,8 +61,8 @@ impl<S> StreamEndpoint<'_, S> {
         crate::lifecycle::increment(&self.state.ingress_drops);
         Ok(sequence)
     }
-    fn acquire(&mut self) -> Result<StreamWrite<'_, S>, WriteError> {
-        self.check_open()?;
+    /// Demand/pool acquisition shared by every stream write entry point.
+    fn acquire_slot(&mut self) -> Result<S, WriteError> {
         if !self.demand.active {
             return Err(WriteError::Unavailable(WriteUnavailable::NoDemand));
         }
@@ -69,6 +70,11 @@ impl<S> StreamEndpoint<'_, S> {
             let sequence = self.dropped()?;
             return Err(WriteError::Unavailable(WriteUnavailable::Full { sequence }));
         };
+        Ok(slot)
+    }
+    fn acquire(&mut self) -> Result<StreamWrite<'_, S>, WriteError> {
+        self.check_open()?;
+        let slot = self.acquire_slot()?;
         Ok(StreamWrite {
             endpoint: StreamEndpoint {
                 writer: self.writer,
@@ -128,13 +134,7 @@ impl<T: Copy + Send + 'static> StreamEndpoint<'_, ValueSlot<T>> {
     pub(crate) fn publish(&mut self, value: T) -> Result<PublishOutcome, PublishError> {
         let mut write = match self.acquire() {
             Ok(write) => write,
-            Err(WriteError::Unavailable(WriteUnavailable::NoDemand)) => {
-                return Ok(PublishOutcome::NoDemand);
-            }
-            Err(WriteError::Unavailable(WriteUnavailable::Full { sequence })) => {
-                return Ok(PublishOutcome::DroppedFull { sequence });
-            }
-            Err(WriteError::Invalid(error)) => return Err(error),
+            Err(error) => return flatten_write_error(error),
         };
         write.slot_mut().value = value;
         write.commit(1)
@@ -163,15 +163,21 @@ impl<H: Copy + Send + 'static, E: Copy + Send + 'static> StreamBlockWriteGuard<'
     }
 }
 impl<H: Copy + Send + 'static, E: Copy + Send + 'static> StreamEndpoint<'_, BlockSlot<H, E>> {
+    /// Validation shared with the production `try_write_owned` path so the
+    /// test-facing borrow entry point exercises the same checks.
+    fn check_write(&self, max_len: usize) -> Result<(), WriteError> {
+        self.check_open()?;
+        if max_len > self.capacity {
+            return Err(PublishError::InvalidLength.into());
+        }
+        Ok(())
+    }
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn try_write(
         &mut self,
         max_len: usize,
     ) -> Result<StreamBlockWriteGuard<'_, H, E>, WriteError> {
-        self.check_open()?;
-        if max_len > self.capacity {
-            return Err(PublishError::InvalidLength.into());
-        }
+        self.check_write(max_len)?;
         let write = self.acquire()?;
         Ok(StreamBlockWriteGuard {
             write,
@@ -187,13 +193,7 @@ impl<H: Copy + Send + 'static, E: Copy + Send + 'static> StreamEndpoint<'_, Bloc
     ) -> Result<PublishOutcome, PublishError> {
         let mut write = match self.try_write(elements.len()) {
             Ok(write) => write,
-            Err(WriteError::Unavailable(WriteUnavailable::NoDemand)) => {
-                return Ok(PublishOutcome::NoDemand);
-            }
-            Err(WriteError::Unavailable(WriteUnavailable::Full { sequence })) => {
-                return Ok(PublishOutcome::DroppedFull { sequence });
-            }
-            Err(WriteError::Invalid(error)) => return Err(error),
+            Err(error) => return flatten_write_error(error),
         };
         *write.header_mut() = header;
         write.elements_mut().copy_from_slice(elements);
@@ -205,17 +205,8 @@ impl<'a, H: Copy + Send + 'static, E: Copy + Send + 'static> StreamEndpoint<'a, 
         mut self,
         max_len: usize,
     ) -> Result<StreamBlockWriteGuard<'a, H, E>, WriteError> {
-        self.check_open()?;
-        if max_len > self.capacity {
-            return Err(PublishError::InvalidLength.into());
-        }
-        if !self.demand.active {
-            return Err(WriteError::Unavailable(WriteUnavailable::NoDemand));
-        }
-        let Some(slot) = self.writer.acquire() else {
-            let sequence = self.dropped()?;
-            return Err(WriteError::Unavailable(WriteUnavailable::Full { sequence }));
-        };
+        self.check_write(max_len)?;
+        let slot = self.acquire_slot()?;
         Ok(StreamBlockWriteGuard {
             write: StreamWrite {
                 endpoint: self,
@@ -266,23 +257,16 @@ impl<S: Payload> StreamStorage<S> {
         let Some(lease) = sender.lease.upgrade() else {
             return;
         };
-        if !lease.counted
-            || !demand.active
-            || meta.activation_generation != demand.generation
-            || meta.activation_generation != sender.generation
-            || meta.sequence <= sender.fence
-        {
+        if !lease.counted || !sender.eligible(meta, &demand) {
             return;
         }
         let Some(mut destination) = sender.writer.acquire() else {
-            sender.drops = sender.drops.saturating_add(1);
-            crate::lifecycle::increment(&lease.overflow_drops);
+            sender.record_drop(&lease);
             return;
         };
         destination.copy_from(source);
         if !sender.writer.enqueue(destination) {
-            sender.drops = sender.drops.saturating_add(1);
-            crate::lifecycle::increment(&lease.overflow_drops);
+            sender.record_drop(&lease);
         } else {
             crate::lifecycle::increment(&lease.delivered);
         }

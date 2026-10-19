@@ -76,6 +76,20 @@ pub enum WriteError {
     Invalid(#[from] PublishError),
 }
 
+/// Publisher-visible result of a failed guard acquisition: an unavailable
+/// write is a successful no-delivery outcome, while an invalid one surfaces.
+pub(crate) fn flatten_write_error(
+    error: WriteError,
+) -> Result<crate::PublishOutcome, PublishError> {
+    match error {
+        WriteError::Unavailable(WriteUnavailable::NoDemand) => Ok(crate::PublishOutcome::NoDemand),
+        WriteError::Unavailable(WriteUnavailable::Full { sequence }) => {
+            Ok(crate::PublishOutcome::DroppedFull { sequence })
+        }
+        WriteError::Invalid(error) => Err(error),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ReadError {
     #[error("destination requires at least {required} elements")]

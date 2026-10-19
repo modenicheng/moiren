@@ -151,6 +151,17 @@ pub(crate) fn latest_shared<S: Send>() -> Result<Layout, RegisterError> {
     Ok(extend(array::<AtomicUsize>(2)?, shared)?.pad_to_align())
 }
 
+/// The free owner ring holds depth+1 slots and rtrb tracks ring indices in
+/// 0..2*capacity (even for zero-sized queue items), so every registration,
+/// subscription and bus configuration must keep `(depth + 1) * 2` inside
+/// usize before any ring is laid out.
+pub(crate) fn ring_index_bound(depth: usize) -> Result<usize, RegisterError> {
+    depth
+        .checked_add(1)
+        .and_then(|slots| slots.checked_mul(2))
+        .ok_or(RegisterError::SizeOverflow)
+}
+
 fn owner_ring<S>(depth: usize) -> Result<usize, RegisterError> {
     // rtrb uses indices in 0..2*capacity, even for zero-sized queue items.
     depth.checked_mul(2).ok_or(RegisterError::SizeOverflow)?;

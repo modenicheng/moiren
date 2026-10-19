@@ -116,17 +116,15 @@ impl DirectoryId {
     }
 }
 
+/// Allocates the counter's current value and stores the incremented
+/// successor, matching the `try_update` form used for host identities.
+/// Relaxed suffices: the counter guards no other memory.
 fn checked_identity(counter: &AtomicU64) -> Result<u64, RegisterError> {
-    let mut current = counter.load(Ordering::Relaxed);
-    loop {
-        let next = current
-            .checked_add(1)
-            .ok_or(RegisterError::GenerationExhausted)?;
-        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => return Ok(current),
-            Err(observed) => current = observed,
-        }
-    }
+    counter
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| RegisterError::GenerationExhausted)
 }
 
 #[cfg(test)]

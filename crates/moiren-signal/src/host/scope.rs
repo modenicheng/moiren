@@ -96,13 +96,7 @@ impl SignalScope<'_> {
     ) -> Result<PublishOutcome, PublishError> {
         let mut write = match P::write_access(self.access(handle)?, elements.len()) {
             Ok(write) => write,
-            Err(WriteError::Unavailable(crate::WriteUnavailable::NoDemand)) => {
-                return Ok(PublishOutcome::NoDemand);
-            }
-            Err(WriteError::Unavailable(crate::WriteUnavailable::Full { sequence })) => {
-                return Ok(PublishOutcome::DroppedFull { sequence });
-            }
-            Err(WriteError::Invalid(error)) => return Err(error),
+            Err(error) => return crate::error::flatten_write_error(error),
         };
         *write.header_mut() = header;
         write.elements_mut().copy_from_slice(elements);

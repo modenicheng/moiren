@@ -117,11 +117,9 @@ impl<H: Copy + Send, E: Copy + Send> BlockWriteGuard<'_, H, E> {
     }
 }
 impl<H: Copy + Send, E: Copy + Send> LatestEndpoint<'_, BlockSlot<H, E>> {
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn try_write(
-        &mut self,
-        max_len: usize,
-    ) -> Result<BlockWriteGuard<'_, H, E>, WriteError> {
+    /// Validation shared with the production `try_write_owned` path so the
+    /// test-facing borrow entry point exercises the same checks.
+    fn check_write(&mut self, max_len: usize) -> Result<(), WriteError> {
         self.check_open()?;
         if max_len > self.input.input_buffer_mut().elements.len() {
             return Err(PublishError::InvalidLength.into());
@@ -129,6 +127,14 @@ impl<H: Copy + Send, E: Copy + Send> LatestEndpoint<'_, BlockSlot<H, E>> {
         if !self.demand.active {
             return Err(WriteError::Unavailable(WriteUnavailable::NoDemand));
         }
+        Ok(())
+    }
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn try_write(
+        &mut self,
+        max_len: usize,
+    ) -> Result<BlockWriteGuard<'_, H, E>, WriteError> {
+        self.check_write(max_len)?;
         Ok(BlockWriteGuard {
             endpoint: LatestEndpoint {
                 input: self.input,
@@ -143,16 +149,10 @@ impl<H: Copy + Send, E: Copy + Send> LatestEndpoint<'_, BlockSlot<H, E>> {
 }
 impl<'a, H: Copy + Send, E: Copy + Send> LatestEndpoint<'a, BlockSlot<H, E>> {
     pub(crate) fn try_write_owned(
-        self,
+        mut self,
         max_len: usize,
     ) -> Result<BlockWriteGuard<'a, H, E>, WriteError> {
-        self.check_open()?;
-        if max_len > self.input.input_buffer_mut().elements.len() {
-            return Err(PublishError::InvalidLength.into());
-        }
-        if !self.demand.active {
-            return Err(WriteError::Unavailable(WriteUnavailable::NoDemand));
-        }
+        self.check_write(max_len)?;
         Ok(BlockWriteGuard {
             endpoint: self,
             max_len,

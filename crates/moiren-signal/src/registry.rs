@@ -1,7 +1,10 @@
 use std::{
     alloc::Layout,
     marker::PhantomData,
-    sync::{Arc, atomic::Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use crate::{
@@ -14,11 +17,65 @@ use crate::{
     lifecycle::DirectoryId,
     storage::Payload,
     storage::{
-        LatestSender, LatestStorage, StreamSender, StreamStorage, ValueSlot, block_template, pool,
+        LatestSender, LatestStorage, StreamSender, StreamStorage, ValueSlot, block_template,
+        detach_sender, pool,
     },
     subscriber::{LatestReceiver, StreamReceiver, Subscriber, SubscriptionLease},
     types::{Mode, PayloadType},
 };
+
+/// Slots whose receiver signalled post-deallocation completion while its
+/// sender is still physically installed. Arc strong_count == 0 only means
+/// destruction has begun, not that the lease fields and receiver box have
+/// finished releasing allocations, so `completed` must be the Acquire load
+/// pairing with the receiver Drop's post-deallocation Release signal.
+fn retired_slot_snapshot<S>(senders: &[Option<S>; 64], completed: u64) -> [bool; 64] {
+    std::array::from_fn(|index| senders[index].is_some() && completed & (1 << index) != 0)
+}
+
+/// First slot a replacement subscriber may adopt: physically free, or
+/// retired and therefore reclaimable by this preparation.
+fn next_sender_slot<S>(
+    senders: &[Option<S>; 64],
+    retired_slots: &[bool; 64],
+) -> Result<usize, SubscribeError> {
+    senders
+        .iter()
+        .enumerate()
+        .position(|(index, sender)| sender.is_none() || retired_slots[index])
+        .ok_or(SubscribeError::SubscriberLimit)
+}
+
+/// Reclaims the staged-retired physical slots, then clears the adopted
+/// slot's completion bit.
+///
+/// Mirrors `storage::retire_sender`'s field order: each retired slot is
+/// detached from senders/occupied/fanout.recipients first. The adopted
+/// `sender_slot`'s completion bit is cleared with Relaxed after all
+/// reclaims and strictly before the replacement sender is installed, so no
+/// in-progress receiver Drop can set a stale flag for the replacement
+/// (tests/registry.rs: `retiring_receiver_keeps_its_sender_slot_until_drop_completes`).
+/// Bits of merely reclaimed slots stay set; `occupied` no longer selects
+/// them and their sender is `None`, so no later reader observes them.
+fn reclaim_retired_and_clear_adopted<S>(
+    senders: &mut [Option<S>; 64],
+    occupied: &mut u64,
+    recipients: &mut u64,
+    retired_receivers: &AtomicU64,
+    retired_slots: [bool; 64],
+    sender_slot: usize,
+) {
+    // Drop may race preparation on another subscriber thread. Reclaim
+    // exactly the slots whose credit was included in staged accounting.
+    for (index, retire) in retired_slots.into_iter().enumerate() {
+        if retire {
+            detach_sender(senders, occupied, recipients, index);
+        }
+    }
+    // Only the Bus reuses slots, after observing the old completion. Clear
+    // that bit before handing its identity to the replacement receiver.
+    retired_receivers.fetch_and(!(1 << sender_slot), Ordering::Relaxed);
+}
 
 struct Entry {
     id: TopicId,
@@ -56,11 +113,7 @@ impl Bus {
         {
             return Err(RegisterError::InvalidCapacity);
         }
-        config
-            .default_stream_depth
-            .checked_add(1)
-            .and_then(|free_depth| free_depth.checked_mul(2))
-            .ok_or(RegisterError::SizeOverflow)?;
+        budget::ring_index_bound(config.default_stream_depth)?;
         let directory_layout = budget::array::<Option<Entry>>(config.max_topics)?;
         // Count the bus's own inline metadata and every fixed directory slot,
         // including vacant entries. No directory growth is possible later.
@@ -167,21 +220,28 @@ impl Bus {
         report
     }
 
+    /// Directory lookup shared by both transport accessors: validates the
+    /// bus identity and current generation, then returns the erased storage.
+    fn entry_storage_mut<P: Shape>(
+        &mut self,
+        topic: &Topic<P>,
+    ) -> Result<&mut dyn Dispatch, SubscribeError> {
+        if topic.id.directory != self.directory {
+            return Err(SubscribeError::ForeignTopic);
+        }
+        self.entries
+            .get_mut(topic.id.slot)
+            .and_then(Option::as_mut)
+            .filter(|entry| entry.id == topic.id)
+            .map(|entry| &mut *entry.storage)
+            .ok_or(SubscribeError::Closed)
+    }
+
     pub(crate) fn latest_storage_mut<P: Shape, S: Payload>(
         &mut self,
         topic: &Topic<P>,
     ) -> Result<&mut LatestStorage<S>, SubscribeError> {
-        if topic.id.directory != self.directory {
-            return Err(SubscribeError::ForeignTopic);
-        }
-        let entry = self
-            .entries
-            .get_mut(topic.id.slot)
-            .and_then(Option::as_mut)
-            .filter(|entry| entry.id == topic.id)
-            .ok_or(SubscribeError::Closed)?;
-        entry
-            .storage
+        self.entry_storage_mut(topic)?
             .as_any_mut()
             .downcast_mut::<LatestStorage<S>>()
             .ok_or(SubscribeError::ForeignTopic)
@@ -198,21 +258,11 @@ impl Bus {
         let limit = self.config.max_subscribers_per_topic;
         let storage = self.latest_storage_mut::<P, S>(topic)?;
         storage.state.demand.check_add(limit)?;
-        // Arc strong_count == 0 means destruction has begun, not that the
-        // lease fields and receiver box have finished releasing allocations.
-        // Acquire pairs with Subscriber's post-deallocation completion signal.
         let completed = storage.state.retired_receivers.load(Ordering::Acquire);
-        let retired_slots: [bool; 64] = std::array::from_fn(|index| {
-            storage.senders[index].is_some() && completed & (1 << index) != 0
-        });
+        let retired_slots = retired_slot_snapshot(&storage.senders, completed);
         // Demand can decrease before a concurrent receiver's deallocation
         // completes. Its sender still occupies one of the fixed physical slots.
-        let sender_slot = storage
-            .senders
-            .iter()
-            .enumerate()
-            .position(|(index, sender)| sender.is_none() || retired_slots[index])
-            .ok_or(SubscribeError::SubscriberLimit)?;
+        let sender_slot = next_sender_slot(&storage.senders, &retired_slots)?;
         let bytes = budget::latest_subscriber::<S>(storage.template.element_bytes())
             .map_err(|_| SubscribeError::BudgetExceeded)?;
         // The replacement is allocated while retired senders are still staged.
@@ -228,13 +278,7 @@ impl Bus {
             .map_err(|_| SubscribeError::BudgetExceeded)?;
         let storage = self.latest_storage_mut::<P, S>(topic)?;
         let (mut input, output) = triple_buffer::TripleBuffer::new(&storage.template).split();
-        let lease = Arc::new(SubscriptionLease {
-            state: storage.state.clone(),
-            counted: false,
-            sender_slot,
-            delivered: std::sync::atomic::AtomicU64::new(0),
-            overflow_drops: std::sync::atomic::AtomicU64::new(0),
-        });
+        let lease = SubscriptionLease::staged(&storage.state, sender_slot);
         let mut receiver = Box::new(LatestReceiver::new(output, lease));
         let demand = storage.state.demand.add(limit)?;
         Arc::get_mut(&mut receiver.lease)
@@ -250,21 +294,14 @@ impl Bus {
             seeded_sequence = current.meta().sequence;
             crate::lifecycle::increment(&receiver.lease.delivered);
         }
-        for (index, (slot, retire)) in storage.senders.iter_mut().zip(retired_slots).enumerate() {
-            // Drop may race preparation on another subscriber thread. Reclaim
-            // exactly the slots whose credit was included in staged accounting.
-            if retire {
-                *slot = None;
-                storage.occupied &= !(1 << index);
-                storage.fanout.recipients &= !(1 << index);
-            }
-        }
-        // Only the Bus reuses slots, after observing the old completion. Clear
-        // that bit before handing its identity to the replacement receiver.
-        storage
-            .state
-            .retired_receivers
-            .fetch_and(!(1 << sender_slot), Ordering::Relaxed);
+        reclaim_retired_and_clear_adopted(
+            &mut storage.senders,
+            &mut storage.occupied,
+            &mut storage.fanout.recipients,
+            &storage.state.retired_receivers,
+            retired_slots,
+            sender_slot,
+        );
         storage.senders[sender_slot] = Some(LatestSender {
             input,
             lease: Arc::downgrade(&receiver.lease),
@@ -279,17 +316,7 @@ impl Bus {
         &mut self,
         topic: &Topic<P>,
     ) -> Result<&mut StreamStorage<S>, SubscribeError> {
-        if topic.id.directory != self.directory {
-            return Err(SubscribeError::ForeignTopic);
-        }
-        let entry = self
-            .entries
-            .get_mut(topic.id.slot)
-            .and_then(Option::as_mut)
-            .filter(|entry| entry.id == topic.id)
-            .ok_or(SubscribeError::Closed)?;
-        entry
-            .storage
+        self.entry_storage_mut(topic)?
             .as_any_mut()
             .downcast_mut::<StreamStorage<S>>()
             .ok_or(SubscribeError::ForeignTopic)
@@ -303,12 +330,7 @@ impl Bus {
         let depth = options
             .stream_depth
             .unwrap_or(self.config.default_stream_depth);
-        if depth == 0
-            || depth
-                .checked_add(1)
-                .and_then(|slots| slots.checked_mul(2))
-                .is_none()
-        {
+        if depth == 0 || budget::ring_index_bound(depth).is_err() {
             return Err(SubscribeError::InvalidCapacity);
         }
         let limit = self.config.max_subscribers_per_topic;
@@ -320,15 +342,8 @@ impl Bus {
             .checked_mul(depth + 1)
             .ok_or(SubscribeError::InvalidCapacity)?;
         let completed = storage.state.retired_receivers.load(Ordering::Acquire);
-        let retired_slots: [bool; 64] = std::array::from_fn(|index| {
-            storage.senders[index].is_some() && completed & (1 << index) != 0
-        });
-        let sender_slot = storage
-            .senders
-            .iter()
-            .enumerate()
-            .position(|(index, sender)| sender.is_none() || retired_slots[index])
-            .ok_or(SubscribeError::SubscriberLimit)?;
+        let retired_slots = retired_slot_snapshot(&storage.senders, completed);
+        let sender_slot = next_sender_slot(&storage.senders, &retired_slots)?;
         let bytes = budget::stream_subscriber::<S>(depth, storage.template.element_bytes())
             .map_err(|_| SubscribeError::BudgetExceeded)?;
         // Bound preparation's peak; retained sender/ring/payload owners cannot
@@ -343,13 +358,7 @@ impl Bus {
         let storage = self.stream_storage_mut::<P, S>(topic)?;
         let (writer, reader) = pool(&storage.template, depth);
         let retirement = Arc::new(std::sync::Mutex::new(None));
-        let lease = Arc::new(SubscriptionLease {
-            state: storage.state.clone(),
-            counted: false,
-            sender_slot,
-            delivered: std::sync::atomic::AtomicU64::new(0),
-            overflow_drops: std::sync::atomic::AtomicU64::new(0),
-        });
+        let lease = SubscriptionLease::staged(&storage.state, sender_slot);
         let mut receiver = Box::new(StreamReceiver {
             reader: Some(reader),
             loan: storage.template.clone(),
@@ -365,17 +374,14 @@ impl Bus {
         Arc::get_mut(&mut receiver.lease)
             .expect("staged sole lease owner")
             .counted = true;
-        for (index, (slot, retire)) in storage.senders.iter_mut().zip(retired_slots).enumerate() {
-            if retire {
-                *slot = None;
-                storage.occupied &= !(1 << index);
-                storage.fanout.recipients &= !(1 << index);
-            }
-        }
-        storage
-            .state
-            .retired_receivers
-            .fetch_and(!(1 << sender_slot), Ordering::Relaxed);
+        reclaim_retired_and_clear_adopted(
+            &mut storage.senders,
+            &mut storage.occupied,
+            &mut storage.fanout.recipients,
+            &storage.state.retired_receivers,
+            retired_slots,
+            sender_slot,
+        );
         storage.senders[sender_slot] = Some(StreamSender {
             writer,
             lease: Arc::downgrade(&receiver.lease),
@@ -527,11 +533,7 @@ impl Bus {
 
     fn check_depth(depth: usize) -> Result<(), RegisterError> {
         Self::check_capacity(depth)?;
-        // The free owner ring has depth+1 slots and rtrb doubles its indices.
-        depth
-            .checked_add(1)
-            .and_then(|free_depth| free_depth.checked_mul(2))
-            .ok_or(RegisterError::SizeOverflow)?;
+        budget::ring_index_bound(depth)?;
         Ok(())
     }
 

@@ -76,6 +76,17 @@ impl Drop for SubscriptionLease {
 }
 
 impl SubscriptionLease {
+    /// Sole-owner staging lease for preparation; `counted` is flipped to
+    /// true before any sender slot exposes the lease to dispatch.
+    pub(crate) fn staged(state: &StateHandle, sender_slot: usize) -> Arc<Self> {
+        Arc::new(Self {
+            state: state.clone(),
+            counted: false,
+            sender_slot,
+            delivered: AtomicU64::new(0),
+            overflow_drops: AtomicU64::new(0),
+        })
+    }
     fn stats(&self) -> SubscriberStats {
         SubscriberStats {
             delivered: self.delivered.load(Ordering::Relaxed),
