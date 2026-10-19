@@ -161,6 +161,84 @@ fn gate_threshold_hold_and_range_are_block_continuous_in_both_precisions() {
 }
 
 #[test]
+fn gate_slow_release_ramp_advances_every_frame_toward_the_range_floor() {
+    fn check<S: ProcessingSample>() {
+        // Threshold at 0 dB opens on the first frame only; the 5 s release
+        // then ramps the closed gain down at 1 kHz, the slowest in-domain
+        // ramp this render helper can produce. Every frame must keep moving.
+        let settings = GateSettings {
+            threshold_db: 0.0,
+            attack_ms: 0.0,
+            release_ms: 5_000.0,
+            hold_ms: 0.0,
+            range_db: -40.0,
+        };
+        let mut samples = vec![vec![1.0]];
+        samples[0].extend(std::iter::repeat_n(1.0e-3, 600));
+        let output = render::<S, _>(
+            Gate::new(),
+            Gate::parameters(PROCESSOR, settings).to_vec(),
+            &samples,
+            &[601],
+            false,
+        );
+        assert_eq!(output[0][0], 1.0);
+        let mut previous = output[0][1];
+        for (frame, &sample) in output[0][2..].iter().enumerate() {
+            assert!(sample < previous, "gate ramp stalled at frame {frame}");
+            previous = sample;
+        }
+        // Frame 0 attacks to gain 1; frames 1..=600 each take one 5 s
+        // release step, so gain 600 = range + (1 - range) * exp(-600/5000).
+        let expected = 1.0e-3 * (0.01 + 0.99 * (-(600.0_f64 / 5_000.0)).exp());
+        assert!((output[0][600] - expected).abs() <= 2e-9);
+    }
+    check::<f32>();
+    check::<f64>();
+}
+
+#[test]
+fn limiter_slow_release_ramp_advances_every_frame_toward_unity() {
+    fn check<S: ProcessingSample>() {
+        let settings = LimiterSettings {
+            threshold_db: -6.0,
+            release_ms: 5_000.0,
+            input_gain_db: 0.0,
+        };
+        let mut samples = vec![vec![2.0]];
+        samples[0].extend(std::iter::repeat_n(0.25, 600));
+        let output = render::<S, _>(
+            Limiter::new(),
+            Limiter::parameters(PROCESSOR, settings).to_vec(),
+            &samples,
+            &[601],
+            false,
+        );
+        let threshold = 10.0_f64.powf(-6.0 / 20.0);
+        // f32 rendering rounds the exact f64 reference gain by a few ULP.
+        assert!((output[0][0] - threshold).abs() <= 1e-6);
+        let mut previous = output[0][1];
+        for (frame, &sample) in output[0][2..].iter().enumerate() {
+            assert!(sample > previous, "limiter ramp stalled at frame {frame}");
+            previous = sample;
+        }
+        // Frame 0 attacks to threshold / peak; frames 1..=600 each take one
+        // 5 s release step toward unity, so the remaining deficit decays:
+        // gain 600 = 1 - (1 - attack) * exp(-600/5000).
+        let attack = threshold / 2.0;
+        let expected = 0.25 * (1.0 - (1.0 - attack) * (-(600.0_f64 / 5_000.0)).exp());
+        // f32 rendering rounds each output sample independently of the f64 ramp.
+        assert!(
+            (output[0][600] - expected).abs() <= 1e-6,
+            "limiter ramp off: {} vs {expected}",
+            output[0][600]
+        );
+    }
+    check::<f32>();
+    check::<f64>();
+}
+
+#[test]
 fn limiter_caps_linked_peaks_in_both_precisions_and_variable_blocks() {
     fn check<S: ProcessingSample>() {
         let threshold = 10.0_f64.powf(-6.0 / 20.0);

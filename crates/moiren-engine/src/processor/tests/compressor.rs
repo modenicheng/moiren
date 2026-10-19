@@ -371,7 +371,11 @@ fn compressor_silence_remains_finite_and_matches_variable_blocks() {
 fn compressor_validates_all_ten_parameter_types_and_future_domains() {
     let defaults = Compressor::parameters(PROCESSOR, CompressorSettings::default());
     assert_eq!(defaults.len(), 10);
-    assert_eq!(Compressor::OUTPUTGAIN, Compressor::OUTPUT_GAIN);
+    // The retired OUTPUTGAIN alias pinned parameter 8; keep it positional.
+    assert_eq!(
+        Compressor::OUTPUT_GAIN,
+        moiren_core::protocol::ParameterId(8)
+    );
     for (index, spec) in defaults.iter().enumerate() {
         assert_eq!(
             spec.key.parameter,

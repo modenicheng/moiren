@@ -2,8 +2,7 @@ use super::RackProcessor;
 use crate::{
     control::ParamSpec,
     processor::{
-        ChannelMapper, Compressor, Delay, DelaySettings, Eq, Gain, Gate, Limiter, Pan,
-        ProcessorError, RtProcessor,
+        ChannelMapper, Compressor, Delay, Eq, Gain, Gate, Limiter, Pan, ProcessorError, RtProcessor,
     },
     sample::ProcessingSample,
 };
@@ -44,7 +43,8 @@ pub fn prepare_slot<S: ProcessingSample>(
         RackProcessor::Gate(_) => Box::new(Gate::new()),
         RackProcessor::Limiter(_) => Box::new(Limiter::new()),
         RackProcessor::Delay(settings) => {
-            validate_delay_storage(*settings, channels, sample_rate)?;
+            // Reject oversized rings before allocating; same contract as Delay.
+            Delay::validate_settings(channels, *settings, sample_rate)?;
             Box::new(Delay::new(channels, *settings, sample_rate)?)
         }
         RackProcessor::ChannelMapper(settings) => Box::new(ChannelMapper::with_layout(
@@ -54,25 +54,4 @@ pub fn prepare_slot<S: ProcessingSample>(
         )?),
     };
     Ok((kernel, parameters))
-}
-
-fn validate_delay_storage(
-    settings: DelaySettings,
-    channels: usize,
-    sample_rate: f64,
-) -> Result<(), ProcessorError> {
-    // Match Delay's capacity calculation before its float-to-usize cast and
-    // allocation. Finite sample rates can still overflow frame or byte counts.
-    let frames = (settings.max_delay_ms * sample_rate / 1_000.0).ceil();
-    if !frames.is_finite() || frames >= usize::MAX as f64 {
-        return Err(ProcessorError::InvalidIo);
-    }
-    let bytes = (frames as usize)
-        .checked_add(1)
-        .and_then(|capacity| capacity.checked_mul(channels))
-        .and_then(|samples| samples.checked_mul(std::mem::size_of::<f64>()));
-    if bytes.is_none_or(|bytes| bytes > isize::MAX as usize) {
-        return Err(ProcessorError::InvalidIo);
-    }
-    Ok(())
 }

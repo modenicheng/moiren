@@ -48,7 +48,9 @@ impl Pan {
         }
     }
 
-    fn coefficient(channel: usize, position: f64) -> f64 {
+    /// Per-channel balance factor; also the compiler's send kernel, so edge
+    /// pan and the Pan node can never drift apart.
+    pub(crate) fn coefficient(channel: usize, position: f64) -> f64 {
         if channel == 0 {
             1.0 - position.max(0.0)
         } else {

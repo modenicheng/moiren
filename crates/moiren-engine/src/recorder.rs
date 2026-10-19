@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     buffer::{IoMode, PreparedIo, ReadPorts},
-    processor::{ProcessContext, ProcessorError, RtObserver},
+    processor::{ProcessContext, ProcessorError, RtObserver, builtin::MAX_CHANNELS},
     sample::ProcessingSample,
 };
 
@@ -24,7 +24,8 @@ pub(crate) use wav::{RecordingSource, spawn_recording};
 #[cfg(test)]
 mod tests;
 
-const MAX_CHANNELS: usize = 256;
+/// Same built-in channel budget as the processing kernels; see
+/// `builtin::MAX_CHANNELS` for why builtin state is width-bounded.
 const MAX_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

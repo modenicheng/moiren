@@ -22,6 +22,23 @@ pub struct EngineConfig {
     pub max_block_frames: usize,
     pub max_events_per_block: usize,
 }
+impl EngineConfig {
+    /// Single owner of the engine bounds. Compilation and plan preparation
+    /// route through here so neither entry point can accept a config the
+    /// other rejects.
+    pub(crate) fn validated(&self) -> Result<(), RuntimeError> {
+        if !self.processing_sr.is_finite()
+            || self.processing_sr <= 0.0
+            || self.max_block_frames == 0
+            || self.max_block_frames > u32::MAX as usize
+            || self.max_events_per_block == 0
+        {
+            Err(RuntimeError::InvalidConfig)
+        } else {
+            Ok(())
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RuntimeError {
     #[error("engine configuration has invalid sample rate or block/event bounds")]
@@ -143,14 +160,7 @@ impl<S: ProcessingSample> ExecutionPlan<S> {
         config: EngineConfig,
         host: Option<&moiren_signal::HostControl>,
     ) -> Result<Self, RuntimeError> {
-        if !config.processing_sr.is_finite()
-            || config.processing_sr <= 0.0
-            || config.max_block_frames == 0
-            || config.max_block_frames > u32::MAX as usize
-            || config.max_events_per_block == 0
-        {
-            return Err(RuntimeError::InvalidConfig);
-        }
+        config.validated()?;
         let mut ops = Vec::<PreparedOp>::with_capacity(specs.len());
         let mut signal_bindings = Vec::with_capacity(specs.len());
         for spec in specs {

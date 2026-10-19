@@ -1,11 +1,14 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
-use super::MAX_CHANNELS;
+use super::dynamics::{
+    db_to_gain, float_specs, sanitize_sample_rate, smooth, validate_float_domains,
+    validate_linked_io,
+};
 use crate::{
     buffer::{PreparedIo, ProcessIo},
-    control::{ParamDomain, ParamSpec, ProcessParameters},
+    control::{ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
-use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
+use moiren_core::protocol::{ParameterId, ProcessorId};
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -78,38 +81,7 @@ impl Gate {
             settings.hold_ms,
             settings.range_db,
         ];
-        std::array::from_fn(|index| {
-            let (min, max) = Self::DOMAINS[index];
-            ParamSpec {
-                key: ParameterKey {
-                    processor: id,
-                    parameter: ParameterId(index as u32),
-                },
-                domain: ParamDomain::Float { min, max },
-                initial: ParamValue::Float(values[index]),
-            }
-        })
-    }
-
-    fn gain(db: f64) -> f64 {
-        10.0_f64.powf(db / 20.0)
-    }
-
-    fn smooth(current: f64, target: f64, milliseconds: f64, sample_rate: f64) -> f64 {
-        if milliseconds == 0.0 {
-            target
-        } else {
-            let samples = (milliseconds * sample_rate / 1_000.0).max(1.0);
-            current + (target - current) * (1.0 - (-1.0 / samples).exp())
-        }
-    }
-
-    fn sample_rate(sample_rate: f64) -> f64 {
-        if sample_rate.is_finite() && sample_rate > 0.0 {
-            sample_rate
-        } else {
-            48_000.0
-        }
+        float_specs(id, &Self::DOMAINS, values)
     }
 
     fn process_frame(&mut self, peak: f64, settings: GateSettings, sample_rate: f64) -> f64 {
@@ -120,17 +92,17 @@ impl Gate {
             hold_ms,
             range_db,
         } = settings;
-        let sample_rate = Self::sample_rate(sample_rate);
+        let sample_rate = sanitize_sample_rate(sample_rate);
         if !self.initialized {
-            self.gain = Self::gain(range_db);
+            self.gain = db_to_gain(range_db);
             self.initialized = true;
         }
         if peak >= self.envelope {
-            self.envelope = Self::smooth(self.envelope, peak, attack_ms, sample_rate);
+            self.envelope = smooth(self.envelope, peak, attack_ms, sample_rate);
         } else {
-            self.envelope = Self::smooth(self.envelope, peak, release_ms, sample_rate);
+            self.envelope = smooth(self.envelope, peak, release_ms, sample_rate);
         }
-        let threshold = Self::gain(threshold_db);
+        let threshold = db_to_gain(threshold_db);
         if self.envelope >= threshold {
             self.open = true;
             self.hold_elapsed_frames = 0;
@@ -142,29 +114,20 @@ impl Gate {
                 self.open = false;
             }
         }
-        let target = if self.open { 1.0 } else { Self::gain(range_db) };
+        let target = if self.open { 1.0 } else { db_to_gain(range_db) };
         let time = if target > self.gain {
             attack_ms
         } else {
             release_ms
         };
-        self.gain = Self::smooth(self.gain, target, time, sample_rate);
+        self.gain = smooth(self.gain, target, time, sample_rate);
         self.gain
     }
 }
 
 impl<S: ProcessingSample> RtProcessor<S> for Gate {
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
-        let channels = io.input_channels(0).ok_or(ProcessorError::InvalidIo)?;
-        if io.input_count() != 1
-            || io.output_count() != 1
-            || io.output_channels(0) != Some(channels)
-            || channels == 0
-            || channels > MAX_CHANNELS
-        {
-            return Err(ProcessorError::InvalidIo);
-        }
-        Ok(())
+        validate_linked_io(io)
     }
 
     fn validate_parameters(&self, params: ProcessParameters<'_>) -> Result<(), ProcessorError> {
@@ -172,18 +135,8 @@ impl<S: ProcessingSample> RtProcessor<S> for Gate {
             params
                 .float(ParameterId(index))
                 .ok_or(ProcessorError::MissingParameter)?;
-            let (supported_min, supported_max) = Self::DOMAINS[index as usize];
-            match params.domain(ParameterId(index)) {
-                Some(ParamDomain::Float { min, max })
-                    if min.is_finite()
-                        && max.is_finite()
-                        && min <= max
-                        && min >= supported_min
-                        && max <= supported_max => {}
-                _ => return Err(ProcessorError::InvalidParameterDomain),
-            }
         }
-        Ok(())
+        validate_float_domains(&params, &Self::DOMAINS)
     }
 
     fn process(

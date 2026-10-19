@@ -2,6 +2,7 @@
 mod channel_mapper;
 mod compressor;
 mod delay;
+mod dynamics;
 mod eq;
 mod gain;
 mod gate;

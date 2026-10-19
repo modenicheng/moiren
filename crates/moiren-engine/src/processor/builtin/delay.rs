@@ -41,15 +41,21 @@ impl Delay {
     pub const DELAY: ParameterId = ParameterId(0);
     pub const FEEDBACK: ParameterId = ParameterId(1);
     pub const MIX: ParameterId = ParameterId(2);
-    const MAX_DELAY_MS: f64 = 60_000.0;
+    /// Shared bound for `max_delay_ms`; rack and project validation route
+    /// through this constant instead of repeating the literal.
+    pub(crate) const MAX_DELAY_MS: f64 = 60_000.0;
     /// Delay history is separate from the compiler's audio slab budget.
     pub const MAX_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 
-    pub fn new(
+    /// Single source for the delay storage contract: channel width, ms range,
+    /// frame math that must stay representable, and a ring inside the byte
+    /// budget. `new` and the control-side rack precheck both route through
+    /// here, so neither can accept storage the other would reject.
+    pub(crate) fn validate_settings(
         channels: usize,
         settings: DelaySettings,
         sample_rate: f64,
-    ) -> Result<Self, ProcessorError> {
+    ) -> Result<(), ProcessorError> {
         if !(1..=MAX_CHANNELS).contains(&channels)
             || !settings.max_delay_ms.is_finite()
             || !(0.0..=Self::MAX_DELAY_MS).contains(&settings.max_delay_ms)
@@ -62,18 +68,25 @@ impl Delay {
         if !frames.is_finite() || frames >= usize::MAX as f64 {
             return Err(ProcessorError::InvalidIo);
         }
-        let capacity = (frames as usize)
+        let bytes = (frames as usize)
             .checked_add(1)
-            .ok_or(ProcessorError::InvalidIo)?;
-        let len = channels
-            .checked_mul(capacity)
-            .ok_or(ProcessorError::InvalidIo)?;
-        let bytes = len
-            .checked_mul(std::mem::size_of::<f64>())
-            .ok_or(ProcessorError::InvalidIo)?;
-        if bytes > Self::MAX_BUFFER_BYTES || bytes > isize::MAX as usize {
+            .and_then(|capacity| capacity.checked_mul(channels))
+            .and_then(|samples| samples.checked_mul(std::mem::size_of::<f64>()));
+        if bytes.is_none_or(|bytes| bytes > Self::MAX_BUFFER_BYTES || bytes > isize::MAX as usize) {
             return Err(ProcessorError::InvalidIo);
         }
+        Ok(())
+    }
+
+    pub fn new(
+        channels: usize,
+        settings: DelaySettings,
+        sample_rate: f64,
+    ) -> Result<Self, ProcessorError> {
+        Self::validate_settings(channels, settings, sample_rate)?;
+        // All arithmetic is representable per validate_settings.
+        let capacity = (settings.max_delay_ms * sample_rate / 1_000.0).ceil() as usize + 1;
+        let len = channels * capacity;
         // Preparation can reject an unavailable allocation instead of aborting
         // the process; no allocation or resizing occurs during audio callbacks.
         let mut ring = Vec::new();

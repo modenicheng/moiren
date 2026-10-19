@@ -420,6 +420,21 @@ struct IoSchema {
     inputs: Box<[(u16, usize)]>,
     outputs: Box<[(u16, usize)]>,
 }
+impl IoSchema {
+    /// Canonical port snapshot: sorted so schemas captured at preparation and
+    /// re-derived by a reservation's IO check compare structurally.
+    fn from_io(io: &PreparedIo) -> Self {
+        let mut inputs: Vec<_> = io.input_ports().collect();
+        let mut outputs: Vec<_> = io.output_ports().collect();
+        inputs.sort_unstable();
+        outputs.sort_unstable();
+        Self {
+            mode: io.mode(),
+            inputs: inputs.into_boxed_slice(),
+            outputs: outputs.into_boxed_slice(),
+        }
+    }
+}
 #[derive(Clone)]
 struct ProcessorSchema {
     id: ProcessorId,
@@ -463,17 +478,11 @@ impl PlanSnapshot {
             .iter()
             .enumerate()
             .map(|(index, instance)| {
-                let io = plan.ops.iter().find(|op| op.runtime == index).map(|op| {
-                    let mut inputs: Vec<_> = op.io.input_ports().collect();
-                    let mut outputs: Vec<_> = op.io.output_ports().collect();
-                    inputs.sort_unstable();
-                    outputs.sort_unstable();
-                    IoSchema {
-                        mode: op.io.mode(),
-                        inputs: inputs.into_boxed_slice(),
-                        outputs: outputs.into_boxed_slice(),
-                    }
-                });
+                let io = plan
+                    .ops
+                    .iter()
+                    .find(|op| op.runtime == index)
+                    .map(|op| IoSchema::from_io(&op.io));
                 ProcessorSchema {
                     id: instance.id,
                     state_type: instance.state_type,

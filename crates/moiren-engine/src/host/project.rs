@@ -12,6 +12,7 @@ use crate::{
     processor::{
         ChannelMapperSettings, Compressor, CompressorSettings, Delay, DelaySettings,
         Eq as EqProcessor, EqSettings, Gate, GateSettings, Limiter, LimiterSettings,
+        builtin::MAX_CHANNELS,
     },
     runtime::EngineConfig,
 };
@@ -228,7 +229,7 @@ impl EngineProject {
                     .all(|spec| spec.accepts(spec.initial, 0)),
                 NodeConfig::Delay(settings) => {
                     settings.max_delay_ms.is_finite()
-                        && (0.0..=60_000.0).contains(&settings.max_delay_ms)
+                        && (0.0..=Delay::MAX_DELAY_MS).contains(&settings.max_delay_ms)
                         && Delay::parameters(ProcessorId(0), *settings)
                             .iter()
                             .all(|spec| spec.accepts(spec.initial, 0))
@@ -236,10 +237,12 @@ impl EngineProject {
                 NodeConfig::ChannelMapper(settings) => {
                     settings.valid_layout(node.inputs()[0].channels(), node.outputs()[0].channels())
                 }
-                NodeConfig::Recorder(settings) => settings.valid() && node.channels() <= 256,
-                NodeConfig::Meter(settings) => settings.valid() && node.channels() <= 256,
+                NodeConfig::Recorder(settings) => {
+                    settings.valid() && node.channels() <= MAX_CHANNELS
+                }
+                NodeConfig::Meter(settings) => settings.valid() && node.channels() <= MAX_CHANNELS,
                 NodeConfig::SpectrumAnalyzer(settings) => {
-                    settings.valid() && node.channels() <= 256
+                    settings.valid() && node.channels() <= MAX_CHANNELS
                 }
                 NodeConfig::Rack(settings) => settings.valid_layout(
                     &node

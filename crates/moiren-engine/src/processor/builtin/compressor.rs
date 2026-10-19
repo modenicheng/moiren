@@ -1,10 +1,11 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
+use super::dynamics::{db_to_gain, float_specs, smooth, validate_float_domains};
 use crate::{
     buffer::{PreparedIo, ProcessIo},
-    control::{ParamDomain, ParamSpec, ProcessParameters},
+    control::{ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
-use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
+use moiren_core::protocol::{ParameterId, ProcessorId};
 use moiren_signal::{ErasedBinding, LatestValue, PreparedPublisher, PublisherHandle};
 
 /// Initial control-side values. Gains, threshold and knee are dB; times are ms.
@@ -71,8 +72,7 @@ impl Compressor {
     pub const HOLD: ParameterId = ParameterId(5);
     pub const KNEE: ParameterId = ParameterId(6);
     pub const MAKEUP_GAIN: ParameterId = ParameterId(7);
-    pub const OUTPUTGAIN: ParameterId = ParameterId(8);
-    pub const OUTPUT_GAIN: ParameterId = Self::OUTPUTGAIN;
+    pub const OUTPUT_GAIN: ParameterId = ParameterId(8);
     pub const MIX: ParameterId = ParameterId(9);
 
     const DOMAINS: [(f64, f64); 10] = [
@@ -118,21 +118,7 @@ impl Compressor {
             settings.output_gain_db,
             settings.mix,
         ];
-        std::array::from_fn(|index| {
-            let (min, max) = Self::DOMAINS[index];
-            ParamSpec {
-                key: ParameterKey {
-                    processor: id,
-                    parameter: ParameterId(index as u32),
-                },
-                domain: ParamDomain::Float { min, max },
-                initial: ParamValue::Float(values[index]),
-            }
-        })
-    }
-
-    fn gain(db: f64) -> f64 {
-        10.0_f64.powf(db / 20.0)
+        float_specs(id, &Self::DOMAINS, values)
     }
 
     // Giannoulis / Massberg / Reiss, JAES 2012, Eq. (4):
@@ -149,15 +135,6 @@ impl Compressor {
         }
     }
 
-    fn smooth(current: f64, target: f64, ms: f64, sr: f64) -> f64 {
-        if ms == 0.0 {
-            target
-        } else {
-            // exp_m1 avoids losing slow ramp steps to cancellation.
-            current + (target - current) * -(-1000.0 / (ms * sr)).exp_m1()
-        }
-    }
-
     fn coefficient(&mut self, peak: f64, values: [f64; 10], sr: f64) -> f64 {
         // Adding input gain in dB avoids overflowing the detector's amplitude.
         let level_db = if peak == 0.0 {
@@ -167,15 +144,15 @@ impl Compressor {
         };
         let target = Self::target_reduction(level_db, values[1], values[2], values[6]);
         if target >= self.reduction_db {
-            self.reduction_db = Self::smooth(self.reduction_db, target, values[3], sr);
+            self.reduction_db = smooth(self.reduction_db, target, values[3], sr);
             self.hold_elapsed_frames = 0;
         } else if self.hold_elapsed_frames < (values[5] * (sr / 1000.0)).ceil() as u64 {
             self.hold_elapsed_frames = self.hold_elapsed_frames.saturating_add(1);
         } else {
-            self.reduction_db = Self::smooth(self.reduction_db, target, values[4], sr);
+            self.reduction_db = smooth(self.reduction_db, target, values[4], sr);
         }
-        let wet_gain = Self::gain(values[0] - self.reduction_db + values[7]);
-        ((1.0 - values[9]) + values[9] * wet_gain) * Self::gain(values[8])
+        let wet_gain = db_to_gain(values[0] - self.reduction_db + values[7]);
+        ((1.0 - values[9]) + values[9] * wet_gain) * db_to_gain(values[8])
     }
 }
 
@@ -201,18 +178,7 @@ impl<S: ProcessingSample> RtProcessor<S> for Compressor {
                 .float(ParameterId(index))
                 .ok_or(ProcessorError::MissingParameter)?;
         }
-        for (index, &(supported_min, supported_max)) in Self::DOMAINS.iter().enumerate() {
-            match params.domain(ParameterId(index as u32)) {
-                Some(ParamDomain::Float { min, max })
-                    if min.is_finite()
-                        && max.is_finite()
-                        && min >= supported_min
-                        && max <= supported_max
-                        && min <= max => {}
-                _ => return Err(ProcessorError::InvalidParameterDomain),
-            }
-        }
-        Ok(())
+        validate_float_domains(&params, &Self::DOMAINS)
     }
 
     fn process(

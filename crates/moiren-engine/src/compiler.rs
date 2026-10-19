@@ -149,14 +149,7 @@ fn compile_inner<S: ProcessingSample>(
     host: Option<&moiren_signal::HostControl>,
 ) -> Result<CompiledGraph<S>, CompileError> {
     let cfg = config.engine;
-    if !cfg.processing_sr.is_finite()
-        || cfg.processing_sr <= 0.0
-        || cfg.max_block_frames == 0
-        || cfg.max_block_frames > u32::MAX as usize
-        || cfg.max_events_per_block == 0
-    {
-        return Err(RuntimeError::InvalidConfig.into());
-    }
+    cfg.validated()?;
     graph.validate()?;
     for edge in graph.edges() {
         if edge.params().tap == SendTap::PreFader

@@ -1,11 +1,14 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
-use super::MAX_CHANNELS;
+use super::dynamics::{
+    db_to_gain, float_specs, sanitize_sample_rate, smooth, validate_float_domains,
+    validate_linked_io,
+};
 use crate::{
     buffer::{PreparedIo, ProcessIo},
-    control::{ParamDomain, ParamSpec, ProcessParameters},
+    control::{ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
-use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
+use moiren_core::protocol::{ParameterId, ProcessorId};
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -54,53 +57,13 @@ impl Limiter {
             settings.release_ms,
             settings.input_gain_db,
         ];
-        std::array::from_fn(|index| {
-            let (min, max) = Self::DOMAINS[index];
-            ParamSpec {
-                key: ParameterKey {
-                    processor: id,
-                    parameter: ParameterId(index as u32),
-                },
-                domain: ParamDomain::Float { min, max },
-                initial: ParamValue::Float(values[index]),
-            }
-        })
-    }
-
-    fn gain_from_db(db: f64) -> f64 {
-        10.0_f64.powf(db / 20.0)
-    }
-
-    fn sample_rate(sample_rate: f64) -> f64 {
-        if sample_rate.is_finite() && sample_rate > 0.0 {
-            sample_rate
-        } else {
-            48_000.0
-        }
-    }
-
-    fn release(current: f64, target: f64, release_ms: f64, sample_rate: f64) -> f64 {
-        if release_ms == 0.0 {
-            target
-        } else {
-            let samples = (release_ms * Self::sample_rate(sample_rate) / 1_000.0).max(1.0);
-            current + (target - current) * (1.0 - (-1.0 / samples).exp())
-        }
+        float_specs(id, &Self::DOMAINS, values)
     }
 }
 
 impl<S: ProcessingSample> RtProcessor<S> for Limiter {
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
-        let channels = io.input_channels(0).ok_or(ProcessorError::InvalidIo)?;
-        if io.input_count() != 1
-            || io.output_count() != 1
-            || io.output_channels(0) != Some(channels)
-            || channels == 0
-            || channels > MAX_CHANNELS
-        {
-            return Err(ProcessorError::InvalidIo);
-        }
-        Ok(())
+        validate_linked_io(io)
     }
 
     fn validate_parameters(&self, params: ProcessParameters<'_>) -> Result<(), ProcessorError> {
@@ -108,18 +71,8 @@ impl<S: ProcessingSample> RtProcessor<S> for Limiter {
             params
                 .float(ParameterId(index))
                 .ok_or(ProcessorError::MissingParameter)?;
-            let (supported_min, supported_max) = Self::DOMAINS[index as usize];
-            match params.domain(ParameterId(index)) {
-                Some(ParamDomain::Float { min, max })
-                    if min.is_finite()
-                        && max.is_finite()
-                        && min <= max
-                        && min >= supported_min
-                        && max <= supported_max => {}
-                _ => return Err(ProcessorError::InvalidParameterDomain),
-            }
         }
-        Ok(())
+        validate_float_domains(&params, &Self::DOMAINS)
     }
 
     fn process(
@@ -146,8 +99,8 @@ impl<S: ProcessingSample> RtProcessor<S> for Limiter {
                 let input = inputs.get(0).expect("validated limiter input");
                 let mut output = outputs.get_mut(0).expect("validated limiter output");
                 for frame in 0..input.frames() {
-                    let input_gain = Self::gain_from_db(input_gain.sample(frame));
-                    let threshold = Self::gain_from_db(threshold.sample(frame));
+                    let input_gain = db_to_gain(input_gain.sample(frame));
+                    let threshold = db_to_gain(threshold.sample(frame));
                     let peak = input.channels().fold(0.0_f64, |peak, channel| {
                         peak.max(channel[frame].to_f64().abs() * input_gain)
                     });
@@ -159,7 +112,12 @@ impl<S: ProcessingSample> RtProcessor<S> for Limiter {
                     self.gain = if target < self.gain {
                         target
                     } else {
-                        Self::release(self.gain, target, release.sample(frame), ctx.processing_sr)
+                        smooth(
+                            self.gain,
+                            target,
+                            release.sample(frame),
+                            sanitize_sample_rate(ctx.processing_sr),
+                        )
                     };
                     for channel in 0..input.channel_count() {
                         output.channel_mut(channel)[frame] = S::from_f64(
@@ -171,8 +129,8 @@ impl<S: ProcessingSample> RtProcessor<S> for Limiter {
             ProcessIo::InPlace { mut pairs, .. } => {
                 let mut block = pairs.get_mut(0, 0).expect("validated limiter pair");
                 for frame in 0..block.frames() {
-                    let input_gain = Self::gain_from_db(input_gain.sample(frame));
-                    let threshold = Self::gain_from_db(threshold.sample(frame));
+                    let input_gain = db_to_gain(input_gain.sample(frame));
+                    let threshold = db_to_gain(threshold.sample(frame));
                     let peak = (0..block.channel_count()).fold(0.0_f64, |peak, channel| {
                         peak.max(block.channel(channel)[frame].to_f64().abs() * input_gain)
                     });
@@ -184,7 +142,12 @@ impl<S: ProcessingSample> RtProcessor<S> for Limiter {
                     self.gain = if target < self.gain {
                         target
                     } else {
-                        Self::release(self.gain, target, release.sample(frame), ctx.processing_sr)
+                        smooth(
+                            self.gain,
+                            target,
+                            release.sample(frame),
+                            sanitize_sample_rate(ctx.processing_sr),
+                        )
                     };
                     for channel in block.channels_mut() {
                         channel[frame] =

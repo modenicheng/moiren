@@ -3,7 +3,7 @@ use super::SendParameterKeys;
 use crate::{
     buffer::{IoMode, PreparedIo, ProcessIo},
     control::{ParamDomain, ParamSpec, ProcessParameters},
-    processor::{ProcessContext, ProcessorError, RtProcessor},
+    processor::{Pan, ProcessContext, ProcessorError, RtProcessor},
     sample::ProcessingSample,
 };
 use moiren_core::{
@@ -112,10 +112,8 @@ impl<S: ProcessingSample> RtProcessor<S> for Send {
                     let position = pan.sample(i);
                     let balance = if self.channels != 2 {
                         1.0
-                    } else if channel == 0 {
-                        1.0 - position.max(0.0)
                     } else {
-                        1.0 + position.min(0.0)
+                        Pan::coefficient(channel, position)
                     };
                     // Balance is in [0, 1]. Form the finite coefficient before
                     // scaling audio, so a fully attenuated channel cannot turn

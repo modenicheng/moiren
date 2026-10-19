@@ -251,6 +251,28 @@ fn prepare_rejects_invalid_context_and_configuration_without_allocating_delay_st
 }
 
 #[test]
+fn precheck_rejects_delay_rings_over_the_64_mib_buffer_budget() {
+    use crate::processor::Delay;
+    // 256 channels x 6 s at 48 kHz needs ~563 MiB of f64 ring: inside the
+    // 60 s ms bound but beyond Delay's storage budget. The control-side
+    // precheck must refuse before any ring allocation is attempted.
+    let settings = DelaySettings {
+        delay_ms: 0.0,
+        feedback: 0.0,
+        mix: 1.0,
+        max_delay_ms: 6_000.0,
+    };
+    assert_eq!(
+        Delay::validate_settings(256, settings, 48_000.0),
+        Err(ProcessorError::InvalidIo)
+    );
+    assert!(matches!(
+        prepare_slot::<f64>(&RackProcessor::Delay(settings), 256, 48_000.0, PROCESSOR),
+        Err(ProcessorError::InvalidIo)
+    ));
+}
+
+#[test]
 fn nonlinear_chain_obeys_slot_order_and_bypass_in_both_precisions() {
     fn check<S: ProcessingSample>() {
         let limiter = RackProcessor::Limiter(LimiterSettings {

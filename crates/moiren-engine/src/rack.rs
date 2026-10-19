@@ -277,7 +277,7 @@ impl RackProcessor {
                 // This is the same prepared length limit enforced by Delay.
                 // Checking it here avoids allocating a ring just to validate.
                 if !settings.max_delay_ms.is_finite()
-                    || !(0.0..=60_000.0).contains(&settings.max_delay_ms)
+                    || !(0.0..=Delay::MAX_DELAY_MS).contains(&settings.max_delay_ms)
                 {
                     return Err(ProcessorError::InvalidParameterDomain);
                 }

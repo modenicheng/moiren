@@ -16,16 +16,7 @@ impl<S: ProcessingSample> RtProcessor<S> for ReservedIo {
         self.schema.latency
     }
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
-        let mut inputs: Vec<_> = io.input_ports().collect();
-        let mut outputs: Vec<_> = io.output_ports().collect();
-        inputs.sort_unstable();
-        outputs.sort_unstable();
-        let schema = IoSchema {
-            mode: io.mode(),
-            inputs: inputs.into_boxed_slice(),
-            outputs: outputs.into_boxed_slice(),
-        };
-        if self.schema.io.as_ref() == Some(&schema) {
+        if self.schema.io.as_ref() == Some(&IoSchema::from_io(io)) {
             Ok(())
         } else {
             Err(ProcessorError::InvalidIo)
@@ -53,15 +44,6 @@ impl PlanSnapshot {
             .iter()
             .filter(|schema| schema.role == ProcessorRole::Sink)
             .map(|schema| schema.id)
-    }
-    pub fn single_sink(&self) -> Option<ProcessorId> {
-        let mut sinks = self
-            .0
-            .processors
-            .iter()
-            .filter(|schema| schema.role == ProcessorRole::Sink);
-        let sink = sinks.next()?;
-        sinks.next().is_none().then_some(sink.id)
     }
 
     pub(crate) fn processor_role(&self, processor: ProcessorId) -> Option<ProcessorRole> {

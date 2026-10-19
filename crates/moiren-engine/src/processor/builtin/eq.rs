@@ -1,11 +1,14 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
 use super::MAX_CHANNELS;
+use super::dynamics::{
+    float_specs, sanitize_sample_rate, validate_float_domains, validate_linked_io,
+};
 use crate::{
     buffer::{PreparedIo, ProcessIo},
-    control::{ParamDomain, ParamSpec, ProcessParameters},
+    control::{ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
-use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
+use moiren_core::protocol::{ParameterId, ProcessorId};
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -53,25 +56,11 @@ impl Eq {
 
     pub fn parameters(id: ProcessorId, settings: EqSettings) -> [ParamSpec; 3] {
         let values = [settings.frequency_hz, settings.gain_db, settings.q];
-        std::array::from_fn(|index| {
-            let (min, max) = Self::DOMAINS[index];
-            ParamSpec {
-                key: ParameterKey {
-                    processor: id,
-                    parameter: ParameterId(index as u32),
-                },
-                domain: ParamDomain::Float { min, max },
-                initial: ParamValue::Float(values[index]),
-            }
-        })
+        float_specs(id, &Self::DOMAINS, values)
     }
 
     fn coefficients(frequency_hz: f64, gain_db: f64, q: f64, sample_rate: f64) -> [f64; 5] {
-        let sample_rate = if sample_rate.is_finite() && sample_rate > 0.0 {
-            sample_rate
-        } else {
-            48_000.0
-        };
+        let sample_rate = sanitize_sample_rate(sample_rate);
         let frequency_hz = frequency_hz.clamp(0.0, (sample_rate * 0.49).max(1.0));
         let q = q.max(0.1);
         let omega = 2.0 * std::f64::consts::PI * frequency_hz / sample_rate;
@@ -118,16 +107,7 @@ impl Default for Eq {
 
 impl<S: ProcessingSample> RtProcessor<S> for Eq {
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
-        let channels = io.input_channels(0).ok_or(ProcessorError::InvalidIo)?;
-        if io.input_count() != 1
-            || io.output_count() != 1
-            || io.output_channels(0) != Some(channels)
-            || channels == 0
-            || channels > MAX_CHANNELS
-        {
-            return Err(ProcessorError::InvalidIo);
-        }
-        Ok(())
+        validate_linked_io(io)
     }
 
     fn validate_parameters(&self, params: ProcessParameters<'_>) -> Result<(), ProcessorError> {
@@ -135,18 +115,8 @@ impl<S: ProcessingSample> RtProcessor<S> for Eq {
             params
                 .float(ParameterId(index))
                 .ok_or(ProcessorError::MissingParameter)?;
-            let (supported_min, supported_max) = Self::DOMAINS[index as usize];
-            match params.domain(ParameterId(index)) {
-                Some(ParamDomain::Float { min, max })
-                    if min.is_finite()
-                        && max.is_finite()
-                        && min <= max
-                        && min >= supported_min
-                        && max <= supported_max => {}
-                _ => return Err(ProcessorError::InvalidParameterDomain),
-            }
         }
-        Ok(())
+        validate_float_domains(&params, &Self::DOMAINS)
     }
 
     fn process(
