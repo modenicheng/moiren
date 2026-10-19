@@ -26,7 +26,7 @@ fn configured_channel_matrix_downmixes_without_implicit_conversion() {
     assert_eq!(heap, (0, 0, 0));
     let mut samples = [0.0; 4];
     reader.read_interleaved(&mut samples).unwrap();
-    assert_samples(&samples, &[0.28125; 4]);
+    assert_samples_close(&samples, &[0.28125; 4]);
 }
 
 #[test]
@@ -55,7 +55,7 @@ fn configured_channel_matrix_uses_distinct_input_and_output_layouts() {
     compiled.engine.render(4).unwrap();
     let mut samples = [0.0; 12];
     reader.read_interleaved(&mut samples).unwrap();
-    assert_samples(
+    assert_samples_close(
         &samples,
         &[
             0.09375, -0.375, 0.75, 0.09375, -0.375, 0.75, 0.09375, -0.375, 0.75, 0.09375, -0.375,
@@ -167,7 +167,7 @@ fn rack_lowering_runs_empty_and_active_chains_and_resolves_slot_parameters() {
     empty.engine.render(2).unwrap();
     let mut samples = [0.0; 2];
     empty_reader.read_interleaved(&mut samples).unwrap();
-    assert_samples(&samples, &[0.375, 0.375]);
+    assert_samples_close(&samples, &[0.375, 0.375]);
 
     let settings = RackSettings {
         slots: vec![
@@ -210,7 +210,7 @@ fn rack_lowering_runs_empty_and_active_chains_and_resolves_slot_parameters() {
     assert_eq!(response.code, ReplyCode::Accepted);
     compiled.engine.render(2).unwrap();
     reader.read_interleaved(&mut samples).unwrap();
-    assert_samples(&samples, &[0.046875, 0.046875]);
+    assert_samples_close(&samples, &[0.046875, 0.046875]);
 
     let (bindings, mut bypass_reader) = make_bindings(RackSettings {
         slots: vec![
@@ -244,7 +244,7 @@ fn rack_lowering_runs_empty_and_active_chains_and_resolves_slot_parameters() {
     assert_eq!(response.code, ReplyCode::Accepted);
     bypassed.engine.render(2).unwrap();
     bypass_reader.read_interleaved(&mut samples).unwrap();
-    assert_samples(&samples, &[0.09375, 0.09375]);
+    assert_samples_close(&samples, &[0.09375, 0.09375]);
 
     let (bindings, mut reordered_reader) = make_bindings(RackSettings {
         slots: settings.slots.iter().rev().cloned().collect(),
@@ -271,7 +271,7 @@ fn rack_lowering_runs_empty_and_active_chains_and_resolves_slot_parameters() {
     assert_eq!(response.code, ReplyCode::Accepted);
     reordered.engine.render(2).unwrap();
     reordered_reader.read_interleaved(&mut samples).unwrap();
-    assert_samples(&samples, &[0.046875, 0.046875]);
+    assert_samples_close(&samples, &[0.046875, 0.046875]);
 }
 
 #[test]

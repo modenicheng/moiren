@@ -274,7 +274,7 @@ mod signal_tests {
         buffer::{BufferArena, BufferSlotLayout, PortAccess},
         control::parameter_channel,
     };
-    use moiren_signal::{Bus, PumpBudget};
+    use moiren_signal::Bus;
 
     #[test]
     fn signal_publishes_private_reduction_field_and_demand_never_resets_dsp() {
@@ -400,11 +400,7 @@ mod signal_tests {
                 assert_eq!(compressor.hold_elapsed_frames, baseline.hold_elapsed_frames);
                 assert!(compressor.reduction_db > last_reduction);
                 last_reduction = compressor.reduction_db;
-                bus.pump(PumpBudget {
-                    topic_checks: 1024,
-                    deliveries: 128,
-                    copy_bytes: 65536,
-                });
+                crate::test_support::pump(&mut bus);
                 if let Some(reader) = &mut subscriber {
                     assert_eq!(
                         reader.read_latest().unwrap().value,

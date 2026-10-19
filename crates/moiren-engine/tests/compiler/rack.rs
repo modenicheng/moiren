@@ -100,8 +100,8 @@ fn rack_routes_multiple_widths_and_mapper_slots_without_render_allocations() {
         let mut auxiliary = [S::ZERO; 8];
         stereo_reader.read_interleaved(&mut stereo).unwrap();
         auxiliary_reader.read_interleaved(&mut auxiliary).unwrap();
-        assert_samples(&stereo, &[0.75; 8]);
-        assert_samples(
+        assert_samples_close(&stereo, &[0.75; 8]);
+        assert_samples_close(
             &auxiliary,
             &[
                 0.09375, -0.1875, 0.09375, -0.1875, 0.09375, -0.1875, 0.09375, -0.1875,
@@ -141,7 +141,7 @@ fn rack_default_route_preserves_legacy_single_chain_and_bypass_width_is_checked(
     compiled.engine.render(2).unwrap();
     let mut samples = [0.0; 2];
     reader.read_interleaved(&mut samples).unwrap();
-    assert_samples(&samples, &[0.75; 2]);
+    assert_samples_close(&samples, &[0.75; 2]);
 
     let mut graph = LogicalGraph::new();
     let source = graph.create_node(NodeKind::Source, 1).unwrap();
@@ -315,7 +315,7 @@ fn rack_disconnected_routed_input_and_unrouted_output_are_silent() {
         let mut silent = [1.0; 4];
         routed_reader.read_interleaved(&mut routed).unwrap();
         silent_reader.read_interleaved(&mut silent).unwrap();
-        assert_samples(&routed, &[if connected { 0.375 } else { 0.0 }; 4]);
-        assert_samples(&silent, &[0.0; 4]);
+        assert_samples_close(&routed, &[if connected { 0.375 } else { 0.0 }; 4]);
+        assert_samples_close(&silent, &[0.0; 4]);
     }
 }

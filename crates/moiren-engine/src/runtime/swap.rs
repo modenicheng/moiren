@@ -85,6 +85,9 @@ mod signal_tests {
         }
     }
 
+    // Integration tests keep the parameterized twin of this scaffolding in
+    // `tests/common/mod.rs::test_engine`; this copy stays because embedded
+    // `#[cfg(test)]` modules cannot import from the test binaries.
     fn engine(
         host: &HostControl,
         bindings: Vec<ErasedBinding>,

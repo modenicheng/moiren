@@ -56,7 +56,7 @@ fn pan_modes<S: ProcessingSample>() {
                 .unwrap();
             let untouched = if in_place { 1.0 } else { -9.0 };
             let untouched_right = if in_place { 2.0 } else { -9.0 };
-            assert_samples(
+            assert_samples_exact(
                 &mut arena,
                 usize::from(!in_place),
                 &[
@@ -65,7 +65,7 @@ fn pan_modes<S: ProcessingSample>() {
                 ],
             );
             if !in_place {
-                assert_samples(&mut arena, 0, original);
+                assert_samples_exact(&mut arena, 0, original);
             }
         }
     }
@@ -134,7 +134,7 @@ fn pan_stereo_modes<S: ProcessingSample>() {
                     )
                 })
                 .unwrap();
-            assert_samples(
+            assert_samples_exact(
                 &mut arena,
                 usize::from(!in_place),
                 &[
@@ -153,7 +153,7 @@ fn pan_stereo_modes<S: ProcessingSample>() {
                 ],
             );
             if !in_place {
-                assert_samples(&mut arena, 0, original);
+                assert_samples_exact(&mut arena, 0, original);
             }
         }
     }

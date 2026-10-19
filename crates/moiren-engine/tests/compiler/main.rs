@@ -6,6 +6,8 @@ use moiren_engine::{
 
 #[path = "../runtime/allocation.rs"]
 mod allocation;
+#[path = "../common/mod.rs"]
+mod common;
 mod compressor;
 mod nodes;
 mod observers;
@@ -17,32 +19,23 @@ mod sends;
 mod signal_measurement;
 mod validation;
 
+// First-port graph helpers and the canonical pump budget live in `common`;
+// `connect` keeps its historical parameter-taking name for the submodules.
+use common::{connect_with as connect, input, output, pump};
+
 fn config() -> CompileConfig {
     CompileConfig {
         engine: EngineConfig {
-            processing_sr: 48_000.0,
-            max_block_frames: 8,
             max_events_per_block: 16,
+            ..common::engine_config()
         },
         audio_byte_budget: 65_536,
-        plan_revision: 7,
-        timeline_epoch: 3,
         control_capacity: 16,
         control_horizon_frames: 48_000,
+        ..common::compile_config(7)
     }
 }
 
-fn output(graph: &LogicalGraph, node: NodeId) -> PortId {
-    graph.get_node(node).unwrap().outputs()[0].id()
-}
-fn input(graph: &LogicalGraph, node: NodeId) -> PortId {
-    graph.get_node(node).unwrap().inputs()[0].id()
-}
-fn connect(graph: &mut LogicalGraph, a: NodeId, b: NodeId, params: SendParams) -> EdgeId {
-    graph
-        .connect(output(graph, a), input(graph, b), params)
-        .unwrap()
-}
 fn constant<S: ProcessingSample>(bindings: &mut NodeBindings<S>, node: NodeId, channels: usize) {
     bindings
         .bind_source(
@@ -54,7 +47,11 @@ fn constant<S: ProcessingSample>(bindings: &mut NodeBindings<S>, node: NodeId, c
         )
         .unwrap();
 }
-fn assert_samples<S: ProcessingSample>(actual: &[S], expected: &[f64]) {
+
+/// Slice comparison with the shared 1e-6 tolerance policy; the reader-based
+/// twin lives in `common::assert_samples_close` and the exact arena-based
+/// twin in `src/processor/tests.rs::assert_samples_exact`.
+fn assert_samples_close<S: ProcessingSample>(actual: &[S], expected: &[f64]) {
     assert_eq!(actual.len(), expected.len());
     for (actual, expected) in actual.iter().zip(expected) {
         assert!(

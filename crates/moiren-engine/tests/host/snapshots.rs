@@ -1,9 +1,6 @@
 use super::support::*;
 use moiren_engine::host::*;
-use std::{
-    sync::{Arc, atomic::Ordering},
-    time::Instant,
-};
+use std::sync::{Arc, atomic::Ordering};
 
 #[test]
 fn snapshots_keep_desired_and_active_projects_separate_during_update() {
@@ -121,8 +118,7 @@ fn snapshots_publish_matching_project_and_revision_under_concurrent_edits() {
             })
             .collect::<Vec<_>>()
     });
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
+    wait_until("desired revision did not reach 33", TIMEOUT, || {
         let snapshot = observer.read();
         let expected = |revision| {
             if revision == 1 {
@@ -147,12 +143,8 @@ fn snapshots_publish_matching_project_and_revision_under_concurrent_edits() {
         } else {
             assert!(snapshot.active.is_none());
         }
-        if snapshot.state.desired_revision == 33 {
-            break;
-        }
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+        (snapshot.state.desired_revision == 33).then_some(())
+    });
     writer.join().unwrap();
 }
 
@@ -191,8 +183,7 @@ fn snapshots_refresh_desired_parameters_without_advancing_graph_revision() {
             receipt.wait(TIMEOUT),
             ParameterOutcome::Applied(_)
         ));
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
+        wait_until("desired parameter values did not refresh", TIMEOUT, || {
             let snapshot = observer.read();
             if snapshot.desired.parameter_values().iter().any(|parameter| {
                 parameter.target == target && parameter.value == ParamValue::Float(value)
@@ -204,11 +195,11 @@ fn snapshots_refresh_desired_parameters_without_advancing_graph_revision() {
                     snapshot.active.as_ref().unwrap(),
                     before.active.as_ref().unwrap()
                 ));
-                break;
+                Some(())
+            } else {
+                None
             }
-            assert!(Instant::now() < deadline);
-            std::thread::yield_now();
-        }
+        });
         wait_sample(&state, value);
     }
     assert_eq!(state.prepares.load(Ordering::SeqCst), 1);

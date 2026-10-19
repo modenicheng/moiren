@@ -15,3 +15,5 @@ pub mod runtime;
 pub mod sample;
 pub mod signal;
 pub mod spectrum;
+#[cfg(test)]
+pub(crate) mod test_support;

@@ -1,30 +1,20 @@
 use super::allocation::track_allocations;
+use super::common;
 use moiren_core::{graph::*, protocol::*};
 use moiren_engine::{
     boundary::{AudioReader, BoundaryReport, RtAudioSource, audio_bridge},
     buffer::AudioBlockMut,
     compiler::{CompileConfig, CompiledGraph, NodeBindings, compile},
+    control::{ParamDomain, ParamSpec},
     processor::{Gain, ProcessContext},
     runtime::{EngineConfig, PlanSwapError, PreparedPlan, ProcessorReuse, RetireOutcome},
     sample::ProcessingSample,
 };
 
-struct CounterSource {
-    next: f64,
-}
-impl<S: ProcessingSample> RtAudioSource<S> for CounterSource {
-    fn channel_count(&self) -> usize {
-        1
-    }
-    fn read(&mut self, ctx: &ProcessContext, mut output: AudioBlockMut<'_, S>) -> BoundaryReport {
-        for sample in output.channel_mut(0) {
-            *sample = S::from_f64(self.next);
-            self.next += 1.0;
-        }
-        BoundaryReport {
-            transferred_frames: ctx.frames,
-            ..BoundaryReport::default()
-        }
+fn swap_compile_config(revision: u64) -> CompileConfig {
+    CompileConfig {
+        control_capacity: 4,
+        ..common::compile_config(revision)
     }
 }
 
@@ -37,39 +27,16 @@ fn compiled<S: ProcessingSample>(
     let source = graph.create_node(NodeKind::Source, 1).unwrap();
     let gain_node = graph.create_node(NodeKind::Gain, 1).unwrap();
     let sink = graph.create_node(NodeKind::Sink, 1).unwrap();
-    for (a, b) in [(source, gain_node), (gain_node, sink)] {
-        graph
-            .connect(
-                graph.get_node(a).unwrap().outputs()[0].id(),
-                graph.get_node(b).unwrap().inputs()[0].id(),
-                SendParams::default(),
-            )
-            .unwrap();
-    }
+    common::connect(&mut graph, source, gain_node);
+    common::connect(&mut graph, gain_node, sink);
     let (writer, reader) = audio_bridge(1, 64, 4096).unwrap();
     let mut bindings = NodeBindings::new();
     bindings
-        .bind_source(source, CounterSource { next })
+        .bind_source(source, common::CountingSource { next })
         .unwrap();
     bindings.bind_gain(gain_node, gain).unwrap();
     bindings.bind_sink(sink, writer).unwrap();
-    let result = compile(
-        &graph,
-        bindings,
-        CompileConfig {
-            engine: EngineConfig {
-                processing_sr: 48000.0,
-                max_block_frames: 8,
-                max_events_per_block: 8,
-            },
-            audio_byte_budget: 4096,
-            plan_revision: revision,
-            timeline_epoch: 3,
-            control_capacity: 4,
-            control_horizon_frames: 1024,
-        },
-    )
-    .unwrap();
+    let result = compile(&graph, bindings, swap_compile_config(revision)).unwrap();
     (result, reader)
 }
 
@@ -88,23 +55,7 @@ fn request(revision: u64, value: f64, ramp: u32, frame: u64) -> ParameterRequest
     }
 }
 
-fn samples<S: ProcessingSample>(reader: &mut AudioReader<S>, expected: &[f64]) {
-    let mut output = vec![S::ZERO; expected.len()];
-    assert_eq!(
-        reader
-            .read_interleaved(&mut output)
-            .unwrap()
-            .transferred_frames,
-        expected.len()
-    );
-    for (actual, expected) in output.iter().zip(expected) {
-        assert!(
-            (actual.to_f64() - expected).abs() < 1e-6,
-            "{} != {expected}",
-            actual.to_f64()
-        );
-    }
-}
+use common::assert_samples_close;
 
 fn boundary_swap<S: ProcessingSample>() {
     let (mut old, mut old_output) = compiled::<S>(7, 1.0, 1.0);
@@ -121,8 +72,8 @@ fn boundary_swap<S: ProcessingSample>() {
     assert_eq!((rendered.start, rendered.end), (2, 4));
     assert_eq!(old.engine.revision(), 8);
     assert_eq!(plans.active_revision(), 8);
-    samples(&mut old_output, &[1.0, 2.0]);
-    samples(&mut new_output, &[5.0, 5.5]);
+    assert_samples_close(&mut old_output, &[1.0, 2.0]);
+    assert_samples_close(&mut new_output, &[5.0, 5.5]);
     let retired = plans.poll_retired().unwrap();
     assert_eq!(retired.revision(), 7);
     assert_eq!(
@@ -199,7 +150,7 @@ fn reuse_preserves_source_state_sink_identity_and_in_progress_gain_ramp() {
     let (rendered, counts) = track_allocations(|| old.engine.render(2));
     rendered.unwrap();
     assert_eq!(counts, (0, 0));
-    samples(&mut output, &[0.75, 1.0, 0.75, 0.0]);
+    assert_samples_close(&mut output, &[0.75, 1.0, 0.75, 0.0]);
     let mut empty = [0.0];
     assert_eq!(
         unused_output
@@ -238,7 +189,7 @@ fn old_parameters_are_rejected_and_accepted_future_events_are_retired() {
         ReplyCode::StaleRevision
     );
     assert_eq!(new.control.poll_applied().unwrap().code, ReplyCode::Applied);
-    samples(&mut output, &[2.5]);
+    assert_samples_close(&mut output, &[2.5]);
 }
 
 #[test]
@@ -383,55 +334,19 @@ fn gain_engine(
     epoch: u64,
     min: f64,
 ) -> moiren_engine::runtime::Engine<f64> {
-    use moiren_engine::{
-        buffer::{BufferArena, BufferSlotLayout, PortAccess},
-        control::{ParamDomain, parameter_channel},
-        runtime::*,
-    };
-    let resources = RtResources::new(vec![ProcessorInstance::new(ProcessorId(2), Gain)]).unwrap();
-    let (_, parameters) = parameter_channel(
-        vec![moiren_engine::control::ParamSpec {
+    common::test_engine(
+        (ProcessorId(2), Gain),
+        vec![ParamSpec {
             domain: ParamDomain::Float { min, max: 16.0 },
             ..Gain::parameter(ProcessorId(2), 1.0)
         }],
         revision,
         epoch,
         4,
-        1024,
-    )
-    .unwrap();
-    let arena = BufferArena::new(
-        &[BufferSlotLayout {
-            channels: 1,
-            capacity_frames: config.max_block_frames,
-        }; 2],
-        4096,
-    )
-    .unwrap();
-    let io = arena
-        .prepare_io(&[
-            PortAccess::Read {
-                port: 0,
-                slot: arena.slot(0).unwrap(),
-            },
-            PortAccess::Write {
-                port: 0,
-                slot: arena.slot(1).unwrap(),
-            },
-        ])
-        .unwrap();
-    let plan = ExecutionPlan::prepare(
-        arena,
-        vec![OpSpec {
-            processor: ProcessorId(2),
-            io,
-        }],
-        &resources,
-        &parameters,
         config,
+        common::TestIo::SeparateReadWrite,
+        None,
     )
-    .unwrap();
-    Engine::new(plan, resources, parameters).unwrap()
 }
 
 #[test]
@@ -555,24 +470,9 @@ fn rendered_retired_and_pending_processors_are_destroyed_on_the_control_thread()
         bindings
             .bind_source(source, Probe(Arc::clone(audit)))
             .unwrap();
-        compile(
-            &graph,
-            bindings,
-            CompileConfig {
-                engine: EngineConfig {
-                    processing_sr: 48000.0,
-                    max_block_frames: 8,
-                    max_events_per_block: 8,
-                },
-                audio_byte_budget: 4096,
-                plan_revision: revision,
-                timeline_epoch: 3,
-                control_capacity: 4,
-                control_horizon_frames: 1024,
-            },
-        )
-        .unwrap()
-        .engine
+        compile(&graph, bindings, swap_compile_config(revision))
+            .unwrap()
+            .engine
     }
     let audit = Arc::new(Audit {
         owner: thread::current().id(),
@@ -643,15 +543,8 @@ fn compressor_envelope_survives_plan_swap_and_keeps_releasing_in_both_precisions
         let source = graph.create_node(NodeKind::Source, 1).unwrap();
         let compressor = graph.create_node(NodeKind::Compressor, 1).unwrap();
         let sink = graph.create_node(NodeKind::Sink, 1).unwrap();
-        for (from, to) in [(source, compressor), (compressor, sink)] {
-            graph
-                .connect(
-                    graph.get_node(from).unwrap().outputs()[0].id(),
-                    graph.get_node(to).unwrap().inputs()[0].id(),
-                    SendParams::default(),
-                )
-                .unwrap();
-        }
+        common::connect(&mut graph, source, compressor);
+        common::connect(&mut graph, compressor, sink);
         let prepare = |revision, value| {
             let (writer, reader) = audio_bridge::<S>(1, 32, 4096).unwrap();
             let mut io = NodeBindings::new();
@@ -671,23 +564,7 @@ fn compressor_envelope_survives_plan_swap_and_keeps_releasing_in_both_precisions
             )
             .unwrap();
             (
-                compile(
-                    &graph,
-                    io,
-                    CompileConfig {
-                        engine: EngineConfig {
-                            processing_sr: 48000.0,
-                            max_block_frames: 8,
-                            max_events_per_block: 8,
-                        },
-                        audio_byte_budget: 4096,
-                        plan_revision: revision,
-                        timeline_epoch: 3,
-                        control_capacity: 4,
-                        control_horizon_frames: 1024,
-                    },
-                )
-                .unwrap(),
+                compile(&graph, io, swap_compile_config(revision)).unwrap(),
                 reader,
             )
         };
@@ -695,7 +572,7 @@ fn compressor_envelope_survives_plan_swap_and_keeps_releasing_in_both_precisions
         let basis = active.engine.plan_snapshot();
         let mut plans = active.engine.enable_plan_switching(1).unwrap();
         active.engine.render(1).unwrap();
-        samples(&mut output, &[10.0_f64.powf(-9.0 / 20.0)]);
+        assert_samples_close(&mut output, &[10.0_f64.powf(-9.0 / 20.0)]);
         let (mut next, _) = prepare(8, 0.1);
         let new_compressor = next.bindings.node(compressor).unwrap();
         // Candidate automation acts on the transferred envelope at activation.
@@ -736,7 +613,7 @@ fn compressor_envelope_survives_plan_swap_and_keeps_releasing_in_both_precisions
                 0.1 * 10.0_f64.powf((6.0 - reduction) / 20.0)
             })
             .collect();
-        samples(&mut output, &expected);
+        assert_samples_close(&mut output, &expected);
         assert_eq!(
             next.control.poll_applied().unwrap().code,
             ReplyCode::Applied
@@ -753,11 +630,10 @@ fn reusing_a_registry_in_a_new_engine_does_not_make_an_old_snapshot_current() {
         control::parameter_channel,
         runtime::*,
     };
-    let config = EngineConfig {
-        processing_sr: 48000.0,
-        max_block_frames: 8,
-        max_events_per_block: 8,
-    };
+    // The replacement plan reuses the live registry against a re-ordered
+    // parameter table, so it is prepared by hand rather than via
+    // `common::test_engine` (which always builds fresh resources).
+    let config = common::engine_config();
     let original = gain_engine(config, 7, 3, 0.0);
     let obsolete = original.plan_snapshot();
     let resources = original.into_parts().resources;
@@ -924,11 +800,7 @@ fn in_place_compressor_automation_renders_without_rt_allocations_in_both_precisi
             operations,
             &resources,
             &parameters,
-            EngineConfig {
-                processing_sr: 48000.0,
-                max_block_frames: 8,
-                max_events_per_block: 8,
-            },
+            common::engine_config(),
         )
         .unwrap();
         let mut engine = Engine::new(plan, resources, parameters).unwrap();
@@ -939,7 +811,7 @@ fn in_place_compressor_automation_renders_without_rt_allocations_in_both_precisi
             .into_iter()
             .map(|db| 10.0_f64.powf(db / 20.0))
             .collect();
-        samples(&mut output, &expected);
+        assert_samples_close(&mut output, &expected);
     }
     check::<f32>();
     check::<f64>();

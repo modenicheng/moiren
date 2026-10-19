@@ -79,7 +79,7 @@ fn automated<S: ProcessingSample>() {
         .into_iter()
         .enumerate()
     {
-        assert_samples(
+        assert_samples_close(
             &samples[frame * 4..(frame + 1) * 4],
             &[10.0_f64.powf(gain_db / 20.0); 4],
         );

@@ -50,14 +50,14 @@ fn gain_modes<S: ProcessingSample>() {
             })
             .unwrap();
         if in_place {
-            assert_samples(
+            assert_samples_exact(
                 &mut arena,
                 0,
                 &[&[1.0, 4.0, 6.0, 8.0], &[-1.0, -4.0, -6.0, -8.0]],
             );
         } else {
-            assert_samples(&mut arena, 0, original);
-            assert_samples(
+            assert_samples_exact(&mut arena, 0, original);
+            assert_samples_exact(
                 &mut arena,
                 1,
                 &[&[-9.0, 4.0, 6.0, 8.0], &[-9.0, -4.0, -6.0, -8.0]],

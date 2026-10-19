@@ -316,12 +316,28 @@ pub fn wait(observer: &EngineObserver, predicate: impl Fn(&HostSnapshot) -> bool
         thread::sleep(Duration::from_millis(2));
     }
 }
-pub fn wait_count(counter: &AtomicUsize, expected: usize) {
-    let deadline = Instant::now() + TIMEOUT;
-    while counter.load(Ordering::SeqCst) < expected {
-        assert!(Instant::now() < deadline);
+
+/// Polls `poll` every 2 ms until it yields a value, then returns it.
+///
+/// This is the generic deadline loop behind the [`wait`] family, shared by
+/// host-side progress that has no dedicated helper (managed subscriptions,
+/// write gates, coordinator queues). Panics with `what` once `timeout`
+/// (normally [`TIMEOUT`]) elapses.
+pub fn wait_until<T>(what: &str, timeout: Duration, mut poll: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(value) = poll() {
+            return value;
+        }
+        assert!(Instant::now() < deadline, "{what}");
         thread::sleep(Duration::from_millis(2));
     }
+}
+
+pub fn wait_count(counter: &AtomicUsize, expected: usize) {
+    wait_until("counter did not reach the expected count", TIMEOUT, || {
+        (counter.load(Ordering::SeqCst) >= expected).then_some(())
+    });
 }
 pub fn wait_sample(state: &State, expected: f64) {
     let deadline = Instant::now() + TIMEOUT;
@@ -336,16 +352,8 @@ pub fn wait_sample(state: &State, expected: f64) {
 }
 
 pub fn wait_parameter_consumed(receipt: &ParameterReceipt) -> ParameterOutcome {
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
+    wait_until("parameter command remained queued", TIMEOUT, || {
         let outcome = receipt.outcome();
-        if outcome != ParameterOutcome::Queued {
-            return outcome;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "parameter command remained queued"
-        );
-        thread::sleep(Duration::from_millis(2));
-    }
+        (outcome != ParameterOutcome::Queued).then_some(outcome)
+    })
 }

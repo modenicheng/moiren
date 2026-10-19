@@ -69,7 +69,7 @@ fn example_ramp<S: ProcessingSample>() {
             .transferred_frames,
         8
     );
-    assert_samples(
+    assert_samples_close(
         &samples,
         &[
             0.375, 0.0, 0.375, 0.0, 0.375, 0.1875, 0.375, 0.375, 0.1875, 0.375, 0.0, 0.375, 0.0,

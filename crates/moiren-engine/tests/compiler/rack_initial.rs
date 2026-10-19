@@ -35,5 +35,5 @@ fn rack_parameter_initial_is_rendered_before_control_events() {
     compiled.engine.render(2).unwrap();
     let mut samples = [0.0; 2];
     reader.read_interleaved(&mut samples).unwrap();
-    assert_samples(&samples, &[0.09375, 0.09375]);
+    assert_samples_close(&samples, &[0.09375, 0.09375]);
 }

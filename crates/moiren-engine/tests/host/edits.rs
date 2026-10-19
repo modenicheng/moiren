@@ -248,20 +248,15 @@ fn edits_typed_receipt_clone_shares_capacity_and_survives_owner_close() {
     assert!(matches!(control.edit(|_| Ok(())), Err(HostError::Capacity)));
     drop(retained);
     // The coordinator may still own its receipt after waking the waiting caller.
-    let deadline = std::time::Instant::now() + TIMEOUT;
-    let next = loop {
-        match control.edit_with_result(|_| Ok(789)) {
-            Ok(receipt) => break receipt,
-            Err(HostError::Capacity) => {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "coordinator did not release the completed receipt"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
+    let next = wait_until(
+        "coordinator did not release the completed receipt",
+        TIMEOUT,
+        || match control.edit_with_result(|_| Ok(789)) {
+            Ok(receipt) => Some(receipt),
+            Err(HostError::Capacity) => None,
             Err(error) => panic!("next edit failed: {error}"),
-        }
-    };
+        },
+    );
     assert!(matches!(next.wait(TIMEOUT), EditOutcome::Activated { .. }));
     drop(host);
     assert_eq!(next.result(), Some(789));

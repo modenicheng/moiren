@@ -290,7 +290,7 @@ fn edge_gain_and_pan_ramps_cross_blocks_and_nonstereo_pan_updates_are_rejected()
                 })
             })
             .collect::<Vec<_>>();
-        assert_samples(&samples, &expected);
+        assert_samples_close(&samples, &expected);
     }
 }
 

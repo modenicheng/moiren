@@ -8,10 +8,7 @@ use moiren_engine::{
     recorder::RecorderSettings,
     spectrum::SpectrumSettings,
 };
-use std::{
-    sync::atomic::Ordering,
-    time::{Duration, Instant},
-};
+use std::{sync::atomic::Ordering, time::Duration};
 
 fn spectrum_project() -> (EngineProject, moiren_core::graph::NodeId) {
     let (mut project, input, gain, output) = project();
@@ -44,25 +41,23 @@ fn spectrum_project() -> (EngineProject, moiren_core::graph::NodeId) {
 }
 
 fn wait_spectrum(subscription: &mut ManagedSpectrumSubscription, fft_size: usize) {
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        if let Some(block) = subscription.subscriber.read_latest() {
-            assert_eq!(block.header().fft_size, fft_size);
-            assert_eq!(block.header().channels, 1);
-            assert_eq!(block.elements().len(), fft_size / 2 + 1);
-            return;
-        }
-        assert!(Instant::now() < deadline, "spectrum did not publish");
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    wait_until("spectrum did not publish", TIMEOUT, || {
+        let block = subscription.subscriber.read_latest()?;
+        assert_eq!(block.header().fft_size, fft_size);
+        assert_eq!(block.header().channels, 1);
+        assert_eq!(block.elements().len(), fft_size / 2 + 1);
+        Some(())
+    });
 }
 
 fn wait_level(subscription: &mut ManagedLevelSubscription, channels: usize, peak: f32) {
     // A 1536-frame window needs 192 fake 8-frame callbacks. Windows may round
     // each 1 ms callback wait to a timer tick, exceeding the ordinary 3 s bound.
-    let deadline = Instant::now() + TIMEOUT.max(Duration::from_secs(10));
-    loop {
-        if let Some(block) = subscription.subscriber.read_latest() {
+    wait_until(
+        "level did not publish",
+        TIMEOUT.max(Duration::from_secs(10)),
+        || {
+            let block = subscription.subscriber.read_latest()?;
             assert_eq!(block.elements().len(), channels);
             assert!(
                 block
@@ -70,11 +65,9 @@ fn wait_level(subscription: &mut ManagedLevelSubscription, channels: usize, peak
                     .iter()
                     .all(|level| (level.peak - peak).abs() < 1e-5)
             );
-            return;
-        }
-        assert!(Instant::now() < deadline, "level did not publish");
-        std::thread::sleep(Duration::from_millis(2));
-    }
+            Some(())
+        },
+    );
 }
 
 #[test]
@@ -457,14 +450,9 @@ fn signals_attach_automatically_and_retained_subscriber_does_not_hold_owner_aliv
     });
     let mut subscription = observer.subscribe_compressor(compressor).unwrap();
     assert_eq!(subscription.owner_generation, snapshot.owner_generation);
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        if subscription.subscriber.read_latest().is_some() {
-            break;
-        }
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_until("compressor measurement did not publish", TIMEOUT, || {
+        subscription.subscriber.read_latest().map(|_| ())
+    });
     drop(host);
     assert_eq!(observer.snapshot().host, HostState::Closed);
     assert_eq!(
@@ -538,15 +526,10 @@ fn managed_measurements_keep_readers_and_publish_typed_spectrum_blocks() {
         snapshot.owner_generation
     );
 
-    let deadline = Instant::now() + TIMEOUT;
     let mut meter_snapshot = None;
     let mut level_seen = false;
     let mut spectrum_seen = false;
-    while meter_snapshot.is_none()
-        || !level_seen
-        || !spectrum_seen
-        || recorder_reader.queued_frames() == Some(0)
-    {
+    wait_until("managed measurements did not publish", TIMEOUT, || {
         meter_snapshot = meter_reader.latest().or(meter_snapshot);
         if let Some(block) = level.subscriber.read_latest() {
             assert_eq!(block.header().frame_end - block.header().frame_start, 4);
@@ -556,9 +539,12 @@ fn managed_measurements_keep_readers_and_publish_typed_spectrum_blocks() {
             assert_eq!(block.header().fft_size, 16);
             spectrum_seen = true;
         }
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(2));
-    }
+        (meter_snapshot.is_some()
+            && level_seen
+            && spectrum_seen
+            && recorder_reader.queued_frames() != Some(0))
+        .then_some(())
+    });
     assert_eq!(meter_snapshot.unwrap().samples, 4);
     assert!(
         recorder_reader

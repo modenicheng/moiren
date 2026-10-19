@@ -105,5 +105,5 @@ fn observer_requires_read_only_io_and_delegates_input_validation_and_audio() {
     );
     assert_eq!(snapshot.peak, 4.0);
     assert_eq!(snapshot.rms, 7.5_f64.sqrt());
-    assert_samples(&mut arena, 0, &[&[1.0, -2.0, 3.0, -4.0]]);
+    assert_samples_exact(&mut arena, 0, &[&[1.0, -2.0, 3.0, -4.0]]);
 }

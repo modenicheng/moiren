@@ -57,6 +57,8 @@ impl Seek for SharedWriter {
     }
 }
 
+// Recording-specific sibling of `support::wait_until`, kept local so the
+// failure message can report the session status.
 fn wait_recording(session: &RecordingSession, predicate: impl Fn(&RecordingSession) -> bool) {
     let deadline = Instant::now() + TIMEOUT;
     while !predicate(session) {
@@ -526,11 +528,11 @@ fn blocked_file_io_does_not_hold_reader_or_hub_locks_or_block_host_close() {
         .unwrap();
     // On test failure release the writer before Session's stop+join Drop runs.
     let release = ReleaseGate(gate.clone());
-    let deadline = Instant::now() + TIMEOUT;
-    while !gate.entered.load(Ordering::SeqCst) {
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    wait_until(
+        "blocked writer did not enter the write gate",
+        TIMEOUT,
+        || gate.entered.load(Ordering::SeqCst).then_some(()),
+    );
     assert_eq!(reader.stats(), None);
     assert!(observer.recorder_reader(recorder).is_ok());
     let edit = host
@@ -580,11 +582,11 @@ fn old_lease_cannot_overwrite_replacement_endpoint_while_its_writer_is_blocked()
             )
             .unwrap();
         let release = ReleaseGate(gate.clone());
-        let deadline = Instant::now() + TIMEOUT;
-        while !gate.entered.load(Ordering::SeqCst) {
-            assert!(Instant::now() < deadline);
-            std::thread::yield_now();
-        }
+        wait_until(
+            "blocked writer did not enter the write gate",
+            TIMEOUT,
+            || gate.entered.load(Ordering::SeqCst).then_some(()),
+        );
         let edit = host
             .control()
             .edit(move |project| {

@@ -53,9 +53,9 @@ pub(super) fn request(id: u64, at: ApplyAt, value: f64, ramp_frames: u32) -> Par
 }
 pub(super) fn config(events: usize) -> EngineConfig {
     EngineConfig {
-        processing_sr: 48000.0,
         max_block_frames: 16,
         max_events_per_block: events,
+        ..super::common::engine_config()
     }
 }
 pub(super) fn pipeline(

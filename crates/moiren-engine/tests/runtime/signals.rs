@@ -1,10 +1,8 @@
 use super::allocation::track_allocations;
-use moiren_core::graph::{LogicalGraph, NodeKind, SendParams};
+use super::common;
+use moiren_core::graph::{LogicalGraph, NodeKind};
 use moiren_core::protocol::ProcessorId;
-use moiren_engine::runtime::{
-    Engine, ExecutionPlan, OpSpec, PlanSwapError, PreparedPlan, ProcessorInstance, ProcessorReuse,
-    RtResources,
-};
+use moiren_engine::runtime::{Engine, PlanSwapError, PreparedPlan, ProcessorReuse};
 use moiren_engine::{
     boundary::{AudioReader, ConstantSource, audio_bridge},
     buffer::{IoMode, PreparedIo, ProcessIo, ReadPorts},
@@ -16,7 +14,7 @@ use moiren_engine::{
 };
 use moiren_signal::{
     ActivateError, BlockInit, Bus, ErasedBinding, HostControl, LatestBlock, LatestValue,
-    PreparedPublisher, PublishError, PublisherHandle, PumpBudget, StreamValue, Topic,
+    PreparedPublisher, PublishError, PublisherHandle, StreamValue, Topic,
 };
 
 fn c3_render(engine: &mut Engine<f64>, frames: usize) {
@@ -56,50 +54,16 @@ fn source_engine(
     id: u64,
     source: impl RtProcessor<f64> + 'static,
 ) -> Engine<f64> {
-    use moiren_engine::{
-        buffer::{BufferArena, BufferSlotLayout, PortAccess},
-        control::parameter_channel,
-    };
-    let resources =
-        RtResources::new(vec![ProcessorInstance::new(ProcessorId(id), source)]).unwrap();
-    let (_, parameters) = parameter_channel(vec![], revision, 3, 16, 1024).unwrap();
-    let arena = BufferArena::new(
-        &[BufferSlotLayout {
-            channels: 1,
-            capacity_frames: 16,
-        }],
-        4096,
+    common::test_engine(
+        (ProcessorId(id), source),
+        vec![],
+        revision,
+        3,
+        16,
+        super::support::config(16),
+        common::TestIo::SourceWrite,
+        host,
     )
-    .unwrap();
-    let io = arena
-        .prepare_io(&[PortAccess::Write {
-            port: 0,
-            slot: arena.slot(0).unwrap(),
-        }])
-        .unwrap();
-    let specs = vec![OpSpec {
-        processor: ProcessorId(id),
-        io,
-    }];
-    let plan = match host {
-        Some(host) => ExecutionPlan::prepare_with_signals(
-            arena,
-            specs,
-            &resources,
-            &parameters,
-            config(revision).engine,
-            host,
-        ),
-        None => ExecutionPlan::prepare(
-            arena,
-            specs,
-            &resources,
-            &parameters,
-            config(revision).engine,
-        ),
-    }
-    .unwrap();
-    Engine::new(plan, resources, parameters).unwrap()
 }
 
 #[test]
@@ -115,7 +79,7 @@ fn c3_replacement_preserves_latest_and_queued_stream_without_resubscribing() {
     engine.attach_signal_host(host).unwrap();
     let mut plans = engine.enable_plan_switching(4).unwrap();
     c3_render(&mut engine, 1);
-    pump(&mut bus);
+    common::pump(&mut bus);
     let before = witness.read_latest().unwrap();
     assert_eq!(before.value, 1);
     let generation = before.meta.activation_generation;
@@ -129,7 +93,7 @@ fn c3_replacement_preserves_latest_and_queued_stream_without_resubscribing() {
         .publish(PreparedPlan::new(swap_source(&control, &latest, &stream, 2, 20, false)).unwrap())
         .unwrap();
     c3_render(&mut engine, 1);
-    pump(&mut bus);
+    common::pump(&mut bus);
     let unchanged = latest_reader.read_latest().unwrap();
     assert_eq!(unchanged.value, 3);
     assert_eq!(unchanged.meta.sequence, 3);
@@ -139,7 +103,7 @@ fn c3_replacement_preserves_latest_and_queued_stream_without_resubscribing() {
         .publish(PreparedPlan::new(swap_source(&control, &latest, &stream, 3, 30, true)).unwrap())
         .unwrap();
     c3_render(&mut engine, 1);
-    pump(&mut bus);
+    common::pump(&mut bus);
     let after = latest_reader.read_latest().unwrap();
     assert_eq!(after.value, 1);
     assert_eq!(after.meta.sequence, 4);
@@ -177,7 +141,7 @@ fn c3_reused_processor_publishes_with_its_retained_handle() {
         .unwrap();
     plans.publish(candidate).unwrap();
     c3_render(&mut engine, 1);
-    pump(&mut bus);
+    common::pump(&mut bus);
     let read = reader.read_latest().unwrap();
     assert_eq!((read.value, read.meta.sequence), (2, 2));
     assert_eq!(engine.revision(), 2);
@@ -213,7 +177,7 @@ fn c3_replacing_reuse_mappings_restores_disposable_processor_bindings() {
         .unwrap();
     plans.publish(candidate).unwrap();
     c3_render(&mut engine, 1);
-    pump(&mut bus);
+    common::pump(&mut bus);
     let read = reader.read_latest().unwrap();
     assert_eq!((read.value, read.meta.sequence), (1, 2));
 }
@@ -286,48 +250,27 @@ fn meter_engine(
     id: u64,
     publish: bool,
 ) -> (Engine<f64>, PublisherHandle<LatestBlock<MeterHeader, f32>>) {
-    use moiren_engine::buffer::{BufferArena, BufferSlotLayout, PortAccess};
-    use moiren_engine::control::parameter_channel;
     let publisher = host.prepare(topic, host.new_binding().unwrap()).unwrap();
     let handle = publisher.handle();
     let bindings = publisher.erase();
-    let resources = RtResources::new(vec![ProcessorInstance::new(
-        ProcessorId(id),
-        MeterPublisher {
-            publisher: handle,
-            binding: bindings,
-            publish,
-        },
-    )])
-    .unwrap();
-    let (_, parameters) = parameter_channel(vec![], revision, 3, 16, 1024).unwrap();
-    let arena = BufferArena::new(
-        &[BufferSlotLayout {
-            channels: 1,
-            capacity_frames: 16,
-        }],
-        4096,
-    )
-    .unwrap();
-    let io = arena
-        .prepare_io(&[PortAccess::Write {
-            port: 0,
-            slot: arena.slot(0).unwrap(),
-        }])
-        .unwrap();
-    let plan = ExecutionPlan::prepare_with_signals(
-        arena,
-        vec![OpSpec {
-            processor: ProcessorId(id),
-            io,
-        }],
-        &resources,
-        &parameters,
-        config(revision).engine,
-        host,
-    )
-    .unwrap();
-    (Engine::new(plan, resources, parameters).unwrap(), handle)
+    let engine = common::test_engine(
+        (
+            ProcessorId(id),
+            MeterPublisher {
+                publisher: handle,
+                binding: bindings,
+                publish,
+            },
+        ),
+        vec![],
+        revision,
+        3,
+        16,
+        super::support::config(16),
+        common::TestIo::SourceWrite,
+        Some(host),
+    );
+    (engine, handle)
 }
 
 #[test]
@@ -353,7 +296,7 @@ fn c3_latest_block_header_payload_and_length_survive_real_engine_swap() {
     let (mut engine, _) = meter_engine(&control, &topic, 1, 10, true);
     engine.attach_signal_host(host).unwrap();
     c3_render(&mut engine, 1);
-    pump(&mut bus);
+    common::pump(&mut bus);
     let first = witness.read_latest().unwrap();
     assert_eq!(
         *first.header(),
@@ -376,7 +319,7 @@ fn c3_latest_block_header_payload_and_length_survive_real_engine_swap() {
     assert_eq!(first.elements().as_ptr(), retained_address);
     assert_eq!(first.elements(), &[0.25, 0.5, 0.75]);
     assert_eq!(first.meta(), first_meta);
-    pump(&mut bus);
+    common::pump(&mut bus);
     let retained = reader.read_latest().unwrap();
     assert_eq!(
         *retained.header(),
@@ -394,7 +337,7 @@ fn c3_latest_block_header_payload_and_length_survive_real_engine_swap() {
         .publish(PreparedPlan::new(meter_engine(&control, &topic, 3, 30, true).0).unwrap())
         .unwrap();
     c3_render(&mut engine, 1);
-    pump(&mut bus);
+    common::pump(&mut bus);
     let next = reader.read_latest().unwrap();
     assert_eq!(
         *next.header(),
@@ -534,7 +477,7 @@ fn c3_cancel_retire_full_and_snapshot_leases_keep_current_bindings() {
     plans.publish(candidate).unwrap();
     c3_render(&mut engine, 1);
     assert_eq!(engine.revision(), 1);
-    pump(&mut bus);
+    common::pump(&mut bus);
     assert_eq!(reader.read_latest().unwrap().value, 2);
     let retired = plans.poll_retired().unwrap();
     assert_eq!(
@@ -549,7 +492,7 @@ fn c3_cancel_retire_full_and_snapshot_leases_keep_current_bindings() {
     bus.unregister(&new_stream).unwrap();
     c3_render(&mut engine, 1);
     assert_eq!(engine.revision(), 3);
-    pump(&mut bus);
+    common::pump(&mut bus);
     let read = reader.read_latest().unwrap();
     assert_eq!((read.value, read.meta.sequence), (1, 3));
 }
@@ -618,7 +561,7 @@ fn c3_stale_signal_update_and_stale_reuse_basis_retire_without_changing_audio() 
         plans.poll_retired().unwrap().outcome(),
         RetireOutcome::Rejected(PlanSwapError::StaleBasis)
     );
-    pump(&mut bus);
+    common::pump(&mut bus);
     assert_eq!(reader.read_latest().unwrap().value, 3);
     let mut original_audio = [0.0; 3];
     assert_eq!(
@@ -656,7 +599,7 @@ fn c3_prepared_new_topics_activate_without_heap_work_and_old_leases_retire() {
     assert_eq!(latest.status().publisher, PublisherStatus::NoPublisher);
     assert_eq!(new_latest.status().publisher, PublisherStatus::Bound);
     assert_eq!(bus.unregister(&latest), Err(UnregisterError::Busy));
-    pump(&mut bus);
+    common::pump(&mut bus);
     let read = reader.read_latest().unwrap();
     assert_eq!(
         (
@@ -1046,7 +989,7 @@ fn reserved_source_keeps_signal_publisher_and_dsp_state_on_audio_owner_thread() 
     });
     let engine = worker.join().unwrap();
     assert_eq!(engine.revision(), 2);
-    pump(&mut bus);
+    common::pump(&mut bus);
     let value = reader.read_latest().unwrap();
     assert_eq!((value.value, value.meta.sequence), (2, 2));
     drop(plans.poll_retired().unwrap());
@@ -1103,11 +1046,8 @@ impl RtProcessor<f64> for SignalSource {
 fn config(revision: u64) -> CompileConfig {
     CompileConfig {
         engine: super::support::config(16),
-        audio_byte_budget: 4096,
-        plan_revision: revision,
-        timeline_epoch: 3,
         control_capacity: 16,
-        control_horizon_frames: 1024,
+        ..common::compile_config(revision)
     }
 }
 
@@ -1124,13 +1064,7 @@ fn pipeline(
     let mut graph = LogicalGraph::new();
     let source = graph.create_node(NodeKind::Source, 1).unwrap();
     let sink = graph.create_node(NodeKind::Sink, 1).unwrap();
-    graph
-        .connect(
-            graph.get_node(source).unwrap().outputs()[0].id(),
-            graph.get_node(sink).unwrap().inputs()[0].id(),
-            SendParams::default(),
-        )
-        .unwrap();
+    common::connect(&mut graph, source, sink);
     let mut bindings = NodeBindings::new();
     bindings
         .bind_io(
@@ -1152,14 +1086,6 @@ fn pipeline(
     )
 }
 
-fn pump(bus: &mut Bus) {
-    bus.pump(PumpBudget {
-        topic_checks: 1024,
-        deliveries: 128,
-        copy_bytes: 65536,
-    });
-}
-
 #[test]
 fn signal_publication_renders_with_zero_heap_work_and_no_demand_still_runs_dsp() {
     let mut bus = Bus::new(Default::default()).unwrap();
@@ -1176,7 +1102,7 @@ fn signal_publication_renders_with_zero_heap_work_and_no_demand_still_runs_dsp()
     let (report, counts) = track_allocations(|| graph.engine.render(4).unwrap());
     assert_eq!(counts, (0, 0));
     assert_eq!(report.segments, 1);
-    pump(&mut bus);
+    common::pump(&mut bus);
     assert_eq!(latest_reader.read_latest().unwrap().value, 1);
     assert_eq!(stream_reader.next().unwrap().value, 1);
     drop((latest_reader, stream_reader));
@@ -1269,7 +1195,7 @@ fn independent_observers_with_one_key_are_scoped_and_empty_permissions_are_inact
     let second = control.prepare(&second, key).unwrap();
     let mut graph = LogicalGraph::new();
     let source = graph.create_node(NodeKind::Source, 1).unwrap();
-    let port = graph.get_node(source).unwrap().outputs()[0].id();
+    let port = common::output(&graph, source);
     let mut bindings = NodeBindings::new();
     bindings
         .bind_source(
@@ -1348,15 +1274,8 @@ fn meter_and_compressor_demand_transitions_keep_full_dsp_and_zero_heap_work() {
     let source = graph.create_node(NodeKind::Source, 2).unwrap();
     let compressor = graph.create_node(NodeKind::Compressor, 2).unwrap();
     let sink = graph.create_node(NodeKind::Sink, 2).unwrap();
-    for (from, to) in [(source, compressor), (compressor, sink)] {
-        graph
-            .connect(
-                graph.get_node(from).unwrap().outputs()[0].id(),
-                graph.get_node(to).unwrap().inputs()[0].id(),
-                SendParams::default(),
-            )
-            .unwrap();
-    }
+    common::connect(&mut graph, source, compressor);
+    common::connect(&mut graph, compressor, sink);
     let mut bindings = NodeBindings::new();
     bindings
         .bind_source(
@@ -1383,7 +1302,7 @@ fn meter_and_compressor_demand_transitions_keep_full_dsp_and_zero_heap_work() {
         .unwrap();
     bindings
         .observe_output(
-            graph.get_node(compressor).unwrap().outputs()[0].id(),
+            common::output(&graph, compressor),
             SignalLevelMeter::new(
                 2,
                 4,
@@ -1408,7 +1327,7 @@ fn meter_and_compressor_demand_transitions_keep_full_dsp_and_zero_heap_work() {
     let mut reduction_reader = bus.subscribe(&reduction, Default::default()).unwrap();
     let (_, counts) = track_allocations(|| compiled.engine.render(2).unwrap());
     assert_eq!(counts, (0, 0));
-    pump(&mut bus);
+    common::pump(&mut bus);
     assert_eq!(reduction_reader.read_latest().unwrap().value, 9.0);
     assert_eq!(levels.stats().attempts, 0);
     drop((level_reader, reduction_reader));
@@ -1420,12 +1339,12 @@ fn meter_and_compressor_demand_transitions_keep_full_dsp_and_zero_heap_work() {
     let mut reduction_reader = bus.subscribe(&reduction, Default::default()).unwrap();
     let (_, counts) = track_allocations(|| compiled.engine.render(2).unwrap());
     assert_eq!(counts, (0, 0));
-    pump(&mut bus);
+    common::pump(&mut bus);
     assert!(level_reader.read_latest().is_none());
     assert_eq!(reduction_reader.read_latest().unwrap().value, 9.0);
     let (_, counts) = track_allocations(|| compiled.engine.render(2).unwrap());
     assert_eq!(counts, (0, 0));
-    pump(&mut bus);
+    common::pump(&mut bus);
     let read = level_reader.read_latest().unwrap();
     assert_eq!(
         *read.header(),

@@ -1,56 +1,21 @@
 use super::allocation::track_allocations;
+use super::common::{self, assert_samples_exact, connect};
 use moiren_core::{graph::*, protocol::*};
 use moiren_engine::{
-    boundary::{AudioReader, BoundaryReport, RtAudioSource, audio_bridge},
-    buffer::AudioBlockMut,
+    boundary::{AudioReader, audio_bridge},
     compiler::{
         CompileConfig, CompiledGraph, NodeBindings, UpdateReuse, compile, compile_update,
         compile_update_with_reuse,
     },
-    processor::{Gain, ProcessContext},
-    runtime::{EngineConfig, PlanSwapError, PreparedPlan, RetireOutcome},
+    processor::Gain,
+    runtime::{PlanSwapError, PreparedPlan, RetireOutcome},
 };
-
-struct Counter(f64);
-impl RtAudioSource<f64> for Counter {
-    fn channel_count(&self) -> usize {
-        1
-    }
-    fn read(&mut self, ctx: &ProcessContext, mut output: AudioBlockMut<'_, f64>) -> BoundaryReport {
-        for value in output.channel_mut(0) {
-            *value = self.0;
-            self.0 += 1.0;
-        }
-        BoundaryReport {
-            transferred_frames: ctx.frames,
-            ..Default::default()
-        }
-    }
-}
 
 fn config(revision: u64) -> CompileConfig {
     CompileConfig {
-        engine: EngineConfig {
-            processing_sr: 48_000.0,
-            max_block_frames: 8,
-            max_events_per_block: 8,
-        },
-        audio_byte_budget: 4096,
-        plan_revision: revision,
         timeline_epoch: 17,
-        control_capacity: 8,
-        control_horizon_frames: 1024,
+        ..common::compile_config(revision)
     }
-}
-
-fn connect(graph: &mut LogicalGraph, source: NodeId, sink: NodeId) -> EdgeId {
-    graph
-        .connect(
-            graph.get_node(source).unwrap().outputs()[0].id(),
-            graph.get_node(sink).unwrap().inputs()[0].id(),
-            SendParams::default(),
-        )
-        .unwrap()
 }
 
 fn initial() -> (
@@ -65,32 +30,22 @@ fn initial() -> (
     let sink = graph.create_node(NodeKind::Sink, 1).unwrap();
     connect(&mut graph, source, gain);
     connect(&mut graph, gain, sink);
-    let (writer, reader) = audio_bridge(1, 32, 4096).unwrap();
+    let (writer, reader) = audio_bridge::<f64>(1, 32, 4096).unwrap();
     let mut bindings = NodeBindings::new();
-    bindings.bind_source(source, Counter(1.0)).unwrap();
+    bindings
+        .bind_source(source, common::CountingSource { next: 1.0 })
+        .unwrap();
     bindings.bind_gain(gain, 1.0).unwrap();
     bindings.bind_sink(sink, writer).unwrap();
     let compiled = compile(&graph, bindings, config(1)).unwrap();
     (graph, [source, gain, sink], compiled, reader)
 }
 
-fn samples(reader: &mut AudioReader<f64>, expected: &[f64]) {
-    let mut actual = vec![0.0; expected.len()];
-    assert_eq!(
-        reader
-            .read_interleaved(&mut actual)
-            .unwrap()
-            .transferred_frames,
-        expected.len()
-    );
-    assert_eq!(actual, expected);
-}
-
 #[test]
 fn changed_prepared_value_overrides_reused_parameter_on_first_block_without_resetting_source() {
     let (graph, [source, gain, sink], mut active, mut output) = initial();
     active.engine.render(2).unwrap();
-    samples(&mut output, &[1.0, 2.0]);
+    assert_samples_exact(&mut output, &[1.0, 2.0]);
     let basis = active.engine.plan_snapshot();
     let mut plans = active.engine.enable_plan_switching(1).unwrap();
     let mut bindings = NodeBindings::new();
@@ -105,7 +60,7 @@ fn changed_prepared_value_overrides_reused_parameter_on_first_block_without_rese
     let (result, heap) = super::allocation::track_heap(|| active.engine.render(2));
     result.unwrap();
     assert_eq!(heap, (0, 0, 0));
-    samples(&mut output, &[0.75, 1.0]);
+    assert_samples_exact(&mut output, &[0.75, 1.0]);
     assert!(matches!(
         plans.poll_retired().unwrap().outcome(),
         RetireOutcome::Replaced { .. }
@@ -137,9 +92,11 @@ fn rack_delay_history_survives_processor_id_migration_without_rt_heap_work() {
         }],
         ..Default::default()
     };
-    let (writer, mut output) = audio_bridge(1, 32, 4096).unwrap();
+    let (writer, mut output) = audio_bridge::<f64>(1, 32, 4096).unwrap();
     let mut bindings = NodeBindings::new();
-    bindings.bind_source(source, Counter(1.0)).unwrap();
+    bindings
+        .bind_source(source, common::CountingSource { next: 1.0 })
+        .unwrap();
     bindings.bind_rack(rack, settings.clone()).unwrap();
     bindings.bind_sink(sink, writer).unwrap();
     let mut active = compile(&graph, bindings, config(1)).unwrap();
@@ -147,7 +104,7 @@ fn rack_delay_history_survives_processor_id_migration_without_rt_heap_work() {
     let (result, heap) = super::allocation::track_heap(|| active.engine.render(2));
     result.unwrap();
     assert_eq!(heap, (0, 0, 0));
-    samples(&mut output, &[0.0, 0.0]);
+    assert_samples_exact(&mut output, &[0.0, 0.0]);
 
     graph.disconnect(upstream).unwrap();
     let added = graph.create_node(NodeKind::Gain, 1).unwrap();
@@ -178,7 +135,7 @@ fn rack_delay_history_survives_processor_id_migration_without_rt_heap_work() {
     let (result, heap) = super::allocation::track_heap(|| active.engine.render(2));
     result.unwrap();
     assert_eq!(heap, (0, 0, 0));
-    samples(&mut output, &[0.0, 0.0]);
+    assert_samples_exact(&mut output, &[0.0, 0.0]);
     assert!(matches!(
         plans.poll_retired().unwrap().outcome(),
         RetireOutcome::Replaced {
@@ -189,7 +146,7 @@ fn rack_delay_history_survives_processor_id_migration_without_rt_heap_work() {
     let (result, heap) = super::allocation::track_heap(|| active.engine.render(2));
     result.unwrap();
     assert_eq!(heap, (0, 0, 0));
-    samples(&mut output, &[1.0, 2.0]);
+    assert_samples_exact(&mut output, &[1.0, 2.0]);
 }
 
 #[test]
@@ -204,9 +161,11 @@ fn observer_reuse_preserves_meter_window_and_recorder_queue_without_rt_heap_work
     connect(&mut graph, source, meter);
     connect(&mut graph, meter, recorder);
     connect(&mut graph, recorder, sink);
-    let (writer, _output) = audio_bridge(1, 32, 4096).unwrap();
+    let (writer, _output) = audio_bridge::<f64>(1, 32, 4096).unwrap();
     let mut bindings = NodeBindings::new();
-    bindings.bind_source(source, Counter(1.0)).unwrap();
+    bindings
+        .bind_source(source, common::CountingSource { next: 1.0 })
+        .unwrap();
     bindings.bind_sink(sink, writer).unwrap();
     let settings = MeterSettings { window_frames: 4 };
     let mut meter_reader = bindings.bind_meter(meter, settings).unwrap();
@@ -268,7 +227,7 @@ fn update_reserves_live_io_and_preserves_source_sink_and_ramp_without_rt_heap_wo
         .require_sink_reuse(active.bindings.node(sink).unwrap())
         .unwrap();
     active.engine.render(2).unwrap();
-    samples(&mut output, &[1.0, 2.0]);
+    assert_samples_exact(&mut output, &[1.0, 2.0]);
     let reply = active.control.submit(
         ParameterRequest {
             request_id: 1,
@@ -286,7 +245,7 @@ fn update_reserves_live_io_and_preserves_source_sink_and_ramp_without_rt_heap_wo
     );
     assert_eq!(reply.code, ReplyCode::Accepted);
     active.engine.render(2).unwrap();
-    samples(&mut output, &[2.25, 2.0]);
+    assert_samples_exact(&mut output, &[2.25, 2.0]);
     let edge = graph
         .edges()
         .iter()
@@ -310,7 +269,7 @@ fn update_reserves_live_io_and_preserves_source_sink_and_ramp_without_rt_heap_wo
     let (rendered, allocations) = track_allocations(|| active.engine.render(2));
     assert_eq!(allocations, (0, 0));
     assert_eq!(rendered.unwrap().end, 6);
-    samples(&mut output, &[0.625, 0.0]);
+    assert_samples_exact(&mut output, &[0.625, 0.0]);
     assert_eq!(plans.active_revision(), 2);
     assert_eq!(
         plans.poll_retired().unwrap().outcome(),
@@ -339,7 +298,7 @@ fn update_reserves_live_io_and_preserves_source_sink_and_ramp_without_rt_heap_wo
     plans.publish(next.plan).unwrap();
     active.engine.render(2).unwrap();
     assert_eq!(plans.active_revision(), 3);
-    samples(&mut output, &[0.0, 0.0]);
+    assert_samples_exact(&mut output, &[0.0, 0.0]);
 }
 
 #[test]
@@ -350,9 +309,11 @@ fn protected_sink_rejects_an_arbitrary_replacement_output_bridge() {
         .engine
         .require_sink_reuse(active.bindings.node(sink).unwrap())
         .unwrap();
-    let (writer, mut foreign_output) = audio_bridge(1, 32, 4096).unwrap();
+    let (writer, mut foreign_output) = audio_bridge::<f64>(1, 32, 4096).unwrap();
     let mut bindings = NodeBindings::new();
-    bindings.bind_source(source, Counter(100.0)).unwrap();
+    bindings
+        .bind_source(source, common::CountingSource { next: 100.0 })
+        .unwrap();
     bindings.bind_gain(gain, 0.5).unwrap();
     bindings.bind_sink(sink, writer).unwrap();
     let candidate = compile(&graph, bindings, config(2)).unwrap();
@@ -366,7 +327,7 @@ fn protected_sink_rejects_an_arbitrary_replacement_output_bridge() {
         plans.poll_retired().unwrap().outcome(),
         RetireOutcome::Rejected(PlanSwapError::MissingReuse)
     );
-    samples(&mut output, &[1.0, 2.0]);
+    assert_samples_exact(&mut output, &[1.0, 2.0]);
     let mut unused = [0.0; 2];
     assert_eq!(
         foreign_output
@@ -429,7 +390,7 @@ fn unrelated_topology_update_preserves_an_active_send_ramp() {
         ReplyCode::Accepted
     );
     active.engine.render(2).unwrap();
-    samples(&mut output, &[0.875, 1.5]);
+    assert_samples_exact(&mut output, &[0.875, 1.5]);
     let removed = graph
         .edges()
         .iter()
@@ -463,16 +424,18 @@ fn unrelated_topology_update_preserves_an_active_send_ramp() {
     plans.publish(update.plan).unwrap();
     let (_, allocations) = track_allocations(|| active.engine.render(2).unwrap());
     assert_eq!(allocations, (0, 0));
-    samples(&mut output, &[1.875, 2.0]);
+    assert_samples_exact(&mut output, &[1.875, 2.0]);
 }
 
 #[test]
 fn stopped_owner_returns_pending_candidate_and_terminalizes_accepted_controls() {
     let (graph, [source, gain, sink], mut active, _) = initial();
     let mut plans = active.engine.enable_plan_switching(1).unwrap();
-    let (writer, _) = audio_bridge(1, 32, 4096).unwrap();
+    let (writer, _) = audio_bridge::<f64>(1, 32, 4096).unwrap();
     let mut bindings = NodeBindings::new();
-    bindings.bind_source(source, Counter(10.0)).unwrap();
+    bindings
+        .bind_source(source, common::CountingSource { next: 10.0 })
+        .unwrap();
     bindings.bind_gain(gain, 1.0).unwrap();
     bindings.bind_sink(sink, writer).unwrap();
     let mut candidate = compile(&graph, bindings, config(2)).unwrap();
@@ -621,11 +584,13 @@ fn protected_sink_rejects_foreign_output_after_slot_migration() {
     plans.publish(update.plan).unwrap();
     active.engine.render(1).unwrap();
     drop(plans.poll_retired().unwrap());
-    samples(&mut output, &[1.0]);
+    assert_samples_exact(&mut output, &[1.0]);
     let next_basis = active.engine.plan_snapshot();
-    let (writer, mut foreign_output) = audio_bridge(1, 32, 4096).unwrap();
+    let (writer, mut foreign_output) = audio_bridge::<f64>(1, 32, 4096).unwrap();
     let mut bindings = NodeBindings::new();
-    bindings.bind_source(source, Counter(100.0)).unwrap();
+    bindings
+        .bind_source(source, common::CountingSource { next: 100.0 })
+        .unwrap();
     bindings.bind_gain(gain, 1.0).unwrap();
     bindings.bind_gain(added, 1.0).unwrap();
     bindings.bind_sink(sink, writer).unwrap();
@@ -649,7 +614,7 @@ fn protected_sink_rejects_foreign_output_after_slot_migration() {
         plans.poll_retired().unwrap().outcome(),
         RetireOutcome::Rejected(PlanSwapError::MissingReuse)
     );
-    samples(&mut output, &[2.0]);
+    assert_samples_exact(&mut output, &[2.0]);
     let mut unused = [0.0];
     assert_eq!(
         foreign_output
@@ -694,7 +659,7 @@ fn reserved_input_reader_survives_owner_thread_swap_stale_basis_and_cancellation
     });
     commands.send(true).unwrap();
     assert_eq!(report_reader.recv().unwrap().1, (0, 0, 0));
-    samples(&mut output, &[1.0, 2.0]);
+    assert_samples_exact(&mut output, &[1.0, 2.0]);
     let reuse = [
         (source, compiled.bindings.node(source).unwrap()),
         (sink, compiled.bindings.node(sink).unwrap()),
@@ -707,7 +672,7 @@ fn reserved_input_reader_survives_owner_thread_swap_stale_basis_and_cancellation
     commands.send(true).unwrap();
     let (_, heap, next_basis) = report_reader.recv().unwrap();
     assert_eq!(heap, (0, 0, 0));
-    samples(&mut output, &[3.0, 4.0]);
+    assert_samples_exact(&mut output, &[3.0, 4.0]);
     drop(plans.poll_retired().unwrap());
     plans.publish(stale.plan).unwrap();
     commands.send(true).unwrap();
@@ -716,7 +681,7 @@ fn reserved_input_reader_survives_owner_thread_swap_stale_basis_and_cancellation
         plans.poll_retired().unwrap().outcome(),
         RetireOutcome::Rejected(PlanSwapError::StaleBasis)
     );
-    samples(&mut output, &[5.0, 6.0]);
+    assert_samples_exact(&mut output, &[5.0, 6.0]);
     let next_reuse = [
         (source, update.bindings.node(source).unwrap()),
         (sink, update.bindings.node(sink).unwrap()),
@@ -738,7 +703,7 @@ fn reserved_input_reader_survives_owner_thread_swap_stale_basis_and_cancellation
         plans.poll_retired().unwrap().outcome(),
         RetireOutcome::Rejected(PlanSwapError::Cancelled)
     );
-    samples(&mut output, &[7.0, 8.0]);
+    assert_samples_exact(&mut output, &[7.0, 8.0]);
     commands.send(false).unwrap();
     let engine = worker.join().unwrap();
     assert_eq!(engine.revision(), 2);
@@ -765,10 +730,12 @@ fn every_protected_sink_survives_partial_reuse_rejection_and_slot_migration_with
     let b = graph.create_node(NodeKind::Sink, 1).unwrap();
     let edge_a = connect(&mut graph, source, a);
     connect(&mut graph, source, b);
-    let (writer_a, mut output_a) = audio_bridge(1, 32, 4096).unwrap();
-    let (writer_b, mut output_b) = audio_bridge(1, 32, 4096).unwrap();
+    let (writer_a, mut output_a) = audio_bridge::<f64>(1, 32, 4096).unwrap();
+    let (writer_b, mut output_b) = audio_bridge::<f64>(1, 32, 4096).unwrap();
     let mut bindings = NodeBindings::new();
-    bindings.bind_source(source, Counter(1.0)).unwrap();
+    bindings
+        .bind_source(source, common::CountingSource { next: 1.0 })
+        .unwrap();
     bindings.bind_sink(a, writer_a).unwrap();
     bindings.bind_sink(b, writer_b).unwrap();
     let mut active = compile(&graph, bindings, config(1)).unwrap();
@@ -782,7 +749,7 @@ fn every_protected_sink_survives_partial_reuse_rejection_and_slot_migration_with
         .require_sink_reuse(active.bindings.node(b).unwrap())
         .unwrap();
     let basis = active.engine.plan_snapshot();
-    let (foreign, mut foreign_output) = audio_bridge(1, 32, 4096).unwrap();
+    let (foreign, mut foreign_output) = audio_bridge::<f64>(1, 32, 4096).unwrap();
     let mut bindings = NodeBindings::new();
     bindings.bind_sink(a, foreign).unwrap();
     let partial = compile_update(
@@ -804,8 +771,8 @@ fn every_protected_sink_survives_partial_reuse_rejection_and_slot_migration_with
         plans.poll_retired().unwrap().outcome(),
         RetireOutcome::Rejected(PlanSwapError::MissingReuse)
     );
-    samples(&mut output_a, &[1.0, 2.0]);
-    samples(&mut output_b, &[1.0, 2.0]);
+    assert_samples_exact(&mut output_a, &[1.0, 2.0]);
+    assert_samples_exact(&mut output_b, &[1.0, 2.0]);
     assert_eq!(
         foreign_output
             .read_interleaved(&mut [0.0; 2])
@@ -833,9 +800,9 @@ fn every_protected_sink_survives_partial_reuse_rejection_and_slot_migration_with
             ..
         }
     ));
-    samples(&mut output_a, &[1.5, 2.0]);
-    samples(&mut output_b, &[3.0, 4.0]);
-    let (foreign, _) = audio_bridge(1, 32, 4096).unwrap();
+    assert_samples_exact(&mut output_a, &[1.5, 2.0]);
+    assert_samples_exact(&mut output_b, &[3.0, 4.0]);
+    let (foreign, _) = audio_bridge::<f64>(1, 32, 4096).unwrap();
     let mut bindings = NodeBindings::new();
     bindings.bind_sink(b, foreign).unwrap();
     bindings.bind_gain(gain, 0.5).unwrap();
@@ -858,6 +825,6 @@ fn every_protected_sink_survives_partial_reuse_rejection_and_slot_migration_with
         plans.poll_retired().unwrap().outcome(),
         RetireOutcome::Rejected(PlanSwapError::MissingReuse)
     );
-    samples(&mut output_a, &[2.5, 3.0]);
-    samples(&mut output_b, &[5.0, 6.0]);
+    assert_samples_exact(&mut output_a, &[2.5, 3.0]);
+    assert_samples_exact(&mut output_b, &[5.0, 6.0]);
 }

@@ -59,5 +59,5 @@ fn delay_preserves_state_across_blocks() {
             })
             .unwrap();
     }
-    assert_samples(&mut arena, 1, &[&[0.0, 1.0, 2.0, 3.0]]);
+    assert_samples_exact(&mut arena, 1, &[&[0.0, 1.0, 2.0, 3.0]]);
 }

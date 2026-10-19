@@ -61,7 +61,9 @@ fn seed<S: ProcessingSample>(arena: &mut BufferArena<S>, slot: usize, samples: &
         .unwrap();
 }
 
-fn assert_samples<S: ProcessingSample>(
+/// Bit-exact slot comparison; the tolerance-based twin lives in
+/// `tests/common/mod.rs::assert_samples_close`.
+fn assert_samples_exact<S: ProcessingSample>(
     arena: &mut BufferArena<S>,
     slot: usize,
     expected: &[&[f64]],

@@ -155,7 +155,7 @@ impl<S: ProcessingSample> RtObserver<S> for SignalLevelMeter {
 mod tests {
     use super::*;
     use crate::buffer::{BufferArena, BufferSlotLayout, PortAccess, PreparedIo, ProcessIo};
-    use moiren_signal::{BlockInit, Bus, OpSignalBindings, PumpBudget, RtHost, Topic};
+    use moiren_signal::{BlockInit, Bus, OpSignalBindings, RtHost, Topic};
     use std::cell::Cell;
 
     thread_local! { static CONVERSIONS: Cell<usize> = const { Cell::new(0) }; }
@@ -267,11 +267,7 @@ mod tests {
                         .observe(&ctx, inputs, self.host.scope(&self.op).into());
                 })
                 .unwrap();
-            self.bus.pump(PumpBudget {
-                topic_checks: 1024,
-                deliveries: 128,
-                copy_bytes: 65536,
-            });
+            crate::test_support::pump(&mut self.bus);
         }
     }
 

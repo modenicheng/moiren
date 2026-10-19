@@ -62,7 +62,7 @@ fn sum_inputs<S: ProcessingSample>() {
             )
         })
         .unwrap();
-    assert_samples(
+    assert_samples_exact(
         &mut arena,
         3,
         &[&[3.25, 4.5, 5.75, 7.0], &[4.0, 2.0, 0.0, -2.0]],

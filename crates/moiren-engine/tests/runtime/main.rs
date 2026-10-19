@@ -2,6 +2,8 @@
 //! thread-local while graph, boundary IO, and automation coverage can evolve apart.
 mod allocation;
 mod automation;
+#[path = "../common/mod.rs"]
+mod common;
 mod graph;
 mod io;
 mod signals;

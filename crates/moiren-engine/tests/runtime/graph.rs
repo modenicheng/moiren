@@ -58,16 +58,8 @@ fn compiler_prepared_graph_renders_without_allocations_or_deallocations() {
             &graph,
             bindings,
             CompileConfig {
-                engine: EngineConfig {
-                    processing_sr: 48000.0,
-                    max_block_frames: 8,
-                    max_events_per_block: 8,
-                },
-                audio_byte_budget: 4096,
-                plan_revision: REV,
-                timeline_epoch: EPOCH,
-                control_capacity: 8,
-                control_horizon_frames: 48000,
+                control_horizon_frames: 48_000,
+                ..super::common::compile_config(REV)
             },
         )
         .unwrap();

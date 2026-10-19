@@ -79,7 +79,7 @@ fn random_dags<S: ProcessingSample>() {
                     frames
                 );
                 let reference = (0..frames).flat_map(|_| *value).collect::<Vec<_>>();
-                assert_samples(&samples, &reference);
+                assert_samples_close(&samples, &reference);
             }
         }
     }

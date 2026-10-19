@@ -1,6 +1,6 @@
 use super::*;
 use moiren_engine::meter::signal::{AudioWindow, ChannelLevel, MeterError, SignalLevelMeter};
-use moiren_signal::{BlockInit, Bus, PumpBudget};
+use moiren_signal::{BlockInit, Bus};
 
 fn window() -> AudioWindow {
     AudioWindow {
@@ -130,11 +130,7 @@ fn render<S: ProcessingSample>(
         allocation::track_allocations(|| compiled.engine.render(4).unwrap());
     assert_eq!(allocations, (0, 0));
     assert_eq!(report.segments, if segmented { 2 } else { 1 });
-    bus.pump(PumpBudget {
-        topic_checks: 1024,
-        deliveries: 128,
-        copy_bytes: 65536,
-    });
+    pump(&mut bus);
     let mut samples = [S::ZERO; 8];
     reader.read_interleaved(&mut samples).unwrap();
     let samples = samples.map(ProcessingSample::to_f64);
@@ -292,11 +288,7 @@ fn compiler_binds_optional_compressor_signal_without_changing_samples() {
         compiled.engine.attach_signal_host(host).unwrap();
         let (_, counts) = allocation::track_allocations(|| compiled.engine.render(4).unwrap());
         assert_eq!(counts, (0, 0));
-        bus.pump(PumpBudget {
-            topic_checks: 1024,
-            deliveries: 128,
-            copy_bytes: 65536,
-        });
+        pump(&mut bus);
         if publish {
             assert_eq!(reader.read_latest().unwrap().value, 9.0);
         } else {
