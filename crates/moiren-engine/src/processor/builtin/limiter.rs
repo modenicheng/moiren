@@ -4,8 +4,8 @@ use super::dynamics::{
     validate_linked_io,
 };
 use crate::{
-    buffer::{PreparedIo, ProcessIo},
-    control::{ParamSpec, ProcessParameters},
+    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    control::{FloatRamp, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
 use moiren_core::protocol::{ParamValue, ParameterId, ProcessorId};
@@ -73,6 +73,42 @@ impl Limiter {
             input_gain_db: resolve_float(&mut intent, Self::INPUT_GAIN, settings.input_gain_db),
         }
     }
+    /// One kernel for both transports: the linked detector reads the whole
+    /// input frame before any channel of it is written.
+    fn process_linked<S: ProcessingSample, Io: FrameIo<S>>(
+        &mut self,
+        io: &mut Io,
+        threshold: FloatRamp,
+        release: FloatRamp,
+        input_gain: FloatRamp,
+        sample_rate: f64,
+    ) {
+        let sample_rate = sanitize_sample_rate(sample_rate);
+        for frame in 0..io.frames() {
+            let input_gain = db_to_gain(input_gain.sample(frame));
+            let threshold = db_to_gain(threshold.sample(frame));
+            let peak = (0..io.channel_count()).fold(0.0_f64, |peak, channel| {
+                peak.max(io.read(channel, frame).abs() * input_gain)
+            });
+            let target = if peak > threshold {
+                threshold / peak
+            } else {
+                1.0
+            };
+            self.gain = if target < self.gain {
+                target
+            } else {
+                smooth(self.gain, target, release.sample(frame), sample_rate)
+            };
+            for channel in 0..io.channel_count() {
+                io.write(
+                    channel,
+                    frame,
+                    S::from_f64(io.read(channel, frame) * input_gain * self.gain),
+                );
+            }
+        }
+    }
 }
 
 impl<S: ProcessingSample> RtProcessor<S> for Limiter {
@@ -109,66 +145,23 @@ impl<S: ProcessingSample> RtProcessor<S> for Limiter {
             ProcessIo::Separate {
                 inputs,
                 mut outputs,
-            } => {
-                let input = inputs.get(0).expect("validated limiter input");
-                let mut output = outputs.get_mut(0).expect("validated limiter output");
-                for frame in 0..input.frames() {
-                    let input_gain = db_to_gain(input_gain.sample(frame));
-                    let threshold = db_to_gain(threshold.sample(frame));
-                    let peak = input.channels().fold(0.0_f64, |peak, channel| {
-                        peak.max(channel[frame].to_f64().abs() * input_gain)
-                    });
-                    let target = if peak > threshold {
-                        threshold / peak
-                    } else {
-                        1.0
-                    };
-                    self.gain = if target < self.gain {
-                        target
-                    } else {
-                        smooth(
-                            self.gain,
-                            target,
-                            release.sample(frame),
-                            sanitize_sample_rate(ctx.processing_sr),
-                        )
-                    };
-                    for channel in 0..input.channel_count() {
-                        output.channel_mut(channel)[frame] = S::from_f64(
-                            input.channel(channel)[frame].to_f64() * input_gain * self.gain,
-                        );
-                    }
-                }
-            }
-            ProcessIo::InPlace { mut pairs, .. } => {
-                let mut block = pairs.get_mut(0, 0).expect("validated limiter pair");
-                for frame in 0..block.frames() {
-                    let input_gain = db_to_gain(input_gain.sample(frame));
-                    let threshold = db_to_gain(threshold.sample(frame));
-                    let peak = (0..block.channel_count()).fold(0.0_f64, |peak, channel| {
-                        peak.max(block.channel(channel)[frame].to_f64().abs() * input_gain)
-                    });
-                    let target = if peak > threshold {
-                        threshold / peak
-                    } else {
-                        1.0
-                    };
-                    self.gain = if target < self.gain {
-                        target
-                    } else {
-                        smooth(
-                            self.gain,
-                            target,
-                            release.sample(frame),
-                            sanitize_sample_rate(ctx.processing_sr),
-                        )
-                    };
-                    for channel in block.channels_mut() {
-                        channel[frame] =
-                            S::from_f64(channel[frame].to_f64() * input_gain * self.gain);
-                    }
-                }
-            }
+            } => self.process_linked(
+                &mut SeparateFrames::new(
+                    inputs.get(0).expect("validated limiter input"),
+                    outputs.get_mut(0).expect("validated limiter output"),
+                ),
+                threshold,
+                release,
+                input_gain,
+                ctx.processing_sr,
+            ),
+            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
+                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated limiter pair")),
+                threshold,
+                release,
+                input_gain,
+                ctx.processing_sr,
+            ),
             ProcessIo::ReadOnly { .. } => unreachable!("limiter requires an output"),
         }
     }

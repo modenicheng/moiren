@@ -8,17 +8,17 @@ use std::{
 };
 
 use moiren_core::{
-    graph::{EdgeId, NodeId},
+    graph::{EdgeId, LogicalGraph, NodeId},
     protocol::{ParamValue, ProcessorId},
 };
 
 use super::{
     BackendError, BackendOwner, CancellationToken, Diagnostic, EngineBackend, EngineProject,
-    HostConfig, NodeConfig, ParameterTarget, PrepareMode, PrepareRequest, SendParameter, Shared,
-    signals::PreparedReaders,
+    HostConfig, NodeConfig, ParameterTarget, PrepareMode, PrepareRequest, PreparedBackend,
+    SendParameter, Shared, signals::PreparedReaders,
 };
 use crate::{
-    compiler::{self, CompiledBindings, CompiledUpdate},
+    compiler::{self, CompileConfig, CompiledBindings, CompiledUpdate, NodeBindings},
     processor::{Compressor, Delay, Eq, Gain, Gate, Limiter, Pan},
     runtime::{PlanControlPort, PlanSnapshot},
     sample::ProcessingSample,
@@ -121,23 +121,76 @@ fn prepare<S: ProcessingSample>(
     if job.cancel.is_cancelled() {
         return Err(fail(BackendError::Cancelled));
     }
-    let (signals, rt_host) = match &job.signals {
-        Some(signals) => (signals.clone(), None),
+    let (signals, rt_host) = acquire_signal_host(config, shared, job)?;
+    let mut readers = PreparedReaders::default();
+    let mut prepared = prepare_backend(backend, job, &signals)?;
+    if job.cancel.is_cancelled() {
+        return Err(fail(BackendError::Cancelled));
+    }
+    bind_host_processors(shared, job, &signals, &mut prepared.bindings, &mut readers)?;
+    let inputs = CompileInputs {
+        graph: apply_edge_parameters(job)?,
+        backend: prepared,
+        config: job
+            .project
+            .processing
+            .compile_config(job.plan_revision, job.epoch),
+        signals,
+        rt_host,
+        readers,
+    };
+    if let Some(basis) = &job.active {
+        compile_update_ready(job, basis, inputs)
+    } else {
+        compile_initial_ready(config, job, inputs)
+    }
+}
+
+/// Inputs of the compile phase: the intent-adjusted graph, the backend's
+/// bindings and transport, the compilation identity, the signal host halves
+/// and the observer readers accumulated by the earlier phases.
+struct CompileInputs<S: ProcessingSample> {
+    graph: LogicalGraph,
+    backend: PreparedBackend<S>,
+    config: CompileConfig,
+    signals: moiren_signal::HostControl,
+    rt_host: Option<moiren_signal::RtHost>,
+    readers: PreparedReaders,
+}
+
+/// Signal-host phase: an owner-carried host is reused, otherwise a fresh bus
+/// host is created. The runtime half is present only when this worker created
+/// it, because only initial preparations attach the RT pump.
+fn acquire_signal_host(
+    config: &HostConfig,
+    shared: &Shared,
+    job: &PrepareJob,
+) -> Result<(moiren_signal::HostControl, Option<moiren_signal::RtHost>), Diagnostic> {
+    match &job.signals {
+        Some(signals) => Ok((signals.clone(), None)),
         None => {
             let (signals, rt_host) = shared
                 .signals
                 .create_host(job.basis.owner, config.signal_bindings)
-                .map_err(fail)?;
-            (signals, Some(rt_host))
+                .map_err(Diagnostic::Backend)?;
+            Ok((signals, Some(rt_host)))
         }
-    };
-    let mut readers = PreparedReaders::default();
+    }
+}
+
+/// Backend phase: the transport-owning backend resolves IO and observers for
+/// the requested mode. It never compiles the logical graph.
+fn prepare_backend<S: ProcessingSample>(
+    backend: &dyn EngineBackend<S>,
+    job: &PrepareJob,
+    signals: &moiren_signal::HostControl,
+) -> Result<PreparedBackend<S>, Diagnostic> {
     let mode = if job.active.is_some() {
         PrepareMode::Update
     } else {
         PrepareMode::Initial
     };
-    let mut prepared = backend
+    backend
         .prepare(
             PrepareRequest {
                 project: &job.project,
@@ -146,16 +199,25 @@ fn prepare<S: ProcessingSample>(
                 graph_revision: job.basis.graph,
                 owner_generation: job.basis.owner,
                 resource_generation: job.basis.resources,
-                signal_host: &signals,
+                signal_host: signals,
             },
             &job.cancel,
         )
-        .map_err(fail)?;
-    if job.cancel.is_cancelled() {
-        return Err(fail(BackendError::Cancelled));
-    }
+        .map_err(Diagnostic::Backend)
+}
+
+/// Node-binding phase: strips, one dispatch per node configuration (with
+/// recorded intent applied through each kernel's `resolve*` entry point),
+/// recorded rack-slot parameters, and the level-meter signal bindings.
+fn bind_host_processors<S: ProcessingSample>(
+    shared: &Shared,
+    job: &PrepareJob,
+    signals: &moiren_signal::HostControl,
+    bindings: &mut NodeBindings<S>,
+    readers: &mut PreparedReaders,
+) -> Result<(), Diagnostic> {
     for (&node, config) in &job.project.strips {
-        prepared.bindings.bind_strip(node, *config);
+        bindings.bind_strip(node, *config);
     }
     for (&node, configuration) in &job.project.nodes {
         if matches!(
@@ -164,7 +226,7 @@ fn prepare<S: ProcessingSample>(
         ) {
             continue;
         }
-        if prepared.bindings.contains_node(node) {
+        if bindings.contains_node(node) {
             return Err(Diagnostic::Fault(
                 "backend bound a host-owned builtin processor".into(),
             ));
@@ -181,40 +243,40 @@ fn prepare<S: ProcessingSample>(
                 .map_or(fallback, |value| value.value)
         };
         let result = match configuration {
-            NodeConfig::Gain { initial: value } => prepared
-                .bindings
-                .bind_gain(node, Gain::resolve_level(*value, initial)),
+            NodeConfig::Gain { initial: value } => {
+                bindings.bind_gain(node, Gain::resolve_level(*value, initial))
+            }
             NodeConfig::Pan { initial: value } => {
                 let (position, mono, swap) = Pan::resolve(*value, false, false, initial);
-                prepared
-                    .bindings
-                    .bind_pan_with_stereo(node, position, mono, swap)
+                bindings.bind_pan_with_stereo(node, position, mono, swap)
             }
             NodeConfig::Compressor(settings) => {
                 let settings = Compressor::resolve_settings(*settings, initial);
-                prepared.bindings.bind_compressor_with_signal(
+                bindings.bind_compressor_with_signal(
                     node,
                     settings,
-                    shared.signals.prepare(node, &signals).map_err(fail)?,
+                    shared
+                        .signals
+                        .prepare(node, signals)
+                        .map_err(Diagnostic::Backend)?,
                 )
             }
-            NodeConfig::Eq(settings) => prepared
-                .bindings
-                .bind_eq(node, Eq::resolve_settings(*settings, initial)),
-            NodeConfig::Gate(settings) => prepared
-                .bindings
-                .bind_gate(node, Gate::resolve_settings(*settings, initial)),
-            NodeConfig::Limiter(settings) => prepared
-                .bindings
-                .bind_limiter(node, Limiter::resolve_settings(*settings, initial)),
-            NodeConfig::Delay(settings) => prepared
-                .bindings
-                .bind_delay(node, Delay::resolve_settings(*settings, initial)),
-            NodeConfig::ChannelMapper(settings) => prepared
-                .bindings
-                .bind_channel_mapper(node, settings.clone()),
-            NodeConfig::Recorder(settings) => prepared
-                .bindings
+            NodeConfig::Eq(settings) => {
+                bindings.bind_eq(node, Eq::resolve_settings(*settings, initial))
+            }
+            NodeConfig::Gate(settings) => {
+                bindings.bind_gate(node, Gate::resolve_settings(*settings, initial))
+            }
+            NodeConfig::Limiter(settings) => {
+                bindings.bind_limiter(node, Limiter::resolve_settings(*settings, initial))
+            }
+            NodeConfig::Delay(settings) => {
+                bindings.bind_delay(node, Delay::resolve_settings(*settings, initial))
+            }
+            NodeConfig::ChannelMapper(settings) => {
+                bindings.bind_channel_mapper(node, settings.clone())
+            }
+            NodeConfig::Recorder(settings) => bindings
                 .bind_recorder(
                     node,
                     job.project
@@ -227,11 +289,9 @@ fn prepare<S: ProcessingSample>(
                 .map(|reader| {
                     readers.recorders.insert(node, Some(reader));
                 }),
-            NodeConfig::Meter(settings) => {
-                prepared.bindings.bind_meter(node, *settings).map(|reader| {
-                    readers.meters.insert(node, Some(reader));
-                })
-            }
+            NodeConfig::Meter(settings) => bindings.bind_meter(node, *settings).map(|reader| {
+                readers.meters.insert(node, Some(reader));
+            }),
             NodeConfig::SpectrumAnalyzer(settings) => {
                 let channels = job
                     .project
@@ -241,13 +301,13 @@ fn prepare<S: ProcessingSample>(
                     .channels();
                 let publisher = shared
                     .signals
-                    .prepare_spectrum(node, channels, *settings, &signals)
-                    .map_err(fail)?;
+                    .prepare_spectrum(node, channels, *settings, signals)
+                    .map_err(Diagnostic::Backend)?;
                 SignalSpectrumAnalyzer::new(channels, *settings, publisher)
                     .map_err(|_| compiler::CompileError::BindingKind { node })
-                    .and_then(|analyzer| prepared.bindings.bind_spectrum(node, analyzer))
+                    .and_then(|analyzer| bindings.bind_spectrum(node, analyzer))
             }
-            NodeConfig::Rack(settings) => prepared.bindings.bind_rack(node, settings.clone()),
+            NodeConfig::Rack(settings) => bindings.bind_rack(node, settings.clone()),
             _ => unreachable!(),
         };
         result.map_err(|error| Diagnostic::Compile(error.to_string()))?;
@@ -259,16 +319,22 @@ fn prepare<S: ProcessingSample>(
             parameter: id,
         } = parameter.target
         {
-            prepared
-                .bindings
+            bindings
                 .bind_rack_parameter(node, slot, id, parameter.value)
                 .map_err(|error| Diagnostic::Compile(error.to_string()))?;
         }
     }
     shared
         .signals
-        .prepare_levels(&job.project, &signals, &mut prepared.bindings)
-        .map_err(fail)?;
+        .prepare_levels(&job.project, signals, bindings)
+        .map_err(Diagnostic::Backend)?;
+    Ok(())
+}
+
+/// Edge-writeback phase: recorded send intent is applied to a private graph
+/// clone, so compilation sees the adjusted gains, pans and mutes without
+/// mutating the project's own topology.
+fn apply_edge_parameters(job: &PrepareJob) -> Result<LogicalGraph, Diagnostic> {
     let mut graph = job.project.graph.clone();
     for parameter in &job.project.parameters {
         if let ParameterTarget::Edge {
@@ -291,89 +357,120 @@ fn prepare<S: ProcessingSample>(
                 .map_err(|error| Diagnostic::Compile(error.to_string()))?;
         }
     }
-    let compile_config = job
-        .project
-        .processing
-        .compile_config(job.plan_revision, job.epoch);
-    if let Some(basis) = &job.active {
-        if prepared.transport.is_some() {
-            return Err(Diagnostic::Fault(
-                "compatible preparation replaced the native transport".into(),
-            ));
-        }
-        for &(node, processor) in &job.observer_reuse {
-            prepared
-                .bindings
-                .bind_observer_reuse(node, processor)
-                .map_err(|error| Diagnostic::Compile(error.to_string()))?;
-        }
-        let mut update = compiler::compile_update_with_reuse(
-            &graph,
-            prepared.bindings,
-            compile_config,
-            basis,
-            compiler::UpdateReuse {
-                nodes: &job.reuse,
-                edges: &job.edge_reuse,
-                rack_slots: &job.rack_reuse,
-            },
-            Some(&signals),
-        )
-        .map_err(|error| Diagnostic::Compile(error.to_string()))?;
-        let initial: Vec<_> = job
-            .initial_parameters
-            .iter()
-            .filter_map(|&target| super::parameters::resolve(&update.bindings, target))
-            .collect();
-        update.plan = update.plan.with_initial_parameters(&initial);
-        // Only a successfully validated observer transfer may keep its original
-        // reader. Placeholder endpoints are reclaimed here, never on RT.
-        for &(node, _) in &job.observer_reuse {
-            if let Some(reader) = readers.meters.get_mut(&node) {
-                *reader = None;
-            }
-            if let Some(reader) = readers.recorders.get_mut(&node) {
-                *reader = None;
-            }
-        }
-        Ok(Ready::Update { update, readers })
-    } else {
-        let transport = prepared
-            .transport
-            .take()
-            .ok_or_else(|| Diagnostic::Fault("initial preparation omitted transport".into()))?;
-        let mut compiled =
-            compiler::compile_with_signals(&graph, prepared.bindings, compile_config, &signals)
-                .map_err(|error| Diagnostic::Compile(error.to_string()))?;
-        compiled
-            .engine
-            .attach_signal_host(rt_host.expect("initial signal owner"))
-            .map_err(|error| Diagnostic::Compile(error.error.to_string()))?;
-        let plans = compiled
-            .engine
-            .enable_plan_switching(config.cleanup_capacity)
-            .map_err(|error| Diagnostic::Compile(error.to_string()))?;
-        let snapshot = compiled.engine.plan_snapshot();
-        if job.cancel.is_cancelled() {
-            return Err(fail(BackendError::Cancelled));
-        }
-        let owner = transport
-            .attach(compiled.engine, &compiled.bindings, job.cancel.clone())
-            .map_err(|failure| {
-                drop(failure.engine);
-                fail(failure.error)
-            })?;
-        Ok(Ready::Initial(Initial {
-            owner,
-            plans,
-            control: compiled.control,
-            bindings: compiled.bindings,
-            snapshot,
-            signals,
-            readers,
-            owner_generation: job.basis.owner,
-        }))
+    Ok(graph)
+}
+
+/// Update-compile phase: binds observer reuse, compiles against the active
+/// plan's basis so live state survives, and reclaims the reader slots of
+/// observers whose transfer succeeded.
+fn compile_update_ready<S: ProcessingSample>(
+    job: &PrepareJob,
+    basis: &PlanSnapshot,
+    inputs: CompileInputs<S>,
+) -> Result<Ready<S>, Diagnostic> {
+    let CompileInputs {
+        graph,
+        backend: PreparedBackend {
+            mut bindings,
+            transport,
+        },
+        config: compile_config,
+        signals,
+        rt_host: _,
+        mut readers,
+    } = inputs;
+    if transport.is_some() {
+        return Err(Diagnostic::Fault(
+            "compatible preparation replaced the native transport".into(),
+        ));
     }
+    for &(node, processor) in &job.observer_reuse {
+        bindings
+            .bind_observer_reuse(node, processor)
+            .map_err(|error| Diagnostic::Compile(error.to_string()))?;
+    }
+    let mut update = compiler::compile_update_with_reuse(
+        &graph,
+        bindings,
+        compile_config,
+        basis,
+        compiler::UpdateReuse {
+            nodes: &job.reuse,
+            edges: &job.edge_reuse,
+            rack_slots: &job.rack_reuse,
+        },
+        Some(&signals),
+    )
+    .map_err(|error| Diagnostic::Compile(error.to_string()))?;
+    let initial: Vec<_> = job
+        .initial_parameters
+        .iter()
+        .filter_map(|&target| super::parameters::resolve(&update.bindings, target))
+        .collect();
+    update.plan = update.plan.with_initial_parameters(&initial);
+    // Only a successfully validated observer transfer may keep its original
+    // reader. Placeholder endpoints are reclaimed here, never on RT.
+    for &(node, _) in &job.observer_reuse {
+        if let Some(reader) = readers.meters.get_mut(&node) {
+            *reader = None;
+        }
+        if let Some(reader) = readers.recorders.get_mut(&node) {
+            *reader = None;
+        }
+    }
+    Ok(Ready::Update { update, readers })
+}
+
+/// Initial-compile phase: attaches the RT signal pump and the transport
+/// owner to a freshly compiled engine and snapshots the published plan.
+fn compile_initial_ready<S: ProcessingSample>(
+    config: &HostConfig,
+    job: &PrepareJob,
+    inputs: CompileInputs<S>,
+) -> Result<Ready<S>, Diagnostic> {
+    let CompileInputs {
+        graph,
+        backend: PreparedBackend {
+            bindings,
+            transport,
+        },
+        config: compile_config,
+        signals,
+        rt_host,
+        readers,
+    } = inputs;
+    let transport = transport
+        .ok_or_else(|| Diagnostic::Fault("initial preparation omitted transport".into()))?;
+    let mut compiled = compiler::compile_with_signals(&graph, bindings, compile_config, &signals)
+        .map_err(|error| Diagnostic::Compile(error.to_string()))?;
+    compiled
+        .engine
+        .attach_signal_host(rt_host.expect("initial signal owner"))
+        .map_err(|error| Diagnostic::Compile(error.error.to_string()))?;
+    let plans = compiled
+        .engine
+        .enable_plan_switching(config.cleanup_capacity)
+        .map_err(|error| Diagnostic::Compile(error.to_string()))?;
+    let snapshot = compiled.engine.plan_snapshot();
+    if job.cancel.is_cancelled() {
+        return Err(Diagnostic::Backend(BackendError::Cancelled));
+    }
+    let owner = transport
+        .attach(compiled.engine, &compiled.bindings, job.cancel.clone())
+        .map_err(|failure| {
+            drop(failure.engine);
+            Diagnostic::Backend(failure.error)
+        })?;
+    Ok(Ready::Initial(Initial {
+        owner,
+        plans,
+        control: compiled.control,
+        bindings: compiled.bindings,
+        snapshot,
+        signals,
+        readers,
+        owner_generation: job.basis.owner,
+    }))
 }
 fn float(value: ParamValue) -> f64 {
     match value {

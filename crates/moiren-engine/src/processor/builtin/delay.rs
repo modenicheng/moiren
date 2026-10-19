@@ -2,8 +2,8 @@ use super::super::{ProcessContext, ProcessorError, RtProcessor};
 use super::MAX_CHANNELS;
 use super::dynamics::resolve_float;
 use crate::{
-    buffer::{PreparedIo, ProcessIo},
-    control::{ParamDomain, ParamSpec, ProcessParameters},
+    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    control::{FloatRamp, ParamDomain, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
 use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
@@ -161,6 +161,39 @@ impl Delay {
     fn write_index(&self, channel: usize) -> usize {
         channel * self.capacity + self.write
     }
+    /// One kernel for both transports: each channel sample is read before the
+    /// ring is updated and the frame position is written.
+    fn process_linked<S: ProcessingSample, Io: FrameIo<S>>(
+        &mut self,
+        io: &mut Io,
+        delay: FloatRamp,
+        feedback: FloatRamp,
+        mix: FloatRamp,
+        sample_rate: f64,
+    ) {
+        for frame in 0..io.frames() {
+            let delay_frames =
+                (delay.sample(frame).max(0.0) * sample_rate / 1_000.0).round() as usize;
+            let feedback = feedback.sample(frame).clamp(-0.999, 0.999);
+            let mix = mix.sample(frame).clamp(0.0, 1.0);
+            for channel in 0..self.channels {
+                let input_sample = io.read(channel, frame);
+                let index = self.sample_index(channel, delay_frames);
+                let delayed = if delay_frames == 0 {
+                    input_sample
+                } else {
+                    self.ring[index]
+                };
+                self.ring[self.write_index(channel)] = input_sample + delayed * feedback;
+                io.write(
+                    channel,
+                    frame,
+                    S::from_f64(input_sample * (1.0 - mix) + delayed * mix),
+                );
+            }
+            self.write = (self.write + 1) % self.capacity;
+        }
+    }
 }
 
 impl<S: ProcessingSample> RtProcessor<S> for Delay {
@@ -203,51 +236,23 @@ impl<S: ProcessingSample> RtProcessor<S> for Delay {
             ProcessIo::Separate {
                 inputs,
                 mut outputs,
-            } => {
-                let input = inputs.get(0).expect("validated delay input");
-                let mut output = outputs.get_mut(0).expect("validated delay output");
-                for frame in 0..input.frames() {
-                    let delay_frames = (delay.sample(frame).max(0.0) * ctx.processing_sr / 1_000.0)
-                        .round() as usize;
-                    let feedback = feedback.sample(frame).clamp(-0.999, 0.999);
-                    let mix = mix.sample(frame).clamp(0.0, 1.0);
-                    for channel in 0..self.channels {
-                        let input_sample = input.channel(channel)[frame].to_f64();
-                        let index = self.sample_index(channel, delay_frames);
-                        let delayed = if delay_frames == 0 {
-                            input_sample
-                        } else {
-                            self.ring[index]
-                        };
-                        self.ring[self.write_index(channel)] = input_sample + delayed * feedback;
-                        output.channel_mut(channel)[frame] =
-                            S::from_f64(input_sample * (1.0 - mix) + delayed * mix);
-                    }
-                    self.write = (self.write + 1) % self.capacity;
-                }
-            }
-            ProcessIo::InPlace { mut pairs, .. } => {
-                let mut block = pairs.get_mut(0, 0).expect("validated delay pair");
-                for frame in 0..block.frames() {
-                    let delay_frames = (delay.sample(frame).max(0.0) * ctx.processing_sr / 1_000.0)
-                        .round() as usize;
-                    let feedback = feedback.sample(frame).clamp(-0.999, 0.999);
-                    let mix = mix.sample(frame).clamp(0.0, 1.0);
-                    for channel in 0..self.channels {
-                        let input_sample = block.channel(channel)[frame].to_f64();
-                        let index = self.sample_index(channel, delay_frames);
-                        let delayed = if delay_frames == 0 {
-                            input_sample
-                        } else {
-                            self.ring[index]
-                        };
-                        self.ring[self.write_index(channel)] = input_sample + delayed * feedback;
-                        block.channel_mut(channel)[frame] =
-                            S::from_f64(input_sample * (1.0 - mix) + delayed * mix);
-                    }
-                    self.write = (self.write + 1) % self.capacity;
-                }
-            }
+            } => self.process_linked(
+                &mut SeparateFrames::new(
+                    inputs.get(0).expect("validated delay input"),
+                    outputs.get_mut(0).expect("validated delay output"),
+                ),
+                delay,
+                feedback,
+                mix,
+                ctx.processing_sr,
+            ),
+            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
+                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated delay pair")),
+                delay,
+                feedback,
+                mix,
+                ctx.processing_sr,
+            ),
             ProcessIo::ReadOnly { .. } => unreachable!("delay requires an output"),
         }
     }

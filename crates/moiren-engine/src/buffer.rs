@@ -7,7 +7,10 @@ use crate::sample::ProcessingSample;
 
 mod view;
 use view::RawWindow;
-pub use view::{AudioBlock, AudioBlockMut, InPlacePorts, ProcessIo, ReadPorts, WritePorts};
+pub use view::{
+    AudioBlock, AudioBlockMut, FrameIo, InPlaceFrames, InPlacePorts, ProcessIo, ReadPorts,
+    SeparateFrames, WritePorts,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BufferSlotId(u32);

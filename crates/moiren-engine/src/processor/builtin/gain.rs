@@ -1,8 +1,8 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
 use super::dynamics::resolve_float;
 use crate::{
-    buffer::{PreparedIo, ProcessIo},
-    control::{ParamDomain, ParamSpec, ProcessParameters},
+    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    control::{FloatRamp, ParamDomain, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
 use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
@@ -21,6 +21,16 @@ impl Gain {
                 max: 16.0,
             },
             initial: ParamValue::Float(initial),
+        }
+    }
+
+    /// One kernel for both transports; the ramp is sampled once per frame.
+    fn process_linked<S: ProcessingSample, Io: FrameIo<S>>(io: &mut Io, level: FloatRamp) {
+        for frame in 0..io.frames() {
+            let gain = level.sample(frame);
+            for channel in 0..io.channel_count() {
+                io.write(channel, frame, S::from_f64(io.read(channel, frame) * gain));
+            }
         }
     }
 
@@ -63,23 +73,17 @@ impl<S: ProcessingSample> RtProcessor<S> for Gain {
             ProcessIo::Separate {
                 inputs,
                 mut outputs,
-            } => {
-                let input = inputs.get(0).expect("validated main input");
-                let mut output = outputs.get_mut(0).expect("validated main output");
-                for (src, dst) in input.channels().zip(output.channels_mut()) {
-                    for (i, (src, dst)) in src.iter().zip(dst.iter_mut()).enumerate() {
-                        *dst = S::from_f64(src.to_f64() * gain.sample(i));
-                    }
-                }
-            }
-            ProcessIo::InPlace { mut pairs, .. } => {
-                let mut block = pairs.get_mut(0, 0).expect("validated main pair");
-                for channel in block.channels_mut() {
-                    for (i, sample) in channel.iter_mut().enumerate() {
-                        *sample = S::from_f64(sample.to_f64() * gain.sample(i));
-                    }
-                }
-            }
+            } => Self::process_linked(
+                &mut SeparateFrames::new(
+                    inputs.get(0).expect("validated main input"),
+                    outputs.get_mut(0).expect("validated main output"),
+                ),
+                gain,
+            ),
+            ProcessIo::InPlace { mut pairs, .. } => Self::process_linked(
+                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated main pair")),
+                gain,
+            ),
             ProcessIo::ReadOnly { .. } => unreachable!("gain requires an output"),
         }
     }

@@ -4,7 +4,7 @@ use super::dynamics::{
     validate_linked_io,
 };
 use crate::{
-    buffer::{PreparedIo, ProcessIo},
+    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
     control::{ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
@@ -138,6 +138,41 @@ impl Gate {
         self.gain = smooth(self.gain, target, time, sample_rate);
         self.gain
     }
+    /// One kernel for both transports: the detector reads the whole input
+    /// frame before any channel of it is written.
+    fn process_linked<S: ProcessingSample, Io: FrameIo<S>>(
+        &mut self,
+        io: &mut Io,
+        params: &ProcessParameters<'_>,
+        sample_rate: f64,
+    ) {
+        let threshold = params
+            .float(Self::THRESHOLD)
+            .expect("validated gate threshold");
+        let attack = params.float(Self::ATTACK).expect("validated gate attack");
+        let release = params.float(Self::RELEASE).expect("validated gate release");
+        let hold = params.float(Self::HOLD).expect("validated gate hold");
+        let range = params.float(Self::RANGE).expect("validated gate range");
+        for frame in 0..io.frames() {
+            let peak = (0..io.channel_count()).fold(0.0_f64, |peak, channel| {
+                peak.max(io.read(channel, frame).abs())
+            });
+            let gain = self.process_frame(
+                peak,
+                GateSettings {
+                    threshold_db: threshold.sample(frame),
+                    attack_ms: attack.sample(frame),
+                    release_ms: release.sample(frame),
+                    hold_ms: hold.sample(frame),
+                    range_db: range.sample(frame),
+                },
+                sample_rate,
+            );
+            for channel in 0..io.channel_count() {
+                io.write(channel, frame, S::from_f64(io.read(channel, frame) * gain));
+            }
+        }
+    }
 }
 
 impl<S: ProcessingSample> RtProcessor<S> for Gate {
@@ -161,63 +196,23 @@ impl<S: ProcessingSample> RtProcessor<S> for Gate {
         params: ProcessParameters<'_>,
         _signals: crate::signal::ProcessSignals<'_>,
     ) {
-        let threshold = params
-            .float(Self::THRESHOLD)
-            .expect("validated gate threshold");
-        let attack = params.float(Self::ATTACK).expect("validated gate attack");
-        let release = params.float(Self::RELEASE).expect("validated gate release");
-        let hold = params.float(Self::HOLD).expect("validated gate hold");
-        let range = params.float(Self::RANGE).expect("validated gate range");
         match io {
             ProcessIo::Separate {
                 inputs,
                 mut outputs,
-            } => {
-                let input = inputs.get(0).expect("validated gate input");
-                let mut output = outputs.get_mut(0).expect("validated gate output");
-                for frame in 0..input.frames() {
-                    let peak = input.channels().fold(0.0_f64, |peak, channel| {
-                        peak.max(channel[frame].to_f64().abs())
-                    });
-                    let gain = self.process_frame(
-                        peak,
-                        GateSettings {
-                            threshold_db: threshold.sample(frame),
-                            attack_ms: attack.sample(frame),
-                            release_ms: release.sample(frame),
-                            hold_ms: hold.sample(frame),
-                            range_db: range.sample(frame),
-                        },
-                        ctx.processing_sr,
-                    );
-                    for channel in 0..input.channel_count() {
-                        output.channel_mut(channel)[frame] =
-                            S::from_f64(input.channel(channel)[frame].to_f64() * gain);
-                    }
-                }
-            }
-            ProcessIo::InPlace { mut pairs, .. } => {
-                let mut block = pairs.get_mut(0, 0).expect("validated gate pair");
-                for frame in 0..block.frames() {
-                    let peak = (0..block.channel_count()).fold(0.0_f64, |peak, channel| {
-                        peak.max(block.channel(channel)[frame].to_f64().abs())
-                    });
-                    let gain = self.process_frame(
-                        peak,
-                        GateSettings {
-                            threshold_db: threshold.sample(frame),
-                            attack_ms: attack.sample(frame),
-                            release_ms: release.sample(frame),
-                            hold_ms: hold.sample(frame),
-                            range_db: range.sample(frame),
-                        },
-                        ctx.processing_sr,
-                    );
-                    for channel in block.channels_mut() {
-                        channel[frame] = S::from_f64(channel[frame].to_f64() * gain);
-                    }
-                }
-            }
+            } => self.process_linked(
+                &mut SeparateFrames::new(
+                    inputs.get(0).expect("validated gate input"),
+                    outputs.get_mut(0).expect("validated gate output"),
+                ),
+                &params,
+                ctx.processing_sr,
+            ),
+            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
+                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated gate pair")),
+                &params,
+                ctx.processing_sr,
+            ),
             ProcessIo::ReadOnly { .. } => unreachable!("gate requires an output"),
         }
     }

@@ -269,48 +269,14 @@ pub(super) fn build<S: ProcessingSample>(
         // Resolve widths before allocating kernels; slot identity remains stable,
         // while ProcessorIds and buffer slots belong only to this prepared plan.
         let rack_boundary = if let Some(Binding::Rack(settings)) = &binding {
-            let input_widths: Vec<_> = node.inputs().iter().map(|port| port.channels()).collect();
-            let output_widths: Vec<_> = node.outputs().iter().map(|port| port.channels()).collect();
-            let layout = settings
-                .resolve_layout(&input_widths, &output_widths)
-                .ok_or(CompileError::BindingKind { node: id })?;
-            let mut streams: Vec<_> = layout
-                .routes
-                .iter()
-                .map(|route| reads[usize::from(route.input_port)].1)
-                .collect();
-            // Never iterate routes here: slots on distinct streams must still
-            // execute in the single global order declared by RackSettings.
-            for slot in settings.slots.iter().filter(|slot| !slot.bypass) {
-                let io = layout.slots[&slot.id];
-                let processor = ProcessorId(
-                    u64::try_from(builder.instances.len())
-                        .map_err(|_| CompileError::TooManyProcessors)?,
-                );
-                let (kernel, parameters) = crate::rack::prepare_slot::<S>(
-                    &slot.processor,
-                    io.input_channels,
-                    builder.processing_sr,
-                    processor,
-                )
-                .map_err(|_| CompileError::BindingKind { node: id })?;
-                let prepared = builder.processor(BoundIo(kernel))?;
-                builder.params.extend(parameters);
-                let output = builder.slot(io.output_channels);
-                builder.ops.push(DraftOp {
-                    processor: prepared,
-                    reads: vec![(0, streams[io.route])],
-                    outputs: vec![(0, output)],
-                });
-                streams[io.route] = output;
-                mapping.rack_slots.insert((id, slot.id), prepared);
-            }
-            reads = streams
-                .into_iter()
-                .enumerate()
-                .map(|(port, slot)| (port as u16, slot))
-                .collect();
-            Some(builder.processor(crate::rack::RackRouting::new(&layout, &output_widths))?)
+            Some(lower_rack(
+                &mut builder,
+                &mut mapping,
+                id,
+                node,
+                settings,
+                &mut reads,
+            )?)
         } else {
             None
         };
@@ -384,6 +350,61 @@ pub(super) fn build<S: ProcessingSample>(
         }
     }
     Ok((builder, mapping))
+}
+
+/// Rack lowering: resolve the rack's layout against the node's port widths,
+/// materialize one prepared op per non-bypass slot in the order declared by
+/// `RackSettings`, and rewire the node's `reads` onto the routed output
+/// streams. Returns the boundary processor that applies the rack's routing.
+fn lower_rack<S: ProcessingSample>(
+    builder: &mut Builder<S>,
+    mapping: &mut CompiledBindings,
+    id: NodeId,
+    node: &moiren_core::graph::Node,
+    settings: &crate::rack::RackSettings,
+    reads: &mut Vec<(u16, usize)>,
+) -> Result<ProcessorId, CompileError> {
+    let input_widths: Vec<_> = node.inputs().iter().map(|port| port.channels()).collect();
+    let output_widths: Vec<_> = node.outputs().iter().map(|port| port.channels()).collect();
+    let layout = settings
+        .resolve_layout(&input_widths, &output_widths)
+        .ok_or(CompileError::BindingKind { node: id })?;
+    let mut streams: Vec<_> = layout
+        .routes
+        .iter()
+        .map(|route| reads[usize::from(route.input_port)].1)
+        .collect();
+    // Never iterate routes here: slots on distinct streams must still
+    // execute in the single global order declared by RackSettings.
+    for slot in settings.slots.iter().filter(|slot| !slot.bypass) {
+        let io = layout.slots[&slot.id];
+        let processor = ProcessorId(
+            u64::try_from(builder.instances.len()).map_err(|_| CompileError::TooManyProcessors)?,
+        );
+        let (kernel, parameters) = crate::rack::prepare_slot::<S>(
+            &slot.processor,
+            io.input_channels,
+            builder.processing_sr,
+            processor,
+        )
+        .map_err(|_| CompileError::BindingKind { node: id })?;
+        let prepared = builder.processor(BoundIo(kernel))?;
+        builder.params.extend(parameters);
+        let output = builder.slot(io.output_channels);
+        builder.ops.push(DraftOp {
+            processor: prepared,
+            reads: vec![(0, streams[io.route])],
+            outputs: vec![(0, output)],
+        });
+        streams[io.route] = output;
+        mapping.rack_slots.insert((id, slot.id), prepared);
+    }
+    *reads = streams
+        .into_iter()
+        .enumerate()
+        .map(|(port, slot)| (port as u16, slot))
+        .collect();
+    builder.processor(crate::rack::RackRouting::new(&layout, &output_widths))
 }
 
 pub(super) fn prepare_operations<S: ProcessingSample>(

@@ -141,6 +141,80 @@ impl<S: ProcessingSample> InPlacePorts<'_, S> {
     }
 }
 
+/// Frame-level symmetric access over one linked input/output pair, so a DSP
+/// kernel can be written once for both transports. `read` observes the
+/// frame's input, `write` replaces the frame's output. In-place storage
+/// reads the value it is about to replace, so a linked detector must finish
+/// reading a frame before writing any of its channels. Implementations are
+/// inline monomorphizations, never dynamic dispatch on the render path.
+pub trait FrameIo<S: ProcessingSample> {
+    fn frames(&self) -> usize;
+    fn channel_count(&self) -> usize;
+    fn read(&self, channel: usize, frame: usize) -> f64;
+    fn write(&mut self, channel: usize, frame: usize, sample: S);
+}
+
+/// Separate-transport frames: reads the producer's slot, writes a fresh one.
+pub struct SeparateFrames<'a, S: ProcessingSample> {
+    input: AudioBlock<'a, S>,
+    output: AudioBlockMut<'a, S>,
+}
+
+impl<'a, S: ProcessingSample> SeparateFrames<'a, S> {
+    pub fn new(input: AudioBlock<'a, S>, output: AudioBlockMut<'a, S>) -> Self {
+        Self { input, output }
+    }
+}
+
+impl<S: ProcessingSample> FrameIo<S> for SeparateFrames<'_, S> {
+    #[inline]
+    fn frames(&self) -> usize {
+        self.input.frames()
+    }
+    #[inline]
+    fn channel_count(&self) -> usize {
+        self.input.channel_count()
+    }
+    #[inline]
+    fn read(&self, channel: usize, frame: usize) -> f64 {
+        self.input.channel(channel)[frame].to_f64()
+    }
+    #[inline]
+    fn write(&mut self, channel: usize, frame: usize, sample: S) {
+        self.output.channel_mut(channel)[frame] = sample;
+    }
+}
+
+/// In-place frames: reads the same storage it replaces.
+pub struct InPlaceFrames<'a, S: ProcessingSample> {
+    block: AudioBlockMut<'a, S>,
+}
+
+impl<'a, S: ProcessingSample> InPlaceFrames<'a, S> {
+    pub fn new(block: AudioBlockMut<'a, S>) -> Self {
+        Self { block }
+    }
+}
+
+impl<S: ProcessingSample> FrameIo<S> for InPlaceFrames<'_, S> {
+    #[inline]
+    fn frames(&self) -> usize {
+        self.block.frames()
+    }
+    #[inline]
+    fn channel_count(&self) -> usize {
+        self.block.channel_count()
+    }
+    #[inline]
+    fn read(&self, channel: usize, frame: usize) -> f64 {
+        self.block.channel(channel)[frame].to_f64()
+    }
+    #[inline]
+    fn write(&mut self, channel: usize, frame: usize, sample: S) {
+        self.block.channel_mut(channel)[frame] = sample;
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct AudioBlock<'a, S: ProcessingSample> {
     data: &'a [S],

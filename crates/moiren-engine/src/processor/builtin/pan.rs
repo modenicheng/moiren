@@ -1,8 +1,8 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
 use super::dynamics::resolve_float;
 use crate::{
-    buffer::{PreparedIo, ProcessIo},
-    control::{ParamDomain, ParamSpec, ProcessParameters},
+    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    control::{FloatRamp, ParamDomain, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
 use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId};
@@ -95,6 +95,27 @@ impl Pan {
             (left, right)
         }
     }
+
+    /// One kernel for both transports: both input channels of a frame are
+    /// read before either is written.
+    fn process_linked<S: ProcessingSample, Io: FrameIo<S>>(
+        io: &mut Io,
+        position: FloatRamp,
+        mono: bool,
+        swap: bool,
+    ) {
+        for frame in 0..io.frames() {
+            let (left, right) = Self::stereo(
+                io.read(0, frame),
+                io.read(1, frame),
+                position.sample(frame),
+                mono,
+                swap,
+            );
+            io.write(0, frame, S::from_f64(left));
+            io.write(1, frame, S::from_f64(right));
+        }
+    }
 }
 
 impl<S: ProcessingSample> RtProcessor<S> for Pan {
@@ -146,45 +167,21 @@ impl<S: ProcessingSample> RtProcessor<S> for Pan {
             ProcessIo::Separate {
                 inputs,
                 mut outputs,
-            } => {
-                let input = inputs.get(0).expect("validated stereo input");
-                let mut output = outputs.get_mut(0).expect("validated stereo output");
-                let mut channels = output.channels_mut();
-                let left_output = channels.next().expect("validated left output");
-                let right_output = channels.next().expect("validated right output");
-                for (i, (left, right)) in left_output
-                    .iter_mut()
-                    .zip(right_output.iter_mut())
-                    .enumerate()
-                {
-                    let (l, r) = Self::stereo(
-                        input.channel(0)[i].to_f64(),
-                        input.channel(1)[i].to_f64(),
-                        position.sample(i),
-                        mono,
-                        swap,
-                    );
-                    *left = S::from_f64(l);
-                    *right = S::from_f64(r);
-                }
-            }
-            ProcessIo::InPlace { mut pairs, .. } => {
-                let mut block = pairs.get_mut(0, 0).expect("validated stereo pair");
-                let mut channels = block.channels_mut();
-                let left = channels.next().expect("validated left channel");
-                let right = channels.next().expect("validated right channel");
-                for (i, (left, right)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
-                    let (l, r) = Self::stereo(
-                        left.to_f64(),
-                        right.to_f64(),
-                        position.sample(i),
-                        mono,
-                        swap,
-                    );
-                    *left = S::from_f64(l);
-                    *right = S::from_f64(r);
-                }
-            }
+            } => Self::process_linked(
+                &mut SeparateFrames::new(
+                    inputs.get(0).expect("validated stereo input"),
+                    outputs.get_mut(0).expect("validated stereo output"),
+                ),
+                position,
+                mono,
+                swap,
+            ),
+            ProcessIo::InPlace { mut pairs, .. } => Self::process_linked(
+                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated stereo pair")),
+                position,
+                mono,
+                swap,
+            ),
             ProcessIo::ReadOnly { .. } => unreachable!("pan requires an output"),
         }
     }

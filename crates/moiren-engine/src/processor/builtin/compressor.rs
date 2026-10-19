@@ -1,8 +1,8 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
 use super::dynamics::{db_to_gain, float_specs, resolve_float, smooth, validate_float_domains};
 use crate::{
-    buffer::{PreparedIo, ProcessIo},
-    control::{ParamSpec, ProcessParameters},
+    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    control::{FloatRamp, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
 use moiren_core::protocol::{ParamValue, ParameterId, ProcessorId};
@@ -178,6 +178,27 @@ impl Compressor {
         let wet_gain = db_to_gain(values[0] - self.reduction_db + values[7]);
         ((1.0 - values[9]) + values[9] * wet_gain) * db_to_gain(values[8])
     }
+    /// One kernel for both transports. In-place storage reads the value it is
+    /// about to replace, so detection must complete before any linked channel
+    /// of the frame is overwritten — the read fold precedes the write loop.
+    fn process_linked<S: ProcessingSample, Io: FrameIo<S>>(
+        &mut self,
+        io: &mut Io,
+        ramps: [FloatRamp; 10],
+        sample_rate: f64,
+    ) {
+        for frame in 0..io.frames() {
+            // Complete detection before overwriting any linked channel.
+            let peak = (0..io.channel_count()).fold(0.0_f64, |peak, channel| {
+                peak.max(io.read(channel, frame).abs())
+            });
+            let values = ramps.map(|ramp| ramp.sample(frame));
+            let gain = self.coefficient(peak, values, sample_rate);
+            for channel in 0..io.channel_count() {
+                io.write(channel, frame, S::from_f64(io.read(channel, frame) * gain));
+            }
+        }
+    }
 }
 
 impl<S: ProcessingSample> RtProcessor<S> for Compressor {
@@ -221,35 +242,19 @@ impl<S: ProcessingSample> RtProcessor<S> for Compressor {
             ProcessIo::Separate {
                 inputs,
                 mut outputs,
-            } => {
-                let input = inputs.get(0).expect("validated compressor input");
-                let mut output = outputs.get_mut(0).expect("validated compressor output");
-                for frame in 0..input.frames() {
-                    let peak = input
-                        .channels()
-                        .fold(0.0_f64, |peak, ch| peak.max(ch[frame].to_f64().abs()));
-                    let values = ramps.map(|ramp| ramp.sample(frame));
-                    let gain = self.coefficient(peak, values, ctx.processing_sr);
-                    for channel in 0..input.channel_count() {
-                        output.channel_mut(channel)[frame] =
-                            S::from_f64(input.channel(channel)[frame].to_f64() * gain);
-                    }
-                }
-            }
-            ProcessIo::InPlace { mut pairs, .. } => {
-                let mut block = pairs.get_mut(0, 0).expect("validated compressor pair");
-                for frame in 0..block.frames() {
-                    // Complete detection before overwriting any linked channel.
-                    let peak = (0..block.channel_count()).fold(0.0_f64, |peak, ch| {
-                        peak.max(block.channel(ch)[frame].to_f64().abs())
-                    });
-                    let values = ramps.map(|ramp| ramp.sample(frame));
-                    let gain = self.coefficient(peak, values, ctx.processing_sr);
-                    for channel in block.channels_mut() {
-                        channel[frame] = S::from_f64(channel[frame].to_f64() * gain);
-                    }
-                }
-            }
+            } => self.process_linked(
+                &mut SeparateFrames::new(
+                    inputs.get(0).expect("validated compressor input"),
+                    outputs.get_mut(0).expect("validated compressor output"),
+                ),
+                ramps,
+                ctx.processing_sr,
+            ),
+            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
+                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated compressor pair")),
+                ramps,
+                ctx.processing_sr,
+            ),
             ProcessIo::ReadOnly { .. } => unreachable!("compressor requires an output"),
         }
         if let Some(signal) = &self.signal

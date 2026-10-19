@@ -4,8 +4,8 @@ use super::dynamics::{
     float_specs, resolve_float, sanitize_sample_rate, validate_float_domains, validate_linked_io,
 };
 use crate::{
-    buffer::{PreparedIo, ProcessIo},
-    control::{ParamSpec, ProcessParameters},
+    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    control::{FloatRamp, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
 use moiren_core::protocol::{ParamValue, ParameterId, ProcessorId};
@@ -91,22 +91,45 @@ impl Eq {
         ]
     }
 
-    fn process_sample<S: ProcessingSample>(
-        state: &mut EqState,
-        sample: S,
-        coefficients: [f64; 5],
-    ) -> S {
-        let input = sample.to_f64();
-        let output = coefficients[0] * input
+    fn process_sample(state: &mut EqState, sample: f64, coefficients: [f64; 5]) -> f64 {
+        let output = coefficients[0] * sample
             + coefficients[1] * state.input_1
             + coefficients[2] * state.input_2
             - coefficients[3] * state.output_1
             - coefficients[4] * state.output_2;
         state.input_2 = state.input_1;
-        state.input_1 = input;
+        state.input_1 = sample;
         state.output_2 = state.output_1;
         state.output_1 = output;
-        S::from_f64(output)
+        output
+    }
+    /// One kernel for both transports. Coefficients depend only on the frame
+    /// index, so they are formed once per frame and shared across channels;
+    /// per-channel state recurrences are unaffected by the traversal order.
+    fn process_linked<S: ProcessingSample, Io: FrameIo<S>>(
+        &mut self,
+        io: &mut Io,
+        frequency: FloatRamp,
+        gain: FloatRamp,
+        q: FloatRamp,
+        sample_rate: f64,
+    ) {
+        for frame in 0..io.frames() {
+            let coefficients = Self::coefficients(
+                frequency.sample(frame),
+                gain.sample(frame),
+                q.sample(frame),
+                sample_rate,
+            );
+            for channel in 0..io.channel_count() {
+                let output = Self::process_sample(
+                    &mut self.states[channel],
+                    io.read(channel, frame),
+                    coefficients,
+                );
+                io.write(channel, frame, S::from_f64(output));
+            }
+        }
     }
 }
 
@@ -150,43 +173,23 @@ impl<S: ProcessingSample> RtProcessor<S> for Eq {
             ProcessIo::Separate {
                 inputs,
                 mut outputs,
-            } => {
-                let input = inputs.get(0).expect("validated EQ input");
-                let mut output = outputs.get_mut(0).expect("validated EQ output");
-                for channel in 0..input.channel_count() {
-                    let source = input.channel(channel);
-                    let destination = output.channel_mut(channel);
-                    for frame in 0..source.len() {
-                        let coefficients = Self::coefficients(
-                            frequency.sample(frame),
-                            gain.sample(frame),
-                            q.sample(frame),
-                            ctx.processing_sr,
-                        );
-                        destination[frame] = Self::process_sample(
-                            &mut self.states[channel],
-                            source[frame],
-                            coefficients,
-                        );
-                    }
-                }
-            }
-            ProcessIo::InPlace { mut pairs, .. } => {
-                let mut block = pairs.get_mut(0, 0).expect("validated EQ pair");
-                for channel in 0..block.channel_count() {
-                    let samples = block.channel_mut(channel);
-                    for (frame, sample) in samples.iter_mut().enumerate() {
-                        let coefficients = Self::coefficients(
-                            frequency.sample(frame),
-                            gain.sample(frame),
-                            q.sample(frame),
-                            ctx.processing_sr,
-                        );
-                        *sample =
-                            Self::process_sample(&mut self.states[channel], *sample, coefficients);
-                    }
-                }
-            }
+            } => self.process_linked(
+                &mut SeparateFrames::new(
+                    inputs.get(0).expect("validated EQ input"),
+                    outputs.get_mut(0).expect("validated EQ output"),
+                ),
+                frequency,
+                gain,
+                q,
+                ctx.processing_sr,
+            ),
+            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
+                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated EQ pair")),
+                frequency,
+                gain,
+                q,
+                ctx.processing_sr,
+            ),
             ProcessIo::ReadOnly { .. } => unreachable!("EQ requires an output"),
         }
     }
