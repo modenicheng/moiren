@@ -14,37 +14,9 @@ use moiren_windows_audio::{
     latency::{LatencyBudgetPolicy, NativeStreamTiming},
     render::DemandRenderer,
 };
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    cell::Cell,
-};
 
-struct Allocator;
-thread_local! { static TRACK: Cell<bool> = const { Cell::new(false) }; static COUNTS: Cell<(usize,usize)> = const { Cell::new((0,0)) }; }
-unsafe impl GlobalAlloc for Allocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if TRACK.try_with(Cell::get).unwrap_or(false) {
-            COUNTS.with(|count| {
-                let (a, d) = count.get();
-                count.set((a + 1, d));
-            });
-        }
-        // SAFETY: Forward the caller's unchanged allocation contract.
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if TRACK.try_with(Cell::get).unwrap_or(false) {
-            COUNTS.with(|count| {
-                let (a, d) = count.get();
-                count.set((a, d + 1));
-            });
-        }
-        // SAFETY: The allocation originated from this System allocator.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-#[global_allocator]
-static ALLOCATOR: Allocator = Allocator;
+mod common;
+
 struct Constant(f32);
 impl RtAudioSource<f32> for Constant {
     fn channel_count(&self) -> usize {
@@ -135,18 +107,16 @@ fn every_output_routes_its_own_graph_signal_without_rt_allocation_or_destruction
     let mut master_samples = [0.0; 672];
     let mut follower_samples = [0.0; 480];
     let mut routed_frames = 0;
-    COUNTS.with(|count| count.set((0, 0)));
-    TRACK.with(|track| track.set(true));
-    for _ in 0..1000 {
-        master.render_interleaved(&mut master_samples).unwrap();
-        follower.read_interleaved(&mut follower_samples).unwrap();
-        routed_frames += follower_samples
-            .iter()
-            .filter(|&&sample| sample == -0.5)
-            .count();
-    }
-    TRACK.with(|track| track.set(false));
-    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    common::assert_allocates_nothing(|| {
+        for _ in 0..1000 {
+            master.render_interleaved(&mut master_samples).unwrap();
+            follower.read_interleaved(&mut follower_samples).unwrap();
+            routed_frames += follower_samples
+                .iter()
+                .filter(|&&sample| sample == -0.5)
+                .count();
+        }
+    });
     assert!(
         routed_frames > 0,
         "follower must render its own nonzero signal"
@@ -276,29 +246,27 @@ fn persistent_native_demand_deficit_is_not_hidden_by_healthy_wake_intervals() {
         let mut master_at = 336;
         let mut follower_at = 240;
         let mut follower_event = 1_usize;
-        COUNTS.with(|count| count.set((0, 0)));
-        TRACK.with(|track| track.set(true));
-        while master_at.min(follower_at) < 48000 * 30 {
-            if master_at <= follower_at {
-                master
-                    .render_interleaved(&mut master_samples[..672])
-                    .unwrap();
-                master_at += 336;
-            } else {
-                let demand = match follower_event % 120 {
-                    0 => paired_demands[0],
-                    1 if follower_event > 1 => paired_demands[1],
-                    _ => 240,
-                };
-                follower
-                    .read_interleaved(&mut follower_samples[..demand * 2])
-                    .unwrap();
-                follower_at += 240;
-                follower_event += 1;
+        common::assert_allocates_nothing(|| {
+            while master_at.min(follower_at) < 48000 * 30 {
+                if master_at <= follower_at {
+                    master
+                        .render_interleaved(&mut master_samples[..672])
+                        .unwrap();
+                    master_at += 336;
+                } else {
+                    let demand = match follower_event % 120 {
+                        0 => paired_demands[0],
+                        1 if follower_event > 1 => paired_demands[1],
+                        _ => 240,
+                    };
+                    follower
+                        .read_interleaved(&mut follower_samples[..demand * 2])
+                        .unwrap();
+                    follower_at += 240;
+                    follower_event += 1;
+                }
             }
-        }
-        TRACK.with(|track| track.set(false));
-        assert_eq!(COUNTS.with(Cell::get), (0, 0));
+        });
         let counters = observer.snapshot();
         assert_eq!(counters.dropped_frames, 0, "{counters:?}");
         assert_eq!(counters.underrun_frames, 0, "{counters:?}");

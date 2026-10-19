@@ -6,7 +6,10 @@ use moiren_windows_audio::latency::{
     RenderQueuePolicy, prepare_latency_budget,
 };
 
-const OUTPUT_RATE: u32 = 48_000;
+mod common;
+
+use common::{OUTPUT_RATE, burst_delay};
+
 const RENDER_PERIOD: u32 = 336;
 const RENDER_TARGET: u32 = 480;
 const PAUSE_START: u64 = 20 * OUTPUT_RATE as u64;
@@ -103,19 +106,17 @@ struct FaultResult {
     bridge: BridgeSnapshot,
 }
 
-fn burst_delay(event: u64, frames: u32) -> u32 {
-    if event % 17 < 8 { frames } else { 0 }
-}
-
 fn simulate(case: FaultCase, seconds: u32) -> FaultResult {
     let budget = case.budget(case.fault.input_target()).unwrap();
     let (mut ingress, mut source, observer) = capture_bridge(
         ClockBridgeConfig::with_prepared_input(case.input_rate, 2, budget.input),
     )
     .unwrap();
-    let capture_interval = f64::from(case.capture_period()) * f64::from(OUTPUT_RATE)
-        / f64::from(case.input_rate)
-        / (1.0 + f64::from(case.drift_ppm) / 1_000_000.0);
+    let capture_interval = common::capture_interval(
+        f64::from(case.capture_period()),
+        case.input_rate,
+        f64::from(case.drift_ppm),
+    );
     let mut capture_event = 1u64;
     let mut nominal_capture_at = capture_interval + f64::from(case.phase_frames);
     let mut capture_at =
@@ -149,14 +150,8 @@ fn simulate(case: FaultCase, seconds: u32) -> FaultResult {
         let capture_next =
             capture_at < render_at as f64 || (capture_at == render_at as f64 && !case.render_first);
         if capture_next {
-            for (frame, samples) in payload.as_chunks_mut::<8>().0.iter_mut().enumerate() {
-                let sample = (position + frame as u64) as f32;
-                samples[..4].copy_from_slice(&sample.to_le_bytes());
-                samples[4..].copy_from_slice(&sample.to_le_bytes());
-            }
-            let stamp = ((nominal_capture_at - capture_interval).max(0.0) * 10_000_000.0
-                / f64::from(OUTPUT_RATE)) as u64
-                + 1;
+            common::fill_ramp(&mut payload, position);
+            let stamp = common::capture_stamp(nominal_capture_at, capture_interval);
             ingress
                 .push_packet(
                     &payload,

@@ -6,7 +6,10 @@ use moiren_windows_audio::latency::{
     RenderQueuePolicy, prepare_latency_budget,
 };
 
-const OUTPUT_RATE: u32 = 48_000;
+mod common;
+
+use common::OUTPUT_RATE;
+
 const CAPACITY: u32 = 1_056;
 const LATE_FRAMES: u32 = 96;
 
@@ -105,11 +108,7 @@ struct StartupResult {
 }
 
 fn burst_delay(event: u64) -> u64 {
-    if event % 17 < 8 {
-        u64::from(LATE_FRAMES)
-    } else {
-        0
-    }
+    u64::from(common::burst_delay(event, LATE_FRAMES))
 }
 
 fn simulate(case: StartupCase, seconds: u32) -> StartupResult {
@@ -119,9 +118,11 @@ fn simulate(case: StartupCase, seconds: u32) -> StartupResult {
     )
     .unwrap();
     let (capture_start, render_start) = case.starts();
-    let capture_interval = f64::from(case.capture_period()) * f64::from(OUTPUT_RATE)
-        / f64::from(case.input_rate)
-        / (1.0 + f64::from(case.drift_ppm) / 1_000_000.0);
+    let capture_interval = common::capture_interval(
+        f64::from(case.capture_period()),
+        case.input_rate,
+        f64::from(case.drift_ppm),
+    );
     let mut capture_event = 1u64;
     let mut nominal_capture_at =
         capture_start as f64 + capture_interval + f64::from(case.phase_frames);
@@ -151,9 +152,7 @@ fn simulate(case: StartupCase, seconds: u32) -> StartupResult {
     let end = u64::from(seconds) * u64::from(OUTPUT_RATE);
     while capture_at.min(render_at as f64) <= end as f64 {
         if capture_at <= render_at as f64 {
-            let qpc = ((nominal_capture_at - capture_interval) * 10_000_000.0
-                / f64::from(OUTPUT_RATE)) as u64
-                + 1;
+            let qpc = common::capture_stamp(nominal_capture_at, capture_interval);
             ingress
                 .push_packet(
                     payload.as_flattened(),

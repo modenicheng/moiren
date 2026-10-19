@@ -1,4 +1,8 @@
 #[cfg(windows)]
+#[path = "common/mod.rs"]
+mod common;
+
+#[cfg(windows)]
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
     let mut iterations = 3;
@@ -8,21 +12,17 @@ fn main() -> anyhow::Result<()> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--iterations" => {
-                iterations = args
-                    .next()
-                    .context("--iterations requires 1..10")?
-                    .parse::<u32>()
-                    .context("--iterations expects a number")?
+                iterations = common::u32(&mut args, "--iterations", "1..10", "a number")?
             }
             "--observe-pid" => {
-                observe_pid = Some(
-                    args.next()
-                        .context("--observe-pid requires PID")?
-                        .parse::<u32>()
-                        .context("--observe-pid expects a numeric PID")?,
-                )
+                observe_pid = Some(common::u32(
+                    &mut args,
+                    "--observe-pid",
+                    "PID",
+                    "a numeric PID",
+                )?)
             }
-            "--output" => output = Some(args.next().context("--output requires a path")?),
+            "--output" => output = Some(common::value(&mut args, "--output", "a path")?),
             "--help" | "-h" => {
                 println!(
                     "w00_swdevice [--iterations 1..10] [--observe-pid PID] [--output PATH]\nCreates only temporary MoirenW00 PnP nodes and uninstalls those exact instances. No driver packages or audio endpoints installed. Administrator rights required for successful device creation."

@@ -3,40 +3,8 @@ use moiren_windows_audio::{
     latency::TelemetryMode,
     render::{RENDER_EVENT_CAPACITY, RenderCallback, RenderDiagnostics},
 };
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    cell::Cell,
-};
 
-struct Allocator;
-thread_local! {
-    static TRACK: Cell<bool> = const { Cell::new(false) };
-    static COUNTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
-}
-unsafe impl GlobalAlloc for Allocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if TRACK.try_with(Cell::get).unwrap_or(false) {
-            COUNTS.with(|count| {
-                let (a, d) = count.get();
-                count.set((a + 1, d));
-            });
-        }
-        // SAFETY: Forward the caller's allocation contract unchanged.
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        if TRACK.try_with(Cell::get).unwrap_or(false) {
-            COUNTS.with(|count| {
-                let (a, d) = count.get();
-                count.set((a, d + 1));
-            });
-        }
-        // SAFETY: The pointer originated from System.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-}
-#[global_allocator]
-static ALLOCATOR: Allocator = Allocator;
+mod common;
 
 fn callback(at: u64) -> RenderCallback {
     RenderCallback {
@@ -86,17 +54,15 @@ fn recovery_retains_preceding_callbacks_and_distinguishes_native_wake_budget() {
 #[test]
 fn late_events_replace_old_events_with_visible_loss_and_no_rt_heap_work() {
     let mut diagnostics = RenderDiagnostics::new(TelemetryMode::Trace, 75_000);
-    COUNTS.with(|count| count.set((0, 0)));
-    TRACK.with(|track| track.set(true));
-    for index in 0..RENDER_EVENT_CAPACITY + 17 {
-        let mut observation = callback(index as u64 * 50_000);
-        observation.padding_before_frames = 0;
-        observation.failed = index.is_multiple_of(2);
-        diagnostics.record(observation);
-    }
-    let snapshot = diagnostics.finish();
-    TRACK.with(|track| track.set(false));
-    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    let snapshot = common::assert_allocates_nothing(|| {
+        for index in 0..RENDER_EVENT_CAPACITY + 17 {
+            let mut observation = callback(index as u64 * 50_000);
+            observation.padding_before_frames = 0;
+            observation.failed = index.is_multiple_of(2);
+            diagnostics.record(observation);
+        }
+        diagnostics.finish()
+    });
     assert_eq!(snapshot.events.len(), RENDER_EVENT_CAPACITY);
     assert_eq!(snapshot.overwritten_events, 17);
     assert_eq!(snapshot.events[0].callback.wake_qpc_100ns, Some(850_000));

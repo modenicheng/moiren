@@ -1,4 +1,8 @@
 #[cfg(windows)]
+#[path = "common/mod.rs"]
+mod common;
+
+#[cfg(windows)]
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
     let mut endpoints = Vec::new();
@@ -7,24 +11,21 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--endpoint" => endpoints.push(
-                args.next()
-                    .context("--endpoint requires an opaque endpoint ID")?,
-            ),
+            "--endpoint" => endpoints.push(common::value(
+                &mut args,
+                "--endpoint",
+                "an opaque endpoint ID",
+            )?),
             "--seconds" => {
-                seconds = args
-                    .next()
-                    .context("--seconds requires a duration")?
-                    .parse::<u32>()
-                    .context("--seconds expects a number of seconds")?
+                seconds = common::u32(&mut args, "--seconds", "a duration", "a number of seconds")?
             }
             "--observe-pid" => {
-                observe_pid = Some(
-                    args.next()
-                        .context("--observe-pid requires a process ID")?
-                        .parse::<u32>()
-                        .context("--observe-pid expects a numeric PID")?,
-                )
+                observe_pid = Some(common::u32(
+                    &mut args,
+                    "--observe-pid",
+                    "a process ID",
+                    "a numeric PID",
+                )?)
             }
             "--help" | "-h" => {
                 println!(

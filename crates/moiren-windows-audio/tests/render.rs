@@ -1,45 +1,9 @@
 use moiren_core::graph::*;
 use moiren_engine::{boundary::*, compiler::*, runtime::*};
 use moiren_windows_audio::render::*;
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    cell::Cell,
-    time::Duration,
-};
+use std::time::Duration;
 
-struct CountingAllocator;
-thread_local! {
-    static TRACK: Cell<bool> = const { Cell::new(false) };
-    static COUNTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
-}
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let _ = TRACK.try_with(|t| {
-            if t.get() {
-                let _ = COUNTS.try_with(|n| {
-                    let (a, d) = n.get();
-                    n.set((a + 1, d));
-                });
-            }
-        });
-        // SAFETY: Forward the caller's unchanged allocation contract.
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let _ = TRACK.try_with(|t| {
-            if t.get() {
-                let _ = COUNTS.try_with(|n| {
-                    let (a, d) = n.get();
-                    n.set((a, d + 1));
-                });
-            }
-        });
-        // SAFETY: The allocation originated from this System allocator.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
+mod common;
 
 struct RampSource;
 impl RtAudioSource<f32> for RampSource {
@@ -76,23 +40,21 @@ fn fade_is_segment_independent_and_requires_successful_submission() {
         let fade = renderer.fade_control();
         fade.request_fade_in(8).unwrap();
         let mut samples = [0.0; 64];
-        COUNTS.with(|count| count.set((0, 0)));
-        TRACK.with(|track| track.set(true));
-        for segment in samples[..16].chunks_mut(chunk * 2) {
-            renderer.render_interleaved(segment).unwrap();
-        }
-        fade.request_fade_out(8).unwrap();
-        renderer.render_interleaved(&mut []).unwrap();
-        assert!(!fade.fade_out_submitted());
-        for segment in samples[16..32].chunks_mut(chunk * 2) {
-            renderer.render_interleaved(segment).unwrap();
-        }
-        assert!(!fade.fade_out_submitted());
-        renderer.acknowledge_submission();
-        assert!(fade.fade_out_submitted());
-        renderer.render_interleaved(&mut samples[32..]).unwrap();
-        TRACK.with(|track| track.set(false));
-        assert_eq!(COUNTS.with(Cell::get), (0, 0));
+        common::assert_allocates_nothing(|| {
+            for segment in samples[..16].chunks_mut(chunk * 2) {
+                renderer.render_interleaved(segment).unwrap();
+            }
+            fade.request_fade_out(8).unwrap();
+            renderer.render_interleaved(&mut []).unwrap();
+            assert!(!fade.fade_out_submitted());
+            for segment in samples[16..32].chunks_mut(chunk * 2) {
+                renderer.render_interleaved(segment).unwrap();
+            }
+            assert!(!fade.fade_out_submitted());
+            renderer.acknowledge_submission();
+            assert!(fade.fade_out_submitted());
+            renderer.render_interleaved(&mut samples[32..]).unwrap();
+        });
         for frame in 0..8 {
             let expected = frame as f32 / 1000.0 * (frame + 1) as f32 / 8.0;
             assert!((samples[frame * 2] - expected).abs() < 1e-8);
@@ -259,12 +221,8 @@ fn managed_swap_preserves_the_only_output_writer_and_coherent_timeline_without_r
     .unwrap();
     plans.publish(update.plan).unwrap();
     let mut samples = [0.0; 38];
-    COUNTS.with(|counts| counts.set((0, 0)));
-    TRACK.with(|tracking| tracking.set(true));
-    let rendered = renderer.render_interleaved(&mut samples);
-    TRACK.with(|tracking| tracking.set(false));
+    let rendered = common::assert_allocates_nothing(|| renderer.render_interleaved(&mut samples));
     assert!(rendered.is_ok());
-    assert_eq!(COUNTS.with(Cell::get), (0, 0));
     assert_eq!(samples, [0.75; 38]);
     assert_eq!(plans.active_revision(), 2);
     assert_eq!(
@@ -559,12 +517,8 @@ fn render_demand_has_no_allocations_or_deallocations() {
     let (engine, reader) = graph(48000.0);
     let mut renderer = DemandRenderer::new(engine, reader).unwrap();
     let mut samples = [0.0; 38];
-    COUNTS.with(|n| n.set((0, 0)));
-    TRACK.with(|t| t.set(true));
-    let result = renderer.render_interleaved(&mut samples);
-    TRACK.with(|t| t.set(false));
+    let result = common::assert_allocates_nothing(|| renderer.render_interleaved(&mut samples));
     assert!(result.is_ok());
-    assert_eq!(COUNTS.with(Cell::get), (0, 0));
 }
 
 #[test]

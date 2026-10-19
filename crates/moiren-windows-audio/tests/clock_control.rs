@@ -7,6 +7,8 @@ use moiren_windows_audio::latency::{
 };
 use moiren_windows_audio::stats::TIMESTAMP_ERROR;
 
+mod common;
+
 #[derive(Debug, Clone, Copy)]
 struct ClockCase {
     sample_rate: u32,
@@ -61,9 +63,8 @@ fn simulate(case: ClockCase, seconds: u32) -> ClockResult {
         |input| ClockBridgeConfig::with_prepared_input(case.sample_rate, 2, input),
     );
     let (mut ingress, mut source, observer) = capture_bridge(config).unwrap();
-    let capture_interval = case.capture_period as f64 * 48_000.0
-        / f64::from(case.sample_rate)
-        / (1.0 + case.drift_ppm / 1_000_000.0);
+    let capture_interval =
+        common::capture_interval(case.capture_period as f64, case.sample_rate, case.drift_ppm);
     let mut capture_at = capture_interval + case.phase_frames;
     let mut nominal_capture_at = capture_at;
     let render_interval = case.render_period as f64 / (1.0 + case.render_drift_ppm / 1_000_000.0);
@@ -83,14 +84,8 @@ fn simulate(case: ClockCase, seconds: u32) -> ClockResult {
             capture_at < render_at || (capture_at == render_at && !case.render_first);
         if capture_next {
             capture_events += 1;
-            let stamp = ((nominal_capture_at - capture_interval).max(0.0) * 10_000_000.0 / 48_000.0)
-                as u64
-                + 1;
-            for (frame, samples) in payload.as_chunks_mut::<8>().0.iter_mut().enumerate() {
-                let sample = (position + frame as u64) as f32;
-                samples[..4].copy_from_slice(&sample.to_le_bytes());
-                samples[4..].copy_from_slice(&sample.to_le_bytes());
-            }
+            let stamp = common::capture_stamp(nominal_capture_at, capture_interval);
+            common::fill_ramp(&mut payload, position);
             ingress
                 .push_packet(
                     &payload,

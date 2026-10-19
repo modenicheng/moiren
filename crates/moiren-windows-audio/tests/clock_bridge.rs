@@ -2,10 +2,8 @@ use moiren_windows_audio::{
     clock_bridge::*,
     stats::{DISCONTINUITY, SILENT, TIMESTAMP_ERROR},
 };
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    cell::Cell,
-};
+
+mod common;
 
 #[test]
 fn virtual_zero_positions_do_not_create_gaps_but_native_flags_still_reset() {
@@ -42,40 +40,6 @@ fn virtual_zero_positions_do_not_create_gaps_but_native_flags_still_reset() {
         .unwrap();
     assert_eq!(observer.snapshot().discontinuities, 1);
 }
-
-struct CountingAllocator;
-thread_local! {
-    static TRACK: Cell<bool> = const { Cell::new(false) };
-    static COUNTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
-}
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let _ = TRACK.try_with(|t| {
-            if t.get() {
-                let _ = COUNTS.try_with(|c| {
-                    let (a, d) = c.get();
-                    c.set((a + 1, d));
-                });
-            }
-        });
-        // SAFETY: Forward the caller's unchanged allocation contract.
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let _ = TRACK.try_with(|t| {
-            if t.get() {
-                let _ = COUNTS.try_with(|c| {
-                    let (a, d) = c.get();
-                    c.set((a, d + 1));
-                });
-            }
-        });
-        // SAFETY: The allocation originated from this System allocator.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 fn config() -> ClockBridgeConfig {
     ClockBridgeConfig {
@@ -447,18 +411,16 @@ fn ingress_resampling_underrun_and_reset_allocate_and_free_nothing() {
     let (mut input, mut source, observer) = capture_bridge(config()).unwrap();
     let payload = bytes(&[0.25; 64]);
     let mut out = [99.0; 64];
-    COUNTS.with(|c| c.set((0, 0)));
-    TRACK.with(|t| t.set(true));
-    input.push_packet(&payload, packet(32, 0, 0)).unwrap();
-    source.read_interleaved(&mut out).unwrap();
-    source.read_interleaved(&mut out).unwrap();
-    input
-        .push_packet(&payload, packet(32, 32, DISCONTINUITY))
-        .unwrap();
-    source.read_interleaved(&mut out).unwrap();
-    let snapshot = observer.snapshot();
-    TRACK.with(|t| t.set(false));
-    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    let snapshot = common::assert_allocates_nothing(|| {
+        input.push_packet(&payload, packet(32, 0, 0)).unwrap();
+        source.read_interleaved(&mut out).unwrap();
+        source.read_interleaved(&mut out).unwrap();
+        input
+            .push_packet(&payload, packet(32, 32, DISCONTINUITY))
+            .unwrap();
+        source.read_interleaved(&mut out).unwrap();
+        observer.snapshot()
+    });
     assert!(snapshot.underrun_frames > 0);
 }
 
@@ -698,13 +660,13 @@ fn running_backlog_recovery_and_fade_allocate_and_free_nothing() {
     let (mut input, mut source, observer) = running_recovery_bridge(recovery_config(true, 128));
     let payload = ramp_bytes(64, 256);
     let mut output = [0.0; 64];
-    COUNTS.with(|counts| counts.set((0, 0)));
-    TRACK.with(|track| track.set(true));
-    input.push_packet(&payload, packet(192, 64, 0)).unwrap();
-    let report = source.read_interleaved(&mut output).unwrap();
-    let snapshot = observer.snapshot();
-    TRACK.with(|track| track.set(false));
-    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    let (report, snapshot) = common::assert_allocates_nothing(|| {
+        input.push_packet(&payload, packet(192, 64, 0)).unwrap();
+        (
+            source.read_interleaved(&mut output).unwrap(),
+            observer.snapshot(),
+        )
+    });
     assert_eq!(report.transferred_frames, 32);
     assert!(report.discontinuity);
     assert_eq!(snapshot.resets, 1);
@@ -753,15 +715,13 @@ fn running_age_recovery_and_query_allocate_and_free_nothing() {
         .unwrap();
     source.read_interleaved(&mut [0.0; 2]).unwrap();
     let mut output = [0.0; 2];
-    COUNTS.with(|counts| counts.set((0, 0)));
-    TRACK.with(|track| track.set(true));
-    let report = source
-        .read_interleaved_at_qpc(&mut output, Some(1_033_333))
-        .unwrap();
-    let _ = source.oldest_frame_age(1_033_333);
-    let snapshot = observer.snapshot();
-    TRACK.with(|track| track.set(false));
-    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    let (report, snapshot) = common::assert_allocates_nothing(|| {
+        let report = source
+            .read_interleaved_at_qpc(&mut output, Some(1_033_333))
+            .unwrap();
+        let _ = source.oldest_frame_age(1_033_333);
+        (report, observer.snapshot())
+    });
     assert!(report.discontinuity);
     assert_eq!(snapshot.age_recoveries, 1);
     assert!(snapshot.age_discarded_frames > 0);
@@ -907,13 +867,13 @@ fn low_water_controller_guard_allocates_and_frees_nothing() {
     let (mut input, mut source, observer) = running_recovery_bridge(config);
     let payload = ramp_bytes(64, 192);
     let mut output = [0.0; 320];
-    COUNTS.with(|counts| counts.set((0, 0)));
-    TRACK.with(|track| track.set(true));
-    input.push_packet(&payload, packet(128, 64, 0)).unwrap();
-    let report = source.read_interleaved(&mut output).unwrap();
-    let snapshot = observer.snapshot();
-    TRACK.with(|track| track.set(false));
-    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    let (report, snapshot) = common::assert_allocates_nothing(|| {
+        input.push_packet(&payload, packet(128, 64, 0)).unwrap();
+        (
+            source.read_interleaved(&mut output).unwrap(),
+            observer.snapshot(),
+        )
+    });
     assert_eq!(report.transferred_frames, 160);
     assert_eq!(report.xruns, 0);
     assert_eq!(snapshot.low_water_guard_frames, 1);
@@ -935,26 +895,24 @@ fn queued_packet_stamp_acceptance_and_query_allocate_and_free_nothing() {
         )
         .unwrap();
     let mut output = [0.0; 16];
-    COUNTS.with(|counts| counts.set((0, 0)));
-    TRACK.with(|track| track.set(true));
-    input
-        .push_packet(
-            &[],
-            CapturePacket {
-                frames: 8,
-                flags: SILENT,
-                device_position_frames: 8,
-                qpc_100ns: 1_001_667,
-            },
-        )
-        .unwrap();
-    let report = source.read_interleaved(&mut output).unwrap();
-    let stamp = source.oldest_frame_stamp().unwrap();
-    let age = source.oldest_frame_age(1_010_000).unwrap();
-    let unavailable_age = source.oldest_frame_age(0);
-    let snapshot = observer.snapshot();
-    TRACK.with(|track| track.set(false));
-    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    let (report, stamp, age, unavailable_age, snapshot) = common::assert_allocates_nothing(|| {
+        input
+            .push_packet(
+                &[],
+                CapturePacket {
+                    frames: 8,
+                    flags: SILENT,
+                    device_position_frames: 8,
+                    qpc_100ns: 1_001_667,
+                },
+            )
+            .unwrap();
+        let report = source.read_interleaved(&mut output).unwrap();
+        let stamp = source.oldest_frame_stamp().unwrap();
+        let age = source.oldest_frame_age(1_010_000).unwrap();
+        let unavailable_age = source.oldest_frame_age(0);
+        (report, stamp, age, unavailable_age, observer.snapshot())
+    });
     assert_eq!(report.transferred_frames, 8);
     assert_eq!(report.xruns, 0);
     assert_eq!(stamp.packet_position_frames, 8);
@@ -985,28 +943,26 @@ fn rate_clock_windows_and_feed_forward_allocate_and_free_nothing() {
     let mut output = [0.0; 960];
     let mut estimate = None;
     let mut xruns = 0;
-    COUNTS.with(|counts| counts.set((0, 0)));
-    TRACK.with(|track| track.set(true));
-    for index in 0..440 {
-        input
-            .push_packet(
-                &[],
-                CapturePacket {
-                    frames: 480,
-                    flags: SILENT,
-                    device_position_frames: index * 480,
-                    qpc_100ns: 1_000_000 + index * 100_000,
-                },
-            )
-            .unwrap();
-        xruns += source.read_interleaved(&mut output).unwrap().xruns;
-        estimate = source
-            .oldest_frame_stamp()
-            .and_then(|stamp| stamp.rate_correction_ppm);
-        let _ = observer.snapshot();
-    }
-    TRACK.with(|track| track.set(false));
-    assert_eq!(COUNTS.with(Cell::get), (0, 0));
+    common::assert_allocates_nothing(|| {
+        for index in 0..440 {
+            input
+                .push_packet(
+                    &[],
+                    CapturePacket {
+                        frames: 480,
+                        flags: SILENT,
+                        device_position_frames: index * 480,
+                        qpc_100ns: 1_000_000 + index * 100_000,
+                    },
+                )
+                .unwrap();
+            xruns += source.read_interleaved(&mut output).unwrap().xruns;
+            estimate = source
+                .oldest_frame_stamp()
+                .and_then(|stamp| stamp.rate_correction_ppm);
+            let _ = observer.snapshot();
+        }
+    });
     assert_eq!(estimate, Some(0));
     assert_eq!(xruns, 0);
 }

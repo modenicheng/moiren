@@ -6,7 +6,9 @@ use moiren_windows_audio::{
     stats::{DISCONTINUITY, SILENT, TIMESTAMP_ERROR},
 };
 
-const ORIGIN: u64 = 1_000_000;
+mod common;
+
+use common::clock::ORIGIN;
 
 fn config(capacity: usize) -> ClockBridgeConfig {
     ClockBridgeConfig {
@@ -18,17 +20,13 @@ fn config(capacity: usize) -> ClockBridgeConfig {
     }
 }
 
+// Local 48 kHz wrappers over the shared rate-parameterized constructors.
 fn packet(frames: usize, position: u64) -> CapturePacket {
-    CapturePacket {
-        frames,
-        flags: SILENT,
-        device_position_frames: position,
-        qpc_100ns: ORIGIN + (position * 10_000_000).div_ceil(48_000),
-    }
+    common::clock::packet(frames, position, 48_000)
 }
 
 fn push(ingress: &mut CaptureIngress, frames: usize, position: u64) -> usize {
-    ingress.push_packet(&[], packet(frames, position)).unwrap()
+    common::clock::push(ingress, frames, position, 48_000)
 }
 
 fn stamp(generation: u64, position: u64, accepted: u64, offset: u64) -> QueuedFrameStamp {

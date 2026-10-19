@@ -1,9 +1,11 @@
 use moiren_windows_audio::{
-    clock_bridge::{CaptureIngress, CapturePacket, ClockBridgeConfig, ClockSource, capture_bridge},
+    clock_bridge::{CapturePacket, ClockBridgeConfig, capture_bridge},
     stats::{DISCONTINUITY, SILENT, TIMESTAMP_ERROR},
 };
 
-const ORIGIN: u64 = 1_000_000;
+mod common;
+
+use common::clock::{ORIGIN, consume, packet, push};
 
 fn config(capacity: usize, rate: u32) -> ClockBridgeConfig {
     ClockBridgeConfig {
@@ -13,29 +15,6 @@ fn config(capacity: usize, rate: u32) -> ClockBridgeConfig {
         trim_on_prime: false,
         max_correction_ppm: 0.0,
         ..ClockBridgeConfig::default()
-    }
-}
-
-fn packet(frames: usize, position: u64, rate: u32) -> CapturePacket {
-    CapturePacket {
-        frames,
-        flags: SILENT,
-        device_position_frames: position,
-        qpc_100ns: ORIGIN + (position * 10_000_000).div_ceil(u64::from(rate)),
-    }
-}
-
-fn push(ingress: &mut CaptureIngress, frames: usize, position: u64, rate: u32) -> usize {
-    ingress
-        .push_packet(&[], packet(frames, position, rate))
-        .unwrap()
-}
-
-fn consume(source: &mut ClockSource, frames: usize) {
-    for _ in 0..frames {
-        let report = source.read_interleaved(&mut [0.0; 2]).unwrap();
-        assert_eq!(report.transferred_frames, 1);
-        assert_eq!(report.xruns, 0);
     }
 }
 

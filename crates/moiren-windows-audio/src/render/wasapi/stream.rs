@@ -500,6 +500,12 @@ pub(super) mod diagnostic_tests {
         core::{GUID, HRESULT, Result as WinResult, implement},
     };
 
+    // Deliberately independent of the shared counting allocator in
+    // `tests/common/alloc_guard.rs`: that guard counts per thread, while this
+    // probe registers one specific RenderEvent allocation by pointer and
+    // attributes its frees to the worker versus the joiner thread through
+    // atomics — the library's unit-test binary also cannot share a
+    // `tests/common` module, and only one `#[global_allocator]` may exist.
     struct EventAllocator;
     thread_local! {
         static TRACK_EVENTS: Cell<bool> = const { Cell::new(false) };

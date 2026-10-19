@@ -16,8 +16,6 @@ use moiren_engine::{
 use moiren_windows_audio::clock_bridge;
 use moiren_windows_audio::professional::native;
 use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    cell::Cell,
     marker::PhantomData,
     sync::{
         Arc,
@@ -49,39 +47,14 @@ use native::{NativeStream, NativeStreamInfo, StereoFrame};
 use observations::{Counters, ProfessionalObservations};
 use owner::{Pump, Timeline, Transport, WorkerRequest};
 
-struct Allocator;
-thread_local! {
-    static TRACK: Cell<bool> = const { Cell::new(false) };
-    static ALLOCS: Cell<usize> = const { Cell::new(0) };
-    static FREES: Cell<usize> = const { Cell::new(0) };
-}
-unsafe impl GlobalAlloc for Allocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if TRACK.try_with(Cell::get).unwrap_or(false) {
-            let _ = ALLOCS.try_with(|n| n.set(n.get() + 1));
-        }
-        // SAFETY: preserve the GlobalAlloc caller's layout contract.
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if TRACK.try_with(Cell::get).unwrap_or(false) {
-            let _ = FREES.try_with(|n| n.set(n.get() + 1));
-        }
-        // SAFETY: allocations are forwarded to the same System allocator.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-#[global_allocator]
-static ALLOCATOR: Allocator = Allocator;
+// The counting allocator is the single shared copy under
+// `tests/common/alloc_guard.rs`; this separate-crate harness pulls it in with
+// `#[path]` just like the shadow-compiled modules above.
+#[path = "../../tests/common/alloc_guard.rs"]
+mod alloc_guard;
+
 fn measured<T>(f: impl FnOnce() -> T) -> T {
-    ALLOCS.with(|n| n.set(0));
-    FREES.with(|n| n.set(0));
-    TRACK.with(|n| n.set(true));
-    let value = f();
-    TRACK.with(|n| n.set(false));
-    assert_eq!(ALLOCS.with(Cell::get), 0, "RT allocated");
-    assert_eq!(FREES.with(Cell::get), 0, "RT deallocated");
-    value
+    alloc_guard::assert_allocates_nothing(f)
 }
 
 #[derive(Clone, Copy, Debug)]

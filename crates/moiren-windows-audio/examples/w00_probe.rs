@@ -1,4 +1,8 @@
 #[cfg(windows)]
+#[path = "common/mod.rs"]
+mod common;
+
+#[cfg(windows)]
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
     let mut pid = None;
@@ -9,19 +13,15 @@ fn main() -> anyhow::Result<()> {
         match arg.as_str() {
             "--list" => list = true,
             "--pid" => {
-                pid = Some(
-                    args.next()
-                        .context("--pid requires a process ID")?
-                        .parse::<u32>()
-                        .context("--pid expects a numeric PID")?,
-                )
+                pid = Some(common::u32(
+                    &mut args,
+                    "--pid",
+                    "a process ID",
+                    "a numeric PID",
+                )?)
             }
             "--seconds" => {
-                seconds = args
-                    .next()
-                    .context("--seconds requires a duration")?
-                    .parse::<u32>()
-                    .context("--seconds expects a number of seconds")?
+                seconds = common::u32(&mut args, "--seconds", "a duration", "a number of seconds")?
             }
             "--help" | "-h" => {
                 println!(

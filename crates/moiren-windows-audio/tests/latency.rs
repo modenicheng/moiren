@@ -6,44 +6,8 @@ use moiren_windows_audio::{
     },
     stats::SILENT,
 };
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    cell::Cell,
-};
 
-struct CountingAllocator;
-thread_local! {
-    static TRACKING: Cell<bool> = const { Cell::new(false) };
-    static ALLOCATIONS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
-}
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let _ = TRACKING.try_with(|tracking| {
-            if tracking.get() {
-                let _ = ALLOCATIONS.try_with(|counts| {
-                    let (allocated, freed) = counts.get();
-                    counts.set((allocated + 1, freed));
-                });
-            }
-        });
-        // SAFETY: Forward the unchanged allocator contract to System.
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        let _ = TRACKING.try_with(|tracking| {
-            if tracking.get() {
-                let _ = ALLOCATIONS.try_with(|counts| {
-                    let (allocated, freed) = counts.get();
-                    counts.set((allocated, freed + 1));
-                });
-            }
-        });
-        // SAFETY: This allocation originated from the same System allocator.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-}
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
+mod common;
 
 fn callback(wake: u64, duration: u64) -> CallbackObservation {
     CallbackObservation {
@@ -196,34 +160,32 @@ fn trace_overflow_keeps_audio_complete_without_allocation_or_deallocation() {
         .unwrap();
     let mut recorder = LatencyRecorder::new(TelemetryMode::Trace);
     let mut output = [0.0f32; 8];
-    ALLOCATIONS.with(|counts| counts.set((0, 0)));
-    TRACKING.with(|tracking| tracking.set(true));
-    for index in 0..TRACE_CAPACITY + 17 {
-        assert_eq!(
-            ingress
-                .push_packet(
-                    &[],
-                    CapturePacket {
-                        frames: 4,
-                        flags: SILENT,
-                        device_position_frames: 8 + index as u64 * 4,
-                        qpc_100ns: 1 + index as u64,
-                    }
-                )
-                .unwrap(),
-            4
-        );
-        assert_eq!(
-            source
-                .read_interleaved(&mut output)
-                .unwrap()
-                .transferred_frames,
-            4
-        );
-        recorder.record(callback(100 + index as u64 * 100, 20));
-    }
-    TRACKING.with(|tracking| tracking.set(false));
-    assert_eq!(ALLOCATIONS.with(Cell::get), (0, 0));
+    common::assert_allocates_nothing(|| {
+        for index in 0..TRACE_CAPACITY + 17 {
+            assert_eq!(
+                ingress
+                    .push_packet(
+                        &[],
+                        CapturePacket {
+                            frames: 4,
+                            flags: SILENT,
+                            device_position_frames: 8 + index as u64 * 4,
+                            qpc_100ns: 1 + index as u64,
+                        },
+                    )
+                    .unwrap(),
+                4
+            );
+            assert_eq!(
+                source
+                    .read_interleaved(&mut output)
+                    .unwrap()
+                    .transferred_frames,
+                4
+            );
+            recorder.record(callback(100 + index as u64 * 100, 20));
+        }
+    });
     // Snapshot ownership is finalized off the audio path, after recording ends.
     let snapshot = recorder.snapshot();
     assert_eq!(snapshot.trace.records().len(), TRACE_CAPACITY);
