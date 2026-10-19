@@ -1,6 +1,6 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
 use super::dynamics::{
-    db_to_gain, float_specs, sanitize_sample_rate, smooth, validate_float_domains,
+    db_to_gain, float_specs, resolve_float, sanitize_sample_rate, smooth, validate_float_domains,
     validate_linked_io,
 };
 use crate::{
@@ -8,7 +8,7 @@ use crate::{
     control::{ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
-use moiren_core::protocol::{ParameterId, ProcessorId};
+use moiren_core::protocol::{ParamValue, ParameterId, ProcessorId};
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -82,6 +82,21 @@ impl Gate {
             settings.range_db,
         ];
         float_specs(id, &Self::DOMAINS, values)
+    }
+
+    /// Effective settings after applying recorded parameter intent by id; the
+    /// result feeds both the default kernel construction and [`Gate::parameters`].
+    pub(crate) fn resolve_settings(
+        settings: GateSettings,
+        mut intent: impl FnMut(ParameterId, ParamValue) -> ParamValue,
+    ) -> GateSettings {
+        GateSettings {
+            threshold_db: resolve_float(&mut intent, Self::THRESHOLD, settings.threshold_db),
+            attack_ms: resolve_float(&mut intent, Self::ATTACK, settings.attack_ms),
+            release_ms: resolve_float(&mut intent, Self::RELEASE, settings.release_ms),
+            hold_ms: resolve_float(&mut intent, Self::HOLD, settings.hold_ms),
+            range_db: resolve_float(&mut intent, Self::RANGE, settings.range_db),
+        }
     }
 
     fn process_frame(&mut self, peak: f64, settings: GateSettings, sample_rate: f64) -> f64 {

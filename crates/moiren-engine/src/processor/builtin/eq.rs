@@ -1,14 +1,14 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
 use super::MAX_CHANNELS;
 use super::dynamics::{
-    float_specs, sanitize_sample_rate, validate_float_domains, validate_linked_io,
+    float_specs, resolve_float, sanitize_sample_rate, validate_float_domains, validate_linked_io,
 };
 use crate::{
     buffer::{PreparedIo, ProcessIo},
     control::{ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
-use moiren_core::protocol::{ParameterId, ProcessorId};
+use moiren_core::protocol::{ParamValue, ParameterId, ProcessorId};
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -57,6 +57,19 @@ impl Eq {
     pub fn parameters(id: ProcessorId, settings: EqSettings) -> [ParamSpec; 3] {
         let values = [settings.frequency_hz, settings.gain_db, settings.q];
         float_specs(id, &Self::DOMAINS, values)
+    }
+
+    /// Effective settings after applying recorded parameter intent by id; the
+    /// result feeds both the default kernel construction and [`Eq::parameters`].
+    pub(crate) fn resolve_settings(
+        settings: EqSettings,
+        mut intent: impl FnMut(ParameterId, ParamValue) -> ParamValue,
+    ) -> EqSettings {
+        EqSettings {
+            frequency_hz: resolve_float(&mut intent, Self::FREQUENCY, settings.frequency_hz),
+            gain_db: resolve_float(&mut intent, Self::GAIN, settings.gain_db),
+            q: resolve_float(&mut intent, Self::Q, settings.q),
+        }
     }
 
     fn coefficients(frequency_hz: f64, gain_db: f64, q: f64, sample_rate: f64) -> [f64; 5] {

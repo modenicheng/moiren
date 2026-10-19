@@ -9,7 +9,7 @@ use std::{
 
 use moiren_core::{
     graph::{EdgeId, NodeId},
-    protocol::{ParamValue, ParameterId, ProcessorId},
+    protocol::{ParamValue, ProcessorId},
 };
 
 use super::{
@@ -19,6 +19,7 @@ use super::{
 };
 use crate::{
     compiler::{self, CompiledBindings, CompiledUpdate},
+    processor::{Compressor, Delay, Eq, Gain, Gate, Limiter, Pan},
     runtime::{PlanControlPort, PlanSnapshot},
     sample::ProcessingSample,
     spectrum::SignalSpectrumAnalyzer,
@@ -168,6 +169,10 @@ fn prepare<S: ProcessingSample>(
                 "backend bound a host-owned builtin processor".into(),
             ));
         }
+        // One intent lookup per parameter id: recorded node parameters
+        // override the configuration's default initial values. The kernels'
+        // own `resolve*` entry points apply it, so the settings-to-parameter
+        // mapping lives with each processor instead of here.
         let initial = |parameter, fallback| {
             job.project
                 .parameters
@@ -176,122 +181,35 @@ fn prepare<S: ProcessingSample>(
                 .map_or(fallback, |value| value.value)
         };
         let result = match configuration {
-            NodeConfig::Gain { initial: value } => prepared.bindings.bind_gain(
-                node,
-                float(initial(
-                    crate::processor::Gain::LEVEL,
-                    ParamValue::Float(*value),
-                )),
-            ),
-            NodeConfig::Pan { initial: value } => prepared.bindings.bind_pan_with_stereo(
-                node,
-                float(initial(
-                    crate::processor::Pan::POSITION,
-                    ParamValue::Float(*value),
-                )),
-                initial(crate::processor::Pan::MONO, ParamValue::Bool(false))
-                    == ParamValue::Bool(true),
-                initial(crate::processor::Pan::SWAP, ParamValue::Bool(false))
-                    == ParamValue::Bool(true),
-            ),
+            NodeConfig::Gain { initial: value } => prepared
+                .bindings
+                .bind_gain(node, Gain::resolve_level(*value, initial)),
+            NodeConfig::Pan { initial: value } => {
+                let (position, mono, swap) = Pan::resolve(*value, false, false, initial);
+                prepared
+                    .bindings
+                    .bind_pan_with_stereo(node, position, mono, swap)
+            }
             NodeConfig::Compressor(settings) => {
-                let mut settings = *settings;
-                let values = [
-                    &mut settings.input_gain_db,
-                    &mut settings.threshold_db,
-                    &mut settings.ratio,
-                    &mut settings.attack_ms,
-                    &mut settings.release_ms,
-                    &mut settings.hold_ms,
-                    &mut settings.knee_db,
-                    &mut settings.makeup_gain_db,
-                    &mut settings.output_gain_db,
-                    &mut settings.mix,
-                ];
-                for (index, value) in values.into_iter().enumerate() {
-                    *value = float(initial(
-                        ParameterId(index as u32),
-                        ParamValue::Float(*value),
-                    ));
-                }
+                let settings = Compressor::resolve_settings(*settings, initial);
                 prepared.bindings.bind_compressor_with_signal(
                     node,
                     settings,
                     shared.signals.prepare(node, &signals).map_err(fail)?,
                 )
             }
-            NodeConfig::Eq(settings) => {
-                let mut settings = *settings;
-                settings.frequency_hz = float(initial(
-                    crate::processor::Eq::FREQUENCY,
-                    ParamValue::Float(settings.frequency_hz),
-                ));
-                settings.gain_db = float(initial(
-                    crate::processor::Eq::GAIN,
-                    ParamValue::Float(settings.gain_db),
-                ));
-                settings.q = float(initial(
-                    crate::processor::Eq::Q,
-                    ParamValue::Float(settings.q),
-                ));
-                prepared.bindings.bind_eq(node, settings)
-            }
-            NodeConfig::Gate(settings) => {
-                let mut settings = *settings;
-                settings.threshold_db = float(initial(
-                    crate::processor::Gate::THRESHOLD,
-                    ParamValue::Float(settings.threshold_db),
-                ));
-                settings.attack_ms = float(initial(
-                    crate::processor::Gate::ATTACK,
-                    ParamValue::Float(settings.attack_ms),
-                ));
-                settings.release_ms = float(initial(
-                    crate::processor::Gate::RELEASE,
-                    ParamValue::Float(settings.release_ms),
-                ));
-                settings.hold_ms = float(initial(
-                    crate::processor::Gate::HOLD,
-                    ParamValue::Float(settings.hold_ms),
-                ));
-                settings.range_db = float(initial(
-                    crate::processor::Gate::RANGE,
-                    ParamValue::Float(settings.range_db),
-                ));
-                prepared.bindings.bind_gate(node, settings)
-            }
-            NodeConfig::Limiter(settings) => {
-                let mut settings = *settings;
-                settings.threshold_db = float(initial(
-                    crate::processor::Limiter::THRESHOLD,
-                    ParamValue::Float(settings.threshold_db),
-                ));
-                settings.release_ms = float(initial(
-                    crate::processor::Limiter::RELEASE,
-                    ParamValue::Float(settings.release_ms),
-                ));
-                settings.input_gain_db = float(initial(
-                    crate::processor::Limiter::INPUT_GAIN,
-                    ParamValue::Float(settings.input_gain_db),
-                ));
-                prepared.bindings.bind_limiter(node, settings)
-            }
-            NodeConfig::Delay(settings) => {
-                let mut settings = *settings;
-                settings.delay_ms = float(initial(
-                    crate::processor::Delay::DELAY,
-                    ParamValue::Float(settings.delay_ms),
-                ));
-                settings.feedback = float(initial(
-                    crate::processor::Delay::FEEDBACK,
-                    ParamValue::Float(settings.feedback),
-                ));
-                settings.mix = float(initial(
-                    crate::processor::Delay::MIX,
-                    ParamValue::Float(settings.mix),
-                ));
-                prepared.bindings.bind_delay(node, settings)
-            }
+            NodeConfig::Eq(settings) => prepared
+                .bindings
+                .bind_eq(node, Eq::resolve_settings(*settings, initial)),
+            NodeConfig::Gate(settings) => prepared
+                .bindings
+                .bind_gate(node, Gate::resolve_settings(*settings, initial)),
+            NodeConfig::Limiter(settings) => prepared
+                .bindings
+                .bind_limiter(node, Limiter::resolve_settings(*settings, initial)),
+            NodeConfig::Delay(settings) => prepared
+                .bindings
+                .bind_delay(node, Delay::resolve_settings(*settings, initial)),
             NodeConfig::ChannelMapper(settings) => prepared
                 .bindings
                 .bind_channel_mapper(node, settings.clone()),

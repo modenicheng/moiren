@@ -39,6 +39,20 @@ pub(crate) fn smooth(current: f64, target: f64, ms: f64, sample_rate: f64) -> f6
     }
 }
 
+/// One float parameter's effective value: recorded intent over the settings
+/// fallback. A type mismatch is unreachable — project validation only records
+/// values the kernels' own float domains accept.
+pub(crate) fn resolve_float(
+    intent: &mut impl FnMut(ParameterId, ParamValue) -> ParamValue,
+    parameter: ParameterId,
+    fallback: f64,
+) -> f64 {
+    match intent(parameter, ParamValue::Float(fallback)) {
+        ParamValue::Float(value) => value,
+        _ => unreachable!("validated float parameter"),
+    }
+}
+
 /// Positional float parameter table: parameter `i` pairs `DOMAINS[i]` with
 /// `values[i]`, which is the layout every fixed-schema kernel publishes.
 pub(crate) fn float_specs<const N: usize>(

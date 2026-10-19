@@ -1,7 +1,10 @@
 //! Demand-gated sample peak/RMS over exact, contiguous source-frame windows.
 use crate::{
     buffer::{PreparedIo, ReadPorts},
-    processor::{ProcessContext, ProcessorError, RtObserver},
+    processor::{
+        ProcessContext, ProcessorError, RtObserver, TimelineHeader, WindowContinuity,
+        validate_single_input,
+    },
     sample::ProcessingSample,
     signal::ProcessSignals,
 };
@@ -14,6 +17,17 @@ pub struct AudioWindow {
     pub frame_start: u64,
     pub frame_end: u64,
     pub sample_rate: f64,
+}
+
+impl From<TimelineHeader> for AudioWindow {
+    fn from(header: TimelineHeader) -> Self {
+        Self {
+            timeline_epoch: header.timeline_epoch,
+            frame_start: header.frame_start,
+            frame_end: header.frame_end,
+            sample_rate: header.sample_rate,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,10 +52,7 @@ pub struct SignalLevelMeter {
     window_frames: usize,
     accumulated_frames: usize,
     frame_start: u64,
-    generation: u64,
-    timeline_epoch: u64,
-    next_frame: u64,
-    sample_rate: f64,
+    continuity: WindowContinuity,
     peaks: Box<[f64]>,
     squares: Box<[f64]>,
     publisher: PublisherHandle<LatestBlock<AudioWindow, ChannelLevel>>,
@@ -69,10 +80,7 @@ impl SignalLevelMeter {
             window_frames,
             accumulated_frames: 0,
             frame_start: 0,
-            generation: 0,
-            timeline_epoch: 0,
-            next_frame: 0,
-            sample_rate: 0.0,
+            continuity: WindowContinuity::new(),
             peaks: vec![0.0; channels].into_boxed_slice(),
             squares: vec![0.0; channels].into_boxed_slice(),
             publisher: publisher.handle(),
@@ -89,11 +97,7 @@ impl SignalLevelMeter {
 
 impl<S: ProcessingSample> RtObserver<S> for SignalLevelMeter {
     fn validate_inputs(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
-        if io.input_count() == 1 && io.input_channels(0) == Some(self.channels) {
-            Ok(())
-        } else {
-            Err(ProcessorError::InvalidIo)
-        }
+        validate_single_input(self.channels, io)
     }
 
     fn signal_bindings(&self) -> &[ErasedBinding] {
@@ -106,22 +110,15 @@ impl<S: ProcessingSample> RtObserver<S> for SignalLevelMeter {
         inputs: ReadPorts<'_, S>,
         mut signals: ProcessSignals<'_>,
     ) {
-        let Ok(demand) = signals.demand(&self.publisher) else {
+        let Some(restart) = self
+            .continuity
+            .begin_window(&mut signals, &self.publisher, ctx)
+        else {
             return;
         };
-        if !demand.active {
-            return;
-        }
-        if self.generation != demand.generation
-            || self.timeline_epoch != ctx.timeline_epoch
-            || self.next_frame != ctx.timeline_start
-            || self.sample_rate != ctx.processing_sr
-        {
+        if restart {
             self.reset_window();
         }
-        self.generation = demand.generation;
-        self.timeline_epoch = ctx.timeline_epoch;
-        self.sample_rate = ctx.processing_sr;
         let input = inputs.get(0).expect("validated signal meter input");
         for frame in 0..ctx.frames {
             if self.accumulated_frames == 0 {
@@ -135,12 +132,10 @@ impl<S: ProcessingSample> RtObserver<S> for SignalLevelMeter {
             self.accumulated_frames += 1;
             if self.accumulated_frames == self.window_frames {
                 if let Ok(mut write) = signals.try_write(&self.publisher, self.channels) {
-                    *write.header_mut() = AudioWindow {
-                        timeline_epoch: ctx.timeline_epoch,
-                        frame_start: self.frame_start,
-                        frame_end: ctx.timeline_start + frame as u64 + 1,
-                        sample_rate: ctx.processing_sr,
-                    };
+                    *write.header_mut() = self
+                        .continuity
+                        .window(self.frame_start, ctx.timeline_start + frame as u64 + 1)
+                        .into();
                     for (channel, level) in write.elements_mut().iter_mut().enumerate() {
                         *level = ChannelLevel {
                             peak: self.peaks[channel] as f32,
@@ -152,7 +147,7 @@ impl<S: ProcessingSample> RtObserver<S> for SignalLevelMeter {
                 self.reset_window();
             }
         }
-        self.next_frame = ctx.timeline_start + ctx.frames as u64;
+        self.continuity.finish_block(ctx);
     }
 }
 
@@ -311,14 +306,14 @@ mod tests {
             .subscribe(&fixture.topic, Default::default())
             .unwrap();
         fixture.observe(context(0, 2));
-        let generation = fixture.meter.generation;
+        let generation = fixture.meter.continuity.generation();
         drop(subscriber);
         let mut subscriber = fixture
             .bus
             .subscribe(&fixture.topic, Default::default())
             .unwrap();
         fixture.observe(context(2, 2));
-        assert!(fixture.meter.generation > generation);
+        assert!(fixture.meter.continuity.generation() > generation);
         assert!(subscriber.read_latest().is_none());
         fixture.observe(context(4, 2));
         let read = subscriber.read_latest().unwrap();

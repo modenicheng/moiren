@@ -1,4 +1,4 @@
-use moiren_core::protocol::{ParamValue, ParameterKey};
+use moiren_core::protocol::{ParamValue, ParameterId, ParameterKey};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,4 +41,23 @@ pub enum ControlError {
     InvalidConfiguration,
     #[error("two parameters declare the same processor/parameter key")]
     DuplicateParameter,
+}
+
+/// Single source for the "a kernel's own settings are valid" idiom: every
+/// spec must accept its initial value at zero ramp horizon. Project
+/// validation and rack expansion share it so the two cannot drift.
+pub(crate) fn specs_accept_initials(specs: &[ParamSpec]) -> bool {
+    specs.iter().all(|spec| spec.accepts(spec.initial, 0))
+}
+
+/// Single source for the "one recorded value targets a valid parameter"
+/// idiom: some spec must carry this parameter id and accept the value.
+pub(crate) fn accepts_parameter(
+    specs: &[ParamSpec],
+    parameter: ParameterId,
+    value: ParamValue,
+) -> bool {
+    specs
+        .iter()
+        .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0))
 }

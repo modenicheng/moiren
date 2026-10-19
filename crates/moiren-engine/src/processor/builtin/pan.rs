@@ -1,4 +1,5 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
+use super::dynamics::resolve_float;
 use crate::{
     buffer::{PreparedIo, ProcessIo},
     control::{ParamDomain, ParamSpec, ProcessParameters},
@@ -46,6 +47,28 @@ impl Pan {
             },
             initial: ParamValue::Float(initial),
         }
+    }
+
+    /// Effective (position, mono, swap) after applying recorded parameter
+    /// intent by id; the result feeds both the default kernel construction and
+    /// [`Pan::parameters`]. A type mismatch is unreachable — validation only
+    /// records Bool values for the switches.
+    pub(crate) fn resolve(
+        position: f64,
+        mono: bool,
+        swap: bool,
+        mut intent: impl FnMut(ParameterId, ParamValue) -> ParamValue,
+    ) -> (f64, bool, bool) {
+        let position = resolve_float(&mut intent, Self::POSITION, position);
+        let mono = match intent(Self::MONO, ParamValue::Bool(mono)) {
+            ParamValue::Bool(value) => value,
+            _ => unreachable!("validated boolean parameter"),
+        };
+        let swap = match intent(Self::SWAP, ParamValue::Bool(swap)) {
+            ParamValue::Bool(value) => value,
+            _ => unreachable!("validated boolean parameter"),
+        };
+        (position, mono, swap)
     }
 
     /// Per-channel balance factor; also the compiler's send kernel, so edge

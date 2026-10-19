@@ -6,7 +6,7 @@
 //! nor an opaque realtime processor.
 
 use crate::{
-    control::ParamSpec,
+    control::{ParamSpec, specs_accept_initials},
     processor::{
         ChannelMapperSettings, Compressor, CompressorSettings, Delay, DelaySettings, Eq,
         EqSettings, Gain, Gate, GateSettings, Limiter, LimiterSettings, Pan, ProcessorError,
@@ -292,7 +292,7 @@ impl RackProcessor {
         };
         // Use the kernels' own schemas to keep rack validation and parameter
         // preparation aligned when a builtin's supported ranges change.
-        if parameters.iter().any(|spec| !spec.accepts(spec.initial, 0)) {
+        if !specs_accept_initials(&parameters) {
             return Err(ProcessorError::InvalidParameterDomain);
         }
         Ok(parameters)

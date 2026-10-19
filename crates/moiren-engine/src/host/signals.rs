@@ -21,8 +21,8 @@ use crate::{
 };
 use moiren_core::graph::{NodeId, PortId};
 use moiren_signal::{
-    BlockInit, Bus, HostControl, LatestBlock, LatestValue, PreparedPublisher, RtHost, Subscriber,
-    Topic,
+    BlockInit, Bus, HostControl, LatestBlock, LatestValue, PreparedPublisher, RtHost, Shape,
+    Subscriber, Topic,
 };
 
 pub type ManagedLevelTopic = LatestBlock<AudioWindow, ChannelLevel>;
@@ -285,32 +285,17 @@ impl SignalHub {
         generation: u64,
         capacity: usize,
     ) -> Result<(HostControl, RtHost), BackendError> {
-        let mut directory = self
+        let mut guard = self
             .directory
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        let directory = &mut *guard;
         directory.active_levels.clear();
         directory.active_spectra.clear();
-        let topics = std::mem::take(&mut directory.topics);
-        for topic in topics.into_values() {
-            directory
-                .bus
-                .unregister(&topic)
-                .map_err(|error| BackendError::Failed(error.to_string()))?;
-        }
+        unregister_topics(&mut directory.bus, std::mem::take(&mut directory.topics))?;
         directory.generation = generation;
-        for topic in std::mem::take(&mut directory.levels).into_values() {
-            directory
-                .bus
-                .unregister(&topic)
-                .map_err(|error| BackendError::Failed(error.to_string()))?;
-        }
-        for topic in std::mem::take(&mut directory.spectra).into_values() {
-            directory
-                .bus
-                .unregister(&topic)
-                .map_err(|error| BackendError::Failed(error.to_string()))?;
-        }
+        unregister_topics(&mut directory.bus, std::mem::take(&mut directory.levels))?;
+        unregister_topics(&mut directory.bus, std::mem::take(&mut directory.spectra))?;
         clear_slots(&mut directory.meters);
         clear_slots(&mut directory.recorders);
         directory
@@ -324,7 +309,8 @@ impl SignalHub {
         host: &HostControl,
         bindings: &mut crate::compiler::NodeBindings<S>,
     ) -> Result<(), BackendError> {
-        let mut directory = self.directory.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self.directory.lock().unwrap_or_else(|p| p.into_inner());
+        let directory = &mut *guard;
         for node in project.graph.nodes() {
             let port = match node.kind() {
                 moiren_core::graph::NodeKind::Sink => node.inputs().first(),
@@ -332,20 +318,17 @@ impl SignalHub {
             }
             .expect("validated IO port");
             let shape = (node.id(), port.id(), port.channels());
-            let topic = if let Some(topic) = directory.levels.get(&shape) {
-                topic.clone()
-            } else {
-                let name = format!(
-                    "owner/{}/node/{:?}/level/{:?}/{}",
-                    directory.generation,
-                    node.id(),
-                    port.id(),
-                    port.channels()
-                );
-                let topic = directory
-                    .bus
-                    .register_latest_block(
-                        &name,
+            let generation = directory.generation;
+            let topic =
+                topic_or_register(&mut directory.bus, &mut directory.levels, shape, |bus| {
+                    bus.register_latest_block(
+                        &format!(
+                            "owner/{}/node/{:?}/level/{:?}/{}",
+                            generation,
+                            node.id(),
+                            port.id(),
+                            port.channels()
+                        ),
                         BlockInit {
                             header: AudioWindow {
                                 timeline_epoch: 0,
@@ -360,10 +343,7 @@ impl SignalHub {
                             capacity: port.channels(),
                         },
                     )
-                    .map_err(|e| BackendError::Failed(e.to_string()))?;
-                directory.levels.insert(shape, topic.clone());
-                topic
-            };
+                })?;
             let publisher = host
                 .prepare(
                     &topic,
@@ -393,42 +373,36 @@ impl SignalHub {
         settings: SpectrumSettings,
         host: &HostControl,
     ) -> Result<PreparedPublisher<ManagedSpectrumTopic>, BackendError> {
-        let mut directory = self
+        let mut guard = self
             .directory
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        let directory = &mut *guard;
         let capacity = channels
             .checked_mul(settings.bins_per_channel())
             .ok_or_else(|| BackendError::Failed("spectrum topic capacity overflow".into()))?;
         let shape = (node, channels, settings.fft_size);
-        let topic = if let Some(topic) = directory.spectra.get(&shape) {
-            topic.clone()
-        } else {
-            let name = format!(
-                "owner/{}/node/{node:?}/spectrum/{channels}/{}",
-                directory.generation, settings.fft_size
-            );
-            let topic = directory
-                .bus
-                .register_latest_block(
-                    &name,
-                    BlockInit {
-                        header: SpectrumWindow {
-                            timeline_epoch: 0,
-                            frame_start: 0,
-                            frame_end: 0,
-                            sample_rate: 0.0,
-                            fft_size: settings.fft_size,
-                            channels,
-                        },
-                        element: 0.0_f32,
-                        capacity,
+        let generation = directory.generation;
+        let topic = topic_or_register(&mut directory.bus, &mut directory.spectra, shape, |bus| {
+            bus.register_latest_block(
+                &format!(
+                    "owner/{}/node/{node:?}/spectrum/{channels}/{}",
+                    generation, settings.fft_size
+                ),
+                BlockInit {
+                    header: SpectrumWindow {
+                        timeline_epoch: 0,
+                        frame_start: 0,
+                        frame_end: 0,
+                        sample_rate: 0.0,
+                        fft_size: settings.fft_size,
+                        channels,
                     },
-                )
-                .map_err(|error| BackendError::Failed(error.to_string()))?;
-            directory.spectra.insert(shape, topic.clone());
-            topic
-        };
+                    element: 0.0_f32,
+                    capacity,
+                },
+            )
+        })?;
         host.prepare(
             &topic,
             host.new_binding()
@@ -441,21 +415,20 @@ impl SignalHub {
         &self,
         node: NodeId,
     ) -> Result<ManagedSpectrumSubscription, String> {
-        let mut directory = self
+        let mut guard = self
             .directory
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let topic = directory
-            .active_spectra
-            .get(&node)
-            .cloned()
-            .ok_or_else(|| "spectrum signal is not prepared".to_string())?;
+        let directory = &mut *guard;
+        let (owner_generation, subscriber) = subscribe_active(
+            &mut directory.bus,
+            directory.generation,
+            directory.active_spectra.get(&node),
+            "spectrum signal is not prepared",
+        )?;
         Ok(ManagedSpectrumSubscription {
-            owner_generation: directory.generation,
-            subscriber: directory
-                .bus
-                .subscribe(&topic, Default::default())
-                .map_err(|error| error.to_string())?,
+            owner_generation,
+            subscriber,
         })
     }
 
@@ -515,17 +488,12 @@ impl SignalHub {
             .directory
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let slot = directory
-            .meters
-            .get(&node)
-            .cloned()
-            .ok_or_else(|| "meter reader is not prepared".to_string())?;
-        let owner_generation = slot
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .as_ref()
-            .map(|(generation, _)| *generation)
-            .ok_or_else(|| "meter reader is not active".to_string())?;
+        let (owner_generation, slot) = reader_handle(
+            &directory.meters,
+            node,
+            "meter reader is not prepared",
+            "meter reader is not active",
+        )?;
         Ok(ManagedMeterReader {
             owner_generation,
             slot,
@@ -537,35 +505,29 @@ impl SignalHub {
             .directory
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let slot = directory
-            .recorders
-            .get(&node)
-            .cloned()
-            .ok_or_else(|| "recorder reader is not prepared".to_string())?;
-        let owner_generation = slot
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .as_ref()
-            .map(|(generation, _)| *generation)
-            .ok_or_else(|| "recorder reader is not active".to_string())?;
+        let (owner_generation, slot) = reader_handle(
+            &directory.recorders,
+            node,
+            "recorder reader is not prepared",
+            "recorder reader is not active",
+        )?;
         Ok(ManagedRecorderReader {
             owner_generation,
             slot,
         })
     }
     pub(crate) fn subscribe_level(&self, node: NodeId) -> Result<ManagedLevelSubscription, String> {
-        let mut directory = self.directory.lock().unwrap_or_else(|p| p.into_inner());
-        let topic = directory
-            .active_levels
-            .get(&node)
-            .cloned()
-            .ok_or("node level signal is not prepared")?;
+        let mut guard = self.directory.lock().unwrap_or_else(|p| p.into_inner());
+        let directory = &mut *guard;
+        let (owner_generation, subscriber) = subscribe_active(
+            &mut directory.bus,
+            directory.generation,
+            directory.active_levels.get(&node),
+            "node level signal is not prepared",
+        )?;
         Ok(ManagedLevelSubscription {
-            owner_generation: directory.generation,
-            subscriber: directory
-                .bus
-                .subscribe(&topic, Default::default())
-                .map_err(|e| e.to_string())?,
+            owner_generation,
+            subscriber,
         })
     }
     pub(crate) fn prepare(
@@ -573,24 +535,18 @@ impl SignalHub {
         node: NodeId,
         host: &HostControl,
     ) -> Result<PreparedPublisher<LatestValue<f32>>, BackendError> {
-        let mut directory = self
+        let mut guard = self
             .directory
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let topic = if let Some(topic) = directory.topics.get(&node) {
-            topic.clone()
-        } else {
-            let name = format!(
-                "owner/{}/node/{node:?}/compressor/reduction",
-                directory.generation
-            );
-            let topic = directory
-                .bus
-                .register_latest_value(&name, 0.0_f32)
-                .map_err(|error| BackendError::Failed(error.to_string()))?;
-            directory.topics.insert(node, topic.clone());
-            topic
-        };
+        let directory = &mut *guard;
+        let generation = directory.generation;
+        let topic = topic_or_register(&mut directory.bus, &mut directory.topics, node, |bus| {
+            bus.register_latest_value(
+                &format!("owner/{generation}/node/{node:?}/compressor/reduction"),
+                0.0_f32,
+            )
+        })?;
         host.prepare(
             &topic,
             host.new_binding()
@@ -599,21 +555,20 @@ impl SignalHub {
         .map_err(|error| BackendError::Failed(error.to_string()))
     }
     pub(crate) fn subscribe(&self, node: NodeId) -> Result<ManagedSignalSubscription, String> {
-        let mut directory = self
+        let mut guard = self
             .directory
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let topic = directory
-            .topics
-            .get(&node)
-            .cloned()
-            .ok_or_else(|| "compressor signal is not prepared".to_string())?;
+        let directory = &mut *guard;
+        let (owner_generation, subscriber) = subscribe_active(
+            &mut directory.bus,
+            directory.generation,
+            directory.topics.get(&node),
+            "compressor signal is not prepared",
+        )?;
         Ok(ManagedSignalSubscription {
-            owner_generation: directory.generation,
-            subscriber: directory
-                .bus
-                .subscribe(&topic, Default::default())
-                .map_err(|error| error.to_string())?,
+            owner_generation,
+            subscriber,
         })
     }
 
@@ -710,6 +665,79 @@ fn install_slots<T>(
         *slot.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
         false
     });
+}
+
+/// Get-or-register shared by every shape-keyed topic cache: a hit reuses the
+/// topic an earlier (possibly retired) preparation registered, a miss
+/// registers through `build` and caches the result. Caching by shape rather
+/// than by active plan lets compatible successors share one topic, and the
+/// name formatting runs only on the miss path.
+fn topic_or_register<K: Ord + Copy, T: Shape>(
+    bus: &mut Bus,
+    cache: &mut BTreeMap<K, Topic<T>>,
+    key: K,
+    build: impl FnOnce(&mut Bus) -> Result<Topic<T>, moiren_signal::RegisterError>,
+) -> Result<Topic<T>, BackendError> {
+    if let Some(topic) = cache.get(&key) {
+        return Ok(topic.clone());
+    }
+    let topic = build(bus).map_err(|error| BackendError::Failed(error.to_string()))?;
+    cache.insert(key, topic.clone());
+    Ok(topic)
+}
+
+/// Shared subscribe step of the three managed subscription flavors: resolve
+/// the currently active topic, then bind one subscriber under the current
+/// owner generation. Staleness against later owner changes is the caller's
+/// per-read concern, not the subscription's.
+fn subscribe_active<T: Shape>(
+    bus: &mut Bus,
+    generation: u64,
+    topic: Option<&Topic<T>>,
+    unprepared: &str,
+) -> Result<(u64, Subscriber<T>), String> {
+    let topic = topic.ok_or_else(|| unprepared.to_string())?;
+    Ok((
+        generation,
+        bus.subscribe(topic, Default::default())
+            .map_err(|error| error.to_string())?,
+    ))
+}
+
+/// Shared half of the meter/recorder reader twins: resolve a node's reader
+/// slot and the owner generation stamped inside it. A missing slot means the
+/// observer was never prepared; an empty one means it is not active.
+fn reader_handle<T>(
+    slots: &BTreeMap<NodeId, ReaderSlot<T>>,
+    node: NodeId,
+    unprepared: &str,
+    inactive: &str,
+) -> Result<(u64, ReaderSlot<T>), String> {
+    let slot = slots
+        .get(&node)
+        .cloned()
+        .ok_or_else(|| unprepared.to_string())?;
+    let owner_generation = slot
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .as_ref()
+        .map(|(generation, _)| *generation)
+        .ok_or_else(|| inactive.to_string())?;
+    Ok((owner_generation, slot))
+}
+
+/// Retire one full topic family when a new owner takes over the bus. The map
+/// has been taken up front, so a failed unregister drops its entries on the
+/// returning error instead of leaving the directory pointing at dead topics.
+fn unregister_topics<K, T: Shape>(
+    bus: &mut Bus,
+    topics: BTreeMap<K, Topic<T>>,
+) -> Result<(), BackendError> {
+    for topic in topics.into_values() {
+        bus.unregister(&topic)
+            .map_err(|error| BackendError::Failed(error.to_string()))?;
+    }
+    Ok(())
 }
 
 fn clear_slots<T>(slots: &mut BTreeMap<NodeId, ReaderSlot<T>>) {

@@ -1,11 +1,11 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
-use super::dynamics::{db_to_gain, float_specs, smooth, validate_float_domains};
+use super::dynamics::{db_to_gain, float_specs, resolve_float, smooth, validate_float_domains};
 use crate::{
     buffer::{PreparedIo, ProcessIo},
     control::{ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
-use moiren_core::protocol::{ParameterId, ProcessorId};
+use moiren_core::protocol::{ParamValue, ParameterId, ProcessorId};
 use moiren_signal::{ErasedBinding, LatestValue, PreparedPublisher, PublisherHandle};
 
 /// Initial control-side values. Gains, threshold and knee are dB; times are ms.
@@ -119,6 +119,30 @@ impl Compressor {
             settings.mix,
         ];
         float_specs(id, &Self::DOMAINS, values)
+    }
+
+    /// Effective settings after applying recorded parameter intent by id. Each
+    /// field is keyed by its named constant — never by declaration order — so
+    /// reordering `CompressorSettings` can no longer silently misroute intent
+    /// (the hazard of the positional backfill this replaces). The result feeds
+    /// both the default kernel construction and [`Compressor::parameters`],
+    /// keeping the bound kernel and its schema from drifting apart.
+    pub(crate) fn resolve_settings(
+        settings: CompressorSettings,
+        mut intent: impl FnMut(ParameterId, ParamValue) -> ParamValue,
+    ) -> CompressorSettings {
+        CompressorSettings {
+            input_gain_db: resolve_float(&mut intent, Self::INPUT_GAIN, settings.input_gain_db),
+            threshold_db: resolve_float(&mut intent, Self::THRESHOLD, settings.threshold_db),
+            ratio: resolve_float(&mut intent, Self::RATIO, settings.ratio),
+            attack_ms: resolve_float(&mut intent, Self::ATTACK, settings.attack_ms),
+            release_ms: resolve_float(&mut intent, Self::RELEASE, settings.release_ms),
+            hold_ms: resolve_float(&mut intent, Self::HOLD, settings.hold_ms),
+            knee_db: resolve_float(&mut intent, Self::KNEE, settings.knee_db),
+            makeup_gain_db: resolve_float(&mut intent, Self::MAKEUP_GAIN, settings.makeup_gain_db),
+            output_gain_db: resolve_float(&mut intent, Self::OUTPUT_GAIN, settings.output_gain_db),
+            mix: resolve_float(&mut intent, Self::MIX, settings.mix),
+        }
     }
 
     // Giannoulis / Massberg / Reiss, JAES 2012, Eq. (4):

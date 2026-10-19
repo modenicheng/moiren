@@ -420,6 +420,33 @@ struct IoSchema {
     inputs: Box<[(u16, usize)]>,
     outputs: Box<[(u16, usize)]>,
 }
+
+/// Single source for the (config, epoch, revision) compatibility ordering
+/// shared by the three swap gates: control-side [`PlanControlPort::publish`],
+/// RT-side [`Engine::apply_pending_plan`], and the reuse-basis check in
+/// [`PreparedPlan::prepare_reuse`]. A replacing plan must preserve the exact
+/// processing configuration and timeline epoch of the plan it replaces and
+/// carry a strictly greater revision. The control-side and RT-side checks are
+/// deliberately both kept: control validates before queueing, RT re-validates
+/// before committing, so a racing or stale control side can never activate an
+/// incompatible candidate.
+fn swap_rejection(
+    active: (&EngineConfig, u64, u64),
+    replacement: (&EngineConfig, u64, u64),
+) -> Option<PlanSwapError> {
+    let (config, epoch, revision) = active;
+    let (replacement_config, replacement_epoch, replacement_revision) = replacement;
+    if config != replacement_config {
+        Some(PlanSwapError::IncompatibleConfig)
+    } else if epoch != replacement_epoch {
+        Some(PlanSwapError::StaleEpoch)
+    } else if replacement_revision <= revision {
+        Some(PlanSwapError::StaleRevision)
+    } else {
+        None
+    }
+}
+
 impl IoSchema {
     /// Canonical port snapshot: sorted so schemas captured at preparation and
     /// re-derived by a reservation's IO check compare structurally.
@@ -623,11 +650,15 @@ impl<S: ProcessingSample> PreparedPlan<S> {
             }
         }
         let target = &self.original_snapshot.0;
-        if basis.config() != target.config {
-            return Err(PlanSwapError::IncompatibleConfig);
-        }
-        if basis.epoch() != target.epoch {
-            return Err(PlanSwapError::StaleEpoch);
+        // Same compatibility ordering as publish/apply; any candidate that
+        // passed an unordered revision here would still be rejected before
+        // activation, so checking it with the shared source adds no new
+        // reachable rejection.
+        if let Some(reason) = swap_rejection(
+            (&basis.0.config, basis.0.epoch, basis.0.revision),
+            (&target.config, target.epoch, target.revision),
+        ) {
+            return Err(reason);
         }
         if basis.0.signal_host != target.signal_host {
             return Err(PlanSwapError::IncompatibleSignals);
@@ -793,12 +824,11 @@ impl<S: ProcessingSample> PlanControlPort<S> {
             Some(PlanSwapError::Disconnected)
         } else if plan.engine.parameters.is_retired() {
             Some(PlanSwapError::InvalidCandidate)
-        } else if self.config != plan.engine.config() {
-            Some(PlanSwapError::IncompatibleConfig)
-        } else if self.epoch != plan.engine.epoch() {
-            Some(PlanSwapError::StaleEpoch)
-        } else if plan.revision() <= self.last_revision {
-            Some(PlanSwapError::StaleRevision)
+        } else if let Some(reason) = swap_rejection(
+            (&self.config, self.epoch, self.last_revision),
+            (&plan.engine.config(), plan.engine.epoch(), plan.revision()),
+        ) {
+            Some(reason)
         } else if plan
             .engine
             .resources
@@ -921,25 +951,52 @@ impl<S: ProcessingSample> Engine<S> {
         Ok(())
     }
     pub(super) fn apply_pending_plan(&mut self) {
-        let Some(port) = &mut self.swaps else {
+        // The port moves out for the duration so each phase below can borrow
+        // the engine directly; it is restored on every exit path. Nothing
+        // else runs while this audio callback holds `&mut self`.
+        let Some(mut port) = self.swaps.take() else {
             return;
         };
         // Never take ownership without a guaranteed return slot. When control
         // disappears, leave both queues owned until Engine returns after stop.
-        if port.retired.is_abandoned() || port.retired.is_full() {
-            return;
+        if !port.retired.is_abandoned()
+            && !port.retired.is_full()
+            && let Ok(mut candidate) = port.pending.pop()
+        {
+            let rejection = Self::plan_swap_rejection(self, &port, &candidate);
+            let activation = Self::activate_plan_signals(self, rejection, &mut candidate);
+            let (outcome, retired_signals) = match activation {
+                Err(reason) => (RetireOutcome::Rejected(reason), None),
+                Ok(retired_signals) => {
+                    Self::commit_plan_swap(self, &mut port, &mut candidate, retired_signals)
+                }
+            };
+            retire_swapped_plan(&mut port, candidate, outcome, retired_signals);
         }
-        let Ok(mut candidate) = port.pending.pop() else {
-            return;
-        };
-        let rejection = if port.status.cancel.load(Ordering::Acquire) == candidate.revision() {
+        self.swaps = Some(port);
+    }
+
+    /// Phase 1 — guard evaluation. Reads the shared cancel word and re-checks
+    /// the candidate against the live plan; this is the RT-side twin of the
+    /// compatibility ordering control already applied in `publish`, kept as a
+    /// deliberate second line of defense.
+    #[inline]
+    fn plan_swap_rejection(
+        &self,
+        port: &RtPlanPort<S>,
+        candidate: &PreparedPlan<S>,
+    ) -> Option<PlanSwapError> {
+        if port.status.cancel.load(Ordering::Acquire) == candidate.revision() {
             Some(PlanSwapError::Cancelled)
-        } else if candidate.engine.config() != self.plan.config {
-            Some(PlanSwapError::IncompatibleConfig)
-        } else if candidate.engine.epoch() != self.plan.epoch {
-            Some(PlanSwapError::StaleEpoch)
-        } else if candidate.revision() <= self.plan.revision {
-            Some(PlanSwapError::StaleRevision)
+        } else if let Some(reason) = swap_rejection(
+            (&self.plan.config, self.plan.epoch, self.plan.revision),
+            (
+                &candidate.engine.plan.config,
+                candidate.engine.plan.epoch,
+                candidate.engine.plan.revision,
+            ),
+        ) {
+            Some(reason)
         } else if candidate
             .transfer
             .as_ref()
@@ -955,80 +1012,106 @@ impl<S: ProcessingSample> Engine<S> {
             Some(PlanSwapError::MissingReuse)
         } else {
             None
-        };
-        let activation = if let Some(reason) = rejection {
-            Err(reason)
-        } else {
-            match (
-                &mut self.signal_host,
-                &mut candidate.engine.plan.signal_update,
-            ) {
-                (Some(host), Some(update)) => host
-                    .activation(update)
-                    .map(Some)
-                    .map_err(PlanSwapError::SignalActivation),
-                (Some(_), None) => Err(PlanSwapError::MissingSignalPlan),
-                (None, Some(_)) => Err(PlanSwapError::MissingSignalHost),
-                (None, None) => Ok(None),
-            }
-        };
-        let (outcome, retired_signals) = match activation
-            .map(|transaction| transaction.map(moiren_signal::ActivationTransaction::commit))
-        {
-            Err(reason) => (RetireOutcome::Rejected(reason), None),
-            Ok(retired_signals) => {
-                if let Some(transfer) = &candidate.transfer {
-                    // The set is allocated during non-RT attachment. Updating
-                    // indices in place protects every retained native consumer
-                    // without allocating or destroying on the audio thread.
-                    for sink in &mut port.protected_sinks {
-                        *sink = transfer
-                            .processors
-                            .iter()
-                            .find_map(|&(old, new)| (old == *sink).then_some(new))
-                            .expect("all protected sinks validated above");
-                    }
-                    for &(old, new) in &transfer.processors {
-                        mem::swap(
-                            &mut self.resources.instances[old].processor,
-                            &mut candidate.engine.resources.instances[new].processor,
-                        );
-                        mem::swap(
-                            &mut self.resources.instances[old].reservation,
-                            &mut candidate.engine.resources.instances[new].reservation,
-                        );
-                    }
-                    candidate
-                        .engine
-                        .parameters
-                        .copy_states_from(&self.parameters, &transfer.parameters);
-                }
-                mem::swap(&mut self.plan, &mut candidate.engine.plan);
-                mem::swap(&mut self.resources, &mut candidate.engine.resources);
-                mem::swap(&mut self.parameters, &mut candidate.engine.parameters);
-                mem::swap(&mut self.snapshot, &mut candidate.engine.snapshot);
-                candidate.engine.timeline = self.timeline;
-                port.status
-                    .revision
-                    .store(self.plan.revision, Ordering::Release);
-                (
-                    RetireOutcome::Replaced {
-                        active_revision: self.plan.revision,
-                        frame: self.timeline,
-                    },
-                    retired_signals,
-                )
-            }
-        };
-        candidate.engine.parameters.retire();
-        let prepared_signals = candidate.engine.plan.signal_update.take();
-        port.retired
-            .push(RetiredPlan {
-                plan: candidate,
-                outcome,
-                _signals: retired_signals,
-                _prepared_signals: prepared_signals,
-            })
-            .unwrap_or_else(|_| unreachable!("single producer reserved retire slot"));
+        }
     }
+
+    /// Phase 2 — signal activation. Commits the candidate's prepared signal
+    /// update against the live host; the retired half of the activation
+    /// transaction is carried out with the retired plan.
+    #[inline]
+    fn activate_plan_signals(
+        &mut self,
+        rejection: Option<PlanSwapError>,
+        candidate: &mut PreparedPlan<S>,
+    ) -> Result<Option<moiren_signal::RetiredHostUpdate>, PlanSwapError> {
+        if let Some(reason) = rejection {
+            return Err(reason);
+        }
+        match (
+            &mut self.signal_host,
+            &mut candidate.engine.plan.signal_update,
+        ) {
+            (Some(host), Some(update)) => host
+                .activation(update)
+                .map(Some)
+                .map_err(PlanSwapError::SignalActivation)
+                .map(|transaction| transaction.map(moiren_signal::ActivationTransaction::commit)),
+            (Some(_), None) => Err(PlanSwapError::MissingSignalPlan),
+            (None, Some(_)) => Err(PlanSwapError::MissingSignalHost),
+            (None, None) => Ok(None),
+        }
+    }
+
+    /// Phase 3 — transfer and swap. Migrates reused kernels and parameter
+    /// ramp state in place, then swaps plan ownership wholesale. Everything
+    /// moved was prepared off RT; the index surgery on protected sinks exists
+    /// so a sink migration never allocates on the audio thread.
+    #[inline]
+    fn commit_plan_swap(
+        &mut self,
+        port: &mut RtPlanPort<S>,
+        candidate: &mut PreparedPlan<S>,
+        retired_signals: Option<moiren_signal::RetiredHostUpdate>,
+    ) -> (RetireOutcome, Option<moiren_signal::RetiredHostUpdate>) {
+        if let Some(transfer) = &candidate.transfer {
+            for sink in &mut port.protected_sinks {
+                *sink = transfer
+                    .processors
+                    .iter()
+                    .find_map(|&(old, new)| (old == *sink).then_some(new))
+                    .expect("all protected sinks validated above");
+            }
+            for &(old, new) in &transfer.processors {
+                mem::swap(
+                    &mut self.resources.instances[old].processor,
+                    &mut candidate.engine.resources.instances[new].processor,
+                );
+                mem::swap(
+                    &mut self.resources.instances[old].reservation,
+                    &mut candidate.engine.resources.instances[new].reservation,
+                );
+            }
+            candidate
+                .engine
+                .parameters
+                .copy_states_from(&self.parameters, &transfer.parameters);
+        }
+        mem::swap(&mut self.plan, &mut candidate.engine.plan);
+        mem::swap(&mut self.resources, &mut candidate.engine.resources);
+        mem::swap(&mut self.parameters, &mut candidate.engine.parameters);
+        mem::swap(&mut self.snapshot, &mut candidate.engine.snapshot);
+        candidate.engine.timeline = self.timeline;
+        port.status
+            .revision
+            .store(self.plan.revision, Ordering::Release);
+        (
+            RetireOutcome::Replaced {
+                active_revision: self.plan.revision,
+                frame: self.timeline,
+            },
+            retired_signals,
+        )
+    }
+}
+
+/// Phase 4 — retirement enqueue. The replaced engine retires its accepted
+/// controls and both signal-update halves leave the audio thread with it;
+/// the queue slot was reserved before the candidate was ever popped.
+#[inline]
+fn retire_swapped_plan<S: ProcessingSample>(
+    port: &mut RtPlanPort<S>,
+    mut candidate: PreparedPlan<S>,
+    outcome: RetireOutcome,
+    retired_signals: Option<moiren_signal::RetiredHostUpdate>,
+) {
+    candidate.engine.parameters.retire();
+    let prepared_signals = candidate.engine.plan.signal_update.take();
+    port.retired
+        .push(RetiredPlan {
+            plan: candidate,
+            outcome,
+            _signals: retired_signals,
+            _prepared_signals: prepared_signals,
+        })
+        .unwrap_or_else(|_| unreachable!("single producer reserved retire slot"));
 }

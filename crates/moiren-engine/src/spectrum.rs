@@ -7,7 +7,10 @@ mod tests;
 
 use crate::{
     buffer::{PreparedIo, ReadPorts},
-    processor::{ProcessContext, ProcessorError, RtObserver},
+    processor::{
+        ProcessContext, ProcessorError, RtObserver, TimelineHeader, WindowContinuity,
+        validate_single_input,
+    },
     sample::ProcessingSample,
     signal::ProcessSignals,
 };
@@ -68,6 +71,27 @@ pub struct SpectrumWindow {
     pub channels: usize,
 }
 
+impl From<TimelineHeader> for SpectrumWindow {
+    fn from(header: TimelineHeader) -> Self {
+        // Kernel-specific fields are set by the constructing write; the
+        // conversion only fills the shared timeline prefix.
+        let TimelineHeader {
+            timeline_epoch,
+            frame_start,
+            frame_end,
+            sample_rate,
+        } = header;
+        Self {
+            timeline_epoch,
+            frame_start,
+            frame_end,
+            sample_rate,
+            fft_size: 0,
+            channels: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum SpectrumError {
     #[error("channel count must be nonzero and representable")]
@@ -86,10 +110,7 @@ pub struct SignalSpectrumAnalyzer {
     ring: Box<[f64]>,
     ring_write: usize,
     frames_until_window: usize,
-    timeline_epoch: u64,
-    next_frame: u64,
-    sample_rate: f64,
-    generation: u64,
+    continuity: WindowContinuity,
     window: Box<[f64]>,
     coherent_scale: f64,
     fft: Radix2Fft,
@@ -140,10 +161,7 @@ impl SignalSpectrumAnalyzer {
             ring: vec![0.0; history_len].into_boxed_slice(),
             ring_write: 0,
             frames_until_window: settings.fft_size,
-            timeline_epoch: 0,
-            next_frame: 0,
-            sample_rate: 0.0,
-            generation: 0,
+            continuity: WindowContinuity::new(),
             window,
             coherent_scale,
             fft: Radix2Fft::new(settings.fft_size),
@@ -166,13 +184,14 @@ impl SignalSpectrumAnalyzer {
             return;
         };
 
+        let header = self
+            .continuity
+            .window(frame_end - self.settings.fft_size as u64, frame_end)
+            .into();
         *write.header_mut() = SpectrumWindow {
-            timeline_epoch: self.timeline_epoch,
-            frame_start: frame_end - self.settings.fft_size as u64,
-            frame_end,
-            sample_rate: self.sample_rate,
             fft_size: self.settings.fft_size,
             channels: self.channels,
+            ..header
         };
         let elements = write.elements_mut();
         for channel in 0..self.channels {
@@ -199,11 +218,7 @@ impl SignalSpectrumAnalyzer {
 
 impl<S: ProcessingSample> RtObserver<S> for SignalSpectrumAnalyzer {
     fn validate_inputs(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
-        if io.input_count() == 1 && io.input_channels(0) == Some(self.channels) {
-            Ok(())
-        } else {
-            Err(ProcessorError::InvalidIo)
-        }
+        validate_single_input(self.channels, io)
     }
 
     fn signal_bindings(&self) -> &[ErasedBinding] {
@@ -216,22 +231,15 @@ impl<S: ProcessingSample> RtObserver<S> for SignalSpectrumAnalyzer {
         inputs: ReadPorts<'_, S>,
         mut signals: ProcessSignals<'_>,
     ) {
-        let Ok(demand) = signals.demand(&self.publisher) else {
+        let Some(restart) = self
+            .continuity
+            .begin_window(&mut signals, &self.publisher, ctx)
+        else {
             return;
         };
-        if !demand.active {
-            return;
-        }
-        if self.generation != demand.generation
-            || self.timeline_epoch != ctx.timeline_epoch
-            || self.next_frame != ctx.timeline_start
-            || self.sample_rate != ctx.processing_sr
-        {
+        if restart {
             self.reset_history();
         }
-        self.generation = demand.generation;
-        self.timeline_epoch = ctx.timeline_epoch;
-        self.sample_rate = ctx.processing_sr;
 
         let input = inputs.get(0).expect("validated spectrum analyzer input");
         for frame in 0..ctx.frames {
@@ -248,6 +256,6 @@ impl<S: ProcessingSample> RtObserver<S> for SignalSpectrumAnalyzer {
                 self.frames_until_window = self.settings.hop_frames;
             }
         }
-        self.next_frame = ctx.timeline_start + ctx.frames as u64;
+        self.continuity.finish_block(ctx);
     }
 }

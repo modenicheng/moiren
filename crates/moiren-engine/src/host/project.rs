@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use crate::{
     compiler::CompileConfig,
+    control::{accepts_parameter, specs_accept_initials},
     node::{InputConfig, IoConfigError, OutputConfig},
     processor::{
         ChannelMapperSettings, Compressor, CompressorSettings, Delay, DelaySettings,
@@ -214,25 +215,21 @@ impl EngineProject {
                     initial.is_finite() && (-1.0..=1.0).contains(initial)
                 }
                 NodeConfig::Compressor(settings) => {
-                    Compressor::parameters(ProcessorId(0), *settings)
-                        .iter()
-                        .all(|spec| spec.accepts(spec.initial, 0))
+                    specs_accept_initials(&Compressor::parameters(ProcessorId(0), *settings))
                 }
-                NodeConfig::Eq(settings) => EqProcessor::parameters(ProcessorId(0), *settings)
-                    .iter()
-                    .all(|spec| spec.accepts(spec.initial, 0)),
-                NodeConfig::Gate(settings) => Gate::parameters(ProcessorId(0), *settings)
-                    .iter()
-                    .all(|spec| spec.accepts(spec.initial, 0)),
-                NodeConfig::Limiter(settings) => Limiter::parameters(ProcessorId(0), *settings)
-                    .iter()
-                    .all(|spec| spec.accepts(spec.initial, 0)),
+                NodeConfig::Eq(settings) => {
+                    specs_accept_initials(&EqProcessor::parameters(ProcessorId(0), *settings))
+                }
+                NodeConfig::Gate(settings) => {
+                    specs_accept_initials(&Gate::parameters(ProcessorId(0), *settings))
+                }
+                NodeConfig::Limiter(settings) => {
+                    specs_accept_initials(&Limiter::parameters(ProcessorId(0), *settings))
+                }
                 NodeConfig::Delay(settings) => {
                     settings.max_delay_ms.is_finite()
                         && (0.0..=Delay::MAX_DELAY_MS).contains(&settings.max_delay_ms)
-                        && Delay::parameters(ProcessorId(0), *settings)
-                            .iter()
-                            .all(|spec| spec.accepts(spec.initial, 0))
+                        && specs_accept_initials(&Delay::parameters(ProcessorId(0), *settings))
                 }
                 NodeConfig::ChannelMapper(settings) => {
                     settings.valid_layout(node.inputs()[0].channels(), node.outputs()[0].channels())
@@ -376,27 +373,31 @@ impl EngineProject {
                             crate::processor::Pan::MONO | crate::processor::Pan::SWAP
                         ) && matches!(value, ParamValue::Bool(_)))
                 }
-                Some(NodeConfig::Compressor(settings)) => {
-                    Compressor::parameters(ProcessorId(0), *settings)
-                        .iter()
-                        .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0))
-                }
-                Some(NodeConfig::Eq(settings)) => {
-                    EqProcessor::parameters(ProcessorId(0), *settings)
-                        .iter()
-                        .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0))
-                }
-                Some(NodeConfig::Gate(settings)) => Gate::parameters(ProcessorId(0), *settings)
-                    .iter()
-                    .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0)),
-                Some(NodeConfig::Limiter(settings)) => {
-                    Limiter::parameters(ProcessorId(0), *settings)
-                        .iter()
-                        .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0))
-                }
-                Some(NodeConfig::Delay(settings)) => Delay::parameters(ProcessorId(0), *settings)
-                    .iter()
-                    .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0)),
+                Some(NodeConfig::Compressor(settings)) => accepts_parameter(
+                    &Compressor::parameters(ProcessorId(0), *settings),
+                    parameter,
+                    value,
+                ),
+                Some(NodeConfig::Eq(settings)) => accepts_parameter(
+                    &EqProcessor::parameters(ProcessorId(0), *settings),
+                    parameter,
+                    value,
+                ),
+                Some(NodeConfig::Gate(settings)) => accepts_parameter(
+                    &Gate::parameters(ProcessorId(0), *settings),
+                    parameter,
+                    value,
+                ),
+                Some(NodeConfig::Limiter(settings)) => accepts_parameter(
+                    &Limiter::parameters(ProcessorId(0), *settings),
+                    parameter,
+                    value,
+                ),
+                Some(NodeConfig::Delay(settings)) => accepts_parameter(
+                    &Delay::parameters(ProcessorId(0), *settings),
+                    parameter,
+                    value,
+                ),
                 _ => false,
             },
             ParameterTarget::RackSlot {
@@ -406,11 +407,7 @@ impl EngineProject {
             } => self.rack_slot(node, slot).is_some_and(|(channels, slot)| {
                 slot.processor
                     .checked_parameters(channels, ProcessorId(0))
-                    .is_ok_and(|specs| {
-                        specs
-                            .iter()
-                            .any(|spec| spec.key.parameter == parameter && spec.accepts(value, 0))
-                    })
+                    .is_ok_and(|specs| accepts_parameter(&specs, parameter, value))
             }),
             ParameterTarget::Edge { edge, parameter } => {
                 self.graph.get_edge(edge).is_ok()

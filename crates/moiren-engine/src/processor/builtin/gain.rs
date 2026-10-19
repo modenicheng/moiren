@@ -1,4 +1,5 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
+use super::dynamics::resolve_float;
 use crate::{
     buffer::{PreparedIo, ProcessIo},
     control::{ParamDomain, ParamSpec, ProcessParameters},
@@ -21,6 +22,16 @@ impl Gain {
             },
             initial: ParamValue::Float(initial),
         }
+    }
+
+    /// Effective level after applying recorded parameter intent by id; the
+    /// result feeds both the default kernel construction and
+    /// [`Gain::parameter`].
+    pub(crate) fn resolve_level(
+        initial: f64,
+        mut intent: impl FnMut(ParameterId, ParamValue) -> ParamValue,
+    ) -> f64 {
+        resolve_float(&mut intent, Self::LEVEL, initial)
     }
 }
 impl<S: ProcessingSample> RtProcessor<S> for Gain {

@@ -11,5 +11,6 @@ pub use channel::{ControlPort, parameter_channel};
 pub use ramp::FloatRamp;
 pub use runtime::ParameterRuntime;
 pub use schema::{ControlError, ParamDomain, ParamSpec};
+pub(crate) use schema::{accepts_parameter, specs_accept_initials};
 pub(crate) use view::ParameterBindings;
 pub use view::ProcessParameters;

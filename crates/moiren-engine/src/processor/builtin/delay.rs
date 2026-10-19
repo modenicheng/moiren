@@ -1,5 +1,6 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
 use super::MAX_CHANNELS;
+use super::dynamics::resolve_float;
 use crate::{
     buffer::{PreparedIo, ProcessIo},
     control::{ParamDomain, ParamSpec, ProcessParameters},
@@ -134,6 +135,22 @@ impl Delay {
                 initial: ParamValue::Float(settings.mix),
             },
         ]
+    }
+
+    /// Effective settings after applying recorded parameter intent by id.
+    /// `max_delay_ms` is storage configuration, not a parameter, so intent
+    /// never rewrites it; the result feeds both the default ring construction
+    /// and [`Delay::parameters`].
+    pub(crate) fn resolve_settings(
+        settings: DelaySettings,
+        mut intent: impl FnMut(ParameterId, ParamValue) -> ParamValue,
+    ) -> DelaySettings {
+        DelaySettings {
+            delay_ms: resolve_float(&mut intent, Self::DELAY, settings.delay_ms),
+            feedback: resolve_float(&mut intent, Self::FEEDBACK, settings.feedback),
+            mix: resolve_float(&mut intent, Self::MIX, settings.mix),
+            max_delay_ms: settings.max_delay_ms,
+        }
     }
 
     fn sample_index(&self, channel: usize, delay_frames: usize) -> usize {

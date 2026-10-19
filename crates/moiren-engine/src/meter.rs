@@ -38,6 +38,13 @@ pub struct LevelSnapshot {
     pub dropped_snapshots: u64,
     pub non_finite_samples: u64,
 }
+/// Queue-backed meter: fixed snapshots cross to control through a bounded
+/// rtrb queue that is drained on demand, with no signal-bus participation.
+/// This is the older variant retained for the queue-based `NodeConfig::Meter`
+/// path; its continuity tracking is epoch + next frame only (no activation
+/// generation or sample-rate latch, both of which are meaningless without a
+/// demand-gated publisher). Demand-gated exact-window measurement lives in
+/// [`signal::SignalLevelMeter`]; do not add new behavior here.
 pub struct LevelMeter {
     tx: Producer<LevelSnapshot>,
     interval_frames: u64,
