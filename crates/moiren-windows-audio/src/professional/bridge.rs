@@ -74,7 +74,7 @@ impl FollowerServo {
             correction: 0.0,
         }
     }
-    /// Priming/fullness watermark the follower waits for before starting.
+    /// Queue target for drift control and capture-side content priming.
     pub(super) fn target(&self) -> usize {
         self.target
     }

@@ -26,8 +26,12 @@ use std::{
         mpsc,
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+#[cfg(test)]
+#[path = "owner/idle_tests.rs"]
+mod idle_tests;
 
 pub(super) trait AuxiliaryOwner: Send {
     fn activate(&self) -> Result<(), BackendError>;
@@ -297,22 +301,8 @@ fn native_owner<S: ProcessingSample>(
     }
     // Engine is outside this closure: processor/native panics cannot unwind it.
     let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), BackendError> {
-        if !request.master {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while !pump.ready_to_start() {
-                if request.state.stop.load(Ordering::Acquire) {
-                    return Ok(());
-                }
-                if Instant::now() >= deadline {
-                    return Err(BackendError::ResourceUnavailable(
-                        "follower did not receive master output for priming".into(),
-                    ));
-                }
-                // Native audio has not started. Priming waits cannot hold up
-                // the master or run inside a processing callback.
-                thread::park_timeout(Duration::from_millis(1));
-            }
-        }
+        // Activation authorizes native start even when the master has no PCM.
+        // The follower pump supplies silence without advancing Engine.
         stream.start()?;
         log::debug!(
             target: "moiren::audio::professional",
@@ -320,24 +310,10 @@ fn native_owner<S: ProcessingSample>(
             request.master,
         );
         started.store(true, Ordering::Release);
-        let mut last_progress = Instant::now();
         while !request.state.stop.load(Ordering::Acquire) {
-            if pump.cycle(&mut *stream, engine.as_mut(), &request.timeline)? {
-                last_progress = Instant::now();
-            }
-            if last_progress.elapsed() >= Duration::from_secs(3) {
-                log::error!(
-                    target: "moiren::audio::professional",
-                    "native transfer stalled: master={} elapsed_ms={} stats={:?}",
-                    request.master,
-                    last_progress.elapsed().as_millis(),
-                    stream.stats(),
-                );
-                return Err(BackendError::ResourceUnavailable(format!(
-                    "native device stopped transferring frames ({:?})",
-                    stream.stats()
-                )));
-            }
+            // Zero transfers and wait timeouts describe supply/demand, not
+            // resource health. Only explicit native errors retire this owner.
+            pump.cycle(&mut *stream, engine.as_mut(), &request.timeline)?;
             // Waiting belongs to the native owner, outside Engine::render.
             stream.wait(Duration::from_millis(10))?;
             request
@@ -424,11 +400,6 @@ pub(super) struct Pump {
     max_engine_frames: usize,
 }
 impl Pump {
-    fn ready_to_start(&self) -> bool {
-        self.render
-            .as_ref()
-            .is_none_or(|rx| rx.slots() >= self.servo.target())
-    }
     pub(super) fn new(
         capture: Option<Producer<StereoFrame>>,
         render: Option<Consumer<StereoFrame>>,
@@ -446,8 +417,8 @@ impl Pump {
         } else {
             None
         };
-        // Two native periods expressed in engine-rate frames prime the
-        // follower's start; the u64 form keeps the frame math truncating.
+        // The servo targets two native periods in engine-rate frames; this
+        // watermark is a drift target, never a condition for native start.
         let period_frames = (u64::from(info.buffer_frames) * u64::from(engine_rate)
             / u64::from(info.sample_rate)) as usize;
         Ok(Self {
