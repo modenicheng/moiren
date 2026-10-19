@@ -26,3 +26,7 @@ rustc-ice-*.txt
 
 # AI Slops
 .tmp/
+.v2c/
+
+# Visual Studio IDE state (driver/ experiments stay out of the repo for now)
+.vs/
