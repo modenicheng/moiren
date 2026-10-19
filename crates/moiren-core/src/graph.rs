@@ -16,6 +16,24 @@ mod tests;
 const MAX_INPUT_PORTS: usize = u16::MAX as usize + 1;
 const MAX_OUTPUT_PORTS: usize = u16::MAX as usize + 1;
 
+/// Dynamic (addable/removable) port slots: Bus inputs and Rack inputs and
+/// outputs. Every other kind exposes a fixed port set
+/// (see `GraphError::FixedPortLayout`).
+fn dynamic_ports_allowed(kind: NodeKind, role: PortRole) -> bool {
+    matches!(
+        (kind, role),
+        (NodeKind::Bus | NodeKind::Rack, PortRole::Input) | (NodeKind::Rack, PortRole::Output)
+    )
+}
+
+/// Prepared port indices are u16-based; each role has its own address space.
+fn port_capacity(role: PortRole) -> usize {
+    match role {
+        PortRole::Input => MAX_INPUT_PORTS,
+        PortRole::Output => MAX_OUTPUT_PORTS,
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct IdCounter {
     node: u64,
@@ -77,43 +95,9 @@ impl LogicalGraph {
     pub fn create_node(&mut self, kind: NodeKind, channels: usize) -> Result<NodeId, GraphError> {
         kind.validate_channels(channels)?;
         let (input_count, output_count) = kind.initial_ports();
-        let next_node = self
-            .counts
-            .node
-            .checked_add(1)
-            .ok_or(GraphError::TooManyNodes)?;
-        let next_port = self
-            .counts
-            .port
-            .checked_add((input_count + output_count) as u64)
-            .ok_or(GraphError::TooManyPorts)?;
-        let id = NodeId(self.counts.node);
-        let mut port_id = self.counts.port;
-        let mut make_ports = |count, role| {
-            (0..count)
-                .map(|_| {
-                    let port = Port {
-                        id: PortId(port_id),
-                        channels,
-                        role,
-                    };
-                    port_id += 1;
-                    port
-                })
-                .collect()
-        };
-        let inputs = make_ports(input_count, PortRole::Input);
-        let outputs = make_ports(output_count, PortRole::Output);
-        self.nodes.push(Node {
-            id,
-            kind,
-            channels,
-            inputs,
-            outputs,
-        });
-        self.counts.node = next_node;
-        self.counts.port = next_port;
-        Ok(id)
+        let inputs = vec![channels; input_count];
+        let outputs = vec![channels; output_count];
+        self.create_node_with_widths(kind, channels, &inputs, &outputs)
     }
 
     /// Explicit conversion boundary: `channels()` is the output width, while
@@ -151,6 +135,24 @@ impl LogicalGraph {
         if input_channels.len() > MAX_INPUT_PORTS || output_channels.len() > MAX_OUTPUT_PORTS {
             return Err(GraphError::TooManyPorts);
         }
+        self.create_node_with_widths(
+            NodeKind::Rack,
+            output_channels[0],
+            input_channels,
+            output_channels,
+        )
+    }
+
+    /// Reserve the node and port ID range, then commit the node with its
+    /// inputs numbered before its outputs. Any failure leaves the graph and
+    /// its counters untouched.
+    fn create_node_with_widths(
+        &mut self,
+        kind: NodeKind,
+        channels: usize,
+        input_widths: &[usize],
+        output_widths: &[usize],
+    ) -> Result<NodeId, GraphError> {
         let next_node = self
             .counts
             .node
@@ -159,7 +161,7 @@ impl LogicalGraph {
         let next_port = self
             .counts
             .port
-            .checked_add((input_channels.len() + output_channels.len()) as u64)
+            .checked_add((input_widths.len() + output_widths.len()) as u64)
             .ok_or(GraphError::TooManyPorts)?;
         let id = NodeId(self.counts.node);
         let mut port_id = self.counts.port;
@@ -177,12 +179,12 @@ impl LogicalGraph {
                 })
                 .collect()
         };
-        let inputs = ports(input_channels, PortRole::Input);
-        let outputs = ports(output_channels, PortRole::Output);
+        let inputs = ports(input_widths, PortRole::Input);
+        let outputs = ports(output_widths, PortRole::Output);
         self.nodes.push(Node {
             id,
-            kind: NodeKind::Rack,
-            channels: output_channels[0],
+            kind,
+            channels,
             inputs,
             outputs,
         });
@@ -198,6 +200,24 @@ impl LogicalGraph {
         node_id: NodeId,
         channels: usize,
     ) -> Result<PortId, GraphError> {
+        self.add_port(node_id, channels, PortRole::Input)
+    }
+
+    /// Add a separately-addressable Rack output stream.
+    pub fn add_output_port(
+        &mut self,
+        node_id: NodeId,
+        channels: usize,
+    ) -> Result<PortId, GraphError> {
+        self.add_port(node_id, channels, PortRole::Output)
+    }
+
+    fn add_port(
+        &mut self,
+        node_id: NodeId,
+        channels: usize,
+        role: PortRole,
+    ) -> Result<PortId, GraphError> {
         if channels == 0 {
             return Err(GraphError::InvalidChannelCount);
         }
@@ -207,13 +227,17 @@ impl LogicalGraph {
             .position(|n| n.id == node_id)
             .ok_or(GraphError::NodeNotFound)?;
         let node = &self.nodes[index];
-        if !matches!(node.kind, NodeKind::Bus | NodeKind::Rack) {
+        if !dynamic_ports_allowed(node.kind, role) {
             return Err(GraphError::FixedPortLayout);
         }
         if node.kind == NodeKind::Bus && node.channels != channels {
             return Err(GraphError::ChannelMismatch);
         }
-        if node.inputs.len() >= MAX_INPUT_PORTS {
+        let count = match role {
+            PortRole::Input => node.inputs.len(),
+            PortRole::Output => node.outputs.len(),
+        };
+        if count >= port_capacity(role) {
             return Err(GraphError::TooManyPorts);
         }
         let next = self
@@ -222,47 +246,11 @@ impl LogicalGraph {
             .checked_add(1)
             .ok_or(GraphError::TooManyPorts)?;
         let id = PortId(self.counts.port);
-        self.nodes[index].inputs.push(Port {
-            id,
-            channels,
-            role: PortRole::Input,
-        });
-        self.counts.port = next;
-        Ok(id)
-    }
-
-    /// Add a separately-addressable Rack output stream.
-    pub fn add_output_port(
-        &mut self,
-        node_id: NodeId,
-        channels: usize,
-    ) -> Result<PortId, GraphError> {
-        if channels == 0 {
-            return Err(GraphError::InvalidChannelCount);
+        let port = Port { id, channels, role };
+        match role {
+            PortRole::Input => self.nodes[index].inputs.push(port),
+            PortRole::Output => self.nodes[index].outputs.push(port),
         }
-        let index = self
-            .nodes
-            .iter()
-            .position(|node| node.id == node_id)
-            .ok_or(GraphError::NodeNotFound)?;
-        let node = &self.nodes[index];
-        if node.kind != NodeKind::Rack {
-            return Err(GraphError::FixedPortLayout);
-        }
-        if node.outputs.len() >= MAX_OUTPUT_PORTS {
-            return Err(GraphError::TooManyPorts);
-        }
-        let next = self
-            .counts
-            .port
-            .checked_add(1)
-            .ok_or(GraphError::TooManyPorts)?;
-        let id = PortId(self.counts.port);
-        self.nodes[index].outputs.push(Port {
-            id,
-            channels,
-            role: PortRole::Output,
-        });
         self.counts.port = next;
         Ok(id)
     }
@@ -273,27 +261,7 @@ impl LogicalGraph {
         node_id: NodeId,
         port_id: PortId,
     ) -> Result<Port, GraphError> {
-        let node = self.get_node(node_id)?;
-        if !matches!(node.kind, NodeKind::Bus | NodeKind::Rack) {
-            return Err(GraphError::FixedPortLayout);
-        }
-        let index = node
-            .inputs
-            .iter()
-            .position(|p| p.id == port_id)
-            .ok_or(GraphError::PortNotFound)?;
-        if node.kind == NodeKind::Rack && node.inputs.len() == 1 {
-            return Err(GraphError::InvalidNodeLayout);
-        }
-        if self.edges.iter().any(|e| e.dst_port == port_id) {
-            return Err(GraphError::PortConnected);
-        }
-        let node = self
-            .nodes
-            .iter_mut()
-            .find(|n| n.id == node_id)
-            .expect("checked node");
-        Ok(node.inputs.remove(index))
+        self.remove_port(node_id, port_id, PortRole::Input)
     }
 
     /// Disconnect first. Removing a Rack output with outgoing edges is rejected.
@@ -302,29 +270,56 @@ impl LogicalGraph {
         node_id: NodeId,
         port_id: PortId,
     ) -> Result<Port, GraphError> {
-        let node = self.get_node(node_id)?;
-        if node.kind != NodeKind::Rack {
-            return Err(GraphError::FixedPortLayout);
-        }
-        let index = node
-            .outputs
-            .iter()
-            .position(|port| port.id == port_id)
-            .ok_or(GraphError::PortNotFound)?;
-        if node.outputs.len() == 1 {
+        self.remove_port(node_id, port_id, PortRole::Output)
+    }
+
+    fn remove_port(
+        &mut self,
+        node_id: NodeId,
+        port_id: PortId,
+        role: PortRole,
+    ) -> Result<Port, GraphError> {
+        let (kind, index, single) = {
+            let node = self.get_node(node_id)?;
+            if !dynamic_ports_allowed(node.kind, role) {
+                return Err(GraphError::FixedPortLayout);
+            }
+            let ports = match role {
+                PortRole::Input => &node.inputs,
+                PortRole::Output => &node.outputs,
+            };
+            let index = ports
+                .iter()
+                .position(|p| p.id == port_id)
+                .ok_or(GraphError::PortNotFound)?;
+            (node.kind, index, ports.len() == 1)
+        };
+        // A Rack keeps at least one stream per side; Bus inputs may drain to
+        // zero and survive disconnects for reuse.
+        if kind == NodeKind::Rack && single {
             return Err(GraphError::InvalidNodeLayout);
         }
-        if self.edges.iter().any(|edge| edge.src_port == port_id) {
+        let connected = match role {
+            PortRole::Input => self.edges.iter().any(|e| e.dst_port == port_id),
+            PortRole::Output => self.edges.iter().any(|e| e.src_port == port_id),
+        };
+        if connected {
             return Err(GraphError::PortConnected);
         }
         let node = self
             .nodes
             .iter_mut()
-            .find(|node| node.id == node_id)
+            .find(|n| n.id == node_id)
             .expect("checked node");
-        let removed = node.outputs.remove(index);
-        node.channels = node.outputs[0].channels;
-        Ok(removed)
+        Ok(match role {
+            PortRole::Input => node.inputs.remove(index),
+            // The node width mirrors the first remaining Rack output stream.
+            PortRole::Output => {
+                let removed = node.outputs.remove(index);
+                node.channels = node.outputs[0].channels;
+                removed
+            }
+        })
     }
 
     /// Connect existing ports only. Gain is linear; no implicit conversion or
@@ -375,16 +370,12 @@ impl LogicalGraph {
     ) -> Result<(NodeId, NodeId), GraphError> {
         let (source, src) = self.find_port(src_port)?;
         let (destination, dst) = self.find_port(dst_port)?;
-        if src.role != PortRole::Output || dst.role != PortRole::Input {
-            return Err(GraphError::PortDirectionMismatch);
-        }
-        if src.channels != dst.channels {
-            return Err(GraphError::ChannelMismatch);
-        }
-        params.validate()?;
-        if self.edges.iter().any(|e| e.dst_port == dst_port) {
-            return Err(GraphError::InputAlreadyConnected);
-        }
+        Self::check_edge(
+            src,
+            dst,
+            params,
+            self.edges.iter().any(|e| e.dst_port == dst_port),
+        )?;
         let (src, dst) = (source.id, destination.id);
         if self.would_cycle(src, dst)? {
             return Err(GraphError::CycleDetected);
@@ -394,6 +385,31 @@ impl LogicalGraph {
             .checked_add(1)
             .ok_or(GraphError::TooManyEdges)?;
         Ok((src, dst))
+    }
+
+    /// Single-edge contract shared by prospective sends (`connection_nodes`)
+    /// and stored edges (`validate`): an edge must leave an output port, enter
+    /// an input port of the same width, carry valid send parameters, and find
+    /// its destination unoccupied. Callers derive `dst_occupied` from their own
+    /// context — a live edge scan for a prospective send, an accumulating set
+    /// when rechecking stored edges.
+    fn check_edge(
+        src: &Port,
+        dst: &Port,
+        params: SendParams,
+        dst_occupied: bool,
+    ) -> Result<(), GraphError> {
+        if src.role != PortRole::Output || dst.role != PortRole::Input {
+            return Err(GraphError::PortDirectionMismatch);
+        }
+        if src.channels != dst.channels {
+            return Err(GraphError::ChannelMismatch);
+        }
+        params.validate()?;
+        if dst_occupied {
+            return Err(GraphError::InputAlreadyConnected);
+        }
+        Ok(())
     }
 
     pub fn disconnect(&mut self, edge_id: EdgeId) -> Result<Edge, GraphError> {
@@ -504,16 +520,7 @@ impl LogicalGraph {
             if source.id != edge.src || destination.id != edge.dst || !edge_ids.insert(edge.id) {
                 return Err(GraphError::InvalidNodeLayout);
             }
-            if src.role != PortRole::Output || dst.role != PortRole::Input {
-                return Err(GraphError::PortDirectionMismatch);
-            }
-            if src.channels != dst.channels {
-                return Err(GraphError::ChannelMismatch);
-            }
-            if !incoming.insert(dst.id) {
-                return Err(GraphError::InputAlreadyConnected);
-            }
-            edge.params.validate()?;
+            Self::check_edge(src, dst, edge.params, !incoming.insert(dst.id))?;
         }
         self.topological_order().map(|_| ())
     }

@@ -5,6 +5,11 @@ use thiserror::Error;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const PARAM_BODY_BYTES: usize = 64;
+pub const REPLY_BODY_BYTES: usize = 40;
+
+/// Body opcodes distinguishing message kinds inside the shared layout.
+const PARAMETER_OPCODE: u16 = 1;
+const REPLY_OPCODE: u16 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProcessorId(pub u64);
@@ -62,7 +67,7 @@ impl ParameterRequest {
         };
         let mut out = [0u8; PARAM_BODY_BYTES];
         out[0..2].copy_from_slice(&PROTOCOL_VERSION.to_le_bytes());
-        out[2..4].copy_from_slice(&1u16.to_le_bytes());
+        out[2..4].copy_from_slice(&PARAMETER_OPCODE.to_le_bytes());
         out[4..12].copy_from_slice(&self.request_id.to_le_bytes());
         out[12..20].copy_from_slice(&self.plan_revision.to_le_bytes());
         out[20..28].copy_from_slice(&self.timeline_epoch.to_le_bytes());
@@ -89,7 +94,7 @@ impl ParameterRequest {
         if u16_at(0) != PROTOCOL_VERSION {
             return Err(ProtocolError::UnsupportedVersion);
         }
-        if u16_at(2) != 1 {
+        if u16_at(2) != PARAMETER_OPCODE {
             return Err(ProtocolError::UnsupportedOpcode);
         }
         let tag = u32_at(40);
@@ -123,24 +128,34 @@ impl ParameterRequest {
 
 /// Reject oversized frames BEFORE reading their bodies or allocating memory.
 /// Close the connection on framing/version errors; do not guess a resync point.
-pub fn read_parameter(reader: &mut impl Read) -> Result<ParameterRequest, ProtocolError> {
+fn read_frame<const N: usize>(reader: &mut impl Read) -> Result<[u8; N], ProtocolError> {
     let mut prefix = [0u8; 4];
     reader.read_exact(&mut prefix)?;
-    if u32::from_le_bytes(prefix) as usize != PARAM_BODY_BYTES {
+    if u32::from_le_bytes(prefix) as usize != N {
         return Err(ProtocolError::InvalidLength);
     }
-    let mut body = [0u8; PARAM_BODY_BYTES];
+    let mut body = [0u8; N];
     reader.read_exact(&mut body)?;
-    ParameterRequest::decode_body(&body)
+    Ok(body)
+}
+
+fn write_frame<const N: usize>(
+    writer: &mut impl Write,
+    body: &[u8; N],
+) -> Result<(), ProtocolError> {
+    writer.write_all(&(N as u32).to_le_bytes())?;
+    writer.write_all(body)?;
+    Ok(())
+}
+
+pub fn read_parameter(reader: &mut impl Read) -> Result<ParameterRequest, ProtocolError> {
+    ParameterRequest::decode_body(&read_frame::<PARAM_BODY_BYTES>(reader)?)
 }
 pub fn write_parameter(
     writer: &mut impl Write,
     request: ParameterRequest,
 ) -> Result<(), ProtocolError> {
-    let body = request.encode_body()?;
-    writer.write_all(&(PARAM_BODY_BYTES as u32).to_le_bytes())?;
-    writer.write_all(&body)?;
-    Ok(())
+    write_frame(writer, &request.encode_body()?)
 }
 
 /// The worker may emit Accepted immediately, but only RT may report Applied.
@@ -168,30 +183,22 @@ pub struct ControlReply {
     pub effective_frame: u64,
 }
 pub fn write_reply(writer: &mut impl Write, reply: ControlReply) -> Result<(), ProtocolError> {
-    let mut body = [0u8; 40];
+    let mut body = [0u8; REPLY_BODY_BYTES];
     body[0..2].copy_from_slice(&PROTOCOL_VERSION.to_le_bytes());
-    body[2..4].copy_from_slice(&2u16.to_le_bytes());
+    body[2..4].copy_from_slice(&REPLY_OPCODE.to_le_bytes());
     body[4..8].copy_from_slice(&(reply.code as u32).to_le_bytes());
     body[8..16].copy_from_slice(&reply.request_id.to_le_bytes());
     body[16..24].copy_from_slice(&reply.plan_revision.to_le_bytes());
     body[24..32].copy_from_slice(&reply.timeline_epoch.to_le_bytes());
     body[32..40].copy_from_slice(&reply.effective_frame.to_le_bytes());
-    writer.write_all(&40u32.to_le_bytes())?;
-    writer.write_all(&body)?;
-    Ok(())
+    write_frame(writer, &body)
 }
 pub fn read_reply(reader: &mut impl Read) -> Result<ControlReply, ProtocolError> {
-    let mut prefix = [0u8; 4];
-    reader.read_exact(&mut prefix)?;
-    if u32::from_le_bytes(prefix) != 40 {
-        return Err(ProtocolError::InvalidLength);
-    }
-    let mut b = [0u8; 40];
-    reader.read_exact(&mut b)?;
+    let b = read_frame::<REPLY_BODY_BYTES>(reader)?;
     if u16::from_le_bytes(b[0..2].try_into().unwrap()) != PROTOCOL_VERSION {
         return Err(ProtocolError::UnsupportedVersion);
     }
-    if u16::from_le_bytes(b[2..4].try_into().unwrap()) != 2 {
+    if u16::from_le_bytes(b[2..4].try_into().unwrap()) != REPLY_OPCODE {
         return Err(ProtocolError::UnsupportedOpcode);
     }
     let code = match u32::from_le_bytes(b[4..8].try_into().unwrap()) {
