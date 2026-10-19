@@ -89,6 +89,67 @@ fn record_submit(samples: &[f32], stats: &mut RenderStats) {
     }
 }
 
+/// Fields captured once per wake, before the demand decision, that both the
+/// zero-demand and the render/submit paths report identically.
+struct WakeTrace {
+    wake_qpc_100ns: Option<u64>,
+    padding_before_frames: u32,
+    submitted_frames_before: u64,
+    native_clock: Option<super::super::RenderClockSample>,
+    bridge_before: Option<crate::clock_bridge::BridgeSnapshot>,
+}
+
+/// What the wake did between the demand decision and the recording call.
+enum CallbackOutcome {
+    /// Demand was zero: no render or submit was attempted.
+    ZeroDemand,
+    /// A render/submit of `demand` frames ran; `failed` preserves its error.
+    Submitted { demand: u32, failed: bool },
+}
+
+/// One wake, one record: the stats wake counters, the trace diagnostics event
+/// and the latency telemetry observation converge here so the zero-demand and
+/// the render/submit paths can never drift apart.
+#[inline]
+fn record_callback(
+    report: &mut RenderReport,
+    telemetry: &mut LatencyRecorder,
+    clock: Option<&QpcClock>,
+    wake: &WakeTrace,
+    outcome: CallbackOutcome,
+    bridge_after: Option<crate::clock_bridge::BridgeSnapshot>,
+) {
+    let (demand_frames, submitted_frames, failed) = match outcome {
+        CallbackOutcome::ZeroDemand => (0, 0, false),
+        CallbackOutcome::Submitted { demand, failed } => {
+            (demand, if failed { 0 } else { u64::from(demand) }, failed)
+        }
+    };
+    if demand_frames == 0 {
+        report.stats.zero_demand_wakes += 1;
+    } else if wake.padding_before_frames == 0 {
+        report.stats.empty_padding_wakes += 1;
+    }
+    report.record_diagnostics(super::super::RenderCallback {
+        wake_qpc_100ns: wake.wake_qpc_100ns,
+        padding_before_frames: wake.padding_before_frames,
+        demand_frames,
+        submitted_frames_before: wake.submitted_frames_before,
+        native_clock: wake.native_clock,
+        failed,
+        bridge_before: wake.bridge_before,
+        bridge_after,
+        ..Default::default()
+    });
+    telemetry.record(CallbackObservation {
+        wake_qpc_100ns: wake.wake_qpc_100ns,
+        completed_qpc_100ns: clock.and_then(QpcClock::now),
+        demand_frames: u64::from(demand_frames),
+        padding_before_frames: Some(wake.padding_before_frames),
+        submitted_frames,
+    });
+}
+
 pub(super) struct NativeRender {
     render: IAudioRenderClient,
     client: IAudioClient,
@@ -303,13 +364,17 @@ pub(super) fn run_stream(
             }
             let wake_qpc_100ns = clock.as_ref().and_then(QpcClock::now);
             let padding = api("GetCurrentPadding", unsafe { client.GetCurrentPadding() })?;
-            let native_clock = trace
-                .then(|| native_clock.as_ref().map(clock_sample))
-                .flatten();
-            let submitted_frames_before = report.stats.submitted_frames;
+            let wake = WakeTrace {
+                wake_qpc_100ns,
+                padding_before_frames: padding,
+                submitted_frames_before: report.stats.submitted_frames,
+                native_clock: trace
+                    .then(|| native_clock.as_ref().map(clock_sample))
+                    .flatten(),
+                bridge_before: trace.then(|| renderer.bridge_snapshot()).flatten(),
+            };
             let writable = writable_frames(capacity, padding)?;
             let demand = queue.demand(padding)?;
-            let bridge_before = trace.then(|| renderer.bridge_snapshot()).flatten();
             if writable > 0 {
                 report.stats.min_writable_frames = Some(
                     report
@@ -320,28 +385,15 @@ pub(super) fn run_stream(
                 report.stats.max_writable_frames = report.stats.max_writable_frames.max(writable);
             }
             if demand == 0 {
-                report.stats.zero_demand_wakes += 1;
-                telemetry.record(CallbackObservation {
-                    wake_qpc_100ns,
-                    completed_qpc_100ns: clock.as_ref().and_then(QpcClock::now),
-                    demand_frames: 0,
-                    padding_before_frames: Some(padding),
-                    submitted_frames: 0,
-                });
-                report.record_diagnostics(super::super::RenderCallback {
-                    wake_qpc_100ns,
-                    padding_before_frames: padding,
-                    demand_frames: demand,
-                    submitted_frames_before,
-                    native_clock,
-                    bridge_before,
-                    bridge_after: bridge_before,
-                    ..Default::default()
-                });
+                record_callback(
+                    report,
+                    &mut telemetry,
+                    clock.as_ref(),
+                    &wake,
+                    CallbackOutcome::ZeroDemand,
+                    wake.bridge_before,
+                );
                 continue;
-            }
-            if padding == 0 {
-                report.stats.empty_padding_wakes += 1;
             }
             let samples = &mut staging[..demand as usize * CHANNELS];
             let result = produce(renderer, samples, &mut report.stats)
@@ -352,24 +404,17 @@ pub(super) fn run_stream(
             }
             // Preserve the terminal wake and post-render bridge state before
             // propagating the original error. Failed transfers are not submissions.
-            report.record_diagnostics(super::super::RenderCallback {
-                wake_qpc_100ns,
-                padding_before_frames: padding,
-                demand_frames: demand,
-                submitted_frames_before,
-                native_clock,
-                failed: result.is_err(),
-                bridge_before,
-                bridge_after: trace.then(|| renderer.bridge_snapshot()).flatten(),
-                ..Default::default()
-            });
-            telemetry.record(CallbackObservation {
-                wake_qpc_100ns,
-                completed_qpc_100ns: clock.as_ref().and_then(QpcClock::now),
-                demand_frames: u64::from(demand),
-                padding_before_frames: Some(padding),
-                submitted_frames: if result.is_ok() { u64::from(demand) } else { 0 },
-            });
+            record_callback(
+                report,
+                &mut telemetry,
+                clock.as_ref(),
+                &wake,
+                CallbackOutcome::Submitted {
+                    demand,
+                    failed: result.is_err(),
+                },
+                trace.then(|| renderer.bridge_snapshot()).flatten(),
+            );
             result?;
         }
         Ok(RenderStatus::Completed)

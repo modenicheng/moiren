@@ -1,6 +1,6 @@
 //! Isolated harness: the library unit-test binary already installs an allocator.
 //! Compile the actual bridge/owner files here to measure their private RT paths.
-//! Run: cargo test --manifest-path crates/moiren-windows-audio/src/professional/rt-check/Cargo.toml
+//! Run: cargo test --manifest-path tools/rt-check/Cargo.toml
 use moiren_core::graph::{LogicalGraph, NodeKind, SendParams};
 use moiren_engine::{
     audio_config::SampleFormat,
@@ -26,21 +26,21 @@ use std::{
     time::{Duration, Instant},
 };
 #[cfg(windows)]
-#[path = "asio_rt_tests.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/professional/asio_rt_tests.rs"]
 mod asio_rt;
-#[path = "bridge.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/professional/bridge.rs"]
 mod bridge;
-#[path = "codec.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/professional/codec.rs"]
 mod codec;
-#[path = "observations.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/professional/observations.rs"]
 mod observations;
-#[path = "owner.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/professional/owner.rs"]
 mod owner;
-#[path = "recovery.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/professional/recovery.rs"]
 mod recovery;
-#[path = "recovery_host_tests.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/professional/recovery_host_tests.rs"]
 mod recovery_host_tests;
-#[path = "resample.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/professional/resample.rs"]
 mod resample;
 use bridge::{RingSink, RingSource, Tone};
 use native::{NativeStream, NativeStreamInfo, StereoFrame};
@@ -50,7 +50,7 @@ use owner::{Pump, Timeline, Transport, WorkerRequest};
 // The counting allocator is the single shared copy under
 // `tests/common/alloc_guard.rs`; this separate-crate harness pulls it in with
 // `#[path]` just like the shadow-compiled modules above.
-#[path = "../../tests/common/alloc_guard.rs"]
+#[path = "../../../crates/moiren-windows-audio/tests/common/alloc_guard.rs"]
 mod alloc_guard;
 
 fn measured<T>(f: impl FnOnce() -> T) -> T {

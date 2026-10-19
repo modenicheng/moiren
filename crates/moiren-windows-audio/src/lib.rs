@@ -18,16 +18,20 @@ mod session;
 #[cfg(windows)]
 pub use session::{Activation, ActivationGate, GateError, StopSignal};
 
-#[cfg(windows)]
+// Example-only probe tooling. These modules drive real WASAPI/SWDevice COM
+// surfaces exclusively for the `w00_*`/`exclusive_probe` examples; they are
+// kept out of library builds (and out of consumer dependency graphs) behind
+// the opt-in `probe-tools` feature. Enable it to build the probe examples.
+#[cfg(all(windows, feature = "probe-tools"))]
 pub mod probe;
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "probe-tools"))]
 pub mod exclusive_probe;
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "probe-tools"))]
 pub mod physical;
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "probe-tools"))]
 pub mod swdevice;
 
 #[cfg(windows)]

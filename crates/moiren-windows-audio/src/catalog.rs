@@ -403,6 +403,8 @@ fn selector_snapshot(flow: EDataFlow, name: &'static str) -> Result<CatalogSnaps
 }
 
 /// Observations only: never restore settings or attribute external changes to the probe.
+/// Consumed by the probe-tool examples (`probe-tools` feature).
+#[cfg(feature = "probe-tools")]
 pub fn changes(before: &CatalogSnapshot, after: &CatalogSnapshot, pid: u32) -> Vec<String> {
     let mut result = Vec::new();
     if before.defaults != after.defaults {

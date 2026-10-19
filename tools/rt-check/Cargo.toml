@@ -4,19 +4,21 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+# Standalone harness workspace: it is intentionally NOT a member of the root
+# workspace (the root lists its members explicitly) so its target directory
+# stays out of the library source tree.
 [workspace]
 
 [dependencies]
 log = "0.4"
-moiren-core = { path = "../../../../moiren-core" }
-moiren-engine = { path = "../../../../moiren-engine" }
-moiren-windows-audio = { path = "../../.." }
+moiren-core = { path = "../../crates/moiren-core" }
+moiren-engine = { path = "../../crates/moiren-engine" }
+moiren-windows-audio = { path = "../../crates/moiren-windows-audio" }
 rtrb = "=0.4.0"
 thiserror = "2.0"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
 
-[[test]]
-name = "professional_rt"
-path = "../rt_tests.rs"
+# The single test target is auto-discovered from tests/professional_rt.rs; it
+# shadow-compiles the library's professional modules through #[path] includes.

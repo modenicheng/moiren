@@ -12,7 +12,7 @@ mod identity;
 mod stream;
 #[cfg(windows)]
 pub use identity::inspect_process;
-#[cfg(windows)]
+#[cfg(all(windows, feature = "probe-tools"))]
 pub(crate) use stream::capture_format;
 #[cfg(windows)]
 pub use stream::{

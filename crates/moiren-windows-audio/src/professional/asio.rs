@@ -17,6 +17,9 @@ pub use capabilities::{
     AsioSampleType, query_capabilities,
 };
 
+/// Pure acceptance-probe logic shared with the `asio_probe` example.
+pub mod probe;
+
 #[cfg(any(all(windows, target_pointer_width = "64"), test))]
 mod abi;
 #[cfg(any(all(windows, target_pointer_width = "64"), test))]

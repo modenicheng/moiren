@@ -151,6 +151,9 @@ impl WasapiStream {
         result
     }
 
+    /// Result of the format-selection phase of `open_inner`: the descriptor that
+    /// later phases negotiate, its decoded codec pair, and whether Shared mode
+    /// will convert between the client format and the endpoint mix.
     fn open_inner(options: WasapiOptions) -> Result<Self, BackendError> {
         if options.endpoint_id.trim().is_empty()
             || options.endpoint_id.contains('\0')
@@ -181,7 +184,7 @@ impl WasapiStream {
             return Err(unsupported("WASAPI endpoint direction does not match node"));
         }
         let event = api("CreateEvent", OwnedHandle::event())?;
-        let mut client: IAudioClient = api("Activate(IAudioClient)", unsafe {
+        let client: IAudioClient = api("Activate(IAudioClient)", unsafe {
             device.Activate(CLSCTX_ALL, None)
         })?;
         let memory = TaskMemory(api("GetMixFormat", unsafe { client.GetMixFormat() })?);
@@ -209,262 +212,31 @@ impl WasapiStream {
             mix_container_bits,
             mix_block_align,
         );
-        let channels = if options.device.mode == DeviceMode::Shared {
-            usize::from(base.nChannels)
-        } else {
-            2
-        };
-        let mut format = if options.device.sample_format == SampleFormat::Native {
-            let mut mix = mix;
-            mix.Format.nSamplesPerSec = options.sample_rate;
-            mix.Format.nAvgBytesPerSec = options
-                .sample_rate
-                .checked_mul(u32::from(mix.Format.nBlockAlign))
-                .ok_or_else(|| unsupported("native format size overflow"))?;
-            mix
-        } else {
-            wave_format(options.device.sample_format, options.sample_rate, channels)?
-        };
-        let shared_conversion =
-            options.device.mode == DeviceMode::Shared && !same_format(&format, &mix);
-        if shared_conversion {
-            let mix_rate = mix.Format.nSamplesPerSec;
-            let client_rate = format.Format.nSamplesPerSec;
-            log::info!(
-                target: "moiren::audio::wasapi",
-                "WASAPI Shared format conversion selected: endpoint={:?} name={:?} mix_rate={} mix_format={:?} client_rate={} client_format={:?}",
-                options.endpoint_id,
-                endpoint_name,
-                mix_rate,
-                codec_for(&mix)?.0,
-                client_rate,
-                codec_for(&format)?.0,
-            );
-        }
         let exclusive = options.device.mode == DeviceMode::Exclusive;
-        if exclusive && !supported(&client, &format.Format)? {
-            if options.device.sample_format != SampleFormat::Native {
-                return Err(unsupported(
-                    "requested Exclusive rate/sample format is not supported",
-                ));
-            }
-            let mut selected = None;
-            for candidate in [
-                SampleFormat::Float32,
-                SampleFormat::Pcm32,
-                SampleFormat::Pcm24,
-                SampleFormat::Pcm16,
-                SampleFormat::Float64,
-            ] {
-                let candidate = wave_format(candidate, options.sample_rate, 2)?;
-                if supported(&client, &candidate.Format)? {
-                    selected = Some(candidate);
-                    break;
-                }
-            }
-            format = selected
-                .ok_or_else(|| unsupported("no supported Exclusive format at requested rate"))?;
-        }
-        let (sample_format, codec) = codec_for(&format)?;
+        let selected = select_format(
+            &options,
+            &client,
+            mix,
+            mix_channels,
+            &endpoint_name,
+            exclusive,
+        )?;
+        let SelectedFormat {
+            format,
+            sample_format,
+            codec,
+            shared_conversion: _,
+        } = &selected;
         let rate = format.Format.nSamplesPerSec;
-        if exclusive {
-            let (mut default_period, mut minimum_period) = (0, 0);
-            api("GetDevicePeriod", unsafe {
-                client.GetDevicePeriod(Some(&mut default_period), Some(&mut minimum_period))
-            })?;
-            let duration = options
-                .device
-                .period_frames
-                .map_or(default_period, |frames| {
-                    frames_duration(frames as u32, rate)
-                });
-            if let Some(requested_frames) = options.device.period_frames
-                && let Some(minimum_frames) = minimum_exclusive_frames(minimum_period, rate)
-                && u64::try_from(requested_frames)
-                    .is_ok_and(|requested| requested < u64::from(minimum_frames))
-            {
-                let next_preset = next_exclusive_preset(minimum_frames);
-                let suggestion = next_preset.map_or_else(
-                    || "no configured buffer preset is large enough".to_owned(),
-                    |frames| format!("choose {frames} frames or larger"),
-                );
-                log::warn!(
-                    target: "moiren::audio::wasapi",
-                    "WASAPI exclusive period rejected before Initialize: endpoint={:?} name={:?} rate={} requested_frames={} minimum_frames={} next_preset={:?}",
-                    options.endpoint_id,
-                    endpoint_name,
-                    rate,
-                    requested_frames,
-                    minimum_frames,
-                    next_preset,
-                );
-                return Err(unsupported(format!(
-                    "requested Exclusive buffer {requested_frames} frames ({:.2} ms) is below the device minimum {minimum_frames} frames ({:.2} ms) at {rate} Hz; {suggestion}",
-                    frames_milliseconds(requested_frames as u32, rate),
-                    frames_milliseconds(minimum_frames, rate),
-                )));
-            }
-            let selected_channels = format.Format.nChannels;
-            let selected_bits = format.Format.wBitsPerSample;
-            log::debug!(
-                target: "moiren::audio::wasapi",
-                "WASAPI initialize request: endpoint={:?} name={:?} direction={} requested_rate={} selected_format={:?} channels={} bits={} period_frames={:?} duration_100ns={} device_default_period_100ns={} device_minimum_period_100ns={}",
-                options.endpoint_id,
-                endpoint_name,
-                if options.input { "input" } else { "output" },
-                rate,
-                sample_format,
-                selected_channels,
-                selected_bits,
-                options.device.period_frames,
-                duration,
-                default_period,
-                minimum_period,
-            );
-            let initialized = initialize_exclusive(&client, &format.Format, duration);
-            if initialized
-                .as_ref()
-                .is_err_and(|e| e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
-            {
-                let aligned = api("GetBufferSize(alignment)", unsafe {
-                    client.GetBufferSize()
-                })?;
-                if options
-                    .device
-                    .period_frames
-                    .is_some_and(|requested| requested != aligned as usize)
-                {
-                    return Err(unsupported(format!(
-                        "requested Exclusive buffer requires {aligned} aligned frames"
-                    )));
-                }
-                // Failed initialization requires a fresh audio client.
-                drop(client);
-                client = api("Activate(aligned client)", unsafe {
-                    device.Activate(CLSCTX_ALL, None)
-                })?;
-                api(
-                    "Initialize(Exclusive aligned)",
-                    initialize_exclusive(&client, &format.Format, frames_duration(aligned, rate)),
-                )?;
-            } else {
-                api("Initialize(Exclusive)", initialized)?;
-            }
-        } else if let Some(period) = options.device.period_frames {
-            // Explicit requests are exact, not rounded to a convenient driver
-            // period. Legacy conversion cannot promise an exact event period.
-            let period = period as u32;
-            if shared_conversion {
-                log::warn!(
-                    target: "moiren::audio::wasapi",
-                    "WASAPI Shared explicit period uses compatibility initialization because the requested client format differs from the endpoint mix: endpoint={:?} requested_rate={} requested_format={:?} requested_frames={}",
-                    options.endpoint_id,
-                    rate,
-                    sample_format,
-                    period,
-                );
-                initialize_shared_legacy(
-                    &client,
-                    &format.Format,
-                    "Initialize(Shared compatibility)",
-                )?;
-            } else {
-                let client3: Option<IAudioClient3> = match client.cast() {
-                    Ok(client3) => Some(client3),
-                    // The professional stack applies the kernel rejection
-                    // matrix to this interface query as well; the legacy
-                    // shared stack falls back on E_NOINTERFACE alone.
-                    Err(error) if client3_rejects_format(error.code()) => {
-                        log::warn!(
-                            target: "moiren::audio::wasapi",
-                            "WASAPI Client3 unavailable for exact Shared period; using compatibility initialization: endpoint={:?} hresult=0x{:08X} requested_frames={}",
-                            options.endpoint_id,
-                            error.code().0 as u32,
-                            period,
-                        );
-                        initialize_shared_legacy(
-                            &client,
-                            &format.Format,
-                            "Initialize(Shared compatibility)",
-                        )?;
-                        None
-                    }
-                    Err(error) => return api("IAudioClient3(exact period)", Err(error)),
-                };
-                if let Some(client3) = client3 {
-                    // SAFETY: format is the locally owned selected descriptor,
-                    // valid for this query.
-                    let capabilities = unsafe {
-                        shared_engine_periods(&client3, std::ptr::from_ref(&format.Format))
-                    };
-                    match capabilities {
-                        Ok(periods) => {
-                            let EnginePeriods {
-                                default_frames: default,
-                                fundamental_frames: fundamental,
-                                min_frames: minimum,
-                                max_frames: maximum,
-                            } = periods;
-                            log::info!(
-                                target: "moiren::audio::wasapi",
-                                "WASAPI shared period capabilities: endpoint={:?} name={:?} direction={} rate={} default_frames={} fundamental_frames={} minimum_frames={} maximum_frames={} requested_frames={}",
-                                options.endpoint_id,
-                                endpoint_name,
-                                if options.input { "input" } else { "output" },
-                                rate,
-                                default,
-                                fundamental,
-                                minimum,
-                                maximum,
-                                period,
-                            );
-                            if fundamental == 0
-                                || period < minimum
-                                || period > maximum
-                                || !period.is_multiple_of(fundamental)
-                            {
-                                return Err(unsupported(format!(
-                                    "requested Shared period {period} is outside {minimum}..{maximum} or not a multiple of {fundamental}"
-                                )));
-                            }
-                            // D4: an explicit Shared period is a hard contract
-                            // here (out-of-range periods are rejected above,
-                            // never rounded), so PERIODICITY_LOCKED surfaces
-                            // instead of retrying with the engine period
-                            // (PERIODICITY_POLICY; the legacy shared stack
-                            // retries exactly once).
-                            api("InitializeSharedAudioStream", unsafe {
-                                client3.InitializeSharedAudioStream(
-                                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                                    period,
-                                    &format.Format,
-                                    None,
-                                )
-                            })?;
-                        }
-                        Err(error) if client3_rejects_format(error.code()) => {
-                            log::warn!(
-                                target: "moiren::audio::wasapi",
-                                "WASAPI Client3 rejected the Shared format; using compatibility initialization: endpoint={:?} hresult=0x{:08X} requested_frames={}",
-                                options.endpoint_id,
-                                error.code().0 as u32,
-                                period,
-                            );
-                            initialize_shared_legacy(
-                                &client,
-                                &format.Format,
-                                "Initialize(Shared compatibility)",
-                            )?;
-                        }
-                        Err(error) => {
-                            return api("GetSharedModeEnginePeriod", Err(error));
-                        }
-                    }
-                }
-            }
+        let client = if exclusive {
+            negotiate_exclusive(&options, &device, client, &selected, &endpoint_name)?
+        } else if let Some(period_frames) = options.device.period_frames {
+            negotiate_shared_exact(&options, &client, &selected, &endpoint_name, period_frames)?;
+            client
         } else {
             initialize_shared_legacy(&client, &format.Format, "Initialize(Shared)")?;
-        }
+            client
+        };
         api("SetEventHandle", unsafe { client.SetEventHandle(event.0) })?;
         let capacity = api("GetBufferSize", unsafe { client.GetBufferSize() })?;
         if capacity == 0 || capacity > 65536 {
@@ -513,11 +285,11 @@ impl WasapiStream {
             event,
             info: NativeStreamInfo {
                 sample_rate: rate,
-                format: sample_format,
+                format: *sample_format,
                 buffer_frames: capacity,
                 channels: usize::from(format.Format.nChannels),
             },
-            codec,
+            codec: *codec,
             mode: options.device.mode,
             started: false,
             render_ready: true,
@@ -528,6 +300,304 @@ impl WasapiStream {
             _apartment: apartment,
         })
     }
+}
+
+struct SelectedFormat {
+    format: WAVEFORMATEXTENSIBLE,
+    sample_format: SampleFormat,
+    codec: SampleCodec,
+    shared_conversion: bool,
+}
+
+/// Phase 1: choose the client format descriptor from the requested options
+/// and the device's mix format, including the Exclusive fallback matrix.
+fn select_format(
+    options: &WasapiOptions,
+    client: &IAudioClient,
+    mix: WAVEFORMATEXTENSIBLE,
+    mix_channels: u16,
+    endpoint_name: &str,
+    exclusive: bool,
+) -> Result<SelectedFormat, BackendError> {
+    let channels = if options.device.mode == DeviceMode::Shared {
+        usize::from(mix_channels)
+    } else {
+        2
+    };
+    let mut format = if options.device.sample_format == SampleFormat::Native {
+        let mut mix = mix;
+        mix.Format.nSamplesPerSec = options.sample_rate;
+        mix.Format.nAvgBytesPerSec = options
+            .sample_rate
+            .checked_mul(u32::from(mix.Format.nBlockAlign))
+            .ok_or_else(|| unsupported("native format size overflow"))?;
+        mix
+    } else {
+        wave_format(options.device.sample_format, options.sample_rate, channels)?
+    };
+    let shared_conversion =
+        options.device.mode == DeviceMode::Shared && !same_format(&format, &mix);
+    if shared_conversion {
+        let mix_rate = mix.Format.nSamplesPerSec;
+        let client_rate = format.Format.nSamplesPerSec;
+        log::info!(
+            target: "moiren::audio::wasapi",
+            "WASAPI Shared format conversion selected: endpoint={:?} name={:?} mix_rate={} mix_format={:?} client_rate={} client_format={:?}",
+            options.endpoint_id,
+            endpoint_name,
+            mix_rate,
+            codec_for(&mix)?.0,
+            client_rate,
+            codec_for(&format)?.0,
+        );
+    }
+    if exclusive && !supported(client, &format.Format)? {
+        if options.device.sample_format != SampleFormat::Native {
+            return Err(unsupported(
+                "requested Exclusive rate/sample format is not supported",
+            ));
+        }
+        let mut selected = None;
+        for candidate in [
+            SampleFormat::Float32,
+            SampleFormat::Pcm32,
+            SampleFormat::Pcm24,
+            SampleFormat::Pcm16,
+            SampleFormat::Float64,
+        ] {
+            let candidate = wave_format(candidate, options.sample_rate, 2)?;
+            if supported(client, &candidate.Format)? {
+                selected = Some(candidate);
+                break;
+            }
+        }
+        format = selected
+            .ok_or_else(|| unsupported("no supported Exclusive format at requested rate"))?;
+    }
+    let (sample_format, codec) = codec_for(&format)?;
+    Ok(SelectedFormat {
+        format,
+        sample_format,
+        codec,
+        shared_conversion,
+    })
+}
+
+/// Phase 2 (Exclusive): device-period precheck and Initialize with the
+/// alignment retry. Consumes the audio client because a
+/// BUFFER_SIZE_NOT_ALIGNED failure requires activating a fresh one; the
+/// (possibly realigned) client is returned for service setup.
+fn negotiate_exclusive(
+    options: &WasapiOptions,
+    device: &IMMDevice,
+    mut client: IAudioClient,
+    selected: &SelectedFormat,
+    endpoint_name: &str,
+) -> Result<IAudioClient, BackendError> {
+    let format = &selected.format;
+    let sample_format = selected.sample_format;
+    let rate = format.Format.nSamplesPerSec;
+    let (mut default_period, mut minimum_period) = (0, 0);
+    api("GetDevicePeriod", unsafe {
+        client.GetDevicePeriod(Some(&mut default_period), Some(&mut minimum_period))
+    })?;
+    let duration = options
+        .device
+        .period_frames
+        .map_or(default_period, |frames| {
+            frames_duration(frames as u32, rate)
+        });
+    if let Some(requested_frames) = options.device.period_frames
+        && let Some(minimum_frames) = minimum_exclusive_frames(minimum_period, rate)
+        && u64::try_from(requested_frames)
+            .is_ok_and(|requested| requested < u64::from(minimum_frames))
+    {
+        let next_preset = next_exclusive_preset(minimum_frames);
+        let suggestion = next_preset.map_or_else(
+            || "no configured buffer preset is large enough".to_owned(),
+            |frames| format!("choose {frames} frames or larger"),
+        );
+        log::warn!(
+            target: "moiren::audio::wasapi",
+            "WASAPI exclusive period rejected before Initialize: endpoint={:?} name={:?} rate={} requested_frames={} minimum_frames={} next_preset={:?}",
+            options.endpoint_id,
+            endpoint_name,
+            rate,
+            requested_frames,
+            minimum_frames,
+            next_preset,
+        );
+        return Err(unsupported(format!(
+            "requested Exclusive buffer {requested_frames} frames ({:.2} ms) is below the device minimum {minimum_frames} frames ({:.2} ms) at {rate} Hz; {suggestion}",
+            frames_milliseconds(requested_frames as u32, rate),
+            frames_milliseconds(minimum_frames, rate),
+        )));
+    }
+    let selected_channels = format.Format.nChannels;
+    let selected_bits = format.Format.wBitsPerSample;
+    log::debug!(
+        target: "moiren::audio::wasapi",
+        "WASAPI initialize request: endpoint={:?} name={:?} direction={} requested_rate={} selected_format={:?} channels={} bits={} period_frames={:?} duration_100ns={} device_default_period_100ns={} device_minimum_period_100ns={}",
+        options.endpoint_id,
+        endpoint_name,
+        if options.input { "input" } else { "output" },
+        rate,
+        sample_format,
+        selected_channels,
+        selected_bits,
+        options.device.period_frames,
+        duration,
+        default_period,
+        minimum_period,
+    );
+    let initialized = initialize_exclusive(&client, &format.Format, duration);
+    if initialized
+        .as_ref()
+        .is_err_and(|e| e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
+    {
+        let aligned = api("GetBufferSize(alignment)", unsafe {
+            client.GetBufferSize()
+        })?;
+        if options
+            .device
+            .period_frames
+            .is_some_and(|requested| requested != aligned as usize)
+        {
+            return Err(unsupported(format!(
+                "requested Exclusive buffer requires {aligned} aligned frames"
+            )));
+        }
+        // Failed initialization requires a fresh audio client.
+        drop(client);
+        client = api("Activate(aligned client)", unsafe {
+            device.Activate(CLSCTX_ALL, None)
+        })?;
+        api(
+            "Initialize(Exclusive aligned)",
+            initialize_exclusive(&client, &format.Format, frames_duration(aligned, rate)),
+        )?;
+    } else {
+        api("Initialize(Exclusive)", initialized)?;
+    }
+    Ok(client)
+}
+
+/// Phase 2 (Shared, explicit period): exact period negotiation through
+/// IAudioClient3's engine periods, falling back to compatibility
+/// initialization on the kernel rejection matrix (D4 policy).
+fn negotiate_shared_exact(
+    options: &WasapiOptions,
+    client: &IAudioClient,
+    selected: &SelectedFormat,
+    endpoint_name: &str,
+    period_frames: usize,
+) -> Result<(), BackendError> {
+    let format = &selected.format;
+    let sample_format = selected.sample_format;
+    let rate = format.Format.nSamplesPerSec;
+    // Explicit requests are exact, not rounded to a convenient driver
+    // period. Legacy conversion cannot promise an exact event period.
+    let period = period_frames as u32;
+    if selected.shared_conversion {
+        log::warn!(
+            target: "moiren::audio::wasapi",
+            "WASAPI Shared explicit period uses compatibility initialization because the requested client format differs from the endpoint mix: endpoint={:?} requested_rate={} requested_format={:?} requested_frames={}",
+            options.endpoint_id,
+            rate,
+            sample_format,
+            period,
+        );
+        initialize_shared_legacy(client, &format.Format, "Initialize(Shared compatibility)")?;
+        return Ok(());
+    }
+    let client3: Option<IAudioClient3> = match client.cast() {
+        Ok(client3) => Some(client3),
+        // The professional stack applies the kernel rejection
+        // matrix to this interface query as well; the legacy
+        // shared stack falls back on E_NOINTERFACE alone.
+        Err(error) if client3_rejects_format(error.code()) => {
+            log::warn!(
+                target: "moiren::audio::wasapi",
+                "WASAPI Client3 unavailable for exact Shared period; using compatibility initialization: endpoint={:?} hresult=0x{:08X} requested_frames={}",
+                options.endpoint_id,
+                error.code().0 as u32,
+                period,
+            );
+            initialize_shared_legacy(client, &format.Format, "Initialize(Shared compatibility)")?;
+            None
+        }
+        Err(error) => return api("IAudioClient3(exact period)", Err(error)),
+    };
+    if let Some(client3) = client3 {
+        // SAFETY: format is the locally owned selected descriptor,
+        // valid for this query.
+        let capabilities =
+            unsafe { shared_engine_periods(&client3, std::ptr::from_ref(&format.Format)) };
+        match capabilities {
+            Ok(periods) => {
+                let EnginePeriods {
+                    default_frames: default,
+                    fundamental_frames: fundamental,
+                    min_frames: minimum,
+                    max_frames: maximum,
+                } = periods;
+                log::info!(
+                    target: "moiren::audio::wasapi",
+                    "WASAPI shared period capabilities: endpoint={:?} name={:?} direction={} rate={} default_frames={} fundamental_frames={} minimum_frames={} maximum_frames={} requested_frames={}",
+                    options.endpoint_id,
+                    endpoint_name,
+                    if options.input { "input" } else { "output" },
+                    rate,
+                    default,
+                    fundamental,
+                    minimum,
+                    maximum,
+                    period,
+                );
+                if fundamental == 0
+                    || period < minimum
+                    || period > maximum
+                    || !period.is_multiple_of(fundamental)
+                {
+                    return Err(unsupported(format!(
+                        "requested Shared period {period} is outside {minimum}..={maximum} or not a multiple of {fundamental}"
+                    )));
+                }
+                // D4: an explicit Shared period is a hard contract
+                // here (out-of-range periods are rejected above,
+                // never rounded), so PERIODICITY_LOCKED surfaces
+                // instead of retrying with the engine period
+                // (PERIODICITY_POLICY; the legacy shared stack
+                // retries exactly once).
+                api("InitializeSharedAudioStream", unsafe {
+                    client3.InitializeSharedAudioStream(
+                        AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                        period,
+                        &format.Format,
+                        None,
+                    )
+                })?;
+            }
+            Err(error) if client3_rejects_format(error.code()) => {
+                log::warn!(
+                    target: "moiren::audio::wasapi",
+                    "WASAPI Client3 rejected the Shared format; using compatibility initialization: endpoint={:?} hresult=0x{:08X} requested_frames={}",
+                    options.endpoint_id,
+                    error.code().0 as u32,
+                    period,
+                );
+                initialize_shared_legacy(
+                    client,
+                    &format.Format,
+                    "Initialize(Shared compatibility)",
+                )?;
+            }
+            Err(error) => {
+                return api("GetSharedModeEnginePeriod", Err(error));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl NativeStream for WasapiStream {

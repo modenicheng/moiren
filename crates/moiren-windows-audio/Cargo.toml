@@ -17,6 +17,32 @@ thiserror = { workspace = true }
 [dev-dependencies]
 moiren-signal = { path = "../moiren-signal" }
 
+[features]
+# Opt-in probe tooling (`probe`, `exclusive_probe`, `physical`, `swdevice`).
+# Only the W00/exclusive probe examples consume these modules; the feature
+# keeps their COM surface out of default library builds for engine/app
+# consumers. Build the probe examples with:
+#   cargo build -p moiren-windows-audio --examples --features probe-tools
+probe-tools = []
+
+# `cargo build --examples` skips examples whose required features are off, so
+# the probe examples declare the feature instead of failing the default build.
+[[example]]
+name = "w00_probe"
+required-features = ["probe-tools"]
+
+[[example]]
+name = "w00_physical"
+required-features = ["probe-tools"]
+
+[[example]]
+name = "w00_swdevice"
+required-features = ["probe-tools"]
+
+[[example]]
+name = "exclusive_probe"
+required-features = ["probe-tools"]
+
 [target.'cfg(windows)'.dependencies]
 windows-core = "=0.62.2"
 windows = { version = "=0.62.2", features = [

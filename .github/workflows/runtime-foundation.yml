@@ -30,7 +30,7 @@ jobs:
       - run: cargo +stable check --locked --workspace --all-targets
       - run: cargo +stable test --locked --workspace
       - name: Test native-owner realtime contracts
-        run: cargo +stable test --locked --manifest-path crates/moiren-windows-audio/src/professional/rt-check/Cargo.toml
+        run: cargo +stable test --locked --manifest-path tools/rt-check/Cargo.toml
       - name: Test headless desktop UI
         if: runner.os == 'Windows'
         run: cargo +stable test --locked -p moiren-app --features gpui-test
