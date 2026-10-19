@@ -484,6 +484,12 @@ mod mixer;
 mod native;
 mod project;
 mod settings;
+#[cfg(any(test, feature = "gpui-test"))]
+mod test_harness;
+#[cfg(any(test, feature = "gpui-test"))]
+pub use test_harness::{finish_service, initial_projection, spawn_service, wait_for, wait_until};
+#[cfg(feature = "gpui-test")]
+pub use test_harness::{shell_with_state, test_shell};
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
 

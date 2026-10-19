@@ -1,12 +1,13 @@
+mod common;
+
 use moiren_app::{
     service::*,
     ui::{Page, SelectionState, WindowPresentation},
 };
-use std::time::{Duration, Instant};
 
 #[test]
 fn pure_presentation_hide_and_recreate_leaves_idle_service_untouched() {
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = common::service();
     let handle = runtime.handle();
     let mut presentation = WindowPresentation::default();
     presentation.show();
@@ -17,17 +18,9 @@ fn pure_presentation_hide_and_recreate_leaves_idle_service_untouched() {
     replacement.show();
     assert!(replacement.visible && !replacement.minimized);
     // Reads are intentionally nonblocking and may race the service publisher.
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let snapshot = loop {
-        if let Some(snapshot) = handle.try_snapshot() {
-            break snapshot;
-        }
-        assert!(Instant::now() < deadline, "service snapshot stayed busy");
-        std::thread::sleep(Duration::from_millis(1));
-    };
+    let snapshot = common::wait_snapshot(&handle);
     assert_eq!(snapshot.phase, SessionPhase::Idle);
-    handle.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
 }
 
 fn catalog(ids: &[&str], default: &str) -> DeviceCatalog {

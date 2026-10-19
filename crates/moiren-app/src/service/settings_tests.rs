@@ -59,8 +59,7 @@ fn saved_audio_is_present_before_first_driver_poll_and_initial_snapshot() {
     assert_eq!(initial.latency_profile, AudioLatencyProfile::Low);
     first_poll_tx.send(()).unwrap();
     let observed = observed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-    handle.request_exit();
-    runtime.join().unwrap();
+    crate::ui::finish_service(runtime);
     assert_eq!(observed, settings);
 }
 

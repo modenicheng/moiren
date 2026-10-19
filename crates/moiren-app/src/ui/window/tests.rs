@@ -1,17 +1,17 @@
 use super::{ServiceRuntime, StudioShell, UiState, pages, theme};
+use crate::ui::window::test_harness::{
+    finish_service, initial_projection, shell_with_state, spawn_service, test_shell, wait_for,
+    wait_until,
+};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, point, px};
+use std::time::Duration;
 
 #[gpui_kit::test]
 fn toolbar_reserves_draggable_space_outside_interactive_controls(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    cx.update(gpui_kit::init);
-    let runtime = ServiceRuntime::spawn().unwrap();
-    let handle = runtime.handle();
-    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
-    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
-    let (_view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let (_view, cx, runtime) = test_shell(cx);
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.0), px(900.0)));
         window.render_frame(cx);
@@ -24,8 +24,7 @@ fn toolbar_reserves_draggable_space_outside_interactive_controls(
         window.render_frame(cx);
         assert!(window.find("tab-mixer").visible());
     });
-    handle.request_exit();
-    runtime.join().unwrap();
+    finish_service(runtime);
 }
 
 #[gpui_kit::test]
@@ -33,9 +32,9 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(gpui_kit::init);
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = spawn_service();
     let handle = runtime.handle();
-    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+    let snapshot = initial_projection(&handle);
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
     let desktop = cx.new(|cx| super::desktop::Desktop::new(state.clone(), None, cx));
     cx.update(|cx| {
@@ -115,8 +114,7 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
             .unwrap();
     });
     assert_eq!(cx.windows().len(), 1);
-    handle.request_exit();
-    runtime.join().unwrap();
+    finish_service(runtime);
 }
 
 #[gpui_kit::test]
@@ -129,9 +127,9 @@ fn closed_window_keeps_preference_writes_until_application_shutdown(
     };
 
     cx.update(gpui_kit::init);
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = spawn_service();
     let handle = runtime.handle();
-    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+    let snapshot = initial_projection(&handle);
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
     let desktop = cx.new(|cx| super::desktop::Desktop::new(state, None, cx));
     cx.update(|cx| {
@@ -204,8 +202,7 @@ fn closed_window_keeps_preference_writes_until_application_shutdown(
         crate::project::UiDensity::Comfortable,
         "shutdown must drain the latest write after the window is destroyed"
     );
-    handle.request_exit();
-    runtime.join().unwrap();
+    finish_service(runtime);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -218,12 +215,7 @@ fn app_quit_drains_delayed_preference_chain_and_restores_latest_profile(
         sync::{Arc, Mutex},
         task::{Poll, Waker},
     };
-    cx.update(gpui_kit::init);
-    let runtime = ServiceRuntime::spawn().unwrap();
-    let handle = runtime.handle();
-    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
-    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
-    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let (view, cx, runtime) = test_shell(cx);
     let directory = std::env::temp_dir().join(format!(
         "moiren-latency-quit-{}-{}",
         std::process::id(),
@@ -304,8 +296,7 @@ fn app_quit_drains_delayed_preference_chain_and_restores_latest_profile(
     assert!(gate.lock().unwrap().0, "shutdown polled its quit futures");
     let restored = project::load_preferences_at(&path).unwrap();
     assert_eq!(restored.latency_profile, AudioLatencyProfile::Low);
-    handle.request_exit();
-    runtime.join().unwrap();
+    finish_service(runtime);
     std::fs::remove_file(&path).unwrap();
     std::fs::remove_dir(&directory).unwrap();
 }
@@ -314,12 +305,7 @@ fn app_quit_drains_delayed_preference_chain_and_restores_latest_profile(
 fn graph_wire_selection_shows_connection_properties_without_selecting_node(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    cx.update(gpui_kit::init);
-    let runtime = ServiceRuntime::spawn().unwrap();
-    let handle = runtime.handle();
-    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
-    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
-    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, cx| {
         window.render_frame(cx);
         window.render_frame(cx);
@@ -364,8 +350,7 @@ fn graph_wire_selection_shows_connection_properties_without_selecting_node(
             "selection never mutates topology"
         );
     });
-    handle.request_exit();
-    runtime.join().unwrap();
+    finish_service(runtime);
 }
 
 fn settings_test_path(name: &str) -> std::path::PathBuf {
@@ -382,22 +367,14 @@ fn settings_test_path(name: &str) -> std::path::PathBuf {
 }
 
 fn settle_settings(view: &gpui_kit::Entity<StudioShell>, cx: &mut gpui_kit::VisualTestContext) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    loop {
+    wait_until(Duration::from_secs(3), || {
         view.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| state.poll());
         });
         cx.update(|window, cx| window.render_frame(cx));
         cx.run_until_parked();
-        if view.update(cx, |shell, _| !shell.settings.busy()) {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "settings transaction did not finish"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+        view.update(cx, |shell, _| !shell.settings.busy())
+    });
     cx.run_until_parked();
 }
 
@@ -405,12 +382,7 @@ fn settle_settings(view: &gpui_kit::Entity<StudioShell>, cx: &mut gpui_kit::Visu
 fn settings_modal_blocks_graph_input_and_restores_workspace_and_focus(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    cx.update(gpui_kit::init);
-    let runtime = ServiceRuntime::spawn().unwrap();
-    let handle = runtime.handle();
-    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
-    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
-    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, cx| {
         window.resize(gpui_kit::size(px(1440.), px(900.)));
         window.render_frame(cx);
@@ -479,8 +451,7 @@ fn settings_modal_blocks_graph_input_and_restores_workspace_and_focus(
         window.click("close-settings", cx);
         assert!(window.try_find("settings-dialog").is_none());
     });
-    handle.request_exit();
-    runtime.join().unwrap();
+    finish_service(runtime);
 }
 
 #[gpui_kit::test]
@@ -488,12 +459,7 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     use moiren_engine::audio_config::{AudioBackend, ProcessingPrecision};
-    cx.update(gpui_kit::init);
-    let runtime = ServiceRuntime::spawn().unwrap();
-    let handle = runtime.handle();
-    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
-    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
-    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let (view, cx, runtime) = test_shell(cx);
     let path = settings_test_path("draft");
     view.update(cx, |shell, cx| {
         shell.preferences = crate::project::AppPreferences::default();
@@ -567,8 +533,7 @@ fn settings_controls_are_drafts_until_save_and_stopped_save_never_starts_audio(
         crate::project::load_preferences_at(&path).unwrap().density,
         crate::project::UiDensity::Compact
     );
-    handle.request_exit();
-    runtime.join().unwrap();
+    finish_service(runtime);
     cx.update(|window, cx| {
         window.click("density-0", cx);
         window.click("settings-save", cx);
@@ -586,10 +551,9 @@ fn device_inspection_and_overrides_are_independent_from_candidate_bindings(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     use super::settings::{Direction, Editor};
-    cx.update(gpui_kit::init);
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = spawn_service();
     let handle = runtime.handle();
-    let mut snapshot = (*crate::ui::state::initial_snapshot(&handle).unwrap()).clone();
+    let mut snapshot = (*initial_projection(&handle)).clone();
     std::sync::Arc::make_mut(&mut snapshot.catalog)
         .outputs
         .push(crate::service::DeviceRow {
@@ -597,7 +561,7 @@ fn device_inspection_and_overrides_are_independent_from_candidate_bindings(
             name: "Studio output".into(),
         });
     let state = cx.new(|_| UiState::new(handle.clone(), std::sync::Arc::new(snapshot)));
-    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let (view, cx) = shell_with_state(cx, state);
     let path = settings_test_path("device");
     view.update(cx, |shell, cx| {
         shell.preferences_path = Some(path.clone());
@@ -693,8 +657,7 @@ fn device_inspection_and_overrides_are_independent_from_candidate_bindings(
     assert!(!saved.audio.output_overrides.contains_key("output-a"));
     assert_eq!(saved.audio.effective_output("output-a"), saved.audio.output);
     assert!(saved.audio.input_overrides.contains_key("input-b"));
-    handle.request_exit();
-    runtime.join().unwrap();
+    finish_service(runtime);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
@@ -815,18 +778,13 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
     })
     .unwrap();
     let handle = runtime.handle();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let snapshot = loop {
-        if let Some(snapshot) = handle.try_snapshot()
-            && snapshot.phase == crate::service::SessionPhase::Running
-        {
-            break snapshot;
-        }
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    };
+    let snapshot = wait_for(Duration::from_secs(2), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == crate::service::SessionPhase::Running)
+    });
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
-    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let (view, cx) = shell_with_state(cx, state);
     let path = settings_test_path("restart");
     view.update(cx, |shell, _| shell.preferences_path = Some(path.clone()));
     cx.update(|window, cx| {
@@ -864,23 +822,16 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
         window.click("processing-rate-0", cx);
         window.click("settings-restart", cx);
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    loop {
+    wait_until(Duration::from_secs(3), || {
         view.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| state.poll());
         });
         cx.update(|window, cx| window.render_frame(cx));
-        if log
-            .lock()
+        log.lock()
             .unwrap()
             .iter()
             .any(|request| matches!(request, AppRequest::ApplyGraph))
-        {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    });
     let requests = log.lock().unwrap().clone();
     assert!(
         matches!(&requests[requests.len()-3], AppRequest::SetAudioSettings(settings) if settings.processing.sample_rate == 44_100)
@@ -956,7 +907,6 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
             .sample_rate,
         44_100
     );
-    handle.request_exit();
-    runtime.join().unwrap();
+    finish_service(runtime);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }

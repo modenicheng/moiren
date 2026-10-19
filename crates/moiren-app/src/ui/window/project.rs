@@ -60,17 +60,20 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoE
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests {
-    use super::{Duration, ProjectDocument, ServiceRuntime, StudioShell, UiState};
+    use super::{Duration, ProjectDocument};
+    use crate::ui::UiState;
+    use crate::ui::window::test_harness::{
+        finish_service, initial_projection, shell_with_state, spawn_service, test_shell, wait_until,
+    };
     use gpui_kit::AppContext;
 
     #[gpui_kit::test]
     fn project_presentation_waits_for_service_and_maps_sparse_document_ids(
         cx: &mut gpui_kit::TestAppContext,
     ) {
-        cx.update(gpui_kit::init);
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let runtime = spawn_service();
         let handle = runtime.handle();
-        let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+        let snapshot = initial_projection(&handle);
         let mut document = ProjectDocument::from_graph("Sparse template", &snapshot.graph).unwrap();
         let graph = document.graph.as_mut().unwrap();
         for node in &mut graph.nodes {
@@ -86,7 +89,7 @@ mod tests {
             y: 120.,
         });
         let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
-        let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+        let (view, cx) = shell_with_state(cx, state);
         view.update(cx, |shell, cx| {
             shell
                 .stage_project(document, "Sparse.moiren.json".into(), cx)
@@ -94,19 +97,13 @@ mod tests {
             assert_eq!(shell.project_name, "Untitled session");
             assert!(shell.pending_project.is_some());
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            let done = view.update(cx, |shell, cx| {
+        wait_until(Duration::from_secs(2), || {
+            view.update(cx, |shell, cx| {
                 shell.state.update(cx, |state, _| state.poll());
                 shell.finish_project_load(cx);
                 shell.pending_project.is_none()
-            });
-            if done {
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
-        }
+            })
+        });
         view.update(cx, |shell, cx| {
             assert_eq!(shell.project_name, "Sparse template");
             let source = shell.state.read(cx).snapshot.graph.graph.nodes()[0].id();
@@ -114,23 +111,18 @@ mod tests {
             assert!(!shell.project_busy);
             assert!(shell.state.read(cx).selection.output_id.is_none());
         });
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
     }
 
     #[gpui_kit::test]
     fn rejected_project_enqueue_preserves_current_name_and_layout(
         cx: &mut gpui_kit::TestAppContext,
     ) {
-        cx.update(gpui_kit::init);
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let (view, cx, runtime) = test_shell(cx);
         let handle = runtime.handle();
-        let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+        let snapshot = initial_projection(&handle);
         let document = ProjectDocument::from_graph("Rejected", &snapshot.graph).unwrap();
-        let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
-        let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
         view.update(cx, |shell, cx| {
             let original = shell.state.read(cx).snapshot.graph.graph.nodes()[0].id();
             shell.node_positions.insert(original, (10., 20.));
@@ -151,11 +143,9 @@ mod tests {
     ) {
         use moiren_engine::audio_config::{ProcessingPrecision, ProcessingSettings, SampleFormat};
 
-        cx.update(gpui_kit::init);
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let runtime = spawn_service();
         let handle = runtime.handle();
-        let initial = crate::ui::state::initial_snapshot(&handle).unwrap();
-        let mut snapshot = (*initial).clone();
+        let mut snapshot = (*initial_projection(&handle)).clone();
         snapshot.audio_settings.output.format = SampleFormat::Pcm24;
         snapshot.audio_settings.input.buffer_frames = Some(512);
         let hardware_defaults = snapshot.audio_settings.clone();
@@ -167,22 +157,16 @@ mod tests {
         };
         document.processing = Some(processing);
         let state = cx.new(|_| UiState::new(handle.clone(), std::sync::Arc::new(snapshot)));
-        let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+        let (view, cx) = shell_with_state(cx, state);
         view.update(cx, |shell, cx| {
             shell.apply_project_presentation(&document, cx).unwrap();
         });
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            let done = view.update(cx, |shell, cx| {
+        wait_until(Duration::from_secs(2), || {
+            view.update(cx, |shell, cx| {
                 shell.state.update(cx, |state, _| state.poll());
                 shell.state.read(cx).snapshot.audio_settings.processing == processing
-            });
-            if done {
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
-        }
+            })
+        });
         view.update(cx, |shell, cx| {
             let state = shell.state.read(cx);
             assert_eq!(state.max_block_frames, 1024);
@@ -198,8 +182,7 @@ mod tests {
                 Some(processing)
             );
         });
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
     }
 }
 

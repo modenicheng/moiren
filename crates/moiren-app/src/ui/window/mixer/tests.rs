@@ -1,34 +1,25 @@
-use super::{Duration, NodeKind, Page, ServiceRuntime, StudioShell, UiState, reorder};
+use super::{Duration, NodeKind, Page, StudioShell, reorder};
+use crate::ui::window::test_harness::{finish_service, test_shell, wait_until};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext, Entity, Modifiers, MouseButton, SharedString, TestAppContext, VisualTestContext,
-    point, px, size,
+    Entity, Modifiers, MouseButton, SharedString, TestAppContext, VisualTestContext, point, px,
+    size,
 };
 
 fn poll(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
+    wait_until(Duration::from_secs(2), || {
         let pending = view.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| state.poll());
             shell.state.read(cx).pending_request
         });
         cx.update(|window, cx| window.render_frame(cx));
-        if !pending {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(1));
-    }
+        !pending
+    });
 }
 
 #[gpui_kit::test]
 fn mixer_controls_target_selected_nodes_and_restore_layout(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let runtime = ServiceRuntime::spawn().unwrap();
-    let handle = runtime.handle();
-    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
-    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
-    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
     view.update(cx, |shell, cx| {
         shell.presentation.page = Page::Mixer;
@@ -92,18 +83,12 @@ fn mixer_controls_target_selected_nodes_and_restore_layout(cx: &mut TestAppConte
             .bounds();
         assert!((f32::from(output.right() - dock.right())).abs() <= 1.);
     });
-    handle.request_exit();
-    runtime.join().unwrap();
+    finish_service(runtime);
 }
 
 #[gpui_kit::test]
 fn mixer_header_drag_reorders_and_divider_resizes(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let runtime = ServiceRuntime::spawn().unwrap();
-    let handle = runtime.handle();
-    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
-    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
-    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
     view.update(cx, |shell, cx| {
         shell.presentation.page = Page::Mixer;
@@ -149,18 +134,12 @@ fn mixer_header_drag_reorders_and_divider_resizes(cx: &mut TestAppContext) {
         Modifiers::default(),
     );
     view.update(cx, |shell, _| assert_eq!(shell.mixer.dock_width, 400.));
-    handle.request_exit();
-    runtime.join().unwrap();
+    finish_service(runtime);
 }
 
 #[gpui_kit::test]
 fn compact_mixer_keeps_send_controls_and_minimum_width_meters_unclipped(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
-    let runtime = ServiceRuntime::spawn().unwrap();
-    let handle = runtime.handle();
-    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
-    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
-    let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+    let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, _| window.resize(size(px(1024.), px(720.))));
     view.update(cx, |shell, cx| {
         shell.presentation.page = Page::Mixer;
@@ -188,6 +167,5 @@ fn compact_mixer_keeps_send_controls_and_minimum_width_meters_unclipped(cx: &mut
             .bounds();
         assert!(readout.top() >= levels.bottom());
     });
-    handle.request_exit();
-    runtime.join().unwrap();
+    finish_service(runtime);
 }

@@ -1,3 +1,5 @@
+mod common;
+
 use moiren_app::service::*;
 use std::{
     sync::{Arc, Barrier, mpsc},
@@ -141,8 +143,7 @@ fn unread_snapshots_do_not_stall_generation_and_exit() {
             SessionGeneration(n)
         );
     }
-    h.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
     assert_eq!(h.try_snapshot().unwrap().phase, SessionPhase::Exited);
 }
 #[test]
@@ -176,8 +177,7 @@ fn all_sixty_four_queued_requests_are_drained_in_bounded_rounds() {
             SessionGeneration(n)
         );
     }
-    h.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
 }
 struct BlockedAckDriver {
     gate: Arc<Barrier>,
@@ -232,8 +232,7 @@ fn bounded_rounds_continue_until_backlog_is_empty() {
         }
         observed += 1;
     }
-    h.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
     assert_eq!(observed, 64);
     let exited = h.try_snapshot().unwrap();
     assert_eq!(exited.phase, SessionPhase::Exited);
@@ -347,8 +346,7 @@ fn disposed_stale_or_failed(fail: bool) {
     let disposal_thread = drx.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_ne!(disposal_thread, thread::current().id());
     assert_ne!(disposal_thread, prepare_thread);
-    h.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
     let snapshot = h.try_snapshot().unwrap();
     assert_eq!(snapshot.generation, SessionGeneration(2));
     assert_eq!(snapshot.error, None);
@@ -576,18 +574,12 @@ fn failed_start_receipt_is_published_with_failed_phase_and_retained_through_exit
     let id = handle
         .try_request_tracked(AppRequest::Start(spec()))
         .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    let failed = loop {
-        if let Some(snapshot) = handle.try_snapshot()
-            && snapshot.phase == SessionPhase::Failed
-        {
-            break snapshot;
-        }
-        assert!(std::time::Instant::now() < deadline);
-        thread::yield_now();
-    };
-    handle.request_exit();
-    runtime.join().unwrap();
+    let failed = common::wait_for(Duration::from_secs(2), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Failed)
+    });
+    common::finish(runtime);
     assert_eq!(failed.consumed_request_id, id);
     assert_eq!(failed.error.as_deref(), Some("test prepare failure"));
     assert_eq!(handle.try_snapshot().unwrap().consumed_request_id, id);

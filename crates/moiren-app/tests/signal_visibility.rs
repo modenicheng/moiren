@@ -1,20 +1,8 @@
-use moiren_app::service::{AppRequest, RequestId, ServiceMailbox, ServiceRuntime};
-use moiren_app::ui::signals::{PresentationDemand, PresentationRect, VisibleSignal};
-use std::time::{Duration, Instant};
+mod common;
 
-fn snapshot(
-    handle: &moiren_app::service::AppHandle,
-) -> std::sync::Arc<moiren_app::service::AppSnapshot> {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        if let Some(snapshot) = handle.try_snapshot() {
-            return snapshot;
-        }
-        // Publishing can briefly own the mutex; contention is not missing state.
-        assert!(Instant::now() < deadline, "service snapshot stayed busy");
-        std::thread::yield_now();
-    }
-}
+use moiren_app::service::{AppRequest, RequestId, ServiceMailbox};
+use moiren_app::ui::signals::{PresentationDemand, PresentationRect, VisibleSignal};
+use std::time::Duration;
 
 fn visible() -> PresentationDemand {
     PresentationDemand {
@@ -99,61 +87,52 @@ fn persistent_visible_ticks_enqueue_only_one_subscription() {
 
 #[test]
 fn hide_show_between_audio_blocks_advances_real_demand_and_retains_analysis() {
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = common::service();
     let handle = runtime.handle();
-    let topic = snapshot(&handle).signal_topics.tone_output.clone();
+    let topic = common::wait_snapshot(&handle)
+        .signal_topics
+        .tone_output
+        .clone();
     let mut visible_signal = VisibleSignal::new(handle.clone(), topic.clone(), Default::default());
     visible_signal.update_demand(visible()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while visible_signal.subscriber().unwrap().is_none() {
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    common::wait_until(Duration::from_secs(2), || {
+        visible_signal.subscriber().unwrap().is_some()
+    });
     assert_eq!(topic.business_subscribers(), 1);
     let first = topic.demand_snapshot().generation;
     visible_signal.clear();
     assert_eq!(topic.business_subscribers(), 0);
     visible_signal.update_demand(visible()).unwrap();
-    while visible_signal.subscriber().unwrap().is_none() {
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    common::wait_until(Duration::from_secs(2), || {
+        visible_signal.subscriber().unwrap().is_some()
+    });
     assert!(topic.demand_snapshot().generation > first);
     let mut analysis_ticket = handle
         .subscribe_topic(topic.clone(), Default::default())
         .unwrap();
-    let analysis = loop {
-        if let Some(subscriber) = analysis_ticket.try_take().unwrap() {
-            break subscriber;
-        }
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    };
+    let analysis = common::wait_for(Duration::from_secs(2), || {
+        analysis_ticket.try_take().unwrap()
+    });
     drop(visible_signal);
     assert_eq!(topic.business_subscribers(), 1);
     assert!(topic.demand_snapshot().active);
     drop(analysis);
     assert_eq!(topic.business_subscribers(), 0);
-    handle.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
 }
 
 #[test]
 fn each_hide_predicate_drops_only_ui_demand_and_keeps_analysis_generation() {
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = common::service();
     let handle = runtime.handle();
-    let topic = snapshot(&handle).signal_topics.tone_output.clone();
+    let topic = common::wait_snapshot(&handle)
+        .signal_topics
+        .tone_output
+        .clone();
     let mut ticket = handle
         .subscribe_topic(topic.clone(), Default::default())
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let analysis = loop {
-        if let Some(subscriber) = ticket.try_take().unwrap() {
-            break subscriber;
-        }
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    };
+    let analysis = common::wait_for(Duration::from_secs(2), || ticket.try_take().unwrap());
     drop(ticket);
     let generation = topic.demand_snapshot().generation;
     let mut ui = VisibleSignal::new(handle.clone(), topic.clone(), Default::default());
@@ -165,10 +144,9 @@ fn each_hide_predicate_drops_only_ui_demand_and_keeps_analysis_generation() {
     hidden[4].intersects_viewport = false;
     for demand in hidden {
         ui.update_demand(visible()).unwrap();
-        while ui.subscriber().unwrap().is_none() {
-            assert!(Instant::now() < deadline);
-            std::thread::yield_now();
-        }
+        common::wait_until(Duration::from_secs(2), || {
+            ui.subscriber().unwrap().is_some()
+        });
         assert_eq!(topic.business_subscribers(), 2);
         ui.update_demand(demand).unwrap();
         ui.update_demand(demand).unwrap();
@@ -181,6 +159,5 @@ fn each_hide_predicate_drops_only_ui_demand_and_keeps_analysis_generation() {
     assert_eq!(topic.business_subscribers(), 1);
     drop(analysis);
     assert_eq!(topic.business_subscribers(), 0);
-    handle.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
 }

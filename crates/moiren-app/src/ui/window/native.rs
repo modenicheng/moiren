@@ -37,7 +37,8 @@ pub(super) fn saved_maximized(window: &gpui_kit::Window) -> Option<bool> {
 #[cfg(all(test, windows, feature = "gpui-test"))]
 #[allow(unsafe_code)]
 mod tests {
-    use crate::ui::window::{ActionAssets, ServiceRuntime, UiState, desktop, register_fonts};
+    use crate::ui::window::test_harness::{finish_service, initial_projection, spawn_service};
+    use crate::ui::window::{ActionAssets, UiState, desktop, register_fonts};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext, Window};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -63,9 +64,9 @@ mod tests {
     #[test]
     #[ignore = "opens a bounded native test window; no audio devices are opened"]
     fn native_chrome_toggles_maximize_hits_drag_regions_and_releases_closed_window() {
-        let service = ServiceRuntime::spawn().unwrap();
+        let service = spawn_service();
         let handle = service.handle();
-        let initial = crate::ui::state::initial_snapshot(&handle).unwrap();
+        let initial = initial_projection(&handle);
         let result = Arc::new(Mutex::new(None));
         let completion = result.clone();
         gpui_kit::application()
@@ -221,8 +222,7 @@ mod tests {
                 })
                 .detach();
             });
-        service.handle().request_exit();
-        service.join().unwrap();
+        finish_service(service);
         result
             .lock()
             .unwrap()

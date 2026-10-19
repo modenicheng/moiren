@@ -575,7 +575,8 @@ pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::{ProcessRow, ServiceMailbox, ServiceRuntime};
+    use crate::service::{ProcessRow, ServiceMailbox};
+    use crate::ui::{finish_service, initial_projection, spawn_service, wait_until};
     use moiren_core::graph::NodeKind;
 
     fn catalog_state(backend: AudioBackend) -> (UiState, ServiceMailbox) {
@@ -777,9 +778,9 @@ mod tests {
     #[test]
     fn control_feedback_reports_results_without_internal_protocol_identifiers() {
         use moiren_core::protocol::{ControlReply, ReplyCode};
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let runtime = spawn_service();
         let handle = runtime.handle();
-        let snapshot = initial_snapshot(&handle).unwrap();
+        let snapshot = initial_projection(&handle);
         let mut state = UiState::new(handle.clone(), snapshot);
         for (code, expected) in [
             (ReplyCode::Applied, "Changes applied"),
@@ -802,8 +803,7 @@ mod tests {
                 expected
             );
         }
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
     }
 
     #[test]
@@ -818,9 +818,9 @@ mod tests {
             ProfessionalObservationSnapshot, ProfessionalStreamObservation,
             native::NativeStreamInfo,
         };
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let runtime = spawn_service();
         let handle = runtime.handle();
-        let mut state = UiState::new(handle.clone(), initial_snapshot(&handle).unwrap());
+        let mut state = UiState::new(handle.clone(), initial_projection(&handle));
         let node = state.snapshot.graph.graph.nodes()[0].id();
         let snapshot = Arc::make_mut(&mut state.snapshot);
         snapshot.generation = SessionGeneration(7);
@@ -902,16 +902,15 @@ mod tests {
                 .iter()
                 .any(|(key, _)| key.contains("actual stream"))
         );
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
     }
 
     #[test]
     fn restored_audio_settings_sync_block_size_without_starting_audio() {
         use crate::service::{AudioSettings, ProcessingPrecision};
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let runtime = spawn_service();
         let handle = runtime.handle();
-        let mut state = UiState::new(handle.clone(), initial_snapshot(&handle).unwrap());
+        let mut state = UiState::new(handle.clone(), initial_projection(&handle));
         let mut audio = AudioSettings::default();
         audio.processing.sample_rate = 96_000;
         audio.processing.precision = ProcessingPrecision::F64;
@@ -921,12 +920,10 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(state.max_block_frames, 1024);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while state.pending_request {
+        wait_until(std::time::Duration::from_secs(2), || {
             state.poll();
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+            !state.pending_request
+        });
         assert_eq!(state.snapshot.audio_settings, audio);
         assert_eq!(state.snapshot.active_audio_settings, None);
         assert_eq!(state.snapshot.phase, SessionPhase::Idle);
@@ -934,15 +931,14 @@ mod tests {
             crate::ui::presentation::latency_apply_text(&state.snapshot),
             "Explicit stream buffers control professional audio latency"
         );
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
     }
 
     #[test]
     fn invalid_restored_audio_does_not_hide_its_error_with_latency_dispatch() {
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let runtime = spawn_service();
         let handle = runtime.handle();
-        let mut state = UiState::new(handle.clone(), initial_snapshot(&handle).unwrap());
+        let mut state = UiState::new(handle.clone(), initial_projection(&handle));
         let mut preferences = crate::project::AppPreferences::default();
         preferences.audio.processing.sample_rate = 192_000;
         preferences.latency_profile = crate::service::AudioLatencyProfile::Low;
@@ -957,26 +953,23 @@ mod tests {
         assert!(!state.pending_request);
         assert_eq!(state.max_block_frames, 256);
         assert_eq!(state.snapshot.consumed_request_id, RequestId::default());
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
     }
 
     #[test]
     fn restored_latency_preference_selects_next_start_without_starting_audio() {
         use crate::service::AudioLatencyProfile;
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let runtime = spawn_service();
         let handle = runtime.handle();
-        let mut state = UiState::new(handle.clone(), initial_snapshot(&handle).unwrap());
+        let mut state = UiState::new(handle.clone(), initial_projection(&handle));
         state.restore_preferences(&crate::project::AppPreferences {
             latency_profile: AudioLatencyProfile::Low,
             ..Default::default()
         });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while state.pending_request {
+        wait_until(std::time::Duration::from_secs(2), || {
             state.poll();
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+            !state.pending_request
+        });
         assert_eq!(state.snapshot.latency_profile, AudioLatencyProfile::Low);
         assert_eq!(state.snapshot.phase, SessionPhase::Idle);
         assert_eq!(state.snapshot.active_latency_profile, None);
@@ -994,8 +987,7 @@ mod tests {
             crate::ui::presentation::latency_apply_text(&state.snapshot),
             "Active profile matches selection"
         );
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
     }
 
     #[cfg(windows)]
@@ -1009,9 +1001,9 @@ mod tests {
             },
             latency::NativeStreamTiming,
         };
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let runtime = spawn_service();
         let handle = runtime.handle();
-        let mut snapshot = (*initial_snapshot(&handle).unwrap()).clone();
+        let mut snapshot = (*initial_projection(&handle)).clone();
         snapshot.phase = SessionPhase::Running;
         snapshot.generation = SessionGeneration(8);
         let node = snapshot.graph.graph.nodes()[0].id();
@@ -1078,15 +1070,14 @@ mod tests {
             crate::ui::presentation::native_timing_rows(&state.snapshot)[0].1,
             "—"
         );
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
     }
 
     #[test]
     fn service_resource_binding_changes_update_the_shared_session_projection() {
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let runtime = spawn_service();
         let handle = runtime.handle();
-        let mut state = UiState::new(handle.clone(), initial_snapshot(&handle).unwrap());
+        let mut state = UiState::new(handle.clone(), initial_projection(&handle));
         let source = state
             .snapshot
             .graph
@@ -1104,26 +1095,23 @@ mod tests {
                 },
             },
         ));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while state.pending_request {
+        wait_until(std::time::Duration::from_secs(2), || {
             state.poll();
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+            !state.pending_request
+        });
         assert_eq!(state.source_mode, SourceMode::Input);
         assert_eq!(
             state.selection.input_id.as_deref(),
             Some("service-selected-input")
         );
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
     }
 
     #[test]
     fn unavailable_resources_remain_in_saved_candidate_configuration() {
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let runtime = spawn_service();
         let handle = runtime.handle();
-        let mut state = UiState::new(handle.clone(), initial_snapshot(&handle).unwrap());
+        let mut state = UiState::new(handle.clone(), initial_projection(&handle));
         let spec = SessionSpec {
             source: InputSelection::Physical {
                 endpoint_id: "unplugged-input".into(),
@@ -1140,15 +1128,14 @@ mod tests {
             state.candidate_spec().is_none(),
             "unavailable devices cannot start"
         );
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
     }
 
     #[test]
     fn graph_only_template_clears_previous_project_resource_selection() {
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let runtime = spawn_service();
         let handle = runtime.handle();
-        let mut state = UiState::new(handle.clone(), initial_snapshot(&handle).unwrap());
+        let mut state = UiState::new(handle.clone(), initial_projection(&handle));
         state.selection.output_id = Some("old-output".into());
         state.selection.input_id = Some("old-input".into());
         state.source_mode = SourceMode::Input;
@@ -1164,26 +1151,23 @@ mod tests {
         assert_eq!(state.run_limit, RunLimit::UntilStopped);
         assert!(!state.muted);
         assert!(state.candidate_config().is_none());
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
     }
 
     #[test]
     fn running_projection_edits_candidate_nodes_instead_of_legacy_session_pair() {
-        let runtime = ServiceRuntime::spawn().unwrap();
+        let runtime = spawn_service();
         let handle = runtime.handle();
-        let mut snapshot = (*initial_snapshot(&handle).unwrap()).clone();
+        let mut snapshot = (*initial_projection(&handle)).clone();
         snapshot.phase = SessionPhase::Running;
         let mut state = UiState::new(handle.clone(), Arc::new(snapshot));
         state.gain = 0.25;
         state.pan = 0.4;
         state.request_parameters();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while state.pending_request && std::time::Instant::now() < deadline {
+        wait_until(std::time::Duration::from_secs(2), || {
             state.poll();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        assert!(!state.pending_request);
+            !state.pending_request
+        });
         for node in state.snapshot.graph.graph.nodes() {
             let entry = state.snapshot.graph.node(node.id()).unwrap();
             match node.kind() {
@@ -1193,7 +1177,6 @@ mod tests {
             }
         }
         assert!(state.snapshot.control.pending_gain_pan.is_none());
-        handle.request_exit();
-        runtime.join().unwrap();
+        finish_service(runtime);
     }
 }

@@ -1,3 +1,5 @@
+mod common;
+
 use moiren_app::service::*;
 use moiren_engine::{compiler::CompiledBindings, control::ControlPort};
 use std::{
@@ -6,7 +8,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 #[derive(Default)]
@@ -276,12 +278,11 @@ fn spec() -> SessionSpec {
         max_block_frames: 256,
     }
 }
+// File-wide budget wrapper: every condition in this suite polls against the
+// same 5s deadline, so the budget is declared once and delegated to the
+// shared canonical loop.
 fn wait_until(mut check: impl FnMut() -> bool) {
-    let until = Instant::now() + Duration::from_secs(5);
-    while !check() {
-        assert!(Instant::now() < until, "timed out");
-        thread::sleep(Duration::from_millis(2));
-    }
+    common::wait_until(Duration::from_secs(5), &mut check);
 }
 fn phase(handle: &AppHandle, expected: SessionPhase) {
     wait_until(|| handle.try_snapshot().is_some_and(|s| s.phase == expected));
@@ -357,6 +358,8 @@ fn runtime(state: &Arc<State>) -> ServiceRuntime {
     })
     .unwrap()
 }
+// Not common::finish: this exit also observes the Exited phase between
+// request_exit and join, which the bare finish pair does not.
 fn exit(runtime: ServiceRuntime) {
     let h = runtime.handle();
     h.request_exit();
@@ -428,16 +431,11 @@ fn automatic_startup_recovers_catalog_or_missing_defaults_without_ui_refresh() {
         wait_until(|| state.catalog_calls.load(Ordering::Acquire) != 0);
         state.catalog_failure.store(false, Ordering::Release);
         state.catalog_empty.store(false, Ordering::Release);
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let snapshot = loop {
-            if let Some(snapshot) = handle.try_snapshot()
-                && snapshot.phase == SessionPhase::Running
-            {
-                break snapshot;
-            }
-            assert!(Instant::now() < deadline, "automatic startup timed out");
-            thread::sleep(Duration::from_millis(5));
-        };
+        let snapshot = common::wait_for(Duration::from_secs(3), || {
+            handle
+                .try_snapshot()
+                .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+        });
         exit(runtime);
         assert_eq!(snapshot.phase, SessionPhase::Running);
         assert_eq!(snapshot.consumed_request_id, RequestId(0));

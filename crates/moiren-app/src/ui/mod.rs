@@ -33,3 +33,7 @@ pub use window::run_ui_capture;
 #[cfg(feature = "gpui-test")]
 pub use window::shell_for_tests;
 pub use window::{WindowPresentation, run};
+#[cfg(any(test, feature = "gpui-test"))]
+pub use window::{finish_service, initial_projection, spawn_service, wait_for, wait_until};
+#[cfg(feature = "gpui-test")]
+pub use window::{shell_with_state, test_shell};

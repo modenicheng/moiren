@@ -1,3 +1,5 @@
+mod common;
+
 use moiren_app::service::{
     ActiveSession, AppHandle, AppRequest, AppSnapshot, BackendAdapter, BackendDriver, BackendError,
     Cancellation, DeviceCatalog, DispatchError, InputSelection, PreparedSession, RunLimit,
@@ -17,7 +19,7 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn typed_subscription_is_admitted_by_the_running_service() {
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = common::service();
     let handle = runtime.handle();
     let topic = wait_snapshot(&handle, |_| true)
         .signal_topics
@@ -26,6 +28,8 @@ fn typed_subscription_is_admitted_by_the_running_service() {
     let mut ticket = handle
         .subscribe_topic(topic, SubscriptionOptions::default())
         .unwrap();
+    // Result-shaped wait: an Err delivery is a real outcome, not "keep
+    // polling", so the Option-based common::wait_for cannot express it.
     let deadline = Instant::now() + Duration::from_secs(2);
     let result = loop {
         match ticket.try_take() {
@@ -33,8 +37,7 @@ fn typed_subscription_is_admitted_by_the_running_service() {
             result => break result,
         }
     };
-    handle.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
     let subscriber = result.unwrap().expect("service delivered a subscriber");
     assert_eq!(subscriber.status().publisher, PublisherStatus::NoPublisher);
 }
@@ -192,6 +195,9 @@ impl ActiveSession for OfflineSignalSession {
     }
 }
 
+// Domain-specialized snapshot wait: unlike common::wait_snapshot it takes a
+// predicate, and its timeout assertion dumps the last published snapshot,
+// which is the diagnostic these subscription tests fail with.
 #[track_caller]
 fn wait_snapshot(handle: &AppHandle, predicate: impl Fn(&AppSnapshot) -> bool) -> Arc<AppSnapshot> {
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -263,6 +269,8 @@ fn zero_signal_demand_still_applies_controls_retires_owner_and_exits() {
     assert_eq!(topic.status().publisher, PublisherStatus::NoPublisher);
     handle.try_request(AppRequest::Start(spec)).unwrap();
     wait_snapshot(&handle, |snapshot| snapshot.phase == SessionPhase::Running);
+    // Exit is observed before the join (retirement and Exited-phase asserts
+    // run in between), so the adjacent common::finish pair does not apply.
     handle.request_exit();
     assert_eq!(
         retired_rx.recv_timeout(Duration::from_secs(2)).unwrap(),

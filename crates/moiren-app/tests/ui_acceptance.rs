@@ -7,21 +7,23 @@
 // resolve to the same GPUI snapshot the app uses.
 extern crate gpui_kit as gpui;
 
+mod common;
+
 // Import explicitly: glob-importing the Kit would shadow Rust's #[test]
 // with GPUI's test macro and recurse inside the generated body.
 #[allow(unused_imports)]
 use gpui_kit::prelude::*;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, WindowOptions, px, size};
-use moiren_app::service::ServiceRuntime;
 use moiren_app::ui::UiState;
 use moiren_app::ui::{Page, PageCell};
+use std::time::Duration;
 
 #[gpui_kit::test]
 fn shell_renders_statusbar_and_session_panel(cx: &mut gpui_kit::TestAppContext) {
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = common::service();
     let handle = runtime.handle();
-    let snapshot = initial_snapshot(&handle);
+    let snapshot = common::wait_snapshot(&handle);
     cx.update(gpui_kit::init);
 
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
@@ -41,15 +43,14 @@ fn shell_renders_statusbar_and_session_panel(cx: &mut gpui_kit::TestAppContext) 
     })
     .unwrap();
 
-    handle.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
 }
 
 #[gpui_kit::test]
 fn page_cell_switches_between_graph_and_mixer(cx: &mut gpui_kit::TestAppContext) {
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = common::service();
     let handle = runtime.handle();
-    let snapshot = initial_snapshot(&handle);
+    let snapshot = common::wait_snapshot(&handle);
     cx.update(gpui_kit::init);
 
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
@@ -74,16 +75,15 @@ fn page_cell_switches_between_graph_and_mixer(cx: &mut gpui_kit::TestAppContext)
     })
     .unwrap();
 
-    handle.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
 }
 
 #[gpui_kit::test]
 fn window_smoke_options_valid(cx: &mut gpui_kit::TestAppContext) {
     // Keep the fixed-size test window machinery exercised.
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = common::service();
     let handle = runtime.handle();
-    let snapshot = initial_snapshot(&handle);
+    let snapshot = common::wait_snapshot(&handle);
     cx.update(gpui_kit::init);
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
     let page = cx.new(|_| PageCell::default());
@@ -102,17 +102,16 @@ fn window_smoke_options_valid(cx: &mut gpui_kit::TestAppContext) {
         .unwrap()
     });
     let _ = window;
-    handle.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
 }
 
 #[gpui_kit::test]
 fn production_navigation_opens_every_workspace_and_settings_overlays_matrix(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = common::service();
     let handle = runtime.handle();
-    let snapshot = initial_snapshot(&handle);
+    let snapshot = common::wait_snapshot(&handle);
     cx.update(gpui_kit::init);
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
     let page = cx.new(|_| PageCell::default());
@@ -168,15 +167,14 @@ fn production_navigation_opens_every_workspace_and_settings_overlays_matrix(
         assert_eq!(page.read(cx).page, Page::Matrix);
     })
     .unwrap();
-    handle.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
 }
 
 #[gpui_kit::test]
 fn compact_shell_keeps_navigation_and_opens_session_drawer(cx: &mut gpui_kit::TestAppContext) {
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = common::service();
     let handle = runtime.handle();
-    let snapshot = initial_snapshot(&handle);
+    let snapshot = common::wait_snapshot(&handle);
     cx.update(gpui_kit::init);
     let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
     let page = cx.new(|_| PageCell::default());
@@ -216,28 +214,14 @@ fn compact_shell_keeps_navigation_and_opens_session_drawer(cx: &mut gpui_kit::Te
         assert!(window.find("devices-page").visible());
     })
     .unwrap();
-    handle.request_exit();
-    runtime.join().unwrap();
-}
-
-fn initial_snapshot(
-    handle: &moiren_app::service::AppHandle,
-) -> std::sync::Arc<moiren_app::service::AppSnapshot> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        if let Some(snapshot) = handle.try_snapshot() {
-            return snapshot;
-        }
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    common::finish(runtime);
 }
 
 #[gpui_kit::test]
 fn large_matrix_keeps_both_headers_visible_while_scrolling(cx: &mut gpui_kit::TestAppContext) {
-    let runtime = ServiceRuntime::spawn().unwrap();
+    let runtime = common::service();
     let handle = runtime.handle();
-    let mut projection = UiState::new(handle.clone(), initial_snapshot(&handle));
+    let mut projection = UiState::new(handle.clone(), common::wait_snapshot(&handle));
     for _ in 0..16 {
         projection.dispatch(moiren_app::service::AppRequest::EditGraph(
             moiren_app::service::GraphEdit::AddNode {
@@ -246,12 +230,10 @@ fn large_matrix_keeps_both_headers_visible_while_scrolling(cx: &mut gpui_kit::Te
             },
         ));
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while projection.pending_request {
+    common::wait_until(Duration::from_secs(2), || {
         projection.poll();
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+        !projection.pending_request
+    });
     assert_eq!(projection.snapshot.graph.graph.nodes().len(), 20);
     cx.update(gpui_kit::init);
     let state = cx.new(|_| projection);
@@ -288,6 +270,5 @@ fn large_matrix_keeps_both_headers_visible_while_scrolling(cx: &mut gpui_kit::Te
         assert_eq!(window.find("matrix-row-header").bounds().origin.x, row_x);
     })
     .unwrap();
-    handle.request_exit();
-    runtime.join().unwrap();
+    common::finish(runtime);
 }

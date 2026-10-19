@@ -1,3 +1,5 @@
+mod common;
+
 use moiren_app::{
     monitor::{
         MonitorFaults, MonitorInitializationApi, MonitorInputBudget, MonitorLatencyConfig,
@@ -13,7 +15,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 #[derive(Default)]
@@ -230,12 +232,11 @@ fn spec() -> SessionSpec {
         max_block_frames: 256,
     }
 }
+// File-wide budget wrapper: every condition in this suite polls against the
+// same 5s deadline, so the budget is declared once and delegated to the
+// shared canonical loop.
 fn wait(mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !condition() {
-        assert!(Instant::now() < deadline, "timed out");
-        thread::sleep(Duration::from_millis(2));
-    }
+    common::wait_until(Duration::from_secs(5), &mut condition);
 }
 fn runtime(state: &Arc<State>, recovery: Option<MonitorRecoveryPolicy>) -> ServiceRuntime {
     ServiceRuntime::spawn_with_driver(
@@ -244,10 +245,6 @@ fn runtime(state: &Arc<State>, recovery: Option<MonitorRecoveryPolicy>) -> Servi
             .unwrap(),
     )
     .unwrap()
-}
-fn shutdown(runtime: ServiceRuntime) {
-    runtime.handle().request_exit();
-    runtime.join().unwrap();
 }
 
 #[test]
@@ -275,7 +272,7 @@ fn default_physical_driver_publishes_native_diagnostics_without_a_profile_overri
             .prime_frames,
         2048
     );
-    shutdown(runtime);
+    common::finish(runtime);
 }
 
 #[test]
@@ -303,7 +300,7 @@ fn non_physical_sources_cannot_publish_physical_monitor_diagnostics() {
         let running = handle.try_snapshot().unwrap();
         assert!(running.monitor_latency.is_none());
         assert!(running.monitor_diagnostics.is_none());
-        shutdown(runtime);
+        common::finish(runtime);
     }
 }
 
@@ -332,7 +329,7 @@ fn native_diagnostics_remain_unpublished_until_both_owners_are_running() {
     assert_eq!(prepared.output.requested_period_frames, Some(240));
     assert_eq!(prepared.output.actual_period_frames, Some(288));
     assert_eq!(prepared.input.actual_period_frames, None);
-    shutdown(runtime);
+    common::finish(runtime);
 }
 
 #[test]
@@ -373,7 +370,7 @@ fn running_diagnostics_follow_fill_and_clear_before_cleanup_finishes() {
     assert_eq!(stopping.generation, SessionGeneration(2));
     assert!(stopping.monitor_diagnostics.is_none());
     state.release();
-    shutdown(runtime);
+    common::finish(runtime);
 }
 
 #[test]
@@ -394,7 +391,7 @@ fn a_selected_policy_does_not_invent_missing_native_diagnostics() {
         MonitorLatencyConfig::balanced()
     );
     assert!(running.monitor_diagnostics.is_none());
-    shutdown(runtime);
+    common::finish(runtime);
 }
 
 #[test]
@@ -468,7 +465,7 @@ fn fallback_waits_for_fade_and_reaping_then_prepares_compatible_once() {
                 .unwrap()
     );
     drop(events);
-    shutdown(runtime);
+    common::finish(runtime);
     assert_eq!(state.preparations.lock().unwrap().len(), 2);
 }
 
@@ -486,7 +483,7 @@ fn stop_during_fade_revokes_replacement() {
             .try_snapshot()
             .is_some_and(|snapshot| snapshot.phase == SessionPhase::Idle)
     });
-    shutdown(runtime);
+    common::finish(runtime);
     assert_eq!(state.preparations.lock().unwrap().len(), 1);
 }
 
@@ -514,7 +511,7 @@ fn stalled_fade_times_out_without_hanging_the_control_service() {
             .unwrap()
             .fade_timed_out
     );
-    shutdown(runtime);
+    common::finish(runtime);
 }
 
 #[test]
@@ -537,7 +534,7 @@ fn cleanup_and_replacement_prepare_failures_are_terminal_without_retry() {
         });
         assert!(handle.try_snapshot().unwrap().error.is_some());
         assert!(handle.try_snapshot().unwrap().monitor_diagnostics.is_none());
-        shutdown(runtime);
+        common::finish(runtime);
         assert_eq!(
             state.preparations.lock().unwrap().len(),
             if cleanup_failure { 1 } else { 2 }
@@ -560,7 +557,7 @@ fn recovery_is_opt_in_even_when_faults_continue() {
     thread::sleep(Duration::from_millis(150));
     assert_eq!(state.preparations.lock().unwrap().len(), 1);
     assert!(!state.events.lock().unwrap().contains(&(0, "fade")));
-    shutdown(runtime);
+    common::finish(runtime);
 }
 
 #[test]
@@ -611,7 +608,7 @@ fn newer_start_during_cleanup_supersedes_fallback_and_restores_requested_policy(
     assert_eq!(preparations[1].0.gain, 0.4);
     assert_eq!(preparations[1].2, 0);
     drop(preparations);
-    shutdown(runtime);
+    common::finish(runtime);
 }
 
 #[test]
@@ -625,7 +622,7 @@ fn exit_during_fade_revokes_replacement() {
         .try_request(AppRequest::Start(spec()))
         .unwrap();
     wait(|| state.events.lock().unwrap().contains(&(0, "fade")));
-    shutdown(runtime);
+    common::finish(runtime);
     let exited = handle.try_snapshot().unwrap();
     assert_eq!(exited.phase, SessionPhase::Exited);
     assert!(exited.monitor_diagnostics.is_none());
