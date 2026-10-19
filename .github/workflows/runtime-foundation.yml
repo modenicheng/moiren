@@ -36,6 +36,10 @@ jobs:
         run: cargo +stable test --locked -p moiren-app --features gpui-test
       - if: always()
         run: cargo +stable clippy --locked --workspace --all-targets -- -D warnings
+      # Probe tools are feature-gated out of the default build (see
+      # docs/superpowers/plans/2026-10-19-repo-steward-remediation.md W8).
+      - if: always()
+        run: cargo +stable clippy --locked -p moiren-windows-audio --all-targets --features probe-tools -- -D warnings
       - if: always()
         run: cargo +stable fmt --all -- --check
       - run: cargo +stable run --locked -p moiren-engine --example offline

@@ -2,8 +2,8 @@
 
 > **Source:** read-only repo-steward audit on 2026-10-19 (four parallel crate
 > audits + hygiene scan + spot-check verification). This document is the
-> master checklist; update the `[ ]` status of each item as work lands so
-> nothing is lost across sessions.
+> master checklist; statuses below reflect the remediation executed the same
+> day (commit range `aa19314..17f04e5`).
 
 **Goal:** Consolidate duplicated invariants into single sources, fix the three
 drifts the audit found, converge test scaffolding, and land the structural
@@ -20,9 +20,9 @@ is explicitly flagged.
 - Behavior-preserving refactors only, except items explicitly marked
   **drift fix** (numerical-equivalence or error-handling alignment, each with
   a test).
-- Per AGENTS.md: run `cargo fmt --all`, `cargo clippy --locked --workspace
+- Per AGENTS.md: `cargo fmt --all`, `cargo clippy --locked --workspace
   --all-targets -- -D warnings`, and the affected crate tests after each
-  group; no commits unless requested.
+  group; batches were committed and pushed to main per user instruction.
 - `driver/` stays out of the repository for now (decided 2026-10-19). Do not
   add ignore rules that would hide it; `.vs/` and `.v2c/` ignore entries are
   still correct.
@@ -37,338 +37,271 @@ is explicitly flagged.
 - **D3 (open, hardware):** Switching the default audio path (default
   `AudioSettings` → professional backend) and retiring the legacy stack is a
   behavior change requiring on-device verification. Excluded from this plan's
-  execution; see item W-K.
-- **D4 (during W-K):** PERIODICITY_LOCKED retry divergence: align professional
-  with legacy's single retry **only if** professional's strict-period contract
-  permits fallback; otherwise parametrize and document. NOPERSIST flag
-  difference: parametrize, do not silently unify.
+  execution; see item W-K. Prerequisite W3/W4 kernel unification is done.
+- **D4 (resolved during W3):** PERIODICITY_LOCKED: professional keeps its
+  structural exact-or-fail contract (retry would silently open a
+  non-requested period); the retry policy is parametrized in the shared
+  kernel (`EnginePeriodicityPolicy`) and pinned by a const assert + test.
+  NOPERSIST: not unified — `LegacySharedInit` named params carry each stack's
+  flag set.
+- **D5 (open, small):** Whether the legacy driver should also apply `SetSend`
+  in real time (A8); requires edge-addressable bindings in legacy
+  `CompiledBindings`.
+- **D6 (accepted residual):** `managed_stress` example keeps its
+  `Arc<WindowsBackend>` forwarding impl — the engine-side Box forwarding
+  covers `Box<dyn EngineBackend>` only; an `Arc` blanket impl is not worth API
+  surface for one example.
 
 ## Group 1 — Zero-risk extractions (each independently landable)
 
 ### moiren-engine
 
-- **[ ] E1 — Dynamics support helpers + smooth-coefficient drift fix.**
-  Extract into `src/processor/builtin/mod.rs` (or `builtin/dynamics.rs`):
-  `db_to_gain` (verbatim ×3: `compressor.rs:134`, `gate.rs:94`,
-  `limiter.rs:70`), `sanitize_sample_rate` (×3: `gate.rs:107-113`,
-  `limiter.rs:74-80`, `eq.rs:70-74`), `float_specs` (parameters() constructor
-  shape ×5), `validate_float_domains` (DOMAINS loop ×4:
-  `compressor.rs:197-216`, `gate.rs:170-187`, `limiter.rs:106-123`,
-  `eq.rs:133-150`), shared `validate_io` (gate/limiter identical).
-  **Drift fix:** unify `smooth` on the `exp_m1` form used by
-  `compressor.rs:152-158` — `gate.rs:98-105` and `limiter.rs:82-89` currently
-  use the cancellation-prone `1.0 - exp()` form the compressor comment
-  explicitly avoids. Add an equivalence test documenting
-  `-exp_m1(-x) == 1 - exp(-x)` and a slow-ramp step-preservation test before
-  switching.
-- **[ ] E2 — Pan/balance coefficient single source.** `pan.rs:51-57`
-  `coefficient()` duplicated inline in `compiler/send.rs:113-119`; make it
-  `pub(crate)` and reuse (send keeps its `channels != 2` early-out).
-- **[ ] E3 — Supervisor idle predicate.** The
-  `preparing.is_none() && pending.is_none() && cleanup_inflight == 0` triple
-  appears at `host/supervisor.rs:182`, `231-233`, `241-245`; extract
-  `fn idle(&self)`.
+- **[x] E1 — Dynamics support helpers + smooth-coefficient drift fix.**
+  Helpers live in `src/processor/builtin/dynamics.rs` (`db_to_gain`,
+  `sanitize_sample_rate`, `smooth` on the `exp_m1` form, `float_specs`,
+  `validate_float_domains`, `validate_linked_io`); gate/limiter unified onto
+  the `exp_m1` smoothing with equivalence + slow-ramp tests. The interrupted
+  first attempt's buggy test expectations (gate off-by-one, limiter start
+  gain/tolerance) were corrected before landing. Delay's handwritten
+  `parameters()` intentionally not merged (different shape).
+- **[x] E2 — Pan/balance coefficient single source.** `Pan::coefficient` is
+  `pub(crate)`; `compiler/send.rs` reuses it.
+- **[x] E3 — Supervisor idle predicate.** `Supervisor::idle()` replaces the
+  three hand-written triples.
 
 ### moiren-windows-audio
 
-- **[x] W1 — FollowerServo extraction.** `professional/bridge.rs:78-85` and
-  `professional/owner.rs:503-509` are the same 8-line drift servo (magic
-  numbers 500.0 / ±2000 / 0.01 also at `resample.rs:78`). Extract
-  `FollowerServo { target, correction }` with `observe(queued) -> ppm` and
-  `start_target(capacity, period)`; the two start-target formulas
-  (`bridge.rs:65`, `owner.rs:460-464`) parametrize. Named constants. Pure
-  move, no behavior change.
-- **[x] W2 — Endpoint projection merge.** `capture/wasapi/endpoint.rs:22-57`
-  and `render/wasapi/endpoint.rs:26-65` are the same CatalogSnapshot → rows
-  mapping (4× `format!("{}: {}", stage, hresult)`); share one projection with
-  flow/support params.
+- **[x] W1 — FollowerServo extraction.** `professional/bridge.rs` owns
+  `FollowerServo { target, correction }` (`observe`, `start_target`);
+  constants `FOLLOWER_GAIN_PPM` / `FOLLOWER_SMOOTHING` /
+  `CORRECTION_PPM_LIMIT`; both start-target formulas keep their exact integer
+  arithmetic paths.
+- **[x] W2 — Endpoint projection merge.** `catalog.rs::endpoint_rows` is the
+  single projection; capture/render keep thin public types via `From`.
 
 ### moiren-app
 
-- **[ ] A1 — Session bookkeeping methods.** `service/driver.rs:385-392`
-  (Start) vs `523-533` (ApplyGraph) repeat a 7-line ownership-transfer block;
-  Stop (`398-403`) and `begin_exit` (`790-798`) repeat subsets. Extract
-  `session_started`/`session_stopped`.
-- **[ ] A2 — Error string constant.** `"legacy audio driver cannot apply
-  professional audio settings; use the managed engine driver"` ×3 at
-  `driver.rs:370`, `377`, `520`.
-- **[ ] A3 — graph.rs helper reuse.** `window/graph.rs:408-419` re-inlines
-  `controls.rs:145-156` `inspector_toggle` (parametrize id); the
-  `on_select_node`/`on_select_wire`/`on_port_down` shared preamble
-  (`graph.rs:94-125`, `339-369`, `247-272`) becomes
-  `begin_pointer_session`.
-- **[ ] A4 — Mixer faders/sends twin merge.**
-  `window/mixer/model.rs:54-94` vs `95-132`: parameterize by key type +
-  edit-constructor closure.
-- **[ ] A5 — capture.rs snapshot helper.** The 7-line screenshot block ×7
-  (`ui/window/capture.rs:95-105` … `358-367`) becomes a local
-  `snapshot(name, window, cx)`; optionally split `run_ui_capture` phases.
-- **[ ] A6 — devices.rs row reuse.** Expose `state.rs:14-26`
-  `input_rows/output_rows` as `pub(crate)` for `window/devices.rs:57-63`.
+- **[x] A1 — Session bookkeeping methods.** `session_started` /
+  `session_stopped` in `service/driver.rs`.
+- **[x] A2 — Error string constant.** `PROFESSIONAL_SETTINGS_UNSUPPORTED`.
+- **[x] A3 — graph.rs helper reuse.** `inspector_toggle(id, cx)` parametrized;
+  `StudioShell::begin_pointer_session` replaces the three preamble copies.
+- **[x] A4 — Mixer faders/sends twin merge.** `sync_sliders<K>` +
+  `SliderEdit` alias.
+- **[x] A5 — capture.rs snapshot helper.** Local `capture(cx, path)` closure;
+  the optional phase split of `run_ui_capture` was skipped.
+- **[x] A6 — devices.rs row reuse.** `input_rows`/`output_rows` are
+  `pub(crate)`.
 
 ### Repository hygiene
 
-- **[x] H1 — `.gitignore`:** add `.vs/` and `.v2c/`; leave `driver/` visible
-  per D1.
+- **[x] H1 — `.gitignore`:** `.vs/` and `.v2c/` ignored; `driver/` left
+  visible per D1.
 
 ## Group 2 — Rule single-sourcing
 
 ### moiren-signal
 
-- **[x] S1 — Sender-slot bitmap helpers.** The retired-slot snapshot,
-  free-slot search, lease construction, and reclaim loop are duplicated
-  between `subscribe_latest` (`registry.rs:190-276`) and `subscribe_stream`
-  (`298-390`); `latest_storage_mut`/`stream_storage_mut` (`170-188`/`278-296`)
-  are type-only twins. Extract shared storage helpers.
-- **[x] S2 — `retire_sender` single implementation.** The 4-line clear
-  sequence (senders/occupied/fanout/retired_receivers with Acquire-read /
-  Relaxed-clear ordering) is hand-written ×4: `registry.rs:253-267`,
-  `368-378`, `dispatcher.rs:85-94`, `179-192`. One `retire_sender(&mut self,
-  index)` (Stream variant keeps its `finish_dispatch` hook). This is the
-  highest-risk-of-silent-race duplication in the workspace.
-- **[x] S3 (kept per-site liveness/`counted` checks — the two implementations are not fully equivalent; only the shared eligibility predicate and drop counting were converged) — Stream delivery-eligibility predicate.** Eligibility + drop
-  counting implemented twice with different shapes:
-  `transport/stream.rs:266-288` (`deliver_to`, contains `lease.counted`) vs
-  `dispatcher.rs:222-247` (`step`, uses `lease.upgrade().is_some()`).
-  Extract `StreamSender::eligible(meta, demand)` + `record_drop`.
-- **[x] S4 (via shared `check_write`/`acquire_slot` — literal delegation impossible: `&mut self` cannot produce the owned guard) — `try_write` thin delegation.** Test-only `try_write`
-  (`transport/latest.rs:121-143`, `stream.rs:167-181`) re-implements the
-  checks that production `try_write_owned` performs; delegate so tests
-  exercise production validation.
-- **[x] S5 — `WriteError → PublishOutcome` flatten.** Same 4-arm match ×3
-  (`transport/stream.rs:129-138`, `188-197`, `host/scope.rs:97-106`); plus
-  `scope.rs:97-109` `publish_slice` body duplicates `stream.rs:188-201`.
-- **[x] S6 — `ring_index_bound`.** `(depth + 1) * 2` hand-checked ×3
-  (`registry.rs:59-63`, `306-313`, `528-535`) and laid out at
-  `budget.rs:154-161`; expose one `pub(crate)` helper in budget.rs.
-- **[x] S7 (verified `try_update` returns the pre-update value, exact replacement) — identity allocator.** `lifecycle.rs:119-130`
-  `checked_identity` hand-rolls the CAS loop; the crate already has the
-  `try_update` form (`host/mod.rs:26-35`) duplicated cross-crate at
-  `moiren-engine/src/host/snapshot.rs:21-31`. Use `try_update` in signal.
-  Cross-crate `HostId` name collision documented, rename deferred.
+- **[x] S1 — Sender-slot bitmap helpers.** `retired_slot_snapshot`,
+  `next_sender_slot`, `reclaim_retired_and_clear_adopted`,
+  `entry_storage_mut`, `SubscriptionLease::staged`.
+- **[x] S2 — `retire_sender` single implementation.** `storage.rs`
+  `detach_sender`/`retire_sender` with the race-invariant comment; registry
+  and dispatcher call them. (`fanout.active` move in the dispatcher Latest
+  path is unobservable — private non-atomic field, no ordering relation.)
+- **[x] S3 — Stream delivery-eligibility predicate.** `StreamSender::eligible`
+  + `record_drop`; per-site liveness/`counted` checks kept because the two
+  implementations are genuinely not equivalent.
+- **[x] S4 — `try_write` shares production validation.** Via shared
+  `check_write`/`acquire_slot` (literal delegation impossible: `&mut self`
+  cannot produce the owned guard); check order and atomic-read count
+  unchanged.
+- **[x] S5 — `WriteError → PublishOutcome` flatten.** `error::
+  flatten_write_error` used by the three call sites.
+- **[x] S6 — `ring_index_bound`.** `budget::ring_index_bound(depth)` replaces
+  the three hand checks.
+- **[x] S7 — identity allocator.** `checked_identity` uses `try_update`
+  (verified to return the pre-update value — exact replacement).
 
 ### moiren-core
 
-- **[x] C1 — Port-twin consolidation.** `create_node`/`create_rack`
-  (`graph.rs:77-117`/`136-192`), `add_input_port`/`add_output_port`
-  (`196-232`/`235-268`), `remove_input_port`/`remove_output_port`
-  (`271-297`/`300-328`): parameterize by role, keep thin public wrappers so
-  the API is unchanged.
-- **[x] C2 (single-edge order follows `connect`; `validate` now reports `InvalidSendParameters` for the unreachable double-fault state — not constructible via public API) — `check_edge` shared.** `connection_nodes` (`370-397`) and
-  `validate` (`462-519`) maintain the same edge invariants; extract the
-  single-edge check, call from both.
-- **[x] C3 — protocol frame helpers.** `read_parameter` (`protocol.rs:126-135`)
-  vs `read_reply` (`183-218`) duplicate prefix/length/op decoding;
-  `REPLY_BODY_BYTES = 40` replaces literals at `171,179,186,189`; opcodes get
-  named constants; `read_frame`/`write_frame` helpers.
+- **[x] C1 — Port-twin consolidation.** Private `create_node_with_widths`,
+  `add_port`/`remove_port` by `PortRole`; public thin wrappers keep the API.
+- **[x] C2 — `check_edge` shared.** Single-edge order follows `connect`;
+  `validate`'s unreachable double-fault state now reports
+  `InvalidSendParameters` (not constructible via public API).
+- **[x] C3 — protocol frame helpers.** `REPLY_BODY_BYTES = 40`, opcode
+  constants, const-generic `read_frame`/`write_frame`; wire format
+  byte-identical.
 
 ### moiren-engine
 
-- **[ ] E4 — Per-processor parameter knowledge single source.** Adding a
-  parameter currently touches `builtin/x.rs` DOMAINS, `host/preparation.rs:
-  159-336` backfill (compressor arm backfills by positional
-  `ParameterId(index)` — reorder silently misreads), `host/project.rs
-  validate`, `rack.rs`. Give each processor one
-  `parameters_from(settings, overrides)` entry point; preparation.rs only
-  dispatches. Also fixes the duplicated `parameters().iter().all(|spec|
-  spec.accepts(..))` idiom (`rack.rs:295`, `host/project.rs` arms).
-- **[ ] E5 — Delay bounds single source + precheck drift fix.**
-  `Delay::MAX_DELAY_MS` private at `delay.rs:44` while `rack.rs:279-283` and
-  `host/project.rs:231` hard-code 60_000.0; `rack/prepare.rs:59-78`
-  re-derives capacity and already drifted (misses `MAX_BUFFER_BYTES`).
-  Add `Delay::validate_settings` used by `new` and the rack precheck.
-- **[ ] E6 — Channel bound constants.** `recorder.rs:27` private
-  `MAX_CHANNELS = 256` duplicates `builtin/mod.rs:31`;
-  `host/project.rs` uses `<= 256` literals ×3; route through one constant.
-- **[ ] E7 — `EngineConfig::validated`.** Identical validation at
-  `compiler.rs:152-158` and `runtime.rs:146-153`; one owner.
-- **[ ] E8 — `IoSchema::from_io`.** Same collect+sort+construct at
-  `runtime/swap.rs:464-475` and `runtime/swap/reservation.rs:18-33`.
-- **[ ] E9 — Observer window continuity.** meter/spectrum duplicate the
-  demand gate + generation/epoch/next_frame/sample_rate reset preamble
-  (`meter/signal.rs:109-124` vs `spectrum.rs:219-234`) and `validate_inputs`;
-  extract `WindowContinuity` (+ shared `TimelineHeader` fields). The older
-  queue-based `LevelMeter` (`meter.rs:102-118`) stays; add a doc comment
-  marking its boundary.
-- **[ ] E10 — Swap compatibility predicate.** Three parallel predicates
-  (`runtime/swap.rs:617-622`, `787-806`, `928-949`). Keep the defensive
-  control+RT double-check; extract the (config, epoch, revision) comparison
-  so the three sites share one source. Split `apply_pending_plan`'s four
-  phases into `#[inline]` private fns (no allocation/locking change).
-- **[ ] E11 — `host/signals.rs` get-or-register.** Three
-  shape-cache→register→prepare copies (`335-384`, `404-438`, `580-600`),
-  twin readers (`513-533` vs `535-555`), twin subscribes, and the three
-  unregister loops in `create_host` (`294-313`); extract a generic
-  `topic_or_register` + `reader_handle`.
-- **[ ] E12 — Dead/alias API.** Delete `PlanSnapshot::single_sink`
-  (`runtime/swap/reservation.rs:57-65`, zero workspace references); resolve
-  `Compressor::OUTPUT_GAIN` alias (keep one name, update the alias test).
+- **[x] E4 — Per-processor parameter knowledge single source.** Each builtin
+  has a `resolve*` entry applying intent by named constants (no positional
+  index backfill); `specs_accept_initials`/`accepts_parameter` in
+  control/schema.rs serve project validation and rack checks. ParameterId
+  numbering unchanged (`OUTPUT_GAIN=8` pinned by test).
+- **[x] E5 — Delay bounds single source + precheck drift fix.**
+  `Delay::validate_settings` (60 s + frames/bytes incl. `MAX_BUFFER_BYTES`)
+  shared by `Delay::new` and the rack precheck; 563 MiB rejection test added.
+- **[x] E6 — Channel bound constants.** Single `builtin::MAX_CHANNELS`.
+- **[x] E7 — `EngineConfig::validated`.** One owner; compiler reuses.
+- **[x] E8 — `IoSchema::from_io`.** Single construction point.
+- **[x] E9 — Observer window continuity.** `WindowContinuity` +
+  `TimelineHeader` (+ `validate_single_input`) in processor/mod.rs; the
+  queue-based `LevelMeter` keeps its boundary comment.
+- **[x] E10 — Swap compatibility predicate.** `swap_rejection` shared by the
+  three sites; control+RT double-check preserved; `apply_pending_plan` split
+  into four `#[inline]` phases (no allocation/lock/atomics added).
+  `prepare_reuse` additionally checks revision via the shared source —
+  reachable behavior unchanged (60 runtime tests pass).
+- **[x] E11 — `host/signals.rs` get-or-register.** `topic_or_register`,
+  `subscribe_active`, `reader_handle`, `unregister_topics`; public API
+  unchanged.
+- **[x] E12 — Dead/alias API.** `PlanSnapshot::single_sink` deleted;
+  `OUTPUTGAIN` alias dropped, `OUTPUT_GAIN` kept and pinned.
 
 ### moiren-windows-audio
 
-- **[ ] W3 — WASAPI negotiation kernel.** Two full negotiation stacks:
-  `professional/wasapi.rs` (368-449 + fallback 737-742) vs
-  `shared_stream/wasapi.rs` (187-268 + failure() 29-59); PCM/FLOAT GUID
-  consts duplicated (`professional/wasapi.rs:29-30` vs
-  `shared_stream/format.rs:14-15`); descriptor parsing duplicated
-  (`professional/wasapi.rs:813-877` vs `shared_stream/format.rs:27-72`);
-  `friendly_name` duplicated (`professional/wasapi.rs:32-41` vs
-  `catalog.rs:117-130`). Extract a shared kernel (descriptor parse, Client3
-  capability query + fallback matrix, legacy-init flags as named policy
-  params per D4). PERIODICITY_LOCKED retry per D4.
-- **[ ] W4 — `open_shared_client(direction)` builder.** The same COM
-  sequence ×3 (`capture/wasapi/physical.rs:26-99`,
-  `render/wasapi/stream.rs:110-197`, `professional/wasapi.rs:152-516`
-  exclusive branch aside); parameterize direction + error type via a shared
-  stage error (also unifies the ×4 `api()` shape: `render/wasapi.rs:40-45`,
-  `capture/wasapi.rs:32-40`, `professional/wasapi.rs:51-71`, `catalog.rs:32-40`).
-- **[x] W5 — Lease family parametrization.** Three RAII release-buffer leases
-  with different fallback flags (`professional/wasapi.rs:669-683`,
-  `render/wasapi/packet.rs:6-25`, `owner.rs:60-77`); one type, flags as
-  parameter.
-- **[x] W6 (rt-check adjusted: local `#[path]` include of codec/resample + standalone thiserror dep; harness suite 68/68 green) — Dead/narrow API.** Delete `professional/backend.rs:44-46
-  stream_observations()` (self-described alias, zero callers) and
-  `resample.rs:66-68 capacity()`; `push()` is test-only → gate or remove;
-  `codec`/`resample`/`native` modules narrow to `pub(crate)` except
-  `native::NativeLatency` (app consumer) — verify rt-check's `#[path]`
-  shadow-compile still builds.
+- **[x] W3 — WASAPI negotiation kernel.** `src/negotiation.rs`: GUID consts,
+  `parse_descriptor`, Client3 capability query + fallback matrix,
+  `friendly_name`, `LegacySharedInit` flags, `EnginePeriodicityPolicy`
+  (decisions per D4). Descriptor/Client3/legacy-init plumbing shared by both
+  stacks; exclusive branch untouched.
+- **[x] W4 — `open_shared_client(direction)`.** Full shared open sequence for
+  capture/render; professional reuses the clean sub-steps only.
+  `StageError` + `From` impls unify the ×4 `api()` shape (messages
+  unchanged).
+- **[x] W5 — Lease family parametrization.** `PacketLease<'a, C:
+  LeaseClient>` with `LeaseFallback` enum (CapturePacket / RenderSilent /
+  RenderEmpty); no default unified.
+- **[x] W6 — Dead/narrow API.** `stream_observations()` and
+  `resample::capacity()` deleted; `push`/`SampleCodec::new` test-gated;
+  `codec`/`resample` are `pub(crate)`; rt-check locally includes those files
+  via `#[path]` (harness suite 68/68).
 
 ### moiren-app
 
-- **[ ] A7 — InputSelection ⇄ SourceMode mapping.** 5 copies
-  (`ui/state.rs:547-561`, `600-625`, `649-666`, `722-749`, `753-770`);
-  extract `apply_source(&mut self, InputSelection)` +
-  `current_selection(&self) -> Option<InputSelection>`.
-- **[ ] A8 — GraphEdit → parameter mapping.** `service/driver.rs:407-439`
-  lacks `SetSend`, `service/managed/parameters.rs:39-85` has it; one pure
-  function in `service::graph` (managed version canonical), both drivers use
-  it.
-- **[ ] A9 — Node-state validation single source.** Same domains three times
-  with three message styles: `service/graph/edit.rs:119-206`,
-  `service/graph/preparation.rs:237-271`, `project/graph.rs:270-311`; the
-  dummy-`SessionSpec` trick is verbatim ×2 (`edit.rs:159-167`,
-  `preparation.rs:252-266`). One `validate_node_state` +
-  `InputSelection::validate`; project layer keeps field-path context.
-- **[ ] A10 — Stale-observation guard.** The `Running && generation && owner
-  _generation` predicate ×7 (`managed/driver.rs:174-177`, `193-196`,
-  `service/mod.rs:255-280` ×4 filters, `ui/state.rs:293-302`, `385-389`);
-  one `fresh()` helper in service, UI keeps one display-level fallback.
-- **[ ] A11 — Remove `managed::Backend<S>` newtype** (`managed.rs:21-33`,
-  pure forwarding, no second implementation, no added invariant).
-- **[ ] A12 — Catalog refresher.** `service/driver.rs:287-294` vs
-  `managed/driver.rs:139-150` (+ parallel completion consumers) share the
-  catalog-refresh job shape; extract `CatalogRefresher`; the
-  automatic-startup retry divergence stays in each poll and is documented.
+- **[x] A7 — InputSelection ⇄ SourceMode mapping.**
+  `UiState::apply_source` + `current_selection()` replace the five matches.
+- **[x] A8 — GraphEdit → parameter mapping.** Pure
+  `graph::edit_parameter_values` (managed version canonical, incl. SetSend);
+  legacy filters out SetSend explicitly — whether legacy should support it is
+  open decision D5.
+- **[x] A9 — Node-state validation single source.**
+  `graph::validate_node_state` + `InputSelection::validate`; dummy-SessionSpec
+  trick removed; messages unified to the per-rule zh style; project layer
+  keeps node-level field paths.
+- **[x] A10 — Stale-observation guard.** `ServiceContext::fresh` for
+  snapshot() filters; managed writers use a local `fresh` closure; UI keeps
+  one display-level fallback (`fresh_observation`).
+- **[x] A11 — `managed::Backend<S>` newtype removed.** Enabled by
+  `impl EngineBackend<S> for Box<dyn EngineBackend<S>>` in engine
+  (commit c97730d); `lifecycle.rs` passes the boxed backend directly. See D6
+  for the managed_stress example residual.
+- **[x] A12 — Catalog refresher.** `service/jobs.rs::CatalogRefresher`;
+  automatic-startup retry divergence documented per side.
 
 ## Group 3 — Test scaffolding convergence
 
-- **[ ] T1 — engine `tests/common/`.** `CompileConfig` ×4
-  (`tests/compiler/main.rs:20-33`, `runtime/signals.rs:1103-1112`,
-  `runtime/update.rs:31-44`, `runtime/swap.rs:56-72`), connect helpers ×3+,
-  hand-built engines ×3 (`runtime/swap.rs` test mod, `runtime/signals.rs
-  source_engine`, `runtime/swap.rs prepare`), counting sources ×2 vs unused
-  shared `ConstantSource`, `PumpBudget` literal ×5, deadline-wait ×5.
-  Converge: `compile_config`, `connect`, `counting_source`, `test_engine`,
-  `pump`, `wait_*`. Keep the two `assert_samples` tolerance policies but
-  name them (`assert_samples_exact` / `assert_samples_close`).
-- **[ ] T2 — signal test utils.** `pump_until_settled` (5 variants with
-  drifted bounds: 1000-panic vs 8-silent) in `tests/common/mod.rs` + a
-  `#[cfg(test)]` unit-side helper; the `Resume`/deallocation-gate 18-line
-  block ×4 (`tests/registry.rs:205-226`, `428-445`, `488-505`, `753-771`)
-  becomes one helper; counting-allocator probes: keep the independent
-  cross-check mirrors in `tests/registry.rs` (intentional), converge
-  `src/test_alloc.rs` vs `tests/allocation.rs` counting semantics if a
-  shared dev-only module is cheap; otherwise document the split.
-- **[ ] T3 — windows-audio test commons.** Counting-allocator scaffold ×7
-  (`tests/clock_bridge.rs:46-80`, `output_followers.rs:17-44`, `render.rs`,
-  `render_diagnostics.rs`, `latency.rs`, `professional/rt_tests.rs:46-81`,
-  `render/wasapi/stream.rs:502-556`) → one `alloc_guard` module; clock_*
-  packet/push/consume helpers (`clock_age.rs:6-41`, `clock_timing.rs:9-45`,
-  `clock_rate.rs:9-42`, `clock_bridge.rs:80-188`) and the three `simulate()`
-  kernels (`clock_control.rs:54-152`, `clock_startup.rs:115-213`,
-  `clock_faults.rs:110-231`) → `tests/common/` with parameterization.
-- **[ ] T4 — app UI harness.** `ServiceRuntime::spawn` ×51,
-  `initial_snapshot` ×41, `add_window_view(StudioShell::new)` ×31,
-  request_exit/join ×61, per-test 6-line preambles, ~26 deadline loops with
-  2s/3s/5s timeouts. Add `#[cfg(feature = "gpui-test")] test_shell(cx)` and
-  `wait_until(deadline, poll)` next to the existing service `Rig`; migrate
-  call sites mechanically.
-- **[ ] T5 — examples arg parsing** (`w00_probe.rs`, `w00_physical.rs`,
-  `w00_swdevice.rs` ~40-line twin parsers): shared tiny helper or accept as
-  example-local noise — implementer's call, keep it small.
+- **[x] T1 — engine `tests/common/`.** `compile_config`/`engine_config`,
+  `connect`/`connect_with`, `test_engine` + `TestIo`, `CountingSource`,
+  `pump`, `assert_samples_close`/`assert_samples_exact`; src-side
+  `test_support.rs`; `wait_until` in host/support.rs. Deliberately kept:
+  `src/runtime/swap.rs` in-crate `engine()` (cfg(test) import boundary), the
+  reuse-registry second engine (scenario), spectrum/observers budget
+  variants (behavior), `wait_recording` (diagnostics-rich domain helper).
+- **[x] T2 — signal test utils.** `tests/common/mod.rs` pump helper (bounded
+  1000 + panic semantics); `spawn_parked_drop` replaces the four Resume
+  blocks; `tests/allocation.rs` includes `src/test_alloc.rs` as the single
+  counting-allocator owner.
+- **[x] T3 — windows-audio test commons.** `tests/common/alloc_guard.rs`
+  (six users migrated; EventAllocator stays independent — global-allocator
+  uniqueness + cross-thread attribution), `tests/common/clock.rs` +
+  `clock_sim.rs`, `examples/common/mod.rs` arg parsing.
+- **[x] T4 — app UI harness.** `src/ui/window/test_harness.rs`
+  (`spawn_service`, `initial_projection`, `finish_service`, `wait_until` /
+  `wait_for`, `test_shell`, `shell_with_state`) mirrored by
+  `tests/common/mod.rs` for integration binaries; ~26 exit/join pairs, 8
+  spawn/snapshot preambles and 5 drifted deadline loops converged. Kept
+  unmigrated (documented): managed `Rig` tick-driven waits,
+  diagnostics-dumping domain helpers, non-adjacent exit/join pairs with
+  interleaved assertions, custom-driver spawns.
+- **[x] T5 — examples arg parsing.** `examples/common/mod.rs`.
 
 ## Group 4 — Structural
 
-- **[ ] E13 — process() dual-arm unification.** Seven processors write the
-  algorithm twice inside Separate/InPlace arms (`gate.rs:203-255`,
-  `limiter.rs:141-197`, `compressor.rs:230-264`, `delay.rs:172-222`,
-  `eq.rs:166-208`, `gain.rs:51-73`, `pan.rs:120-164`); introduce a
-  frame-level symmetric access API on the existing buffer abstraction so
-  each kernel is written once. Preserve the ordering constraints called out
-  in arm comments (e.g. `compressor.rs:252`). No RT semantics change
-  (no allocation); existing DSP tests are the gate.
-- **[ ] E14 — Long-function phase splits (no file moves).**
-  `host/preparation.rs::prepare` (347 lines, five phases),
-  `compiler/plan.rs::build` (186 lines; rack-degradation block extracted),
-  `professional/wasapi.rs::open_inner` (365 lines → select_format /
-  negotiate_exclusive / negotiate_shared_exact),
-  `render/wasapi/stream.rs::run_stream` (163 lines; one `record_callback`
-  for the stats/diagnostics/telemetry bookkeeping triple),
-  `service/managed/driver.rs::poll` (327 lines → named poll phases),
-  `ui/window/graph/node_inspector.rs` table-driven builtin controls
-  (`510-558`/`564-616`/`622-666` triple + ± button closures `967-997`).
-- **[ ] A13 — `ui/state.rs` presentation extraction.** 1488-line module
-  mixes six responsibilities; move the pure text projections
-  (`native_timing_rows` ~200 lines, `phase_text`, `latency_apply_text`,
-  `elapsed_text`, `control_feedback`) into `ui::presentation` taking
-  `&AppSnapshot`; state keeps projection + intent. Group `StudioShell`
-  fields along existing sub-module boundaries.
-- **[ ] A14 — NodeId strong typing in UI.** `Option<String>` /
-  `HashMap<String, _>` keys with 17 `format!("{:?}", id)` sites
-  (`window.rs:142,162`, `node_inspector.rs`, `mixer.rs`, `graph.rs`,
-  `project.rs`, `graph_canvas.rs`); switch to `NodeId` (Copy/Eq/Hash),
-  keep one conversion at the project-document boundary.
-- **[ ] W7 — rt-check out of `src/`.** `src/professional/rt-check/` shadow-
-  compiles four modules via `#[path]` and drops a ~2.2 GB `target/` inside
-  src. Move the harness directory out of `src/` (e.g. `tools/rt-check/`),
-  keeping the `#[path]` mechanism and CI wiring
-  (`.github/workflows/runtime-foundation.yml:33`) intact; verify
-  `cargo test` from the new location and that the workspace still excludes
-  it correctly.
-- **[ ] W8 — Example-only library modules.** `src/probe.rs` (327 ln),
-  `src/exclusive_probe.rs` (726 ln), `src/physical/*` (~900 ln),
-  `src/swdevice.rs` (269 ln) compile into the library but only examples
-  consume them; move under `examples/` module dirs or feature-gate
-  (`probe-tools`). Keep the tools working.
-- **[ ] W9 — asio_probe test relocation.** `examples/asio_probe.rs` (1053
-  ln) carries ~490 lines of embedded tests; move pure-logic tests
-  (parse_options, ProgressMonitor) into the library test tree.
+- **[x] E13 — process() dual-arm unification.** `buffer::view::FrameIo`
+  (`SeparateFrames` / `InPlaceFrames`, all `#[inline]`) lets all seven
+  processors write the kernel once as `process_linked<S, Io: FrameIo<S>>`.
+  Per-processor arm-diff audit done; compressor's
+  complete-detection-before-overwrite ordering preserved; eq/gain hoisted
+  loop-invariant coefficient/ramp reads (bit-identical results). No dyn, no
+  allocation.
+- **[x] E14 — Long-function phase splits.**
+  engine: `prepare` → five named stages + `CompileInputs`; `plan.rs::build`
+  rack block → `lower_rack`.
+  windows-audio: `open_inner` → `select_format` / `negotiate_exclusive` /
+  `negotiate_shared_exact`; `run_stream` → `record_callback` +
+  `WakeTrace`/`CallbackOutcome`.
+  app: managed `poll` → ten named phases (ACK-barrier comments preserved);
+  node_inspector → `BuiltinFieldSpec` tables + `step_button`.
+- **[x] A13 — `ui/state.rs` presentation extraction.** `ui/presentation.rs`
+  holds `phase_text`, `latency_apply_text`, `native_timing_rows`,
+  `elapsed_text`, `control_feedback`, `fresh_observation` taking snapshots;
+  StudioShell field grouping (optional) skipped — fields already cluster by
+  lifecycle.
+- **[x] A14 — NodeId strong typing in UI.** `selected_node` /
+  `node_positions` / drag/selection state are `NodeId`; 14 production
+  Debug-string key sites removed; explicit conversions remain only at the
+  project-document boundary and the canvas view's own string-id identity
+  (hit-test API — view-layer concern).
+- **[x] W7 — rt-check out of `src/`.** Now `tools/rt-check/` (own
+  `[workspace]`, so no root exclude needed); CI path updated; the ~2.6 GB
+  stale `target/` under src physically deleted; 68/68 green at the new
+  location.
+- **[x] W8 — Example-only library modules.** Feature-gated behind
+  `probe-tools` (not default): `probe`, `exclusive_probe`, `physical`,
+  `swdevice` + their examples' `required-features`. Migration was rejected:
+  the modules depend on ~700 lines of internal COM machinery (`owner`,
+  `catalog`, `capture_format`) that would have to become public. The 12
+  module tests still run under `--features probe-tools`; CI now runs a
+  dedicated probe-tools clippy step.
+- **[x] W9 — asio_probe test relocation.** Pure logic (options,
+  ProgressMonitor, run_stream over FakeStream) + 14 tests moved to
+  `src/professional/asio/probe.rs`; the example keeps `main` + reporting.
 - **[!] W-K — Default path → professional + legacy retirement.** Blocked
   per D3: behavior change on default settings, needs hardware validation
-  and explicit user go-ahead. Prerequisite: W3 kernel unification so the
-  switch is a routing change, not a semantics change.
+  and explicit user go-ahead. Prerequisite W3 is done, so the eventual
+  switch is a routing change rather than a semantics change.
 
 ## Cross-crate notes (recorded, mostly no action)
 
-- `HostId` name collision (`moiren-signal/src/host/binding.rs:10` vs
-  `moiren-engine/src/host/snapshot.rs:15`): same name, different types;
-  consider renaming the engine side when next touched.
-- Engine `BoundIo` seven-method forwarding wrapper, `compile_update`
-  convenience forward, `EngineObserver` subscription forwards: kept —
-  documented encapsulation reasons.
-- windows-audio `src/stats.rs` peak/RMS vs engine meters: different
-  semantics (probe diagnostics vs exact windows), intentional.
-- 256-channel limits in three crates: ASIO driver-domain vs engine bound —
-  coincidental, add cross-reference comments only (E6 covers engine side).
+- `HostId` name collision (`moiren-signal/src/host/binding.rs` vs
+  `moiren-engine/src/host/snapshot.rs`): rename deferred until next touched.
+- Engine `BoundIo` forwarding wrapper, `compile_update` convenience forward,
+  `EngineObserver` subscription forwards: kept — documented encapsulation
+  reasons.
+- windows-audio `src/stats.rs` peak/RMS vs engine meters: intentional
+  (probe diagnostics vs exact windows).
+- 256-channel limits across crates: ASIO driver-domain vs engine bound —
+  coincidental; engine side now uses the single `builtin::MAX_CHANNELS`.
 - moiren-core `LogicalGraph::validate_connection` and moiren-signal
-  `copy_latest`/`copy_next`: currently test/example-only consumers; add
-  "reserved for" doc comments or remove when their intended consumers land.
+  `copy_latest`/`copy_next`: still test/example-only consumers; doc-comment
+  or remove when their intended consumers land.
+- moiren-app `ui/units` consolidation of the four dB-formatting helpers
+  (controls/node_inspector/mixer): not done — domains differ; revisit if a
+  fifth copy appears.
 
 ## Validation
 
-- Baseline: `cargo test --locked --workspace` (recorded pre-change state),
-  `cargo clippy --locked --workspace --all-targets -- -D warnings`,
-  `cargo fmt --all -- --check`.
-- After each group: affected-crate tests + clippy + fmt; full workspace suite
-  at closeout. UI acceptance: `cargo test --locked -p moiren-app --features
-  gpui-test` where app/UI code changed.
+- Baseline (pre-change, 2026-10-19): `cargo test --locked --workspace` green.
+- Per batch: affected-crate `cargo test` + `cargo clippy --all-targets
+  -D warnings` + `cargo fmt --all -- --check`, plus `cargo test -p moiren-app
+  --features gpui-test` for app/UI batches, rt-check suite for
+  windows-audio batches, and `cargo test --features probe-tools` for W6/W8.
+  Test counts preserved at every step (e.g. windows-audio 338 → 337+5 ignored
+  after probe tests moved under the feature; app 174 unit / 210 gpui-test
+  unchanged; engine 314).
+- Closeout: full-workspace `cargo test`, `clippy -D warnings`, `fmt --check`
+  on the final tree (commit `17f04e5`).
