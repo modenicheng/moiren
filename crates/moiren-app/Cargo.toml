@@ -24,10 +24,16 @@ embed-resource = "3.0"
 [features]
 # UI headless tests activate gpui-kit test-support without affecting release builds.
 gpui-test = ["gpui-kit/test-support"]
+# Explicit target service/VAD integration probe; ordinary builds never run it.
+vad-integration-probe = []
 
 [[example]]
 name = "ui_capture"
 required-features = ["gpui-test"]
+
+[[example]]
+name = "vad_integration"
+required-features = ["vad-integration-probe"]
 
 [dev-dependencies]
 # Backend tests exercise the portable renderer without enabling native audio.
