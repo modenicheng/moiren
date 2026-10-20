@@ -596,8 +596,7 @@ impl ManagedDriver {
         let Some(owner) = self.owner.as_ref() else {
             return;
         };
-        if let Some(spec) = c.core.desired()
-            && let RunLimit::Seconds(seconds) = spec.limit
+        if let Some(RunLimit::Seconds(seconds)) = c.core.run_limit()
             && owner
                 .started
                 .is_some_and(|t| t.elapsed() >= Duration::from_secs(u64::from(seconds)))

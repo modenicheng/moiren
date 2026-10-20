@@ -107,8 +107,11 @@ impl ManagedDriver {
                 || o.exports != preparation.exports
                 || stranded_virtual_transport
         }) {
-            if let Ok(spec) = c.graph.session_spec(c.core.desired()) {
-                let _ = c.core.start(spec);
+            if let Ok(summary) = c
+                .graph
+                .managed_session_spec(c.core.desired(), c.core.run_limit())
+            {
+                let _ = c.core.restart_managed_graph(summary);
             }
             self.retire(c);
             return;
@@ -168,8 +171,11 @@ impl ManagedDriver {
                 }
             }
         } else if self.cleaning == 0 && !self.exiting {
-            let mut spec = match c.graph.session_spec(c.core.desired()) {
-                Ok(spec) => spec,
+            let mut summary = match c
+                .graph
+                .managed_session_spec(c.core.desired(), c.core.run_limit())
+            {
+                Ok(summary) => summary,
                 Err(error) => {
                     c.core.failed(c.core.generation(), error.clone());
                     c.graph.record_error(error);
@@ -177,8 +183,10 @@ impl ManagedDriver {
                     return;
                 }
             };
-            spec.max_block_frames = block;
-            if c.core.managed_desired(spec).is_err() {
+            if let Some(spec) = &mut summary {
+                spec.max_block_frames = block;
+            }
+            if c.core.managed_graph_desired(summary).is_err() {
                 self.apply = false;
                 return;
             }

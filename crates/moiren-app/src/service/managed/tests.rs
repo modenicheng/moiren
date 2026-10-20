@@ -12,6 +12,109 @@ struct Rig {
     state: Arc<State>,
 }
 
+#[test]
+fn virtual_only_apply_runs_without_physical_session_selectors() {
+    let mut rig = Rig::new();
+    rig.driver.exports_runtime.adapter = Some(Arc::new(
+        super::super::exports::runtime::tests::FakeAdapter::default(),
+    ));
+    let mut snapshot = rig.c.graph.snapshot();
+    for node in &mut snapshot.nodes {
+        node.source = None;
+        node.output_endpoint_id = None;
+    }
+    let exports = [
+        (ExportDirection::Playback, rig.node(NodeKind::Source)),
+        (ExportDirection::Microphone, rig.node(NodeKind::Sink)),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, (direction, node))| ExportIntent {
+        endpoint_id: moiren_engine::node::VirtualEndpointId::from_bytes([index as u8 + 1; 16]),
+        direction,
+        name: format!("Virtual integration {index}"),
+        channels: 2,
+        enabled: true,
+        binding: Some(node),
+    })
+    .collect();
+    rig.c
+        .graph
+        .replace_with_exports(snapshot.graph, snapshot.nodes, exports)
+        .unwrap();
+    rig.request(AppRequest::ApplyGraph);
+    for _ in 0..250 {
+        rig.tick();
+        if rig.c.core.phase() == SessionPhase::Running {
+            break;
+        }
+    }
+    assert_eq!(
+        rig.c.core.phase(),
+        SessionPhase::Running,
+        "virtual graph rejected: {:?}",
+        rig.c.graph.snapshot().last_error
+    );
+    rig.wait(|r| {
+        r.c.exports
+            .statuses(&r.c.graph.snapshot())
+            .iter()
+            .all(|status| status.gate_open)
+    });
+    assert!(
+        rig.c.core.desired().is_none(),
+        "no invented legacy selectors"
+    );
+    let first_generation = rig.c.core.generation();
+    let mut settings = AudioSettings::default();
+    settings.processing.block_frames = 512;
+    rig.request(AppRequest::SetAudioSettings(settings));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| {
+        r.c.core.phase() == SessionPhase::Running
+            && r.c.core.generation() != first_generation
+            && r.c.graph.snapshot().active_revision.is_some()
+    });
+    assert!(rig.c.core.desired().is_none());
+    rig.request(AppRequest::Stop);
+    rig.wait(|r| r.driver.cleaning == 0 && r.c.core.phase() == SessionPhase::Idle);
+    assert!(
+        rig.c
+            .exports
+            .statuses(&rig.c.graph.snapshot())
+            .iter()
+            .all(|status| { status.resource == ExportResourceState::Present && !status.gate_open })
+    );
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
+}
+
+#[test]
+fn virtual_to_physical_apply_preserves_explicit_run_limit() {
+    let (mut rig, _) = export_rig();
+    rig.request(AppRequest::Start(SessionSpec {
+        source: InputSelection::Tone {
+            frequency_hz: 440.0,
+        },
+        output_endpoint_id: "output".into(),
+        limit: RunLimit::Seconds(12),
+        gain: 1.0,
+        pan: 0.0,
+        max_block_frames: 256,
+    }));
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
+    assert!(rig.c.core.desired().is_none());
+    assert_eq!(rig.c.core.run_limit(), Some(RunLimit::Seconds(12)));
+    let generation = rig.c.core.generation();
+    rig.request(AppRequest::EditGraph(GraphEdit::SetExports(Vec::new())));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running && r.c.core.generation() != generation);
+    assert_eq!(rig.c.core.run_limit(), Some(RunLimit::Seconds(12)));
+    rig.driver.owner.as_mut().unwrap().started = Some(Instant::now() - Duration::from_secs(13));
+    rig.tick();
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Idle && r.driver.cleaning == 0);
+}
+
 fn export_rig() -> (Rig, Arc<super::super::exports::runtime::tests::FakeAdapter>) {
     let mut rig = Rig::new();
     let adapter = Arc::new(super::super::exports::runtime::tests::FakeAdapter::default());

@@ -383,6 +383,27 @@ impl ServiceGraph {
         }
         Ok(())
     }
+    /// Only legacy sessions have a two-endpoint summary. The managed host uses
+    /// the validated EngineProject for virtual or mixed graph resource intent.
+    pub(crate) fn managed_session_spec(
+        &self,
+        current: Option<&SessionSpec>,
+        limit: Option<RunLimit>,
+    ) -> Result<Option<SessionSpec>, String> {
+        let prep = self.preparation();
+        let (source, output) = prep.primary_io_nodes()?;
+        if prep.exports.iter().any(|export| {
+            export.enabled
+                && matches!(export.binding, Some(node) if node == source || node == output)
+        }) {
+            return Ok(None);
+        }
+        let mut summary = self.session_spec(current)?;
+        if let Some(limit) = limit {
+            summary.limit = limit;
+        }
+        Ok(Some(summary))
+    }
     pub fn session_spec(&self, current: Option<&SessionSpec>) -> Result<SessionSpec, String> {
         let prep = self.preparation();
         let (source, output) = prep.primary_io_nodes()?;
