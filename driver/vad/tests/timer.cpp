@@ -14,18 +14,20 @@ static void Check(bool condition, const char* message)
     }
 }
 
-struct Fixture {
+template<unsigned Frames>
+struct PacketFixture {
     vad::Slot Slot = {};
     vad::audio::TimerDrivenRing Ring = {};
     vad::audio::TimerPcmPacket Packet = {};
     std::array<unsigned char, 4096> Native = {};
-    std::array<unsigned char, 196> Scratch = {};
-    std::array<unsigned char, 196> Transferred = {};
+    std::array<unsigned char, Frames * 4> Scratch = {};
+    std::array<unsigned char, Frames * 4> Payload = {};
+    std::array<unsigned char, Frames * 4> Transferred = {};
     unsigned Transfers = 0;
     bool PayloadAvailable = true;
     bool Capture;
 
-    explicit Fixture(bool capture) : Capture(capture)
+    explicit PacketFixture(bool capture) : Capture(capture)
     {
         Slot.Id = 5;
         Slot.Session = 9;
@@ -37,17 +39,19 @@ struct Fixture {
         Slot.Intent = capture ? MOIREN_VAD_INTENT_MICROPHONE : MOIREN_VAD_INTENT_PLAYBACK;
         Slot.Channels = 2;
         Slot.SampleFormat = MOIREN_VAD_FORMAT_PCM16;
-        Slot.PacketFrames = 49;
-        Check(vad::audio::InitializeTimerDrivenRing(Ring, 196, 4, 4096),
+        Slot.PacketFrames = Frames;
+        Check(vad::audio::InitializeTimerDrivenRing(Ring, Frames * 4, 4, 4096),
             "fixture uses a logical packet shorter than its page-backed ring");
         Native.fill(7);
+        Payload.fill(5);
     }
 
-    void Segment()
+    vad::audio::TimerDrivenSegment Segment(
+        unsigned budget = vad::audio::DefaultTimerSegmentFrames)
     {
         vad::audio::TimerDrivenSegment segment = {};
-        Check(vad::audio::NextTimerDrivenSegment(Ring, segment), "segment advances");
-        vad::audio::TransferTimerSegment(Slot, 5, 3, Capture, Ring, segment, Packet,
+        Check(vad::audio::NextTimerDrivenSegment(Ring, segment, budget), "segment advances");
+        Check(vad::audio::TransferTimerSegment(Slot, 5, 3, Capture, Ring, segment, Packet,
             [&] { Scratch.fill(0); },
             [&](const vad::audio::TimerDrivenCopySpan& span) {
                 auto ring = Native.data() + span.RingByteOffset;
@@ -67,14 +71,80 @@ struct Fixture {
                     // Models the existing queue transfer contract: an empty
                     // or already-canceled queue leaves zeroed scratch.
                     if (PayloadAvailable) {
-                        Scratch.fill(5);
+                        Scratch = Payload;
                     }
                 } else {
                     Transferred = Scratch;
                 }
-            });
+            }), "production PCM helper accepts the fixture segment");
+        return segment;
     }
 };
+
+using Fixture = PacketFixture<49>;
+
+struct ElapsedFixture : PacketFixture<480> {
+    static constexpr uint64_t Epoch = 10000000;
+    vad::audio::Clock Clock = {};
+    unsigned Spans = 0;
+    unsigned PacketEnds = 0;
+
+    explicit ElapsedFixture(bool capture) : PacketFixture<480>(capture)
+    {
+        Clock.Frequency = 10000000;
+        Clock.EpochQpc = Epoch;
+        Clock.Running = true;
+    }
+
+    void LoadPayload(unsigned seed)
+    {
+        for (unsigned i = 0; i < Payload.size(); ++i) {
+            Payload[i] = static_cast<unsigned char>((seed + i * 17 + i / 7) % 251 + 1);
+            if (!Capture) {
+                Native[(Ring.RingFrameOffset * 4 + i) % Native.size()] = Payload[i];
+            }
+        }
+    }
+
+    vad::audio::TimerDrivenStep Tick(uint64_t now)
+    {
+        const auto before = Ring.PresentedFrames;
+        const auto transfers = Transfers;
+        const auto step = vad::audio::PlanTimerDrivenStep(Clock, Ring, now);
+        Check(step.Valid && step.Due < 0 && step.Frames <= Ring.PacketFrames,
+            "elapsed callback has a finite future deadline and one-packet budget");
+        // Mirrors Streams.cpp's reset/dispatch glue, not WDF request completion.
+        // Clock planning and every byte copy below use the production helpers.
+        if (step.Rebased) {
+            vad::InvalidatePcmEpoch(Slot);
+            Packet = {};
+            Scratch.fill(0);
+            Native.fill(0);
+        }
+        Spans = PacketEnds = 0;
+        unsigned remaining = step.Frames;
+        for (; remaining != 0 && Spans < 3; ++Spans) {
+            const auto segment = Segment(remaining);
+            remaining -= segment.Frames;
+            PacketEnds += segment.CompletesPacket ? 1u : 0u;
+        }
+        Check(remaining == 0 && PacketEnds <= 1 && Transfers - transfers <= 1 &&
+            Ring.PresentedFrames == before + step.Frames,
+            "elapsed callback copies only its bounded budget with at most one transfer");
+        return step;
+    }
+};
+
+template<size_t Size>
+static bool AllZero(const std::array<unsigned char, Size>& bytes)
+{
+    for (const auto value : bytes) {
+        if (value != 0) {
+            return false;
+        }
+    }
+    return true;
+}
 
 static void PlaybackCompletesOnlyAfterAllSegments()
 {
@@ -293,6 +363,9 @@ static void FormatsAndNativeWrapsPreserveEveryByte()
 
 static void OneMillisecondQuantumDoesNotScheduleShortPacketTails()
 {
+    // TODO(timer-short-packet-jitter): 48/49-frame packets at 1.1 ms callbacks
+    // can still rebase without progress. Exact 1 ms coverage is not a fix;
+    // add the progress regression with a bounded production overload policy.
     vad::audio::TimerDrivenRing ring = {};
     Check(vad::audio::InitializeTimerDrivenRing(ring, 196, 4, 4096),
         "49-frame packet sets up short-tail timer regression");
@@ -328,39 +401,117 @@ static void OneMillisecondQuantumDoesNotScheduleShortPacketTails()
 
 static void TimerJitterPreservesOneBoundedPacket()
 {
-    Fixture f(false);
-    Check(vad::audio::InitializeTimerDrivenRing(f.Ring, 1920, 4, 4096),
-        "jitter regression uses a ten millisecond logical packet");
-    vad::audio::Clock clock = {};
-    clock.Frequency = 10000000;
-    clock.EpochQpc = 10000000;
-    clock.Running = true;
-    const auto step = vad::audio::PlanTimerDrivenStep(clock, f.Ring, 10050000);
-    Check(step.Valid && !step.Rebased && step.Frames == 240 && step.Due < 0,
-        "five millisecond scheduling jitter processes elapsed frames without reset");
-    unsigned remaining = step.Frames;
-    unsigned spans = 0;
-    unsigned completed = 0;
-    while (remaining != 0 && spans < 3) {
-        vad::audio::TimerDrivenSegment segment = {};
-        Check(vad::audio::NextTimerDrivenSegment(f.Ring, segment, remaining),
-            "elapsed work uses a bounded logical/native span");
-        vad::audio::TimerDrivenCopyPlan plan = {};
-        Check(vad::audio::BuildTimerDrivenCopyPlan(f.Ring, segment, plan),
-            "bounded elapsed span has a valid copy plan");
-        remaining -= segment.Frames;
-        completed += segment.CompletesPacket ? 1 : 0;
-        ++spans;
+    for (bool capture : {false, true}) {
+        ElapsedFixture f(capture);
+        f.LoadPayload(19);
+        const auto native = f.Native;
+        const auto epoch = f.Slot.AdmissionGeneration;
+        const auto first = f.Tick(ElapsedFixture::Epoch + 50000);
+        Check(!first.Rebased && first.Frames == 240 && first.Due == -10000 &&
+            f.Ring.PresentedFrames == 240 && f.Packet.Active && f.PacketEnds == 0 &&
+            f.Transfers == (capture ? 1u : 0u),
+            "first five milliseconds retain a partial packet without playback publication");
+        for (unsigned i = 0; i < f.Scratch.size(); ++i) {
+            Check(f.Scratch[i] == (capture || i < 960 ? f.Payload[i] : 0),
+                "partial scratch contains exactly the copied bytes or one capture payload");
+        }
+        for (unsigned i = 0; i < f.Native.size(); ++i) {
+            const auto expected = i < 960 ? (capture ? f.Payload[i] : 0) : native[i];
+            Check(f.Native[i] == expected, "first callback leaves all future ring bytes untouched");
+        }
+        const auto second = f.Tick(ElapsedFixture::Epoch + 100000);
+        Check(!second.Rebased && second.Frames == 240 && f.PacketEnds == 1 &&
+            f.Ring.PresentedFrames == 480 && f.Transfers == 1 &&
+            f.Slot.AdmissionGeneration == epoch && f.Clock.EpochQpc == ElapsedFixture::Epoch &&
+            f.Scratch == f.Payload,
+            "two five millisecond callbacks finish one intact 480-frame payload in one epoch");
+        if (!capture) {
+            Check(f.Transferred == f.Payload, "playback publishes all 1920 patterned bytes exactly once");
+        }
+        for (unsigned i = 0; i < f.Native.size(); ++i) {
+            const auto expected = i < f.Payload.size() ?
+                (capture ? f.Payload[i] : 0) : native[i];
+            Check(f.Native[i] == expected, "complete payload preserves capture bytes and padding guards");
+        }
+        const auto duplicate = f.Tick(ElapsedFixture::Epoch + 100000);
+        Check(!duplicate.Rebased && duplicate.Frames == 0 && f.Spans == 0 &&
+            f.Transfers == 1 && f.Ring.PresentedFrames == 480,
+            "same-QPC callback cannot repeat the payload transfer or advance position");
     }
-    Check(remaining == 0 && spans <= 3 && completed <= 1 &&
-        f.Ring.PresentedFrames == 240, "one callback never loops over old periods");
-    const auto next = vad::audio::PlanTimerDrivenStep(clock, f.Ring, 10100000);
-    Check(next.Valid && !next.Rebased && next.Frames == 240,
-        "a second late callback can complete the same logical packet");
-    const auto stalled = vad::audio::PlanTimerDrivenStep(clock, f.Ring, 900000000);
-    Check(stalled.Valid && stalled.Rebased && stalled.Frames == 0 &&
-        stalled.Due == -10000 && f.Ring.PresentedFrames == 240,
-        "a long stall discards old time without rendering a catch-up packet");
+}
+
+static void ElapsedHalfPacketRejectsGateAndStreamReplacement()
+{
+    for (bool capture : {false, true}) {
+        for (bool replaceStream : {false, true}) {
+            ElapsedFixture f(capture);
+            f.LoadPayload(31);
+            f.Tick(ElapsedFixture::Epoch + 50000);
+            Check(!AllZero(f.Scratch), "replacement regression starts with real partial PCM");
+            const auto transfers = f.Transfers;
+            if (replaceStream) {
+                ++f.Slot.StreamGeneration;
+            } else {
+                vad::CloseGate(f.Slot);
+                f.Slot.GateOpen = 1;
+            }
+            const auto second = f.Tick(ElapsedFixture::Epoch + 100000);
+            Check(!second.Rebased && second.Frames == 240 && f.PacketEnds == 1 &&
+                !f.Packet.Active && AllZero(f.Scratch) && f.Transfers == transfers,
+                "mid-packet gate epoch or stream replacement clears scratch without an old transfer");
+            for (unsigned i = 960; i < 1920; ++i) {
+                Check(f.Native[i] == 0, "retired packet tail never reaches either native direction");
+            }
+            if (!capture) {
+                Check(AllZero(f.Transferred), "discarded playback cannot publish a mixed-epoch payload");
+            }
+        }
+    }
+}
+
+static void ElapsedLongStallDiscardsWithoutCompletionOrCatchUp()
+{
+    for (bool capture : {false, true}) {
+        ElapsedFixture f(capture);
+        f.LoadPayload(43);
+        f.Tick(ElapsedFixture::Epoch + 50000);
+        const auto transfers = f.Transfers;
+        const auto sequence = f.Ring.SegmentSequence;
+        const auto epoch = f.Slot.AdmissionGeneration;
+        const auto stalledAt = ElapsedFixture::Epoch + 50000000;
+        const auto stalled = f.Tick(stalledAt);
+        Check(stalled.Rebased && stalled.Frames == 0 && stalled.Due == -10000 &&
+            f.Ring.PresentedFrames == 240 && f.Ring.RingFrameOffset == 240 &&
+            f.Ring.SegmentSequence == sequence && f.Spans == 0 && f.PacketEnds == 0 &&
+            f.Transfers == transfers && !f.Packet.Active && AllZero(f.Scratch) &&
+            AllZero(f.Native) && f.Slot.AdmissionGeneration == epoch + 1 &&
+            f.Clock.BaseFrames == 240 && f.Clock.EpochQpc == stalledAt,
+            "long stall invalidates partial bytes once without position jumps or packet transfers");
+        const auto duplicate = f.Tick(stalledAt);
+        Check(!duplicate.Rebased && duplicate.Frames == 0 && f.Transfers == transfers &&
+            f.Slot.AdmissionGeneration == epoch + 1 && f.Spans == 0,
+            "same-QPC retry cannot drain old periods or repeatedly invalidate the epoch");
+        const auto tail = f.Tick(stalledAt + 50000);
+        Check(!tail.Rebased && tail.Frames == 240 && f.Ring.PresentedFrames == 480 &&
+            f.PacketEnds == 1 && f.Transfers == transfers && AllZero(f.Scratch) &&
+            AllZero(f.Native), "first fresh interval silently retires the discarded old packet tail");
+        f.LoadPayload(97);
+        const auto freshFirst = f.Tick(stalledAt + 100000);
+        const auto freshSecond = f.Tick(stalledAt + 150000);
+        Check(!freshFirst.Rebased && !freshSecond.Rebased && freshFirst.Frames == 240 &&
+            freshSecond.Frames == 240 && f.Ring.PresentedFrames == 960 &&
+            f.Transfers == transfers + 1 && f.Scratch == f.Payload &&
+            f.Slot.AdmissionGeneration == epoch + 1,
+            "only a complete post-stall packet resumes transport on the fresh timeline");
+        if (!capture) {
+            Check(f.Transferred == f.Payload, "post-stall playback publishes only the new payload");
+        }
+        for (unsigned i = 0; i < f.Native.size(); ++i) {
+            const auto expected = capture && i >= 1920 && i < 3840 ?
+                f.Payload[i - 1920] : 0;
+            Check(f.Native[i] == expected, "old ring PCM stays zero outside the fresh capture interval");
+        }
+    }
 }
 
 static void TimerElapsedBudgetsRespectAllBoundaries()
@@ -410,6 +561,8 @@ static void TimerElapsedBudgetsRespectAllBoundaries()
 int main()
 {
     TimerJitterPreservesOneBoundedPacket();
+    ElapsedHalfPacketRejectsGateAndStreamReplacement();
+    ElapsedLongStallDiscardsWithoutCompletionOrCatchUp();
     TimerElapsedBudgetsRespectAllBoundaries();
     Check(!vad::audio::SupportsPacketNotifications(1) &&
         vad::audio::SupportsPacketNotifications(2) &&
@@ -425,5 +578,6 @@ int main()
     TimerDiscontinuityDiscardsPartialBytes();
     FormatsAndNativeWrapsPreserveEveryByte();
     OneMillisecondQuantumDoesNotScheduleShortPacketTails();
-    std::puts("PASS: segmented PCM, epoch/session/stream fencing, mid-packet admission, capture silence");
+    std::puts("PASS: segmented PCM, elapsed payload/gate/stream/stall regressions, "
+        "epoch/session/stream fencing, mid-packet admission, capture silence");
 }
