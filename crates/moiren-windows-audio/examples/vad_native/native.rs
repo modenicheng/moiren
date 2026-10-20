@@ -1,5 +1,8 @@
 //! One explicitly identified exclusive WASAPI client, owned on the probe thread.
-use crate::validation::Observation;
+use crate::{
+    NativeMode,
+    validation::{self, Observation, PositionProgress},
+};
 use anyhow::{Context, ensure};
 use moiren_windows_audio::vad::{
     Channels, Intent, MAX_PACKET_FRAMES, SampleFormat, decode_interleaved, encode_interleaved,
@@ -14,7 +17,7 @@ use windows::{
         Media::Audio::{
             AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
             AUDCLNT_E_BUFFER_ERROR, AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE_EXCLUSIVE,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioCaptureClient, IAudioClient,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioCaptureClient, IAudioClient, IAudioClock,
             IAudioRenderClient, IMMDevice, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
             WAVEFORMATEXTENSIBLE_0,
         },
@@ -23,7 +26,7 @@ use windows::{
             Threading::{CreateEventW, WaitForSingleObject},
         },
     },
-    core::GUID,
+    core::{GUID, Interface},
 };
 
 fn capture_packet_available(result: windows::core::Result<()>) -> anyhow::Result<bool> {
@@ -36,6 +39,13 @@ fn capture_packet_available(result: windows::core::Result<()>) -> anyhow::Result
     }
 }
 
+fn stream_flags(mode: NativeMode) -> u32 {
+    match mode {
+        NativeMode::Event => AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+        NativeMode::Timer => 0,
+    }
+}
+
 enum Service {
     Render(IAudioRenderClient),
     Capture(IAudioCaptureClient),
@@ -43,7 +53,8 @@ enum Service {
 
 pub(super) struct Stream {
     client: IAudioClient,
-    event: OwnedHandle,
+    event: Option<OwnedHandle>,
+    clock: Option<IAudioClock>,
     service: Service,
     active: bool,
     pub frames: u32,
@@ -52,6 +63,7 @@ pub(super) struct Stream {
     encoded: Vec<u8>,
     decoded: Vec<f32>,
     pub discontinuities: u64,
+    pub position: PositionProgress,
 }
 
 pub(super) fn descriptor(format: SampleFormat, channels: Channels) -> WAVEFORMATEXTENSIBLE {
@@ -85,6 +97,7 @@ impl Stream {
         format: SampleFormat,
         channels: Channels,
         pattern: [f32; 2],
+        mode: NativeMode,
     ) -> anyhow::Result<Self> {
         let wave = descriptor(format, channels);
         // SAFETY: complete descriptor, apartment-local COM objects, no reference
@@ -106,7 +119,7 @@ impl Stream {
         let initialize = |client: &IAudioClient, period| unsafe {
             client.Initialize(
                 AUDCLNT_SHAREMODE_EXCLUSIVE,
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                stream_flags(mode),
                 period,
                 period,
                 &wave.Format,
@@ -136,10 +149,28 @@ impl Stream {
             (1..=MAX_PACKET_FRAMES * 2).contains(&frames),
             "native buffer out of bounds: {frames}"
         );
-        // SAFETY: auto-reset, unnamed, non-inheritable event transferred once.
-        let event = unsafe { CreateEventW(None, false, false, None)? };
-        let event = unsafe { OwnedHandle::from_raw_handle(event.0) };
-        unsafe { client.SetEventHandle(HANDLE(event.as_raw_handle()))? };
+        let event = if mode == NativeMode::Event {
+            // SAFETY: auto-reset, unnamed, non-inheritable event transferred once.
+            let event = unsafe { CreateEventW(None, false, false, None)? };
+            let event = unsafe { OwnedHandle::from_raw_handle(event.0) };
+            unsafe { client.SetEventHandle(HANDLE(event.as_raw_handle()))? };
+            Some(event)
+        } else {
+            None // Timer mode never creates or registers an event handle.
+        };
+        let clock: Option<IAudioClock> = if mode == NativeMode::Timer {
+            Some(unsafe { client.GetService() }.context("GetService(IAudioClock, timer)")?)
+        } else {
+            None
+        };
+        let mut position = PositionProgress::default();
+        if let Some(clock) = &clock {
+            position.frequency = unsafe { clock.GetFrequency() }.context("GetFrequency(timer)")?;
+            ensure!(
+                position.frequency > 0,
+                "native timer clock frequency is zero"
+            );
+        }
         let service = match intent {
             Intent::Playback => Service::Render(unsafe { client.GetService()? }),
             Intent::Microphone => Service::Capture(unsafe { client.GetService()? }),
@@ -147,6 +178,7 @@ impl Stream {
         let mut result = Self {
             client,
             event,
+            clock,
             service,
             active: false,
             frames,
@@ -155,6 +187,7 @@ impl Stream {
             encoded: vec![0; frames as usize * channels as usize * format.bytes_per_sample()],
             decoded: vec![0.0; frames as usize * 2],
             discontinuities: 0,
+            position,
         };
         encode_interleaved(
             &pattern.repeat(frames as usize),
@@ -164,7 +197,7 @@ impl Stream {
         )
         .map_err(|error| anyhow::anyhow!("native pattern encoding: {error:?}"))?;
         if let Service::Render(service) = &result.service {
-            result.render(service)?;
+            result.render(service, frames)?;
         }
         Ok(result)
     }
@@ -190,16 +223,41 @@ impl Stream {
 
     pub fn poll(&mut self, expected: [f32; 2], seen: &mut Observation) -> anyhow::Result<()> {
         // Probe polling is control-side and is not a production timing path.
-        match unsafe { WaitForSingleObject(HANDLE(self.event.as_raw_handle()), 0) } {
-            WAIT_TIMEOUT => return Ok(()),
-            WAIT_OBJECT_0 => {}
-            WAIT_FAILED => {
-                return Err(windows::core::Error::from_thread()).context("native event wait");
+        if let Some(event) = &self.event {
+            match unsafe { WaitForSingleObject(HANDLE(event.as_raw_handle()), 0) } {
+                WAIT_TIMEOUT => return Ok(()),
+                WAIT_OBJECT_0 => {}
+                WAIT_FAILED => {
+                    return Err(windows::core::Error::from_thread()).context("native event wait");
+                }
+                status => anyhow::bail!("unexpected native event result {}", status.0),
             }
-            status => anyhow::bail!("unexpected native event result {}", status.0),
+        } else {
+            self.sample_position()?;
+        }
+        let available = if self.event.is_none() {
+            let padding = unsafe { self.client.GetCurrentPadding() }
+                .context("GetCurrentPadding(exclusive timer)")?;
+            // Capture's next packet can grow after this snapshot; the leased
+            // GetBuffer frame count below, not this value, bounds the copy.
+            match &self.service {
+                Service::Render(_) => validation::timer_render_frames(self.frames, padding)?,
+                Service::Capture(_) => {
+                    ensure!(
+                        padding <= self.frames,
+                        "capture padding exceeds native capacity"
+                    );
+                    padding
+                }
+            }
+        } else {
+            self.frames
+        };
+        if available == 0 {
+            return Ok(());
         }
         match &self.service {
-            Service::Render(service) => self.render(service),
+            Service::Render(service) => self.render(service, available),
             Service::Capture(service) => {
                 let mut pointer = std::ptr::null_mut();
                 let (mut frames, mut flags) = (0, 0);
@@ -246,15 +304,42 @@ impl Stream {
         }
     }
 
-    fn render(&self, service: &IAudioRenderClient) -> anyhow::Result<()> {
-        // Exclusive event streams submit one entire negotiated buffer.
-        let pointer = unsafe { service.GetBuffer(self.frames)? };
+    fn sample_position(&mut self) -> anyhow::Result<()> {
+        let clock = self
+            .clock
+            .as_ref()
+            .context("timer clock was not prepared")?;
+        let (mut position, mut qpc) = (0, 0);
+        // Preserve S_FALSE: low-accuracy samples cannot prove clock progress.
+        let status = unsafe {
+            (Interface::vtable(clock).GetPosition)(
+                Interface::as_raw(clock),
+                &mut position,
+                &mut qpc,
+            )
+        };
+        status.ok().context("GetPosition(exclusive timer)")?;
+        if status == S_OK {
+            self.position.observe(position, qpc)?;
+        }
+        Ok(())
+    }
+
+    fn render(&self, service: &IAudioRenderClient, frames: u32) -> anyhow::Result<()> {
+        ensure!(
+            frames > 0 && frames <= self.frames,
+            "invalid render frame count"
+        );
+        // Event mode submits the whole buffer; timer mode only the free prefix.
+        // One bounded transfer per poll, never a catch-up loop after a stall.
+        let bytes = frames as usize * self.channels as usize * self.format.bytes_per_sample();
+        let pointer = unsafe { service.GetBuffer(frames)? };
         ensure!(!pointer.is_null(), "render packet is null");
         // SAFETY: GetBuffer granted exactly frames and the descriptor has the
         // checked block alignment. Initialized bytes are copied before release.
         unsafe {
-            std::ptr::copy_nonoverlapping(self.encoded.as_ptr(), pointer, self.encoded.len());
-            service.ReleaseBuffer(self.frames, 0)?;
+            std::ptr::copy_nonoverlapping(self.encoded.as_ptr(), pointer, bytes);
+            service.ReleaseBuffer(frames, 0)?;
         }
         Ok(())
     }
@@ -270,6 +355,15 @@ impl Drop for Stream {
 mod tests {
     use super::*;
     use windows::core::HRESULT;
+
+    #[test]
+    fn timer_initialization_never_requests_an_event_callback() {
+        assert_eq!(
+            stream_flags(NativeMode::Event),
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+        );
+        assert_eq!(stream_flags(NativeMode::Timer), 0);
+    }
 
     #[test]
     fn exclusive_descriptors_match_exact_native_shapes() {

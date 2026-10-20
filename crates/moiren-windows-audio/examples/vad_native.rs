@@ -6,11 +6,20 @@ use std::ffi::OsString;
 #[path = "vad_native/validation.rs"]
 mod validation;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+enum NativeMode {
+    #[serde(rename = "exclusive-event")]
+    Event,
+    #[serde(rename = "exclusive-timer")]
+    Timer,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Options {
     exercise: bool,
     seconds: u32,
     help: bool,
+    mode: NativeMode,
 }
 
 impl Options {
@@ -19,6 +28,7 @@ impl Options {
             exercise: false,
             seconds: 2,
             help: false,
+            mode: NativeMode::Event,
         };
         let mut seconds_seen = false;
         for argument in arguments {
@@ -28,6 +38,7 @@ impl Options {
             match argument.as_str() {
                 "--exercise" if !options.exercise => options.exercise = true,
                 "--help" | "-h" => options.help = true,
+                "--timer" if options.mode == NativeMode::Event => options.mode = NativeMode::Timer,
                 value if value.starts_with("--seconds=") && !seconds_seen => {
                     options.seconds = value["--seconds=".len()..].parse()?;
                     anyhow::ensure!(
@@ -43,6 +54,10 @@ impl Options {
             !seconds_seen || options.exercise || options.help,
             "--seconds requires --exercise"
         );
+        anyhow::ensure!(
+            options.mode != NativeMode::Timer || options.exercise || options.help,
+            "--timer requires --exercise"
+        );
         Ok(options)
     }
 }
@@ -51,11 +66,13 @@ fn main() -> anyhow::Result<()> {
     let options = Options::parse(std::env::args_os().skip(1))?;
     if options.help || !options.exercise {
         println!(
-            "vad_native --exercise [--seconds=2]\n\
+            "vad_native --exercise [--seconds=2] [--timer]\n\
              Explicit installed-driver probe: four owned virtual endpoints,\n\
              MMDevice/adapter identity, exclusive 48 kHz PCM16/Float32,\n\
              mono/stereo in both directions and microphone gate-close silence.\n\
              --seconds: signal duration per case, 1..=60; eight cases total.\n\
+             Default: exclusive event-driven; --timer: exclusive no-event,\n\
+             padding/position-driven probe with no fallback if unsupported.\n\
              No arguments or --help: display this help without contacting a driver.\n\
              Never installs a driver, selects defaults or changes endpoint settings."
         );
@@ -71,7 +88,7 @@ fn run(_options: Options) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn run(options: Options) -> anyhow::Result<()> {
-    target::exercise(options.seconds)
+    target::exercise(options.seconds, options.mode)
 }
 
 #[cfg(windows)]
@@ -89,6 +106,8 @@ mod tests {
     #[test]
     fn default_and_help_do_not_contact_a_driver() {
         assert!(!parse(&[]).unwrap().exercise);
+        assert_eq!(parse(&[]).unwrap().mode, NativeMode::Event);
+        assert_eq!(parse(&["--exercise"]).unwrap().mode, NativeMode::Event);
         assert!(parse(&["--help"]).unwrap().help);
         assert!(parse(&["-h"]).unwrap().help);
     }
@@ -109,5 +128,17 @@ mod tests {
         ] {
             assert!(parse(&arguments).is_err(), "{arguments:?}");
         }
+    }
+
+    #[test]
+    fn timer_mode_requires_explicit_exercise_and_cannot_repeat() {
+        assert_eq!(
+            parse(&["--exercise", "--timer"]).unwrap().mode,
+            NativeMode::Timer
+        );
+        assert!(parse(&["--timer", "--seconds=1", "--exercise"]).is_ok());
+        assert!(parse(&["--timer", "--help"]).unwrap().help);
+        assert!(parse(&["--timer"]).is_err());
+        assert!(parse(&["--exercise", "--timer", "--timer"]).is_err());
     }
 }

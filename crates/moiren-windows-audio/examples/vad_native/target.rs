@@ -1,4 +1,7 @@
-use crate::validation::{self, Candidate, Observation, PacketProgress};
+use crate::{
+    NativeMode,
+    validation::{self, Candidate, Observation, PacketProgress},
+};
 use anyhow::{Context, ensure};
 use moiren_windows_audio::vad::{
     Channels, ControlClient, EndpointSnapshot, Intent, PcmCompletion, PcmOwner, PcmTicket,
@@ -71,18 +74,21 @@ struct CaseReport {
     closed_gate_after: Option<Observation>,
     microphone_dropped_packets: u64,
     native_discontinuities: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_position: Option<validation::PositionProgress>,
 }
 
 #[derive(Serialize)]
 struct Report {
     schema_version: u32,
+    native_mode: NativeMode,
     root_instance: String,
     defaults_before: Vec<Option<String>>,
     defaults_after: Vec<Option<String>>,
     cases: Vec<CaseReport>,
 }
 
-pub(super) fn exercise(seconds: u32) -> anyhow::Result<()> {
+pub(super) fn exercise(seconds: u32, mode: NativeMode) -> anyhow::Result<()> {
     let interfaces = discover_present_interfaces()?;
     ensure!(
         interfaces.len() == 1,
@@ -120,7 +126,7 @@ pub(super) fn exercise(seconds: u32) -> anyhow::Result<()> {
     for (index, (endpoint, mapping)) in endpoints.iter_mut().zip(&mappings).enumerate() {
         for format in [SampleFormat::Pcm16, SampleFormat::Float32] {
             eprintln!(
-                "native case intent={:?} channels={:?} format={format:?} id={}",
+                "native case mode={mode:?} intent={:?} channels={:?} format={format:?} id={}",
                 endpoint.intent(),
                 endpoint.channels(),
                 endpoint.stable_id()
@@ -134,10 +140,11 @@ pub(super) fn exercise(seconds: u32) -> anyhow::Result<()> {
                 format,
                 index,
                 seconds,
+                mode,
             )
             .with_context(|| {
                 format!(
-                    "native {:?} {:?} {format:?}",
+                    "native {mode:?} {:?} {:?} {format:?}",
                     endpoint.intent(),
                     endpoint.channels()
                 )
@@ -162,7 +169,8 @@ pub(super) fn exercise(seconds: u32) -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::to_string_pretty(&Report {
-            schema_version: 1,
+            schema_version: 2,
+            native_mode: mode,
             root_instance: root,
             defaults_before: before,
             defaults_after: after,
@@ -265,6 +273,7 @@ fn exercise_case(
     format: SampleFormat,
     index: usize,
     seconds: u32,
+    mode: NativeMode,
 ) -> anyhow::Result<CaseReport> {
     let case_index = index * 2 + usize::from(format == SampleFormat::Float32);
     let pattern = validation::pattern(case_index, endpoint.channels());
@@ -281,6 +290,7 @@ fn exercise_case(
         format,
         endpoint.channels(),
         pattern,
+        mode,
     )?;
     native.start()?;
     let mut snapshot = endpoint;
@@ -339,6 +349,7 @@ fn exercise_case(
         let mut pending = VecDeque::with_capacity(4);
         let mut seen = Observation::default();
         let mut progress = TransferProgress::default();
+        native.position.begin_phase();
         let until = Instant::now() + Duration::from_secs(u64::from(seconds));
         while Instant::now() < until {
             native.poll(pattern, &mut seen)?;
@@ -354,7 +365,15 @@ fn exercise_case(
             std::thread::sleep(Duration::from_millis(1));
         }
         seen.require_signal(u64::from(seconds) * 48_000 / 2)?;
-        Ok((seen, progress.microphone_drops))
+        if mode == NativeMode::Timer {
+            native.position.require_advance()?;
+        }
+        let position = if mode == NativeMode::Timer {
+            Some(native.position.clone())
+        } else {
+            None
+        };
+        Ok((seen, progress.microphone_drops, position))
     })();
     // Cut admission first, then drain every outstanding direct request before
     // closing its native stream, including phase and revocation failures.
@@ -364,7 +383,7 @@ fn exercise_case(
         || Ok(pcm.shutdown(Duration::from_secs(5))?),
     );
     drop(pcm);
-    let (seen, dropped) = outcome?;
+    let (seen, dropped, position) = outcome?;
     let after = if endpoint.intent() == Intent::Microphone {
         // Already delivered WASAPI buffers may still contain valid old audio.
         // Drain two full buffers before measuring silence on the same RUN stream.
@@ -395,6 +414,7 @@ fn exercise_case(
         closed_gate_after: after,
         microphone_dropped_packets: dropped,
         native_discontinuities: native.discontinuities,
+        native_position: position,
     })
 }
 

@@ -63,6 +63,69 @@ impl PacketProgress {
     }
 }
 
+pub(super) fn timer_render_frames(capacity: u32, padding: u32) -> anyhow::Result<u32> {
+    anyhow::ensure!(
+        capacity > 0 && padding <= capacity,
+        "invalid native padding"
+    );
+    Ok(capacity - padding)
+}
+
+#[derive(Clone, Default, Debug, Serialize)]
+pub(super) struct PositionProgress {
+    first: Option<PositionSample>,
+    last: Option<PositionSample>,
+    pub frequency: u64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct PositionSample {
+    position_units: u64,
+    qpc_100ns: u64,
+}
+
+impl PositionProgress {
+    pub fn begin_phase(&mut self) {
+        // Keep the last sample for regression checks, but require fresh phase
+        // evidence; closed-gate motion cannot qualify the later signal phase.
+        self.first = None;
+    }
+
+    pub fn observe(&mut self, position: u64, qpc: u64) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.frequency > 0 && qpc != 0,
+            "invalid native clock sample"
+        );
+        if let Some(previous) = self.last {
+            anyhow::ensure!(
+                position >= previous.position_units && qpc >= previous.qpc_100ns,
+                "native clock regressed: position={position}, qpc={qpc}, previous={:?}",
+                self.last
+            );
+        }
+        let sample = PositionSample {
+            position_units: position,
+            qpc_100ns: qpc,
+        };
+        self.first.get_or_insert(sample);
+        self.last = Some(sample);
+        Ok(())
+    }
+
+    pub fn require_advance(&self) -> anyhow::Result<()> {
+        let (Some(first), Some(last)) = (self.first, self.last) else {
+            anyhow::bail!("no native position evidence");
+        };
+        anyhow::ensure!(
+            self.frequency > 0
+                && last.position_units > first.position_units
+                && last.qpc_100ns > first.qpc_100ns,
+            "native clock did not advance: {self:?}"
+        );
+        Ok(())
+    }
+}
+
 #[derive(Default, Debug, Serialize)]
 pub(super) struct Observation {
     pub signal_frames: u64,
@@ -311,5 +374,53 @@ mod tests {
             revoke_and_drain(Ok(42), || Ok(()), || Err(anyhow::anyhow!("drain failed"))).is_err()
         );
         assert_eq!(revoke_and_drain(Ok(42), || Ok(()), || Ok(())).unwrap(), 42);
+    }
+
+    #[test]
+    fn timer_render_uses_only_unpadded_frames_without_catch_up() {
+        assert_eq!(timer_render_frames(480, 480).unwrap(), 0);
+        assert_eq!(timer_render_frames(480, 360).unwrap(), 120);
+        assert_eq!(timer_render_frames(480, 0).unwrap(), 480);
+        assert!(timer_render_frames(480, 481).is_err());
+        assert!(timer_render_frames(0, 0).is_err());
+    }
+
+    #[test]
+    fn timer_position_requires_real_progress_and_rejects_regressions() {
+        let mut progress = PositionProgress {
+            frequency: 48_000,
+            ..Default::default()
+        };
+        assert!(progress.require_advance().is_err());
+        progress.observe(0, 100).unwrap();
+        progress.observe(0, 100).unwrap();
+        assert!(progress.require_advance().is_err());
+        progress.observe(48, 10_100).unwrap();
+        progress.require_advance().unwrap();
+        assert!(progress.observe(47, 10_101).is_err());
+        assert!(progress.observe(49, 10_099).is_err());
+        progress.frequency = 0;
+        assert!(progress.require_advance().is_err());
+    }
+
+    #[test]
+    fn timer_signal_phase_cannot_reuse_closed_gate_clock_evidence() {
+        let mut progress = PositionProgress {
+            frequency: 48_000,
+            ..Default::default()
+        };
+        progress.observe(0, 100).unwrap();
+        progress.observe(48, 10_100).unwrap();
+        progress.require_advance().unwrap();
+        progress.begin_phase();
+        assert_eq!(progress.frequency, 48_000);
+        assert!(progress.require_advance().is_err());
+        progress.observe(48, 10_101).unwrap();
+        assert!(progress.require_advance().is_err());
+        progress.observe(96, 20_100).unwrap();
+        progress.require_advance().unwrap();
+        let report = serde_json::to_value(&progress).unwrap();
+        assert_eq!(report["first"]["position_units"], 48);
+        assert_eq!(report["last"]["qpc_100ns"], 20_100);
     }
 }
