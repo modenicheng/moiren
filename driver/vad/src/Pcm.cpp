@@ -249,20 +249,32 @@ void VadPcmTransfer(WDFDEVICE child, uint64_t generation, PVOID buffer,
         return;
     }
     batch->Shared = shared;
-    bool copied = false;
     KIRQL irql;
     KeAcquireSpinLock(&shared->Lock, &irql);
     auto& slot = shared->Slots[childContext->Index];
+    if (slot.Id == childContext->Id && slot.StreamGeneration == generation) {
+        VadPcmTransferLocked(shared, childContext->Index, buffer,
+            frames, blockAlign, sequence, qpc, batch);
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+}
+
+void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
+    ULONG frames, ULONG blockAlign, uint64_t sequence, uint64_t qpc,
+    VAD_PCM_BATCH* batch)
+{
+    NT_ASSERT(batch->Shared == shared && batch->Completions.Count == 0);
+    auto& slot = shared->Slots[index];
+    bool copied = false;
     const bool capture = slot.Intent == MOIREN_VAD_INTENT_MICROPHONE;
     const ULONG bytes = frames * blockAlign;
     if (capture) {
         RtlZeroMemory(buffer, bytes);
     }
-    if (slot.Id == childContext->Id && slot.StreamGeneration == generation &&
-        slot.State == MOIREN_VAD_STATE_PRESENT && slot.AudioReady != 0) {
+    if (slot.State == MOIREN_VAD_STATE_PRESENT && slot.AudioReady != 0) {
         for (ULONG count = 0; count < MOIREN_VAD_REQUEST_SLOTS; ++count) {
             WDFREQUEST request = nullptr;
-            if (!NT_SUCCESS(WdfIoQueueRetrieveNextRequest(shared->PcmQueues[childContext->Index],
+            if (!NT_SUCCESS(WdfIoQueueRetrieveNextRequest(shared->PcmQueues[index],
                 &request))) {
                 break;
             }
@@ -310,7 +322,6 @@ void VadPcmTransfer(WDFDEVICE child, uint64_t generation, PVOID buffer,
             }
         }
     }
-    KeReleaseSpinLock(&shared->Lock, irql);
 }
 
 void VadPcmComplete(VAD_PCM_BATCH* batch)

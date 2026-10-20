@@ -125,3 +125,8 @@ void VadPcmTransfer(WDFDEVICE child, uint64_t generation, PVOID buffer,
     VAD_PCM_BATCH* batch);
 void VadPcmComplete(VAD_PCM_BATCH* batch);
 void VadPcmDiscontinuity(WDFDEVICE child, uint64_t generation, bool pauseStream = false);
+// Caller holds Shared->Lock and a PCM rundown reference. Retrieved requests
+// always enter the batch and complete after all spin locks are released.
+void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
+    ULONG frames, ULONG blockAlign, uint64_t sequence, uint64_t qpc,
+    VAD_PCM_BATCH* batch);
