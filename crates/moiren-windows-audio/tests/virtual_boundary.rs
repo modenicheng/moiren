@@ -99,17 +99,20 @@ fn check_virtual_src<S: ProcessingSample>(drift: bool) {
                     if block == 65 {
                         // The fake native producer is now fully stopped. RT
                         // playback must have returned silence, not waited.
-                        playback_producer.store(1, Ordering::Release);
+                        let current = epoch.load(Ordering::Acquire);
+                        playback_producer.store(current, Ordering::Release);
+                        microphone_producer.store(current, Ordering::Release);
                     }
                     engine.render(128).unwrap();
-                    if microphone_producer.load(Ordering::Acquire) == 1
-                        && microphone_consumer.load(Ordering::Acquire) == 0
+                    let current = epoch.load(Ordering::Acquire);
+                    if microphone_producer.load(Ordering::Acquire) == current
+                        && microphone_consumer.load(Ordering::Acquire) != current
                     {
                         output.discard();
-                        microphone_consumer.store(1, Ordering::Release);
+                        microphone_consumer.store(current, Ordering::Release);
                     }
                     if block >= 65 {
-                        assert_eq!(playback_consumer.load(Ordering::Acquire), 1);
+                        assert_eq!(playback_consumer.load(Ordering::Acquire), current);
                     }
                     if block >= 64 {
                         output.read_interleaved(&mut scratch).unwrap();

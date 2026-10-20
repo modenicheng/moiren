@@ -570,9 +570,28 @@ impl VirtualMicrophoneSink {
         true
     }
 
-    fn finish_transfer(&mut self, report: BoundaryReport, frames: usize) -> BoundaryReport {
+    fn finish_transfer(
+        &mut self,
+        report: BoundaryReport,
+        frames: usize,
+        carrier_short: bool,
+    ) -> BoundaryReport {
         #[cfg(test)]
         tests::before_transfer_return();
+        if carrier_short
+            && self.handshake.is_some()
+            && let Some(epoch) = &self.reset_epoch
+        {
+            // The old prefix is fully published before producer quiescence.
+            // Only the fenced consumer may discard it; standalone sinks keep
+            // their existing drop-new behavior. Do not replace a newer reset.
+            let _ = epoch.compare_exchange(
+                self.observed_reset,
+                self.observed_reset.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
         if self
             .reset_epoch
             .as_ref()
@@ -615,7 +634,7 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
                 if let Some(drift) = &mut self.drift {
                     drift.reset();
                 }
-                return short(input.frames());
+                return self.finish_transfer(short(input.frames()), input.frames(), true);
             }
             for frame in 0..input.frames() {
                 let left = input.channel(0)[frame].to_f64();
@@ -662,7 +681,7 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
                 discontinuity: report.discontinuity,
                 xruns: report.xruns,
             };
-            return self.finish_transfer(report, input.frames());
+            return self.finish_transfer(report, input.frames(), !complete);
         }
         if input.frames() > self.scratch.len() / 2 {
             return short(input.frames());
@@ -680,7 +699,8 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
             .carrier
             .write_interleaved(scratch)
             .expect("complete carrier frames");
-        self.finish_transfer(report, input.frames())
+        let carrier_short = report.transferred_frames < input.frames();
+        self.finish_transfer(report, input.frames(), carrier_short)
     }
 }
 

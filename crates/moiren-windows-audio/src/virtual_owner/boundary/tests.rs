@@ -747,3 +747,188 @@ fn microphone_late_write_is_fenced_until_the_consumer_discards_it() {
         assert_eq!(consumer.available_frames(), 0);
     }
 }
+
+#[test]
+fn microphone_backpressure_requests_one_reset_without_src() {
+    microphone_backpressure_requests_one_reset(false, 0, false);
+}
+
+#[test]
+fn microphone_backpressure_requests_one_reset_with_clock_drift() {
+    microphone_backpressure_requests_one_reset(true, 0, false);
+}
+
+#[test]
+fn microphone_backpressure_requests_one_reset_after_partial_write_without_src() {
+    microphone_backpressure_requests_one_reset(false, 32, false);
+}
+
+#[test]
+fn microphone_backpressure_requests_one_reset_after_partial_write_with_clock_drift() {
+    microphone_backpressure_requests_one_reset(true, 32, false);
+}
+
+#[test]
+fn microphone_backpressure_preserves_a_reset_racing_the_partial_publication() {
+    for drift in [false, true] {
+        microphone_backpressure_requests_one_reset(drift, 32, true);
+    }
+}
+
+#[test]
+fn microphone_backpressure_without_a_complete_fence_keeps_drop_new_behavior() {
+    for drift in [false, true] {
+        for reset_only in [false, true] {
+            let requested = Arc::new(AtomicU64::new(0));
+            let (mut writer, mut consumer) = audio_bridge(2, 4800, 1 << 20).unwrap();
+            writer.write_interleaved_exact(&[0.75; 9600]).unwrap();
+            let mut sink = VirtualMicrophoneSink::new(writer, 2, 128, 48_000, 1 << 20).unwrap();
+            if drift {
+                sink = sink.with_clock_drift().unwrap();
+            }
+            if reset_only {
+                sink = sink.with_reset_epoch(requested.clone());
+            }
+            let (mut input, source) = audio_bridge(2, 128, 4096).unwrap();
+            input.write_interleaved_exact(&[-0.25; 256]).unwrap();
+            let mut engine = graph_with_bindings(48_000, source, sink);
+            engine.render(128).unwrap();
+            assert_eq!(requested.load(Ordering::Acquire), 0);
+            assert_eq!(consumer.available_frames(), 4800);
+            let mut scratch = [f32::NAN; 256];
+            consumer.read_interleaved(&mut scratch).unwrap();
+            assert_eq!(scratch, [0.75; 256]);
+        }
+    }
+}
+
+fn microphone_backpressure_requests_one_reset(
+    drift: bool,
+    free_frames: usize,
+    external_reset: bool,
+) {
+    use moiren_engine::buffer::{BufferArena, BufferSlotLayout, PortAccess, ProcessIo};
+    const CAPACITY: usize = 4800;
+    const BLOCK: usize = 128;
+    let requested = Arc::new(AtomicU64::new(0));
+    let producer_ack = Arc::new(AtomicU64::new(0));
+    let consumer_ack = Arc::new(AtomicU64::new(0));
+    let (mut writer, mut consumer) = audio_bridge(2, CAPACITY, 1 << 20).unwrap();
+    assert!(
+        writer
+            .write_interleaved_exact(&vec![0.75; (CAPACITY - free_frames) * 2])
+            .unwrap()
+    );
+    let mut sink = VirtualMicrophoneSink::new(writer, 2, BLOCK, 48_000, 1 << 20)
+        .unwrap()
+        .with_reset_fence(
+            requested.clone(),
+            producer_ack.clone(),
+            consumer_ack.clone(),
+        );
+    if drift {
+        sink = sink.with_clock_drift().unwrap();
+    }
+    let mut arena = BufferArena::<f64>::new(
+        &[BufferSlotLayout {
+            channels: 2,
+            capacity_frames: BLOCK,
+        }],
+        1 << 20,
+    )
+    .unwrap();
+    let slot = arena.slot(0).unwrap();
+    let write = arena
+        .prepare_io(&[PortAccess::Write { port: 0, slot }])
+        .unwrap();
+    let read = arena
+        .prepare_io(&[PortAccess::Read { port: 0, slot }])
+        .unwrap();
+    arena
+        .with_io(&write, 0..BLOCK, |io| {
+            let ProcessIo::Separate { mut outputs, .. } = io else {
+                unreachable!()
+            };
+            let mut output = outputs.get_mut(0).unwrap();
+            for channel in 0..2 {
+                output.channel_mut(channel).fill(-0.25);
+            }
+        })
+        .unwrap();
+    let context = ProcessContext {
+        timeline_epoch: 1,
+        timeline_start: 0,
+        frames: BLOCK,
+        processing_sr: 48_000.0,
+    };
+    if free_frames > 0 {
+        let ack = producer_ack.clone();
+        let reset = requested.clone();
+        BEFORE_RETURN.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                assert_eq!(
+                    ack.load(Ordering::Acquire),
+                    0,
+                    "old write is not fenced yet"
+                );
+                if external_reset {
+                    reset.store(2, Ordering::Release);
+                }
+            }));
+        });
+    }
+    let mut publish = |sink: &mut VirtualMicrophoneSink| {
+        arena
+            .with_io(&read, 0..BLOCK, |io| {
+                let ProcessIo::ReadOnly { inputs } = io else {
+                    unreachable!()
+                };
+                sink.write(&context, inputs.get(0).unwrap())
+            })
+            .unwrap()
+    };
+    let report = publish(&mut sink);
+    let epoch = if external_reset { 2 } else { 1 };
+    assert_eq!(
+        consumer.available_frames(),
+        CAPACITY,
+        "the old prefix was published"
+    );
+    assert_eq!(
+        requested.load(Ordering::Acquire),
+        epoch,
+        "backpressure requests reset"
+    );
+    assert_eq!(
+        producer_ack.load(Ordering::Acquire),
+        epoch,
+        "same write quiesces producer"
+    );
+    assert_eq!(consumer_ack.load(Ordering::Acquire), 0);
+    assert_eq!(report.transferred_frames, 0);
+    assert!(report.discontinuity);
+    assert_eq!(report.xruns, 1);
+    assert_eq!(sink.carrier.capacity_frames(), CAPACITY);
+
+    // Returning some space does not authorize publication before discard/ACK.
+    let mut scratch = [f32::NAN; BLOCK * 2];
+    consumer.read_interleaved(&mut scratch).unwrap();
+    for _ in 0..3 {
+        assert_eq!(publish(&mut sink).transferred_frames, 0);
+        assert_eq!(consumer.available_frames(), CAPACITY - BLOCK);
+        assert_eq!(requested.load(Ordering::Acquire), epoch);
+        assert_eq!(producer_ack.load(Ordering::Acquire), epoch);
+    }
+    // The consumer owns discard, after acquiring the producer's release fence.
+    assert_eq!(producer_ack.load(Ordering::Acquire), epoch);
+    assert_eq!(consumer.discard(), CAPACITY - BLOCK);
+    consumer_ack.store(epoch, Ordering::Release);
+    for _ in 0..3 {
+        assert!(publish(&mut sink).transferred_frames > 0);
+        let report = consumer.read_interleaved(&mut scratch).unwrap();
+        assert!(report.transferred_frames > 0);
+    }
+    assert!(scratch.iter().all(|sample| (*sample + 0.25).abs() < 1e-5));
+    assert_eq!(requested.load(Ordering::Acquire), epoch);
+    assert_eq!(sink.observed_reset, epoch);
+}
