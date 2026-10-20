@@ -131,3 +131,91 @@ fn project_parameter_reads_resolve_explicit_values_over_configuration_defaults()
     assert_eq!(project.nodes[&gain], NodeConfig::Gain { initial: 1.0 });
     assert_eq!(project.graph.get_edge(edge).unwrap().params().gain, 1.0);
 }
+
+#[test]
+fn virtual_identity_survives_project_edits_and_graph_node_replacement() {
+    use moiren_engine::node::{
+        InputConfig, InputSource, IoConfigError, OutputConfig, OutputTarget, VirtualEndpointId,
+    };
+
+    let playback_id = VirtualEndpointId::from_bytes([0x81; 16]);
+    let microphone_id = VirtualEndpointId::from_bytes([0x42; 16]);
+    for channels in [1, 2] {
+        let mut project = EngineProject::default();
+        let source = project
+            .graph
+            .create_node(NodeKind::Source, channels)
+            .unwrap();
+        let sink = project.graph.create_node(NodeKind::Sink, channels).unwrap();
+        let input = NodeConfig::Input(InputConfig {
+            source: InputSource::VirtualPlayback {
+                endpoint_id: playback_id,
+            },
+            channels,
+            device: Default::default(),
+        });
+        let output = NodeConfig::Output(OutputConfig {
+            target: OutputTarget::VirtualMicrophone {
+                endpoint_id: microphone_id,
+            },
+            channels,
+            device: Default::default(),
+        });
+        project.nodes.insert(source, input.clone());
+        project.nodes.insert(sink, output.clone());
+        let source_port = project.graph.get_node(source).unwrap().outputs()[0].id();
+        let sink_port = project.graph.get_node(sink).unwrap().inputs()[0].id();
+        project
+            .graph
+            .connect(source_port, sink_port, Default::default())
+            .unwrap();
+        project.validate().unwrap();
+
+        let before = project.clone();
+        let error = project
+            .edit(|candidate| {
+                let NodeConfig::Input(input) = candidate.nodes.get_mut(&source).unwrap() else {
+                    unreachable!()
+                };
+                input.channels = 3;
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ProjectError::Io {
+                node: source,
+                error: IoConfigError::InvalidVirtualChannels,
+            }
+        );
+        assert_eq!(project, before);
+        let error = project
+            .edit(|candidate| {
+                let NodeConfig::Output(output) = candidate.nodes.get_mut(&sink).unwrap() else {
+                    unreachable!()
+                };
+                output.channels = 3 - channels;
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(error, ProjectError::IoChannels(sink));
+        assert_eq!(project, before);
+
+        let replacement = project
+            .edit_with_result(|candidate| {
+                candidate.graph.remove_node(source)?;
+                let replacement = candidate.graph.create_node(NodeKind::Source, channels)?;
+                candidate.nodes.insert(replacement, input.clone());
+                let port = candidate.graph.get_node(replacement)?.outputs()[0].id();
+                candidate
+                    .graph
+                    .connect(port, sink_port, Default::default())?;
+                Ok(replacement)
+            })
+            .unwrap();
+        assert_ne!(source, replacement);
+        assert!(!project.nodes.contains_key(&source));
+        assert_eq!(project.nodes[&replacement], input);
+        assert_eq!(project.nodes[&sink], output);
+    }
+}

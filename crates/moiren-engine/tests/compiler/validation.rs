@@ -197,3 +197,79 @@ fn prepared_io_nodes_keep_their_boundary_telemetry_through_compilation() {
         assert_eq!(snapshot.total_xruns, 0);
     }
 }
+
+#[test]
+fn virtual_io_contracts_compile_with_portable_boundaries_and_render_without_allocations() {
+    use moiren_engine::node::*;
+
+    fn check<S: ProcessingSample>(channels: usize) {
+        let mut graph = LogicalGraph::new();
+        let source = graph.create_node(NodeKind::Source, channels).unwrap();
+        let sink = graph.create_node(NodeKind::Sink, channels).unwrap();
+        connect(&mut graph, source, sink, SendParams::default());
+        let (mut producer, source_audio) = audio_bridge::<S>(channels, 8, 4096).unwrap();
+        let (sink_audio, mut consumer) = audio_bridge::<S>(channels, 8, 4096).unwrap();
+        let (input_node, mut input_reports) = InputNode::new(
+            InputConfig {
+                source: InputSource::VirtualPlayback {
+                    endpoint_id: VirtualEndpointId::from_bytes([1; 16]),
+                },
+                channels,
+                device: Default::default(),
+            },
+            source_audio,
+            8,
+        )
+        .unwrap();
+        let (output_node, mut output_reports) = OutputNode::new(
+            OutputConfig {
+                target: OutputTarget::VirtualMicrophone {
+                    endpoint_id: VirtualEndpointId::from_bytes([2; 16]),
+                },
+                channels,
+                device: Default::default(),
+            },
+            sink_audio,
+            8,
+        )
+        .unwrap();
+        let mut bindings = NodeBindings::new();
+        bindings.bind_io(source, input_node).unwrap();
+        bindings.bind_io(sink, output_node).unwrap();
+        let mut compiled = compile(&graph, bindings, config()).unwrap();
+        let samples: Vec<S> = (0..5 * channels)
+            .map(|index| S::from_f64((index + 1) as f64 / 16.0))
+            .collect();
+        producer.write_interleaved(&samples).unwrap();
+        let mut output = vec![S::from_f64(99.0); 8 * channels];
+        let ((first, second, report), counts) = allocation::track_allocations(|| {
+            let first = compiled.engine.render(3);
+            let second = compiled.engine.render(5);
+            let report = consumer.read_interleaved(&mut output);
+            (first, second, report)
+        });
+        assert_eq!(counts, (0, 0));
+        first.unwrap();
+        second.unwrap();
+        assert_eq!(report.unwrap().transferred_frames, 8);
+        for (&actual, &expected) in output.iter().zip(&samples) {
+            assert_eq!(actual.to_f64(), expected.to_f64());
+        }
+        assert!(
+            output[samples.len()..]
+                .iter()
+                .all(|&value| value.to_f64() == 0.0)
+        );
+        let input = input_reports.latest().unwrap();
+        assert_eq!(input.total_transferred_frames, 5);
+        assert_eq!(input.total_shortfall_frames, 3);
+        let output = output_reports.latest().unwrap();
+        assert_eq!(output.total_transferred_frames, 8);
+        assert_eq!(output.total_shortfall_frames, 0);
+    }
+
+    for channels in [1, 2] {
+        check::<f32>(channels);
+        check::<f64>(channels);
+    }
+}
