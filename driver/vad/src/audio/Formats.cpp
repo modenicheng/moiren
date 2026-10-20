@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MS-PL
 // Derived format construction: ACX Samples/Common/CircuitHelper.cpp.
 #include "Private.h"
+#include "Formats.tmh"
 
 static ULONG ChannelMask(ULONG channels)
 {
@@ -66,13 +67,27 @@ VAD_PAGE NTSTATUS VadAudioAddFormats(VAD_AUDIO_DEVICE* device, ACXPIN host)
         &AUDIO_SIGNALPROCESSINGMODE_RAW, &AUDIO_SIGNALPROCESSINGMODE_DEFAULT};
     for (const GUID* mode : modes) {
         ACXDATAFORMATLIST list = nullptr;
-        ACX_DATAFORMAT_LIST_CONFIG listConfig;
-        ACX_DATAFORMAT_LIST_CONFIG_INIT(&listConfig);
-        WDF_OBJECT_ATTRIBUTES listAttributes;
-        WDF_OBJECT_ATTRIBUTES_INIT(&listAttributes);
-        listAttributes.ParentObject = device->Circuit;
-        NTSTATUS status = AcxDataFormatListCreate(device->Device,
-            &listAttributes, &listConfig, &list);
+        const bool raw = IsEqualGUID(*mode, AUDIO_SIGNALPROCESSINGMODE_RAW);
+        NTSTATUS status = STATUS_SUCCESS;
+        if (raw) {
+            // Every ACX pin already owns its RAW list. Replacing that reserved
+            // association is invalid; populate the built-in list instead.
+            list = AcxPinGetRawDataFormatList(host);
+            if (list == nullptr) {
+                status = STATUS_INSUFFICIENT_RESOURCES;
+            }
+        } else {
+            ACX_DATAFORMAT_LIST_CONFIG listConfig;
+            ACX_DATAFORMAT_LIST_CONFIG_INIT(&listConfig);
+            WDF_OBJECT_ATTRIBUTES listAttributes;
+            WDF_OBJECT_ATTRIBUTES_INIT(&listAttributes);
+            listAttributes.ParentObject = host;
+            status = AcxDataFormatListCreate(device->Device,
+                &listAttributes, &listConfig, &list);
+        }
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+            "Formats list mode=%u status=%!STATUS!",
+            IsEqualGUID(*mode, AUDIO_SIGNALPROCESSINGMODE_RAW) ? 0u : 1u, status);
         if (!NT_SUCCESS(status)) {
             return status;
         }
@@ -104,15 +119,23 @@ VAD_PAGE NTSTATUS VadAudioAddFormats(VAD_AUDIO_DEVICE* device, ACXPIN host)
             attributes.ParentObject = device->Circuit;
             ACXDATAFORMAT data = nullptr;
             status = AcxDataFormatCreate(device->Device, &attributes, &config, &data);
+            VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+                "Formats create bits=%u status=%!STATUS!", bits, status);
             if (!NT_SUCCESS(status)) {
                 return status;
             }
             status = AcxDataFormatListAddDataFormat(list, data);
+            VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+                "Formats add bits=%u status=%!STATUS!", bits, status);
             if (!NT_SUCCESS(status)) {
                 return status;
             }
         }
-        status = AcxPinAssignModeDataFormatList(host, mode, list);
+        status = raw ? STATUS_SUCCESS :
+            AcxPinAssignModeDataFormatList(host, mode, list);
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+            "Formats assign mode=%u status=%!STATUS!",
+            IsEqualGUID(*mode, AUDIO_SIGNALPROCESSINGMODE_RAW) ? 0u : 1u, status);
         if (!NT_SUCCESS(status)) {
             return status;
         }

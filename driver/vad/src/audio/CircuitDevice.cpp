@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MS-PL
 // Derived initialization sequence: SdcaVad/SdcaVXu/CircuitDevice.cpp.
 #include "Private.h"
+#include "CircuitDevice.tmh"
 
 VAD_PAGE static EVT_WDF_DEVICE_PREPARE_HARDWARE Prepare;
 VAD_PAGE static EVT_WDF_DEVICE_RELEASE_HARDWARE Release;
@@ -93,8 +94,12 @@ static NTSTATUS Prepare(WDFDEVICE child, WDFCMRESLIST raw,
     // The PDO has a devnode now. Stage all default-qualification properties
     // on a system worker before ACX publishes any audio interface.
     NTSTATUS status = VadPreparePolicy(child, device->Intent);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+        "Audio prepare policy intent=%u status=%!STATUS!", device->Intent, status);
     if (NT_SUCCESS(status)) {
         status = VadAudioBuildCircuit(device);
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+            "Audio prepare build intent=%u status=%!STATUS!", device->Intent, status);
     }
     if (!NT_SUCCESS(status)) {
         DeleteUnpublishedCircuit(device);
@@ -104,6 +109,8 @@ static NTSTATUS Prepare(WDFDEVICE child, WDFCMRESLIST raw,
     // ACX may enter power callbacks synchronously. Never hold Lifecycle across
     // Add/RemoveCircuit (or root Add/RemoveCircuitDevice).
     status = AcxDeviceAddCircuit(child, device->Circuit);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+        "Audio prepare publish intent=%u status=%!STATUS!", device->Intent, status);
     VadAudioLock(device);
     device->Added = NT_SUCCESS(status);
     device->HardwareReady = NT_SUCCESS(status);

@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: MS-PL
 // Derived ACX topology sequence: Samples/Common/{Render,Capture}Circuit.cpp.
 #include "Private.h"
+#include "Circuit.tmh"
 
 static VAD_PAGE EVT_ACX_CIRCUIT_POWER_UP PowerUp;
 static VAD_PAGE EVT_ACX_CIRCUIT_POWER_DOWN PowerDown;
 static VAD_PAGE EVT_ACX_PIN_SET_DATAFORMAT SetFormat;
-static VAD_PAGE EVT_ACX_JACK_RETRIEVE_PRESENCE_STATE JackPresent;
 
 _Use_decl_annotations_
 static VAD_PAGE NTSTATUS SetFormat(ACXPIN pin, ACXDATAFORMAT format)
@@ -22,15 +22,6 @@ static VAD_PAGE NTSTATUS SetFormat(ACXPIN pin, ACXDATAFORMAT format)
     return VadAudioValidateFormat(device, format, &align);
 }
 
-_Use_decl_annotations_
-static VAD_PAGE NTSTATUS JackPresent(ACXJACK jack, PBOOLEAN connected)
-{
-    PAGED_CODE();
-    UNREFERENCED_PARAMETER(jack);
-    *connected = TRUE; // Integrated virtual endpoint, no presence detection.
-    return STATUS_SUCCESS;
-}
-
 VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
 {
     PAGED_CODE();
@@ -42,6 +33,8 @@ VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
     UNICODE_STRING uri;
     RtlInitUnicodeString(&uri, device->Identity.Uri);
     NTSTATUS status = AcxCircuitInitAssignComponentUri(init, &uri);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+        "Circuit component URI status=%!STATUS!", status);
     if (!NT_SUCCESS(status)) {
         AcxCircuitInitFree(init);
         return status;
@@ -49,6 +42,8 @@ VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
     UNICODE_STRING name;
     RtlInitUnicodeString(&name, VadAudioReference);
     status = AcxCircuitInitAssignName(init, &name);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+        "Circuit name status=%!STATUS!", status);
     if (!NT_SUCCESS(status)) {
         AcxCircuitInitFree(init);
         return status;
@@ -69,6 +64,8 @@ VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.ExecutionLevel = WdfExecutionLevelPassive;
     status = AcxCircuitCreate(device->Device, &attributes, &init, &device->Circuit);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+        "Circuit create status=%!STATUS!", status);
     if (!NT_SUCCESS(status)) {
         if (init != nullptr) {
             AcxCircuitInitFree(init);
@@ -89,6 +86,8 @@ VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
     WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
     attributes.ParentObject = device->Circuit;
     status = AcxPinCreate(device->Circuit, &attributes, &config, &pins[0]);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+        "Circuit host pin status=%!STATUS!", status);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -98,18 +97,19 @@ VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
     config.Communication = AcxPinCommunicationNone;
     config.Category = capture ? &KSNODETYPE_MICROPHONE : &KSNODETYPE_SPEAKER;
     status = AcxPinCreate(device->Circuit, &attributes, &config, &pins[1]);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+        "Circuit bridge pin status=%!STATUS!", status);
     if (!NT_SUCCESS(status)) {
         return status;
     }
     ACX_JACK_CONFIG jackConfig;
     ACX_JACK_CONFIG_INIT(&jackConfig);
-    ACX_JACK_CALLBACKS jackCallbacks;
-    ACX_JACK_CALLBACKS_INIT(&jackCallbacks);
-    jackCallbacks.EvtAcxJackRetrievePresenceState = JackPresent;
-    jackConfig.Callbacks = &jackCallbacks;
-    jackConfig.Description.ChannelMapping = device->Channels == 1 ?
-        SPEAKER_FRONT_CENTER : SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
-    jackConfig.Description.ConnectionType = AcxConnTypeUnknown;
+    // Integrated endpoints have no jack-detection capability or presence
+    // callback. ACX supplies the always-connected state for this description.
+    // Jack speaker mapping is only for analog render connectors, not digital
+    // render or capture. The actual PCM channel mask lives in each format.
+    jackConfig.Description.ChannelMapping = 0;
+    jackConfig.Description.ConnectionType = AcxConnTypeOtherDigital;
     jackConfig.Description.GeoLocation = AcxGeoLocNotApplicable;
     jackConfig.Description.GenLocation = AcxGenLocOther;
     jackConfig.Description.PortConnection = AcxPortConnIntegratedDevice;
@@ -117,6 +117,8 @@ VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
     attributes.ParentObject = pins[1];
     ACXJACK jack = nullptr;
     status = AcxJackCreate(pins[1], &attributes, &jackConfig, &jack);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+        "Circuit jack status=%!STATUS!", status);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -125,10 +127,14 @@ VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
         return status;
     }
     status = VadAudioAddFormats(device, pins[0]);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+        "Circuit formats status=%!STATUS!", status);
     if (!NT_SUCCESS(status)) {
         return status;
     }
     status = AcxCircuitAddPins(device->Circuit, pins, RTL_NUMBER_OF(pins));
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+        "Circuit add pins status=%!STATUS!", status);
     if (!NT_SUCCESS(status)) {
         return status;
     }
