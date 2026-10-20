@@ -1,5 +1,5 @@
-//! Backend-owned capture clock adaptation. The graph sees only stereo f32 at
-//! 48 kHz; native packet layout, buffering and clock correction stay here.
+//! Backend-owned capture clock adaptation. The graph sees stereo f32 at its
+//! prepared Engine rate; native layout and clock correction stay here.
 use crate::latency::clock::QpcClock;
 use rtrb::RingBuffer;
 use std::sync::Arc;
@@ -21,6 +21,9 @@ pub const OUTPUT_SAMPLE_RATE: u32 = 48_000;
 #[derive(Debug, Clone, Copy)]
 pub struct ClockBridgeConfig {
     pub input_sample_rate: u32,
+    /// Engine output rate. Physical-only owners use 48kHz; VAD projects may
+    /// select another supported processing rate after native capture SRC.
+    pub output_sample_rate: u32,
     pub input_channels: usize,
     pub capacity_frames: usize,
     /// Input frames held before starting/restarting interpolation.
@@ -45,6 +48,7 @@ impl Default for ClockBridgeConfig {
     fn default() -> Self {
         Self {
             input_sample_rate: 48_000,
+            output_sample_rate: OUTPUT_SAMPLE_RATE,
             input_channels: 2,
             capacity_frames: 8192,
             target_fill_frames: 2048,
@@ -65,6 +69,23 @@ impl ClockBridgeConfig {
     ) -> Self {
         Self {
             input_sample_rate,
+            output_sample_rate: OUTPUT_SAMPLE_RATE,
+            input_channels,
+            capacity_frames: input.capacity_frames as usize,
+            target_fill_frames: input.prime_frames as usize,
+            prepared_input: Some(input),
+            ..Self::default()
+        }
+    }
+    pub fn with_engine_input(
+        input_sample_rate: u32,
+        output_sample_rate: u32,
+        input_channels: usize,
+        input: crate::latency::PreparedInputQueue,
+    ) -> Self {
+        Self {
+            input_sample_rate,
+            output_sample_rate,
             input_channels,
             capacity_frames: input.capacity_frames as usize,
             target_fill_frames: input.prime_frames as usize,
@@ -99,7 +120,7 @@ impl ClockBridgeConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ClockBridgeError {
     #[error(
-        "capture bridge requires native 44.1/48 kHz mono/stereo, a 2..capacity target, and finite 0..2000 ppm correction"
+        "capture bridge requires supported mono/stereo input and Engine output rates, a 2..capacity target, and finite 0..2000 ppm correction"
     )]
     InvalidConfig,
     #[error("capture bridge storage exceeds its preparation budget")]
@@ -129,7 +150,8 @@ pub(crate) fn capture_bridge_with_clock(
     config: ClockBridgeConfig,
     age_clock: Option<QpcClock>,
 ) -> Result<(CaptureIngress, ClockSource, BridgeObserver), ClockBridgeError> {
-    if ![44_100, 48_000].contains(&config.input_sample_rate)
+    if !moiren_engine::audio_config::SAMPLE_RATES.contains(&config.input_sample_rate)
+        || !moiren_engine::audio_config::SAMPLE_RATES.contains(&config.output_sample_rate)
         || !(1..=2).contains(&config.input_channels)
         || config.target_fill_frames < 2
         || config.target_fill_frames >= config.capacity_frames

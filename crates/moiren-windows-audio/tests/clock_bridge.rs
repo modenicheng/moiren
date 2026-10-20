@@ -223,6 +223,37 @@ fn nominal_src_keeps_fractional_phase_across_variable_demands() {
 }
 
 #[test]
+fn capture_and_follower_src_follow_the_prepared_engine_and_native_rates() {
+    for input_rate in [44_100_u32, 48_000, 88_200, 96_000] {
+        for output_rate in [44_100_u32, 48_000, 88_200, 96_000] {
+            let (mut ingress, mut source, _) = capture_bridge(ClockBridgeConfig {
+                input_sample_rate: input_rate,
+                output_sample_rate: output_rate,
+                capacity_frames: 128,
+                ..config()
+            })
+            .unwrap();
+            let ramp: Vec<_> = (0..128).flat_map(|i| [i as f32, -(i as f32)]).collect();
+            ingress
+                .push_packet(&bytes(&ramp), packet(128, 0, 0))
+                .unwrap();
+            let mut position = 0;
+            for frames in [1, 3, 11, 5] {
+                let mut output = vec![f32::NAN; frames * 2];
+                let report = source.read_interleaved(&mut output).unwrap();
+                assert_eq!(report.transferred_frames, frames);
+                for pair in output.as_chunks::<2>().0 {
+                    let expected = position as f32 * input_rate as f32 / output_rate as f32;
+                    assert!((pair[0] - expected).abs() < 0.00001);
+                    assert!((pair[1] + expected).abs() < 0.00001);
+                    position += 1;
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn underrun_clears_tail_and_reprime_never_replays_old_samples() {
     let (mut input, mut source, observer) = capture_bridge(config()).unwrap();
     let mut out = [99.0; 8];
@@ -302,7 +333,11 @@ fn overflow_timestamp_errors_nonfinite_samples_and_producer_exit_are_visible() {
 fn invalid_layouts_rates_controller_bounds_and_budget_are_rejected() {
     for bad in [
         ClockBridgeConfig {
-            input_sample_rate: 96_000,
+            input_sample_rate: 32_000,
+            ..config()
+        },
+        ClockBridgeConfig {
+            output_sample_rate: 32_000,
             ..config()
         },
         ClockBridgeConfig {

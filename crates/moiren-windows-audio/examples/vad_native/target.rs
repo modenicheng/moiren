@@ -1,0 +1,455 @@
+use crate::validation::{self, Candidate, Observation, PacketProgress};
+use anyhow::{Context, ensure};
+use moiren_windows_audio::vad::{
+    Channels, ControlClient, EndpointSnapshot, Intent, PcmCompletion, PcmOwner, PcmTicket,
+    SampleFormat, StableEndpointId, StreamState, decode_interleaved, discover_present_interfaces,
+    encode_interleaved,
+};
+use serde::Serialize;
+use std::{
+    collections::{HashSet, VecDeque},
+    marker::PhantomData,
+    rc::Rc,
+    time::{Duration, Instant},
+};
+use windows::{
+    Win32::{
+        Foundation::ERROR_NOT_FOUND,
+        Media::Audio::{
+            IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eCommunications, eConsole,
+            eMultimedia, eRender,
+        },
+        System::Com::{
+            CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+        },
+    },
+    core::HSTRING,
+};
+
+#[path = "identity.rs"]
+mod identity;
+#[path = "native.rs"]
+mod native;
+
+const CONTROL_DEADLINE: Duration = Duration::from_secs(15);
+
+#[derive(Default)]
+struct TransferProgress {
+    playback: PacketProgress,
+    microphone_drops: u64,
+}
+
+struct Apartment(PhantomData<Rc<()>>);
+impl Apartment {
+    fn new() -> anyhow::Result<Self> {
+        // SAFETY: this dedicated probe thread has no prior COM ownership.
+        // S_OK and S_FALSE are both balanced by exactly one CoUninitialize.
+        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
+        Ok(Self(PhantomData))
+    }
+}
+impl Drop for Apartment {
+    fn drop(&mut self) {
+        unsafe { CoUninitialize() };
+    }
+}
+
+#[derive(Serialize)]
+struct CaseReport {
+    stable_id: String,
+    mmdevice_id: String,
+    adapter_instance: String,
+    intent: String,
+    channels: u32,
+    format: String,
+    native_buffer_frames: u32,
+    driver_packet_frames: u32,
+    stream_generation: u64,
+    signal_seconds: u32,
+    observation: Observation,
+    closed_gate_before: Option<Observation>,
+    closed_gate_after: Option<Observation>,
+    microphone_dropped_packets: u64,
+    native_discontinuities: u64,
+}
+
+#[derive(Serialize)]
+struct Report {
+    schema_version: u32,
+    root_instance: String,
+    defaults_before: Vec<Option<String>>,
+    defaults_after: Vec<Option<String>>,
+    cases: Vec<CaseReport>,
+}
+
+pub(super) fn exercise(seconds: u32) -> anyhow::Result<()> {
+    let interfaces = discover_present_interfaces()?;
+    ensure!(
+        interfaces.len() == 1,
+        "native probe requires exactly one present control root, found {}",
+        interfaces.len()
+    );
+    let _apartment = Apartment::new()?;
+    let enumerator: IMMDeviceEnumerator =
+        unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
+    let root = identity::root_instance(&interfaces[0]).context("control root identity")?;
+    let before = defaults(&enumerator)?;
+    let mut control = ControlClient::connect(&interfaces[0])?;
+    control.capabilities().require_pcm()?;
+    let mut endpoints = Vec::with_capacity(4);
+    for intent in [Intent::Playback, Intent::Microphone] {
+        for channels in [Channels::Mono, Channels::Stereo] {
+            let stable_id = StableEndpointId::new(
+                intent as u64 | ((channels as u64) << 32),
+                0x4d6f_6972_656e_4e41,
+            );
+            let endpoint = control.create_and_wait(
+                stable_id,
+                intent,
+                channels,
+                &format!("Moiren native probe {intent:?} {channels:?}"),
+                false,
+                CONTROL_DEADLINE,
+            )?;
+            endpoints.push(endpoint);
+        }
+    }
+    let mappings = wait_mappings(&enumerator, &endpoints, &root)?;
+    require_never_default(&enumerator, &mappings)?;
+    let mut cases = Vec::with_capacity(8);
+    for (index, (endpoint, mapping)) in endpoints.iter_mut().zip(&mappings).enumerate() {
+        for format in [SampleFormat::Pcm16, SampleFormat::Float32] {
+            eprintln!(
+                "native case intent={:?} channels={:?} format={format:?} id={}",
+                endpoint.intent(),
+                endpoint.channels(),
+                endpoint.stable_id()
+            );
+            let report = exercise_case(
+                &mut control,
+                &enumerator,
+                *endpoint,
+                mapping,
+                &root,
+                format,
+                index,
+                seconds,
+            )
+            .with_context(|| {
+                format!(
+                    "native {:?} {:?} {format:?}",
+                    endpoint.intent(),
+                    endpoint.channels()
+                )
+            })?;
+            cases.push(report);
+            *endpoint = wait_closed(&mut control, *endpoint)?;
+        }
+    }
+    require_never_default(&enumerator, &mappings)?;
+    let after = defaults(&enumerator)?;
+    for endpoint in endpoints {
+        let latest = control
+            .query(endpoint.key())?
+            .require_progress_after(endpoint)?;
+        ensure!(!latest.gate_open(), "case left a gate open");
+        let removed = control.remove_and_wait(latest.key(), CONTROL_DEADLINE)?;
+        ensure!(
+            removed.removal_complete_after(latest)?,
+            "removal accepted without final Removed"
+        );
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&Report {
+            schema_version: 1,
+            root_instance: root,
+            defaults_before: before,
+            defaults_after: after,
+            cases,
+        })?
+    );
+    Ok(())
+}
+
+fn defaults(enumerator: &IMMDeviceEnumerator) -> anyhow::Result<Vec<Option<String>>> {
+    let mut result = Vec::with_capacity(6);
+    for flow in [eRender, eCapture] {
+        for role in [eConsole, eMultimedia, eCommunications] {
+            // SAFETY: read-only default-role observations in the current apartment.
+            match unsafe { enumerator.GetDefaultAudioEndpoint(flow, role) } {
+                Ok(device) => result.push(Some(identity::take_string(unsafe { device.GetId()? })?)),
+                Err(error) if error.code() == ERROR_NOT_FOUND.to_hresult() => result.push(None),
+                Err(error) => return Err(error).context("GetDefaultAudioEndpoint"),
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn require_never_default(
+    enumerator: &IMMDeviceEnumerator,
+    mappings: &[Candidate],
+) -> anyhow::Result<()> {
+    for default in defaults(enumerator)?.into_iter().flatten() {
+        ensure!(
+            mappings.iter().all(|row| row.id != default),
+            "probe endpoint unexpectedly became a default: {default}"
+        );
+    }
+    Ok(())
+}
+
+fn wait_mappings(
+    enumerator: &IMMDeviceEnumerator,
+    endpoints: &[EndpointSnapshot],
+    root: &str,
+) -> anyhow::Result<Vec<Candidate>> {
+    let deadline = Instant::now() + CONTROL_DEADLINE;
+    loop {
+        let (rows, errors) = identity::candidates(enumerator)?;
+        let mut mapped = Vec::with_capacity(endpoints.len());
+        for endpoint in endpoints {
+            if let Some(row) =
+                validation::select(&rows, endpoint.stable_id(), endpoint.intent(), root)?
+            {
+                mapped.push(row.clone());
+            }
+        }
+        if mapped.len() == endpoints.len() {
+            let distinct: HashSet<_> = mapped.iter().map(|row| &row.id).collect();
+            ensure!(
+                distinct.len() == endpoints.len(),
+                "sibling MMDevice identities alias"
+            );
+            return Ok(mapped);
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "only {}/{} owned endpoints mapped to MMDevices; identity diagnostics={errors:?}",
+            mapped.len(),
+            endpoints.len()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn wait_closed(
+    control: &mut ControlClient,
+    mut previous: EndpointSnapshot,
+) -> anyhow::Result<EndpointSnapshot> {
+    let deadline = Instant::now() + CONTROL_DEADLINE;
+    loop {
+        previous = control
+            .query(previous.key())?
+            .require_progress_after(previous)?;
+        ensure!(!previous.gate_open(), "gate unexpectedly reopened");
+        if previous.stream_state() == StreamState::Closed {
+            return Ok(previous);
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "previous native stream did not close"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exercise_case(
+    control: &mut ControlClient,
+    enumerator: &IMMDeviceEnumerator,
+    endpoint: EndpointSnapshot,
+    mapping: &Candidate,
+    root: &str,
+    format: SampleFormat,
+    index: usize,
+    seconds: u32,
+) -> anyhow::Result<CaseReport> {
+    let case_index = index * 2 + usize::from(format == SampleFormat::Float32);
+    let pattern = validation::pattern(case_index, endpoint.channels());
+    let device = unsafe { enumerator.GetDevice(&HSTRING::from(&mapping.id))? };
+    // Recheck the opened object's topology before Initialize can occupy a stream.
+    let current = [identity::candidate(enumerator, &device, endpoint.intent())?];
+    ensure!(
+        validation::select(&current, endpoint.stable_id(), endpoint.intent(), root)?.is_some(),
+        "opened endpoint lost its owned adapter identity"
+    );
+    let mut native = native::Stream::prepare(
+        &device,
+        endpoint.intent(),
+        format,
+        endpoint.channels(),
+        pattern,
+    )?;
+    native.start()?;
+    let mut snapshot = endpoint;
+    let deadline = Instant::now() + CONTROL_DEADLINE;
+    loop {
+        snapshot = control
+            .query(snapshot.key())?
+            .require_progress_after(snapshot)?;
+        ensure!(
+            !snapshot.gate_open(),
+            "gate opened before explicit probe admission"
+        );
+        if snapshot.stream_state() == StreamState::Running {
+            ensure!(
+                snapshot.sample_format() == Some(format) && snapshot.packet_frames() > 0,
+                "driver native format differs from exclusive request"
+            );
+            break;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "native Start was not observed as Running"
+        );
+        // A control-operation deadline, not a runtime no-PCM fault criterion.
+        native.poll(pattern, &mut Observation::default())?;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let before = if endpoint.intent() == Intent::Microphone {
+        Some(observe_closed(&mut native, pattern)?)
+    } else {
+        None
+    };
+    let opened = control.open_gate(snapshot)?;
+    let mut pcm = match control.pcm_owner(opened) {
+        Ok(pcm) => pcm,
+        Err(error) => {
+            return validation::revoke_and_drain(
+                Err(error.into()),
+                || revoke(control, opened),
+                || Ok(()),
+            );
+        }
+    };
+    let shape = pcm.shape();
+    let outcome = (|| -> anyhow::Result<_> {
+        ensure!(shape.format() == format, "PCM helper format changed");
+        let mut bytes = vec![0; shape.pcm_bytes()];
+        encode_interleaved(
+            &pattern.repeat(shape.frames() as usize),
+            &mut bytes,
+            format,
+            endpoint.channels(),
+        )
+        .map_err(|error| anyhow::anyhow!("driver pattern encoding: {error:?}"))?;
+        let mut decoded = vec![0.0; shape.frames() as usize * 2];
+        let mut pending = VecDeque::with_capacity(4);
+        let mut seen = Observation::default();
+        let mut progress = TransferProgress::default();
+        let until = Instant::now() + Duration::from_secs(u64::from(seconds));
+        while Instant::now() < until {
+            native.poll(pattern, &mut seen)?;
+            pump_pcm(
+                &mut pcm,
+                &mut pending,
+                &bytes,
+                &mut decoded,
+                pattern,
+                &mut seen,
+                &mut progress,
+            )?;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        seen.require_signal(u64::from(seconds) * 48_000 / 2)?;
+        Ok((seen, progress.microphone_drops))
+    })();
+    // Cut admission first, then drain every outstanding direct request before
+    // closing its native stream, including phase and revocation failures.
+    let outcome = validation::revoke_and_drain(
+        outcome,
+        || revoke(control, opened),
+        || Ok(pcm.shutdown(Duration::from_secs(5))?),
+    );
+    drop(pcm);
+    let (seen, dropped) = outcome?;
+    let after = if endpoint.intent() == Intent::Microphone {
+        // Already delivered WASAPI buffers may still contain valid old audio.
+        // Drain two full buffers before measuring silence on the same RUN stream.
+        let flush_until = Instant::now() + native.buffer_duration() * 2 + Duration::from_millis(20);
+        let mut discarded = Observation::default();
+        while Instant::now() < flush_until {
+            native.poll(pattern, &mut discarded)?;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Some(observe_closed(&mut native, pattern)?)
+    } else {
+        None
+    };
+    native.stop()?;
+    Ok(CaseReport {
+        stable_id: endpoint.stable_id().to_string(),
+        mmdevice_id: mapping.id.clone(),
+        adapter_instance: mapping.raw_instance.clone(),
+        intent: format!("{:?}", endpoint.intent()),
+        channels: endpoint.channels() as u32,
+        format: format!("{format:?}"),
+        native_buffer_frames: native.frames,
+        driver_packet_frames: shape.frames(),
+        stream_generation: opened.stream_generation(),
+        signal_seconds: seconds,
+        observation: seen,
+        closed_gate_before: before,
+        closed_gate_after: after,
+        microphone_dropped_packets: dropped,
+        native_discontinuities: native.discontinuities,
+    })
+}
+
+fn revoke(control: &mut ControlClient, opened: EndpointSnapshot) -> anyhow::Result<()> {
+    let latest = control
+        .query(opened.key())?
+        .require_progress_after(opened)?;
+    control.close_gate(latest)?;
+    Ok(())
+}
+
+fn observe_closed(native: &mut native::Stream, pattern: [f32; 2]) -> anyhow::Result<Observation> {
+    let until = Instant::now() + Duration::from_millis(250);
+    let mut seen = Observation::default();
+    while Instant::now() < until {
+        native.poll(pattern, &mut seen)?;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    seen.require_silence()?;
+    Ok(seen)
+}
+
+fn pump_pcm(
+    pcm: &mut PcmOwner,
+    pending: &mut VecDeque<PcmTicket>,
+    encoded: &[u8],
+    decoded: &mut [f32],
+    pattern: [f32; 2],
+    seen: &mut Observation,
+    progress: &mut TransferProgress,
+) -> anyhow::Result<()> {
+    let shape = pcm.shape();
+    let playback = shape.snapshot().intent() == Intent::Playback;
+    while let Some(&ticket) = pending.front() {
+        let Some(completed) = pcm.try_complete(ticket)? else {
+            break;
+        };
+        match completed {
+            PcmCompletion::Render { stamp, pcm } => {
+                progress.playback.observe(stamp)?;
+                decode_interleaved(pcm, decoded, shape.format(), shape.channels())
+                    .map_err(|error| anyhow::anyhow!("driver render decoding: {error:?}"))?;
+                seen.observe(decoded, pattern)?;
+            }
+            PcmCompletion::Capture { .. } => {}
+            PcmCompletion::CaptureDropped { .. } => progress.microphone_drops += 1,
+        }
+        pending.pop_front();
+    }
+    while pending.len() < if playback { 4 } else { 1 } {
+        pending.push_back(if playback {
+            pcm.submit_read()?
+        } else {
+            pcm.submit_write(encoded)?
+        });
+    }
+    Ok(())
+}

@@ -19,6 +19,8 @@ pub enum NativeStreamKind {
     FollowerOutput,
     PhysicalInput,
     ProcessInput,
+    VirtualPlayback,
+    VirtualMicrophone,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct NativeStreamObservation {

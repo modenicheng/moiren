@@ -1,0 +1,218 @@
+//! Ordered PCM pumping: four playback reads, one just-in-time microphone write.
+//! IO is injectable so completion ordering and resets are tested without a driver.
+use super::*;
+use crate::vad::PcmPacketStamp;
+
+pub(super) trait PcmIo {
+    fn wait_activity(&mut self, ticket: PcmTicket, timeout: Duration) -> Result<(), BackendError>;
+    fn complete(&mut self, ticket: PcmTicket) -> Result<Option<PcmCompletion<'_>>, BackendError>;
+    fn read(&mut self) -> Result<PcmTicket, BackendError>;
+    fn write(&mut self, packet: &[u8]) -> Result<PcmTicket, BackendError>;
+}
+impl PcmIo for PcmOwner {
+    fn wait_activity(&mut self, ticket: PcmTicket, timeout: Duration) -> Result<(), BackendError> {
+        self.wait_activity(ticket, timeout).map_err(client_error)
+    }
+    fn complete(&mut self, ticket: PcmTicket) -> Result<Option<PcmCompletion<'_>>, BackendError> {
+        self.try_complete(ticket).map_err(client_error)
+    }
+    fn read(&mut self) -> Result<PcmTicket, BackendError> {
+        self.submit_read().map_err(client_error)
+    }
+    fn write(&mut self, packet: &[u8]) -> Result<PcmTicket, BackendError> {
+        self.submit_write(packet).map_err(client_error)
+    }
+}
+
+#[derive(Default)]
+pub(super) struct PacketOrder(Option<PcmPacketStamp>);
+impl PacketOrder {
+    fn accept(&mut self, stamp: PcmPacketStamp) -> bool {
+        if self
+            .0
+            .is_some_and(|last| stamp.sequence <= last.sequence || stamp.qpc < last.qpc)
+        {
+            return false;
+        }
+        self.0 = Some(stamp);
+        true
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum PumpState {
+    Current,
+    Reset,
+}
+
+/// Retire every old native request before releasing the producer fence. The
+/// boundary then discards the ring and acknowledges it before fresh publication.
+pub(super) fn quiesce_playback(
+    state: &SessionState,
+    observed: &mut u64,
+    retire: impl FnOnce(),
+) -> bool {
+    let epoch = state.reset_epoch.load(Ordering::Acquire);
+    if epoch == *observed {
+        return true;
+    }
+    retire();
+    state
+        .producer_quiesced_epoch
+        .store(epoch, Ordering::Release);
+    if state.consumer_quiesced_epoch.load(Ordering::Acquire) != epoch
+        || state.reset_epoch.load(Ordering::Acquire) != epoch
+    {
+        return false;
+    }
+    *observed = epoch;
+    true
+}
+
+/// Call only after retiring the old PcmOwner and recovering its carrier reader.
+/// The graph producer stays stopped between its release and our acknowledgment,
+/// so this discard includes even an old write that completed after the reset.
+pub(super) fn quiesce_microphone(
+    state: &SessionState,
+    observed: &mut u64,
+    reader: &mut AudioReader<f32>,
+) -> bool {
+    let epoch = state.reset_epoch.load(Ordering::Acquire);
+    if epoch == *observed {
+        return true;
+    }
+    if state.producer_quiesced_epoch.load(Ordering::Acquire) != epoch {
+        return false;
+    }
+    reader.discard();
+    state
+        .consumer_quiesced_epoch
+        .store(epoch, Ordering::Release);
+    if state.reset_epoch.load(Ordering::Acquire) != epoch {
+        return false;
+    }
+    *observed = epoch;
+    true
+}
+
+pub(super) fn playback<C: PcmIo>(
+    owner: &mut C,
+    bridge: &mut PcmPlaybackBridge,
+    tickets: &mut Vec<PcmTicket>,
+    order: &mut PacketOrder,
+    state: &SessionState,
+    epoch: u64,
+) -> Result<PumpState, BackendError> {
+    if !epoch_ready(state, epoch) {
+        return Ok(PumpState::Reset);
+    }
+    while let Some(ticket) = tickets.first().copied() {
+        if state.reset_epoch.load(Ordering::Acquire) != epoch {
+            return Ok(PumpState::Reset);
+        }
+        match owner.complete(ticket)? {
+            Some(PcmCompletion::Render { stamp, pcm }) => {
+                if state.reset_epoch.load(Ordering::Acquire) != epoch {
+                    return Ok(PumpState::Reset);
+                }
+                #[cfg(test)]
+                tests::before_playback_publish();
+                if order.accept(stamp) && !bridge.decode_packet(pcm)? {
+                    // Only the consumer can discard this SPSC carrier. Ask its
+                    // prepared boundary to drop the stale queue before replay.
+                    state.reset_epoch.fetch_add(1, Ordering::AcqRel);
+                    return Ok(PumpState::Reset);
+                }
+                tickets.remove(0);
+            }
+            Some(_) => {
+                return Err(BackendError::Failed(
+                    "playback returned capture data".into(),
+                ));
+            }
+            None => break,
+        }
+    }
+    while tickets.len() < super::super::REQUEST_SLOTS {
+        if state.reset_epoch.load(Ordering::Acquire) != epoch {
+            return Ok(PumpState::Reset);
+        }
+        tickets.push(owner.read()?);
+    }
+    Ok(PumpState::Current)
+}
+
+pub(super) fn microphone<C: PcmIo>(
+    owner: &mut C,
+    bridge: &mut PcmMicrophoneBridge,
+    tickets: &mut Vec<PcmTicket>,
+    order: &mut PacketOrder,
+    state: &SessionState,
+    epoch: u64,
+) -> Result<PumpState, BackendError> {
+    if !epoch_ready(state, epoch) {
+        return Ok(PumpState::Reset);
+    }
+    while let Some(ticket) = tickets.first().copied() {
+        if state.reset_epoch.load(Ordering::Acquire) != epoch {
+            return Ok(PumpState::Reset);
+        }
+        let stamp = match owner.complete(ticket)? {
+            Some(PcmCompletion::Capture { stamp, bytes }) if bytes == bridge.packet_bytes() => {
+                stamp
+            }
+            Some(PcmCompletion::CaptureDropped { stamp }) => stamp,
+            Some(_) => {
+                return Err(BackendError::Failed(
+                    "microphone completion shape changed".into(),
+                ));
+            }
+            None => break,
+        };
+        if !order.accept(stamp) {
+            return Err(BackendError::Failed(
+                "microphone completion sequence regressed".into(),
+            ));
+        }
+        tickets.remove(0);
+    }
+    if tickets.is_empty() {
+        if state.reset_epoch.load(Ordering::Acquire) != epoch {
+            return Ok(PumpState::Reset);
+        }
+        // Each capture packet's QPC is sampled at submission. Encoding several
+        // native periods ahead gives them the same deadline and expires the tail.
+        let packet = bridge.encode_packet()?;
+        if state.reset_epoch.load(Ordering::Acquire) != epoch {
+            return Ok(PumpState::Reset);
+        }
+        tickets.push(owner.write(packet)?);
+    }
+    Ok(PumpState::Current)
+}
+
+/// Native events pace the IO worker, not Engine render. Waiting for the first
+/// submitted ticket preserves ordered collection even if later slots complete.
+pub(super) fn wait_for_activity<C: PcmIo>(
+    owner: &mut C,
+    tickets: &[PcmTicket],
+    state: &SessionState,
+    epoch: u64,
+) -> Result<(), BackendError> {
+    if state.cancel.load(Ordering::Acquire) || !epoch_ready(state, epoch) {
+        return Ok(());
+    }
+    if let Some(&ticket) = tickets.first() {
+        owner.wait_activity(ticket, POLL_INTERVAL)?;
+    }
+    Ok(())
+}
+
+fn epoch_ready(state: &SessionState, epoch: u64) -> bool {
+    state.reset_epoch.load(Ordering::Acquire) == epoch
+        && state.producer_quiesced_epoch.load(Ordering::Acquire) == epoch
+        && state.consumer_quiesced_epoch.load(Ordering::Acquire) == epoch
+}
+
+#[cfg(test)]
+mod tests;

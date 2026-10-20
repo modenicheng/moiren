@@ -25,6 +25,9 @@ moiren-signal = { path = "../moiren-signal" }
 #   cargo build -p moiren-windows-audio --examples --features probe-tools
 probe-tools = []
 
+# Explicit VAD lifecycle/native probes; no driver/device exercise during tests.
+vad-probe = []
+
 # `cargo build --examples` skips examples whose required features are off, so
 # the probe examples declare the feature instead of failing the default build.
 [[example]]
@@ -43,6 +46,14 @@ required-features = ["probe-tools"]
 name = "exclusive_probe"
 required-features = ["probe-tools"]
 
+[[example]]
+name = "vad_lifecycle"
+required-features = ["vad-probe"]
+
+[[example]]
+name = "vad_native"
+required-features = ["vad-probe"]
+
 [target.'cfg(windows)'.dependencies]
 windows-core = "=0.62.2"
 windows = { version = "=0.62.2", features = [
@@ -55,9 +66,11 @@ windows = { version = "=0.62.2", features = [
     "Win32_Media_Audio_Endpoints",
     "Win32_Media_Multimedia",
     "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
     "Win32_System_Performance",
     "Win32_System_Threading",
     "Win32_System_Variant",

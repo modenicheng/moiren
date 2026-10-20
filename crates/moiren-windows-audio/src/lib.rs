@@ -11,6 +11,9 @@ pub mod professional;
 pub mod render;
 pub mod shared_stream;
 pub mod stats;
+pub mod vad;
+
+pub mod virtual_owner;
 pub use duration::{DurationError, SessionDuration};
 
 #[cfg(windows)]

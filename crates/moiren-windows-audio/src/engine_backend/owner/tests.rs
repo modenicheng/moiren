@@ -117,6 +117,7 @@ fn transport(
             queue: RenderQueuePolicy::FullCapacity,
             diagnostics: diagnostics.clone(),
             resources: Arc::new(resources),
+            virtual_sessions: crate::virtual_owner::VirtualSessions::default(),
         }),
         compiled.engine,
         compiled.bindings,
