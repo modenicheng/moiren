@@ -5,7 +5,11 @@ use windows::Win32::{
     Foundation::{HANDLE, WAIT_OBJECT_0},
     System::{
         Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
-        Threading::{CreateWaitableTimerW, INFINITE, SetWaitableTimer, WaitForMultipleObjects},
+        Threading::{
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE,
+            SYNCHRONIZATION_SYNCHRONIZE, SetWaitableTimer, TIMER_MODIFY_STATE,
+            WaitForMultipleObjects,
+        },
     },
 };
 
@@ -37,8 +41,22 @@ impl VirtualClockFactory for QpcClockFactory {
         if frequency <= 0 {
             return Err(BackendError::Failed("invalid QPC frequency".into()));
         }
-        // SAFETY: unnamed non-inheritable synchronization timer; unique owner.
-        let timer = unsafe { CreateWaitableTimerW(None, false, None) }.map_err(api)?;
+        // Require high resolution: coarse waits can exceed the graph period.
+        // SAFETY: unnamed, non-inheritable auto-reset timer; request only the
+        // rights needed to arm and wait, then transfer to one OwnedHandle.
+        let timer = unsafe {
+            CreateWaitableTimerExW(
+                None,
+                None,
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                (TIMER_MODIFY_STATE | SYNCHRONIZATION_SYNCHRONIZE).0,
+            )
+        }
+        .map_err(|error| {
+            BackendError::ResourceUnavailable(format!(
+                "virtual owner clock CreateWaitableTimerExW(high resolution): {error}"
+            ))
+        })?;
         Ok(Box::new(QpcClock {
             // SAFETY: ownership is transferred exactly once after a successful open.
             timer: unsafe { OwnedHandle::from_raw_handle(timer.0) },
