@@ -293,7 +293,13 @@ inline bool NextTimerDrivenSegment(TimerDrivenRing& ring,
     TimerDrivenSegment& segment, uint32_t budget = DefaultTimerSegmentFrames)
 {
     segment = {};
-    const auto available = NextTimerDrivenFrames(ring);
+    if (!IsValidTimerDrivenRing(ring) || budget > ring.PacketFrames) {
+        return false;
+    }
+    const auto logical = ring.PacketFrames - static_cast<uint32_t>(
+        ring.PresentedFrames % ring.PacketFrames);
+    const auto native = ring.MappedFrames - ring.RingFrameOffset;
+    const auto available = logical < native ? logical : native;
     const auto frames = available < budget ? available : budget;
     if (frames == 0 ||
         ring.PresentedFrames > ~uint64_t{0} - frames ||
@@ -343,7 +349,7 @@ inline bool BuildTimerDrivenCopyPlan(const TimerDrivenRing& ring,
         segment.FirstFrames > ring.MappedFrames - segment.RingFrameOffset ||
         segment.PacketOffsetFrames > ring.PacketFrames ||
         segment.Frames > ring.PacketFrames - segment.PacketOffsetFrames ||
-        segment.Frames > ring.SegmentFrames) {
+        segment.Frames > ring.PacketFrames) {
         return false;
     }
     const auto remainingRing = ring.MappedFrames - segment.RingFrameOffset;
@@ -381,6 +387,41 @@ struct TimerDrivenSchedule {
     bool Valid;
     uint64_t SegmentStartQpc;
 };
+
+struct TimerDrivenStep {
+    long long Due;
+    uint32_t Frames;
+    bool Rebased;
+    bool Valid;
+};
+
+inline TimerDrivenStep PlanTimerDrivenStep(Clock& clock,
+    const TimerDrivenRing& ring, uint64_t now)
+{
+    if (!IsValidTimerDrivenRing(ring) || !clock.Running ||
+        !ValidFrequency(clock.Frequency) ||
+        clock.BaseFrames > ring.PresentedFrames ||
+        ring.PresentedFrames > ~uint64_t{0} - ring.PacketFrames -
+            DefaultTimerSegmentFrames) {
+        return {0, 0, false, false};
+    }
+    const auto elapsed = now > clock.EpochQpc ?
+        TicksToFrames(now - clock.EpochQpc, clock.Frequency) : 0;
+    const auto processed = ring.PresentedFrames - clock.BaseFrames;
+    const auto frames = elapsed > processed ? elapsed - processed : 0;
+    if (frames > ring.PacketFrames) {
+        // The complete pending interval no longer fits the logical packet.
+        // Drop its time association instead of replaying old audio in a burst.
+        clock.BaseFrames = ring.PresentedFrames;
+        clock.EpochQpc = now;
+        clock.LimitFrames = ring.PresentedFrames + DefaultTimerSegmentFrames;
+        return {RelativeDue(clock, clock.LimitFrames, now), 0, true, true};
+    }
+    const auto next = ring.PresentedFrames + frames + DefaultTimerSegmentFrames;
+    clock.LimitFrames = next;
+    const auto due = RelativeDue(clock, next, now);
+    return {due == 0 ? -1 : due, static_cast<uint32_t>(frames), false, true};
+}
 
 inline TimerDrivenSchedule ScheduleTimerDrivenQuantum(Clock& clock,
     const TimerDrivenRing& ring, uint64_t now)

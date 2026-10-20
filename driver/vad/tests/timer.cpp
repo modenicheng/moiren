@@ -326,8 +326,91 @@ static void OneMillisecondQuantumDoesNotScheduleShortPacketTails()
 }
 
 
+static void TimerJitterPreservesOneBoundedPacket()
+{
+    Fixture f(false);
+    Check(vad::audio::InitializeTimerDrivenRing(f.Ring, 1920, 4, 4096),
+        "jitter regression uses a ten millisecond logical packet");
+    vad::audio::Clock clock = {};
+    clock.Frequency = 10000000;
+    clock.EpochQpc = 10000000;
+    clock.Running = true;
+    const auto step = vad::audio::PlanTimerDrivenStep(clock, f.Ring, 10050000);
+    Check(step.Valid && !step.Rebased && step.Frames == 240 && step.Due < 0,
+        "five millisecond scheduling jitter processes elapsed frames without reset");
+    unsigned remaining = step.Frames;
+    unsigned spans = 0;
+    unsigned completed = 0;
+    while (remaining != 0 && spans < 3) {
+        vad::audio::TimerDrivenSegment segment = {};
+        Check(vad::audio::NextTimerDrivenSegment(f.Ring, segment, remaining),
+            "elapsed work uses a bounded logical/native span");
+        vad::audio::TimerDrivenCopyPlan plan = {};
+        Check(vad::audio::BuildTimerDrivenCopyPlan(f.Ring, segment, plan),
+            "bounded elapsed span has a valid copy plan");
+        remaining -= segment.Frames;
+        completed += segment.CompletesPacket ? 1 : 0;
+        ++spans;
+    }
+    Check(remaining == 0 && spans <= 3 && completed <= 1 &&
+        f.Ring.PresentedFrames == 240, "one callback never loops over old periods");
+    const auto next = vad::audio::PlanTimerDrivenStep(clock, f.Ring, 10100000);
+    Check(next.Valid && !next.Rebased && next.Frames == 240,
+        "a second late callback can complete the same logical packet");
+    const auto stalled = vad::audio::PlanTimerDrivenStep(clock, f.Ring, 900000000);
+    Check(stalled.Valid && stalled.Rebased && stalled.Frames == 0 &&
+        stalled.Due == -10000 && f.Ring.PresentedFrames == 240,
+        "a long stall discards old time without rendering a catch-up packet");
+}
+
+static void TimerElapsedBudgetsRespectAllBoundaries()
+{
+    const uint32_t sizes[] = {48u, 49u, 480u, 1250u, 4800u};
+    for (const auto frames : sizes) {
+        for (const auto align : {2u, 4u, 8u}) {
+            vad::audio::TimerDrivenRing ring = {};
+            Check(vad::audio::InitializeTimerDrivenRing(ring, frames * align,
+                align, 4096), "elapsed boundary shape is supported");
+            for (unsigned pass = 0; pass < 40; ++pass) {
+                unsigned remaining = frames;
+                unsigned spans = 0;
+                unsigned completions = 0;
+                while (remaining != 0 && spans < 3) {
+                    vad::audio::TimerDrivenSegment segment = {};
+                    Check(vad::audio::NextTimerDrivenSegment(ring, segment, remaining),
+                        "packet budget advances even at a logical/native wrap");
+                    vad::audio::TimerDrivenCopyPlan plan = {};
+                    Check(vad::audio::BuildTimerDrivenCopyPlan(ring, segment, plan),
+                        "elapsed copy stays inside its MDL and scratch packet");
+                    remaining -= segment.Frames;
+                    completions += segment.CompletesPacket ? 1 : 0;
+                    ++spans;
+                }
+                Check(remaining == 0 && completions == 1 && spans <= 3,
+                    "maximum packet budget has at most three spans and one completion");
+                vad::audio::TimerDrivenSegment prefix = {};
+                Check(vad::audio::NextTimerDrivenSegment(ring, prefix, 1),
+                    "shift the next budget across a different native boundary");
+            }
+            vad::audio::Clock clock = {};
+            clock.Frequency = 10000000;
+            clock.Running = true;
+            clock.BaseFrames = ring.PresentedFrames;
+            clock.EpochQpc = 10000000;
+            const auto early = vad::audio::PlanTimerDrivenStep(clock, ring, 9999999);
+            Check(early.Valid && !early.Rebased && early.Frames == 0 && early.Due < 0,
+                "early callback cannot publish any unelapsed native frame");
+            ring.PresentedFrames = ~uint64_t{0} - 1;
+            Check(!vad::audio::PlanTimerDrivenStep(clock, ring, 10000000).Valid,
+                "position exhaustion rejects before scheduling arithmetic wraps");
+        }
+    }
+}
+
 int main()
 {
+    TimerJitterPreservesOneBoundedPacket();
+    TimerElapsedBudgetsRespectAllBoundaries();
     Check(!vad::audio::SupportsPacketNotifications(1) &&
         vad::audio::SupportsPacketNotifications(2) &&
         !vad::audio::SupportsPacketNotifications(0),

@@ -236,28 +236,15 @@ static void TransferTimerSegment(VAD_AUDIO_STREAM* stream,
     KeReleaseSpinLock(&shared->Lock, irql);
 }
 
-// State is held. One callback consumes at most 1 ms, even after a debugger or
-// suspend stall. Logical PCM packets and page-rounded native wraps are separate.
+// State is held. One callback consumes at most one logical packet of elapsed
+// time, split only at logical/native boundaries. Longer stalls discard time;
+// ordinary timer jitter must not repeatedly erase an incomplete PCM packet.
 _IRQL_requires_(DISPATCH_LEVEL)
 static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
     VAD_PCM_BATCH* batch)
 {
-    constexpr auto quantum = vad::audio::DefaultTimerSegmentFrames;
-    if (stream->TimerRing.PresentedFrames > MAXULONGLONG - quantum) {
-        stream->Running = FALSE;
-        ClearTimerPacket(stream);
-        ZeroPackets(stream);
-        return;
-    }
-    if (vad::audio::RelativeDue(stream->Clock,
-        stream->TimerRing.PresentedFrames + quantum, now) < 0) {
-        Schedule(stream, now);
-        return;
-    }
-    auto nextRing = stream->TimerRing;
-    nextRing.PresentedFrames += quantum;
-    auto nextClock = stream->Clock;
-    const auto schedule = vad::audio::ScheduleTimerDrivenQuantum(nextClock, nextRing, now);
+    const auto schedule = vad::audio::PlanTimerDrivenStep(
+        stream->Clock, stream->TimerRing, now);
     if (!schedule.Valid) {
         stream->Running = FALSE;
         ClearTimerPacket(stream);
@@ -269,9 +256,9 @@ static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
         ClearTimerPacket(stream);
         ZeroPackets(stream);
     }
-    ULONG remaining = quantum;
-    // A quantum crosses at most one logical and one native boundary: with
-    // packet length >= 48 frames, three spans are an absolute work bound.
+    ULONG remaining = schedule.Frames;
+    // A budget no larger than one packet crosses at most one logical and one
+    // native boundary. Three spans and one PCM completion are absolute bounds.
     for (unsigned spans = 0; remaining != 0 && spans < 3; ++spans) {
         vad::audio::TimerDrivenSegment segment = {};
         if (!vad::audio::NextTimerDrivenSegment(stream->TimerRing, segment, remaining)) {
@@ -286,8 +273,7 @@ static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
     NT_ASSERT(remaining == 0);
     // Timer clients consume a rolling position, not an immutable native packet.
     // Publishing packet-complete here would advertise bytes already reused by
-    // this quantum, so packet queries and notifications are event-mode only.
-    stream->Clock = nextClock;
+    // this interval, so packet queries and notifications are event-mode only.
     (void)WdfTimerStart(stream->Timer, schedule.Due);
 }
 
