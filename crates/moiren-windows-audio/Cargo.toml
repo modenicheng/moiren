@@ -54,6 +54,10 @@ required-features = ["vad-probe"]
 name = "vad_native"
 required-features = ["vad-probe"]
 
+[[example]]
+name = "vad_active_lifecycle"
+required-features = ["vad-probe"]
+
 [target.'cfg(windows)'.dependencies]
 windows-core = "=0.62.2"
 windows = { version = "=0.62.2", features = [
