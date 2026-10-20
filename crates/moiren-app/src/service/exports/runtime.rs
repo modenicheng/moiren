@@ -145,6 +145,10 @@ impl Runtime {
         result: Result<Batch, String>,
     ) -> Vec<String> {
         self.in_flight = false;
+        // Every completion replaces probe evidence, including missing endpoints
+        // and failed polls. Control dispatch retains its existing stamp policy.
+        #[cfg(feature = "vad-integration-probe")]
+        service.native_stamps.clear();
         if std::mem::take(&mut self.shutdown_in_flight) {
             // Even a failed retirement attempt must permit closing the owning
             // file. Its cleanup revokes every endpoint, including unknown keys.
@@ -178,6 +182,10 @@ impl Runtime {
             if let Some(stamp) = native.snapshot {
                 self.stamps.insert(native.intent.endpoint_id, stamp);
             }
+            #[cfg(feature = "vad-integration-probe")]
+            let native_stamp = native.snapshot.filter(|_| {
+                native.error.is_none() && native.resource != ExportResourceState::Unavailable
+            });
             if native.can_open && native.error.is_none() {
                 self.ready.insert(native.intent.endpoint_id);
             }
@@ -200,6 +208,11 @@ impl Runtime {
                 active_revision: None,
             }) {
                 errors.push(error);
+            } else {
+                #[cfg(feature = "vad-integration-probe")]
+                if let Some(stamp) = native_stamp {
+                    service.native_stamps.insert(id, stamp);
+                }
             }
         }
         errors

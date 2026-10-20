@@ -607,3 +607,194 @@ fn confirmed_absence_releases_app_tracking_across_documents() {
     assert!(service.observations.is_empty());
     assert!(runtime.stamps.is_empty());
 }
+
+#[cfg(feature = "vad-integration-probe")]
+mod native_stamp {
+    use super::*;
+
+    fn observed(intent: &ExportIntent, snapshot: Option<DriverStamp>) -> Batch {
+        Batch {
+            observations: vec![NativeObservation {
+                intent: intent.clone(),
+                snapshot,
+                resource: ExportResourceState::Present,
+                gate_open: false,
+                allow_default: false,
+                can_open: true,
+                error: None,
+            }],
+            errors: vec![],
+        }
+    }
+
+    #[test]
+    fn raw_stamp_updates_without_granting_gate_admission_or_dispatching_io() {
+        let (graph, intent) = runtime_graph();
+        let adapter = Arc::new(FakeAdapter::default());
+        let mut runtime = Runtime {
+            adapter: Some(adapter.clone()),
+            ..Default::default()
+        };
+        let mut service = ExportService::default();
+        runtime.project(&mut service, &graph, &[], None);
+        assert_eq!(service.statuses(&graph)[0].native_stamp, None);
+
+        // A closed native stream can legitimately have generation zero.
+        for stamp in [
+            [11, 22, 33, 0, 55],
+            [11, 22, 33, 44, 56],
+            [12, 23, 34, 45, 57],
+        ] {
+            assert!(
+                runtime
+                    .complete(&mut service, Ok(observed(&intent, Some(stamp))))
+                    .is_empty()
+            );
+            runtime.project(&mut service, &graph, std::slice::from_ref(&intent), None);
+            for _ in 0..3 {
+                let status = &service.statuses(&graph)[0];
+                assert_eq!(status.native_stamp, Some(stamp));
+                assert!(!status.gate_open);
+                assert_eq!(status.active_revision, None);
+            }
+            assert!(
+                runtime
+                    .work(&service, &graph, false)
+                    .unwrap()
+                    .actions
+                    .is_empty()
+            );
+        }
+        assert!(adapter.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_absent_unavailable_and_failed_observations_clear_raw_stamp() {
+        let (graph, intent) = runtime_graph();
+        let stamp = [11, 22, 33, 44, 55];
+        let mut absent = observed(&intent, Some(stamp));
+        absent.observations[0].resource = ExportResourceState::Absent;
+        let mut unavailable = observed(&intent, Some(stamp));
+        unavailable.observations[0].resource = ExportResourceState::Unavailable;
+        let mut failed = observed(&intent, Some(stamp));
+        failed.observations[0].error = Some("QUERY failed; snapshot is last known".into());
+        for (case, completion) in [
+            ("missing snapshot", Ok(observed(&intent, None))),
+            (
+                "missing endpoint",
+                Ok(Batch {
+                    observations: vec![],
+                    errors: vec![],
+                }),
+            ),
+            ("absent", Ok(absent)),
+            ("unavailable", Ok(unavailable)),
+            ("failed observation", Ok(failed)),
+            ("failed completion", Err("lifecycle worker failed".into())),
+        ] {
+            let mut runtime = Runtime::default();
+            let mut service = ExportService::default();
+            service.set_available(true);
+            assert!(
+                runtime
+                    .complete(&mut service, Ok(observed(&intent, Some(stamp))))
+                    .is_empty()
+            );
+            assert_eq!(
+                service.statuses(&graph)[0].native_stamp,
+                Some(stamp),
+                "{case}"
+            );
+            runtime.complete(&mut service, completion);
+            let status = &service.statuses(&graph)[0];
+            assert_eq!(status.native_stamp, None, "{case}");
+            assert!(!status.gate_open, "{case}");
+
+            let fresh = [12, 23, 34, 45, 56];
+            assert!(
+                runtime
+                    .complete(&mut service, Ok(observed(&intent, Some(fresh))))
+                    .is_empty()
+            );
+            assert_eq!(
+                service.statuses(&graph)[0].native_stamp,
+                Some(fresh),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn availability_loss_clears_raw_stamp_until_a_fresh_valid_completion() {
+        let (graph, intent) = runtime_graph();
+        let mut runtime = Runtime::default();
+        let mut service = ExportService::default();
+        let stamp = [11, 22, 33, 44, 55];
+        service.set_available(true);
+        assert!(
+            runtime
+                .complete(&mut service, Ok(observed(&intent, Some(stamp))))
+                .is_empty()
+        );
+        assert_eq!(service.statuses(&graph)[0].native_stamp, Some(stamp));
+        service.set_available(false);
+        assert_eq!(service.statuses(&graph)[0].native_stamp, None);
+        assert_eq!(
+            runtime
+                .complete(&mut service, Ok(observed(&intent, Some(stamp))))
+                .len(),
+            1
+        );
+        service.set_available(true);
+        assert_eq!(service.statuses(&graph)[0].native_stamp, None);
+        assert!(
+            runtime
+                .complete(&mut service, Ok(observed(&intent, Some(stamp))))
+                .is_empty()
+        );
+        assert_eq!(service.statuses(&graph)[0].native_stamp, Some(stamp));
+        assert!(!service.statuses(&graph)[0].gate_open);
+    }
+
+    #[test]
+    fn rejected_completion_cannot_publish_raw_stamp() {
+        let (graph, intent) = runtime_graph();
+        for stale_generation in [false, true] {
+            let mut runtime = Runtime::default();
+            let mut service = ExportService::default();
+            service.set_available(true);
+            assert!(
+                runtime
+                    .complete(&mut service, Ok(observed(&intent, Some([1, 2, 3, 4, 5]))))
+                    .is_empty()
+            );
+            let mut rejected = observed(&intent, Some([6, 7, 8, 9, 10]));
+            if stale_generation {
+                runtime.sequence = 0;
+            } else {
+                rejected.observations[0].intent.channels = 3;
+            }
+            assert_eq!(runtime.complete(&mut service, Ok(rejected)).len(), 1);
+            assert_eq!(service.statuses(&graph)[0].native_stamp, None);
+            assert!(!service.statuses(&graph)[0].gate_open);
+        }
+    }
+
+    #[test]
+    fn unstamped_service_observation_retires_previous_raw_stamp() {
+        let (graph, intent) = runtime_graph();
+        let mut runtime = Runtime::default();
+        let mut service = ExportService::default();
+        service.set_available(true);
+        assert!(
+            runtime
+                .complete(&mut service, Ok(observed(&intent, Some([1, 2, 3, 4, 5]))))
+                .is_empty()
+        );
+        let mut observation = service.observations[&intent.endpoint_id].clone();
+        observation.generation += 1;
+        service.observe(observation).unwrap();
+        assert_eq!(service.statuses(&graph)[0].native_stamp, None);
+        assert!(!service.statuses(&graph)[0].gate_open);
+    }
+}

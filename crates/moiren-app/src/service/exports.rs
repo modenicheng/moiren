@@ -106,6 +106,9 @@ pub struct ExportService {
     pub(super) available: bool,
     pub(super) authorizations: BTreeMap<VirtualEndpointId, bool>,
     pub(super) observations: BTreeMap<VirtualEndpointId, ExportObservation>,
+    /// Probe-only observations, never consulted for native action authority.
+    #[cfg(feature = "vad-integration-probe")]
+    pub(super) native_stamps: BTreeMap<VirtualEndpointId, [u64; 5]>,
 }
 
 impl ExportService {
@@ -126,6 +129,8 @@ impl ExportService {
     /// Enabling a project export never calls this method or grants default use.
     pub fn set_available(&mut self, available: bool) {
         if !available {
+            #[cfg(feature = "vad-integration-probe")]
+            self.native_stamps.clear();
             for observation in self.observations.values_mut() {
                 // Keep actual resource/gate observations until the adapter
                 // closes them, but recovery must establish fresh admission.
@@ -161,6 +166,9 @@ impl ExportService {
                 "export activity or gate observation contradicts its resource state".into(),
             );
         }
+        // A newer unstamped observation must not inherit a previous raw stamp.
+        #[cfg(feature = "vad-integration-probe")]
+        self.native_stamps.remove(&observation.intent.endpoint_id);
         self.observations
             .insert(observation.intent.endpoint_id, observation);
         Ok(())
