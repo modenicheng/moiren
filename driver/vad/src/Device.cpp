@@ -5,6 +5,9 @@
 #include "Device.tmh"
 
 VAD_PAGE static NTSTATUS InitializeRoot(WDFDEVICE device);
+static EVT_WDFDEVICE_WDM_IRP_PREPROCESS TraceFileIrp;
+_IRQL_requires_(PASSIVE_LEVEL)
+static void RevokeFileOwner(WDFDEVICE device, WDFFILEOBJECT file);
 
 VAD_PAGE _Use_decl_annotations_
 NTSTATUS VadAddDevice(WDFDRIVER driver, PWDFDEVICE_INIT init)
@@ -29,6 +32,16 @@ NTSTATUS VadAddDevice(WDFDRIVER driver, PWDFDEVICE_INIT init)
     fileAttributes.ExecutionLevel = WdfExecutionLevelPassive;
     fileAttributes.SynchronizationScope = WdfSynchronizationScopeNone;
     WdfDeviceInitSetFileObjectConfig(init, &files, &fileAttributes);
+    status = WdfDeviceInitAssignWdmIrpPreprocessCallback(init, TraceFileIrp,
+        IRP_MJ_CLEANUP, nullptr, 0);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+    status = WdfDeviceInitAssignWdmIrpPreprocessCallback(init, TraceFileIrp,
+        IRP_MJ_CLOSE, nullptr, 0);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
     WDF_OBJECT_ATTRIBUTES requestAttributes;
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&requestAttributes, VAD_PCM_REQUEST);
     WdfDeviceInitSetRequestAttributes(init, &requestAttributes);
@@ -58,6 +71,38 @@ NTSTATUS VadAddDevice(WDFDRIVER driver, PWDFDEVICE_INIT init)
         }
     }
     return status;
+}
+
+_Use_decl_annotations_
+static NTSTATUS TraceFileIrp(WDFDEVICE device, PIRP irp)
+{
+    // Preprocess runs at the caller's IRQL, not the device's passive callback
+    // level. CLEANUP is sent at PASSIVE_LEVEL; guard before any passive DDIs.
+    const auto stack = IoGetCurrentIrpStackLocation(irp);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_SESSION,
+        "Root file IRP enter major=%u device=%p irp=%p wdm_file=%p irql=%u",
+        static_cast<ULONG>(stack->MajorFunction), device, irp, stack->FileObject,
+        static_cast<ULONG>(KeGetCurrentIrql()));
+    if (stack->MajorFunction == IRP_MJ_CLEANUP) {
+        if (KeGetCurrentIrql() == PASSIVE_LEVEL) {
+            if (stack->FileObject != nullptr) {
+                const auto file = WdfDeviceGetFileObject(device, stack->FileObject);
+                if (file != nullptr) {
+                    // ACX may consume cleanup without calling the client's
+                    // EvtFileCleanup. Revoke this exact owner before forwarding.
+                    RevokeFileOwner(device, file);
+                }
+            }
+        } else {
+            VadTrace(TRACE_LEVEL_ERROR, VAD_SESSION,
+                "Root cleanup unexpected irql=%u; forwarding without passive revoke",
+                static_cast<ULONG>(KeGetCurrentIrql()));
+        }
+    }
+    // Preserve ACX/WDF dispatch and completion ownership. The IRP can be gone
+    // when dispatch returns, so do not inspect it or install a completion hook.
+    IoSkipCurrentIrpStackLocation(irp);
+    return WdfDeviceWdmDispatchPreprocessedIrp(device, irp);
 }
 
 VAD_PAGE static NTSTATUS InitializeRoot(WDFDEVICE device)
@@ -129,6 +174,10 @@ void VadFileCreate(WDFDEVICE device, WDFREQUEST request, WDFFILEOBJECT file)
 {
     PAGED_CODE();
     auto root = VadRoot(device);
+    const auto wdmFile = WdfFileObjectWdmGetFileObject(file);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_SESSION,
+        "Owner create enter file=%p wdm_file=%p irql=%u", file, wdmFile,
+        static_cast<ULONG>(KeGetCurrentIrql()));
     WdfWaitLockAcquire(root->Admin, nullptr);
     NTSTATUS status = STATUS_SUCCESS;
     const auto name = WdfFileObjectGetFileName(file);
@@ -151,7 +200,8 @@ void VadFileCreate(WDFDEVICE device, WDFREQUEST request, WDFFILEOBJECT file)
         [device] { return VadRevokeSession(device); },
         [] { return static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart); });
     VadTrace(TRACE_LEVEL_INFORMATION, VAD_SESSION,
-        "Owner open session=%I64u status=%!STATUS!", root->Session, status);
+        "Owner open session=%I64u status=%!STATUS! file=%p wdm_file=%p owner=%p",
+        root->Session, status, file, wdmFile, root->Owner);
     WdfWaitLockRelease(root->Admin);
     WdfRequestComplete(request, status);
 }
@@ -161,10 +211,25 @@ void VadFileCleanup(WDFFILEOBJECT file)
 {
     PAGED_CODE();
     WDFDEVICE device = WdfFileObjectGetDevice(file);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_SESSION,
+        "Owner cleanup enter file=%p wdm_file=%p irql=%u", file,
+        WdfFileObjectWdmGetFileObject(file),
+        static_cast<ULONG>(KeGetCurrentIrql()));
+    RevokeFileOwner(device, file);
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+static void RevokeFileOwner(WDFDEVICE device, WDFFILEOBJECT file)
+{
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     auto root = VadRoot(device);
     bool revoke = false;
     WdfWaitLockAcquire(root->Admin, nullptr);
-    if (root->Owner == file) {
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_SESSION,
+        "Owner cleanup acquired session=%I64u file=%p owner=%p match=%u",
+        root->Session, file, root->Owner,
+        static_cast<ULONG>(root->Owner == file));
+    if (file != nullptr && root->Owner == file) {
         InterlockedExchange(&root->Releasing, 1);
         // Revoke admission first, before any asynchronous PnP operation.
         root->Owner = nullptr;
