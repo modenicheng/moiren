@@ -9,6 +9,10 @@ use super::{
     resample::StereoResampler,
     wasapi::{WasapiOptions, WasapiStream, resolve_endpoint},
 };
+use crate::virtual_owner::{
+    ProjectClock, QpcClockFactory, VirtualBoundaryProvider, VirtualClockFactory,
+    VirtualPreparedTransport,
+};
 use moiren_core::graph::NodeId;
 use moiren_engine::{
     audio_config::{AudioBackend, SAMPLE_RATES, SampleFormat},
@@ -24,9 +28,21 @@ use moiren_engine::{
 use rtrb::RingBuffer;
 use std::{marker::PhantomData, sync::Arc};
 
+#[cfg(test)]
+#[path = "backend/tests.rs"]
+mod virtual_tests;
+
+#[path = "backend/validation.rs"]
+mod validation;
+#[path = "backend/virtual_io.rs"]
+mod virtual_io;
+use validation::validate;
+
 pub struct ProfessionalBackend<S: ProcessingSample> {
     observations: ProfessionalObservations,
     recovery: RecoveryMonitor,
+    virtual_provider: Option<Arc<dyn VirtualBoundaryProvider>>,
+    virtual_clock: Arc<dyn VirtualClockFactory>,
     marker: PhantomData<S>,
 }
 impl<S: ProcessingSample> ProfessionalBackend<S> {
@@ -34,11 +50,23 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         Ok(Self {
             observations: ProfessionalObservations::default(),
             recovery: RecoveryMonitor::default(),
+            virtual_provider: None,
+            virtual_clock: Arc::new(QpcClockFactory),
             marker: PhantomData,
         })
     }
     pub fn observations(&self) -> ProfessionalObservations {
         self.observations.clone()
+    }
+    /// Enable virtual resource preparation without changing physical settings.
+    pub fn with_virtual_provider(mut self, provider: Arc<dyn VirtualBoundaryProvider>) -> Self {
+        self.virtual_provider = Some(provider);
+        self
+    }
+    /// Select the clock used only when there are no physical render outputs.
+    pub fn with_virtual_clock_factory(mut self, clock: Arc<dyn VirtualClockFactory>) -> Self {
+        self.virtual_clock = clock;
+        self
     }
 }
 
@@ -124,81 +152,69 @@ fn asio_session_options(
     Ok((rate, buffer.unwrap_or(0) as u32))
 }
 
-fn validate(request: &PrepareRequest<'_>) -> Result<u32, BackendError> {
-    let project = request.project;
-    project.validate().map_err(unsupported)?;
-    let sr = project.processing.engine.processing_sr;
-    if !SAMPLE_RATES.iter().any(|&rate| f64::from(rate) == sr) {
-        return Err(unsupported(
-            "professional Engine rate must be 44100/48000/88200/96000 Hz",
-        ));
-    }
-    let block = project.processing.engine.max_block_frames;
-    if block == 0 || block > 4096 {
-        return Err(unsupported(
-            "professional Engine block must be 1..4096 frames",
-        ));
-    }
-    let mut outputs = 0usize;
-    let mut masters = 0usize;
-    let mut native_count = 0usize;
-    for config in project.nodes.values() {
-        let (channels, device) = match config {
-            NodeConfig::Input(input) => {
-                if input.device.clock_role != ClockRole::Follower {
-                    return Err(unsupported("inputs must follow the output master"));
+trait NativeDevices {
+    fn resolve(
+        &self,
+        selector: &EndpointSelector,
+        device: DeviceOptions,
+        input: bool,
+    ) -> Result<String, BackendError>;
+    fn factory(&self, group: &Group, rate: u32) -> Result<StreamFactory, BackendError>;
+}
+
+struct SystemNativeDevices;
+impl NativeDevices for SystemNativeDevices {
+    fn resolve(
+        &self,
+        selector: &EndpointSelector,
+        device: DeviceOptions,
+        input: bool,
+    ) -> Result<String, BackendError> {
+        match device.backend {
+            AudioBackend::Wasapi => resolve_endpoint(selector, input),
+            AudioBackend::Asio => match selector {
+                EndpointSelector::PinnedEndpoint { endpoint_id, .. } => {
+                    canonical_asio_driver_id(endpoint_id)
                 }
-                (input.channels, input.device)
-            }
-            NodeConfig::Output(output) => {
-                if !matches!(output.target, OutputTarget::Physical(_)) {
-                    return Err(unsupported(
-                        "professional outputs need native physical targets",
-                    ));
-                }
-                outputs += 1;
-                masters += usize::from(output.device.clock_role == ClockRole::Master);
-                (output.channels, output.device)
-            }
-            _ => continue,
-        };
-        native_count += 1;
-        if channels != 2 {
-            return Err(unsupported("professional graph IO is stereo"));
-        }
-        if device
-            .hardware_sample_rate
-            .is_some_and(|rate| !SAMPLE_RATES.contains(&rate))
-            || device
-                .period_frames
-                .is_some_and(|frames| !(64..=4096).contains(&frames) || !frames.is_power_of_two())
-        {
-            return Err(unsupported(
-                "unsupported requested native rate or buffer size",
-            ));
+                _ => Err(unsupported(
+                    "ASIO requires an explicitly selected driver CLSID",
+                )),
+            },
         }
     }
-    if outputs == 0 || masters != 1 || native_count > 64 {
-        return Err(unsupported(
-            "professional backend needs exactly one output master and at most 64 IO nodes",
-        ));
+    fn factory(&self, group: &Group, rate: u32) -> Result<StreamFactory, BackendError> {
+        group.factory(rate)
     }
-    Ok(sr as u32)
 }
 
 impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
     fn poll_resource(&self) -> Option<moiren_engine::host::ResourceEvent> {
-        self.recovery.poll()
+        self.recovery.poll().or_else(|| {
+            self.virtual_provider
+                .as_ref()
+                .and_then(|p| p.poll_resource())
+        })
     }
     fn prepare(
         &self,
         request: PrepareRequest<'_>,
         cancel: &CancellationToken,
     ) -> Result<PreparedBackend<S>, BackendError> {
+        self.prepare_with_native(request, cancel, &SystemNativeDevices)
+    }
+}
+
+impl<S: ProcessingSample> ProfessionalBackend<S> {
+    fn prepare_with_native(
+        &self,
+        request: PrepareRequest<'_>,
+        cancel: &CancellationToken,
+        native: &dyn NativeDevices,
+    ) -> Result<PreparedBackend<S>, BackendError> {
         if cancel.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
-        let rate = validate(&request)?;
+        let (rate, clock) = validate(&request, self.virtual_provider.is_some())?;
         let mut bindings = NodeBindings::new();
         if request.mode == PrepareMode::Update {
             for (&node, config) in &request.project.nodes {
@@ -248,6 +264,23 @@ impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
             request.owner_generation,
             self.observations.clone(),
         ));
+        let (mut virtual_sessions, virtual_sinks) = virtual_io::prepare(
+            &request,
+            self.virtual_provider.as_deref(),
+            rate,
+            &mut bindings,
+            cancel,
+        )?;
+        if matches!(clock, ProjectClock::Physical(_)) {
+            transport.sinks.extend(&virtual_sinks);
+            if !virtual_sessions.is_empty() {
+                transport
+                    .auxiliaries
+                    .push(Box::new(virtual_io::VirtualAuxiliary(std::mem::take(
+                        &mut virtual_sessions,
+                    ))));
+            }
+        }
         let mut groups: Vec<Group> = Vec::new();
         let mut processes = Vec::new();
         for (&node, config) in &request.project.nodes {
@@ -297,26 +330,16 @@ impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
                         continue;
                     }
                     InputSource::Physical(selector) => (selector, true, input.device),
+                    InputSource::VirtualPlayback { .. } => continue,
                 },
                 NodeConfig::Output(output) => match &output.target {
                     OutputTarget::Physical(selector) => (selector, false, output.device),
+                    OutputTarget::VirtualMicrophone { .. } => continue,
                     _ => unreachable!("validated output target"),
                 },
                 _ => continue,
             };
-            let id = match device.backend {
-                AudioBackend::Wasapi => resolve_endpoint(selector, input)?,
-                AudioBackend::Asio => match selector {
-                    EndpointSelector::PinnedEndpoint { endpoint_id, .. } => {
-                        canonical_asio_driver_id(endpoint_id)?
-                    }
-                    _ => {
-                        return Err(unsupported(
-                            "ASIO requires an explicitly selected driver CLSID",
-                        ));
-                    }
-                },
-            };
+            let id = native.resolve(selector, device, input)?;
             let endpoint_id_for_log = id.clone();
             let direction = Direction { node, device };
             if let Some(group) = groups.iter_mut().find(|g| {
@@ -398,7 +421,7 @@ impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
                 (None, None)
             };
             let worker_request = WorkerRequest {
-                factory: group.factory(rate)?,
+                factory: native.factory(&group, rate)?,
                 capture: capture_tx,
                 render: render_rx,
                 counters: counters.clone(),
@@ -495,6 +518,29 @@ impl<S: ProcessingSample> EngineBackend<S> for ProfessionalBackend<S> {
         }
         if cancel.is_cancelled() {
             return Err(BackendError::Cancelled);
+        }
+        if clock == ProjectClock::VirtualRealtime {
+            // Captures keep their existing native owner threads and retirement
+            // protocol. Only the QPC owner receives and advances the Engine.
+            if !transport.workers.is_empty() || !transport.auxiliaries.is_empty() {
+                virtual_sessions.push(transport.into_follower(cancel.clone())?);
+            }
+            let stop = crate::StopSignal::new().map_err(unsupported)?;
+            let gate = crate::ActivationGate::new(stop.clone()).map_err(unsupported)?;
+            let clock = self.virtual_clock.prepare(stop.clone())?;
+            if cancel.is_cancelled() {
+                return Err(BackendError::Cancelled);
+            }
+            return Ok(PreparedBackend {
+                bindings,
+                transport: Some(Box::new(VirtualPreparedTransport::new(
+                    virtual_sinks,
+                    virtual_sessions,
+                    stop,
+                    gate,
+                    clock,
+                ))),
+            });
         }
         Ok(PreparedBackend {
             bindings,
@@ -604,17 +650,17 @@ fn prepare_process<S: ProcessingSample>(
     .map_err(unsupported)?;
     let channels = prepared.channels;
     let sample_rate = prepared.sample_rate;
+    transport.auxiliaries.push(Box::new(ProcessOwner {
+        capture: Some(prepared.session),
+        gate,
+        stop,
+    }));
     let source = ProcessSource::<S> {
         source: prepared.source,
         src: StereoResampler::new(48000, engine_rate, capacity).map_err(unsupported)?,
         scratch: vec![0.0; 512].into_boxed_slice(),
         marker: PhantomData,
     };
-    transport.auxiliaries.push(Box::new(ProcessOwner {
-        capture: Some(prepared.session),
-        gate,
-        stop,
-    }));
     bindings.bind_source(node, source).map_err(unsupported)?;
     transport.streams.push((
         ProfessionalStreamObservation {

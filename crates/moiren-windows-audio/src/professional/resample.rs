@@ -67,11 +67,42 @@ impl StereoResampler {
         })
     }
 
+    /// Upper bound for all heap storage allocated by `new` at this capacity.
+    pub fn storage_bytes(capacity: usize) -> Option<usize> {
+        let frames = capacity.checked_mul(std::mem::size_of::<StereoFrame>())?;
+        let kernels = (PHASES + 1)
+            .checked_mul(TAPS)?
+            .checked_mul(std::mem::size_of::<f64>())?;
+        frames.checked_add(kernels)
+    }
+
+    /// Clear stream history without releasing or reallocating prepared storage.
+    pub fn reset(&mut self) {
+        self.head = 0;
+        self.len = HALF;
+        self.position = HALF as f64;
+        self.step = self.nominal_step;
+        self.frames.fill([0.0; 2]);
+    }
+
+    #[cfg(any(windows, test))]
     pub fn queued_frames(&self) -> usize {
         self.len.saturating_sub(self.position.floor() as usize)
     }
+    #[cfg(any(windows, test))]
     pub fn free_frames(&self) -> usize {
         self.frames.len() - self.len
+    }
+
+    /// Minimum new input required to make the requested number of outputs
+    /// available, including the FIR's retained lookahead.
+    pub fn input_frames_needed(&self, output_frames: usize) -> Option<usize> {
+        if output_frames == 0 {
+            return Some(0);
+        }
+        let last_position = self.position + (output_frames - 1) as f64 * self.step;
+        let required_len = (last_position.floor() as usize).checked_add(HALF + 1)?;
+        Some(required_len.saturating_sub(self.len))
     }
 
     /// Positive correction consumes source faster to reduce queue occupancy.
@@ -129,6 +160,9 @@ impl StereoResampler {
         Some(output)
     }
 
+    // Native owners use bulk output; portable virtual boundaries pull frames.
+    // Keep the bulk path available to the cross-platform shadow RT harness.
+    #[cfg(any(windows, test))]
     pub fn produce(&mut self, output: &mut [StereoFrame]) -> usize {
         let mut count = 0;
         for frame in output {
@@ -205,10 +239,12 @@ mod tests {
         assert!(StereoResampler::new(0, 48000, 64).is_err());
         assert!(StereoResampler::new(48000, 48000, 32).is_err());
         let mut src = StereoResampler::new(48000, 48000, 64).unwrap();
+        assert_eq!(src.queued_frames(), 0);
         assert_eq!(src.push(&[[0.0; 2]; 128]), 64 - HALF);
+        assert_eq!(src.queued_frames(), 64 - HALF);
         assert!(!src.push_frame([0.0; 2]));
         src.set_correction_ppm(f64::INFINITY);
-        assert!(src.next_frame().is_some());
+        assert_eq!(src.produce(&mut [[0.0; 2]; 1]), 1);
         assert!(src.free_frames() > 0);
     }
 }

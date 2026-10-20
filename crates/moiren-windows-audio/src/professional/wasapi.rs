@@ -16,17 +16,21 @@ use moiren_engine::{
     host::BackendError,
     node::{DefaultDeviceRole, DeviceMode, DeviceOptions, EndpointSelector},
 };
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::{ptr, time::Duration};
 use windows::{
     Win32::{
-        Foundation::{S_OK, WAIT_OBJECT_0, WAIT_TIMEOUT},
-        Media::Audio::*,
+        Foundation::{PROPERTYKEY, S_OK, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Media::Audio::{IMMNotificationClient_Impl, *},
         System::{
-            Com::{CLSCTX_ALL, CoCreateInstance},
+            Com::{CLSCTX_ALL, CoCreateInstance, IAgileObject, IAgileObject_Impl},
             Threading::WaitForSingleObject,
         },
     },
-    core::{HSTRING, Interface},
+    core::{HSTRING, Interface, PCWSTR, implement},
 };
 
 #[derive(Debug, Clone)]
@@ -129,8 +133,135 @@ pub struct WasapiStream {
     captured_offset: usize,
     captured_frames: usize,
     stats: NativeStreamStats,
+    notifications: EndpointNotificationRegistration,
     // Declared last so every COM interface releases before CoUninitialize.
     _apartment: Apartment,
+}
+
+/// Endpoint notifications are control events, not a PCM-progress watchdog.
+/// Callbacks only latch invalidation; the native owner observes it on its
+/// existing bounded wait and reports the concrete endpoint state change.
+struct EndpointNotificationRegistration {
+    enumerator: IMMDeviceEnumerator,
+    callback: IMMNotificationClient,
+    invalidated: Arc<AtomicBool>,
+    registered: bool,
+}
+
+#[implement(IMMNotificationClient, IAgileObject)]
+struct EndpointNotifications {
+    endpoint_id: Box<[u16]>,
+    invalidated: Arc<AtomicBool>,
+}
+
+impl IAgileObject_Impl for EndpointNotifications_Impl {}
+
+impl EndpointNotifications {
+    fn matches(&self, endpoint_id: &PCWSTR) -> bool {
+        if endpoint_id.0.is_null() {
+            return false;
+        }
+        for (index, expected) in self.endpoint_id.iter().enumerate() {
+            // Stop at the callback's terminator so a shorter unrelated ID
+            // never causes reads beyond the borrowed string allocation.
+            let actual = unsafe { endpoint_id.0.add(index).read() };
+            if actual != *expected {
+                return false;
+            }
+            if *expected == 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn invalidate_if_matching(&self, endpoint_id: &PCWSTR) {
+        if self.matches(endpoint_id) {
+            self.invalidated.store(true, Ordering::Release);
+        }
+    }
+}
+
+impl IMMNotificationClient_Impl for EndpointNotifications_Impl {
+    fn OnDeviceStateChanged(
+        &self,
+        endpoint_id: &PCWSTR,
+        state: DEVICE_STATE,
+    ) -> windows::core::Result<()> {
+        if state != DEVICE_STATE_ACTIVE {
+            self.invalidate_if_matching(endpoint_id);
+        }
+        Ok(())
+    }
+
+    fn OnDeviceAdded(&self, _: &PCWSTR) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn OnDeviceRemoved(&self, endpoint_id: &PCWSTR) -> windows::core::Result<()> {
+        self.invalidate_if_matching(endpoint_id);
+        Ok(())
+    }
+
+    fn OnDefaultDeviceChanged(
+        &self,
+        _: EDataFlow,
+        _: ERole,
+        _: &PCWSTR,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn OnPropertyValueChanged(&self, _: &PCWSTR, _: &PROPERTYKEY) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+impl EndpointNotificationRegistration {
+    fn register(enumerator: IMMDeviceEnumerator, endpoint_id: &str) -> Result<Self, BackendError> {
+        let invalidated = Arc::new(AtomicBool::new(false));
+        let callback: IMMNotificationClient = EndpointNotifications {
+            endpoint_id: endpoint_id.encode_utf16().chain([0]).collect(),
+            invalidated: invalidated.clone(),
+        }
+        .into();
+        api("RegisterEndpointNotificationCallback", unsafe {
+            enumerator.RegisterEndpointNotificationCallback(&callback)
+        })?;
+        Ok(Self {
+            enumerator,
+            callback,
+            invalidated,
+            registered: true,
+        })
+    }
+
+    fn check(&self) -> Result<(), BackendError> {
+        if self.invalidated.load(Ordering::Acquire) {
+            Err(BackendError::ResourceUnavailable(
+                "selected WASAPI endpoint was removed or became inactive".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn unregister(&mut self) -> Result<(), BackendError> {
+        if self.registered {
+            api("UnregisterEndpointNotificationCallback", unsafe {
+                self.enumerator
+                    .UnregisterEndpointNotificationCallback(&self.callback)
+            })?;
+            self.registered = false;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for EndpointNotificationRegistration {
+    fn drop(&mut self) {
+        let _ = self.unregister();
+    }
 }
 
 impl WasapiStream {
@@ -182,6 +313,19 @@ impl WasapiStream {
             != if options.input { eCapture } else { eRender }
         {
             return Err(unsupported("WASAPI endpoint direction does not match node"));
+        }
+        let notifications =
+            EndpointNotificationRegistration::register(enumerator.clone(), &options.endpoint_id)?;
+        // Close the race where the endpoint becomes inactive just before
+        // notification registration begins; subsequent changes are latched by
+        // the registered callback.
+        if api("GetState(after notification registration)", unsafe {
+            device.GetState()
+        })? != DEVICE_STATE_ACTIVE
+        {
+            return Err(BackendError::ResourceUnavailable(
+                "selected WASAPI endpoint became inactive during stream preparation".into(),
+            ));
         }
         let event = api("CreateEvent", OwnedHandle::event())?;
         let client: IAudioClient = api("Activate(IAudioClient)", unsafe {
@@ -297,6 +441,7 @@ impl WasapiStream {
             captured_offset: 0,
             captured_frames: 0,
             stats: NativeStreamStats::default(),
+            notifications,
             _apartment: apartment,
         })
     }
@@ -605,6 +750,7 @@ impl NativeStream for WasapiStream {
         self.info
     }
     fn start(&mut self) -> Result<(), BackendError> {
+        self.notifications.check()?;
         if !self.started {
             api("Start", unsafe { self.client.Start() })?;
             self.started = true;
@@ -619,7 +765,8 @@ impl NativeStream for WasapiStream {
         Ok(())
     }
     fn wait(&mut self, timeout: Duration) -> Result<bool, BackendError> {
-        match unsafe {
+        self.notifications.check()?;
+        let ready = match unsafe {
             WaitForSingleObject(
                 self.event.0,
                 timeout.as_millis().min(u128::from(u32::MAX - 1)) as u32,
@@ -628,19 +775,24 @@ impl NativeStream for WasapiStream {
             WAIT_OBJECT_0 => {
                 self.render_ready = true;
                 self.stats.wait_wakes += 1;
-                Ok(true)
+                true
             }
             WAIT_TIMEOUT => {
                 self.stats.wait_timeouts += 1;
-                Ok(false)
+                false
             }
-            _ => api(
-                "WaitForSingleObject",
-                Err(windows::core::Error::from_thread()),
-            ),
-        }
+            _ => {
+                return api(
+                    "WaitForSingleObject",
+                    Err(windows::core::Error::from_thread()),
+                );
+            }
+        };
+        self.notifications.check()?;
+        Ok(ready)
     }
     fn read(&mut self, output: &mut [StereoFrame]) -> Result<usize, BackendError> {
+        self.notifications.check()?;
         let Some(capture) = &self.capture else {
             return Ok(0);
         };
@@ -688,6 +840,7 @@ impl NativeStream for WasapiStream {
         Ok(count)
     }
     fn write(&mut self, input: &[StereoFrame]) -> Result<usize, BackendError> {
+        self.notifications.check()?;
         let Some(render) = &self.render else {
             return Ok(0);
         };
@@ -733,10 +886,14 @@ impl NativeStream for WasapiStream {
     fn stats(&self) -> NativeStreamStats {
         self.stats
     }
+    fn release(&mut self) -> Result<(), BackendError> {
+        self.notifications.unregister()
+    }
 }
 impl Drop for WasapiStream {
     fn drop(&mut self) {
         let _ = self.stop();
+        let _ = self.notifications.unregister();
     }
 }
 
@@ -932,7 +1089,51 @@ fn codec_for(format: &WAVEFORMATEXTENSIBLE) -> Result<(SampleFormat, SampleCodec
 
 #[cfg(test)]
 mod tests {
-    use super::{frames_milliseconds, minimum_exclusive_frames, next_exclusive_preset};
+    use super::{
+        EndpointNotifications, frames_milliseconds, minimum_exclusive_frames, next_exclusive_preset,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use windows::core::PCWSTR;
+
+    #[test]
+    fn endpoint_notifications_match_only_the_selected_identity() {
+        let selected = EndpointNotifications {
+            endpoint_id: "selected-endpoint".encode_utf16().chain([0]).collect(),
+            invalidated: Arc::new(AtomicBool::new(false)),
+        };
+        let selected_id: Vec<_> = "selected-endpoint\0".encode_utf16().collect();
+        let other_id: Vec<_> = "other-endpoint\0".encode_utf16().collect();
+        selected.invalidate_if_matching(&PCWSTR(selected_id.as_ptr()));
+        assert!(selected.invalidated.load(Ordering::Acquire));
+
+        selected.invalidated.store(false, Ordering::Release);
+        selected.invalidate_if_matching(&PCWSTR(other_id.as_ptr()));
+        assert!(!selected.invalidated.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn shorter_endpoint_id_stops_comparison_at_its_terminator() {
+        let selected = EndpointNotifications {
+            endpoint_id: "selected-endpoint".encode_utf16().chain([0]).collect(),
+            invalidated: Arc::new(AtomicBool::new(false)),
+        };
+        let shorter_id: Vec<_> = "selected\0".encode_utf16().collect();
+        selected.invalidate_if_matching(&PCWSTR(shorter_id.as_ptr()));
+        assert!(!selected.invalidated.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn null_endpoint_identity_is_ignored() {
+        let selected = EndpointNotifications {
+            endpoint_id: "selected-endpoint".encode_utf16().chain([0]).collect(),
+            invalidated: Arc::new(AtomicBool::new(false)),
+        };
+        selected.invalidate_if_matching(&PCWSTR::null());
+        assert!(!selected.invalidated.load(Ordering::Acquire));
+    }
 
     #[test]
     fn minimum_period_rounds_up_to_a_complete_frame() {

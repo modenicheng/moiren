@@ -7,6 +7,7 @@ use super::{
     recovery::RecoveryTicket,
     resample::StereoResampler,
 };
+use crate::virtual_owner::VirtualResourceSession;
 use moiren_core::graph::NodeId;
 use moiren_engine::{
     compiler::CompiledBindings,
@@ -32,12 +33,26 @@ use std::{
 #[cfg(test)]
 #[path = "owner/idle_tests.rs"]
 mod idle_tests;
+#[cfg(test)]
+#[path = "owner/lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 pub(super) trait AuxiliaryOwner: Send {
     fn activate(&self) -> Result<(), BackendError>;
     fn cancel(&self);
     fn running(&self) -> bool;
     fn finished(&self) -> bool;
+    fn status(&self) -> OwnerStatus {
+        if self.finished() {
+            OwnerStatus::Failed(BackendError::ResourceUnavailable(
+                "process capture stopped".into(),
+            ))
+        } else if self.running() {
+            OwnerStatus::Running
+        } else {
+            OwnerStatus::Starting
+        }
+    }
     fn join(&mut self) -> Result<(), BackendError>;
 }
 
@@ -542,6 +557,106 @@ impl<S: ProcessingSample> Transport<S> {
             generation,
         }
     }
+    /// Reuse native capture retirement without attaching or creating an Engine.
+    pub fn into_follower(
+        self: Box<Self>,
+        cancellation: CancellationToken,
+    ) -> Result<Box<dyn VirtualResourceSession>, BackendError> {
+        if !self.sinks.is_empty() {
+            return Err(unsupported(
+                "render transports cannot become capture followers",
+            ));
+        }
+        let state = self.state.clone();
+        cancellation.on_cancel(move || state.cancel())?;
+        Ok(Box::new(FollowerOwner {
+            transport: self,
+            cancellation,
+        }))
+    }
+    fn activate(&self) -> Result<(), BackendError> {
+        for auxiliary in &self.auxiliaries {
+            if let Err(error) = auxiliary.activate() {
+                self.cancel();
+                return Err(error);
+            }
+        }
+        if let Err(error) = self.state.activate() {
+            // Cancellation can win after auxiliary admission but before the
+            // native start gate. Roll back every admitted resource immediately.
+            self.cancel();
+            return Err(error);
+        }
+        Ok(())
+    }
+    fn cancel(&self) {
+        self.state.cancel();
+        for auxiliary in &self.auxiliaries {
+            if catch_unwind(AssertUnwindSafe(|| auxiliary.cancel())).is_err() {
+                self.state.fail(BackendError::WorkerPanicked);
+            }
+        }
+        self.observations.clear(self.generation);
+    }
+    fn failure(&self) -> Option<BackendError> {
+        self.state
+            .failure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|failure| failure.error.clone())
+    }
+    fn status(&self) -> OwnerStatus {
+        if self.failure().is_some() {
+            self.cancel();
+            return OwnerStatus::Failed(self.failure().expect("failure retained until join"));
+        }
+        let mut starting = false;
+        for auxiliary in &self.auxiliaries {
+            match auxiliary.status() {
+                OwnerStatus::Failed(error) => {
+                    self.state.fail(error);
+                    self.cancel();
+                    return OwnerStatus::Failed(
+                        self.failure().expect("auxiliary failure retained"),
+                    );
+                }
+                OwnerStatus::Starting => starting = true,
+                OwnerStatus::Running => {}
+            }
+        }
+        if !starting
+            && self
+                .workers
+                .iter()
+                .all(|w| w.started.load(Ordering::Acquire))
+            && !self.state.stop.load(Ordering::Acquire)
+        {
+            self.observations.running(self.generation);
+            OwnerStatus::Running
+        } else {
+            OwnerStatus::Starting
+        }
+    }
+    fn take_error(
+        &self,
+        cancellation: &CancellationToken,
+        suppress_recovered: bool,
+    ) -> Option<BackendError> {
+        let failure = self
+            .state
+            .failure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        // Only the complete stop/release/drop/auxiliary aggregate can spend a
+        // recovery ticket. A user cancellation fences authorization.
+        failure.and_then(|failure| {
+            let authorized = !cancellation.is_cancelled()
+                && failure.recovery.is_some_and(|ticket| ticket.request());
+            (!(authorized && suppress_recovered)).then_some(failure.error)
+        })
+    }
     fn cleanup(&mut self) {
         log::debug!(
             target: "moiren::audio::professional",
@@ -636,82 +751,47 @@ struct Owner<S: ProcessingSample> {
     transport: Box<Transport<S>>,
     cancellation: CancellationToken,
 }
+struct FollowerOwner<S: ProcessingSample> {
+    transport: Box<Transport<S>>,
+    cancellation: CancellationToken,
+}
+impl<S: ProcessingSample> VirtualResourceSession for FollowerOwner<S> {
+    fn activate(&self) -> Result<(), BackendError> {
+        if self.cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        self.transport
+            .observations
+            .publish(self.transport.generation, self.transport.streams.clone());
+        self.transport.activate()
+    }
+    fn cancel(&self) {
+        self.transport.cancel();
+    }
+    fn status(&self) -> OwnerStatus {
+        self.transport.status()
+    }
+    fn stop_and_join(mut self: Box<Self>) -> Result<(), BackendError> {
+        self.transport.cleanup();
+        // The virtual owner must receive the actual capture error even if a
+        // native recovery event was authorized after successful retirement.
+        self.transport
+            .take_error(&self.cancellation, false)
+            .map_or(Ok(()), Err)
+    }
+}
 impl<S: ProcessingSample> BackendOwner<S> for Owner<S> {
     fn activate(&self) -> Result<(), BackendError> {
         if self.cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
-        for auxiliary in &self.transport.auxiliaries {
-            if let Err(error) = auxiliary.activate() {
-                self.cancel();
-                return Err(error);
-            }
-        }
-        self.transport.state.activate()
+        self.transport.activate()
     }
     fn cancel(&self) {
-        self.transport.state.cancel();
-        for auxiliary in &self.transport.auxiliaries {
-            if catch_unwind(AssertUnwindSafe(|| auxiliary.cancel())).is_err() {
-                self.transport.state.fail(BackendError::WorkerPanicked);
-            }
-        }
-        self.transport.observations.clear(self.transport.generation);
+        self.transport.cancel();
     }
     fn status(&self) -> OwnerStatus {
-        let transport = &self.transport;
-        // A chained if-let scrutinee keeps its mutex temporary alive through
-        // the body. Cancel may record an auxiliary panic into this same state.
-        let failure = transport
-            .state
-            .failure
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-            .map(|failure| failure.error.clone());
-        if failure.is_some() {
-            self.cancel();
-            let error = transport
-                .state
-                .failure
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_ref()
-                .expect("failure remains recorded until stop_and_join")
-                .error
-                .clone();
-            return OwnerStatus::Failed(error);
-        }
-        if transport.auxiliaries.iter().any(|a| a.finished()) {
-            // A sibling native notification must not turn an unexpectedly
-            // finished process capture into a recoverable transport.
-            transport.state.fail(BackendError::ResourceUnavailable(
-                "process capture stopped".into(),
-            ));
-            self.cancel();
-            let error = transport
-                .state
-                .failure
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_ref()
-                .expect("finished auxiliary records a terminal failure")
-                .error
-                .clone();
-            return OwnerStatus::Failed(error);
-        }
-        if transport
-            .workers
-            .iter()
-            .all(|w| w.started.load(Ordering::Acquire))
-            && transport.auxiliaries.iter().all(|a| a.running())
-            && !transport.state.stop.load(Ordering::Acquire)
-        {
-            transport.observations.running(transport.generation);
-            OwnerStatus::Running
-        } else {
-            OwnerStatus::Starting
-        }
+        self.transport.status()
     }
     fn timeline(&self) -> Option<OwnerTimeline> {
         self.transport.timeline.snapshot()
@@ -723,21 +803,7 @@ impl<S: ProcessingSample> BackendOwner<S> for Owner<S> {
             .slot
             .take()
             .expect("Engine is retained outside native unwind boundaries");
-        let error = self
-            .transport
-            .state
-            .failure
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take();
-        // EngineHost calls Owner::cancel for internal failure retirement too;
-        // its explicit cancellation token, not the shared stop flag, fences
-        // user cancellation. Only the final aggregate may spend the ticket.
-        let error = error.and_then(|failure| {
-            let authorized = !self.cancellation.is_cancelled()
-                && failure.recovery.is_some_and(|ticket| ticket.request());
-            (!authorized).then_some(failure.error)
-        });
+        let error = self.transport.take_error(&self.cancellation, true);
         OwnerReturn { engine, error }
     }
 }
