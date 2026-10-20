@@ -430,9 +430,10 @@ evidence remains:
    of unwanted endpoint/default-device changes before any gate is opened.
 5. Target validation of the advertised ACX/KS/MMDevice audio endpoints with real
    PCM16/Float32, 48 kHz mono/stereo playback and capture, the one-stream limit,
-   activation gating, and correct stop/remove behavior. The source advertises
-   these capabilities, but no installed-driver target evidence has passed this
-   gate.
+   activation gating, and correct stop/remove behavior. Two bounded App Stage2
+   runs now verify one stereo Float32 event-driven virtual graph, two known
+   signals and capture silence during Stop; they do not qualify all advertised
+   shapes/formats or sustained behavior.
    Circuit-instance URIs now retain direction and all 128 stable identity bits;
    host regressions and the analyzed driver build cover this correction.
    Simultaneous multi-PDO OS identity and sibling routing/removal isolation
@@ -440,7 +441,9 @@ evidence remains:
 6. Installed-driver Engine/application integration: verify the implemented
    provider, endpoint lifecycle adapter, active-revision gate admission and
    project/export failure handling against actual asynchronous PnP and native
-   streams. Fake-provider host tests do not satisfy this target gate.
+   streams. The two bounded App Stage2 passes below provide partial target
+   evidence; they do not close the broader lifecycle, endpoint-absence or stress
+   gate.
 
 This document records the foundation boundary and reproducible validation
 procedure. It does not claim target hardware/VM validation, WASAPI functionality,
@@ -518,8 +521,73 @@ specification and code-quality reviews passed with no findings. These are
 source/host/build results; timer-mode support and real WDF/PnP, cancellation and
 audio qualification remain open target work.
 
-The latest read-only VM audit on 2026-10-20 reports zero running VMs. The
-preflight directory contains scripts only and no success receipt. Guest sleep
-and hibernation settings remain unverified; no driver installation or target
-exercise has occurred. This checkpoint does not close P1/P3/P5 or claim
-deployment, native PCM, performance or release qualification.
+The read-only VM audit on 2026-10-20 was a historical checkpoint: it reported
+zero running VMs and no power-preflight receipt at that time. It is superseded
+by the later guest power verification and bounded Stage2 runs below. It does not
+close P1/P3/P5 or establish release qualification.
+
+## App Stage2 target checkpoint - 2026-10-21
+
+Two bounded Stage2 runs, `app-integration-stage2-readmission2` and
+`app-integration-stage2-readmission3`, completed on guest `DRIVER-TEST` with
+exit code 0 and no timeout. Both ran executable SHA256
+`FEEDC9F47333FD5C7E5016BFD8C050CA72D96025E1A56278180D4D5F75199E3C`, built from
+source commit `6c4e3c285a704fd67f49993488f89527dec2d9c1` (the Stage2
+gate-correlation implementation). The guest power receipt at
+`D:/tmp/moiren-vad-20261020/power-verified.json` records AC/DC automatic sleep
+disabled and hibernation disabled on VMware Windows 11 build 26200.
+
+Each run restores a persisted v2 typed VirtualPlayback -> Gain(0.5) ->
+VirtualMicrophone project. Before starting probe native clients, the Engine
+remains Running through a 4,004-4,005 ms hold with 14 forward `frame_end`
+advances at 48 kHz and no timeline-epoch changes; progress is also observed
+beyond the prior three-second threshold. The probe then verifies exact root,
+stable child IDs and MMDevice topology identity and opens stereo 48 kHz Float32
+exclusive event-driven render/capture streams with 480-frame buffers, no SRC and
+no fallback. It sends `[0.25, -0.5]` and verifies `[0.125, -0.25]`, then sends
+the distinct `[-0.375, 0.125]` and verifies `[-0.1875, 0.0625]`. Each signal
+phase requires 48,000 consecutive matching frames. Observed longest runs are
+48,000/48,000 frames in readmission2 and 48,000/48,096 in readmission3. Each
+phase includes a one-second settle interval; PCM remains bounded evidence, not a
+throughput or latency qualification.
+
+Native stream generation advances from 0 to 1 in both endpoints/runs. Capture
+gate telemetry records a close followed by reopen after 31 ms in readmission2
+and 34 ms in readmission3. Playback is observed advancing generation while its
+gate remains open; its bounded readmission observation is pending in the final
+gate-event record, while subsequent PCM checkpoints show both gates open and
+active. The probe therefore records per-endpoint observations rather than
+claiming identical gate transitions. During App Stop, capture remains RUN at
+request, after Stop acknowledgment and throughout silence collection; each run
+observes 48,000 real silent frames. The service joins and the exclusive control
+session is released. At exit, both endpoint resources are only `Removing`, not
+confirmed absent; `endpoint_absence_confirmed` remains false.
+
+A subsequent root read-only PnP snapshot found no present `MOIREN\VAD_RAW`
+children after asynchronous exit removal had time to complete. This later
+snapshot is separate evidence from the probe's exit checkpoint, which reported
+`Removing`; it does not retroactively change either JSON report's
+`endpoint_absence_confirmed=false` and is not evidence of default-device policy
+or default arrival.
+
+Exact evidence is under `D:/tmp/moiren-vad-20261020/`:
+
+- `app-integration-stage2-readmission2.result.json`,
+  `.report.json`, `.stderr.log` and `.ssh.log`.
+- `app-integration-stage2-readmission3.result.json`,
+  `.report.json`, `.stderr.log` and `.ssh.log`.
+- `power-verified.json` records the guest sleep/hibernation preflight.
+- `guest-timer-resolution.json` records 100 waits requested at 5.3333 ms:
+  default flags (0) had median 16.2714 ms, P95 17.1947 ms, maximum 23.2712 ms
+  and 100/100 waits over two requested periods; high-resolution flags (2) had
+  median 6.2024 ms, P95 6.8804 ms, maximum 8.2355 ms and 0/100 over two periods.
+  This is a bounded guest wait-timing observation, not a WASAPI timer-mode or
+  end-to-end latency qualification.
+
+These are two bounded runs only, not long stress or release qualification.
+They cover neither timer-mode, shared-mode nor physical-device integration;
+default-device policy/arrival was not qualified, and the probe does not change
+user defaults. Eight-hour idle/audio runs, 100 lifecycle/crash rounds, Driver
+Verifier, production signing, fresh-OS install, and confirmed final endpoint
+absence remain open. The results do not establish broad audio quality,
+repeatability or release readiness.

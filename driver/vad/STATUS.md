@@ -131,9 +131,40 @@ or real audio APIs.
   regression reproduced RED then fixed GREEN, with the final 229 App library
   tests passing, including the explicit run-limit regression. Final host evidence:
   `D:/tmp/moiren-vad-20261020/app-virtual-intent-final-tests.log`.
-  This is partial App/service integration only; Stage2 native-client
-  PCM is not yet verified, and unrelated native-probe PCM results do not close
-  that App integration gate.
+  This was Stage1 only; its native-client PCM gate was still open at that point.
+- App `app-integration-stage2-readmission2` and `app-integration-stage2-readmission3`
+  both exit 0 without timeout on the Windows 11 VMware guest `DRIVER-TEST`.
+  Both use executable SHA256
+  `FEEDC9F47333FD5C7E5016BFD8C050CA72D96025E1A56278180D4D5F75199E3C`, built
+  from source commit `6c4e3c285a704fd67f49993488f89527dec2d9c1`. The persisted v2
+  typed graph is VirtualPlayback -> Gain(0.5) -> VirtualMicrophone. With no
+  native probe clients, a 4,004-4,005 ms idle hold observes real `frame_end`
+  progress: 14 forward advances at 48 kHz and no timeline epoch change. The
+  exact-root/stable-ID MMDevice mapping then starts stereo Float32, 48 kHz,
+  exclusive event-driven WASAPI render and capture with 480-frame buffers and
+  no SRC or fallback. Each run validates source `[0.25, -0.5]` as
+  `[0.125, -0.25]` through Gain 0.5 and a second distinct signal
+  `[-0.375, 0.125]` as `[-0.1875, 0.0625]`. Longest consecutive matching runs
+  are 48,000/48,000 frames in run2 and 48,000/48,096 in run3; each independent
+  signal phase meets the 48,000-frame threshold. During Stop, capture remains
+  RUN at request, after acknowledgment, and while collecting 48,000 real silent
+  frames in each run. The service joins and the owning control session releases.
+  Gate telemetry observes capture stream generation 0 -> 1, a closed interval
+  of 31 ms / 34 ms, then reopen. Playback stream generation also advances 0 ->
+  1; its sampled gate remains open while the bounded readmission observation is
+  pending, and later PCM checkpoints confirm both gates open. On service exit,
+  both endpoints are only `Removing`; `endpoint_absence_confirmed=false`.
+  Evidence (per tag: `.result.json`, `.report.json`, `.stderr.log`):
+  `D:/tmp/moiren-vad-20261020/app-integration-stage2-readmission2` and
+  `D:/tmp/moiren-vad-20261020/app-integration-stage2-readmission3`. This is two
+  bounded passes, not long stress or release qualification. A subsequent
+  read-only PnP snapshot found no present `MOIREN\VAD_RAW` children after the
+  asynchronous service-exit removal had time to complete. That later snapshot
+  is distinct from the run reports' `Removing` state and is not default-policy
+  evidence. Default-device policy/arrival is not qualified; the probe does not
+  change user defaults.
+  Timer-mode, shared-mode and physical-device paths, eight-hour runs, 100-round
+  lifecycle/crash tests, Verifier and production signing remain unqualified.
 - The earlier ALL-states (mask 15) MMDevice result of 0/4 is superseded by a
   target-validated metadata-only child MEDIA/null-service INF: all four owned
   MMDevices now map successfully. Production INF matching was completed in
@@ -208,11 +239,13 @@ control (the current session is high integrity); pre-exposure default
 eligibility; software mute/volume;
 broader active-audio-client revoke/remove/recreate beyond the bounded stage1
 result, including PCM and crash cleanup; App Stage2 native-client PCM and final
-endpoint-absence checks beyond Stage1 service teardown; power transitions; Verifier;
-eight-hour idle/audio runs; 100 lifecycle/crash rounds; resource/latency reports;
-upgrade/rollback/uninstall; production signing and broader Windows-version
-validation. Raw-child and exact-file cleanup PASS results do not close these
-audio-path or long-duration gates.
+endpoint-absence checks beyond the two bounded Stage2 passes; default-device
+policy and arrival qualification; timer/shared/physical-path integration; power
+transitions; Verifier; eight-hour idle/audio runs; 100 lifecycle/crash rounds;
+resource/latency reports; upgrade/rollback/uninstall; production signing and
+broader Windows-version validation. Raw-child and exact-file cleanup PASS results
+do not close these audio-path or long-duration gates. The Stage2 probe does not
+change user defaults and does not qualify their arrival policy.
 
 The per-endpoint component URI replaces the provisional direction-wide IDs.
 A regression first reproduced equal identities for two distinct endpoints,
