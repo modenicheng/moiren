@@ -23,7 +23,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const REMOVE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -634,7 +634,7 @@ fn run_microphone(
     let mut owner: Option<PcmOwner> = None;
     let mut bridge = None;
     let mut tickets = Vec::with_capacity(super::REQUEST_SLOTS);
-    let mut order = pcm_worker::PacketOrder::default();
+    let mut pump = None;
     let mut observed_reset = 0;
     let result = (|| {
         while !state.cancel.load(std::sync::atomic::Ordering::Acquire) {
@@ -670,22 +670,26 @@ fn run_microphone(
                         )?);
                         owner = Some(control.pcm_owner(current).map_err(client_error)?);
                         tickets.clear();
-                        order = pcm_worker::PacketOrder::default();
+                        pump = Some(pcm_worker::MicrophonePump::new(shape.frames()));
                     }
                     match pcm_worker::microphone(
                         owner.as_mut().expect("microphone owner"),
                         bridge.as_mut().expect("microphone bridge"),
                         &mut tickets,
-                        &mut order,
+                        pump.as_mut().expect("microphone pump"),
                         state,
                         observed_reset,
+                        Instant::now,
                     ) {
                         Ok(pcm_worker::PumpState::Current) => {
-                            if let Err(error) = pcm_worker::wait_for_activity(
+                            if let Err(error) = pcm_worker::wait_for_microphone(
                                 owner.as_mut().expect("microphone owner"),
                                 &tickets,
+                                pump.as_mut().expect("microphone pump"),
                                 state,
                                 observed_reset,
+                                Instant::now(),
+                                thread::sleep,
                             ) {
                                 current =
                                     transport::after_io_error(&mut control, current, state, error)?;

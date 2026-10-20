@@ -1,7 +1,8 @@
 //! Ordered PCM pumping: four playback reads, one just-in-time microphone write.
 //! IO is injectable so completion ordering and resets are tested without a driver.
 use super::*;
-use crate::vad::PcmPacketStamp;
+use crate::vad::{PcmPacketStamp, SAMPLE_RATE};
+use std::time::Instant;
 
 pub(super) trait PcmIo {
     fn wait_activity(&mut self, ticket: PcmTicket, timeout: Duration) -> Result<(), BackendError>;
@@ -35,6 +36,38 @@ impl PacketOrder {
             return false;
         }
         self.0 = Some(stamp);
+        true
+    }
+}
+
+pub(super) struct MicrophonePump {
+    order: PacketOrder,
+    half_period: Duration,
+    next_submit: Option<Instant>,
+}
+
+impl MicrophonePump {
+    pub(super) fn new(packet_frames: u32) -> Self {
+        Self {
+            order: PacketOrder::default(),
+            half_period: Duration::from_nanos(
+                (u64::from(packet_frames) * 1_000_000_000).div_ceil(u64::from(SAMPLE_RATE) * 2),
+            ),
+            next_submit: None,
+        }
+    }
+
+    fn remaining(&self, now: Instant) -> Option<Duration> {
+        self.next_submit
+            .map(|deadline| deadline.saturating_duration_since(now))
+    }
+
+    fn current(&mut self, state: &SessionState, epoch: u64) -> bool {
+        if state.cancel.load(Ordering::Acquire) || !epoch_ready(state, epoch) {
+            self.order = PacketOrder::default();
+            self.next_submit = None;
+            return false;
+        }
         true
     }
 }
@@ -146,15 +179,16 @@ pub(super) fn microphone<C: PcmIo>(
     owner: &mut C,
     bridge: &mut PcmMicrophoneBridge,
     tickets: &mut Vec<PcmTicket>,
-    order: &mut PacketOrder,
+    pump: &mut MicrophonePump,
     state: &SessionState,
     epoch: u64,
+    mut now: impl FnMut() -> Instant,
 ) -> Result<PumpState, BackendError> {
-    if !epoch_ready(state, epoch) {
+    if !pump.current(state, epoch) {
         return Ok(PumpState::Reset);
     }
     while let Some(ticket) = tickets.first().copied() {
-        if state.reset_epoch.load(Ordering::Acquire) != epoch {
+        if !pump.current(state, epoch) {
             return Ok(PumpState::Reset);
         }
         let stamp = match owner.complete(ticket)? {
@@ -169,26 +203,66 @@ pub(super) fn microphone<C: PcmIo>(
             }
             None => break,
         };
-        if !order.accept(stamp) {
+        if !pump.order.accept(stamp) {
             return Err(BackendError::Failed(
                 "microphone completion sequence regressed".into(),
             ));
         }
         tickets.remove(0);
+        // Shift replenishment away from the one-period freshness cliff. The
+        // driver still checks the real submission age at native consumption.
+        pump.next_submit =
+            Some(now().checked_add(pump.half_period).ok_or_else(|| {
+                BackendError::Failed("microphone phase deadline overflow".into())
+            })?);
     }
-    if tickets.is_empty() {
-        if state.reset_epoch.load(Ordering::Acquire) != epoch {
+    if tickets.is_empty()
+        && pump
+            .remaining(now())
+            .is_none_or(|remaining| remaining.is_zero())
+    {
+        if !pump.current(state, epoch) {
             return Ok(PumpState::Reset);
         }
-        // Each capture packet's QPC is sampled at submission. Encoding several
-        // native periods ahead gives them the same deadline and expires the tail.
+        // Do not consume the carrier or encode until the phase is due. The
+        // unchanged PcmOwner samples its real QPC only when submitting this PCM.
         let packet = bridge.encode_packet()?;
-        if state.reset_epoch.load(Ordering::Acquire) != epoch {
+        if !pump.current(state, epoch) {
             return Ok(PumpState::Reset);
         }
         tickets.push(owner.write(packet)?);
+        pump.next_submit = None;
     }
     Ok(PumpState::Current)
+}
+
+pub(super) fn wait_for_microphone<C: PcmIo>(
+    owner: &mut C,
+    tickets: &[PcmTicket],
+    pump: &mut MicrophonePump,
+    state: &SessionState,
+    epoch: u64,
+    now: Instant,
+    sleep: impl FnOnce(Duration),
+) -> Result<(), BackendError> {
+    if !pump.current(state, epoch) {
+        return Ok(());
+    }
+    if let Some(&ticket) = tickets.first() {
+        owner.wait_activity(
+            ticket,
+            pump.remaining(now)
+                .unwrap_or(POLL_INTERVAL)
+                .min(POLL_INTERVAL),
+        )?;
+    } else if let Some(remaining) = pump.remaining(now)
+        && !remaining.is_zero()
+    {
+        // This is the non-RT owner. Yield between control polls without a
+        // fixed 10 ms overshoot or spinning while no native request is pending.
+        sleep(remaining.min(Duration::from_millis(1)));
+    }
+    Ok(())
 }
 
 /// Native events pace the IO worker, not Engine render. Waiting for the first
