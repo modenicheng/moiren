@@ -4,6 +4,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Options {
     pub exercise: bool,
+    pub pcm: bool,
     pub help: bool,
     pub timeout_seconds: u64,
     pub output_dir: Option<PathBuf>,
@@ -13,6 +14,7 @@ impl Options {
     pub fn parse(arguments: impl IntoIterator<Item = String>) -> anyhow::Result<Self> {
         let mut options = Self {
             exercise: false,
+            pcm: false,
             help: false,
             timeout_seconds: 30,
             output_dir: None,
@@ -21,6 +23,7 @@ impl Options {
         for argument in arguments {
             match argument.as_str() {
                 "--exercise" if !options.exercise => options.exercise = true,
+                "--pcm" if !options.pcm => options.pcm = true,
                 "--help" | "-h" => options.help = true,
                 value if value.starts_with("--timeout-seconds=") && !timeout_seen => {
                     timeout_seen = true;
@@ -45,6 +48,19 @@ impl Options {
             options.exercise || options.help || (!timeout_seen && options.output_dir.is_none()),
             "--timeout-seconds and --output-dir require --exercise"
         );
+        ensure!(
+            options.exercise || !options.pcm,
+            "--pcm requires --exercise"
+        );
+        if options.pcm {
+            if !timeout_seen {
+                options.timeout_seconds = 90;
+            }
+            ensure!(
+                options.timeout_seconds >= 60,
+                "--pcm needs an overall timeout of at least 60 seconds"
+            );
+        }
         Ok(options)
     }
 }
@@ -108,5 +124,20 @@ mod tests {
         ] {
             assert!(parse(&invalid).is_err(), "accepted {invalid:?}");
         }
+    }
+
+    #[test]
+    fn pcm_is_opt_in_and_reserves_a_long_overall_watchdog() {
+        assert!(parse(&["--pcm"]).is_err());
+        assert!(parse(&["--exercise", "--pcm"]).is_ok());
+        assert_eq!(parse(&["--exercise", "--pcm"]).unwrap().timeout_seconds, 90);
+        assert_eq!(
+            parse(&["--pcm", "--timeout-seconds=60", "--exercise"])
+                .unwrap()
+                .timeout_seconds,
+            60
+        );
+        assert!(parse(&["--exercise", "--pcm", "--timeout-seconds=59"]).is_err());
+        assert!(parse(&["--exercise", "--pcm", "--pcm"]).is_err());
     }
 }

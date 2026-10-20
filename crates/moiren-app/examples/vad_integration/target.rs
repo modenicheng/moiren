@@ -1,11 +1,15 @@
-//! Control-side coordinator only. No ControlClient or native audio client here.
+//! Control-side coordinator; only ManagedDriver owns the driver control file.
 use super::{
+    native,
     options::Options,
     project,
-    report::{Checkpoint, Evidence, Report},
+    report::{Checkpoint, Evidence, IdleHoldEvidence, PcmEvidence, Report},
+    validation,
 };
 use anyhow::{Context, bail, ensure};
 use moiren_app::service::{AppHandle, AppRequest, ManagedDriver, ServiceRuntime, SessionPhase};
+use moiren_core::graph::NodeKind;
+use moiren_windows_audio::vad::StableEndpointId;
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -27,7 +31,8 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
     let started = Instant::now();
     let timeout = Duration::from_secs(options.timeout_seconds);
     let directory = output_directory(options.output_dir)?;
-    eprintln!("stage1 evidence directory: {}", directory.display());
+    let pcm = options.pcm;
+    eprintln!("integration evidence directory: {}", directory.display());
     let shared = Arc::new(Mutex::new(Progress::default()));
     let worker_shared = shared.clone();
     let worker_directory = directory.clone();
@@ -37,7 +42,7 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
     let worker = thread::Builder::new()
         .name("vad-integration".into())
         .spawn(move || {
-            let report = run(&worker_directory, started, timeout, &worker_shared);
+            let report = run(&worker_directory, started, timeout, pcm, &worker_shared);
             let _ = tx.send(report);
         })?;
     let remaining = timeout.saturating_sub(started.elapsed());
@@ -49,7 +54,7 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
             emit_report(&directory, &report)?;
             ensure!(
                 report.status == "passed",
-                "stage1 failed; inspect report.json"
+                "integration failed; inspect report.json"
             );
             Ok(())
         }
@@ -99,8 +104,24 @@ fn output_directory(requested: Option<PathBuf>) -> anyhow::Result<PathBuf> {
         .context("resolving output directory")
 }
 
-fn run(directory: &Path, started: Instant, timeout: Duration, shared: &Shared) -> Report {
+fn run(
+    directory: &Path,
+    started: Instant,
+    timeout: Duration,
+    pcm: bool,
+    shared: &Shared,
+) -> Report {
     let mut report = Report::default();
+    if pcm {
+        report.stage = "stage2_real_graph_native_pcm";
+        report.limitations = vec![
+            "Only exact 48kHz stereo Float32 exclusive event-driven clients are exercised; no timer/shared-mode/physical coverage.",
+            "Signal headers prove Engine timeline advances; AppSnapshot.elapsed is wall time only and is not used.",
+            "Native identity is root parent plus stable ID plus flow; this probe never opens a ControlClient or PcmOwner.",
+            "Known PCM and Stop silence are bounded observations, not long stress/Verifier/release qualification.",
+            "Exited plus join proves service teardown/control-file release, not final PDO absence.",
+        ];
+    }
     let mut runtime = None;
     // Reserve a third of the total interval for stop/exit even after failure.
     let work_deadline = started + timeout.mul_f64(2.0 / 3.0);
@@ -120,6 +141,13 @@ fn run(directory: &Path, started: Instant, timeout: Duration, shared: &Shared) -
             .collect::<Vec<_>>()
             .try_into()
             .map_err(|_| anyhow::anyhow!("fixture must have two exports"))?;
+        let stable_ids: [StableEndpointId; 2] = document
+            .exports
+            .iter()
+            .map(|export| StableEndpointId::from_virtual_endpoint_id(export.endpoint_id))
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("fixture needs two stable IDs"))?;
         // Only the production factory discovers/opens the single control owner.
         let service = ServiceRuntime::spawn_with_startup(ManagedDriver::windows(), startup)?;
         let handle = service.handle();
@@ -157,6 +185,18 @@ fn run(directory: &Path, started: Instant, timeout: Duration, shared: &Shared) -
             running.active_revision.is_some(),
             "missing Engine confirmation"
         );
+        if pcm {
+            let session = LiveSession {
+                handle: &handle,
+                ids: &ids,
+                apply_request: applied.0,
+                revision: running.active_revision.expect("checked"),
+                deadline: work_deadline,
+            };
+            session.hold_without_clients(&mut report, shared)?;
+            session.exercise_pcm(stable_ids, &mut report, shared)?;
+            return Ok(());
+        }
         let stopped = handle
             .try_request_tracked(AppRequest::Stop)
             .map_err(|error| anyhow::anyhow!("Stop enqueue: {error:?}"))?;
@@ -210,6 +250,354 @@ fn run(directory: &Path, started: Instant, timeout: Duration, shared: &Shared) -
     report
 }
 
+const IDLE_HOLD: Duration = Duration::from_secs(4);
+const SETTLE: Duration = Duration::from_secs(1);
+const PCM_PHASE_LIMIT: Duration = Duration::from_secs(12);
+
+struct LiveSession<'a> {
+    handle: &'a AppHandle,
+    ids: &'a [String; 2],
+    apply_request: u64,
+    revision: u64,
+    deadline: Instant,
+}
+
+impl LiveSession<'_> {
+    fn require_running(
+        &self,
+        stage: &str,
+        report: &mut Report,
+        shared: &Shared,
+    ) -> anyhow::Result<()> {
+        if let Some(snapshot) = self.handle.try_snapshot() {
+            let evidence = Evidence::from(snapshot.as_ref());
+            record(report, stage, evidence.clone(), shared);
+            ensure!(
+                evidence.running(self.ids, self.apply_request)
+                    && evidence.active_revision == Some(self.revision),
+                "{stage}: Running/gates/confirmed revision changed: {evidence:?}"
+            );
+        }
+        ensure!(Instant::now() < self.deadline, "{stage}: work deadline");
+        Ok(())
+    }
+
+    fn require_stopped(
+        &self,
+        request: u64,
+        report: &mut Report,
+        shared: &Shared,
+    ) -> anyhow::Result<()> {
+        if let Some(snapshot) = self.handle.try_snapshot() {
+            let evidence = Evidence::from(snapshot.as_ref());
+            record(
+                report,
+                "capture_running_after_stop",
+                evidence.clone(),
+                shared,
+            );
+            ensure!(
+                evidence.stopped(self.ids, request),
+                "Stop state/gates/endpoints changed: {evidence:?}"
+            );
+        }
+        ensure!(Instant::now() < self.deadline, "stopped capture deadline");
+        Ok(())
+    }
+
+    fn hold_without_clients(&self, report: &mut Report, shared: &Shared) -> anyhow::Result<()> {
+        eprintln!("stage2: 4s no-client hold, actual Gain node signal headers");
+        let started = Instant::now();
+        let subscription_deadline = (started + Duration::from_secs(5)).min(self.deadline);
+        report.idle_hold = Some(IdleHoldEvidence {
+            confirmed_revision: self.revision,
+            ..Default::default()
+        });
+        let topic = loop {
+            self.require_running("no_clients_waiting_for_gain_topic", report, shared)?;
+            if let Some(snapshot) = self.handle.try_snapshot()
+                && let Some(node) = snapshot
+                    .graph
+                    .graph
+                    .nodes()
+                    .iter()
+                    .find(|node| node.kind() == NodeKind::Gain)
+                && let Some(topic) = snapshot.signal_topics.node_levels.get(&node.id())
+            {
+                break topic.clone();
+            }
+            ensure!(
+                Instant::now() < subscription_deadline,
+                "Gain signal topic not published"
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
+        let mut ticket = self
+            .handle
+            .subscribe_topic(topic, Default::default())
+            .map_err(|error| anyhow::anyhow!("Gain signal subscribe: {error:?}"))?;
+        let mut subscriber = loop {
+            self.require_running("no_clients_subscribing_gain", report, shared)?;
+            if let Some(subscriber) = ticket
+                .try_take()
+                .map_err(|error| anyhow::anyhow!("Gain subscription: {error:?}"))?
+            {
+                break subscriber;
+            }
+            ensure!(
+                Instant::now() < subscription_deadline,
+                "Gain subscriber not delivered"
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
+        let hold_started = Instant::now();
+        loop {
+            self.require_running("no_clients_four_second_hold", report, shared)?;
+            let elapsed = hold_started.elapsed();
+            let hold = report
+                .idle_hold
+                .as_mut()
+                .expect("initialized hold evidence");
+            hold.observed_wall_ms = elapsed.as_millis();
+            if let Some(window) = subscriber.read_latest()
+                && window.header().frame_end > window.header().frame_start
+            {
+                ensure!(
+                    window.elements().len() == 2
+                        && window
+                            .elements()
+                            .iter()
+                            .all(|level| level.peak.is_finite() && level.rms.is_finite()),
+                    "invalid stereo Gain signal window"
+                );
+                hold.timeline.observe(*window.header())?;
+                if elapsed >= Duration::from_secs(3) {
+                    hold.after_old_three_second_threshold
+                        .observe(*window.header())?;
+                }
+            }
+            publish(shared, report);
+            if elapsed >= IDLE_HOLD {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        let hold = report.idle_hold.as_mut().expect("hold evidence");
+        hold.timeline.require_progress()?;
+        hold.after_old_three_second_threshold.require_progress()?;
+        hold.timeline_verified = true;
+        publish(shared, report);
+        Ok(())
+    }
+
+    fn exercise_pcm(
+        &self,
+        stable_ids: [StableEndpointId; 2],
+        report: &mut Report,
+        shared: &Shared,
+    ) -> anyhow::Result<()> {
+        report.pcm = Some(PcmEvidence {
+            source: validation::SIGNAL,
+            expected_after_gain: validation::EXPECTED,
+            second_source: validation::SECOND_SIGNAL,
+            second_expected_after_gain: validation::SECOND_EXPECTED,
+            settle_ms_per_phase: SETTLE.as_millis() as u64,
+            ..Default::default()
+        });
+        publish(shared, report);
+        eprintln!("stage2: read-only exact root/stable ID -> MMDevice mapping");
+        let mut clients = native::Pair::prepare(
+            stable_ids,
+            (Instant::now() + Duration::from_secs(10)).min(self.deadline),
+        )?;
+        report.pcm.as_mut().expect("PCM evidence").identity = Some(clients.identity.clone());
+        publish(shared, report);
+        self.require_running("before_native_client_start", report, shared)?;
+        let outcome = (|| -> anyhow::Result<()> {
+            let started = clients.start(&mut report.native_clients_started_by_probe);
+            // Publish partial success before any error cleanup can wait on native
+            // calls; capture Start success must survive a later render failure.
+            publish(shared, report);
+            started?;
+            self.signal_phase(&mut clients, false, report, shared)?;
+            clients.set_signal(validation::SECOND_SIGNAL);
+            self.signal_phase(&mut clients, true, report, shared)?;
+            let evidence = report.pcm.as_mut().expect("PCM evidence");
+            evidence.capture_running_at_stop_request = clients.capture_running();
+            ensure!(
+                evidence.capture_running_at_stop_request,
+                "capture stopped before service Stop"
+            );
+            let stopped = self
+                .handle
+                .try_request_tracked(AppRequest::Stop)
+                .map_err(|error| anyhow::anyhow!("Stop enqueue: {error:?}"))?;
+            eprintln!("stage2: Stop while capture RUN, retaining native endpoints");
+            loop {
+                // Do not stop capture/render during service Stop; drain while the
+                // graph retires so a later silent packet is not a stopped client.
+                clients.pump(|samples, _| validate_finite(samples))?;
+                if let Some(snapshot) = self.handle.try_snapshot() {
+                    let evidence = Evidence::from(snapshot.as_ref());
+                    record(
+                        report,
+                        "stop_with_capture_running",
+                        evidence.clone(),
+                        shared,
+                    );
+                    if evidence.stopped(self.ids, stopped.0) {
+                        break;
+                    }
+                    ensure!(
+                        evidence.phase != "failed",
+                        "service Stop failed: {evidence:?}"
+                    );
+                }
+                ensure!(
+                    Instant::now() < self.deadline,
+                    "service Stop timed out with capture RUN"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+            report
+                .pcm
+                .as_mut()
+                .expect("PCM evidence")
+                .capture_running_after_stop_ack = clients.capture_running();
+            let started = Instant::now();
+            let deadline = (started + PCM_PHASE_LIMIT).min(self.deadline);
+            loop {
+                self.require_stopped(stopped.0, report, shared)?;
+                ensure!(
+                    clients.capture_running(),
+                    "capture left RUN before silence verification"
+                );
+                let evidence = report.pcm.as_mut().expect("PCM evidence");
+                let settling = started.elapsed() < SETTLE;
+                evidence.silence_elapsed_ms = started.elapsed().as_millis() as u64;
+                clients.pump(|samples, discontinuity| {
+                    if settling {
+                        validate_finite(samples)
+                    } else {
+                        observe_at(
+                            &mut evidence.stopped_silence,
+                            samples,
+                            [0.0; 2],
+                            discontinuity,
+                            started.elapsed(),
+                        )
+                    }
+                })?;
+                evidence.capture_running_during_silence = true;
+                if !settling && evidence.stopped_silence.require_silence().is_ok() {
+                    break;
+                }
+                publish(shared, report);
+                ensure!(
+                    Instant::now() < deadline,
+                    "insufficient post-Stop real silent frames: {:?}",
+                    report.pcm
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+            Ok(())
+        })();
+        let evidence = report.pcm.as_mut().expect("PCM evidence");
+        evidence.native_discontinuities = clients.discontinuities();
+        let stopped = clients.stop();
+        evidence.native_clients_stopped = stopped.is_ok();
+        // Pair releases both WASAPI leases before service exit/control removal.
+        drop(clients);
+        publish(shared, report);
+        outcome?;
+        stopped?;
+        report.pcm_verified = true;
+        publish(shared, report);
+        Ok(())
+    }
+
+    fn signal_phase(
+        &self,
+        clients: &mut native::Pair,
+        second: bool,
+        report: &mut Report,
+        shared: &Shared,
+    ) -> anyhow::Result<()> {
+        let stage = if second {
+            "pcm_second_signal_gain_half"
+        } else {
+            "pcm_signal_gain_half"
+        };
+        eprintln!("stage2: {stage}, require 48000 consecutive matching frames");
+        let started = Instant::now();
+        let deadline = (started + PCM_PHASE_LIMIT).min(self.deadline);
+        loop {
+            self.require_running(stage, report, shared)?;
+            let settling = started.elapsed() < SETTLE;
+            let pcm = report.pcm.as_mut().expect("PCM evidence");
+            if second {
+                pcm.second_signal_elapsed_ms = started.elapsed().as_millis() as u64;
+            } else {
+                pcm.signal_elapsed_ms = started.elapsed().as_millis() as u64;
+            }
+            let (observation, expected) = if second {
+                (&mut pcm.second_signal, validation::SECOND_EXPECTED)
+            } else {
+                (&mut pcm.signal, validation::EXPECTED)
+            };
+            clients.pump(|samples, discontinuity| {
+                if settling {
+                    validate_finite(samples)
+                } else {
+                    observe_at(
+                        observation,
+                        samples,
+                        expected,
+                        discontinuity,
+                        started.elapsed(),
+                    )
+                }
+            })?;
+            if !settling && observation.require_signal().is_ok() {
+                break;
+            }
+            publish(shared, report);
+            ensure!(
+                Instant::now() < deadline,
+                "{stage}: insufficient matching signal: {:?}",
+                report.pcm
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        publish(shared, report);
+        Ok(())
+    }
+}
+
+fn observe_at(
+    observation: &mut validation::Observation,
+    samples: &[f32],
+    expected: [f32; 2],
+    discontinuity: bool,
+    elapsed: Duration,
+) -> anyhow::Result<()> {
+    if !samples.is_empty() {
+        observation
+            .first_frame_ms
+            .get_or_insert(elapsed.as_millis());
+        observation.last_frame_ms = Some(elapsed.as_millis());
+    }
+    observation.observe_packet(samples, expected, discontinuity)
+}
+
+fn validate_finite(samples: &[f32]) -> anyhow::Result<()> {
+    ensure!(
+        samples.iter().all(|sample| sample.is_finite()),
+        "nonfinite PCM during bounded settling"
+    );
+    Ok(())
+}
+
 fn wait(
     handle: &AppHandle,
     deadline: Instant,
@@ -218,7 +606,7 @@ fn wait(
     shared: &Shared,
     ready: impl Fn(&Evidence) -> bool,
 ) -> anyhow::Result<Evidence> {
-    eprintln!("stage1: {stage}");
+    eprintln!("integration: {stage}");
     let mut last = None;
     loop {
         if let Some(snapshot) = handle.try_snapshot() {

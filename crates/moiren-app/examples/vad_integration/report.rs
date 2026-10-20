@@ -15,6 +15,8 @@ pub(super) struct Report {
     pub persisted_project_verified: bool,
     pub native_clients_started_by_probe: u32,
     pub pcm_verified: bool,
+    pub idle_hold: Option<IdleHoldEvidence>,
+    pub pcm: Option<PcmEvidence>,
     pub service_joined: bool,
     pub control_session_released: bool,
     pub endpoint_absence_confirmed: bool,
@@ -34,6 +36,8 @@ impl Default for Report {
             persisted_project_verified: false,
             native_clients_started_by_probe: 0,
             pcm_verified: false,
+            idle_hold: None,
+            pcm: None,
             service_joined: false,
             control_session_released: false,
             endpoint_absence_confirmed: false,
@@ -48,6 +52,37 @@ impl Default for Report {
             ],
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub(super) struct IdleHoldEvidence {
+    pub observed_wall_ms: u128,
+    pub confirmed_revision: u64,
+    pub timeline_verified: bool,
+    pub timeline: super::validation::TimelineProgress,
+    pub after_old_three_second_threshold: super::validation::TimelineProgress,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub(super) struct PcmEvidence {
+    #[cfg(windows)]
+    pub identity: Option<super::native::IdentityEvidence>,
+    pub source: [f32; 2],
+    pub expected_after_gain: [f32; 2],
+    pub second_source: [f32; 2],
+    pub second_expected_after_gain: [f32; 2],
+    pub signal: super::validation::Observation,
+    pub second_signal: super::validation::Observation,
+    pub stopped_silence: super::validation::Observation,
+    pub signal_elapsed_ms: u64,
+    pub second_signal_elapsed_ms: u64,
+    pub silence_elapsed_ms: u64,
+    pub settle_ms_per_phase: u64,
+    pub capture_running_at_stop_request: bool,
+    pub capture_running_after_stop_ack: bool,
+    pub capture_running_during_silence: bool,
+    pub native_discontinuities: u64,
+    pub native_clients_stopped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
