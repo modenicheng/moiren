@@ -242,6 +242,143 @@ static void NativeAllocationRejectsTimerDrivenPackets()
         "page-aligned two-packet streams remain supported");
 }
 
+static void TimerDrivenRingRoundsBackingAndPlansWrap()
+{
+    vad::audio::TimerDrivenRing ring = {};
+    Check(vad::audio::InitializeTimerDrivenRing(ring, 5000, 4, 4096, 48),
+        "timer-driven shape accepts a packet whose size is not page divisible");
+    Check(ring.PacketSize == 5000 && ring.MappedBytes == 8192 &&
+        ring.PacketFrames == 1250 && ring.MappedFrames == 2048 &&
+        ring.SegmentFrames == 48,
+        "timer-driven state keeps logical packet and page-rounded backing sizes");
+    Check(!vad::audio::InitializeTimerDrivenRing(ring, 5000, 3, 4096, 48),
+        "timer-driven ring rejects a backing size that cannot contain whole frames");
+    Check(!vad::audio::InitializeTimerDrivenRing(ring, 5000, 4, 0, 48),
+        "timer-driven ring rejects an invalid page size");
+
+    ring.RingFrameOffset = ring.MappedFrames - 10;
+    vad::audio::TimerDrivenSegment segment = {};
+    Check(vad::audio::NextTimerDrivenSegment(ring, segment) &&
+        segment.RingFrameOffset == 2038 && segment.FirstFrames == 10 &&
+        segment.SecondFrames == 38 && segment.Frames == 48,
+        "timer-driven segment splits at the physical ring boundary");
+    vad::audio::TimerDrivenCopyPlan plan = {};
+    Check(vad::audio::BuildTimerDrivenCopyPlan(ring, segment, plan) &&
+        plan.First.RingByteOffset == (2048 - 10) * 4 &&
+        plan.First.PacketByteOffset == 0 && plan.First.ByteCount == 40 &&
+        plan.Second.RingByteOffset == 0 && plan.Second.PacketByteOffset == 40 &&
+        plan.Second.ByteCount == 38 * 4 && plan.ByteCount == 48 * 4,
+        "timer-driven wrap exposes two bounded linear copy spans");
+    Check(ring.RingFrameOffset == 38 && ring.PresentedFrames == 48,
+        "timer-driven ring advances one segment after a wrapped copy");
+}
+
+static void TimerDrivenRingKeepsLogicalPacketProgressionBounded()
+{
+    vad::audio::TimerDrivenRing ring = {};
+    Check(vad::audio::InitializeTimerDrivenRing(ring, 5000, 4, 4096, 48),
+        "timer-driven progression setup succeeds");
+    for (uint64_t sequence = 0; sequence < 25; ++sequence) {
+        vad::audio::TimerDrivenSegment segment = {};
+        Check(vad::audio::NextTimerDrivenSegment(ring, segment) &&
+            segment.Sequence == sequence && segment.StartFrame == sequence * 48 &&
+            segment.PacketSequence == 0 && !segment.CompletesPacket,
+            "each timer callback advances exactly one logical segment");
+        vad::audio::TimerDrivenCopyPlan plan = {};
+        Check(vad::audio::BuildTimerDrivenCopyPlan(ring, segment, plan) &&
+            plan.ByteCount == segment.Frames * ring.BlockAlign &&
+            plan.ByteCount <= ring.PacketSize,
+            "each segment copy stays within the logical packet contract");
+    }
+    vad::audio::TimerDrivenSegment finalSegment = {};
+    Check(vad::audio::NextTimerDrivenSegment(ring, finalSegment) &&
+        finalSegment.StartFrame == 1200 && finalSegment.Frames == 48 &&
+        finalSegment.PacketSequence == 0 && !finalSegment.CompletesPacket,
+        "the final full segment remains separate from packet completion");
+    Check(vad::audio::NextTimerDrivenSegment(ring, finalSegment) &&
+        finalSegment.StartFrame == 1248 && finalSegment.Frames == 2 &&
+        finalSegment.PacketSequence == 0 && finalSegment.CompletesPacket,
+        "the last short segment completes a non-page-sized packet exactly");
+    Check(ring.PresentedFrames == 1250 && ring.SegmentSequence == 27,
+        "logical packet completion advances position without consuming padding");
+}
+
+static void TimerDrivenStallRebasesWithoutCatchUp()
+{
+    vad::audio::TimerDrivenRing ring = {};
+    Check(vad::audio::InitializeTimerDrivenRing(ring, 1920, 4, 4096),
+        "timer-driven stall setup succeeds");
+    auto clock = RunningClock();
+    const auto schedule = vad::audio::ScheduleTimerDrivenSegment(
+        clock, ring, 700000000);
+    Check(schedule.Valid && schedule.Rebased && schedule.Due == -10000 &&
+        ring.PresentedFrames == 0 && ring.SegmentSequence == 0,
+        "a long timer-driven stall schedules one fresh segment without catch-up");
+    Check(vad::audio::TimerDrivenPosition(ring, clock, 700000000) == 0,
+        "rebasing does not report unprocessed timer-driven frames");
+
+    vad::audio::TimerDrivenSegment segment = {};
+    Check(vad::audio::NextTimerDrivenSegment(ring, segment) &&
+        segment.Sequence == 0 && segment.Frames == 48 &&
+        ring.PresentedFrames == 48,
+        "one timer callback consumes one segment after a stall");
+    const auto next = vad::audio::ScheduleTimerDrivenSegment(
+        clock, ring, 700000000);
+    Check(next.Valid && !next.Rebased && next.Due == -20000 &&
+        ring.PresentedFrames == 48 && ring.SegmentSequence == 1,
+        "scheduling the next segment does not recursively catch up old time");
+    Check(vad::audio::TimerDrivenPosition(ring, clock, 700000000) == 48,
+        "presentation position never regresses below processed segments");
+}
+
+static void TimerDrivenScheduleMatchesShortSegments()
+{
+    vad::audio::TimerDrivenRing ring = {};
+    Check(vad::audio::InitializeTimerDrivenRing(ring, 5000, 4, 4096),
+        "short-segment scheduling setup succeeds");
+    auto clock = RunningClock(10000003, 0);
+    uint64_t expectedStart = 0;
+    for (unsigned i = 0; i < 108; ++i) {
+        const auto remaining = 1250 - expectedStart % 1250;
+        const auto frames = remaining < 48 ? remaining : 48;
+        const auto next = expectedStart + frames;
+        const auto startQpc = 10000000 +
+            (expectedStart * 10000003 + 47999) / 48000;
+        const auto endQpc = 10000000 + (next * 10000003 + 47999) / 48000;
+        const auto hns = ((endQpc - startQpc) * 10000000 + 10000002) /
+            10000003;
+        const auto schedule = vad::audio::ScheduleTimerDrivenSegment(
+            clock, ring, startQpc);
+        Check(schedule.Valid && !schedule.Rebased &&
+            schedule.Due == -static_cast<long long>(hns) &&
+            schedule.SegmentStartQpc == startQpc && clock.LimitFrames == next,
+            "timer deadlines and position ceilings use the actual short segment");
+        Check(vad::audio::TimerDrivenPosition(ring, clock, endQpc + 1000000) ==
+            next, "a delayed query cannot advance beyond the scheduled segment");
+        vad::audio::TimerDrivenSegment segment = {};
+        Check(vad::audio::NextTimerDrivenSegment(ring, segment) &&
+            segment.StartFrame == expectedStart && segment.Frames == frames,
+            "timer scheduling and segment consumption share the same boundary");
+        expectedStart = next;
+    }
+}
+
+static void TimerDrivenCopyPlanRejectsNoncontiguousSpans()
+{
+    vad::audio::TimerDrivenRing ring = {};
+    Check(vad::audio::InitializeTimerDrivenRing(ring, 5000, 4, 4096),
+        "malformed timer copy plan setup succeeds");
+    vad::audio::TimerDrivenSegment segment = {};
+    Check(vad::audio::NextTimerDrivenSegment(ring, segment),
+        "malformed timer copy plan starts from a genuine segment");
+    vad::audio::TimerDrivenCopyPlan plan = {};
+    segment.FirstFrames = 1;
+    segment.SecondFrames = 47;
+    Check(!vad::audio::BuildTimerDrivenCopyPlan(ring, segment, plan) &&
+        plan.ByteCount == 0,
+        "a second copy span cannot wrap before reaching the ring boundary");
+}
+
 static void RenderPackets()
 {
     using R = vad::audio::RenderPacketResult;
@@ -329,9 +466,15 @@ int main()
     PauseAndResume();
     FractionalDeadlines();
     NativeAllocationRejectsTimerDrivenPackets();
+    TimerDrivenRingRoundsBackingAndPlansWrap();
+    TimerDrivenRingKeepsLogicalPacketProgressionBounded();
+    TimerDrivenStallRebasesWithoutCatchUp();
+    TimerDrivenScheduleMatchesShortSegments();
+    TimerDrivenCopyPlanRejectsNoncontiguousSpans();
     RenderPackets();
     CapturePackets();
     std::puts("PASS: packet reset epoch/sequence/overflow, audio stall rebase, "
         "pause/resume, 3.6M rational deadlines, "
-        "two-packet admission, render flags/EOS/wrap, capture readiness/duplicates");
+        "event/timer packet helpers, bounded ring wrap/segments/no-catch-up, "
+        "render flags/EOS/wrap, capture readiness/duplicates");
 }

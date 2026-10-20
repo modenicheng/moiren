@@ -13,6 +13,7 @@ constexpr uint32_t MaxPackets = 2;
 constexpr uint32_t MinPacketFrames = 48;
 constexpr uint32_t MaxPacketFrames = 4800;
 constexpr uint32_t EndOfStream = 0x200; // KSSTREAM_HEADER_OPTIONSF_ENDOFSTREAM.
+constexpr uint32_t DefaultTimerSegmentFrames = 48; // 1 ms at 48 kHz.
 
 struct Clock {
     uint64_t Frequency;
@@ -140,6 +141,265 @@ inline bool ValidPacketShape(uint32_t count, uint32_t size, uint32_t align)
     return count == MaxPackets && align != 0 && size != 0 &&
         size % align == 0 && size / align >= MinPacketFrames &&
         size / align <= MaxPacketFrames;
+}
+
+// ACX timer-driven streams use one logical packet backed by a page-aligned
+// mapping. Keep the logical packet size separate from the page-rounded backing
+// size: the former is the PCM contract, while the latter is the physical ring
+// span used by offset calculations.
+inline bool RoundUpToPage(uint32_t bytes, uint32_t pageSize,
+    uint32_t& roundedBytes)
+{
+    roundedBytes = 0;
+    if (bytes == 0 || pageSize == 0) {
+        return false;
+    }
+    const auto rounded = (static_cast<uint64_t>(bytes) + pageSize - 1) /
+        pageSize * pageSize;
+    if (rounded > 0xffffffffULL) {
+        return false;
+    }
+    roundedBytes = static_cast<uint32_t>(rounded);
+    return true;
+}
+
+struct TimerDrivenRing {
+    uint32_t PacketSize;
+    uint32_t MappedBytes;
+    uint32_t PacketFrames;
+    uint32_t MappedFrames;
+    uint32_t SegmentFrames;
+    uint32_t BlockAlign;
+    uint32_t RingFrameOffset;
+    uint64_t PresentedFrames;
+    uint64_t SegmentSequence;
+};
+
+struct TimerDrivenSegment {
+    uint64_t Sequence;
+    uint64_t StartFrame;
+    uint64_t PacketSequence;
+    uint32_t PacketOffsetFrames;
+    uint32_t RingFrameOffset;
+    uint32_t Frames;
+    uint32_t FirstFrames;
+    uint32_t SecondFrames;
+    bool CompletesPacket;
+};
+
+struct TimerDrivenCopySpan {
+    uint32_t RingByteOffset;
+    uint32_t PacketByteOffset;
+    uint32_t ByteCount;
+};
+
+struct TimerDrivenCopyPlan {
+    TimerDrivenCopySpan First;
+    TimerDrivenCopySpan Second;
+    uint32_t ByteCount;
+};
+
+inline bool ValidTimerDrivenPacketShape(uint32_t count, uint32_t size,
+    uint32_t align, uint32_t pageSize)
+{
+    if (count != 1 || align == 0 || size == 0 || size % align != 0 ||
+        size / align < MinPacketFrames || size / align > MaxPacketFrames) {
+        return false;
+    }
+    uint32_t mappedBytes = 0;
+    return RoundUpToPage(size, pageSize, mappedBytes) &&
+        mappedBytes % align == 0;
+}
+
+inline bool IsTimerDriven(uint32_t count)
+{
+    return count == 1;
+}
+
+inline bool IsValidTimerDrivenRing(const TimerDrivenRing& ring)
+{
+    return ring.PacketSize != 0 && ring.MappedBytes >= ring.PacketSize &&
+        ring.PacketFrames != 0 && ring.MappedFrames >= ring.PacketFrames &&
+        ring.SegmentFrames != 0 && ring.SegmentFrames <= ring.PacketFrames &&
+        ring.BlockAlign != 0 && ring.PacketSize % ring.BlockAlign == 0 &&
+        ring.MappedBytes % ring.BlockAlign == 0 &&
+        ring.PacketFrames == ring.PacketSize / ring.BlockAlign &&
+        ring.MappedFrames == ring.MappedBytes / ring.BlockAlign &&
+        ring.RingFrameOffset < ring.MappedFrames;
+}
+
+inline bool InitializeTimerDrivenRing(TimerDrivenRing& ring, uint32_t size,
+    uint32_t align, uint32_t pageSize,
+    uint32_t segmentFrames = DefaultTimerSegmentFrames)
+{
+    TimerDrivenRing candidate = {};
+    if (!ValidTimerDrivenPacketShape(1, size, align, pageSize)) {
+        return false;
+    }
+    uint32_t mappedBytes = 0;
+    if (!RoundUpToPage(size, pageSize, mappedBytes)) {
+        return false;
+    }
+    const auto packetFrames = size / align;
+    const auto mappedFrames = mappedBytes / align;
+    if (segmentFrames == 0) {
+        segmentFrames = packetFrames < DefaultTimerSegmentFrames ?
+            packetFrames : DefaultTimerSegmentFrames;
+    }
+    if (segmentFrames > packetFrames || segmentFrames > mappedFrames) {
+        return false;
+    }
+    candidate.PacketSize = size;
+    candidate.MappedBytes = mappedBytes;
+    candidate.PacketFrames = packetFrames;
+    candidate.MappedFrames = mappedFrames;
+    candidate.SegmentFrames = segmentFrames;
+    candidate.BlockAlign = align;
+    ring = candidate;
+    return true;
+}
+
+inline uint32_t NextTimerDrivenFrames(const TimerDrivenRing& ring)
+{
+    if (!IsValidTimerDrivenRing(ring)) {
+        return 0;
+    }
+    const auto remaining = ring.PacketFrames - static_cast<uint32_t>(
+        ring.PresentedFrames % ring.PacketFrames);
+    return ring.SegmentFrames < remaining ? ring.SegmentFrames : remaining;
+}
+
+// Advance exactly one bounded segment. A delayed timer callback must not loop
+// until wall-clock time is caught up; the caller can rebase the clock and
+// discard stale PCM as one discontinuity instead.
+inline bool NextTimerDrivenSegment(TimerDrivenRing& ring,
+    TimerDrivenSegment& segment)
+{
+    segment = {};
+    const auto frames = NextTimerDrivenFrames(ring);
+    if (frames == 0 ||
+        ring.PresentedFrames > ~uint64_t{0} - frames ||
+        ring.SegmentSequence == ~uint64_t{0}) {
+        return false;
+    }
+    const auto packetOffset = static_cast<uint32_t>(
+        ring.PresentedFrames % ring.PacketFrames);
+    const auto remainingPacket = ring.PacketFrames - packetOffset;
+    const auto firstFrames = ring.MappedFrames - ring.RingFrameOffset < frames ?
+        ring.MappedFrames - ring.RingFrameOffset : frames;
+    const auto secondFrames = frames - firstFrames;
+
+    segment.Sequence = ring.SegmentSequence;
+    segment.StartFrame = ring.PresentedFrames;
+    segment.PacketSequence = ring.PresentedFrames / ring.PacketFrames;
+    segment.PacketOffsetFrames = packetOffset;
+    segment.RingFrameOffset = ring.RingFrameOffset;
+    segment.Frames = frames;
+    segment.FirstFrames = firstFrames;
+    segment.SecondFrames = secondFrames;
+    segment.CompletesPacket = frames == remainingPacket;
+
+    // The first span reaches either the end of the mapping or the end of the
+    // segment. With a wrap, the second span starts at ring frame zero.
+    if (secondFrames != 0) {
+        ring.RingFrameOffset = secondFrames;
+    } else {
+        const auto next = ring.RingFrameOffset + firstFrames;
+        ring.RingFrameOffset = next == ring.MappedFrames ? 0 : next;
+    }
+    ring.PresentedFrames += frames;
+    ++ring.SegmentSequence;
+    return true;
+}
+
+// Produce at most two linear spans for either ring-to-packet or
+// packet-to-ring copying. The actual copy stays outside this WDF-independent
+// header so it can obey the caller's IRQL and address-space rules.
+inline bool BuildTimerDrivenCopyPlan(const TimerDrivenRing& ring,
+    const TimerDrivenSegment& segment, TimerDrivenCopyPlan& plan)
+{
+    plan = {};
+    if (!IsValidTimerDrivenRing(ring) || segment.Frames == 0 ||
+        segment.FirstFrames == 0 ||
+        segment.RingFrameOffset >= ring.MappedFrames ||
+        segment.FirstFrames > ring.MappedFrames - segment.RingFrameOffset ||
+        segment.PacketOffsetFrames > ring.PacketFrames ||
+        segment.Frames > ring.PacketFrames - segment.PacketOffsetFrames ||
+        segment.Frames > ring.SegmentFrames) {
+        return false;
+    }
+    const auto remainingRing = ring.MappedFrames - segment.RingFrameOffset;
+    const auto firstFrames = remainingRing < segment.Frames ?
+        remainingRing : segment.Frames;
+    if (segment.FirstFrames != firstFrames ||
+        segment.SecondFrames != segment.Frames - firstFrames) {
+        return false;
+    }
+    const auto firstBytes = static_cast<uint64_t>(segment.FirstFrames) *
+        ring.BlockAlign;
+    const auto secondBytes = static_cast<uint64_t>(segment.SecondFrames) *
+        ring.BlockAlign;
+    const auto totalBytes = firstBytes + secondBytes;
+    const auto packetOffsetBytes = static_cast<uint64_t>(
+        segment.PacketOffsetFrames) * ring.BlockAlign;
+    if (totalBytes > 0xffffffffULL || packetOffsetBytes > ring.PacketSize ||
+        totalBytes > ring.PacketSize - packetOffsetBytes ||
+        firstBytes > ring.MappedBytes || secondBytes > ring.MappedBytes) {
+        return false;
+    }
+    plan.First = {segment.RingFrameOffset * ring.BlockAlign,
+        static_cast<uint32_t>(packetOffsetBytes),
+        static_cast<uint32_t>(firstBytes)};
+    plan.Second = {0,
+        static_cast<uint32_t>(packetOffsetBytes + firstBytes),
+        static_cast<uint32_t>(secondBytes)};
+    plan.ByteCount = static_cast<uint32_t>(totalBytes);
+    return true;
+}
+
+struct TimerDrivenSchedule {
+    long long Due;
+    bool Rebased;
+    bool Valid;
+    uint64_t SegmentStartQpc;
+};
+
+inline uint64_t TimerDrivenPosition(const TimerDrivenRing& ring,
+    const Clock& clock, uint64_t now)
+{
+    if (!IsValidTimerDrivenRing(ring) || !ValidFrequency(clock.Frequency)) {
+        return ring.PresentedFrames;
+    }
+    const auto clockPosition = Position(clock, now);
+    const auto frames = NextTimerDrivenFrames(ring);
+    const auto ceiling = ring.PresentedFrames > ~uint64_t{0} - frames ?
+        ~uint64_t{0} : ring.PresentedFrames + frames;
+    const auto bounded = clockPosition < ceiling ? clockPosition : ceiling;
+    return bounded > ring.PresentedFrames ? bounded : ring.PresentedFrames;
+}
+
+// Schedule only the next segment. On a long stall, rebase to the current ring
+// frontier and schedule one fresh segment; never recursively catch up old time.
+inline TimerDrivenSchedule ScheduleTimerDrivenSegment(Clock& clock,
+    const TimerDrivenRing& ring, uint64_t now)
+{
+    const auto frames = NextTimerDrivenFrames(ring);
+    if (frames == 0 || !clock.Running ||
+        !ValidFrequency(clock.Frequency) ||
+        ring.PresentedFrames > ~uint64_t{0} - frames) {
+        return {0, false, false, 0};
+    }
+    const auto next = ring.PresentedFrames + frames;
+    auto due = RelativeDue(clock, next, now);
+    const bool rebased = due == 0;
+    if (rebased) {
+        clock.BaseFrames = ring.PresentedFrames;
+        clock.EpochQpc = now;
+        due = RelativeDue(clock, next, now);
+    }
+    clock.LimitFrames = next;
+    return {due == 0 ? -1 : due, rebased, true,
+        FrameQpc(clock, ring.PresentedFrames)};
 }
 
 enum class RenderPacketResult { Accepted, Invalid, Ended, Late, Overrun };
