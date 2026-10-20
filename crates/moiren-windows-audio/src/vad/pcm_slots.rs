@@ -1,8 +1,11 @@
 //! Pure fixed-slot ownership rules shared by the transport and host tests.
 
+#[cfg(any(windows, test))]
 use super::REQUEST_SLOTS;
+#[cfg(any(windows, test))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(any(windows, test))]
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 
 /// Opaque completion ticket. Reusing a physical slot cannot revive an old ticket.
@@ -14,12 +17,14 @@ pub struct PcmTicket {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(windows, test))]
 pub(super) enum SlotError {
     Full,
     Stale,
     Exhausted,
 }
 
+#[cfg(any(windows, test))]
 pub(super) struct SlotBook {
     slots: [Option<u64>; REQUEST_SLOTS],
     next_serial: u64,
@@ -27,6 +32,7 @@ pub(super) struct SlotBook {
     owner: u64,
 }
 
+#[cfg(any(windows, test))]
 impl SlotBook {
     pub(super) fn new() -> Result<Self, SlotError> {
         let owner = NEXT_OWNER
@@ -75,6 +81,7 @@ impl SlotBook {
     pub(super) fn pending(&self) -> usize {
         self.slots.iter().filter(|slot| slot.is_some()).count()
     }
+    #[cfg(windows)]
     pub(super) fn retire_slot(&mut self, index: usize) {
         self.slots[index] = None;
     }

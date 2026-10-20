@@ -31,11 +31,13 @@ jobs:
       - run: cargo +stable test --locked --workspace
       - name: Test native-owner realtime contracts
         run: cargo +stable test --locked --manifest-path tools/rt-check/Cargo.toml
+      - name: Test VAD probe contracts without devices
+        run: cargo +stable test --locked -p moiren-windows-audio --features vad-probe --example vad_lifecycle --example vad_native
       - name: Test headless desktop UI
         if: runner.os == 'Windows'
         run: cargo +stable test --locked -p moiren-app --features gpui-test
       - if: always()
-        run: cargo +stable clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo +stable clippy --locked --workspace --all-targets --features moiren-windows-audio/vad-probe -- -D warnings
       - if: always()
         run: cargo +stable fmt --all -- --check
       - run: cargo +stable run --locked -p moiren-engine --example offline
@@ -46,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [moiren-core, moiren-engine, moiren-signal]
+        package: [moiren-core, moiren-engine, moiren-signal, moiren-windows-audio]
         model: [stacked, tree]
     runs-on: ubuntu-latest
     steps:
@@ -56,7 +58,15 @@ jobs:
       - run: rustup toolchain install nightly --profile minimal --component miri
       - run: cargo +nightly miri setup
       # Miri covers the portable RT contracts; native GPUI/GTK is tested above.
-      - run: cargo +nightly miri test --locked --no-fail-fast -p ${{ matrix.package }}
+      - if: matrix.package != 'moiren-windows-audio'
+        run: cargo +nightly miri test --locked --no-fail-fast -p ${{ matrix.package }}
+        env:
+          MIRIFLAGS: ${{ matrix.model == 'tree' && '-Zmiri-tree-borrows' || '' }}
+      # Keep native FFI and long-running clock simulations outside this suite.
+      - if: matrix.package == 'moiren-windows-audio'
+        run: >-
+          cargo +nightly miri test --locked --no-fail-fast
+          -p moiren-windows-audio --lib vad::
         env:
           MIRIFLAGS: ${{ matrix.model == 'tree' && '-Zmiri-tree-borrows' || '' }}
   miri:
