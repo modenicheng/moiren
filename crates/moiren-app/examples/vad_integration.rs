@@ -30,6 +30,9 @@ const HELP: &str = "vad_integration --exercise [--pcm] [--timeout-seconds=30|90]
     frame_end progress beyond 3s; exact-root/stable-ID WASAPI exclusive Float32\n\
     clients verify stereo [.25,-.5] -> Gain .5 -> [.125,-.25], then a distinct\n\
     second signal; keep capture RUN during Stop and verify real captured silence.\n\
+    Running gate closures require the same native identity and an observed newer\n\
+    stream generation; re-admission is bounded to 5s and the existing phase limit.\n\
+    Both gates must be open at successful hold/signal-phase completion.\n\
     --pcm defaults to a 90s overall watchdog and requires at least 60s if set.\n\
     Default/no arguments and --help do not access the driver or write files.\n\
     --exercise exclusively owns the optional VAD control session through App.\n\

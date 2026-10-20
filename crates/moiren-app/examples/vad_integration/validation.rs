@@ -10,6 +10,197 @@ pub(super) const SECOND_SIGNAL: [f32; 2] = [-0.375, 0.125];
 pub(super) const SECOND_EXPECTED: [f32; 2] = [-0.1875, 0.0625];
 pub(super) const REQUIRED_FRAMES: u64 = 48_000;
 const TOLERANCE: f32 = 0.0001;
+const READMISSION_LIMIT_MS: u128 = 5_000;
+const GATE_EVENT_CAPACITY: usize = 32;
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct GateEvent {
+    pub observed_ms: u128,
+    pub event: &'static str,
+    pub native_stamp: [u64; 5],
+    pub gate_open: bool,
+    pub closed_duration_ms: Option<u128>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct Readmission {
+    pub observed_ms: u128,
+    pub deadline_ms: u128,
+    pub closed_since_ms: Option<u128>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct GateProgress {
+    pub endpoint_id: String,
+    pub native_identity: [u64; 3],
+    pub settled_stream_generation: u64,
+    pub last_stamp: [u64; 5],
+    pub last_gate_open: bool,
+    pub last_observed_ms: u128,
+    pub pending: Option<Readmission>,
+    pub closures: u64,
+    pub reopens: u64,
+    pub total_closed_ms: u128,
+    pub longest_closed_ms: u128,
+    pub events: Vec<GateEvent>,
+    pub omitted_events: u64,
+}
+
+impl GateProgress {
+    pub fn new(endpoint_id: String, stamp: Option<[u64; 5]>, now_ms: u128) -> anyhow::Result<Self> {
+        let stamp =
+            stamp.ok_or_else(|| anyhow::anyhow!("{endpoint_id}: missing initial native stamp"))?;
+        let mut progress = Self {
+            endpoint_id,
+            native_identity: [stamp[0], stamp[1], stamp[2]],
+            settled_stream_generation: stamp[3],
+            last_stamp: stamp,
+            last_gate_open: true,
+            last_observed_ms: now_ms,
+            pending: None,
+            closures: 0,
+            reopens: 0,
+            total_closed_ms: 0,
+            longest_closed_ms: 0,
+            events: Vec::new(),
+            omitted_events: 0,
+        };
+        progress.event("initial_open_baseline", stamp, true, now_ms, None);
+        Ok(progress)
+    }
+
+    pub fn observe(
+        &mut self,
+        stamp: Option<[u64; 5]>,
+        open: bool,
+        now_ms: u128,
+        phase_deadline_ms: u128,
+    ) -> anyhow::Result<()> {
+        let stamp =
+            stamp.ok_or_else(|| anyhow::anyhow!("{}: missing native stamp", self.endpoint_id))?;
+        ensure!(
+            [stamp[0], stamp[1], stamp[2]] == self.native_identity,
+            "{}: native identity changed: previous={:?}, current={stamp:?}",
+            self.endpoint_id,
+            self.last_stamp
+        );
+        ensure!(
+            stamp[3] >= self.last_stamp[3] && stamp[4] >= self.last_stamp[4],
+            "{}: native stamp regressed: previous={:?}, current={stamp:?}",
+            self.endpoint_id,
+            self.last_stamp
+        );
+        ensure!(
+            now_ms >= self.last_observed_ms && now_ms < phase_deadline_ms,
+            "{}: observation outside phase deadline",
+            self.endpoint_id
+        );
+        if let Some(pending) = &mut self.pending {
+            pending.deadline_ms = pending.deadline_ms.min(phase_deadline_ms);
+        }
+        if let Some(pending) = &self.pending
+            && now_ms >= pending.deadline_ms
+        {
+            ensure!(
+                pending.closed_since_ms.is_none() && self.last_gate_open,
+                "{}: native gate re-admission timed out: pending={pending:?}, stamp={stamp:?}",
+                self.endpoint_id
+            );
+            // An advance observed while open is not proof of re-admission.
+            // Retain its correlation window, then expire it without inventing
+            // a close/reopen event that the sampled App API did not observe.
+            // A newly observed higher generation may already be closed; it gets
+            // its own window after the old, never-closed generation is settled.
+            self.settled_stream_generation = self.last_stamp[3];
+            self.pending = None;
+            self.event(
+                "advance_without_observed_closure",
+                self.last_stamp,
+                true,
+                now_ms,
+                None,
+            );
+        }
+        if stamp[3] > self.settled_stream_generation && self.pending.is_none() {
+            self.pending = Some(Readmission {
+                observed_ms: now_ms,
+                deadline_ms: (now_ms + READMISSION_LIMIT_MS).min(phase_deadline_ms),
+                closed_since_ms: None,
+            });
+        }
+        if stamp[3] > self.last_stamp[3] {
+            self.event("stream_generation_advanced", stamp, open, now_ms, None);
+        }
+        if !open {
+            ensure!(
+                stamp[3] > self.settled_stream_generation && self.pending.is_some(),
+                "{}: unexplained same-stream gate closure: settled_stream={}, stamp={stamp:?}",
+                self.endpoint_id,
+                self.settled_stream_generation
+            );
+            if self.last_gate_open {
+                self.pending
+                    .as_mut()
+                    .expect("checked transition")
+                    .closed_since_ms = Some(now_ms);
+                self.closures += 1;
+                self.event(
+                    "gate_closed_after_stream_advance",
+                    stamp,
+                    false,
+                    now_ms,
+                    None,
+                );
+            }
+        } else if !self.last_gate_open {
+            let pending = self.pending.take().expect("closed gate has a transition");
+            let duration = now_ms - pending.closed_since_ms.expect("observed closure");
+            self.reopens += 1;
+            self.total_closed_ms += duration;
+            self.longest_closed_ms = self.longest_closed_ms.max(duration);
+            self.settled_stream_generation = stamp[3];
+            self.event("gate_reopened", stamp, true, now_ms, Some(duration));
+        }
+        self.last_stamp = stamp;
+        self.last_gate_open = open;
+        self.last_observed_ms = now_ms;
+        Ok(())
+    }
+
+    pub fn require_deadline(&self, now_ms: u128) -> anyhow::Result<()> {
+        if let Some(pending) = &self.pending
+            && pending.closed_since_ms.is_some()
+        {
+            ensure!(
+                now_ms < pending.deadline_ms,
+                "{}: native gate re-admission timed out: {pending:?}",
+                self.endpoint_id
+            );
+        }
+        Ok(())
+    }
+
+    fn event(
+        &mut self,
+        event: &'static str,
+        native_stamp: [u64; 5],
+        gate_open: bool,
+        observed_ms: u128,
+        closed_duration_ms: Option<u128>,
+    ) {
+        if self.events.len() == GATE_EVENT_CAPACITY {
+            self.events.remove(0);
+            self.omitted_events += 1;
+        }
+        self.events.push(GateEvent {
+            observed_ms,
+            event,
+            native_stamp,
+            gate_open,
+            closed_duration_ms,
+        });
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Candidate {
@@ -391,5 +582,120 @@ mod tests {
         assert_eq!(started, 0);
         start_clients(&mut started, || Ok(()), || Ok(())).unwrap();
         assert_eq!(started, 2);
+    }
+
+    fn gate() -> GateProgress {
+        GateProgress::new("playback".into(), Some([31, 42, 31, 0, 1]), 0).unwrap()
+    }
+
+    #[test]
+    fn open_new_generation_retains_permission_for_a_later_observed_close() {
+        let mut gate = gate();
+        gate.observe(Some([31, 42, 31, 4, 9]), true, 100, 12_000)
+            .unwrap();
+        assert_eq!(gate.settled_stream_generation, 0);
+        assert_eq!(gate.pending.as_ref().unwrap().deadline_ms, 5_100);
+        gate.observe(Some([31, 42, 31, 4, 10]), false, 200, 12_000)
+            .unwrap();
+        gate.observe(Some([31, 42, 31, 4, 10]), true, 350, 12_000)
+            .unwrap();
+        assert_eq!(gate.closures, 1);
+        assert_eq!(gate.reopens, 1);
+        assert_eq!(gate.total_closed_ms, 150);
+        assert_eq!(gate.settled_stream_generation, 4);
+        assert!(gate.pending.is_none());
+        assert!(
+            gate.observe(Some([31, 42, 31, 4, 11]), false, 400, 12_000)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn same_stream_gate_epoch_change_or_unknown_stamp_never_authorizes_closure() {
+        assert!(
+            gate()
+                .observe(Some([31, 42, 31, 0, 9]), false, 100, 12_000)
+                .is_err()
+        );
+        assert!(gate().observe(None, false, 100, 12_000).is_err());
+        assert!(gate().observe(None, true, 100, 12_000).is_err());
+        assert!(GateProgress::new("missing".into(), None, 0).is_err());
+    }
+
+    #[test]
+    fn native_identity_and_regressing_stream_or_gate_stamps_fail_closed() {
+        for stamp in [[32, 42, 31, 4, 9], [31, 43, 31, 4, 9], [31, 42, 32, 4, 9]] {
+            assert!(gate().observe(Some(stamp), true, 100, 12_000).is_err());
+        }
+        let mut gate = gate();
+        gate.observe(Some([31, 42, 31, 4, 9]), true, 100, 12_000)
+            .unwrap();
+        assert!(
+            gate.observe(Some([31, 42, 31, 3, 10]), true, 200, 12_000)
+                .is_err()
+        );
+        assert!(
+            gate.observe(Some([31, 42, 31, 4, 8]), true, 200, 12_000)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn further_generations_and_phase_changes_cannot_extend_readmission_deadline() {
+        let mut gate = gate();
+        gate.observe(Some([31, 42, 31, 4, 10]), false, 100, 4_000)
+            .unwrap();
+        gate.observe(Some([31, 42, 31, 5, 12]), false, 1_000, 12_000)
+            .unwrap();
+        assert_eq!(gate.pending.as_ref().unwrap().deadline_ms, 4_000);
+        assert!(
+            gate.observe(Some([31, 42, 31, 5, 12]), true, 4_000, 12_000)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn unobserved_closure_permission_expires_without_claiming_readmission() {
+        let mut gate = gate();
+        gate.observe(Some([31, 42, 31, 4, 9]), true, 100, 12_000)
+            .unwrap();
+        gate.observe(Some([31, 42, 31, 4, 9]), true, 5_100, 12_000)
+            .unwrap();
+        assert!(gate.pending.is_none());
+        assert_eq!(gate.reopens, 0);
+        assert_eq!(gate.settled_stream_generation, 4);
+        assert!(
+            gate.observe(Some([31, 42, 31, 4, 10]), false, 5_200, 12_000)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn newer_closed_generation_after_an_unclosed_window_expires_gets_its_own_deadline() {
+        let mut gate = gate();
+        gate.observe(Some([31, 42, 31, 1, 3]), true, 100, 12_000)
+            .unwrap();
+        gate.observe(Some([31, 42, 31, 2, 6]), false, 5_200, 12_000)
+            .unwrap();
+        assert_eq!(gate.settled_stream_generation, 1);
+        assert_eq!(gate.pending.as_ref().unwrap().deadline_ms, 10_200);
+        assert_eq!(gate.pending.as_ref().unwrap().closed_since_ms, Some(5_200));
+        gate.observe(Some([31, 42, 31, 2, 6]), true, 5_300, 12_000)
+            .unwrap();
+        assert_eq!(gate.reopens, 1);
+        assert_eq!(gate.total_closed_ms, 100);
+    }
+
+    #[test]
+    fn closed_readmission_deadline_is_checked_without_another_snapshot_or_pcm() {
+        let mut gate = gate();
+        gate.observe(Some([31, 42, 31, 1, 4]), false, 100, 12_000)
+            .unwrap();
+        gate.require_deadline(5_099).unwrap();
+        assert!(gate.require_deadline(5_100).is_err());
+        assert!(
+            gate.observe(Some([31, 42, 31, 2, 6]), false, 5_200, 12_000)
+                .is_err()
+        );
     }
 }

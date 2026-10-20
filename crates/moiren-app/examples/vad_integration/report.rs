@@ -17,6 +17,7 @@ pub(super) struct Report {
     pub pcm_verified: bool,
     pub idle_hold: Option<IdleHoldEvidence>,
     pub pcm: Option<PcmEvidence>,
+    pub gate_transitions: Vec<super::validation::GateProgress>,
     pub service_joined: bool,
     pub control_session_released: bool,
     pub endpoint_absence_confirmed: bool,
@@ -38,6 +39,7 @@ impl Default for Report {
             pcm_verified: false,
             idle_hold: None,
             pcm: None,
+            gate_transitions: Vec::new(),
             service_joined: false,
             control_session_released: false,
             endpoint_absence_confirmed: false,
@@ -95,6 +97,7 @@ pub(super) struct ExportEvidence {
     pub allow_default: bool,
     pub gate_open: bool,
     pub active_revision: Option<u64>,
+    pub native_stamp: Option<[u64; 5]>,
     pub resource: String,
 }
 
@@ -112,6 +115,10 @@ pub(super) struct Evidence {
 
 impl Evidence {
     pub fn running(&self, ids: &[String; 2], request: u64) -> bool {
+        self.owner_running(ids, request) && self.gates_open()
+    }
+
+    pub fn owner_running(&self, ids: &[String; 2], request: u64) -> bool {
         self.phase == "running"
             && self.active_revision == Some(self.candidate_revision)
             && self.pending_revision.is_none()
@@ -119,9 +126,14 @@ impl Evidence {
             && self.error.is_none()
             && self.graph_error.is_none()
             && self.exact_exports(ids)
-            && self.exports.iter().all(|export| {
-                export.present && export.gate_open && export.active_revision == self.active_revision
-            })
+            && self
+                .exports
+                .iter()
+                .all(|export| export.present && export.active_revision == self.active_revision)
+    }
+
+    pub fn gates_open(&self) -> bool {
+        !self.exports.is_empty() && self.exports.iter().all(|export| export.gate_open)
     }
 
     pub fn stopped(&self, ids: &[String; 2], request: u64) -> bool {
@@ -184,6 +196,7 @@ impl From<&moiren_app::service::AppSnapshot> for Evidence {
                     allow_default: export.allow_default,
                     gate_open: export.gate_open,
                     active_revision: export.active_revision,
+                    native_stamp: export.native_stamp,
                     resource: format!("{:?}", export.resource).to_ascii_lowercase(),
                 })
                 .collect(),
@@ -219,6 +232,7 @@ mod tests {
                     allow_default: false,
                     gate_open: true,
                     active_revision: Some(7),
+                    native_stamp: Some([31, 42, 31, 0, 1]),
                     resource: "present".into(),
                 })
                 .collect(),
@@ -247,6 +261,19 @@ mod tests {
             assert!(!evidence.running(&ids(), 2), "accepted change {change}");
         }
         assert!(!running().running(&ids(), 3));
+    }
+
+    #[test]
+    fn owner_validity_is_independent_of_gate_readiness_but_keeps_revision_and_presence() {
+        let mut evidence = running();
+        evidence.exports[0].gate_open = false;
+        assert!(evidence.owner_running(&ids(), 2));
+        assert!(!evidence.running(&ids(), 2));
+        evidence.exports[0].present = false;
+        assert!(!evidence.owner_running(&ids(), 2));
+        evidence.exports[0].present = true;
+        evidence.active_revision = Some(6);
+        assert!(!evidence.owner_running(&ids(), 2));
     }
 
     #[test]

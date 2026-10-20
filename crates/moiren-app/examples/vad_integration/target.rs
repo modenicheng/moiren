@@ -118,6 +118,9 @@ fn run(
             "Only exact 48kHz stereo Float32 exclusive event-driven clients are exercised; no timer/shared-mode/physical coverage.",
             "Signal headers prove Engine timeline advances; AppSnapshot.elapsed is wall time only and is not used.",
             "Native identity is root parent plus stable ID plus flow; this probe never opens a ControlClient or PcmOwner.",
+            "Public native stamps correlate sampled stream advances with gate transitions; intermediate native states and external client counts are not observable.",
+            "Running-phase re-admission is bounded to 5s and the existing phase deadline; gate epoch alone never permits closure.",
+            "Gate transition timestamps are sampled monotonic wall times, not Engine progress. Intentional Stop/exit gate closures are separate checkpoints.",
             "Known PCM and Stop silence are bounded observations, not long stress/Verifier/release qualification.",
             "Exited plus join proves service teardown/control-file release, not final PDO absence.",
         ];
@@ -192,7 +195,20 @@ fn run(
                 apply_request: applied.0,
                 revision: running.active_revision.expect("checked"),
                 deadline: work_deadline,
+                started,
             };
+            report.gate_transitions = running
+                .exports
+                .iter()
+                .map(|export| {
+                    validation::GateProgress::new(
+                        export.endpoint_id.clone(),
+                        export.native_stamp,
+                        started.elapsed().as_millis(),
+                    )
+                })
+                .collect::<anyhow::Result<_>>()?;
+            publish(shared, &report);
             session.hold_without_clients(&mut report, shared)?;
             session.exercise_pcm(stable_ids, &mut report, shared)?;
             return Ok(());
@@ -260,6 +276,7 @@ struct LiveSession<'a> {
     apply_request: u64,
     revision: u64,
     deadline: Instant,
+    started: Instant,
 }
 
 impl LiveSession<'_> {
@@ -268,18 +285,51 @@ impl LiveSession<'_> {
         stage: &str,
         report: &mut Report,
         shared: &Shared,
-    ) -> anyhow::Result<()> {
+        phase_deadline: Instant,
+    ) -> anyhow::Result<bool> {
+        let now_ms = self.started.elapsed().as_millis();
+        ensure!(
+            Instant::now() < phase_deadline.min(self.deadline),
+            "{stage}: phase/work deadline"
+        );
+        // This is a control-operation deadline, independent of PCM availability
+        // and signal publications, including when the snapshot mutex is busy.
+        for transition in &report.gate_transitions {
+            transition.require_deadline(now_ms)?;
+        }
         if let Some(snapshot) = self.handle.try_snapshot() {
             let evidence = Evidence::from(snapshot.as_ref());
             record(report, stage, evidence.clone(), shared);
             ensure!(
-                evidence.running(self.ids, self.apply_request)
+                evidence.owner_running(self.ids, self.apply_request)
                     && evidence.active_revision == Some(self.revision),
-                "{stage}: Running/gates/confirmed revision changed: {evidence:?}"
+                "{stage}: Running/identity/confirmed revision changed: {evidence:?}"
             );
+            for export in &evidence.exports {
+                let transition = report
+                    .gate_transitions
+                    .iter_mut()
+                    .find(|transition| transition.endpoint_id == export.endpoint_id)
+                    .context("missing initial gate/stamp baseline")?;
+                let observed = transition.observe(
+                    export.native_stamp,
+                    export.gate_open,
+                    now_ms,
+                    phase_deadline
+                        .min(self.deadline)
+                        .saturating_duration_since(self.started)
+                        .as_millis(),
+                );
+                // Keep partial transition events even if this observation is
+                // rejected and later service cleanup reaches the watchdog.
+                publish(shared, report);
+                observed?;
+            }
+            publish(shared, report);
+            return Ok(evidence.gates_open());
         }
-        ensure!(Instant::now() < self.deadline, "{stage}: work deadline");
-        Ok(())
+        // A missing current observation cannot satisfy end-of-phase readiness.
+        Ok(false)
     }
 
     fn require_stopped(
@@ -314,7 +364,12 @@ impl LiveSession<'_> {
             ..Default::default()
         });
         let topic = loop {
-            self.require_running("no_clients_waiting_for_gain_topic", report, shared)?;
+            self.require_running(
+                "no_clients_waiting_for_gain_topic",
+                report,
+                shared,
+                subscription_deadline,
+            )?;
             if let Some(snapshot) = self.handle.try_snapshot()
                 && let Some(node) = snapshot
                     .graph
@@ -337,7 +392,12 @@ impl LiveSession<'_> {
             .subscribe_topic(topic, Default::default())
             .map_err(|error| anyhow::anyhow!("Gain signal subscribe: {error:?}"))?;
         let mut subscriber = loop {
-            self.require_running("no_clients_subscribing_gain", report, shared)?;
+            self.require_running(
+                "no_clients_subscribing_gain",
+                report,
+                shared,
+                subscription_deadline,
+            )?;
             if let Some(subscriber) = ticket
                 .try_take()
                 .map_err(|error| anyhow::anyhow!("Gain subscription: {error:?}"))?
@@ -352,7 +412,8 @@ impl LiveSession<'_> {
         };
         let hold_started = Instant::now();
         loop {
-            self.require_running("no_clients_four_second_hold", report, shared)?;
+            let gates_open =
+                self.require_running("no_clients_four_second_hold", report, shared, self.deadline)?;
             let elapsed = hold_started.elapsed();
             let hold = report
                 .idle_hold
@@ -377,7 +438,7 @@ impl LiveSession<'_> {
                 }
             }
             publish(shared, report);
-            if elapsed >= IDLE_HOLD {
+            if elapsed >= IDLE_HOLD && gates_open {
                 break;
             }
             thread::sleep(Duration::from_millis(5));
@@ -412,7 +473,7 @@ impl LiveSession<'_> {
         )?;
         report.pcm.as_mut().expect("PCM evidence").identity = Some(clients.identity.clone());
         publish(shared, report);
-        self.require_running("before_native_client_start", report, shared)?;
+        self.require_running("before_native_client_start", report, shared, self.deadline)?;
         let outcome = (|| -> anyhow::Result<()> {
             let started = clients.start(&mut report.native_clients_started_by_probe);
             // Publish partial success before any error cleanup can wait on native
@@ -532,7 +593,7 @@ impl LiveSession<'_> {
         let started = Instant::now();
         let deadline = (started + PCM_PHASE_LIMIT).min(self.deadline);
         loop {
-            self.require_running(stage, report, shared)?;
+            self.require_running(stage, report, shared, deadline)?;
             let settling = started.elapsed() < SETTLE;
             let pcm = report.pcm.as_mut().expect("PCM evidence");
             if second {
@@ -559,7 +620,11 @@ impl LiveSession<'_> {
                 }
             })?;
             if !settling && observation.require_signal().is_ok() {
-                break;
+                // Gate readiness never substitutes for actual matching PCM.
+                // Require a current, validated observation at successful exit.
+                if self.require_running(stage, report, shared, deadline)? {
+                    break;
+                }
             }
             publish(shared, report);
             ensure!(
