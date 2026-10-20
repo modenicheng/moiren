@@ -19,6 +19,14 @@ DefaultDestDir=13
 
 [Models.NTamd64.10.0...22621]
 %DeviceDescription%=Root,ROOT\MoirenVad
+%ChildDeviceDescription%=Child,MOIREN\VAD_RAW
+
+; ACX owns the raw child stack. Install MEDIA metadata only, with no child
+; function service, WDF binding, copied binary, or static audio interfaces.
+[Child.NT]
+
+[Child.NT.Services]
+AddService=,2
 
 [Root.NT]
 CopyFiles=Driver.Copy
@@ -62,4 +70,5 @@ MoirenVad.sys=1,,
 [Strings]
 Provider="Moiren"
 DeviceDescription="Moiren VAD control bus"
+ChildDeviceDescription="Moiren virtual audio endpoint"
 Disk="Moiren VAD unsigned development package"
