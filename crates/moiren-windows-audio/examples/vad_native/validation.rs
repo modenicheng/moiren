@@ -190,6 +190,46 @@ pub(super) fn revoke_and_drain<T>(
     Ok(value)
 }
 
+#[derive(Debug, Serialize)]
+pub(super) struct FailureCounters {
+    pub mode: crate::NativeMode,
+    pub signal_frames: u64,
+    pub silent_frames: u64,
+    pub microphone_dropped_packets: u64,
+    pub native_buffer_frames: u32,
+    pub driver_packet_frames: u32,
+    pub stream_generation: u64,
+    pub native_discontinuities: u64,
+    pub native_position: Option<PositionProgress>,
+}
+
+pub(super) fn diagnose_failure<T>(
+    outcome: anyhow::Result<T>,
+    counters: &FailureCounters,
+    emit: impl FnOnce(&str),
+) -> anyhow::Result<T> {
+    if let Err(error) = &outcome {
+        #[derive(Serialize)]
+        struct Diagnostic<'a> {
+            diagnostic: &'static str,
+            error: String,
+            counters: &'a FailureCounters,
+        }
+        let diagnostic = Diagnostic {
+            diagnostic: "vad-native-case-failure",
+            error: format!("{error:#}"),
+            counters,
+        };
+        // Diagnostics must not replace the phase or cleanup error, even if
+        // formatting fails. Return the same error object and its full chain.
+        let line = serde_json::to_string(&diagnostic).unwrap_or_else(|format_error| {
+            format!("vad-native-case-failure: {error:#}; counters={counters:?}; diagnostic formatting: {format_error}")
+        });
+        emit(&line);
+    }
+    outcome
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,5 +462,152 @@ mod tests {
         let report = serde_json::to_value(&progress).unwrap();
         assert_eq!(report["first"]["position_units"], 48);
         assert_eq!(report["last"]["qpc_100ns"], 20_100);
+    }
+
+    #[test]
+    fn failed_outcome_diagnoses_counters_after_cleanup_and_preserves_original_error() {
+        let mut position = PositionProgress {
+            frequency: 48_000,
+            ..Default::default()
+        };
+        position.observe(48, 10_100).unwrap();
+        position.observe(96, 20_100).unwrap();
+        let counters = FailureCounters {
+            mode: crate::NativeMode::Timer,
+            signal_frames: 23_136,
+            silent_frames: 25_344,
+            microphone_dropped_packets: 27,
+            native_buffer_frames: 2048,
+            driver_packet_frames: 480,
+            stream_generation: 7,
+            native_discontinuities: 2,
+            native_position: Some(position),
+        };
+        let actions = std::cell::RefCell::new(Vec::new());
+        let error = anyhow::Error::new(std::io::Error::from_raw_os_error(5))
+            .context("native PCM transfer failed");
+        let identity = error.downcast_ref::<std::io::Error>().unwrap() as *const _;
+        let outcome = revoke_and_drain::<()>(
+            Err(error),
+            || {
+                actions.borrow_mut().push("revoke");
+                anyhow::bail!("revoke also failed")
+            },
+            || {
+                actions.borrow_mut().push("drain");
+                anyhow::bail!("drain also failed")
+            },
+        );
+        let mut diagnostic = String::new();
+        let error = diagnose_failure(outcome, &counters, |line| {
+            actions.borrow_mut().push("diagnose");
+            diagnostic = line.to_owned();
+        })
+        .unwrap_err();
+        assert_eq!(*actions.borrow(), ["revoke", "drain", "diagnose"]);
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap() as *const _,
+            identity
+        );
+        assert_eq!(error.to_string(), "native PCM transfer failed");
+        let diagnostic: serde_json::Value = serde_json::from_str(&diagnostic).unwrap();
+        assert!(
+            diagnostic["error"]
+                .as_str()
+                .unwrap()
+                .contains("native PCM transfer failed")
+        );
+        let values = &diagnostic["counters"];
+        assert_eq!(values["mode"], "exclusive-timer");
+        assert_eq!(values["signal_frames"], 23_136);
+        assert_eq!(values["silent_frames"], 25_344);
+        assert_eq!(values["microphone_dropped_packets"], 27);
+        assert_eq!(values["native_buffer_frames"], 2048);
+        assert_eq!(values["driver_packet_frames"], 480);
+        assert_eq!(values["stream_generation"], 7);
+        assert_eq!(values["native_discontinuities"], 2);
+        assert_eq!(values["native_position"]["last"]["position_units"], 96);
+        assert_eq!(values["native_position"]["last"]["qpc_100ns"], 20_100);
+    }
+
+    #[test]
+    fn failure_diagnostic_does_not_emit_or_change_a_successful_outcome() {
+        let counters = FailureCounters {
+            mode: crate::NativeMode::Event,
+            signal_frames: 47_520,
+            silent_frames: 0,
+            microphone_dropped_packets: 0,
+            native_buffer_frames: 480,
+            driver_packet_frames: 480,
+            stream_generation: 9,
+            native_discontinuities: 0,
+            native_position: None,
+        };
+        assert_eq!(
+            diagnose_failure(Ok(42), &counters, |_| panic!("success is not failure")).unwrap(),
+            42
+        );
+    }
+
+    #[test]
+    fn diagnostic_keeps_the_existing_signal_threshold_and_unavailable_position() {
+        let seen = Observation {
+            signal_frames: 23_136,
+            silent_frames: 25_344,
+        };
+        let outcome = seen.require_signal(48_000 / 2);
+        assert!(outcome.is_err());
+        let counters = FailureCounters {
+            mode: crate::NativeMode::Event,
+            signal_frames: seen.signal_frames,
+            silent_frames: seen.silent_frames,
+            microphone_dropped_packets: 31,
+            native_buffer_frames: 480,
+            driver_packet_frames: 480,
+            stream_generation: 9,
+            native_discontinuities: 0,
+            native_position: None,
+        };
+        let mut line = String::new();
+        let error =
+            diagnose_failure(outcome, &counters, |message| line = message.to_owned()).unwrap_err();
+        assert!(error.to_string().contains("need 24000"));
+        let diagnostic: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(diagnostic["counters"]["signal_frames"], 23_136);
+        assert_eq!(diagnostic["counters"]["silent_frames"], 25_344);
+        assert_eq!(diagnostic["counters"]["mode"], "exclusive-event");
+        assert!(diagnostic["counters"]["native_position"].is_null());
+    }
+
+    #[test]
+    fn cleanup_failure_after_success_still_emits_counters_and_fails() {
+        let counters = FailureCounters {
+            mode: crate::NativeMode::Event,
+            signal_frames: 47_520,
+            silent_frames: 0,
+            microphone_dropped_packets: 0,
+            native_buffer_frames: 480,
+            driver_packet_frames: 480,
+            stream_generation: 9,
+            native_discontinuities: 0,
+            native_position: None,
+        };
+        let drained = std::cell::Cell::new(false);
+        let outcome = revoke_and_drain(
+            Ok(42),
+            || anyhow::bail!("revoke failed"),
+            || {
+                drained.set(true);
+                Ok(())
+            },
+        );
+        let mut line = String::new();
+        let error =
+            diagnose_failure(outcome, &counters, |message| line = message.to_owned()).unwrap_err();
+        assert!(drained.get());
+        assert_eq!(error.to_string(), "revoke failed");
+        let diagnostic: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(diagnostic["error"], "revoke failed");
+        assert_eq!(diagnostic["counters"]["signal_frames"], 47_520);
     }
 }

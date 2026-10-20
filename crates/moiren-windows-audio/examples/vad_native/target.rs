@@ -11,6 +11,7 @@ use moiren_windows_audio::vad::{
 use serde::Serialize;
 use std::{
     collections::{HashSet, VecDeque},
+    io::Write,
     marker::PhantomData,
     rc::Rc,
     time::{Duration, Instant},
@@ -40,6 +41,20 @@ const CONTROL_DEADLINE: Duration = Duration::from_secs(15);
 struct TransferProgress {
     playback: PacketProgress,
     microphone_drops: u64,
+    next_mic_submit: Option<Instant>,
+}
+
+impl TransferProgress {
+    fn microphone_completed(&mut self, now: Instant, frames: u32) {
+        // Probe policy: keep one write pending and shift its replacement by
+        // half a period after completion; driver freshness stays unchanged.
+        let half_period = Duration::from_nanos(u64::from(frames) * 1_000_000_000 / (48_000 * 2));
+        self.next_mic_submit = Some(now + half_period);
+    }
+
+    fn microphone_ready(&self, now: Instant, pending: usize) -> bool {
+        pending == 0 && self.next_mic_submit.is_none_or(|deadline| now >= deadline)
+    }
 }
 
 struct Apartment(PhantomData<Rc<()>>);
@@ -275,6 +290,48 @@ fn exercise_case(
     seconds: u32,
     mode: NativeMode,
 ) -> anyhow::Result<CaseReport> {
+    let mut counters = validation::FailureCounters {
+        mode,
+        signal_frames: 0,
+        silent_frames: 0,
+        microphone_dropped_packets: 0,
+        native_buffer_frames: 0,
+        driver_packet_frames: endpoint.packet_frames(),
+        stream_generation: endpoint.stream_generation(),
+        native_discontinuities: 0,
+        native_position: None,
+    };
+    let outcome = exercise_case_inner(
+        control,
+        enumerator,
+        endpoint,
+        mapping,
+        root,
+        format,
+        index,
+        seconds,
+        mode,
+        &mut counters,
+    );
+    validation::diagnose_failure(outcome, &counters, |line| {
+        // A failed stderr write must not replace the original case error.
+        let _ = writeln!(std::io::stderr().lock(), "{line}");
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exercise_case_inner(
+    control: &mut ControlClient,
+    enumerator: &IMMDeviceEnumerator,
+    endpoint: EndpointSnapshot,
+    mapping: &Candidate,
+    root: &str,
+    format: SampleFormat,
+    index: usize,
+    seconds: u32,
+    mode: NativeMode,
+    counters: &mut validation::FailureCounters,
+) -> anyhow::Result<CaseReport> {
     let case_index = index * 2 + usize::from(format == SampleFormat::Float32);
     let pattern = validation::pattern(case_index, endpoint.channels());
     let device = unsafe { enumerator.GetDevice(&HSTRING::from(&mapping.id))? };
@@ -292,130 +349,149 @@ fn exercise_case(
         pattern,
         mode,
     )?;
-    native.start()?;
-    let mut snapshot = endpoint;
-    let deadline = Instant::now() + CONTROL_DEADLINE;
-    loop {
-        snapshot = control
-            .query(snapshot.key())?
-            .require_progress_after(snapshot)?;
-        ensure!(
-            !snapshot.gate_open(),
-            "gate opened before explicit probe admission"
-        );
-        if snapshot.stream_state() == StreamState::Running {
+    counters.native_buffer_frames = native.frames;
+    let outcome = (|| -> anyhow::Result<CaseReport> {
+        native.start()?;
+        let mut snapshot = endpoint;
+        let deadline = Instant::now() + CONTROL_DEADLINE;
+        loop {
+            snapshot = control
+                .query(snapshot.key())?
+                .require_progress_after(snapshot)?;
+            counters.driver_packet_frames = snapshot.packet_frames();
+            counters.stream_generation = snapshot.stream_generation();
             ensure!(
-                snapshot.sample_format() == Some(format) && snapshot.packet_frames() > 0,
-                "driver native format differs from exclusive request"
+                !snapshot.gate_open(),
+                "gate opened before explicit probe admission"
             );
-            break;
-        }
-        ensure!(
-            Instant::now() < deadline,
-            "native Start was not observed as Running"
-        );
-        // A control-operation deadline, not a runtime no-PCM fault criterion.
-        native.poll(pattern, &mut Observation::default())?;
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    let before = if endpoint.intent() == Intent::Microphone {
-        Some(observe_closed(&mut native, pattern)?)
-    } else {
-        None
-    };
-    let opened = control.open_gate(snapshot)?;
-    let mut pcm = match control.pcm_owner(opened) {
-        Ok(pcm) => pcm,
-        Err(error) => {
-            return validation::revoke_and_drain(
-                Err(error.into()),
-                || revoke(control, opened),
-                || Ok(()),
+            if snapshot.stream_state() == StreamState::Running {
+                ensure!(
+                    snapshot.sample_format() == Some(format) && snapshot.packet_frames() > 0,
+                    "driver native format differs from exclusive request"
+                );
+                break;
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "native Start was not observed as Running"
             );
-        }
-    };
-    let shape = pcm.shape();
-    let outcome = (|| -> anyhow::Result<_> {
-        ensure!(shape.format() == format, "PCM helper format changed");
-        let mut bytes = vec![0; shape.pcm_bytes()];
-        encode_interleaved(
-            &pattern.repeat(shape.frames() as usize),
-            &mut bytes,
-            format,
-            endpoint.channels(),
-        )
-        .map_err(|error| anyhow::anyhow!("driver pattern encoding: {error:?}"))?;
-        let mut decoded = vec![0.0; shape.frames() as usize * 2];
-        let mut pending = VecDeque::with_capacity(4);
-        let mut seen = Observation::default();
-        let mut progress = TransferProgress::default();
-        native.position.begin_phase();
-        let until = Instant::now() + Duration::from_secs(u64::from(seconds));
-        while Instant::now() < until {
-            native.poll(pattern, &mut seen)?;
-            pump_pcm(
-                &mut pcm,
-                &mut pending,
-                &bytes,
-                &mut decoded,
-                pattern,
-                &mut seen,
-                &mut progress,
-            )?;
+            // A control-operation deadline, not a runtime no-PCM fault criterion.
+            native.poll(pattern, &mut Observation::default())?;
             std::thread::sleep(Duration::from_millis(1));
         }
-        seen.require_signal(u64::from(seconds) * 48_000 / 2)?;
-        if mode == NativeMode::Timer {
-            native.position.require_advance()?;
-        }
-        let position = if mode == NativeMode::Timer {
-            Some(native.position.clone())
+        let before = if endpoint.intent() == Intent::Microphone {
+            Some(observe_closed(&mut native, pattern)?)
         } else {
             None
         };
-        Ok((seen, progress.microphone_drops, position))
+        let opened = control.open_gate(snapshot)?;
+        counters.stream_generation = opened.stream_generation();
+        counters.driver_packet_frames = opened.packet_frames();
+        let mut pcm = match control.pcm_owner(opened) {
+            Ok(pcm) => pcm,
+            Err(error) => {
+                return validation::revoke_and_drain(
+                    Err(error.into()),
+                    || revoke(control, opened),
+                    || Ok(()),
+                );
+            }
+        };
+        let shape = pcm.shape();
+        counters.driver_packet_frames = shape.frames();
+        counters.stream_generation = opened.stream_generation();
+        let mut seen = Observation::default();
+        let mut progress = TransferProgress::default();
+        let outcome = (|| -> anyhow::Result<_> {
+            ensure!(shape.format() == format, "PCM helper format changed");
+            let mut bytes = vec![0; shape.pcm_bytes()];
+            encode_interleaved(
+                &pattern.repeat(shape.frames() as usize),
+                &mut bytes,
+                format,
+                endpoint.channels(),
+            )
+            .map_err(|error| anyhow::anyhow!("driver pattern encoding: {error:?}"))?;
+            let mut decoded = vec![0.0; shape.frames() as usize * 2];
+            let mut pending = VecDeque::with_capacity(4);
+            native.position.begin_phase();
+            let until = Instant::now() + Duration::from_secs(u64::from(seconds));
+            while Instant::now() < until {
+                native.poll(pattern, &mut seen)?;
+                pump_pcm(
+                    &mut pcm,
+                    &mut pending,
+                    &bytes,
+                    &mut decoded,
+                    pattern,
+                    &mut seen,
+                    &mut progress,
+                )?;
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            seen.require_signal(u64::from(seconds) * 48_000 / 2)?;
+            if mode == NativeMode::Timer {
+                native.position.require_advance()?;
+            }
+            let position = if mode == NativeMode::Timer {
+                Some(native.position.clone())
+            } else {
+                None
+            };
+            Ok(position)
+        })();
+        counters.signal_frames = seen.signal_frames;
+        counters.silent_frames = seen.silent_frames;
+        counters.microphone_dropped_packets = progress.microphone_drops;
+        // Cut admission first, then drain every outstanding direct request before
+        // closing its native stream, including phase and revocation failures.
+        let outcome = validation::revoke_and_drain(
+            outcome,
+            || revoke(control, opened),
+            || Ok(pcm.shutdown(Duration::from_secs(5))?),
+        );
+        drop(pcm);
+        let position = outcome?;
+        let after = if endpoint.intent() == Intent::Microphone {
+            // Already delivered WASAPI buffers may still contain valid old audio.
+            // Drain two full buffers before measuring silence on the same RUN stream.
+            let flush_until =
+                Instant::now() + native.buffer_duration() * 2 + Duration::from_millis(20);
+            let mut discarded = Observation::default();
+            while Instant::now() < flush_until {
+                native.poll(pattern, &mut discarded)?;
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Some(observe_closed(&mut native, pattern)?)
+        } else {
+            None
+        };
+        native.stop()?;
+        Ok(CaseReport {
+            stable_id: endpoint.stable_id().to_string(),
+            mmdevice_id: mapping.id.clone(),
+            adapter_instance: mapping.raw_instance.clone(),
+            intent: format!("{:?}", endpoint.intent()),
+            channels: endpoint.channels() as u32,
+            format: format!("{format:?}"),
+            native_buffer_frames: native.frames,
+            driver_packet_frames: shape.frames(),
+            stream_generation: opened.stream_generation(),
+            signal_seconds: seconds,
+            observation: seen,
+            closed_gate_before: before,
+            closed_gate_after: after,
+            microphone_dropped_packets: progress.microphone_drops,
+            native_discontinuities: native.discontinuities,
+            native_position: position,
+        })
     })();
-    // Cut admission first, then drain every outstanding direct request before
-    // closing its native stream, including phase and revocation failures.
-    let outcome = validation::revoke_and_drain(
-        outcome,
-        || revoke(control, opened),
-        || Ok(pcm.shutdown(Duration::from_secs(5))?),
-    );
-    drop(pcm);
-    let (seen, dropped, position) = outcome?;
-    let after = if endpoint.intent() == Intent::Microphone {
-        // Already delivered WASAPI buffers may still contain valid old audio.
-        // Drain two full buffers before measuring silence on the same RUN stream.
-        let flush_until = Instant::now() + native.buffer_duration() * 2 + Duration::from_millis(20);
-        let mut discarded = Observation::default();
-        while Instant::now() < flush_until {
-            native.poll(pattern, &mut discarded)?;
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        Some(observe_closed(&mut native, pattern)?)
-    } else {
-        None
-    };
-    native.stop()?;
-    Ok(CaseReport {
-        stable_id: endpoint.stable_id().to_string(),
-        mmdevice_id: mapping.id.clone(),
-        adapter_instance: mapping.raw_instance.clone(),
-        intent: format!("{:?}", endpoint.intent()),
-        channels: endpoint.channels() as u32,
-        format: format!("{format:?}"),
-        native_buffer_frames: native.frames,
-        driver_packet_frames: shape.frames(),
-        stream_generation: opened.stream_generation(),
-        signal_seconds: seconds,
-        observation: seen,
-        closed_gate_before: before,
-        closed_gate_after: after,
-        microphone_dropped_packets: dropped,
-        native_discontinuities: native.discontinuities,
-        native_position: position,
-    })
+    // Capture the final native state even for setup, gate-check or Stop errors.
+    counters.native_discontinuities = native.discontinuities;
+    if mode == NativeMode::Timer {
+        counters.native_position = Some(native.position.clone());
+    }
+    outcome
 }
 
 fn revoke(control: &mut ControlClient, opened: EndpointSnapshot) -> anyhow::Result<()> {
@@ -459,17 +535,63 @@ fn pump_pcm(
                     .map_err(|error| anyhow::anyhow!("driver render decoding: {error:?}"))?;
                 seen.observe(decoded, pattern)?;
             }
-            PcmCompletion::Capture { .. } => {}
-            PcmCompletion::CaptureDropped { .. } => progress.microphone_drops += 1,
+            PcmCompletion::Capture { .. } => {
+                progress.microphone_completed(Instant::now(), shape.frames());
+            }
+            PcmCompletion::CaptureDropped { .. } => {
+                progress.microphone_drops += 1;
+                progress.microphone_completed(Instant::now(), shape.frames());
+            }
         }
         pending.pop_front();
     }
-    while pending.len() < if playback { 4 } else { 1 } {
-        pending.push_back(if playback {
-            pcm.submit_read()?
-        } else {
-            pcm.submit_write(encoded)?
-        });
+    if playback {
+        while pending.len() < 4 {
+            pending.push_back(pcm.submit_read()?);
+        }
+    } else if progress.microphone_ready(Instant::now(), pending.len()) {
+        pending.push_back(pcm.submit_write(encoded)?);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::*;
+
+    #[test]
+    fn microphone_first_write_is_immediate_then_waits_half_a_period() {
+        let now = Instant::now();
+        let mut progress = TransferProgress::default();
+        assert!(progress.microphone_ready(now, 0));
+        assert!(!progress.microphone_ready(now, 1));
+        progress.microphone_completed(now, 480);
+        let deadline = now + Duration::from_millis(5);
+        assert_eq!(progress.next_mic_submit, Some(deadline));
+        for milliseconds in 0..5 {
+            assert!(!progress.microphone_ready(now + Duration::from_millis(milliseconds), 0));
+        }
+        assert!(progress.microphone_ready(deadline, 0));
+        assert!(!progress.microphone_ready(deadline, 1));
+        assert!(!progress.microphone_ready(deadline, 4));
+    }
+
+    #[test]
+    fn microphone_each_completion_rearms_from_collection_time_without_catch_up() {
+        let now = Instant::now();
+        let mut progress = TransferProgress::default();
+        progress.microphone_completed(now, 49);
+        let half_period = Duration::from_nanos(510_416);
+        assert_eq!(progress.next_mic_submit, Some(now + half_period));
+        assert!(!progress.microphone_ready(now + half_period - Duration::from_nanos(1), 0));
+        assert!(progress.microphone_ready(now + half_period, 0));
+        let later = now + Duration::from_secs(1);
+        progress.microphone_completed(later, 4800);
+        assert_eq!(
+            progress.next_mic_submit,
+            Some(later + Duration::from_millis(50))
+        );
+        assert!(!progress.microphone_ready(later, 0));
+        assert!(progress.microphone_ready(later + Duration::from_millis(50), 0));
+    }
 }
