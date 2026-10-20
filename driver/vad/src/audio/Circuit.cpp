@@ -8,6 +8,32 @@
 static VAD_PAGE EVT_ACX_CIRCUIT_POWER_UP PowerUp;
 static VAD_PAGE EVT_ACX_CIRCUIT_POWER_DOWN PowerDown;
 static VAD_PAGE EVT_ACX_PIN_SET_DATAFORMAT SetFormat;
+// ACX preallocates Name.Buffer/MaximumLength, unlike the typedef's _Out_ SAL.
+_Function_class_(EVT_ACX_PIN_RETRIEVE_NAME)
+_IRQL_requires_same_
+_IRQL_requires_max_(PASSIVE_LEVEL)
+static VAD_PAGE NTSTATUS PinName(_In_ ACXPIN pin, _Inout_ PUNICODE_STRING name);
+
+static void CopyPinName(VAD_CHILD* child,
+    WCHAR (&text)[MOIREN_VAD_MAX_NAME_UNITS])
+{
+    KIRQL irql;
+    KeAcquireSpinLock(&child->Shared->Lock, &irql);
+    RtlCopyMemory(text, child->Shared->Slots[child->Index].Name, sizeof(text));
+    KeReleaseSpinLock(&child->Shared->Lock, irql);
+}
+
+_Use_decl_annotations_
+static VAD_PAGE NTSTATUS PinName(ACXPIN pin, PUNICODE_STRING name)
+{
+    PAGED_CODE();
+    const auto circuit = AcxPinGetCircuit(pin);
+    const auto child = VadChild(AcxCircuitGetWdfDevice(circuit));
+    WCHAR text[MOIREN_VAD_MAX_NAME_UNITS];
+    CopyPinName(child, text);
+    // ACX owns the output buffer; do not return a borrowed slot/stack string.
+    return RtlUnicodeStringPrintf(name, L"%s", text);
+}
 
 _Use_decl_annotations_
 static VAD_PAGE NTSTATUS SetFormat(ACXPIN pin, ACXDATAFORMAT format)
@@ -96,6 +122,10 @@ VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
     config.Type = capture ? AcxPinTypeSink : AcxPinTypeSource;
     config.Communication = AcxPinCommunicationNone;
     config.Category = capture ? &KSNODETYPE_MICROPHONE : &KSNODETYPE_SPEAKER;
+    ACX_PIN_CALLBACKS bridgeCallbacks;
+    ACX_PIN_CALLBACKS_INIT(&bridgeCallbacks);
+    bridgeCallbacks.EvtAcxPinRetrieveName = PinName;
+    config.PinCallbacks = &bridgeCallbacks;
     status = AcxPinCreate(device->Circuit, &attributes, &config, &pins[1]);
     VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
         "Circuit bridge pin status=%!STATUS!", status);

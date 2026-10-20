@@ -79,6 +79,17 @@ static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
     HANDLE endpointKey = nullptr;
     status = IoOpenDeviceInterfaceRegistryKey(link,
         KEY_CREATE_SUB_KEY | KEY_SET_VALUE, &interfaceKey);
+    const ULONG nameBytes = static_cast<ULONG>((wcslen(name) + 1) * sizeof(WCHAR));
+    static const WCHAR proxy[] = L"{17CCA71B-ECD7-11D0-B908-00A0C9223196}";
+    if (NT_SUCCESS(status)) {
+        // Dynamic raw PDOs have no per-endpoint AddInterface INF section.
+        // Stage the same KSProxy metadata as the official ACX interfaces,
+        // before ACX enables the interface for EndpointBuilder.
+        status = SetValue(interfaceKey, L"CLSID", REG_SZ, proxy, sizeof(proxy));
+    }
+    if (NT_SUCCESS(status)) {
+        status = SetValue(interfaceKey, L"FriendlyName", REG_SZ, name, nameBytes);
+    }
     if (NT_SUCCESS(status)) {
         status = CreateKey(interfaceKey, L"EP", &endpointsKey);
     }
@@ -98,9 +109,15 @@ static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
             &neverDefault, sizeof(neverDefault));
     }
     if (NT_SUCCESS(status)) {
+        const ULONG eventDriven = 1;
+        status = SetValue(endpointKey,
+            L"{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},7", REG_DWORD,
+            &eventDriven, sizeof(eventDriven));
+    }
+    if (NT_SUCCESS(status)) {
         status = SetValue(endpointKey,
             L"{A45C254E-DF1C-4EFD-8020-67D146A850E0},14", REG_SZ, name,
-            static_cast<ULONG>((wcslen(name) + 1) * sizeof(WCHAR)));
+            nameBytes);
     }
     if (endpointKey != nullptr) {
         ZwClose(endpointKey);
