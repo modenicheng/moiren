@@ -817,7 +817,8 @@ NTSTATUS VadAudioAllocatePackets(ACXSTREAM stream, ULONG count, ULONG packetSize
         // ACX double-maps timer packets into user space. Both ends of the
         // descriptor must be page aligned, not just the underlying MDL.
         packets[i].RtPacketSize = count == 1 ? allocation : packetSize;
-        packets[i].RtPacketOffset = 0;
+        packets[i].RtPacketOffset = vad::audio::RtPacketOffset(
+            count, i, packetSize, allocation);
         buffers[i] = buffer;
         RtlZeroMemory(buffer, allocation);
     }

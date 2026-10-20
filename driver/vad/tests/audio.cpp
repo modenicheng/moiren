@@ -463,8 +463,25 @@ static void CapturePackets()
         "capture wraps packet index while duplicate detection remains 64-bit");
 }
 
+static void EventPacketsMeetAtMappedPageBoundary()
+{
+    const uint32_t sizes[] = {960u, 1920u, 3840u, 4096u, 7680u};
+    for (const uint32_t size : sizes) {
+        uint32_t allocation = 0;
+        Check(vad::audio::RoundUpToPage(size, 4096, allocation),
+            "packet backing is page rounded");
+        const auto first = vad::audio::RtPacketOffset(2, 0, size, allocation);
+        const auto second = vad::audio::RtPacketOffset(2, 1, size, allocation);
+        Check(first + size == allocation && second == 0,
+            "event packet zero ends where the second page mapping begins");
+        Check(vad::audio::RtPacketOffset(1, 0, size, allocation) == 0,
+            "timer circular mapping keeps its page-aligned origin");
+    }
+}
+
 int main()
 {
+    EventPacketsMeetAtMappedPageBoundary();
     PacketClockResetFencesSameStreamBeforeCounterRestart();
     PacketClockResetAdvancesClosedEpochAndFailsClosedOnOverflow();
     DeadlineAndStall();

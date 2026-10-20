@@ -161,6 +161,16 @@ inline bool RoundUpToPage(uint32_t bytes, uint32_t pageSize,
     return true;
 }
 
+inline uint32_t RtPacketOffset(uint32_t count, uint32_t index,
+    uint32_t packetSize, uint32_t allocationBytes)
+{
+    // ACX joins the two event MDL mappings into a contiguous user ring. End
+    // packet zero at the page boundary so packet one immediately follows it.
+    // A single timer mapping instead starts at its page-aligned circular origin.
+    return count == MaxPackets && index == 0 && allocationBytes >= packetSize ?
+        allocationBytes - packetSize : 0;
+}
+
 struct TimerDrivenRing {
     uint32_t PacketSize;
     uint32_t MappedBytes;
