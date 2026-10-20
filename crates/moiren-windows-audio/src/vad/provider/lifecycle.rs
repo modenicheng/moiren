@@ -216,9 +216,31 @@ impl<C: EndpointControl> Lifecycle<C> {
                                 || record.error.is_some()
                                 || !record.sessions.iter().any(|s| s.admitted()))
                         {
+                            log::debug!(
+                                target: "moiren::audio::vad",
+                                "event=lifecycle_gate_close endpoint={:?} previous={previous:?} queried={snapshot:?} removing={} error={:?} admitted={}",
+                                snapshot.key(),
+                                record.removing,
+                                record.error,
+                                record.sessions.iter().any(|s| s.admitted()),
+                            );
                             match self.control.gate(snapshot, false) {
-                                Ok(snapshot) => record.snapshot = Some(snapshot),
-                                Err(error) => record.error = Some(error.to_string()),
+                                Ok(snapshot) => {
+                                    log::debug!(
+                                        target: "moiren::audio::vad",
+                                        "event=lifecycle_gate_close_result endpoint={:?} result={snapshot:?}",
+                                        snapshot.key(),
+                                    );
+                                    record.snapshot = Some(snapshot);
+                                }
+                                Err(error) => {
+                                    log::debug!(
+                                        target: "moiren::audio::vad",
+                                        "event=lifecycle_gate_close_result endpoint={:?} error={error:?}",
+                                        snapshot.key(),
+                                    );
+                                    record.error = Some(error.to_string());
+                                }
                             }
                         }
                         let snapshot = record.snapshot.expect("queried export");
@@ -269,6 +291,11 @@ impl<C: EndpointControl> Lifecycle<C> {
             .snapshot
             .ok_or_else(|| unavailable("uncertain CREATE"))?;
         if stamp(previous) != expected {
+            log::debug!(
+                target: "moiren::audio::vad",
+                "event=lifecycle_gate_stale endpoint={:?} open={open} expected={expected:?} previous={previous:?} revision={revision} ticket={ticket}",
+                previous.key(),
+            );
             return Err(BackendError::Cancelled);
         }
         let current = match self.control.query(previous) {
@@ -283,6 +310,11 @@ impl<C: EndpointControl> Lifecycle<C> {
         };
         record.snapshot = Some(current);
         if stamp(current) != expected {
+            log::debug!(
+                target: "moiren::audio::vad",
+                "event=lifecycle_gate_stale endpoint={:?} open={open} expected={expected:?} previous={previous:?} queried={current:?} revision={revision} ticket={ticket}",
+                current.key(),
+            );
             return Err(BackendError::Cancelled);
         }
         if open
@@ -303,8 +335,21 @@ impl<C: EndpointControl> Lifecycle<C> {
             }
         }
         match self.control.gate(current, open) {
-            Ok(snapshot) => record.snapshot = Some(snapshot),
+            Ok(snapshot) => {
+                log::debug!(
+                    target: "moiren::audio::vad",
+                    "event=lifecycle_set_gate endpoint={:?} open={open} previous={current:?} result={snapshot:?} revision={revision} ticket={ticket} admitted={}",
+                    snapshot.key(),
+                    record.sessions.iter().any(|s| s.admitted()),
+                );
+                record.snapshot = Some(snapshot);
+            }
             Err(error) => {
+                log::debug!(
+                    target: "moiren::audio::vad",
+                    "event=lifecycle_set_gate endpoint={:?} open={open} previous={current:?} error={error:?} revision={revision} ticket={ticket}",
+                    current.key(),
+                );
                 record.error = Some(error.to_string());
                 for session in &record.sessions {
                     session.revoke();
@@ -319,6 +364,11 @@ impl<C: EndpointControl> Lifecycle<C> {
                 session.revoke();
             }
             let snapshot = record.snapshot.expect("SET_GATE response");
+            log::debug!(
+                target: "moiren::audio::vad",
+                "event=lifecycle_gate_close endpoint={:?} reason=authority_changed queried={snapshot:?} revision={revision} ticket={ticket}",
+                snapshot.key(),
+            );
             match self.control.gate(snapshot, false) {
                 Ok(snapshot) => record.snapshot = Some(snapshot),
                 Err(error) => {

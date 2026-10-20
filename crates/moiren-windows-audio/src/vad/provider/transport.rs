@@ -8,11 +8,37 @@ pub(super) fn poll<C: EndpointControl>(
     state: &SessionState,
 ) -> Result<(super::super::EndpointSnapshot, bool), BackendError> {
     let queried = control.query(previous)?;
+    let admitted_before = state.admitted();
     if queried.stream_generation() != previous.stream_generation() {
         state.revoke();
     }
+    if queried.stream_generation() != previous.stream_generation()
+        || queried.gate_epoch() != previous.gate_epoch()
+        || queried.gate_open() != previous.gate_open()
+        || queried.stream_state() != previous.stream_state()
+        || queried.state() != previous.state()
+    {
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=transport_observed endpoint={:?} previous={previous:?} queried={queried:?} admitted_before={admitted_before} admitted_after={}",
+            queried.key(),
+            state.admitted(),
+        );
+    }
     let result = if queried.gate_open() && !state.admitted() {
-        control.gate(queried, false)
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=transport_gate_close endpoint={:?} reason=not_admitted previous={previous:?} queried={queried:?} admitted_before={admitted_before}",
+            queried.key(),
+        );
+        let result = control.gate(queried, false);
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=transport_gate_close_result endpoint={:?} result={result:?} admitted={}",
+            queried.key(),
+            state.admitted(),
+        );
+        result
     } else {
         Ok(queried)
     };
@@ -41,6 +67,12 @@ pub(super) fn after_io_error<C: EndpointControl>(
     error: BackendError,
 ) -> Result<super::super::EndpointSnapshot, BackendError> {
     let (current, changed) = poll(control, previous, state)?;
+    log::debug!(
+        target: "moiren::audio::vad",
+        "event=transport_io_error endpoint={:?} previous={previous:?} current={current:?} epoch_changed={changed} admitted={} error={error:?}",
+        current.key(),
+        state.admitted(),
+    );
     // Gate/stream transitions cancel pending PCM by design. Rebuild its slots
     // from the observed epoch; a same-epoch native failure remains a fault.
     if changed || !current.gate_open() || !state.admitted() {
