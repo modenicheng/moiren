@@ -223,21 +223,21 @@ static void FractionalDeadlines()
         "maximum QPC frequency retains a one-ms interval");
 }
 
-static void NativeAllocationRejectsTimerDrivenPackets()
+static void NativeAllocationAdmitsBothBoundedModes()
 {
     const uint32_t aligns[] = {2, 4, 8};
     const uint32_t frames[] = {48, 480, 4800};
     for (const auto align : aligns) {
         for (const auto frameCount : frames) {
             const auto size = frameCount * align;
-            Check(!vad::audio::ValidPacketShape(1, size, align),
-                "single-packet timer-driven allocation must fail closed");
+            Check(vad::audio::ValidPacketShape(1, size, align),
+                "single-packet timer-driven allocation accepts bounded PCM shapes");
             Check(vad::audio::ValidPacketShape(2, size, align),
                 "two-packet event-driven allocation remains supported");
         }
     }
-    Check(!vad::audio::ValidPacketShape(1, 4096, 4),
-        "page alignment does not admit an unsupported timer-driven stream");
+    Check(vad::audio::ValidPacketShape(1, 4096, 4),
+        "page-aligned timer-driven stream remains supported");
     Check(vad::audio::ValidPacketShape(2, 4096, 4),
         "page-aligned two-packet streams remain supported");
 }
@@ -260,8 +260,13 @@ static void TimerDrivenRingRoundsBackingAndPlansWrap()
     vad::audio::TimerDrivenSegment segment = {};
     Check(vad::audio::NextTimerDrivenSegment(ring, segment) &&
         segment.RingFrameOffset == 2038 && segment.FirstFrames == 10 &&
-        segment.SecondFrames == 38 && segment.Frames == 48,
-        "timer-driven segment splits at the physical ring boundary");
+        segment.SecondFrames == 0 && segment.Frames == 10,
+        "native capture wrap ends before overwriting the next native packet");
+    Check(ring.RingFrameOffset == 0 && ring.PresentedFrames == 10,
+        "native wrap is observable before the following segment starts");
+    // The independent copy planner still validates a general wrapped span.
+    segment.Frames = 48;
+    segment.SecondFrames = 38;
     vad::audio::TimerDrivenCopyPlan plan = {};
     Check(vad::audio::BuildTimerDrivenCopyPlan(ring, segment, plan) &&
         plan.First.RingByteOffset == (2048 - 10) * 4 &&
@@ -269,8 +274,6 @@ static void TimerDrivenRingRoundsBackingAndPlansWrap()
         plan.Second.RingByteOffset == 0 && plan.Second.PacketByteOffset == 40 &&
         plan.Second.ByteCount == 38 * 4 && plan.ByteCount == 48 * 4,
         "timer-driven wrap exposes two bounded linear copy spans");
-    Check(ring.RingFrameOffset == 38 && ring.PresentedFrames == 48,
-        "timer-driven ring advances one segment after a wrapped copy");
 }
 
 static void TimerDrivenRingKeepsLogicalPacketProgressionBounded()
@@ -340,7 +343,9 @@ static void TimerDrivenScheduleMatchesShortSegments()
     uint64_t expectedStart = 0;
     for (unsigned i = 0; i < 108; ++i) {
         const auto remaining = 1250 - expectedStart % 1250;
-        const auto frames = remaining < 48 ? remaining : 48;
+        const auto logical = remaining < 48 ? remaining : 48;
+        const auto native = ring.MappedFrames - ring.RingFrameOffset;
+        const auto frames = logical < native ? logical : native;
         const auto next = expectedStart + frames;
         const auto startQpc = 10000000 +
             (expectedStart * 10000003 + 47999) / 48000;
@@ -465,7 +470,7 @@ int main()
     DeadlineAndStall();
     PauseAndResume();
     FractionalDeadlines();
-    NativeAllocationRejectsTimerDrivenPackets();
+    NativeAllocationAdmitsBothBoundedModes();
     TimerDrivenRingRoundsBackingAndPlansWrap();
     TimerDrivenRingKeepsLogicalPacketProgressionBounded();
     TimerDrivenStallRebasesWithoutCatchUp();

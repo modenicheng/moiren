@@ -45,13 +45,44 @@ static PVOID PacketAddress(VAD_AUDIO_STREAM* stream, ULONG index)
     return index == 0 ? address + stream->Packets[0].RtPacketOffset : address;
 }
 
+static PVOID TimerRingAddress(VAD_AUDIO_STREAM* stream, ULONG frame)
+{
+    auto offset = static_cast<SIZE_T>(frame) * stream->BlockAlign;
+    return static_cast<PUCHAR>(stream->Buffers[0]) + offset;
+}
+
 static void ZeroPackets(VAD_AUDIO_STREAM* stream)
 {
+    if (stream->PacketCount == 1 && stream->Buffers[0] != nullptr) {
+        RtlZeroMemory(stream->Buffers[0], stream->TimerRing.MappedBytes);
+        return;
+    }
     if (stream->Packets != nullptr) {
         for (ULONG i = 0; i < stream->PacketCount; ++i) {
             RtlZeroMemory(PacketAddress(stream, i), stream->PacketSize);
         }
     }
+}
+
+static void ZeroTimerRingSpan(VAD_AUDIO_STREAM* stream,
+    const vad::audio::TimerDrivenSegment& segment)
+{
+    if (segment.FirstFrames != 0) {
+        RtlZeroMemory(TimerRingAddress(stream, segment.RingFrameOffset),
+            static_cast<SIZE_T>(segment.FirstFrames) * stream->BlockAlign);
+    }
+    if (segment.SecondFrames != 0) {
+        RtlZeroMemory(TimerRingAddress(stream, 0),
+            static_cast<SIZE_T>(segment.SecondFrames) * stream->BlockAlign);
+    }
+}
+
+static void ClearTimerPacket(VAD_AUDIO_STREAM* stream)
+{
+    if (stream->TimerScratch != nullptr) {
+        RtlZeroMemory(stream->TimerScratch, stream->TimerScratchBytes);
+    }
+    stream->TimerPacket = {};
 }
 
 // Lifecycle held; the caller has already stopped and drained the timer.
@@ -64,6 +95,11 @@ static void FreePacketStorage(VAD_AUDIO_STREAM* stream)
     KeAcquireSpinLock(&stream->State, &irql);
     const auto packets = stream->Packets;
     const auto count = stream->PacketCount;
+    const auto scratch = stream->TimerScratch;
+    stream->TimerScratch = nullptr;
+    stream->TimerScratchBytes = 0;
+    stream->TimerRing = {};
+    stream->TimerPacket = {};
     for (ULONG i = 0; i < count; ++i) {
         buffers[i] = stream->Buffers[i];
         stream->Buffers[i] = nullptr;
@@ -79,6 +115,9 @@ static void FreePacketStorage(VAD_AUDIO_STREAM* stream)
     // Packet/position callbacks see the detached state; freeing MDLs never
     // happens under the spin lock or while a timer can still notify ACX.
     FreeStorage(packets, buffers, count);
+    if (scratch != nullptr) {
+        ExFreePoolWithTag(scratch, VadAudioTag);
+    }
 }
 
 _Use_decl_annotations_
@@ -87,8 +126,14 @@ void VadAudioStopLocked(VAD_AUDIO_STREAM* stream, bool reset)
     NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     KIRQL irql;
     KeAcquireSpinLock(&stream->State, &irql);
-    vad::audio::PauseClock(stream->Clock,
-        static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart));
+    if (stream->PacketCount == 1) {
+        // Never expose timer-ring bytes which the DPC has not copied yet.
+        stream->Clock.BaseFrames = stream->TimerRing.PresentedFrames;
+        stream->Clock.Running = false;
+    } else {
+        vad::audio::PauseClock(stream->Clock,
+            static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart));
+    }
     stream->Running = FALSE;
     KeReleaseSpinLock(&stream->State, irql);
     // All callers hold Lifecycle, including FreeRtPackets and PnP power-down.
@@ -103,7 +148,11 @@ void VadAudioStopLocked(VAD_AUDIO_STREAM* stream, bool reset)
         vad::audio::ResetPacketClock(*stream, [&] {
             VadPcmDiscontinuity(stream->Device, stream->Generation, true);
         });
+        stream->TimerRing.RingFrameOffset = 0;
+        stream->TimerRing.PresentedFrames = 0;
+        stream->TimerRing.SegmentSequence = 0;
     }
+    ClearTimerPacket(stream);
     stream->RenderReadyMask = 0;
     stream->DeliveredPackets = stream->CompletedPackets;
     ZeroPackets(stream);
@@ -127,8 +176,118 @@ static void Schedule(VAD_AUDIO_STREAM* stream, uint64_t now)
     if (stream->Timer == nullptr || !stream->Running) {
         return;
     }
+    if (stream->PacketCount == 1) {
+        const auto schedule = vad::audio::ScheduleTimerDrivenQuantum(
+            stream->Clock, stream->TimerRing, now);
+        NT_ASSERT(schedule.Valid);
+        if (schedule.Valid) {
+            (void)WdfTimerStart(stream->Timer, schedule.Due);
+        }
+        return;
+    }
     const auto schedule = vad::audio::SchedulePacket(stream->Clock,
         stream->CompletedPackets, stream->PacketFrames, now);
+    (void)WdfTimerStart(stream->Timer, schedule.Due);
+}
+
+// State is held. The endpoint lock spans epoch validation and each bounded
+// copy; gate closure therefore cannot acknowledge revocation while stale
+// scratch is being copied. Requests retrieved here complete in this DPC.
+static void TransferTimerSegment(VAD_AUDIO_STREAM* stream,
+    const vad::audio::TimerDrivenSegment& segment, uint64_t now,
+    VAD_PCM_BATCH* batch)
+{
+    auto child = VadChild(stream->Device);
+    auto shared = child->Shared;
+    if (batch->Shared == nullptr &&
+        !ExAcquireRundownProtection(&shared->PcmRundown)) {
+        ClearTimerPacket(stream);
+        ZeroTimerRingSpan(stream, segment);
+        return;
+    }
+    batch->Shared = shared;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    const auto& slot = shared->Slots[child->Index];
+    const bool copied = vad::audio::TransferTimerSegment(slot, child->Id,
+        stream->Generation, stream->Capture != FALSE, stream->TimerRing,
+        segment, stream->TimerPacket,
+        [&] { RtlZeroMemory(stream->TimerScratch, stream->TimerScratchBytes); },
+        [&](const vad::audio::TimerDrivenCopySpan& span) {
+            auto native = static_cast<PUCHAR>(stream->Buffers[0]) + span.RingByteOffset;
+            auto scratch = static_cast<PUCHAR>(stream->TimerScratch) + span.PacketByteOffset;
+            if (stream->Capture) {
+                RtlCopyMemory(native, scratch, span.ByteCount);
+            } else {
+                RtlCopyMemory(scratch, native, span.ByteCount);
+            }
+        },
+        [&](const vad::audio::TimerDrivenCopySpan& span) {
+            RtlZeroMemory(static_cast<PUCHAR>(stream->Buffers[0]) +
+                span.RingByteOffset, span.ByteCount);
+        },
+        [&] {
+            VadPcmTransferLocked(shared, child->Index, stream->TimerScratch,
+                stream->PacketFrames, stream->BlockAlign,
+                segment.PacketSequence, now, batch);
+        });
+    NT_ASSERT(copied);
+    UNREFERENCED_PARAMETER(copied);
+    KeReleaseSpinLock(&shared->Lock, irql);
+}
+
+// State is held. One callback consumes at most 1 ms, even after a debugger or
+// suspend stall. Logical PCM packets and page-rounded native wraps are separate.
+_IRQL_requires_(DISPATCH_LEVEL)
+static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
+    VAD_PCM_BATCH* batch)
+{
+    constexpr auto quantum = vad::audio::DefaultTimerSegmentFrames;
+    if (stream->TimerRing.PresentedFrames > MAXULONGLONG - quantum) {
+        stream->Running = FALSE;
+        ClearTimerPacket(stream);
+        ZeroPackets(stream);
+        return;
+    }
+    if (vad::audio::RelativeDue(stream->Clock,
+        stream->TimerRing.PresentedFrames + quantum, now) < 0) {
+        Schedule(stream, now);
+        return;
+    }
+    auto nextRing = stream->TimerRing;
+    nextRing.PresentedFrames += quantum;
+    auto nextClock = stream->Clock;
+    const auto schedule = vad::audio::ScheduleTimerDrivenQuantum(nextClock, nextRing, now);
+    if (!schedule.Valid) {
+        stream->Running = FALSE;
+        ClearTimerPacket(stream);
+        ZeroPackets(stream);
+        return;
+    }
+    if (schedule.Rebased) {
+        VadPcmDiscontinuity(stream->Device, stream->Generation);
+        ClearTimerPacket(stream);
+        ZeroPackets(stream);
+    }
+    ULONG remaining = quantum;
+    // A quantum crosses at most one logical and one native boundary: with
+    // packet length >= 48 frames, three spans are an absolute work bound.
+    for (unsigned spans = 0; remaining != 0 && spans < 3; ++spans) {
+        vad::audio::TimerDrivenSegment segment = {};
+        if (!vad::audio::NextTimerDrivenSegment(stream->TimerRing, segment, remaining)) {
+            stream->Running = FALSE;
+            ClearTimerPacket(stream);
+            ZeroPackets(stream);
+            return;
+        }
+        remaining -= segment.Frames;
+        TransferTimerSegment(stream, segment, now, batch);
+    }
+    NT_ASSERT(remaining == 0);
+    // Timer clients consume a rolling position, not an immutable native packet.
+    // Publishing packet-complete here would advertise bytes already reused by
+    // this quantum, so packet queries and notifications are event-mode only.
+    stream->Clock = nextClock;
     (void)WdfTimerStart(stream->Timer, schedule.Due);
 }
 
@@ -151,9 +310,16 @@ VOID VadAudioTimer(WDFTIMER timer)
     if (!VadAudioIsStreamCurrent(stream->Device, stream->Generation)) {
         vad::audio::PauseClock(stream->Clock, now);
         stream->Running = FALSE;
+        ClearTimerPacket(stream);
         ZeroPackets(stream);
         stream->DeliveredPackets = stream->CompletedPackets;
         KeReleaseSpinLock(&stream->State, irql);
+        return;
+    }
+    if (stream->PacketCount == 1) {
+        TimerDrivenTick(stream, now, &batch);
+        KeReleaseSpinLock(&stream->State, irql);
+        VadPcmComplete(&batch);
         return;
     }
     // Do not complete early even if a timer implementation wakes prematurely.
@@ -241,6 +407,29 @@ static VAD_PAGE bool StreamCurrent(VAD_AUDIO_STREAM* stream)
         VadAudioIsStreamCurrent(stream->Device, stream->Generation);
 }
 
+// Gate callers have dropped Shared->Lock. Lifecycle keeps a borrowed stream
+// alive while State excludes the DPC. No native packet or scratch from a
+// previous admission may survive a close/open transaction.
+_Use_decl_annotations_
+void VadAudioClearGateBuffers(WDFDEVICE child)
+{
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    auto device = VadAudioDevice(child);
+    LifecycleGuard lifecycle(device);
+    if (device->Stream == nullptr) {
+        return;
+    }
+    auto stream = VadAudioStream(device->Stream);
+    KIRQL irql;
+    KeAcquireSpinLock(&stream->State, &irql);
+    ClearTimerPacket(stream);
+    ZeroPackets(stream);
+    stream->RenderReadyMask = 0;
+    stream->DeliveredPackets = stream->CompletedPackets;
+    stream->LastCaptureStart = 0;
+    KeReleaseSpinLock(&stream->State, irql);
+}
+
 _Use_decl_annotations_
 VAD_PAGE NTSTATUS VadAudioStreamPrepare(ACXSTREAM stream)
 {
@@ -310,6 +499,7 @@ NTSTATUS VadAudioStreamRun(ACXSTREAM stream)
         VadPcmDiscontinuity(context->Device, context->Generation);
         context->RenderReadyMask = 0;
         ZeroPackets(context); // Discard stale pre-pause PCM, retain first preroll.
+        ClearTimerPacket(context);
     }
     VadAudioDescribeStream(context->Device, context->Generation,
         context->BlockAlign, context->PacketFrames, MOIREN_VAD_STREAM_RUNNING);
@@ -350,11 +540,13 @@ NTSTATUS VadAudioSetRenderPacket(ACXSTREAM stream, ULONG packet, ULONG flags,
     if (context->Capture || context->Packets == nullptr || context->PacketCount == 0 ||
         !VadAudioIsStreamCurrent(context->Device, context->Generation)) {
         status = STATUS_INVALID_DEVICE_STATE;
+    } else if (!vad::audio::SupportsPacketNotifications(context->PacketCount)) {
+        status = STATUS_NOT_SUPPORTED;
     } else {
         const auto result = vad::audio::ValidateRenderPacket(
-            context->CompletedPackets, context->PacketCount, context->PacketSize,
-            context->BlockAlign, context->Started != FALSE,
-            context->HasEos != FALSE, packet, flags, eosLength);
+                context->CompletedPackets, context->PacketCount, context->PacketSize,
+                context->BlockAlign, context->Started != FALSE,
+                context->HasEos != FALSE, packet, flags, eosLength);
         switch (result) {
         case vad::audio::RenderPacketResult::Accepted:
             status = STATUS_SUCCESS;
@@ -392,6 +584,12 @@ NTSTATUS VadAudioGetCurrentPacket(ACXSTREAM stream, PULONG current)
     auto context = VadAudioStream(stream);
     KIRQL irql;
     KeAcquireSpinLock(&context->State, &irql);
+    if (context->PacketCount != 0 &&
+        !vad::audio::SupportsPacketNotifications(context->PacketCount)) {
+        *current = 0;
+        KeReleaseSpinLock(&context->State, irql);
+        return STATUS_NOT_SUPPORTED;
+    }
     *current = static_cast<ULONG>(context->CompletedPackets);
     KeReleaseSpinLock(&context->State, irql);
     return STATUS_SUCCESS;
@@ -410,7 +608,10 @@ NTSTATUS VadAudioGetCapturePacket(ACXSTREAM stream, PULONG last,
     KeAcquireSpinLock(&context->State, &irql);
     uint32_t packet = 0;
     NTSTATUS status = STATUS_DEVICE_NOT_READY;
-    if (context->Capture && context->Packets != nullptr &&
+    if (context->PacketCount != 0 &&
+        !vad::audio::SupportsPacketNotifications(context->PacketCount)) {
+        status = STATUS_NOT_SUPPORTED;
+    } else if (context->Capture && context->Packets != nullptr &&
         VadAudioIsStreamCurrent(context->Device, context->Generation) &&
         vad::audio::TakeCapturePacket(context->CompletedPackets,
             context->DeliveredPackets, packet)) {
@@ -431,7 +632,8 @@ NTSTATUS VadAudioGetPosition(ACXSTREAM stream, PULONGLONG blocks,
     KIRQL irql;
     KeAcquireSpinLock(&context->State, &irql);
     const auto now = static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart);
-    const auto frames = vad::audio::Position(context->Clock, now);
+    const auto frames = context->PacketCount == 1 ?
+        context->TimerRing.PresentedFrames : vad::audio::Position(context->Clock, now);
     *blocks = frames;
     *qpc = now;
     KeReleaseSpinLock(&context->State, irql);
@@ -578,7 +780,13 @@ NTSTATUS VadAudioAllocatePackets(ACXSTREAM stream, ULONG count, ULONG packetSize
     const ULONG frames = packetSize / context->BlockAlign;
     const ULONG pages = (packetSize + PAGE_SIZE - 1) / PAGE_SIZE;
     const ULONG allocation = pages * PAGE_SIZE;
-    // The admitted event-driven path always owns exactly two packet descriptors.
+    vad::audio::TimerDrivenRing timerRing = {};
+    if (count == 1 && !vad::audio::InitializeTimerDrivenRing(timerRing,
+        packetSize, context->BlockAlign, PAGE_SIZE)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    // Fixed descriptor capacity also makes the allocation bound visible to the
+    // WDK analyzer; only `count` initialized descriptors are returned to ACX.
     const SIZE_T bytes = VadAudioPacketCount * sizeof(ACX_RTPACKET);
     auto packets = static_cast<PACX_RTPACKET>(ExAllocatePool2(
         POOL_FLAG_NON_PAGED, bytes, VadAudioTag));
@@ -606,10 +814,20 @@ NTSTATUS VadAudioAllocatePackets(ACXSTREAM stream, ULONG count, ULONG packetSize
             FreeStorage(packets, buffers, count);
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-        packets[i].RtPacketSize = packetSize;
+        // ACX double-maps timer packets into user space. Both ends of the
+        // descriptor must be page aligned, not just the underlying MDL.
+        packets[i].RtPacketSize = count == 1 ? allocation : packetSize;
         packets[i].RtPacketOffset = 0;
         buffers[i] = buffer;
         RtlZeroMemory(buffer, allocation);
+    }
+    PVOID scratch = nullptr;
+    if (count == 1) {
+        scratch = ExAllocatePool2(POOL_FLAG_NON_PAGED, packetSize, VadAudioTag);
+        if (scratch == nullptr) {
+            FreeStorage(packets, buffers, count);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
     }
     // Publish only fully allocated storage. The packet callbacks take State
     // rather than Lifecycle and must never observe partial MDL construction.
@@ -620,6 +838,10 @@ NTSTATUS VadAudioAllocatePackets(ACXSTREAM stream, ULONG count, ULONG packetSize
     context->PacketSize = packetSize;
     context->PacketFrames = frames;
     context->PacketCount = count;
+    context->TimerRing = timerRing;
+    context->TimerScratch = scratch;
+    context->TimerScratchBytes = count == 1 ? packetSize : 0;
+    context->TimerPacket = {};
     context->Clock.LimitFrames = frames;
     for (ULONG i = 0; i < count; ++i) {
         context->Buffers[i] = buffers[i];

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'lifecycle', 'audio', 'ownership')]
+    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer')]
     [string]$Test = 'all'
 )
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,7 @@ $version = (Get-Content -LiteralPath "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVe
 $tools = Join-Path $vs "VC\Tools\MSVC\$version"
 $sdk = "${env:ProgramFiles(x86)}\Windows Kits\10"
 $compiler = Join-Path $tools 'bin\Hostx64\x64\cl.exe'
-foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership') } else { @($Test) })) {
+foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer') } else { @($Test) })) {
     & $compiler /nologo /std:c++17 /W4 /WX /EHsc /MT `
         "/I$tools\include" "/I$sdk\Include\10.0.28000.0\ucrt" `
         "/I$sdk\Include\10.0.28000.0\shared" "/I$sdk\Include\10.0.28000.0\um" `

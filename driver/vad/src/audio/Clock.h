@@ -136,9 +136,7 @@ inline PacketSchedule SchedulePacket(Clock& clock, uint64_t completed,
 
 inline bool ValidPacketShape(uint32_t count, uint32_t size, uint32_t align)
 {
-    // One packet selects ACX timer-driven mode, whose partial-buffer consumption
-    // needs separate accounting. Admit only the implemented ping-pong path.
-    return count == MaxPackets && align != 0 && size != 0 &&
+    return (count == 1 || count == MaxPackets) && align != 0 && size != 0 &&
         size % align == 0 && size / align >= MinPacketFrames &&
         size / align <= MaxPacketFrames;
 }
@@ -216,6 +214,11 @@ inline bool IsTimerDriven(uint32_t count)
     return count == 1;
 }
 
+inline bool SupportsPacketNotifications(uint32_t count)
+{
+    return count == MaxPackets;
+}
+
 inline bool IsValidTimerDrivenRing(const TimerDrivenRing& ring)
 {
     return ring.PacketSize != 0 && ring.MappedBytes >= ring.PacketSize &&
@@ -266,17 +269,22 @@ inline uint32_t NextTimerDrivenFrames(const TimerDrivenRing& ring)
     }
     const auto remaining = ring.PacketFrames - static_cast<uint32_t>(
         ring.PresentedFrames % ring.PacketFrames);
-    return ring.SegmentFrames < remaining ? ring.SegmentFrames : remaining;
+    const auto logical = ring.SegmentFrames < remaining ? ring.SegmentFrames : remaining;
+    // Publish a complete native capture packet before any byte at its ring
+    // beginning is overwritten by the next one. PCM packet boundaries differ.
+    const auto native = ring.MappedFrames - ring.RingFrameOffset;
+    return logical < native ? logical : native;
 }
 
 // Advance exactly one bounded segment. A delayed timer callback must not loop
 // until wall-clock time is caught up; the caller can rebase the clock and
 // discard stale PCM as one discontinuity instead.
 inline bool NextTimerDrivenSegment(TimerDrivenRing& ring,
-    TimerDrivenSegment& segment)
+    TimerDrivenSegment& segment, uint32_t budget = DefaultTimerSegmentFrames)
 {
     segment = {};
-    const auto frames = NextTimerDrivenFrames(ring);
+    const auto available = NextTimerDrivenFrames(ring);
+    const auto frames = available < budget ? available : budget;
     if (frames == 0 ||
         ring.PresentedFrames > ~uint64_t{0} - frames ||
         ring.SegmentSequence == ~uint64_t{0}) {
@@ -364,6 +372,27 @@ struct TimerDrivenSchedule {
     uint64_t SegmentStartQpc;
 };
 
+inline TimerDrivenSchedule ScheduleTimerDrivenQuantum(Clock& clock,
+    const TimerDrivenRing& ring, uint64_t now)
+{
+    if (!IsValidTimerDrivenRing(ring) || !clock.Running ||
+        !ValidFrequency(clock.Frequency) ||
+        ring.PresentedFrames > ~uint64_t{0} - DefaultTimerSegmentFrames) {
+        return {0, false, false, 0};
+    }
+    const auto next = ring.PresentedFrames + DefaultTimerSegmentFrames;
+    auto due = RelativeDue(clock, next, now);
+    const bool rebased = due == 0;
+    if (rebased) {
+        clock.BaseFrames = ring.PresentedFrames;
+        clock.EpochQpc = now;
+        due = RelativeDue(clock, next, now);
+    }
+    clock.LimitFrames = next;
+    return {due == 0 ? -1 : due, rebased, true,
+        FrameQpc(clock, ring.PresentedFrames)};
+}
+
 inline uint64_t TimerDrivenPosition(const TimerDrivenRing& ring,
     const Clock& clock, uint64_t now)
 {
@@ -408,7 +437,8 @@ inline RenderPacketResult ValidateRenderPacket(uint64_t completed,
     uint32_t count, uint32_t size, uint32_t align, bool started, bool ended,
     uint32_t packet, uint32_t flags, uint32_t eosLength)
 {
-    if (!ValidPacketShape(count, size, align)) {
+    // Packet sequencing is only used by the event-driven ping-pong path.
+    if (count != MaxPackets || !ValidPacketShape(count, size, align)) {
         return RenderPacketResult::Invalid;
     }
     if (ended) {

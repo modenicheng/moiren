@@ -228,6 +228,7 @@ NTSTATUS VadRemoveChild(WDFDEVICE device, uint64_t id,
     }
     KeReleaseSpinLock(&shared->Lock, irql);
     if (child != nullptr) {
+        VadAudioClearGateBuffers(child);
         VadPcmPurge(shared, VadChild(child)->Index, true);
     }
     if (child != nullptr) {
@@ -261,6 +262,7 @@ NTSTATUS VadRevokeSession(WDFDEVICE device)
     VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
         "Revoke all pending children=%u", count);
     return vad::RemoveAllRetained(count, STATUS_SUCCESS, [&](unsigned i) {
+        VadAudioClearGateBuffers(children[i]);
         VadPcmPurge(shared, VadChild(children[i])->Index, true);
         const auto status = MarkMissing(device, children[i]);
         WdfObjectDereference(children[i]);
@@ -325,6 +327,7 @@ NTSTATUS VadSetGate(WDFDEVICE device, const MOIREN_VAD_GATE_REQUEST& request,
     auto shared = root->Shared;
     NTSTATUS status = STATUS_NOT_FOUND;
     ULONG index = MOIREN_VAD_MAX_ENDPOINTS;
+    WDFDEVICE child = nullptr;
     KIRQL irql;
     KeAcquireSpinLock(&shared->Lock, &irql);
     for (auto& slot : shared->Slots) {
@@ -344,15 +347,42 @@ NTSTATUS VadSetGate(WDFDEVICE device, const MOIREN_VAD_GATE_REQUEST& request,
             status = STATUS_DEVICE_NOT_READY;
         } else if (slot.AdmissionGeneration == MAXULONGLONG) {
             status = STATUS_INTEGER_OVERFLOW;
-        } else {
-            slot.GateOpen = 1;
+        }
+        // Opening remains closed until native storage is cleared below. Admin
+        // serializes management, while a native stop can still change epochs.
+        if (NT_SUCCESS(status) &&
+            (request.Open == 0 || slot.GateOpen == 0)) {
+            child = shared->Children[index];
+            if (child != nullptr) {
+                WdfObjectReference(child);
+            }
         }
         *snapshot = vad::Snapshot(slot);
         break;
     }
     KeReleaseSpinLock(&shared->Lock, irql);
+    if (child != nullptr) {
+        VadAudioClearGateBuffers(child);
+    }
+    if (NT_SUCCESS(status) && request.Open != 0) {
+        KeAcquireSpinLock(&shared->Lock, &irql);
+        auto& slot = shared->Slots[index];
+        if (!vad::SameIdentity(slot, request.Endpoint) ||
+            slot.AdmissionGeneration != request.GateEpoch) {
+            status = STATUS_REVISION_MISMATCH;
+        } else if (!vad::CanCommitGateOpen(slot, request)) {
+            status = STATUS_DEVICE_NOT_READY;
+        } else {
+            slot.GateOpen = 1;
+        }
+        *snapshot = vad::Snapshot(slot);
+        KeReleaseSpinLock(&shared->Lock, irql);
+    }
     if (NT_SUCCESS(status) && request.Open == 0 && index < MOIREN_VAD_MAX_ENDPOINTS) {
         VadPcmPurge(shared, index, true);
+    }
+    if (child != nullptr) {
+        WdfObjectDereference(child);
     }
     return status;
 }

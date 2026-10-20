@@ -59,8 +59,13 @@ static void AdmissionAndWire()
                 ((intent == 1 || intent == 2) && (channels == 1 || channels == 2)));
         }
     }
-    vad::Slot slot = {0x0102030405060708ull, 5,
-        MOIREN_VAD_STATE_PRESENT, 2, 1, 1, 0, 0, 1};
+    vad::Slot slot = {};
+    slot.Id = 0x0102030405060708ull;
+    slot.Session = 5;
+    slot.State = MOIREN_VAD_STATE_PRESENT;
+    slot.Intent = 2;
+    slot.Channels = slot.PolicyPrepared = 1;
+    slot.AdmissionGeneration = 1;
     auto snapshot = vad::Snapshot(slot);
     assert(snapshot.GateOpen == 0 && snapshot.AudioReady == 0);
     assert(snapshot.Size == 128 && snapshot.Version == 2);
@@ -83,7 +88,14 @@ static void AdmissionAndWire()
 
 static void ClosedGenerationCannotReadmitOldStream()
 {
-    vad::Slot slot = {5, 9, MOIREN_VAD_STATE_PRESENT, 1, 2, 1, 1, 1, 42};
+    vad::Slot slot = {};
+    slot.Id = 5;
+    slot.Session = 9;
+    slot.State = MOIREN_VAD_STATE_PRESENT;
+    slot.Intent = 1;
+    slot.Channels = 2;
+    slot.PolicyPrepared = slot.GateOpen = slot.AudioReady = 1;
+    slot.AdmissionGeneration = 42;
     const uint64_t oldGeneration = slot.AdmissionGeneration;
     vad::CloseGate(slot);
     assert(slot.GateOpen == 0 && slot.AdmissionGeneration == oldGeneration + 1);
@@ -409,6 +421,32 @@ static void DeferredCreateWaitsForOldLifetimeWithoutReserving()
 
 int main()
 {
+    // Gate opening is a two-phase operation: clearing storage can overlap
+    // native pause/reset or PnP retirement, so readiness must be revalidated.
+    {
+        vad::Slot slot = {};
+        slot.Id = 5;
+        slot.Session = 9;
+        slot.State = MOIREN_VAD_STATE_PRESENT;
+        slot.PolicyPrepared = slot.AudioReady = 1;
+        slot.AdmissionGeneration = 11;
+        MOIREN_VAD_GATE_REQUEST request = {};
+        request.Endpoint.EndpointId = request.Endpoint.EndpointGeneration = 5;
+        request.Endpoint.SessionEpoch = 9;
+        request.GateEpoch = 11;
+        Check(vad::CanCommitGateOpen(slot, request),
+            "gate may open after storage clear only with unchanged identity and epoch");
+        vad::InvalidatePcmEpoch(slot);
+        Check(!vad::CanCommitGateOpen(slot, request),
+            "native reset during storage clear prevents opening the stale epoch");
+        request.GateEpoch = slot.AdmissionGeneration;
+        slot.State = MOIREN_VAD_STATE_REMOVING;
+        Check(!vad::CanCommitGateOpen(slot, request),
+            "retirement during storage clear cannot readmit the endpoint");
+        slot.State = MOIREN_VAD_STATE_PRESENT;
+        slot.AudioReady = 0;
+        Check(!vad::CanCommitGateOpen(slot, request), "unprepared hardware stays closed");
+    }
     CapacityAndRetirement();
     AdmissionAndWire();
     ClosedGenerationCannotReadmitOldStream();

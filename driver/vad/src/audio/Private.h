@@ -2,6 +2,7 @@
 #pragma once
 #include "Audio.h"
 #include "Clock.h"
+#include "TimerPcm.h"
 #include "CircuitIdentity.h"
 #include <windef.h>
 #include <mmsystem.h>
@@ -43,6 +44,12 @@ struct VAD_AUDIO_STREAM {
     ULONG PacketSize;
     ULONG PacketFrames;
     ULONG BlockAlign;
+    // ACX sees a page-divisible native packet; PCM keeps the requested logical
+    // shape. Only bounded bytes, never a WDFREQUEST, survive between segments.
+    vad::audio::TimerDrivenRing TimerRing;
+    vad::audio::TimerPcmPacket TimerPacket;
+    PVOID TimerScratch;
+    ULONG TimerScratchBytes;
     uint64_t Generation;
     vad::audio::Clock Clock;
     uint64_t CompletedPackets;

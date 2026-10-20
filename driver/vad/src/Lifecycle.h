@@ -167,6 +167,15 @@ inline bool SameStream(const Slot& slot, const MOIREN_VAD_PCM_HEADER& request)
         slot.StreamState == MOIREN_VAD_STREAM_RUNNING;
 }
 
+inline bool CanCommitGateOpen(const Slot& slot, const MOIREN_VAD_GATE_REQUEST& request)
+{
+    return SameIdentity(slot, request.Endpoint) &&
+        slot.AdmissionGeneration == request.GateEpoch &&
+        slot.AdmissionGeneration != ~uint64_t{0} &&
+        slot.State == MOIREN_VAD_STATE_PRESENT &&
+        slot.PolicyPrepared != 0 && slot.AudioReady != 0;
+}
+
 inline bool ValidWriteSequence(const Slot& slot, const MOIREN_VAD_PCM_HEADER& request)
 {
     return request.Qpc != 0 && (!slot.HasSequence || request.Sequence > slot.LastSequence);
