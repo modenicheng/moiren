@@ -16,7 +16,7 @@ use std::{
 };
 use windows::Win32::{
     Foundation::{
-        ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, STATUS_IO_TIMEOUT, WAIT_FAILED, WAIT_OBJECT_0,
+        ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_SEM_TIMEOUT, WAIT_FAILED, WAIT_OBJECT_0,
         WAIT_TIMEOUT,
     },
     System::{
@@ -441,7 +441,9 @@ fn wait_event(event: &OwnedHandle, timeout: Duration) -> Result<(), ClientError>
 }
 
 fn writing_completion_timeout(code: HRESULT, writing: bool) -> bool {
-    writing && code == HRESULT(STATUS_IO_TIMEOUT.0)
+    // GetOverlappedResult reports GetLastError through HRESULT_FROM_WIN32,
+    // after Windows translates the driver's intentional STATUS_IO_TIMEOUT.
+    writing && code == ERROR_SEM_TIMEOUT.to_hresult()
 }
 
 impl Drop for PcmOwner {
@@ -488,7 +490,28 @@ fn slot_error(error: SlotError) -> ClientError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::Foundation::{
+        ERROR_OPERATION_ABORTED, RtlNtStatusToDosError, STATUS_IO_TIMEOUT,
+    };
     use windows::Win32::System::Threading::SetEvent;
+
+    #[test]
+    fn expired_capture_packet_uses_the_windows_completion_error_domain() {
+        // SAFETY: pure OS status translation; no device or request is opened.
+        let translated = unsafe { RtlNtStatusToDosError(STATUS_IO_TIMEOUT) };
+        assert_eq!(translated, ERROR_SEM_TIMEOUT.0);
+        let completion = HRESULT::from_win32(translated);
+        assert!(writing_completion_timeout(completion, true));
+        assert!(!writing_completion_timeout(completion, false));
+        assert!(!writing_completion_timeout(
+            ERROR_OPERATION_ABORTED.to_hresult(),
+            true
+        ));
+        assert!(!writing_completion_timeout(
+            HRESULT::from_win32(WAIT_TIMEOUT.0),
+            true
+        ));
+    }
 
     #[test]
     fn activity_wait_timeout_does_not_cancel_or_modify_request_storage() {
