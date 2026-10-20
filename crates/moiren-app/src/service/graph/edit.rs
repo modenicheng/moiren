@@ -20,6 +20,10 @@ fn validate_edited_node(next: &GraphSnapshot, node: NodeId) -> Result<(), String
 
 pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Result<(), String> {
     match edit {
+        GraphEdit::SetExports(exports) => {
+            validate_exports(&exports, &next.graph)?;
+            next.exports = exports;
+        }
         GraphEdit::SetBuiltin { node, state } => {
             let (kind, input_channels, output_channels) = {
                 let topology = next
@@ -98,6 +102,11 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
         GraphEdit::RemoveNode(node) => {
             next.graph.remove_node(node).map_err(|e| e.to_string())?;
             next.nodes.retain(|s| s.id != node);
+            for export in &mut next.exports {
+                if export.binding == Some(node) {
+                    export.binding = None;
+                }
+            }
         }
         GraphEdit::Connect {
             source,

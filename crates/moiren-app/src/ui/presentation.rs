@@ -149,6 +149,8 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                     NativeStreamKind::FollowerOutput => "Follower output",
                     NativeStreamKind::PhysicalInput => "Physical input",
                     NativeStreamKind::ProcessInput => "Application input",
+                    NativeStreamKind::VirtualPlayback => "Virtual playback",
+                    NativeStreamKind::VirtualMicrophone => "Virtual microphone",
                 };
                 let prefix = format!("{} {kind}", index + 1);
                 rows.push((

@@ -418,6 +418,7 @@ fn compressor_properties_restore_and_prepare_the_saved_values() {
     restored.validate().unwrap();
     let (graph, nodes) = restored.graph.as_ref().unwrap().restore().unwrap();
     let mut project_graph = crate::service::GraphPreparation {
+        exports: Vec::new(),
         graph,
         nodes,
         revision: 1,
@@ -516,9 +517,9 @@ fn mixer_layout_and_node_settings_round_trip_with_document_local_ids() {
     );
 }
 
-struct TestDirectory(PathBuf);
+pub(super) struct TestDirectory(PathBuf);
 impl TestDirectory {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "moiren-project-{}-{}-{}",
             std::process::id(),
@@ -531,7 +532,7 @@ impl TestDirectory {
         fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn file(&self, filename: &str) -> PathBuf {
+    pub(super) fn file(&self, filename: &str) -> PathBuf {
         self.0.join(filename)
     }
 }

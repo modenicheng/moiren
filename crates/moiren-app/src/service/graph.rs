@@ -1,6 +1,8 @@
 //! The service owns the editable topology. Pages receive immutable projections;
 //! only validated transactions replace the candidate and native startup confirms it.
-use super::{InputSelection, RunLimit, SessionGeneration, SessionSpec};
+use super::{
+    ExportIntent, InputSelection, RunLimit, SessionGeneration, SessionSpec, validate_exports,
+};
 use moiren_core::graph::{EdgeId, GraphError, LogicalGraph, NodeId, NodeKind, PortId, SendParams};
 use moiren_core::protocol::ParamValue;
 use moiren_engine::host::ParameterTarget;
@@ -31,6 +33,7 @@ pub struct GraphNodeState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphSnapshot {
+    pub exports: Vec<ExportIntent>,
     pub graph: LogicalGraph,
     pub nodes: Vec<GraphNodeState>,
     pub candidate_revision: u64,
@@ -47,6 +50,7 @@ impl GraphSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphEdit {
+    SetExports(Vec<ExportIntent>),
     SetBuiltin {
         node: NodeId,
         state: BuiltinState,
@@ -113,6 +117,7 @@ pub enum GraphEdit {
 /// Owned worker preparation input; no UI entity or native handle crosses here.
 #[derive(Debug, Clone)]
 pub struct GraphPreparation {
+    pub exports: Vec<ExportIntent>,
     pub graph: LogicalGraph,
     pub nodes: Vec<GraphNodeState>,
     pub revision: u64,
@@ -151,6 +156,7 @@ impl Default for ServiceGraph {
             .collect();
         Self {
             snapshot: GraphSnapshot {
+                exports: Vec::new(),
                 graph: session.graph,
                 nodes,
                 candidate_revision: 1,
@@ -278,6 +284,7 @@ impl ServiceGraph {
     }
     pub fn preparation(&self) -> GraphPreparation {
         GraphPreparation {
+            exports: self.snapshot.exports.clone(),
             graph: self.snapshot.graph.clone(),
             nodes: self.snapshot.nodes.clone(),
             revision: self.snapshot.candidate_revision,
@@ -294,6 +301,10 @@ impl ServiceGraph {
             return Err(error);
         }
         next.graph.validate().map_err(|e| e.to_string())?;
+        if let Err(error) = validate_exports(&next.exports, &next.graph) {
+            self.record_error(&error);
+            return Err(error);
+        }
         next.candidate_revision = next
             .candidate_revision
             .checked_add(1)
@@ -309,7 +320,17 @@ impl ServiceGraph {
         graph: LogicalGraph,
         nodes: Vec<GraphNodeState>,
     ) -> Result<(), String> {
+        self.replace_with_exports(graph, nodes, Vec::new())
+    }
+
+    pub fn replace_with_exports(
+        &mut self,
+        graph: LogicalGraph,
+        nodes: Vec<GraphNodeState>,
+        exports: Vec<ExportIntent>,
+    ) -> Result<(), String> {
         GraphPreparation {
+            exports: exports.clone(),
             graph: graph.clone(),
             nodes: nodes.clone(),
             revision: 0,
@@ -321,6 +342,7 @@ impl ServiceGraph {
             .checked_add(1)
             .ok_or("图版本空间已耗尽")?;
         self.snapshot.graph = graph;
+        self.snapshot.exports = exports;
         self.snapshot.nodes = nodes;
         self.snapshot.candidate_revision = revision;
         self.snapshot.last_error = None;

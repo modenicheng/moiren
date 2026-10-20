@@ -2,6 +2,7 @@ use super::*;
 
 impl ManagedDriver {
     pub(super) fn retire(&mut self, c: &mut ServiceContext) {
+        self.exports_runtime.revoke();
         let generation = c.core.generation();
         log::info!(
             target: "moiren::audio::service",
@@ -59,6 +60,15 @@ impl ManagedDriver {
     }
     pub(super) fn apply(&mut self, c: &mut ServiceContext) {
         let preparation = c.graph.preparation();
+        let virtual_transport_ready = self.exports_runtime.adapter.is_some();
+        c.exports.set_available(virtual_transport_ready);
+        if !virtual_transport_ready
+            && let Err(error) = c.exports.preflight_audio(&preparation.exports)
+        {
+            c.graph.record_error(error);
+            self.apply = false;
+            return;
+        }
         let settings = self
             .apply_audio_settings
             .as_ref()
@@ -76,15 +86,44 @@ impl ManagedDriver {
                 return;
             }
         };
+        // A failed PCM worker can drain while its PDO stays healthy/Present.
+        // Waiting for transport admission before replacing that host would
+        // strand Apply: only a fresh preparation can create its PCM session.
+        // Physical resource waits retain their host when export transport is
+        // still ready (including projects with no enabled virtual exports).
+        let stranded_virtual_transport = self.owner.as_ref().is_some_and(|owner| {
+            owner.observer.read().state.execution == ExecutionState::WaitingForResources
+                && self
+                    .exports_runtime
+                    .lifecycle_ready_for(&c.exports, &preparation.exports)
+                && !self
+                    .exports_runtime
+                    .ready_for(&c.exports, &preparation.exports)
+        });
         if self.owner.as_ref().is_some_and(|o| {
             o.document != self.document
                 || (settings == AudioSettings::default() && o.profile != c.latency_profile)
                 || o.audio_settings != settings
+                || o.exports != preparation.exports
+                || stranded_virtual_transport
         }) {
             if let Ok(spec) = c.graph.session_spec(c.core.desired()) {
                 let _ = c.core.start(spec);
             }
             self.retire(c);
+            return;
+        }
+        if self.owner.is_some() {
+            if !self
+                .exports_runtime
+                .ready_for(&c.exports, &preparation.exports)
+            {
+                return;
+            }
+        } else if !self
+            .exports_runtime
+            .lifecycle_ready_for(&c.exports, &preparation.exports)
+        {
             return;
         }
         if let Some(owner) = self.owner.as_mut() {
@@ -101,6 +140,9 @@ impl ManagedDriver {
                 .into_iter()
                 .map(|p| (p.target, p.value))
                 .collect();
+            // Validation above must leave the confirmed graph's admission
+            // intact. Revoke before this edit can reach the independent owner.
+            self.exports_runtime.revoke();
             match owner.control.edit(move |current| {
                 *current = project;
                 Ok(())
@@ -179,6 +221,7 @@ impl ManagedDriver {
                         document: self.document,
                         profile: c.latency_profile,
                         audio_settings: settings,
+                        exports: preparation.exports.clone(),
                         active_revision: (1, preparation.revision),
                         active_apply_id: 0,
                         latest_apply_revision: preparation.revision,

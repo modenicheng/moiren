@@ -141,6 +141,7 @@ impl SelectionState {
 /// The text projections and the display-level stale guard live in
 /// [`crate::ui::presentation`].
 pub struct UiState {
+    pub(crate) startup_project: Option<std::sync::Arc<crate::project::ProjectDocument>>,
     pub handle: AppHandle,
     pub selection: SelectionState,
     pub snapshot: Arc<AppSnapshot>,
@@ -164,6 +165,7 @@ impl UiState {
         let (gain, pan) = primary_parameters(&initial);
         let max_block_frames = initial.audio_settings.processing.block_frames as usize;
         let mut state = Self {
+            startup_project: initial.loaded_project.clone(),
             handle,
             selection,
             snapshot: initial,

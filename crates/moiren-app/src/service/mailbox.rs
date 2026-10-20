@@ -15,7 +15,7 @@ struct QueuedRequest {
     payload: QueuedPayload,
 }
 enum QueuedPayload {
-    Application(AppRequest),
+    Application(Box<AppRequest>),
     Subscription(signals::SubscriptionRequest),
 }
 #[derive(Clone)]
@@ -38,6 +38,13 @@ impl AppHandle {
             return Err(DispatchError::Exiting);
         }
         match &request {
+            AppRequest::LoadProject(document) => document
+                .validate()
+                .map_err(|_| DispatchError::InvalidConfig)?,
+            AppRequest::SetExportAuthorizations(values) => {
+                super::validate_export_authorizations(values)
+                    .map_err(|_| DispatchError::InvalidConfig)?
+            }
             AppRequest::Start(spec) => spec.validate()?,
             AppRequest::SetAudioSettings(settings) => settings
                 .validate()
@@ -47,7 +54,7 @@ impl AppHandle {
             }
             _ => {}
         }
-        self.try_enqueue(QueuedPayload::Application(request))
+        self.try_enqueue(QueuedPayload::Application(Box::new(request)))
     }
     pub fn subscribe_topic<P: moiren_signal::Shape>(
         &self,
@@ -134,7 +141,7 @@ impl ServiceMailbox {
         match queued.payload {
             QueuedPayload::Application(request) => {
                 self.consumed_request_id.set(queued.id);
-                Some(request)
+                Some(*request)
             }
             QueuedPayload::Subscription(payload) => {
                 *self.pending.borrow_mut() = Some(QueuedRequest {
@@ -152,7 +159,7 @@ impl ServiceMailbox {
         let queued = self.next_payload()?;
         self.consumed_request_id.set(queued.id);
         match queued.payload {
-            QueuedPayload::Application(request) => Some(Some(request)),
+            QueuedPayload::Application(request) => Some(Some(*request)),
             QueuedPayload::Subscription(request) => {
                 signals.execute(request);
                 Some(None)

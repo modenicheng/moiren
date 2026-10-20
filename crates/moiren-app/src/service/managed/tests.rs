@@ -12,6 +12,677 @@ struct Rig {
     state: Arc<State>,
 }
 
+fn export_rig() -> (Rig, Arc<super::super::exports::runtime::tests::FakeAdapter>) {
+    let mut rig = Rig::new();
+    let adapter = Arc::new(super::super::exports::runtime::tests::FakeAdapter::default());
+    rig.driver.exports_runtime.adapter = Some(adapter.clone());
+    let export = ExportIntent {
+        endpoint_id: moiren_engine::node::VirtualEndpointId::from_bytes([0x91; 16]),
+        direction: ExportDirection::Playback,
+        name: "User named playback".into(),
+        channels: 2,
+        enabled: true,
+        binding: Some(rig.node(NodeKind::Source)),
+    };
+    rig.request(AppRequest::EditGraph(GraphEdit::BindOutput {
+        node: rig.node(NodeKind::Sink),
+        endpoint_id: "output".into(),
+    }));
+    rig.request(AppRequest::EditGraph(GraphEdit::SetExports(vec![export])));
+    (rig, adapter)
+}
+
+#[test]
+fn export_presence_does_not_open_gate_until_engine_confirms_and_stop_retains_it() {
+    let (mut rig, adapter) = export_rig();
+    rig.wait(|r| {
+        r.c.exports.statuses(&r.c.graph.snapshot())[0].resource == ExportResourceState::Present
+    });
+    assert!(!rig.c.exports.statuses(&rig.c.graph.snapshot())[0].gate_open);
+    assert_eq!(rig.c.graph.snapshot().active_revision, None);
+    assert!(
+        adapter
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(kind, _, _)| kind != "open")
+    );
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+    let revision = rig.c.graph.snapshot().active_revision.unwrap();
+    assert!(
+        adapter
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(kind, r, _)| kind == "open" && *r == Some(revision))
+    );
+    rig.request(AppRequest::Stop);
+    assert_eq!(
+        adapter.revision.load(Ordering::Acquire),
+        0,
+        "Stop invalidates pending gate jobs immediately"
+    );
+    rig.wait(|r| {
+        r.driver.cleaning == 0 && !r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
+    });
+    assert_eq!(
+        rig.c.exports.statuses(&rig.c.graph.snapshot())[0].resource,
+        ExportResourceState::Present
+    );
+    let calls = adapter.calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .all(|(kind, _, thread)| kind != "remove" && thread == "app-prepare")
+    );
+}
+
+#[test]
+fn export_local_eligibility_recreates_after_drain_and_requires_fresh_apply() {
+    let (mut rig, adapter) = export_rig();
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+    let id = rig.c.graph.snapshot().exports[0].endpoint_id;
+    rig.request(AppRequest::SetExportAuthorizations(vec![
+        ExportAuthorization {
+            endpoint_id: id,
+            allow_default: true,
+        },
+    ]));
+    rig.wait(|r| {
+        let statuses = r.c.exports.statuses(&r.c.graph.snapshot());
+        statuses[0].resource == ExportResourceState::Present
+            && statuses[0].allow_default
+            && r.c.exports.observations[&id].allow_default
+    });
+    assert_eq!(rig.c.graph.snapshot().active_revision, None);
+    assert!(!rig.c.exports.statuses(&rig.c.graph.snapshot())[0].gate_open);
+    assert!(
+        adapter
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(kind, _, _)| kind == "remove")
+    );
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+}
+
+#[test]
+fn unrelated_local_export_authorization_does_not_stop_running_owner() {
+    let (mut rig, _) = export_rig();
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+    rig.request(AppRequest::SetExportAuthorizations(vec![
+        ExportAuthorization {
+            endpoint_id: moiren_engine::node::VirtualEndpointId::from_bytes([0x72; 16]),
+            allow_default: true,
+        },
+    ]));
+    for _ in 0..15 {
+        rig.tick();
+    }
+    assert_eq!(rig.state.stops.load(Ordering::Acquire), 0);
+    assert_eq!(rig.c.core.phase(), SessionPhase::Running);
+    assert!(rig.c.exports.statuses(&rig.c.graph.snapshot())[0].gate_open);
+}
+
+#[test]
+fn failed_export_retirement_stays_removing_until_driver_reports_absence() {
+    let (mut rig, adapter) = export_rig();
+    rig.wait(|r| {
+        r.c.exports.statuses(&r.c.graph.snapshot())[0].resource == ExportResourceState::Present
+    });
+    adapter.fail_remove.store(true, Ordering::Release);
+    rig.request(AppRequest::EditGraph(GraphEdit::SetExports(Vec::new())));
+    rig.wait(|r| {
+        r.c.exports.statuses(&r.c.graph.snapshot())[0].resource == ExportResourceState::Removing
+    });
+    assert!(!rig.driver.exports_runtime.is_drained());
+    adapter.fail_remove.store(false, Ordering::Release);
+    rig.wait(|r| r.driver.exports_runtime.is_drained());
+}
+
+#[test]
+fn explicit_exit_requests_retirement_without_claiming_client_held_pdo_absence() {
+    let (mut rig, adapter) = export_rig();
+    rig.wait(|r| {
+        r.c.exports.statuses(&r.c.graph.snapshot())[0].resource == ExportResourceState::Present
+    });
+    rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
+    rig.wait(|r| r.driver.is_drained() && r.pool.is_idle());
+    assert!(
+        adapter
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(kind, _, _)| kind == "remove")
+    );
+    assert!(
+        rig.c
+            .exports
+            .observations
+            .values()
+            .all(|o| o.resource == ExportResourceState::Removing && !o.gate_open)
+    );
+}
+
+#[test]
+fn explicit_exit_with_unknown_create_finishes_without_fabricating_absence() {
+    let (mut rig, adapter) = export_rig();
+    adapter.uncertain_create.store(true, Ordering::Release);
+    rig.wait(|r| {
+        r.c.exports.statuses(&r.c.graph.snapshot())[0].resource == ExportResourceState::Creating
+    });
+    rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
+    rig.wait(|r| r.driver.is_drained() && r.pool.is_idle());
+    assert!(rig.c.exports.observations.values().all(|o| {
+        o.resource == ExportResourceState::Creating && !o.gate_open && o.active_revision.is_none()
+    }));
+}
+
+#[test]
+fn explicit_exit_does_not_wait_for_failed_native_retirement_to_report_absence() {
+    let (mut rig, adapter) = export_rig();
+    rig.wait(|r| {
+        r.c.exports.statuses(&r.c.graph.snapshot())[0].resource == ExportResourceState::Present
+    });
+    adapter.fail_remove.store(true, Ordering::Release);
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+    rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
+    rig.wait(|r| r.driver.is_drained() && r.pool.is_idle());
+    assert_eq!(rig.state.stops.load(Ordering::Acquire), 1);
+    assert!(
+        rig.c
+            .graph
+            .snapshot()
+            .last_error
+            .as_deref()
+            .is_some_and(|message| message.contains("shutdown REMOVE timeout"))
+    );
+    assert!(rig.c.exports.observations.values().all(|o| {
+        o.resource == ExportResourceState::Removing && !o.gate_open && o.active_revision.is_none()
+    }));
+}
+
+#[test]
+fn export_name_apply_drains_owner_and_recreates_from_intent() {
+    let (mut rig, adapter) = export_rig();
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+    let mut intent = rig.c.graph.snapshot().exports[0].clone();
+    intent.name = "Renamed playback from project".into();
+    let id = intent.endpoint_id;
+    rig.request(AppRequest::EditGraph(GraphEdit::SetExports(vec![
+        intent.clone(),
+    ])));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| {
+        r.c.exports
+            .observations
+            .get(&id)
+            .is_some_and(|o| o.intent.name == intent.name && o.gate_open)
+    });
+    assert_eq!(rig.state.starts.load(Ordering::Acquire), 2);
+    assert_eq!(rig.state.stops.load(Ordering::Acquire), 1);
+    assert_eq!(
+        adapter
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(kind, _, _)| kind == "create")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn unapplied_export_unbinding_and_removal_keep_confirmed_resources() {
+    let (mut rig, adapter) = export_rig();
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+    let active = rig.c.graph.snapshot().active_revision;
+    let mut intent = rig.c.graph.snapshot().exports[0].clone();
+    intent.binding = None;
+    rig.request(AppRequest::EditGraph(GraphEdit::SetExports(vec![intent])));
+    for _ in 0..15 {
+        rig.tick();
+    }
+    assert!(rig.c.exports.statuses(&rig.c.graph.snapshot())[0].gate_open);
+    rig.request(AppRequest::EditGraph(GraphEdit::SetExports(vec![])));
+    for _ in 0..15 {
+        rig.tick();
+    }
+    let statuses = rig.c.exports.statuses(&rig.c.graph.snapshot());
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].active_revision, active);
+    assert!(statuses[0].gate_open);
+    assert!(
+        adapter
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(kind, _, _)| kind != "remove")
+    );
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.exports.observations.is_empty());
+    assert!(
+        adapter
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(kind, _, _)| kind == "remove")
+    );
+}
+
+#[test]
+fn stop_and_exit_revoke_a_pending_gate_dispatch_without_blocking_pump() {
+    for exiting in [false, true] {
+        let (mut rig, adapter) = export_rig();
+        adapter.hold_open.store(true, Ordering::Release);
+        rig.request(AppRequest::ApplyGraph);
+        rig.wait(|_| adapter.open_entered.load(Ordering::Acquire));
+        let started = Instant::now();
+        if exiting {
+            rig.driver.begin_exit(&mut rig.c, &mut rig.pool);
+        } else {
+            rig.request(AppRequest::Stop);
+        }
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert_eq!(adapter.revision.load(Ordering::Acquire), 0);
+        adapter.hold_open.store(false, Ordering::Release);
+        if exiting {
+            rig.wait(|r| r.driver.is_drained() && r.pool.is_idle());
+        } else {
+            rig.wait(|r| r.driver.cleaning == 0 && r.pool.is_idle());
+            assert_eq!(
+                rig.c.exports.statuses(&rig.c.graph.snapshot())[0].resource,
+                ExportResourceState::Present
+            );
+            assert!(!rig.c.exports.statuses(&rig.c.graph.snapshot())[0].gate_open);
+        }
+        assert!(
+            adapter
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(kind, _, _)| kind != "open")
+        );
+        assert_eq!(rig.c.graph.snapshot().last_error, None);
+    }
+}
+
+#[test]
+fn engine_recovery_closes_export_gate_until_owner_and_revision_are_confirmed() {
+    let (mut rig, adapter) = export_rig();
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+    rig.state.fail_owner.store(true, Ordering::SeqCst);
+    rig.wait(|r| {
+        r.c.core.phase() == SessionPhase::Failed
+            && !r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
+    });
+    assert_eq!(adapter.revision.load(Ordering::Acquire), 0);
+    assert_eq!(
+        rig.c.exports.statuses(&rig.c.graph.snapshot())[0].active_revision,
+        None
+    );
+    let host_id = rig.driver.owner.as_ref().unwrap().observer.read().host_id;
+    rig.request(AppRequest::ApplyGraph);
+    rig.tick();
+    assert_eq!(
+        rig.driver.owner.as_ref().unwrap().observer.read().host_id,
+        host_id
+    );
+    let output = rig.node(NodeKind::Sink);
+    let project = rig.driver.owner.as_ref().unwrap().observer.project();
+    rig.state.fail_owner.store(false, Ordering::SeqCst);
+    rig.state
+        .events
+        .lock()
+        .unwrap()
+        .push_back(host::ResourceEvent {
+            node: output,
+            configuration: project.nodes[&output].clone(),
+            generation: 1,
+            available: true,
+        });
+    rig.wait(|r| {
+        r.c.core.phase() == SessionPhase::Running
+            && r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
+    });
+    assert_eq!(
+        rig.c.exports.statuses(&rig.c.graph.snapshot())[0].active_revision,
+        rig.c.graph.snapshot().active_revision
+    );
+    assert_eq!(
+        rig.driver.owner.as_ref().unwrap().observer.read().host_id,
+        host_id
+    );
+}
+
+#[test]
+fn initial_export_apply_prepares_pcm_before_waiting_for_transport_admission() {
+    let (mut rig, adapter) = export_rig();
+    adapter.transport_unavailable.store(true, Ordering::Release);
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
+    let host_id = rig.driver.owner.as_ref().unwrap().observer.read().host_id;
+    assert_eq!(
+        rig.c.exports.statuses(&rig.c.graph.snapshot())[0].resource,
+        ExportResourceState::Present
+    );
+    assert!(!rig.c.exports.statuses(&rig.c.graph.snapshot())[0].gate_open);
+    adapter
+        .transport_unavailable
+        .store(false, Ordering::Release);
+    rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+    assert_eq!(
+        rig.driver.owner.as_ref().unwrap().observer.read().host_id,
+        host_id
+    );
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn unbound_export_without_pcm_does_not_block_later_graph_applies() {
+    let (mut rig, adapter) = export_rig();
+    let mut intent = rig.c.graph.snapshot().exports[0].clone();
+    intent.binding = None;
+    rig.request(AppRequest::EditGraph(GraphEdit::SetExports(vec![intent])));
+    adapter.transport_unavailable.store(true, Ordering::Release);
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
+    let host_id = rig.driver.owner.as_ref().unwrap().observer.read().host_id;
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Gain,
+        channels: 2,
+    }));
+    rig.request(AppRequest::ApplyGraph);
+    rig.tick();
+    assert!(
+        !rig.driver.apply,
+        "an unbound export has no PCM worker to become transport-ready"
+    );
+    rig.wait(|r| {
+        r.c.graph.snapshot().active_revision == Some(r.c.graph.snapshot().candidate_revision)
+    });
+    assert_eq!(
+        rig.driver.owner.as_ref().unwrap().observer.read().host_id,
+        host_id
+    );
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+    let status = &rig.c.exports.statuses(&rig.c.graph.snapshot())[0];
+    assert_eq!(status.resource, ExportResourceState::Present);
+    assert!(!status.gate_open);
+    assert_eq!(status.active_revision, None);
+    assert!(
+        adapter
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(kind, _, _)| kind != "open")
+    );
+}
+
+#[test]
+fn apply_replaces_waiting_owner_after_export_pcm_drains_with_present_pdo() {
+    let (mut rig, adapter) = export_rig();
+    struct ReleasePreparation(Arc<State>);
+    impl Drop for ReleasePreparation {
+        fn drop(&mut self) {
+            self.0.block_update.store(false, Ordering::SeqCst);
+        }
+    }
+    // Release the fake preparation before Rig's shutdown even if an assertion
+    // fails, so this regression cannot strand the test process's cleanup join.
+    let _release = ReleasePreparation(rig.state.clone());
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+    let host_id = rig.driver.owner.as_ref().unwrap().observer.read().host_id;
+    let intent = rig.c.graph.snapshot().exports[0].clone();
+    rig.state.block_update.store(true, Ordering::SeqCst);
+    rig.state.ignore_update_cancel.store(true, Ordering::SeqCst);
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Gain,
+        channels: 2,
+    }));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.state.prepares.load(Ordering::SeqCst) == 2);
+    adapter.transport_unavailable.store(true, Ordering::Release);
+    rig.state.fail_owner.store(true, Ordering::SeqCst);
+    rig.wait(|r| {
+        r.c.core.phase() == SessionPhase::Failed
+            && !r
+                .driver
+                .exports_runtime
+                .ready_for(&r.c.exports, std::slice::from_ref(&intent))
+    });
+    assert!(
+        rig.driver
+            .exports_runtime
+            .lifecycle_ready_for(&rig.c.exports, std::slice::from_ref(&intent)),
+        "a drained PCM worker does not remove or fault the PDO"
+    );
+    assert_eq!(
+        rig.driver
+            .owner
+            .as_ref()
+            .unwrap()
+            .observer
+            .read()
+            .state
+            .execution,
+        ExecutionState::WaitingForResources
+    );
+    rig.state.fail_owner.store(false, Ordering::SeqCst);
+    rig.request(AppRequest::ApplyGraph);
+    rig.tick();
+    assert!(
+        rig.driver.owner.is_none(),
+        "Apply must retire the stranded host before preparing a replacement PCM worker"
+    );
+    assert!(rig.driver.apply);
+    assert_eq!(adapter.revision.load(Ordering::Acquire), 0);
+    adapter
+        .transport_unavailable
+        .store(false, Ordering::Release);
+    for _ in 0..3 {
+        rig.tick();
+        assert!(rig.driver.owner.is_none());
+        assert_eq!(rig.driver.cleaning, 1);
+        assert_eq!(rig.state.prepares.load(Ordering::SeqCst), 2);
+        assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+    }
+    rig.state.block_update.store(false, Ordering::SeqCst);
+    rig.wait(|r| {
+        r.c.core.phase() == SessionPhase::Running
+            && r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
+    });
+    assert_ne!(
+        rig.driver.owner.as_ref().unwrap().observer.read().host_id,
+        host_id
+    );
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 2);
+    assert_eq!(rig.state.stops.load(Ordering::SeqCst), 1);
+    assert!(
+        adapter
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(kind, _, _)| kind != "remove"),
+        "PCM recovery must retain the healthy PDO"
+    );
+}
+
+#[test]
+fn nondefault_f32_and_f64_settings_support_export_admission_after_confirmation() {
+    for (precision, asio) in [
+        (ProcessingPrecision::F32, false),
+        (ProcessingPrecision::F64, false),
+        (ProcessingPrecision::F32, true),
+        (ProcessingPrecision::F64, true),
+    ] {
+        let (mut rig, _) = export_rig();
+        let backend = FakeBackend(rig.state.clone());
+        rig.driver.f64_factory = Some(Arc::new(move |_, _| Ok(Box::new(backend.clone()))));
+        let mut settings = AudioSettings::default();
+        settings.processing.precision = precision;
+        settings.processing.sample_rate = 44_100;
+        settings.processing.block_frames = 512;
+        if asio {
+            settings.backend = AudioBackend::Asio;
+        }
+        rig.request(AppRequest::SetAudioSettings(settings.clone()));
+        rig.request(AppRequest::ApplyGraph);
+        rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+        assert_eq!(rig.c.active_audio_settings, Some(settings));
+        assert_eq!(
+            rig.c.exports.statuses(&rig.c.graph.snapshot())[0].active_revision,
+            rig.c.graph.snapshot().active_revision
+        );
+        rig.request(AppRequest::Stop);
+        rig.wait(|r| {
+            r.driver.cleaning == 0 && !r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open
+        });
+        assert_eq!(
+            rig.c.exports.statuses(&rig.c.graph.snapshot())[0].resource,
+            ExportResourceState::Present
+        );
+    }
+}
+
+#[test]
+fn unsupported_export_apply_preserves_the_confirmed_owner_and_revision() {
+    use super::super::{ExportDirection, ExportIntent};
+    use moiren_engine::node::VirtualEndpointId;
+    let mut rig = Rig::new();
+    rig.start();
+    let active = rig.c.graph.snapshot().active_revision;
+    let generation = rig.c.core.generation();
+    let starts = rig.state.starts.load(Ordering::SeqCst);
+    let source = rig.node(NodeKind::Source);
+    rig.request(AppRequest::EditGraph(GraphEdit::SetExports(vec![
+        ExportIntent {
+            endpoint_id: VirtualEndpointId::from_bytes([0x81; 16]),
+            direction: ExportDirection::Playback,
+            name: "Playback".into(),
+            channels: 2,
+            enabled: true,
+            binding: Some(source),
+        },
+    ])));
+    let mut settings = rig.c.audio_settings.clone();
+    settings.processing.sample_rate = 96_000;
+    rig.request(AppRequest::SetAudioSettings(settings));
+    rig.request(AppRequest::ApplyGraph);
+    rig.tick();
+    assert_eq!(rig.c.graph.snapshot().active_revision, active);
+    assert_eq!(rig.c.core.generation(), generation);
+    assert_eq!(rig.c.core.phase(), SessionPhase::Running);
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), starts);
+    assert_eq!(rig.state.stops.load(Ordering::SeqCst), 0);
+    assert_eq!(rig.c.active_audio_settings, Some(AudioSettings::default()));
+    assert!(
+        rig.c
+            .graph
+            .snapshot()
+            .last_error
+            .unwrap()
+            .contains("not integrated")
+    );
+}
+
+#[test]
+fn invalid_export_candidate_keeps_the_confirmed_admission_before_commit() {
+    let (mut rig, adapter) = export_rig();
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+    let active = rig.c.graph.snapshot().active_revision;
+    let generation = rig.c.core.generation();
+    let revision = adapter.revision.load(Ordering::Acquire);
+    let gate_calls = || {
+        adapter
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(kind, _, _)| kind == "open" || kind == "close")
+            .count()
+    };
+    let before = gate_calls();
+    rig.request(AppRequest::EditGraph(GraphEdit::ClearBinding(
+        rig.node(NodeKind::Sink),
+    )));
+    rig.request(AppRequest::ApplyGraph);
+    assert_eq!(
+        adapter.revision.load(Ordering::Acquire),
+        revision,
+        "request receipt cannot revoke a confirmed graph before candidate validation"
+    );
+    rig.tick();
+    assert!(rig.c.graph.snapshot().last_error.is_some());
+    assert!(!rig.driver.apply);
+    for _ in 0..15 {
+        rig.tick();
+    }
+    assert_eq!(rig.c.graph.snapshot().active_revision, active);
+    assert_eq!(rig.c.core.generation(), generation);
+    assert_eq!(rig.state.stops.load(Ordering::Acquire), 0);
+    assert!(rig.c.exports.statuses(&rig.c.graph.snapshot())[0].gate_open);
+    assert_eq!(adapter.revision.load(Ordering::Acquire), revision);
+    assert_eq!(
+        gate_calls(),
+        before,
+        "rejected candidate must not cycle a live gate"
+    );
+}
+
+#[test]
+fn invalid_start_candidate_keeps_the_confirmed_export_admission() {
+    let (mut rig, adapter) = export_rig();
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|r| r.c.exports.statuses(&r.c.graph.snapshot())[0].gate_open);
+    let active = rig.c.graph.snapshot().active_revision;
+    let revision = adapter.revision.load(Ordering::Acquire);
+    // Start configures only the primary IO pair. This additional unbound sink
+    // is legal editable topology but cannot be prepared as an Engine project.
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Sink,
+        channels: 2,
+    }));
+    rig.request(AppRequest::Start(SessionSpec {
+        source: InputSelection::Tone {
+            frequency_hz: 440.0,
+        },
+        output_endpoint_id: "output".into(),
+        limit: RunLimit::UntilStopped,
+        gain: 1.0,
+        pan: 0.0,
+        max_block_frames: 256,
+    }));
+    assert_eq!(adapter.revision.load(Ordering::Acquire), revision);
+    rig.tick();
+    assert!(rig.c.graph.snapshot().last_error.is_some());
+    assert!(!rig.driver.apply);
+    assert_eq!(rig.c.graph.snapshot().active_revision, active);
+    assert_eq!(rig.state.stops.load(Ordering::Acquire), 0);
+    assert_eq!(adapter.revision.load(Ordering::Acquire), revision);
+    assert!(rig.c.exports.statuses(&rig.c.graph.snapshot())[0].gate_open);
+}
+
 #[test]
 fn asio_automatic_startup_stays_idle_until_a_driver_is_explicitly_bound() {
     let mut rig = Rig::new();
@@ -1056,6 +1727,13 @@ fn initial_resource_recovery_restores_confirmed_revision_and_phase() {
         max_block_frames: 256,
     }));
     r.wait(|r| r.c.core.phase() == SessionPhase::Failed);
+    let host_id = r.driver.owner.as_ref().unwrap().observer.read().host_id;
+    r.request(AppRequest::ApplyGraph);
+    r.tick();
+    assert_eq!(
+        r.driver.owner.as_ref().unwrap().observer.read().host_id,
+        host_id
+    );
     let output = r.node(NodeKind::Sink);
     let project = r.driver.owner.as_ref().unwrap().observer.project();
     r.state.unavailable.store(false, Ordering::SeqCst);
@@ -1077,6 +1755,10 @@ fn initial_resource_recovery_restores_confirmed_revision_and_phase() {
     assert_eq!(
         r.c.active_latency_profile,
         Some(AudioLatencyProfile::Compatible)
+    );
+    assert_eq!(
+        r.driver.owner.as_ref().unwrap().observer.read().host_id,
+        host_id
     );
 }
 

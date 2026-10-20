@@ -4,6 +4,7 @@
 mod backend;
 mod core;
 mod driver;
+mod exports;
 mod graph;
 mod jobs;
 mod latency;
@@ -21,6 +22,7 @@ mod startup;
 mod windows;
 pub use backend::*;
 pub use driver::BackendDriver;
+pub use exports::*;
 pub use graph::{
     BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphNodeState,
     GraphPreparation, GraphSnapshot, MixerState, ServiceGraph, validate_node_state,
@@ -35,6 +37,10 @@ pub use windows::WindowsBackend;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceStartError {
+    #[error(transparent)]
+    Persistence(#[from] crate::project::PersistenceError),
+    #[error("invalid startup intent: {0}")]
+    InvalidStartup(String),
     #[error("service or worker spawn failed: {0}")]
     WorkerSpawn(std::io::Error),
     #[error("native application service is only supported on Windows")]
@@ -45,13 +51,18 @@ pub fn start_service() -> Result<ServiceRuntime, ServiceStartError> {
     {
         // Automatic catalog/startup can run before the UI is constructed. Seed
         // saved machine-local audio intent before the service starts polling.
-        let preferences = crate::project::load_preferences().unwrap_or_default();
-        ServiceRuntime::spawn_with_settings(
-            ManagedDriver::windows().with_automatic_startup(),
-            preferences.audio,
-            preferences.latency_profile,
-        )
-        .map_err(ServiceStartError::WorkerSpawn)
+        let startup = crate::project::StartupDocuments::load()?;
+        let restored = startup.project.is_some();
+        let context = startup
+            .into_context()
+            .map_err(ServiceStartError::InvalidStartup)?;
+        let driver = ManagedDriver::windows();
+        let driver = if restored {
+            driver
+        } else {
+            driver.with_automatic_startup()
+        };
+        ServiceRuntime::spawn_with_context(driver, context).map_err(ServiceStartError::WorkerSpawn)
     }
     #[cfg(not(windows))]
     {
@@ -93,6 +104,8 @@ impl Default for RoundBudget {
     }
 }
 pub struct ServiceContext {
+    pub exports: ExportService,
+    pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
     #[cfg(windows)]
     pub native_observations: Option<NativeSessionObservations>,
     #[cfg(windows)]
@@ -115,6 +128,8 @@ pub struct ServiceContext {
 impl Default for ServiceContext {
     fn default() -> Self {
         Self {
+            exports: ExportService::default(),
+            loaded_project: None,
             #[cfg(windows)]
             native_observations: None,
             #[cfg(windows)]
@@ -147,6 +162,47 @@ impl Drop for DeferredPermit {
     }
 }
 impl ServiceContext {
+    pub(crate) fn with_settings(
+        audio_settings: AudioSettings,
+        latency_profile: AudioLatencyProfile,
+    ) -> Self {
+        Self {
+            audio_settings,
+            latency_profile,
+            ..Self::default()
+        }
+    }
+
+    /// Decode and validate the entire candidate before publishing any part of
+    /// it. Project imports never change the machine-local export authorization.
+    pub fn load_project(
+        &mut self,
+        document: crate::project::ProjectDocument,
+    ) -> Result<(), String> {
+        document.validate().map_err(|error| error.to_string())?;
+        let mut audio = self.audio_settings.clone();
+        if let Some(processing) = document.processing {
+            audio.processing = processing;
+        }
+        audio.validate().map_err(|error| error.to_string())?;
+        if let Some(graph) = &document.graph {
+            let restored = document
+                .restore_graph()
+                .map_err(|error| error.to_string())?;
+            debug_assert_eq!(restored.graph.nodes().len(), graph.nodes.len());
+            self.graph
+                .replace_with_exports(restored.graph, restored.nodes, restored.exports)?;
+        } else if let Some(spec) = document.session_spec().map_err(|error| error.to_string())? {
+            let mut candidate = ServiceGraph::default();
+            candidate.configure_session(&spec)?;
+            let candidate = candidate.snapshot();
+            self.graph.replace(candidate.graph, candidate.nodes)?;
+        }
+        self.audio_settings = audio;
+        self.loaded_project = Some(Arc::new(document));
+        Ok(())
+    }
+
     /// A complete draft replaces the requested configuration atomically. The
     /// running owner keeps its own snapshot until an explicit Apply or Start.
     pub(crate) fn set_audio_settings(&mut self, settings: AudioSettings) -> bool {
@@ -233,6 +289,16 @@ impl ServiceDriver for CoreDriver {
     }
     fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, r: AppRequest) {
         match r {
+            AppRequest::LoadProject(document) => {
+                if let Err(error) = c.load_project(document) {
+                    c.graph.record_error(error);
+                }
+            }
+            AppRequest::SetExportAuthorizations(values) => {
+                if let Err(error) = c.exports.set_authorizations(&values) {
+                    c.graph.record_error(error);
+                }
+            }
             AppRequest::Start(s) => {
                 let _ = c.core.start(s);
             }
@@ -260,7 +326,11 @@ impl ServiceDriver for CoreDriver {
     }
 }
 pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
+    let graph = c.graph.snapshot();
     AppSnapshot {
+        loaded_project: c.loaded_project.clone(),
+        exports: c.exports.statuses(&graph),
+        export_plan: c.exports.reconcile(&graph),
         #[cfg(windows)]
         native_observations: c
             .native_observations
@@ -278,7 +348,7 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
             .active_audio_settings
             .clone()
             .filter(|_| c.fresh(c.core.generation())),
-        graph: Arc::new(c.graph.snapshot()),
+        graph: Arc::new(graph),
         monitor_latency: c.monitor_latency.clone(),
         monitor_diagnostics: c
             .monitor_diagnostics
@@ -315,11 +385,35 @@ impl ServiceRuntime {
         )
     }
     fn spawn_with_settings(
-        mut driver: impl ServiceDriver,
+        driver: impl ServiceDriver,
         audio_settings: AudioSettings,
         latency_profile: AudioLatencyProfile,
     ) -> io::Result<Self> {
-        audio_settings
+        Self::spawn_with_context(
+            driver,
+            ServiceContext {
+                audio_settings,
+                latency_profile,
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn spawn_with_startup(
+        driver: impl ServiceDriver,
+        startup: crate::project::StartupDocuments,
+    ) -> io::Result<Self> {
+        let context = startup
+            .into_context()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        Self::spawn_with_context(driver, context)
+    }
+
+    fn spawn_with_context(
+        mut driver: impl ServiceDriver,
+        mut c: ServiceContext,
+    ) -> io::Result<Self> {
+        c.audio_settings
             .validate()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let mut pool = JobPool::new()?;
@@ -327,11 +421,6 @@ impl ServiceRuntime {
         let thread = thread::Builder::new()
             .name("app-service".into())
             .spawn(move || {
-                let mut c = ServiceContext {
-                    audio_settings,
-                    latency_profile,
-                    ..ServiceContext::default()
-                };
                 let (handle, mailbox) =
                     ServiceMailbox::with_snapshot(thread::current(), snapshot(&c));
                 if hand_tx.send(handle).is_err() {

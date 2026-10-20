@@ -359,6 +359,13 @@ impl GraphDocument {
     }
 
     pub fn restore(&self) -> Result<(LogicalGraph, Vec<GraphNodeState>), PersistenceError> {
+        let (restored, nodes) = self.restore_with_ids()?;
+        Ok((restored.graph, nodes))
+    }
+
+    pub(super) fn restore_with_ids(
+        &self,
+    ) -> Result<(RestoredGraph, Vec<GraphNodeState>), PersistenceError> {
         let restored = self.to_graph()?;
         let nodes = self
             .nodes
@@ -377,6 +384,6 @@ impl GraphDocument {
                 output_endpoint_id: node.output_endpoint_id.clone(),
             })
             .collect();
-        Ok((restored.graph, nodes))
+        Ok((restored, nodes))
     }
 }

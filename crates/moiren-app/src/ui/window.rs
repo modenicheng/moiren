@@ -119,6 +119,7 @@ pub struct StudioShell {
     preferences_quitting: std::sync::Arc<std::sync::atomic::AtomicBool>,
     device_tab: devices::DeviceTab,
     selected_device: Option<String>,
+    export_controls: devices::ExportControls,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     meters: MeterSubscriptions,
     node_meters: super::monitoring::NodeMeters,
@@ -255,6 +256,7 @@ impl StudioShell {
             _ => Density::Comfortable,
         };
         let settings = settings::SettingsEditor::new(&preferences, cx);
+        let export_controls = devices::ExportControls::new(window, cx);
         let mut shell = Self {
             state,
             settings_open: false,
@@ -271,6 +273,7 @@ impl StudioShell {
             preferences_quitting: Default::default(),
             device_tab: devices::DeviceTab::Outputs,
             selected_device: None,
+            export_controls,
             selected_route: None,
             meters,
             node_meters,
@@ -311,6 +314,15 @@ impl StudioShell {
             touchpad,
         };
         shell.presentation.show();
+        let restored = shell
+            .state
+            .update(cx, |state, _| state.startup_project.take());
+        if let Some(document) = restored {
+            if let Err(error) = shell.apply_project_presentation(&document, cx) {
+                shell.project_message = Some(error.to_string());
+            }
+            shell.project_path = shell.preferences.last_project_path.clone();
+        }
         cx.observe_window_bounds(window, |shell, window, _| {
             if shell.presentation.visible {
                 shell.window_state = desktop::capture_window_state(window, shell.presentation.page);
@@ -493,6 +505,7 @@ impl Render for StudioShell {
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
         self.sync_node_name(window, cx);
+        self.sync_export_controls(window, cx);
         self.sync_mixer_controls(window, cx);
         self.sync_compressor_controls(window, cx);
         #[cfg(feature = "gpui-test")]

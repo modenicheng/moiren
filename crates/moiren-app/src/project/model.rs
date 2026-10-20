@@ -3,15 +3,17 @@ use std::collections::BTreeSet;
 use moiren_engine::audio_config::{AudioSettings, ProcessingSettings};
 use serde::{Deserialize, Serialize};
 
-use super::{GraphDocument, PersistenceError};
+use super::{ExportDocument, GraphDocument, PersistenceError};
 use crate::service::{AudioLatencyProfile, InputSelection, RunLimit, SessionSpec};
 
-pub const PROJECT_VERSION: u32 = 1;
-pub const PREFERENCES_VERSION: u32 = 1;
+pub const PROJECT_VERSION: u32 = 2;
+pub const PREFERENCES_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectDocument {
+    #[serde(default)]
+    pub exports: Vec<ExportDocument>,
     pub version: u32,
     pub name: String,
     #[serde(default)]
@@ -29,6 +31,7 @@ pub struct ProjectDocument {
 impl ProjectDocument {
     pub fn new(name: impl Into<String>, session: &SessionSpec) -> Self {
         Self {
+            exports: Vec::new(),
             version: PROJECT_VERSION,
             name: name.into(),
             session: Some(session.into()),
@@ -45,6 +48,7 @@ impl ProjectDocument {
         graph: &crate::service::GraphSnapshot,
     ) -> Result<Self, PersistenceError> {
         let document = Self {
+            exports: ExportDocument::from_snapshot(graph)?,
             version: PROJECT_VERSION,
             name: name.into(),
             session: None,
@@ -96,7 +100,13 @@ impl ProjectDocument {
             session.validate()?;
         }
         if let Some(graph) = &self.graph {
-            graph.to_graph()?;
+            let restored = graph.to_graph()?;
+            self.restore_exports(&restored.graph, &restored.node_ids)?;
+        } else if !self.exports.is_empty() {
+            return Err(PersistenceError::invalid(
+                "exports",
+                "virtual exports require an explicit graph",
+            ));
         }
         if let Some(processing) = self.processing {
             processing
@@ -127,6 +137,22 @@ impl ProjectDocument {
             }
         }
         Ok(())
+    }
+
+    /// V1 physical/process/tone selectors keep their exact meaning. New export
+    /// intent is never inferred from names, graph nodes, or opaque device IDs.
+    pub fn migrate(mut self) -> Result<Self, PersistenceError> {
+        if self.version == 1 {
+            if !self.exports.is_empty() {
+                return Err(PersistenceError::invalid(
+                    "exports",
+                    "v1 cannot declare virtual exports",
+                ));
+            }
+            self.version = PROJECT_VERSION;
+        }
+        self.validate()?;
+        Ok(self)
     }
 }
 
@@ -382,6 +408,7 @@ pub enum Appearance {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppPreferences {
+    pub export_authorizations: Vec<crate::service::ExportAuthorization>,
     pub version: u32,
     pub density: UiDensity,
     pub appearance: Appearance,
@@ -395,6 +422,7 @@ pub struct AppPreferences {
 impl Default for AppPreferences {
     fn default() -> Self {
         Self {
+            export_authorizations: Vec::new(),
             version: PREFERENCES_VERSION,
             density: UiDensity::Comfortable,
             appearance: Appearance::Dark,
@@ -407,6 +435,20 @@ impl Default for AppPreferences {
 }
 
 impl AppPreferences {
+    pub fn migrate(mut self) -> Result<Self, PersistenceError> {
+        if self.version == 1 {
+            if !self.export_authorizations.is_empty() {
+                return Err(PersistenceError::invalid(
+                    "export_authorizations",
+                    "v1 cannot grant virtual default authorization",
+                ));
+            }
+            self.version = PREFERENCES_VERSION;
+        }
+        self.validate()?;
+        Ok(self)
+    }
+
     pub fn validate(&self) -> Result<(), PersistenceError> {
         if self.version != PREFERENCES_VERSION {
             return Err(PersistenceError::UnsupportedVersion {
@@ -414,6 +456,8 @@ impl AppPreferences {
                 version: self.version,
             });
         }
+        crate::service::validate_export_authorizations(&self.export_authorizations)
+            .map_err(|error| PersistenceError::invalid("export_authorizations", error))?;
         self.audio
             .validate()
             .map_err(|error| PersistenceError::invalid("audio", error.to_string()))?;
