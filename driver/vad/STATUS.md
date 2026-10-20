@@ -30,7 +30,9 @@ The package is unsigned and has not been installed by this work.
 - Mono/stereo, 48 kHz PCM16/Float32, RAW/DEFAULT, one native stream per endpoint.
   Native streams can open with Engine gate closed: render discards, capture
   emits zero. No tone/file paths, demonstration mute/volume or DSP/SRC.
-- Bounded one/two native MDL packets; timer rundown precedes packet release.
+- Exactly two native MDL packets for the event-driven path; timer rundown
+  precedes packet release. Single-packet timer-driven allocation is explicitly
+  rejected until segmented position/consumption accounting is implemented.
   QPC deadlines rebase after stalls instead of replaying every missed packet.
   Packet wrap, EOS bounds and capture availability have host regression tests.
 - Circuits and pins are constructed afresh in PrepareHardware after policy
@@ -46,7 +48,12 @@ The package is unsigned and has not been installed by this work.
   owned by WDF. The timer returns a fixed four-entry completion batch, releases
   all spin locks, then completes retrieved requests with PCM rundown still held.
 - Session/endpoint/stream/gate epochs fence all PCM. Gate close, stream reopen,
-  resume/stall and retirement reject old requests. Old microphone payloads are
+  resume/stall and retirement reject old requests. Every full packet-clock reset
+  advances the gate epoch before PCM purge, including ReleaseHardware,
+  FreeRtPackets and cleanup. Paused state and the new epoch are published under
+  the same lock, blocking new-epoch admission until RUN. Same-object
+  Release/Prepare cannot reuse an old stamp even when polling misses the stopped
+  state; epoch exhaustion closes admission. Old microphone payloads are
   discarded by QPC age. Empty capture queues emit zero; render overflow drops.
 - Root rundown protects queues from late DPC/child access. Passive per-queue
   drains serialize forwarding against cancel/removal. Control purge is restarted
@@ -67,7 +74,10 @@ The package is unsigned and has not been installed by this work.
 warnings, API validation, native INF validation and CAT generation. Later source
 changes must rerun this check. `test.ps1` passes lifecycle/ABI/bounds tests plus
 clock, pause/resume, rational deadlines, render wrap/EOS, capture, bounded
-completion batches and single-slot cancellation/claim ownership tests.
+completion batches and single-slot cancellation/claim ownership tests. Extracted
+production-helper regressions cover packet-clock reset fencing before counters
+restart, stale-stamp rejection, sequence-zero admission only under a new epoch,
+closed-gate reset, epoch exhaustion and rejection of one-packet allocations.
 These are host tests; they do not exercise WDF, PnP, cancellation or audio APIs.
 
 Required target checks remain: standard-user control; real MMDevice/KS/WASAPI
@@ -75,6 +85,9 @@ endpoints; pre-exposure default eligibility; software mute/volume; data in both
 formats/shapes; active-client revoke/remove/recreate; power transitions; Verifier;
 eight-hour idle/audio runs; 100 lifecycle/crash rounds; resource/latency reports;
 installation/upgrade/rollback/uninstall; signing and Windows-version validation.
+Timer-driven client compatibility remains open and is currently refused at
+allocation. It needs segmented position/consumption support and separate target
+qualification; passing the two-packet host checks does not establish it.
 
 The per-endpoint component URI replaces the provisional direction-wide IDs.
 A regression first reproduced equal identities for two distinct endpoints,

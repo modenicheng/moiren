@@ -88,6 +88,22 @@ inline void ResumeClock(Clock& clock, uint64_t now)
     clock.Running = true;
 }
 
+template<typename Stream, typename InvalidatePcm>
+inline void ResetPacketClock(Stream& stream, InvalidatePcm invalidatePcm)
+{
+    // Release/Prepare can reuse the same stream and skip Started's resume path.
+    // Fence its old PCM before restarting numbering or exposing purge cancellation.
+    invalidatePcm();
+    stream.CompletedPackets = 0;
+    stream.DeliveredPackets = 0;
+    stream.LastCaptureStart = 0;
+    stream.HasEos = false;
+    stream.Started = false;
+    stream.Clock.BaseFrames = 0;
+    stream.Clock.EpochQpc = 0;
+    stream.Clock.LimitFrames = stream.PacketFrames;
+}
+
 struct PacketSchedule {
     long long Due;
     bool Rebased;
@@ -119,7 +135,9 @@ inline PacketSchedule SchedulePacket(Clock& clock, uint64_t completed,
 
 inline bool ValidPacketShape(uint32_t count, uint32_t size, uint32_t align)
 {
-    return count >= 1 && count <= MaxPackets && align != 0 && size != 0 &&
+    // One packet selects ACX timer-driven mode, whose partial-buffer consumption
+    // needs separate accounting. Admit only the implemented ping-pong path.
+    return count == MaxPackets && align != 0 && size != 0 &&
         size % align == 0 && size / align >= MinPacketFrames &&
         size / align <= MaxPacketFrames;
 }

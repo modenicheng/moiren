@@ -22,6 +22,20 @@ mutex. DPC state uses nonpaged spin-locked helpers. Timer stop/drain precedes
 packet detachment/free, and cleanup handles partially initialized streams.
 QPC presentation positions are monotonic over pause/resume and rebase after a
 stall; each callback completes at most one packet. Tests run outside WDF.
+Every full packet-clock reset advances the PCM gate epoch before purging
+requests, including stream ReleaseHardware, FreeRtPackets and cleanup. Reusing
+the same ACX stream for Release/Prepare restarts packet numbering under a new
+epoch even when polling misses all intermediate states. The new epoch and paused
+state are published under the same lock, so fresh requests cannot enter before
+the pending purge; admission resumes with RUN. Exhausted epochs close admission
+instead of wrapping.
+
+Native allocation currently admits exactly two packets for event-driven
+streaming. Single-packet timer-driven allocation is rejected before allocating
+storage: its partially consumed circular buffer needs segmented position and
+consumption accounting. Timer-driven client compatibility remains an open
+implementation and target-qualification item; the current two-packet path does
+not claim that support.
 
 See PROVENANCE.md for pinned sources and retained MS-PL notices. Linked WDK
 build/static analysis is independent of installation, signing, verifier and

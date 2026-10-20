@@ -114,6 +114,21 @@ inline void CloseGate(Slot& slot)
     }
 }
 
+inline void InvalidatePcmEpoch(Slot& slot, bool pauseStream = false)
+{
+    // A reset must advance even a closed gate; exhaustion cannot reuse a stamp.
+    if (slot.AdmissionGeneration == ~uint64_t{0}) {
+        slot.GateOpen = 0;
+    } else {
+        ++slot.AdmissionGeneration;
+    }
+    slot.HasSequence = 0;
+    if (pauseStream) {
+        // Publish with the epoch under Shared->Lock, before a reset can purge.
+        slot.StreamState = MOIREN_VAD_STREAM_PAUSED;
+    }
+}
+
 inline bool Revoke(Slot& slot)
 {
     if (slot.State != Creating && slot.State != MOIREN_VAD_STATE_PRESENT &&
@@ -150,6 +165,11 @@ inline bool SameStream(const Slot& slot, const MOIREN_VAD_PCM_HEADER& request)
         slot.AdmissionGeneration == request.GateEpoch && slot.GateOpen != 0 &&
         slot.State == MOIREN_VAD_STATE_PRESENT && slot.AudioReady != 0 &&
         slot.StreamState == MOIREN_VAD_STREAM_RUNNING;
+}
+
+inline bool ValidWriteSequence(const Slot& slot, const MOIREN_VAD_PCM_HEADER& request)
+{
+    return request.Qpc != 0 && (!slot.HasSequence || request.Sequence > slot.LastSequence);
 }
 
 inline bool ValidPcmShape(const MOIREN_VAD_PCM_HEADER& header)

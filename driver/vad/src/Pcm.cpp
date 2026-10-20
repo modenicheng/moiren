@@ -60,8 +60,7 @@ static NTSTATUS ReserveRequest(VAD_SHARED* shared, VAD_PCM_REQUEST* context,
         status = STATUS_INVALID_PARAMETER;
     } else if (slot.PendingRequests >= MOIREN_VAD_REQUEST_SLOTS) {
         status = STATUS_QUOTA_EXCEEDED;
-    } else if (capture && (header.Qpc == 0 ||
-        (slot.HasSequence && header.Sequence <= slot.LastSequence))) {
+    } else if (capture && !vad::ValidWriteSequence(slot, header)) {
         status = STATUS_INVALID_PARAMETER;
     } else {
         context->Shared = shared;
@@ -226,7 +225,7 @@ VAD_PAGE NTSTATUS VadPcmSubmit(WDFDEVICE device, WDFREQUEST request, ULONG code)
     return status;
 }
 
-void VadPcmDiscontinuity(WDFDEVICE child, uint64_t generation)
+void VadPcmDiscontinuity(WDFDEVICE child, uint64_t generation, bool pauseStream)
 {
     auto context = VadChild(child);
     auto shared = context->Shared;
@@ -234,12 +233,7 @@ void VadPcmDiscontinuity(WDFDEVICE child, uint64_t generation)
     KeAcquireSpinLock(&shared->Lock, &irql);
     auto& slot = shared->Slots[context->Index];
     if (slot.Id == context->Id && slot.StreamGeneration == generation) {
-        if (slot.AdmissionGeneration == MAXULONGLONG) {
-            slot.GateOpen = 0;
-        } else {
-            ++slot.AdmissionGeneration;
-        }
-        slot.HasSequence = 0;
+        vad::InvalidatePcmEpoch(slot, pauseStream);
     }
     KeReleaseSpinLock(&shared->Lock, irql);
 }

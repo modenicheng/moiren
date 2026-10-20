@@ -98,14 +98,11 @@ void VadAudioStopLocked(VAD_AUDIO_STREAM* stream, bool reset)
     }
     KeAcquireSpinLock(&stream->State, &irql);
     if (reset) {
-        stream->CompletedPackets = 0;
-        stream->DeliveredPackets = 0;
-        stream->LastCaptureStart = 0;
-        stream->HasEos = FALSE;
-        stream->Started = FALSE;
-        stream->Clock.BaseFrames = 0;
-        stream->Clock.EpochQpc = 0;
-        stream->Clock.LimitFrames = stream->PacketFrames;
+        // Shared by ReleaseHardware, FreeRtPackets and cleanup. The epoch must
+        // change before the PCM purge below, even if polling misses this stop.
+        vad::audio::ResetPacketClock(*stream, [&] {
+            VadPcmDiscontinuity(stream->Device, stream->Generation, true);
+        });
     }
     stream->RenderReadyMask = 0;
     stream->DeliveredPackets = stream->CompletedPackets;
@@ -571,8 +568,7 @@ NTSTATUS VadAudioAllocatePackets(ACXSTREAM stream, ULONG count, ULONG packetSize
     auto context = VadAudioStream(stream);
     LifecycleGuard lifecycle(VadAudioDevice(context->Device));
     *output = nullptr;
-    if ((count != 1 && count != VadAudioPacketCount) ||
-        !vad::audio::ValidPacketShape(count, packetSize, context->BlockAlign) ||
+    if (!vad::audio::ValidPacketShape(count, packetSize, context->BlockAlign) ||
         packetSize > MAXULONG - (PAGE_SIZE - 1)) {
         return STATUS_INVALID_PARAMETER;
     }
@@ -582,8 +578,7 @@ NTSTATUS VadAudioAllocatePackets(ACXSTREAM stream, ULONG count, ULONG packetSize
     const ULONG frames = packetSize / context->BlockAlign;
     const ULONG pages = (packetSize + PAGE_SIZE - 1) / PAGE_SIZE;
     const ULONG allocation = pages * PAGE_SIZE;
-    // Descriptor capacity is fixed even for a one-packet timer-driven client.
-    // ACX sees count entries; unused descriptors remain zero and are never mapped.
+    // The admitted event-driven path always owns exactly two packet descriptors.
     const SIZE_T bytes = VadAudioPacketCount * sizeof(ACX_RTPACKET);
     auto packets = static_cast<PACX_RTPACKET>(ExAllocatePool2(
         POOL_FLAG_NON_PAGED, bytes, VadAudioTag));

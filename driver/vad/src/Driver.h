@@ -124,4 +124,4 @@ void VadPcmTransfer(WDFDEVICE child, uint64_t generation, PVOID buffer,
     ULONG frames, ULONG blockAlign, uint64_t sequence, uint64_t qpc,
     VAD_PCM_BATCH* batch);
 void VadPcmComplete(VAD_PCM_BATCH* batch);
-void VadPcmDiscontinuity(WDFDEVICE child, uint64_t generation);
+void VadPcmDiscontinuity(WDFDEVICE child, uint64_t generation, bool pauseStream = false);

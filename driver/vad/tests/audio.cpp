@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "../src/audio/Clock.h"
+#include "../src/Lifecycle.h"
 #include <cstdio>
 #include <cstdlib>
 
@@ -20,6 +21,126 @@ static vad::audio::Clock RunningClock(uint64_t frequency = 10000000,
     clock.LimitFrames = frames;
     clock.Running = true;
     return clock;
+}
+
+struct PacketClockState {
+    vad::audio::Clock Clock;
+    uint64_t CompletedPackets = 7;
+    uint64_t DeliveredPackets = 6;
+    uint64_t LastCaptureStart = 10100000;
+    uint32_t PacketFrames = 480;
+    bool HasEos = true;
+    bool Started = true;
+};
+
+static PacketClockState StoppedPacketClock()
+{
+    PacketClockState stream = {};
+    stream.Clock = RunningClock();
+    stream.Clock.BaseFrames = stream.CompletedPackets * stream.PacketFrames;
+    stream.Clock.LimitFrames = stream.Clock.BaseFrames + stream.PacketFrames;
+    stream.Clock.Running = false;
+    return stream;
+}
+
+static vad::Slot RunningPcmSlot()
+{
+    vad::Slot slot = {};
+    slot.Id = 5;
+    slot.Session = 9;
+    slot.State = MOIREN_VAD_STATE_PRESENT;
+    slot.Intent = MOIREN_VAD_INTENT_MICROPHONE;
+    slot.Channels = 2;
+    slot.PolicyPrepared = 1;
+    slot.AudioReady = 1;
+    slot.GateOpen = 1;
+    slot.AdmissionGeneration = 42;
+    slot.StreamGeneration = 6;
+    slot.StreamState = MOIREN_VAD_STREAM_RUNNING;
+    slot.SampleFormat = MOIREN_VAD_FORMAT_FLOAT32;
+    slot.PacketFrames = 480;
+    slot.LastSequence = 91;
+    slot.HasSequence = 1;
+    return slot;
+}
+
+static MOIREN_VAD_PCM_HEADER PcmStamp(const vad::Slot& slot)
+{
+    return {sizeof(MOIREN_VAD_PCM_HEADER), MOIREN_VAD_ABI_VERSION,
+        slot.Id, slot.Session, slot.Id, slot.StreamGeneration,
+        slot.AdmissionGeneration, 0, 10100000,
+        MOIREN_VAD_FORMAT_FLOAT32, 480, slot.Channels, 0};
+}
+
+static void PacketClockResetFencesSameStreamBeforeCounterRestart()
+{
+    auto slot = RunningPcmSlot();
+    const auto stale = PcmStamp(slot);
+    Check(vad::SameStream(slot, stale) && !vad::ValidWriteSequence(slot, stale),
+        "sequence zero cannot rewind an admitted epoch with existing writes");
+    // Release, packet free and cleanup all use this production reset helper.
+    // The observer samples only before reset and after the same-object RUN.
+    for (unsigned reset = 0; reset < 3; ++reset) {
+        auto stream = StoppedPacketClock();
+        const auto previous = PcmStamp(slot);
+        unsigned invalidations = 0;
+        vad::audio::ResetPacketClock(stream, [&] {
+            Check(stream.CompletedPackets == 7 && stream.Clock.BaseFrames == 3360,
+                "PCM invalidation precedes resetting native packet numbering");
+            vad::InvalidatePcmEpoch(slot, true);
+            ++invalidations;
+        });
+        Check(invalidations == 1 && !vad::SameStream(slot, previous),
+            "packet clock reset must invalidate PCM before restarting numbering");
+        Check(slot.AdmissionGeneration == previous.GateEpoch + 1 &&
+            slot.StreamGeneration == stale.StreamGeneration && slot.GateOpen == 1,
+            "same-object reset advances the gate epoch without replacing the stream");
+        Check(stream.CompletedPackets == 0 && stream.DeliveredPackets == 0 &&
+            stream.LastCaptureStart == 0 && !stream.HasEos && !stream.Started &&
+            stream.Clock.BaseFrames == 0 && stream.Clock.EpochQpc == 0 &&
+            stream.Clock.LimitFrames == 480 && !stream.Clock.Running,
+            "packet counts, timestamps, preroll and presentation restart together");
+        const auto fresh = PcmStamp(slot);
+        Check(slot.StreamState == MOIREN_VAD_STREAM_PAUSED &&
+            !vad::SameStream(slot, fresh),
+            "new-epoch PCM cannot enter between clock reset and the pending purge");
+        slot.StreamState = MOIREN_VAD_STREAM_RUNNING;
+        Check(vad::SameStream(slot, fresh) && vad::ValidWriteSequence(slot, fresh),
+            "sequence zero is admitted only with the new PCM epoch");
+        Check(!vad::SameStream(slot, stale),
+            "old PCM stamps stay invalid across repeated resets");
+        slot.LastSequence = fresh.Sequence;
+        slot.HasSequence = 1;
+        Check(!vad::ValidWriteSequence(slot, fresh),
+            "duplicate sequence zero is still rejected within the new epoch");
+    }
+}
+
+static void PacketClockResetAdvancesClosedEpochAndFailsClosedOnOverflow()
+{
+    const uint64_t epochs[] = {42, ~uint64_t{0}};
+    for (const auto epoch : epochs) {
+        for (uint32_t open = 0; open <= 1; ++open) {
+            auto slot = RunningPcmSlot();
+            slot.GateOpen = open;
+            slot.AdmissionGeneration = epoch;
+            const auto stale = PcmStamp(slot);
+            auto stream = StoppedPacketClock();
+            vad::audio::ResetPacketClock(stream, [&] {
+                vad::InvalidatePcmEpoch(slot, true);
+            });
+            Check(!slot.HasSequence && !vad::SameStream(slot, stale),
+                "reset clears sequence history and rejects every old stamp");
+            if (epoch == ~uint64_t{0}) {
+                Check(slot.AdmissionGeneration == epoch && slot.GateOpen == 0 &&
+                    !vad::SameStream(slot, PcmStamp(slot)),
+                    "epoch exhaustion closes admission instead of wrapping");
+            } else {
+                Check(slot.AdmissionGeneration == epoch + 1 && slot.GateOpen == open,
+                    "every reset advances the epoch even when the gate was closed");
+            }
+        }
+    }
 }
 
 static void DeadlineAndStall()
@@ -102,6 +223,25 @@ static void FractionalDeadlines()
         "maximum QPC frequency retains a one-ms interval");
 }
 
+static void NativeAllocationRejectsTimerDrivenPackets()
+{
+    const uint32_t aligns[] = {2, 4, 8};
+    const uint32_t frames[] = {48, 480, 4800};
+    for (const auto align : aligns) {
+        for (const auto frameCount : frames) {
+            const auto size = frameCount * align;
+            Check(!vad::audio::ValidPacketShape(1, size, align),
+                "single-packet timer-driven allocation must fail closed");
+            Check(vad::audio::ValidPacketShape(2, size, align),
+                "two-packet event-driven allocation remains supported");
+        }
+    }
+    Check(!vad::audio::ValidPacketShape(1, 4096, 4),
+        "page alignment does not admit an unsupported timer-driven stream");
+    Check(vad::audio::ValidPacketShape(2, 4096, 4),
+        "page-aligned two-packet streams remain supported");
+}
+
 static void RenderPackets()
 {
     using R = vad::audio::RenderPacketResult;
@@ -142,10 +282,10 @@ static void RenderPackets()
         {0, 2, 0, 4, false, false, 0, 0, 0, R::Invalid},
         {0, 2, 1919, 4, false, false, 0, 0, 0, R::Invalid},
         {0, 2, 1920, 0, false, false, 0, 0, 0, R::Invalid},
-        {0, 1, 1920, 4, false, false, 0, 0, 0, R::Accepted},
-        {0, 1, 1920, 4, false, false, 1, 0, 0, R::Overrun},
-        {0, 1, 1920, 4, true, false, 0, 0, 0, R::Late},
-        {0, 1, 1920, 4, true, false, 1, 0, 0, R::Overrun},
+        {0, 1, 1920, 4, false, false, 0, 0, 0, R::Invalid},
+        {0, 1, 1920, 4, false, false, 1, 0, 0, R::Invalid},
+        {0, 1, 1920, 4, true, false, 0, 0, 0, R::Invalid},
+        {0, 1, 1920, 4, true, false, 1, 0, 0, R::Invalid},
     };
     for (const auto& c : cases) {
         Check(vad::audio::ValidateRenderPacket(c.Completed, c.Count, c.Size,
@@ -153,10 +293,10 @@ static void RenderPackets()
             "render packet preroll/running/wrap/flag/EOS/allocation contract");
     }
     Check(vad::audio::ValidPacketShape(2, 96, 2) &&
-        vad::audio::ValidPacketShape(1, 38400, 8) &&
+        vad::audio::ValidPacketShape(2, 38400, 8) &&
         !vad::audio::ValidPacketShape(2, 94, 2) &&
         !vad::audio::ValidPacketShape(2, 38408, 8),
-        "native packet allocation enforces one to 100 ms and one/two packets");
+        "native packet allocation enforces one to 100 ms and two packets");
 }
 
 static void CapturePackets()
@@ -183,11 +323,15 @@ static void CapturePackets()
 
 int main()
 {
+    PacketClockResetFencesSameStreamBeforeCounterRestart();
+    PacketClockResetAdvancesClosedEpochAndFailsClosedOnOverflow();
     DeadlineAndStall();
     PauseAndResume();
     FractionalDeadlines();
+    NativeAllocationRejectsTimerDrivenPackets();
     RenderPackets();
     CapturePackets();
-    std::puts("PASS: audio stall rebase, pause/resume, 3.6M rational deadlines, "
-        "render flags/EOS/wrap, capture readiness/duplicates");
+    std::puts("PASS: packet reset epoch/sequence/overflow, audio stall rebase, "
+        "pause/resume, 3.6M rational deadlines, "
+        "two-packet admission, render flags/EOS/wrap, capture readiness/duplicates");
 }
