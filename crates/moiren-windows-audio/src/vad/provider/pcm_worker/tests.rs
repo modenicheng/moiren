@@ -906,7 +906,7 @@ struct MicrophoneFixture {
 
 impl MicrophoneFixture {
     fn new(frames: u32) -> Self {
-        let (writer, reader) = audio_bridge(2, frames as usize * 2, 131_072).unwrap();
+        let (writer, reader) = audio_bridge(2, frames as usize * 2, 1 << 20).unwrap();
         Self {
             io: FakeIo::default(),
             writer,
@@ -914,7 +914,7 @@ impl MicrophoneFixture {
                 Channels::Stereo,
                 SampleFormat::Float32,
                 frames as usize,
-                131_072,
+                1 << 20,
                 reader,
             )
             .unwrap(),
@@ -959,6 +959,237 @@ impl MicrophoneFixture {
 }
 
 #[test]
+fn microphone_observation_gap_resets_before_collecting_or_rearming_old_pcm() {
+    let mut f = MicrophoneFixture::new(480);
+    f.state.active.store(true, Ordering::Release);
+    let admitted = f.state.admission.set(Some(9));
+    f.state.admitted_ticket.store(admitted, Ordering::Release);
+    f.state.admitted_revision.store(9, Ordering::Release);
+    f.cycle().unwrap();
+    let pending = f.tickets[0];
+    f.io.slots[pending.slot].ready = true;
+    // A shallow, lossless publication followed by a stopped producer: no full
+    // carrier notification can protect this old packet from a worker stall.
+    f.writer.write_interleaved_exact(&vec![1.; 960]).unwrap();
+    f.clock.advance(Duration::from_millis(100));
+    assert_eq!(f.cycle().unwrap(), PumpState::Reset);
+    assert!(
+        f.io.collected.is_empty(),
+        "reset before collecting completion"
+    );
+    assert_eq!(f.tickets, vec![pending]);
+    assert_eq!(
+        f.io.written.len(),
+        1,
+        "old A must not receive a new submission"
+    );
+    assert!(f.pump.next_submit.is_none());
+    assert_eq!(f.state.reset_epoch.load(Ordering::Acquire), 1);
+    assert_eq!(f.cycle().unwrap(), PumpState::Reset);
+    assert_eq!(f.state.reset_epoch.load(Ordering::Acquire), 1);
+    assert!(
+        f.state.admitted(),
+        "a timeline gap must not revoke admission"
+    );
+    assert!(f.state.failure.lock().unwrap().is_none());
+
+    f.io.drain(&mut f.tickets);
+    let mut reader = f.bridge.into_carrier();
+    let mut observed = 0;
+    assert!(!quiesce_microphone(&f.state, &mut observed, &mut reader));
+    assert_eq!(reader.available_frames(), 480);
+    // The fake graph producer has stopped; acknowledge only after its last A.
+    f.state.producer_quiesced_epoch.store(1, Ordering::Release);
+    assert!(quiesce_microphone(&f.state, &mut observed, &mut reader));
+    assert_eq!(reader.available_frames(), 0);
+    f.writer.write_interleaved_exact(&vec![5.; 960]).unwrap();
+    let mut bridge = PcmMicrophoneBridge::new(
+        Channels::Stereo,
+        SampleFormat::Float32,
+        480,
+        131_072,
+        reader,
+    )
+    .unwrap();
+    assert_eq!(
+        microphone(
+            &mut f.io,
+            &mut bridge,
+            &mut f.tickets,
+            &mut MicrophonePump::new(480),
+            &f.state,
+            observed,
+            || f.clock.now(),
+        )
+        .unwrap(),
+        PumpState::Current
+    );
+    assert_eq!(f.io.written[1], 5.0_f32.to_le_bytes().repeat(960));
+}
+
+#[test]
+fn microphone_observation_gap_during_phase_cannot_encode_shallow_old_pcm() {
+    let mut f = MicrophoneFixture::new(480);
+    f.cycle().unwrap();
+    f.collect(false);
+    f.writer.write_interleaved_exact(&vec![1.; 960]).unwrap();
+    f.clock.advance(Duration::from_millis(100));
+    assert_eq!(f.cycle().unwrap(), PumpState::Reset);
+    assert_eq!(f.io.written.len(), 1);
+    assert!(f.tickets.is_empty());
+    assert!(f.pump.next_submit.is_none());
+    assert_eq!(f.state.reset_epoch.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn microphone_observation_gap_allows_one_native_period_plus_io_wait() {
+    for (frames, bound) in [
+        (48, Duration::from_millis(11)),
+        (49, Duration::from_nanos(11_020_834)),
+        (480, Duration::from_millis(20)),
+        (4800, Duration::from_millis(110)),
+    ] {
+        let mut f = MicrophoneFixture::new(frames);
+        f.cycle().unwrap();
+        f.clock.advance(bound);
+        assert_eq!(f.cycle().unwrap(), PumpState::Current);
+        assert_eq!(f.state.reset_epoch.load(Ordering::Acquire), 0);
+        f.clock.advance(bound + Duration::from_nanos(1));
+        assert_eq!(f.cycle().unwrap(), PumpState::Reset);
+        assert_eq!(f.state.reset_epoch.load(Ordering::Acquire), 1);
+    }
+}
+
+#[test]
+fn microphone_observation_gap_immediately_before_completion_leaves_ticket_pending() {
+    let mut f = MicrophoneFixture::new(480);
+    f.cycle().unwrap();
+    let pending = f.tickets[0];
+    f.io.slots[pending.slot].ready = true;
+    let start = f.clock.now();
+    let mut observations = 0;
+    assert_eq!(
+        microphone(
+            &mut f.io,
+            &mut f.bridge,
+            &mut f.tickets,
+            &mut f.pump,
+            &f.state,
+            0,
+            || {
+                observations += 1;
+                if observations == 1 {
+                    start
+                } else {
+                    start + Duration::from_millis(100)
+                }
+            },
+        )
+        .unwrap(),
+        PumpState::Reset
+    );
+    assert!(f.io.collected.is_empty());
+    assert_eq!(f.tickets, vec![pending]);
+    assert_eq!(f.io.book.pending(), 1);
+    assert!(f.pump.next_submit.is_none());
+}
+
+#[test]
+fn microphone_observation_gap_inside_completion_cannot_rearm_phase() {
+    let mut f = MicrophoneFixture::new(480);
+    f.cycle().unwrap();
+    f.io.slots[f.tickets[0].slot].ready = true;
+    f.writer.write_interleaved_exact(&vec![1.; 960]).unwrap();
+    let start = f.clock.now();
+    let mut observations = 0;
+    assert_eq!(
+        microphone(
+            &mut f.io,
+            &mut f.bridge,
+            &mut f.tickets,
+            &mut f.pump,
+            &f.state,
+            0,
+            || {
+                observations += 1;
+                if observations <= 2 {
+                    start
+                } else {
+                    start + Duration::from_millis(100)
+                }
+            },
+        )
+        .unwrap(),
+        PumpState::Reset
+    );
+    assert_eq!(f.io.collected.len(), 1);
+    assert!(f.pump.next_submit.is_none());
+    assert_eq!(f.io.written.len(), 1);
+    assert_eq!(f.state.reset_epoch.load(Ordering::Acquire), 1);
+    f.io.drain(&mut f.tickets);
+    assert_eq!(f.io.book.pending(), 0);
+}
+
+#[test]
+fn microphone_observation_gap_before_encode_blocks_late_phase_poll() {
+    let mut f = MicrophoneFixture::new(480);
+    f.cycle().unwrap();
+    f.collect(false);
+    f.writer.write_interleaved_exact(&vec![1.; 960]).unwrap();
+    f.clock.advance(Duration::from_millis(5));
+    let phase = f.clock.now();
+    let mut observations = 0;
+    assert_eq!(
+        microphone(
+            &mut f.io,
+            &mut f.bridge,
+            &mut f.tickets,
+            &mut f.pump,
+            &f.state,
+            0,
+            || {
+                observations += 1;
+                if observations <= 2 {
+                    phase
+                } else {
+                    phase + Duration::from_millis(100)
+                }
+            },
+        )
+        .unwrap(),
+        PumpState::Reset
+    );
+    assert!(f.pump.next_submit.is_none());
+    assert_eq!(f.io.written.len(), 1);
+    assert_eq!(f.bridge.into_carrier().available_frames(), 480);
+}
+
+#[test]
+fn microphone_first_observation_after_idle_has_no_elapsed_history() {
+    let mut f = MicrophoneFixture::new(480);
+    f.clock.advance(Duration::from_secs(60));
+    assert_eq!(f.cycle().unwrap(), PumpState::Current);
+    assert_eq!(f.state.reset_epoch.load(Ordering::Acquire), 0);
+    assert_eq!(f.tickets.len(), 1);
+    assert_eq!(f.io.written.len(), 1);
+}
+
+#[test]
+fn microphone_observation_gap_is_not_a_no_transfer_timeout() {
+    let mut f = MicrophoneFixture::new(480);
+    f.cycle().unwrap();
+    let pending = f.tickets[0];
+    for _ in 0..1000 {
+        f.clock.advance(POLL_INTERVAL);
+        assert_eq!(f.cycle().unwrap(), PumpState::Current);
+    }
+    assert_eq!(f.tickets, vec![pending]);
+    assert_eq!(f.io.written.len(), 1);
+    assert_eq!(f.state.reset_epoch.load(Ordering::Acquire), 0);
+    assert!(f.state.failure.lock().unwrap().is_none());
+}
+
+#[test]
 fn microphone_phase_reads_carrier_only_when_due() {
     let mut f = MicrophoneFixture::new(480);
     f.cycle().unwrap();
@@ -984,7 +1215,10 @@ fn microphone_phase_reads_carrier_only_when_due() {
 fn microphone_dropped_completion_rearms_from_collection_without_catch_up() {
     let mut f = MicrophoneFixture::new(480);
     f.cycle().unwrap();
-    f.clock.advance(Duration::from_secs(20));
+    for _ in 0..2000 {
+        f.clock.advance(POLL_INTERVAL);
+        assert_eq!(f.cycle().unwrap(), PumpState::Current);
+    }
     let collected = f.clock.now();
     f.collect(true);
     assert_eq!(
@@ -992,12 +1226,12 @@ fn microphone_dropped_completion_rearms_from_collection_without_catch_up() {
         Some(collected + Duration::from_millis(5))
     );
     assert_eq!(f.io.written.len(), 1);
-    f.clock.advance(Duration::from_secs(60));
+    f.clock.advance(Duration::from_millis(15));
     f.cycle().unwrap();
     assert_eq!(
         f.io.written.len(),
         2,
-        "a long stall submits at most one fresh packet"
+        "a late phase inside the observation bound submits at most one packet"
     );
     f.cycle().unwrap();
     assert_eq!(

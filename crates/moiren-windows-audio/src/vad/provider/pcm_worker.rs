@@ -44,6 +44,8 @@ pub(super) struct MicrophonePump {
     order: PacketOrder,
     half_period: Duration,
     next_submit: Option<Instant>,
+    observation_gap: Duration,
+    last_observed: Option<Instant>,
 }
 
 impl MicrophonePump {
@@ -54,6 +56,10 @@ impl MicrophonePump {
                 (u64::from(packet_frames) * 1_000_000_000).div_ceil(u64::from(SAMPLE_RATE) * 2),
             ),
             next_submit: None,
+            observation_gap: Duration::from_nanos(
+                (u64::from(packet_frames) * 1_000_000_000).div_ceil(u64::from(SAMPLE_RATE)),
+            ) + POLL_INTERVAL,
+            last_observed: None,
         }
     }
 
@@ -66,8 +72,35 @@ impl MicrophonePump {
         if state.cancel.load(Ordering::Acquire) || !epoch_ready(state, epoch) {
             self.order = PacketOrder::default();
             self.next_submit = None;
+            self.last_observed = None;
             return false;
         }
+        true
+    }
+
+    /// Only a gap strictly greater than one native period plus POLL_INTERVAL
+    /// resets data. The first observation has no history; this is not a source
+    /// sample-age guarantee or a timeout on missing PCM/completions.
+    fn observe(&mut self, state: &SessionState, epoch: u64, now: Instant) -> bool {
+        if !self.current(state, epoch) {
+            return false;
+        }
+        if self
+            .last_observed
+            .is_some_and(|last| now.saturating_duration_since(last) > self.observation_gap)
+        {
+            // One native period plus the bounded IO wait is a timeline gap,
+            // not a device fault. Fence and discard even shallow old PCM before
+            // collection can rearm its phase; do not revoke native admission.
+            let _ = state.reset_epoch.compare_exchange(
+                epoch,
+                epoch.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            return self.current(state, epoch);
+        }
+        self.last_observed = Some(now);
         true
     }
 }
@@ -184,11 +217,11 @@ pub(super) fn microphone<C: PcmIo>(
     epoch: u64,
     mut now: impl FnMut() -> Instant,
 ) -> Result<PumpState, BackendError> {
-    if !pump.current(state, epoch) {
+    if !pump.observe(state, epoch, now()) {
         return Ok(PumpState::Reset);
     }
     while let Some(ticket) = tickets.first().copied() {
-        if !pump.current(state, epoch) {
+        if !pump.observe(state, epoch, now()) {
             return Ok(PumpState::Reset);
         }
         let stamp = match owner.complete(ticket)? {
@@ -203,6 +236,10 @@ pub(super) fn microphone<C: PcmIo>(
             }
             None => break,
         };
+        let collected_at = now();
+        if !pump.observe(state, epoch, collected_at) {
+            return Ok(PumpState::Reset);
+        }
         if !pump.order.accept(stamp) {
             return Err(BackendError::Failed(
                 "microphone completion sequence regressed".into(),
@@ -212,7 +249,7 @@ pub(super) fn microphone<C: PcmIo>(
         // Shift replenishment away from the one-period freshness cliff. The
         // driver still checks the real submission age at native consumption.
         pump.next_submit =
-            Some(now().checked_add(pump.half_period).ok_or_else(|| {
+            Some(collected_at.checked_add(pump.half_period).ok_or_else(|| {
                 BackendError::Failed("microphone phase deadline overflow".into())
             })?);
     }
@@ -221,13 +258,13 @@ pub(super) fn microphone<C: PcmIo>(
             .remaining(now())
             .is_none_or(|remaining| remaining.is_zero())
     {
-        if !pump.current(state, epoch) {
+        if !pump.observe(state, epoch, now()) {
             return Ok(PumpState::Reset);
         }
         // Do not consume the carrier or encode until the phase is due. The
         // unchanged PcmOwner samples its real QPC only when submitting this PCM.
         let packet = bridge.encode_packet()?;
-        if !pump.current(state, epoch) {
+        if !pump.observe(state, epoch, now()) {
             return Ok(PumpState::Reset);
         }
         tickets.push(owner.write(packet)?);
