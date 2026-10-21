@@ -382,3 +382,72 @@ observed from the control side before the next target soak.
 
 Per user direction, no product code was changed after the audit; the
 eight-hour run remains on hold pending a decision on the fix contract.
+
+## Buffering and clock-sync redesign (2026-10-21, commits 20bdb84..f8c8965)
+
+User decision after the audit: redesign the whole buffering and clock
+synchronization instead of patching. Five mechanisms landed, each an
+independently revertable commit, all TDD-first:
+
+1. **Debt ledger clock** (`20bdb84`, R1). `ClockSchedule::due` no longer
+   jumps `next` past missed wall-clock periods: unrendered periods stay
+   due and the owner renders one block per immediate redue, so the engine
+   timeline keeps pace with the wall clock pacing the native side (the
+   anti-bias invariant: injected periodic two-period late wakes over 3000
+   blocks produce zero long-term drift — clock.rs unit test). Debt beyond
+   `DEBT_CAP_PERIODS = 8` (2048 frames ~ 42.7 ms, under the 2255-frame
+   servo target headroom) is clamped and counted in the trace (new
+   `GapStage::Clamp`); clamping on three consecutive wakes escalates to
+   the existing reset handshake. `skip_past` and the AfterRender stage are
+   folded into the ledger; the false one-period rationale comment is
+   replaced. This removes the proven −1791 ppm one-sided skip bias at its
+   source.
+2. **Reachable servo authority** (`b516f21`, R2). `FOLLOWER_GAIN_PPM` now
+   equals `CORRECTION_PPM_LIMIT` (2000): ring geometry bounds relative
+   occupancy error to ±1 at the rails, so the ±2000 ppm clamp is reachable
+   exactly where it is needed. Servo unit tests (rail authority, sign,
+   clamp, smoothing) added; the ±200 ppm dual-direction drift traces pass
+   unchanged.
+3. **Graded boundary resets** (`742729e`, R3). Mic-carrier overflow and
+   playback starvation are bounded counted losses: overflow keeps drop-new
+   and the queued in-order frames (worker drains at its own cadence), and
+   a starved playback block keeps the settled servo correction and prime
+   state instead of re-arming the ~50 ms reprime gate. `finish_transfer`
+   no longer requests an epoch on carrier short; the fenced discard stays
+   reserved for real epoch events (racing test still pins that path).
+4. **Graded worker policy, mic re-prime, MMCSS** (`eb7efd8`, R4). A worker
+   observation gap now degrades softly: the stale phase anchor is dropped
+   and the next successful collection re-arms it like a dropped
+   completion; no epoch bump, no carrier discard. After a completed hard
+   reset the first fresh WRITE waits, bounded by 2.5 native periods, until
+   the carrier holds two packets of margin — one counted driver-side drop
+   instead of ~20 s of partial silence (the proven reset-unrecoverability
+   defect). Fresh streams still start their phase immediately. The owner
+   thread and PCM worker join the Audio MMCSS class via a shared
+   `Mmcss::audio` helper, matching every physical path.
+5. **Carrier water-level probes** (`4816e94`, R5). Each virtual boundary
+   carries a preallocated `BoundaryProbe` (relaxed atomics, one store per
+   block): queued occupancy, applied servo correction in milli-ppm,
+   cumulative xruns, soft-loss events. Exposed on `PreparedVirtual*` and
+   wired through both the VAD and professional backends. Cross-process
+   service-surface exposure deliberately deferred; the deterministic
+   regression consumes probes directly.
+
+**Master regression** (`f8c8965`): 2048 owner wakes with a two-period
+stall injected every 32nd wake while the native pair keeps streaming.
+Pins: engine timeline equals the granted wall-clock frames exactly; no
+boundary epoch or fence ever moves; zero silent microphone packets after
+warm-up; both carrier levels stay more than a packet and a half from
+either rail (probe-observed 483..1414 microphone — the designed slow
+±2000 ppm rebuild from an empty start; playback in band); zero xruns; no
+orphaned book slots. The regression module runs 240-frame engine blocks
+so the harness is rate-exact at the once-per-sub-step pump granularity
+(2×5 ms sub-steps per 480-frame packet); the target's Graph256 shape is
+revalidated on the machine.
+
+Host validation at each step: `cargo test --locked -p
+moiren-windows-audio` (401 lib tests + integration suites green),
+`cargo clippy -p moiren-windows-audio --all-targets -- -D warnings`
+clean, `cargo fmt` applied. Remaining: workspace-wide gates, guest
+rebuild, target combined short revalidation ×2, then the eight-hour
+music soak.
