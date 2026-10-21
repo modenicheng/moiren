@@ -1534,8 +1534,8 @@ fn activity_wait_targets_oldest_and_timeout_keeps_request_pending() {
 mod owner_reset_regression {
     use super::*;
     use crate::virtual_owner::{
-        ClockWake, VirtualMicrophoneSink, VirtualPlaybackSource, VirtualPreparedTransport,
-        VirtualRealtimeClock, VirtualResourceSession, VirtualSessions,
+        BoundaryProbe, ClockWake, VirtualMicrophoneSink, VirtualPlaybackSource,
+        VirtualPreparedTransport, VirtualRealtimeClock, VirtualResourceSession, VirtualSessions,
     };
     use crate::{ActivationGate, StopSignal};
     use moiren_core::graph::NodeId;
@@ -1543,12 +1543,18 @@ mod owner_reset_regression {
     use moiren_engine::host::PreparedTransport;
     use std::sync::Condvar;
 
-    const ENGINE_FRAMES: usize = 256;
+    /// 240-frame engine blocks make the harness rate-exact: one period is
+    /// 5 ms, two sub-steps are one native 480-frame packet period, and the
+    /// pump's once-per-sub-step phase check quantizes to the true cadence
+    /// with zero residual drift. The target runs Graph256; its shape is
+    /// revalidated on the machine, while this harness pins the redesign
+    /// invariants deterministically.
+    const ENGINE_FRAMES: usize = 240;
     const NATIVE_PACKET_FRAMES: usize = 480;
     const CARRIER_FRAMES: usize = 4_800;
     const BASELINE_PERIODS: usize = 64;
     const RECOVERY_PERIODS: usize = 48;
-    /// One Graph256 period at 48 kHz: 256/48000 s.
+    /// One engine period at 48 kHz.
     const PERIOD: Duration = Duration::from_nanos(ENGINE_FRAMES as u64 * 1_000_000_000 / 48_000);
     const RENDEZVOUS_SLICE: Duration = Duration::from_millis(50);
     const RENDEZVOUS_DEADLINE: Duration = Duration::from_secs(30);
@@ -2057,6 +2063,181 @@ mod owner_reset_regression {
              packet (target signature: first post-reset packet is 0/480); \
              post-skip packets (native_step, silent_frames, reset_epoch, \
              producer_epoch, consumer_epoch): {post:?}"
+        );
+    }
+
+    /// The redesign's master invariant under sustained jitter: every 32nd
+    /// wake arrives two periods late (the target trace showed twelve
+    /// skipped=1 events plus multi-period gaps inside 45 s), the native pair
+    /// keeps streaming through the injected stalls, and the debt ledger
+    /// repays every skipped period. Over 2048 wakes this pins: the engine
+    /// timeline equals the granted wall-clock frames exactly (the discarded-
+    /// skip design ran a permanent -1791 ppm deficit), no boundary epoch ever
+    /// moves, no microphone packet carries a silent tail after warm-up, both
+    /// carrier water levels stay well inside the ring (no starvation, no
+    /// overflow, debt never pinned), and no book slot is orphaned.
+    #[test]
+    fn periodic_owner_skips_are_repaid_with_bounded_levels_and_zero_silent_packets() {
+        let playback_state = Arc::new(state());
+        let microphone_state = Arc::new(state());
+        let (playback_writer, playback_reader) = audio_bridge(2, CARRIER_FRAMES, 1 << 20).unwrap();
+        let (microphone_writer, microphone_reader) =
+            audio_bridge(2, CARRIER_FRAMES, 1 << 20).unwrap();
+        let playback_probe = Arc::new(BoundaryProbe::default());
+        let microphone_probe = Arc::new(BoundaryProbe::default());
+        let source = VirtualPlaybackSource::new(playback_reader, 2, ENGINE_FRAMES, 48_000, 1 << 20)
+            .unwrap()
+            .with_reset_fence(
+                playback_state.reset_epoch.clone(),
+                playback_state.producer_quiesced_epoch.clone(),
+                playback_state.consumer_quiesced_epoch.clone(),
+            )
+            .with_probe(playback_probe.clone())
+            .with_clock_drift()
+            .unwrap();
+        let sink = VirtualMicrophoneSink::new(microphone_writer, 2, ENGINE_FRAMES, 48_000, 1 << 20)
+            .unwrap()
+            .with_reset_fence(
+                microphone_state.reset_epoch.clone(),
+                microphone_state.producer_quiesced_epoch.clone(),
+                microphone_state.consumer_quiesced_epoch.clone(),
+            )
+            .with_probe(microphone_probe.clone())
+            .with_clock_drift()
+            .unwrap();
+        let (engine, bindings, sink_node) = passthrough_engine(source, sink);
+
+        const TOTAL_STEPS: usize = 2_048;
+        const SKIP_INTERVAL: usize = 32;
+        const SKIP_EXTRA_PERIODS: usize = 2;
+        const WARMUP_STEPS: usize = 48;
+        let skips = (1..TOTAL_STEPS)
+            .filter(|step| step % SKIP_INTERVAL == 0)
+            .count();
+        let wall_periods = TOTAL_STEPS + skips * SKIP_EXTRA_PERIODS;
+        let clock = StepClock::new(TOTAL_STEPS);
+        let mut sessions = VirtualSessions::default();
+        sessions.push_with_reset_epoch(
+            Box::new(StubResourceSession),
+            playback_state.reset_epoch.clone(),
+        );
+        sessions.push_with_reset_epoch(
+            Box::new(StubResourceSession),
+            microphone_state.reset_epoch.clone(),
+        );
+        let stop = StopSignal::new().unwrap();
+        let gate = ActivationGate::new(stop.clone()).unwrap();
+        let transport = Box::new(VirtualPreparedTransport::new(
+            vec![sink_node],
+            sessions,
+            stop,
+            gate,
+            Box::new(clock.clone()),
+        ));
+        let owner = transport
+            .attach(engine, &bindings, CancellationToken::default())
+            .unwrap_or_else(|failure| panic!("virtual attachment failed: {:?}", failure.error));
+        owner.activate().unwrap();
+        clock.await_owner_parked();
+
+        let mut native = NativeSide::new(playback_writer, microphone_reader);
+        let mut native_substeps = 0usize;
+        let (mut playback_low, mut playback_high) = (u32::MAX, 0u32);
+        let (mut microphone_low, mut microphone_high) = (u32::MAX, 0u32);
+        for step in 0..TOTAL_STEPS {
+            let late = usize::from(step > 0 && step % SKIP_INTERVAL == 0) * SKIP_EXTRA_PERIODS;
+            // The native pair streams through the injected stall: each extra
+            // wall period advances the native side one sub-step before the
+            // late owner wake repays it from the ledger.
+            for _ in 0..=late {
+                native.advance_native_time();
+                native.complete_native_io();
+                native.playback_step(&playback_state);
+                native.microphone_step(&microphone_state);
+                native_substeps += 1;
+            }
+            clock.advance((ENGINE_FRAMES * (1 + late)) as u64);
+            if step >= WARMUP_STEPS {
+                let playback = playback_probe.snapshot().level_frames;
+                playback_low = playback_low.min(playback);
+                playback_high = playback_high.max(playback);
+                let microphone = microphone_probe.snapshot().level_frames;
+                microphone_low = microphone_low.min(microphone);
+                microphone_high = microphone_high.max(microphone);
+            }
+        }
+
+        let returned = owner.stop_and_join();
+        assert!(returned.error.is_none());
+        assert_eq!(
+            returned.engine.timeline(),
+            (wall_periods * ENGINE_FRAMES) as u64,
+            "every granted wall-clock period must render exactly once"
+        );
+        assert_eq!(
+            playback_state.reset_epoch.load(Ordering::Acquire),
+            0,
+            "jitter must never escalate to a boundary reset"
+        );
+        assert_eq!(microphone_state.reset_epoch.load(Ordering::Acquire), 0);
+        assert_eq!(
+            microphone_state
+                .producer_quiesced_epoch
+                .load(Ordering::Acquire),
+            0
+        );
+        assert_eq!(
+            microphone_state
+                .consumer_quiesced_epoch
+                .load(Ordering::Acquire),
+            0
+        );
+        assert_eq!(
+            native.playback_io.book.pending(),
+            native.playback_tickets.len(),
+            "every playback book slot must belong to a live request"
+        );
+        assert_eq!(
+            native.microphone_io.book.pending(),
+            native.microphone_tickets.len(),
+            "every microphone book slot must belong to a live request"
+        );
+        let warmup_packets = native
+            .packets
+            .iter()
+            .take_while(|packet| packet.native_step <= WARMUP_STEPS)
+            .count();
+        let post: Vec<(usize, usize)> = native.packets[warmup_packets..]
+            .iter()
+            .map(|packet| (packet.native_step, packet.silent_frames))
+            .collect();
+        let silent: Vec<_> = post.iter().filter(|(_, silent)| *silent > 0).collect();
+        assert!(
+            silent.is_empty(),
+            "periodic jitter must not silence any microphone packet;              (native_step, silent_frames): {post:?}"
+        );
+        assert!(
+            post.len() >= TOTAL_STEPS / 3,
+            "the native cadence must keep producing packets: {} packets over {} sub-steps",
+            post.len(),
+            native_substeps,
+        );
+        // The band keeps more than a packet and a half away from both rails.
+        // The microphone starts near empty (the native stream begins with the
+        // graph) and rebuilds toward its servo target at the bounded ±2000 ppm
+        // pace - that slow rebuild is the designed behavior, not drift.
+        assert!(
+            playback_low > 400 && playback_high < CARRIER_FRAMES as u32 - 400,
+            "playback level must stay inside the ring under sustained jitter:              {playback_low}..{playback_high}"
+        );
+        assert!(
+            microphone_low > 400 && microphone_high < CARRIER_FRAMES as u32 - 400,
+            "microphone level must stay inside the ring under sustained jitter:              {microphone_low}..{microphone_high}"
+        );
+        assert_eq!(
+            playback_probe.snapshot().xruns + microphone_probe.snapshot().xruns,
+            0,
+            "no starvation or overflow may occur under sustained jitter"
         );
     }
 }
