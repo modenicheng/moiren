@@ -30,6 +30,12 @@ impl FollowerServo {
     pub(crate) fn target(&self) -> usize {
         self.target
     }
+    /// Current smoothed correction in ppm. Diagnostics and probes only; the
+    /// control-side water-level probe lands with the soak-evidence change.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn correction(&self) -> f64 {
+        self.correction
+    }
     /// Positive correction consumes source faster to reduce queue occupancy.
     pub(crate) fn observe(&mut self, queued: usize) -> f64 {
         let desired = ((queued as f64 - self.target as f64) / self.target as f64

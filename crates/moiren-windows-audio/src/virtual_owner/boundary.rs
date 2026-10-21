@@ -392,12 +392,12 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
                 NATIVE_SAMPLE_RATE,
                 self.engine_sample_rate,
             );
-            if transferred < required_input
-                && let Some(drift) = &mut self.drift
-            {
-                drift.reset();
-                src.reset();
-            }
+            // A starved block is an honest, counted xrun. The silence-fill
+            // above already advanced the FIR across the gap, and the servo's
+            // settled correction is exactly the state that must survive to
+            // recenter the level. The old behavior reset the drift servo and
+            // re-armed the prime gate here, trading one missed packet for
+            // ~50 ms of reprime silence.
             #[cfg(test)]
             tests::before_transfer_return();
             if !self.epoch_current() {
@@ -570,28 +570,9 @@ impl VirtualMicrophoneSink {
         true
     }
 
-    fn finish_transfer(
-        &mut self,
-        report: BoundaryReport,
-        frames: usize,
-        carrier_short: bool,
-    ) -> BoundaryReport {
+    fn finish_transfer(&mut self, report: BoundaryReport, frames: usize) -> BoundaryReport {
         #[cfg(test)]
         tests::before_transfer_return();
-        if carrier_short
-            && self.handshake.is_some()
-            && let Some(epoch) = &self.reset_epoch
-        {
-            // The old prefix is fully published before producer quiescence.
-            // Only the fenced consumer may discard it; standalone sinks keep
-            // their existing drop-new behavior. Do not replace a newer reset.
-            let _ = epoch.compare_exchange(
-                self.observed_reset,
-                self.observed_reset.wrapping_add(1),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
-        }
         if self
             .reset_epoch
             .as_ref()
@@ -630,11 +611,17 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
         }
         if let Some(src) = &mut self.resampler {
             if input.frames() > 0 && self.carrier.available_frames() == 0 {
+                // Full-carrier overflow drops the current audio (drop-new) and
+                // re-primes the FIR, but no longer requests a boundary reset:
+                // the queued frames are still in-order graph output, the
+                // worker drains them at its own cadence, and a fenced discard
+                // here converted bounded jitter into ~50 ms of guaranteed
+                // silence plus a full worker re-handshake.
                 src.reset();
                 if let Some(drift) = &mut self.drift {
                     drift.reset();
                 }
-                return self.finish_transfer(short(input.frames()), input.frames(), true);
+                return self.finish_transfer(short(input.frames()), input.frames());
             }
             for frame in 0..input.frames() {
                 let left = input.channel(0)[frame].to_f64();
@@ -681,7 +668,7 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
                 discontinuity: report.discontinuity,
                 xruns: report.xruns,
             };
-            return self.finish_transfer(report, input.frames(), !complete);
+            return self.finish_transfer(report, input.frames());
         }
         if input.frames() > self.scratch.len() / 2 {
             return short(input.frames());
@@ -699,8 +686,7 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
             .carrier
             .write_interleaved(scratch)
             .expect("complete carrier frames");
-        let carrier_short = report.transferred_frames < input.frames();
-        self.finish_transfer(report, input.frames(), carrier_short)
+        self.finish_transfer(report, input.frames())
     }
 }
 

@@ -749,30 +749,24 @@ fn microphone_late_write_is_fenced_until_the_consumer_discards_it() {
 }
 
 #[test]
-fn microphone_backpressure_requests_one_reset_without_src() {
-    microphone_backpressure_requests_one_reset(false, 0, false);
+fn microphone_backpressure_drops_new_without_requesting_a_reset_without_src() {
+    microphone_backpressure_drops_new_without_requesting_a_reset(false, 0);
 }
 
 #[test]
-fn microphone_backpressure_requests_one_reset_with_clock_drift() {
-    microphone_backpressure_requests_one_reset(true, 0, false);
+fn microphone_backpressure_drops_new_without_requesting_a_reset_with_clock_drift() {
+    microphone_backpressure_drops_new_without_requesting_a_reset(true, 0);
 }
 
 #[test]
-fn microphone_backpressure_requests_one_reset_after_partial_write_without_src() {
-    microphone_backpressure_requests_one_reset(false, 32, false);
+fn microphone_backpressure_after_partial_write_drops_new_without_requesting_a_reset_without_src() {
+    microphone_backpressure_drops_new_without_requesting_a_reset(false, 32);
 }
 
 #[test]
-fn microphone_backpressure_requests_one_reset_after_partial_write_with_clock_drift() {
-    microphone_backpressure_requests_one_reset(true, 32, false);
-}
-
-#[test]
-fn microphone_backpressure_preserves_a_reset_racing_the_partial_publication() {
-    for drift in [false, true] {
-        microphone_backpressure_requests_one_reset(drift, 32, true);
-    }
+fn microphone_backpressure_after_partial_write_drops_new_without_requesting_a_reset_with_clock_drift()
+ {
+    microphone_backpressure_drops_new_without_requesting_a_reset(true, 32);
 }
 
 #[test]
@@ -802,11 +796,13 @@ fn microphone_backpressure_without_a_complete_fence_keeps_drop_new_behavior() {
     }
 }
 
-fn microphone_backpressure_requests_one_reset(
-    drift: bool,
-    free_frames: usize,
-    external_reset: bool,
-) {
+/// Full or nearly-full carrier overflow is bounded loss: the newest graph
+/// frames are dropped, the oldest queued frames stay in order, and the
+/// worker drains the carrier at its own cadence. No epoch is requested -
+/// a fenced discard here used to convert bounded jitter into ~50 ms of
+/// guaranteed silence plus a full worker re-handshake (the graded-reset
+/// redesign: discard is reserved for real epoch events).
+fn microphone_backpressure_drops_new_without_requesting_a_reset(drift: bool, free_frames: usize) {
     use moiren_engine::buffer::{BufferArena, BufferSlotLayout, PortAccess, ProcessIo};
     const CAPACITY: usize = 4800;
     const BLOCK: usize = 128;
@@ -861,22 +857,6 @@ fn microphone_backpressure_requests_one_reset(
         frames: BLOCK,
         processing_sr: 48_000.0,
     };
-    if free_frames > 0 {
-        let ack = producer_ack.clone();
-        let reset = requested.clone();
-        BEFORE_RETURN.with(|hook| {
-            *hook.borrow_mut() = Some(Box::new(move || {
-                assert_eq!(
-                    ack.load(Ordering::Acquire),
-                    0,
-                    "old write is not fenced yet"
-                );
-                if external_reset {
-                    reset.store(2, Ordering::Release);
-                }
-            }));
-        });
-    }
     let mut publish = |sink: &mut VirtualMicrophoneSink| {
         arena
             .with_io(&read, 0..BLOCK, |io| {
@@ -888,47 +868,206 @@ fn microphone_backpressure_requests_one_reset(
             .unwrap()
     };
     let report = publish(&mut sink);
-    let epoch = if external_reset { 2 } else { 1 };
-    assert_eq!(
-        consumer.available_frames(),
-        CAPACITY,
-        "the old prefix was published"
-    );
+    assert_eq!(consumer.available_frames(), CAPACITY, "old prefix kept");
     assert_eq!(
         requested.load(Ordering::Acquire),
-        epoch,
-        "backpressure requests reset"
+        0,
+        "overflow is bounded loss, not a timeline break"
     );
-    assert_eq!(
-        producer_ack.load(Ordering::Acquire),
-        epoch,
-        "same write quiesces producer"
-    );
+    assert_eq!(producer_ack.load(Ordering::Acquire), 0);
     assert_eq!(consumer_ack.load(Ordering::Acquire), 0);
-    assert_eq!(report.transferred_frames, 0);
+    // Only the free prefix publishes; the remainder is dropped, not retained.
+    // (The drift variant reports engine-frame equivalents of the published
+    // prefix; its exact value depends on FIR state, so only the raw path is
+    // pinned to the free-frame count.)
+    if drift {
+        assert!(report.transferred_frames < 128);
+    } else {
+        assert_eq!(report.transferred_frames, free_frames);
+    }
     assert!(report.discontinuity);
     assert_eq!(report.xruns, 1);
     assert_eq!(sink.carrier.capacity_frames(), CAPACITY);
 
-    // Returning some space does not authorize publication before discard/ACK.
+    // Publication resumes as soon as the worker drains space: no fence to
+    // complete, no discard, no re-handshake.
     let mut scratch = [f32::NAN; BLOCK * 2];
-    consumer.read_interleaved(&mut scratch).unwrap();
-    for _ in 0..3 {
-        assert_eq!(publish(&mut sink).transferred_frames, 0);
-        assert_eq!(consumer.available_frames(), CAPACITY - BLOCK);
-        assert_eq!(requested.load(Ordering::Acquire), epoch);
-        assert_eq!(producer_ack.load(Ordering::Acquire), epoch);
-    }
-    // The consumer owns discard, after acquiring the producer's release fence.
-    assert_eq!(producer_ack.load(Ordering::Acquire), epoch);
-    assert_eq!(consumer.discard(), CAPACITY - BLOCK);
-    consumer_ack.store(epoch, Ordering::Release);
+    assert!(
+        consumer
+            .read_interleaved(&mut scratch)
+            .unwrap()
+            .transferred_frames
+            > 0
+    );
+    assert_eq!(scratch[..2], [0.75, 0.75], "oldest frames stay in order");
     for _ in 0..3 {
         assert!(publish(&mut sink).transferred_frames > 0);
-        let report = consumer.read_interleaved(&mut scratch).unwrap();
-        assert!(report.transferred_frames > 0);
+        assert!(
+            consumer
+                .read_interleaved(&mut scratch)
+                .unwrap()
+                .transferred_frames
+                > 0
+        );
+        assert_eq!(requested.load(Ordering::Acquire), 0);
+        assert_eq!(producer_ack.load(Ordering::Acquire), 0);
     }
-    assert!(scratch.iter().all(|sample| (*sample + 0.25).abs() < 1e-5));
-    assert_eq!(requested.load(Ordering::Acquire), epoch);
-    assert_eq!(sink.observed_reset, epoch);
+    assert_eq!(sink.observed_reset, 0);
+}
+
+#[test]
+fn microphone_backpressure_preserves_a_reset_racing_the_partial_publication() {
+    for drift in [false, true] {
+        let requested = Arc::new(AtomicU64::new(0));
+        let producer_ack = Arc::new(AtomicU64::new(0));
+        let consumer_ack = Arc::new(AtomicU64::new(0));
+        let (mut writer, mut consumer) = audio_bridge(2, 4800, 1 << 20).unwrap();
+        writer.write_interleaved_exact(&[0.75; 9600]).unwrap();
+        let mut sink = VirtualMicrophoneSink::new(writer, 2, 128, 48_000, 1 << 20)
+            .unwrap()
+            .with_reset_fence(
+                requested.clone(),
+                producer_ack.clone(),
+                consumer_ack.clone(),
+            );
+        if drift {
+            sink = sink.with_clock_drift().unwrap();
+        }
+        let (mut input, source) = audio_bridge(2, 128, 4096).unwrap();
+        input.write_interleaved_exact(&[-0.25; 256]).unwrap();
+        let mut engine = graph_with_bindings(48_000, source, sink);
+        let reset = requested.clone();
+        let ack = producer_ack.clone();
+        BEFORE_RETURN.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                assert_eq!(
+                    ack.load(Ordering::Acquire),
+                    0,
+                    "old write is not fenced yet"
+                );
+                reset.store(2, Ordering::Release);
+            }));
+        });
+        engine.render(128).unwrap();
+        // The externally requested reset wins over the completed publication:
+        // the producer quiesces on the same write and nothing further
+        // publishes until the consumer discards and acknowledges.
+        assert_eq!(requested.load(Ordering::Acquire), 2);
+        assert_eq!(producer_ack.load(Ordering::Acquire), 2);
+        assert_eq!(consumer_ack.load(Ordering::Acquire), 0);
+        engine.render(128).unwrap();
+        assert_eq!(
+            consumer.available_frames(),
+            4800,
+            "publication stays fenced"
+        );
+        assert_eq!(consumer.discard(), 4800);
+        consumer_ack.store(2, Ordering::Release);
+        engine.render(128).unwrap();
+        let mut scratch = [f32::NAN; 256];
+        assert!(
+            consumer
+                .read_interleaved(&mut scratch)
+                .unwrap()
+                .transferred_frames
+                > 0,
+            "fresh content flows after the fence completes"
+        );
+    }
+}
+
+#[test]
+fn playback_starvation_keeps_the_settled_servo_state() {
+    use moiren_engine::buffer::{BufferArena, BufferSlotLayout, PortAccess, ProcessIo};
+    const CAPACITY: usize = 4800;
+    const BLOCK: usize = 128;
+    let (mut producer, reader) = audio_bridge(2, CAPACITY, 1 << 20).unwrap();
+    let mut source = VirtualPlaybackSource::new(reader, 2, BLOCK, 48_000, 1 << 20)
+        .unwrap()
+        .with_clock_drift()
+        .unwrap();
+    let transfer = source.drift.as_ref().unwrap().transfer;
+    let target = source.drift.as_ref().unwrap().servo.target();
+    let pcm: Vec<f32> = (0..CAPACITY).flat_map(|_| [0.25, -0.5]).collect();
+    // Seed only this deterministic simulation; real playback primes from
+    // arriving native packets.
+    producer
+        .write_interleaved(&pcm[..(target + transfer) * 2])
+        .unwrap();
+    let mut arena = BufferArena::<f32>::new(
+        &[BufferSlotLayout {
+            channels: 2,
+            capacity_frames: BLOCK,
+        }],
+        1 << 20,
+    )
+    .unwrap();
+    let slot = arena.slot(0).unwrap();
+    let write = arena
+        .prepare_io(&[PortAccess::Write { port: 0, slot }])
+        .unwrap();
+    let context = |block: usize| ProcessContext {
+        timeline_epoch: 1,
+        timeline_start: (block * BLOCK) as u64,
+        frames: BLOCK,
+        processing_sr: 48_000.0,
+    };
+    let mut read_block = |source: &mut VirtualPlaybackSource, block: usize| {
+        let mut report = BoundaryReport::default();
+        arena
+            .with_io(&write, 0..BLOCK, |io| {
+                let ProcessIo::Separate { mut outputs, .. } = io else {
+                    unreachable!()
+                };
+                let output = outputs.get_mut(0).unwrap();
+                report = source.read(&context(block), output);
+            })
+            .unwrap();
+        report
+    };
+    // Settle the servo clearly positive by holding the level near the ring
+    // top: relative error ~+1, so the correction converges toward the clamp.
+    producer
+        .write_interleaved(&pcm[(target + transfer) * 2..CAPACITY * 2])
+        .unwrap();
+    for block in 0..300 {
+        let report = read_block(&mut source, block);
+        assert_eq!(report.transferred_frames, BLOCK);
+        assert_eq!(report.xruns, 0);
+        producer.write_interleaved(&pcm[..BLOCK * 2]).unwrap();
+    }
+    let settled = source.drift.as_ref().unwrap().servo.correction();
+    assert!(
+        settled > 1000.0,
+        "servo must settle well inside its authority, got {settled} ppm"
+    );
+    assert!(source.drift.as_ref().unwrap().primed);
+    // Drain the carrier and starve one block: an honest counted xrun... The
+    // drain itself legitimately walks the correction partway back down.
+    while source.carrier.available_frames() > 0 {
+        read_block(&mut source, 300);
+    }
+    let pre_starve = source.drift.as_ref().unwrap().servo.correction();
+    let starved = read_block(&mut source, 301);
+    assert!(starved.xruns >= 1, "starvation is counted");
+    assert!(starved.discontinuity);
+    // ...but the servo state and the prime survive: the old behavior reset
+    // both here (one smoothing step moves at most ~1% of the range), trading
+    // one missed packet for ~50 ms of reprime silence.
+    let after = source.drift.as_ref().unwrap().servo.correction();
+    assert!(
+        after > 500.0,
+        "starvation must not discard the settled correction: {after} ppm"
+    );
+    assert!(
+        (after - pre_starve).abs() < 100.0,
+        "the starved block may only move the servo one smoothing step: \
+         {pre_starve} -> {after} ppm"
+    );
+    assert!(source.drift.as_ref().unwrap().primed);
+    // Resupply transfers fully again with the same servo state.
+    producer.write_interleaved(&pcm[..BLOCK * 4]).unwrap();
+    let recovered = read_block(&mut source, 302);
+    assert_eq!(recovered.transferred_frames, BLOCK);
+    assert_eq!(recovered.xruns, 0);
 }
