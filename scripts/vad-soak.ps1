@@ -58,7 +58,9 @@ $arguments = @('--exercise', "--timeout-seconds=$timeoutSeconds", "--output-dir=
 if ($IdleSeconds) { $arguments += "--soak-idle-seconds=$IdleSeconds" }
 if ($PcmSeconds) { $arguments += "--soak-pcm-seconds=$PcmSeconds" }
 if ($PcmFile) { $arguments += "--soak-pcm-file=$PcmFile" }
-$env:RUST_LOG = 'info'
+# The virtual-owner clock gap trace (Wake/Clamp debt-ledger events) logs at
+# debug on this target; keep it visible so a timeline stall leaves evidence.
+$env:RUST_LOG = 'info,moiren::audio::vad=debug'
 $process = $null
 $probeClock = $null
 $writer = $null
