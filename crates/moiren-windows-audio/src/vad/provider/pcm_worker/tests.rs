@@ -1134,3 +1134,23 @@ fn activity_wait_targets_oldest_and_timeout_keeps_request_pending() {
         "reset must return to quiescence, not wait"
     );
 }
+
+#[test]
+fn microphone_activity_wait_skips_cancelled_worker_without_touching_ticket() {
+    let mut io = FakeIo::default();
+    let ticket = io.read().unwrap();
+    let state = state();
+    state.cancel.store(true, Ordering::Release);
+
+    wait_for_microphone(&mut io, &[ticket], &state, 0).unwrap();
+
+    assert!(
+        io.waits.is_empty(),
+        "cancelled workers must not enter a native wait"
+    );
+    assert_eq!(
+        io.book.pending(),
+        1,
+        "cancellation does not collect the request"
+    );
+}
