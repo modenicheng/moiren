@@ -418,11 +418,14 @@ impl LiveSession<'_> {
     /// snapshot. Missing probes stay None; the trail records what the
     /// control side could observe, never an inference.
     fn record_probe_trail(&self, report: &mut Report, now_ms: u64) {
-        let borrowed = self.last_snapshot.borrow();
-        let Some((snapshot, _)) = borrowed.as_ref() else {
-            return;
-        };
-        let Some(native) = snapshot.native_observations.as_ref() else {
+        // Note: virtual-only sessions do not publish NativeObservations yet;
+        // the trail stays empty until the virtual transport gains the
+        // observation surface (windows transports publish with probes).
+        let snapshot = self.handle.try_snapshot();
+        let Some(native) = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.native_observations.as_ref())
+        else {
             return;
         };
         let mut trail = ProbeTrail {

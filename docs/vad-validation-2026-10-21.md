@@ -451,3 +451,41 @@ moiren-windows-audio` (401 lib tests + integration suites green),
 clean, `cargo fmt` applied. Remaining: workspace-wide gates, guest
 rebuild, target combined short revalidation ×2, then the eight-hour
 music soak.
+
+## Target revalidation after the redesign (2026-10-21, builds EB9E7792/639ED3D6/6C5330A0/2522BD2B)
+
+Host gates green at every step (401 lib tests, workspace, clippy, fmt,
+gpui-test). Two follow-up fixes landed from target evidence:
+
+- `1528c4a` full starvation re-arms only the playback prime gate
+  (transferred == 0): consumption pauses while native supply rebuilds
+  the level in under a ring time, with servo/FIR state and carrier
+  content preserved. Before this, one transient dip left supply
+  interleaved with silence for ~20 s of servo-only recovery (three
+  runs failed PCM validation with ~8% interleaved silent frames).
+- `50a332e` the resumption edge after any prime (re)arm is exact zero
+  for one FIR length: the filter's group delay otherwise smears the
+  first resumed frames into mixed-amplitude values that trip the
+  validator's instant non-matching-frame bail (97%-amplitude frames
+  observed on target).
+
+After both fixes the PCM validation phases pass reliably again (both
+signals 48,000/48,000 consecutive). The remaining failure class is a
+single 480-frame fully silent packet inside the continuous soak at a
+random time (0.26 s / 3.1 s / 9.5 s / 19 s / 47.6 s across runs), with
+zero epochs moved, zero clamps, zero capture gaps/regressions, zero
+driver drops, no encode-short logs, and max packet gap 13-22 ms.
+Signature analysis: the mic carrier held 480 real zero frames at one
+encode, i.e. the engine rendered ~2 blocks of zero-fill - a partial
+playback-carrier starvation lasting a few tens of milliseconds, which
+recovers immediately (single packet, not the ~0.5 s prime-hold
+signature). The water-level trail needed to separate "level rides low"
+from "transient supply gap" requires the virtual-only transport to
+publish NativeObservations (virtual-only projects never construct the
+Windows transport that now carries the probes; `9542513` landed the
+probe-to-snapshot chain for windows transports and the report trail,
+which stays empty for virtual-only sessions until that surface exists).
+The 65 s combined gate therefore still fails on this VM; the
+eight-hour run stays on hold. Builds and evidence:
+`C:\MoirenVadTest\20261021-9641601-*`, `20261021-1528c4a-*`,
+`20261021-50a332e-*`, `20261021-9542513-*`, `20261021-dbg1-combined`.
