@@ -8,6 +8,8 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [ValidateRange(0, 28800)][int]$IdleSeconds = 28800,
     [ValidateRange(0, 28800)][int]$PcmSeconds = 28800,
+    # Optional looping WAV driving the PCM phase (the probe's music mode).
+    [string]$PcmFile,
     [string]$ExpectedComputer = 'DRIVER-TEST'
 )
 
@@ -32,6 +34,12 @@ function Confirm-SoakReport($Report, [int]$Idle, [int]$Pcm, [double]$ElapsedSeco
 
 if ($env:COMPUTERNAME -ne $ExpectedComputer) { throw 'Unexpected test computer' }
 if ($IdleSeconds + $PcmSeconds -eq 0) { throw 'Select at least one soak phase' }
+if ($PcmFile) {
+    if ($PcmSeconds -eq 0) { throw 'PcmFile requires a PCM phase' }
+    $PcmFile = (Resolve-Path -LiteralPath $PcmFile).Path
+    # Start-Process on Windows joins its argument array into a command line.
+    if ($PcmFile -match '[\s"\x00]') { throw 'Use a material path without whitespace or quotes' }
+}
 $Executable = (Resolve-Path -LiteralPath $Executable).Path
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 # Start-Process on Windows joins its argument array into a command line.
@@ -49,6 +57,7 @@ $timeoutSeconds = $IdleSeconds + $PcmSeconds + 180
 $arguments = @('--exercise', "--timeout-seconds=$timeoutSeconds", "--output-dir=$probeDirectory")
 if ($IdleSeconds) { $arguments += "--soak-idle-seconds=$IdleSeconds" }
 if ($PcmSeconds) { $arguments += "--soak-pcm-seconds=$PcmSeconds" }
+if ($PcmFile) { $arguments += "--soak-pcm-file=$PcmFile" }
 $env:RUST_LOG = 'info'
 $process = $null
 $probeClock = $null
