@@ -982,10 +982,12 @@ fn playback_starvation_keeps_the_settled_servo_state() {
     const CAPACITY: usize = 4800;
     const BLOCK: usize = 128;
     let (mut producer, reader) = audio_bridge(2, CAPACITY, 1 << 20).unwrap();
+    let probe = Arc::new(BoundaryProbe::default());
     let mut source = VirtualPlaybackSource::new(reader, 2, BLOCK, 48_000, 1 << 20)
         .unwrap()
         .with_clock_drift()
-        .unwrap();
+        .unwrap()
+        .with_probe(probe.clone());
     let transfer = source.drift.as_ref().unwrap().transfer;
     let target = source.drift.as_ref().unwrap().servo.target();
     let pcm: Vec<f32> = (0..CAPACITY).flat_map(|_| [0.25, -0.5]).collect();
@@ -1042,6 +1044,17 @@ fn playback_starvation_keeps_the_settled_servo_state() {
         "servo must settle well inside its authority, got {settled} ppm"
     );
     assert!(source.drift.as_ref().unwrap().primed);
+    let sample = probe.snapshot();
+    assert!(
+        sample.level_frames > 2_000,
+        "probe sees the queued occupancy: {sample:?}"
+    );
+    assert!(
+        sample.applied_milli_ppm > 1_000_000,
+        "probe sees the settled correction: {sample:?}"
+    );
+    assert_eq!(sample.soft_events, 0);
+    assert_eq!(sample.xruns, 0);
     // Drain the carrier and starve one block: an honest counted xrun... The
     // drain itself legitimately walks the correction partway back down.
     while source.carrier.available_frames() > 0 {
@@ -1051,6 +1064,12 @@ fn playback_starvation_keeps_the_settled_servo_state() {
     let starved = read_block(&mut source, 301);
     assert!(starved.xruns >= 1, "starvation is counted");
     assert!(starved.discontinuity);
+    let sample = probe.snapshot();
+    assert!(
+        sample.soft_events >= 1,
+        "probe counts the soft starvation loss: {sample:?}"
+    );
+    assert!(sample.xruns >= 1);
     // ...but the servo state and the prime survive: the old behavior reset
     // both here (one smoothing step moves at most ~1% of the range), trading
     // one missed packet for ~50 ms of reprime silence.
@@ -1070,4 +1089,80 @@ fn playback_starvation_keeps_the_settled_servo_state() {
     let recovered = read_block(&mut source, 302);
     assert_eq!(recovered.transferred_frames, BLOCK);
     assert_eq!(recovered.xruns, 0);
+}
+
+#[test]
+fn microphone_probe_reports_occupancy_and_overflow() {
+    use moiren_engine::buffer::{BufferArena, BufferSlotLayout, PortAccess, ProcessIo};
+    const CAPACITY: usize = 4800;
+    const BLOCK: usize = 128;
+    let (writer, consumer) = audio_bridge(2, CAPACITY, 1 << 20).unwrap();
+    let probe = Arc::new(BoundaryProbe::default());
+    let mut sink = VirtualMicrophoneSink::new(writer, 2, BLOCK, 48_000, 1 << 20)
+        .unwrap()
+        .with_clock_drift()
+        .unwrap()
+        .with_probe(probe.clone());
+    let mut arena = BufferArena::<f32>::new(
+        &[BufferSlotLayout {
+            channels: 2,
+            capacity_frames: BLOCK,
+        }],
+        1 << 20,
+    )
+    .unwrap();
+    let slot = arena.slot(0).unwrap();
+    let write = arena
+        .prepare_io(&[PortAccess::Write { port: 0, slot }])
+        .unwrap();
+    let read = arena
+        .prepare_io(&[PortAccess::Read { port: 0, slot }])
+        .unwrap();
+    let context = |block: usize| ProcessContext {
+        timeline_epoch: 1,
+        timeline_start: (block * BLOCK) as u64,
+        frames: BLOCK,
+        processing_sr: 48_000.0,
+    };
+    let mut publish = |sink: &mut VirtualMicrophoneSink, block: usize| {
+        arena
+            .with_io(&write, 0..BLOCK, |io| {
+                let ProcessIo::Separate { mut outputs, .. } = io else {
+                    unreachable!()
+                };
+                for channel in 0..2 {
+                    outputs.get_mut(0).unwrap().channel_mut(channel).fill(-0.25);
+                }
+            })
+            .unwrap();
+        arena
+            .with_io(&read, 0..BLOCK, |io| {
+                let ProcessIo::ReadOnly { inputs } = io else {
+                    unreachable!()
+                };
+                sink.write(&context(block), inputs.get(0).unwrap())
+            })
+            .unwrap()
+    };
+    publish(&mut sink, 0);
+    assert!(
+        probe.snapshot().level_frames > 0,
+        "the probe reports queued occupancy, not free space"
+    );
+    // Fill to the ring top.
+    for block in 1..60 {
+        publish(&mut sink, block);
+        if sink.carrier.available_frames() == 0 {
+            break;
+        }
+    }
+    assert_eq!(probe.snapshot().level_frames, CAPACITY as u32);
+    // One more write overflows: the probe counts the soft loss while the
+    // queued frames stay in place.
+    publish(&mut sink, 60);
+    let sample = probe.snapshot();
+    assert_eq!(sample.level_frames, CAPACITY as u32);
+    assert!(sample.soft_events >= 1, "{sample:?}");
+    assert!(sample.xruns >= 1, "{sample:?}");
+    assert_eq!(consumer.available_frames(), CAPACITY, "old prefix kept");
 }

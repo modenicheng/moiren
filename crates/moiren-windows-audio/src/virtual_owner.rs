@@ -14,7 +14,9 @@ mod boundary;
 mod clock;
 mod provider;
 
-pub use boundary::{VirtualMicrophoneSink, VirtualPlaybackSource};
+pub use boundary::{
+    BoundaryProbe, BoundaryProbeSample, VirtualMicrophoneSink, VirtualPlaybackSource,
+};
 #[allow(unused_imports)]
 pub use clock::{ClockError, ClockSchedule, ClockTick};
 #[allow(unused_imports)]

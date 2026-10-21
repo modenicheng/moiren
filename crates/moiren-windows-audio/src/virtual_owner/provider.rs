@@ -5,6 +5,8 @@ use moiren_engine::{
 };
 use std::sync::{Arc, atomic::AtomicU64};
 
+use super::boundary::BoundaryProbe;
+
 /// Persistent desired resource identity is resolved here, never on render.
 #[derive(Debug, Clone, Copy)]
 pub struct VirtualBoundaryRequest {
@@ -36,6 +38,8 @@ pub struct PreparedVirtualPlayback {
     pub producer_quiesced_epoch: Arc<AtomicU64>,
     /// Consumer acknowledges after discarding its old carrier/FIR contents.
     pub consumer_quiesced_epoch: Arc<AtomicU64>,
+    /// Control-side carrier water-level probe for this boundary.
+    pub probe: Arc<BoundaryProbe>,
     pub session: Box<dyn VirtualResourceSession>,
 }
 
@@ -45,6 +49,8 @@ pub struct PreparedVirtualMicrophone {
     /// Engine producer pauses publication until the PCM consumer has discarded.
     pub producer_quiesced_epoch: Arc<AtomicU64>,
     pub consumer_quiesced_epoch: Arc<AtomicU64>,
+    /// Control-side carrier water-level probe for this boundary.
+    pub probe: Arc<BoundaryProbe>,
     pub session: Box<dyn VirtualResourceSession>,
 }
 

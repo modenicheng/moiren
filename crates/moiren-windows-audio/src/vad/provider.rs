@@ -10,7 +10,7 @@ use super::{
     StreamState, discover_present_interfaces,
 };
 use crate::virtual_owner::{
-    PreparedVirtualMicrophone, PreparedVirtualPlayback, VirtualBoundaryProvider,
+    BoundaryProbe, PreparedVirtualMicrophone, PreparedVirtualPlayback, VirtualBoundaryProvider,
     VirtualBoundaryRequest, VirtualResourceSession,
 };
 use moiren_engine::{
@@ -260,6 +260,7 @@ impl VirtualBoundaryProvider for WindowsVadProvider {
             reset_epoch: session.reset_epoch(),
             producer_quiesced_epoch: session.state.producer_quiesced_epoch.clone(),
             consumer_quiesced_epoch: session.state.consumer_quiesced_epoch.clone(),
+            probe: Arc::new(BoundaryProbe::default()),
             session: Box::new(session),
         })
     }
@@ -291,6 +292,7 @@ impl VirtualBoundaryProvider for WindowsVadProvider {
             reset_epoch: session.reset_epoch(),
             producer_quiesced_epoch: session.state.producer_quiesced_epoch.clone(),
             consumer_quiesced_epoch: session.state.consumer_quiesced_epoch.clone(),
+            probe: Arc::new(BoundaryProbe::default()),
             session: Box::new(session),
         })
     }

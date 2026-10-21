@@ -79,6 +79,7 @@ pub(super) fn prepare<S: ProcessingSample>(
                 prepared.producer_quiesced_epoch,
                 prepared.consumer_quiesced_epoch,
             )
+            .with_probe(prepared.probe.clone())
             // Native packet publication and a virtual QPC owner's block wakes
             // have independent phases even at the same nominal sample rate.
             .with_clock_drift()?;
@@ -98,6 +99,7 @@ pub(super) fn prepare<S: ProcessingSample>(
                 prepared.producer_quiesced_epoch,
                 prepared.consumer_quiesced_epoch,
             )
+            .with_probe(prepared.probe.clone())
             .with_clock_drift()?;
             bindings.bind_sink(node, sink).map_err(unsupported)?;
             sinks.push(node);

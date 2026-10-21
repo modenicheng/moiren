@@ -3,8 +3,9 @@ use super::super::{Group, NativeDevices, ProfessionalBackend};
 use super::{request, virtual_project};
 use crate::professional::owner::StreamFactory;
 use crate::virtual_owner::{
-    ClockWake, PreparedVirtualMicrophone, PreparedVirtualPlayback, VirtualBoundaryProvider,
-    VirtualBoundaryRequest, VirtualClockFactory, VirtualRealtimeClock, VirtualResourceSession,
+    BoundaryProbe, ClockWake, PreparedVirtualMicrophone, PreparedVirtualPlayback,
+    VirtualBoundaryProvider, VirtualBoundaryRequest, VirtualClockFactory, VirtualRealtimeClock,
+    VirtualResourceSession,
 };
 use moiren_core::graph::NodeKind;
 use moiren_engine::{
@@ -57,6 +58,7 @@ impl VirtualBoundaryProvider for PacketProvider {
             reset_epoch: Arc::new(AtomicU64::new(0)),
             producer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
             consumer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
+            probe: Arc::new(BoundaryProbe::default()),
             session: Box::new(UnstartedSession),
         })
     }
@@ -74,6 +76,7 @@ impl VirtualBoundaryProvider for PacketProvider {
             reset_epoch: Arc::new(AtomicU64::new(0)),
             producer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
             consumer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
+            probe: Arc::new(BoundaryProbe::default()),
             session: Box::new(UnstartedSession),
         })
     }

@@ -212,6 +212,7 @@ impl WindowsBackend {
                         prepared.producer_quiesced_epoch,
                         prepared.consumer_quiesced_epoch,
                     )
+                    .with_probe(prepared.probe.clone())
                     .with_clock_drift()?;
                     bindings
                         .bind_sink(node, sink)
@@ -355,6 +356,7 @@ impl WindowsBackend {
                         prepared.producer_quiesced_epoch,
                         prepared.consumer_quiesced_epoch,
                     )
+                    .with_probe(prepared.probe.clone())
                     // Equal QPC rates do not synchronize the native packet and
                     // Graph wake phases. Reserve existing carrier headroom for
                     // both virtual and physical masters, without delaying owner

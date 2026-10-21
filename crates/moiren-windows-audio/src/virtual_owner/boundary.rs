@@ -8,11 +8,60 @@ use moiren_engine::{
 };
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
 };
 
 const NATIVE_SAMPLE_RATE: u32 = 48_000;
 const SRC_HEADROOM_FRAMES: usize = 32;
+
+/// Control-side observation of one virtual boundary's carrier. The realtime
+/// side records relaxed snapshots once per block (no allocation, no locks);
+/// [`BoundaryProbe::snapshot`] samples the latest values for soak evidence
+/// and regressions.
+#[derive(Debug, Default)]
+pub struct BoundaryProbe {
+    level_frames: AtomicU32,
+    /// Servo correction applied to this carrier, in thousandths of a ppm.
+    /// Positive drains the queue faster.
+    applied_milli_ppm: AtomicI32,
+    xruns: AtomicU64,
+    soft_events: AtomicU64,
+}
+
+/// Latest probe sample. `level_frames` is queued content (occupancy, not
+/// free space) for both directions.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BoundaryProbeSample {
+    pub level_frames: u32,
+    pub applied_milli_ppm: i32,
+    pub xruns: u64,
+    pub soft_events: u64,
+}
+
+impl BoundaryProbe {
+    /// Realtime path: relaxed stores and adds only.
+    fn observe(&self, level_frames: usize, applied_ppm: f64, xruns: u64, soft_events: u64) {
+        self.level_frames.store(
+            u32::try_from(level_frames).unwrap_or(u32::MAX),
+            Ordering::Relaxed,
+        );
+        // Float-to-int casts saturate, so no clamp is needed.
+        self.applied_milli_ppm
+            .store((applied_ppm * 1000.0) as i32, Ordering::Relaxed);
+        self.xruns.fetch_add(xruns, Ordering::Relaxed);
+        self.soft_events.fetch_add(soft_events, Ordering::Relaxed);
+    }
+
+    /// Control side: sample the latest snapshot.
+    pub fn snapshot(&self) -> BoundaryProbeSample {
+        BoundaryProbeSample {
+            level_frames: self.level_frames.load(Ordering::Relaxed),
+            applied_milli_ppm: self.applied_milli_ppm.load(Ordering::Relaxed),
+            xruns: self.xruns.load(Ordering::Relaxed),
+            soft_events: self.soft_events.load(Ordering::Relaxed),
+        }
+    }
+}
 
 /// Reuses the existing carrier: reserve a worst-case transfer, then center the
 /// remaining headroom. This is not an additional audio queue or a latency claim.
@@ -164,6 +213,7 @@ pub struct VirtualPlaybackSource {
     byte_budget: usize,
     drift: Option<ClockDrift>,
     handshake: Option<EpochHandshake>,
+    probe: Option<Arc<BoundaryProbe>>,
 }
 
 impl VirtualPlaybackSource {
@@ -209,7 +259,14 @@ impl VirtualPlaybackSource {
             byte_budget: budget,
             drift: None,
             handshake: None,
+            probe: None,
         })
+    }
+
+    /// Attach the control-side carrier probe; snapshots land once per block.
+    pub fn with_probe(mut self, probe: Arc<BoundaryProbe>) -> Self {
+        self.probe = Some(probe);
+        self
     }
 
     /// Off-RT opt-in for independently paced native and Engine callbacks.
@@ -404,6 +461,16 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
                 output.clear();
                 return short(output.frames());
             }
+            if let Some(probe) = &self.probe {
+                probe.observe(
+                    self.carrier.available_frames(),
+                    self.drift
+                        .as_ref()
+                        .map_or(0.0, |drift| drift.servo.correction()),
+                    report.xruns + u64::from(produced < output.frames()),
+                    u64::from(transferred < required_input),
+                );
+            }
             return BoundaryReport {
                 transferred_frames: produced.saturating_sub(missing),
                 discontinuity: report.discontinuity || produced < output.frames(),
@@ -420,6 +487,9 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
         if !self.epoch_current() {
             output.clear();
             return short(output.frames());
+        }
+        if let Some(probe) = &self.probe {
+            probe.observe(self.carrier.available_frames(), 0.0, report.xruns, 0);
         }
         report
     }
@@ -438,6 +508,7 @@ pub struct VirtualMicrophoneSink {
     byte_budget: usize,
     drift: Option<ClockDrift>,
     handshake: Option<EpochHandshake>,
+    probe: Option<Arc<BoundaryProbe>>,
 }
 
 impl VirtualMicrophoneSink {
@@ -481,7 +552,14 @@ impl VirtualMicrophoneSink {
             byte_budget: budget,
             drift: None,
             handshake: None,
+            probe: None,
         })
+    }
+
+    /// Attach the control-side carrier probe; snapshots land once per block.
+    pub fn with_probe(mut self, probe: Arc<BoundaryProbe>) -> Self {
+        self.probe = Some(probe);
+        self
     }
 
     /// Off-RT packet-phase/drift adaptation without an additional carrier.
@@ -617,6 +695,17 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
                 // worker drains them at its own cadence, and a fenced discard
                 // here converted bounded jitter into ~50 ms of guaranteed
                 // silence plus a full worker re-handshake.
+                if let Some(probe) = &self.probe {
+                    probe.observe(
+                        self.carrier.capacity_frames(),
+                        -self
+                            .drift
+                            .as_ref()
+                            .map_or(0.0, |drift| drift.servo.correction()),
+                        1,
+                        1,
+                    );
+                }
                 src.reset();
                 if let Some(drift) = &mut self.drift {
                     drift.reset();
@@ -668,6 +757,17 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
                 discontinuity: report.discontinuity,
                 xruns: report.xruns,
             };
+            if let Some(probe) = &self.probe {
+                probe.observe(
+                    self.carrier.capacity_frames() - self.carrier.available_frames(),
+                    -self
+                        .drift
+                        .as_ref()
+                        .map_or(0.0, |drift| drift.servo.correction()),
+                    report.xruns,
+                    u64::from(!complete),
+                );
+            }
             return self.finish_transfer(report, input.frames());
         }
         if input.frames() > self.scratch.len() / 2 {
@@ -686,6 +786,14 @@ impl<S: ProcessingSample> RtAudioSink<S> for VirtualMicrophoneSink {
             .carrier
             .write_interleaved(scratch)
             .expect("complete carrier frames");
+        if let Some(probe) = &self.probe {
+            probe.observe(
+                self.carrier.capacity_frames() - self.carrier.available_frames(),
+                0.0,
+                report.xruns,
+                u64::from(report.transferred_frames < input.frames()),
+            );
+        }
         self.finish_transfer(report, input.frames())
     }
 }

@@ -1,8 +1,8 @@
 use super::*;
 use crate::professional::native::{NativeRecoveryRequest, NativeStream, StereoFrame};
 use crate::virtual_owner::{
-    ClockWake, PreparedVirtualMicrophone, PreparedVirtualPlayback, VirtualBoundaryRequest,
-    VirtualRealtimeClock, VirtualResourceSession,
+    BoundaryProbe, ClockWake, PreparedVirtualMicrophone, PreparedVirtualPlayback,
+    VirtualBoundaryRequest, VirtualRealtimeClock, VirtualResourceSession,
 };
 use moiren_engine::{
     boundary::{AudioReader, AudioWriter, audio_bridge},
@@ -77,6 +77,7 @@ impl VirtualBoundaryProvider for FakeProvider {
             reset_epoch: Arc::new(AtomicU64::new(0)),
             producer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
             consumer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
+            probe: Arc::new(BoundaryProbe::default()),
             session: self.session(request),
         })
     }
@@ -97,6 +98,7 @@ impl VirtualBoundaryProvider for FakeProvider {
             reset_epoch: Arc::new(AtomicU64::new(0)),
             producer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
             consumer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
+            probe: Arc::new(BoundaryProbe::default()),
             session: self.session(request),
         })
     }

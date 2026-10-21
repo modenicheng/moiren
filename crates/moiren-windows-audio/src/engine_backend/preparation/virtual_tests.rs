@@ -1,7 +1,7 @@
 use super::*;
 use crate::virtual_owner::{
-    ClockWake, PreparedVirtualMicrophone, PreparedVirtualPlayback, VirtualClockFactory,
-    VirtualRealtimeClock, VirtualResourceSession,
+    BoundaryProbe, ClockWake, PreparedVirtualMicrophone, PreparedVirtualPlayback,
+    VirtualClockFactory, VirtualRealtimeClock, VirtualResourceSession,
 };
 use moiren_core::graph::{LogicalGraph, NodeKind, SendParams};
 use moiren_engine::{
@@ -88,6 +88,7 @@ impl VirtualBoundaryProvider for FakeProvider {
             reset_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             producer_quiesced_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             consumer_quiesced_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            probe: Arc::new(BoundaryProbe::default()),
             session: Box::new(FakeSession::new(self.state.clone())),
         })
     }
@@ -111,6 +112,7 @@ impl VirtualBoundaryProvider for FakeProvider {
             reset_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             producer_quiesced_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             consumer_quiesced_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            probe: Arc::new(BoundaryProbe::default()),
             session: Box::new(FakeSession::new(self.state.clone())),
         })
     }
@@ -360,6 +362,7 @@ fn virtual_qpc_owner_adapts_packet_phase_without_a_physical_master() {
                 reset_epoch: Arc::new(AtomicU64::new(0)),
                 producer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
                 consumer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
+                probe: Arc::new(BoundaryProbe::default()),
                 session: Box::new(FakeSession::new(Arc::default())),
             })
         }
@@ -375,6 +378,7 @@ fn virtual_qpc_owner_adapts_packet_phase_without_a_physical_master() {
                 reset_epoch: Arc::new(AtomicU64::new(0)),
                 producer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
                 consumer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
+                probe: Arc::new(BoundaryProbe::default()),
                 session: Box::new(FakeSession::new(Arc::default())),
             })
         }
