@@ -1008,6 +1008,9 @@ fn playback_starvation_keeps_the_settled_servo_state() {
     let write = arena
         .prepare_io(&[PortAccess::Write { port: 0, slot }])
         .unwrap();
+    let read = arena
+        .prepare_io(&[PortAccess::Read { port: 0, slot }])
+        .unwrap();
     let context = |block: usize| ProcessContext {
         timeline_epoch: 1,
         timeline_start: (block * BLOCK) as u64,
@@ -1053,7 +1056,8 @@ fn playback_starvation_keeps_the_settled_servo_state() {
         sample.applied_milli_ppm > 1_000_000,
         "probe sees the settled correction: {sample:?}"
     );
-    assert_eq!(sample.soft_events, 0);
+    // The initial prime's recovery edge is the only soft loss so far.
+    assert_eq!(sample.soft_events, SRC_HEADROOM_FRAMES as u64);
     assert_eq!(sample.xruns, 0);
     // Drain the carrier and starve one block: an honest counted xrun... The
     // drain itself legitimately walks the correction partway back down.
@@ -1110,6 +1114,25 @@ fn playback_starvation_keeps_the_settled_servo_state() {
     assert_eq!(recovered.xruns, 0);
     assert!(source.drift.as_ref().unwrap().primed);
     assert!(source.drift.as_ref().unwrap().servo.correction() > 500.0);
+    // The resumption edge is exact zero for one FIR length - never a
+    // mixed-amplitude frame downstream - then real content resumes.
+    let mut samples = [0.0f32; BLOCK * 2];
+    arena
+        .with_io(&read, 0..BLOCK, |io| {
+            let ProcessIo::ReadOnly { inputs } = io else {
+                unreachable!()
+            };
+            let input = inputs.get(0).unwrap();
+            for frame in 0..BLOCK {
+                samples[frame * 2] = input.channel(0)[frame];
+                samples[frame * 2 + 1] = input.channel(1)[frame];
+            }
+        })
+        .unwrap();
+    let (mute, rest) = samples.split_at_mut(SRC_HEADROOM_FRAMES * 2);
+    assert_eq!(&mute[..8], &[0.0; 8]);
+    assert!((rest[0] - 0.25).abs() < 1e-6 && (rest[1] + 0.5).abs() < 1e-6);
+    assert!(probe.snapshot().soft_events >= 2);
 }
 
 #[test]

@@ -214,6 +214,8 @@ pub struct VirtualPlaybackSource {
     drift: Option<ClockDrift>,
     handshake: Option<EpochHandshake>,
     probe: Option<Arc<BoundaryProbe>>,
+    /// Frames of exact-zero recovery edge remaining after a prime (re)arm.
+    resume_mute: usize,
 }
 
 impl VirtualPlaybackSource {
@@ -260,6 +262,7 @@ impl VirtualPlaybackSource {
             drift: None,
             handshake: None,
             probe: None,
+            resume_mute: 0,
         })
     }
 
@@ -395,6 +398,11 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
                     return short(output.frames());
                 }
                 drift.primed = true;
+                // The filter's group delay smears the first frames after any
+                // resumption into mixed-amplitude edges. Exact zero for the
+                // first FIR length is the honest recovery edge: counted as
+                // silence downstream, never as corrupted content.
+                self.resume_mute = SRC_HEADROOM_FRAMES;
             }
             self.resampler
                 .as_mut()
@@ -429,13 +437,23 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
                 }
             }
             let mut produced = 0;
+            let mut muted = 0_usize;
             while produced < output.frames() {
                 let Some(frame) = src.next_frame() else {
                     break;
                 };
-                output.channel_mut(0)[produced] = S::from_f64(frame[0]);
-                if self.channels == 2 {
-                    output.channel_mut(1)[produced] = S::from_f64(frame[1]);
+                if self.resume_mute > 0 {
+                    self.resume_mute -= 1;
+                    muted += 1;
+                    output.channel_mut(0)[produced] = S::ZERO;
+                    if self.channels == 2 {
+                        output.channel_mut(1)[produced] = S::ZERO;
+                    }
+                } else {
+                    output.channel_mut(0)[produced] = S::from_f64(frame[0]);
+                    if self.channels == 2 {
+                        output.channel_mut(1)[produced] = S::from_f64(frame[1]);
+                    }
                 }
                 produced += 1;
             }
@@ -477,7 +495,7 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
                         .as_ref()
                         .map_or(0.0, |drift| drift.servo.correction()),
                     report.xruns + u64::from(produced < output.frames()),
-                    u64::from(transferred < required_input),
+                    u64::from(transferred < required_input) + muted as u64,
                 );
             }
             return BoundaryReport {
