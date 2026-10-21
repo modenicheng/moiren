@@ -1070,9 +1070,10 @@ fn playback_starvation_keeps_the_settled_servo_state() {
         "probe counts the soft starvation loss: {sample:?}"
     );
     assert!(sample.xruns >= 1);
-    // ...but the servo state and the prime survive: the old behavior reset
-    // both here (one smoothing step moves at most ~1% of the range), trading
-    // one missed packet for ~50 ms of reprime silence.
+    // ...but the servo's settled correction survives while the prime gate
+    // re-arms on a full starvation: consumption pauses until the level
+    // rebuilds (bounded, no discard) instead of riding marginal supply for
+    // ~20 s of servo-only recovery.
     let after = source.drift.as_ref().unwrap().servo.correction();
     assert!(
         after > 500.0,
@@ -1083,12 +1084,32 @@ fn playback_starvation_keeps_the_settled_servo_state() {
         "the starved block may only move the servo one smoothing step: \
          {pre_starve} -> {after} ppm"
     );
-    assert!(source.drift.as_ref().unwrap().primed);
-    // Resupply transfers fully again with the same servo state.
-    producer.write_interleaved(&pcm[..BLOCK * 4]).unwrap();
-    let recovered = read_block(&mut source, 302);
+    assert!(
+        !source.drift.as_ref().unwrap().primed,
+        "a fully starved block re-arms the prime gate"
+    );
+    // Below the prime threshold consumption stays paused; reaching
+    // transfer+target resumes cleanly with the servo state intact.
+    producer.write_interleaved(&pcm[..BLOCK * 4 * 2]).unwrap();
+    let held = read_block(&mut source, 302);
+    assert_eq!(
+        held.transferred_frames, 0,
+        "unprimed blocks render held silence, not carrier content"
+    );
+    assert_eq!(
+        source.carrier.available_frames(),
+        BLOCK * 4,
+        "unprimed blocks hold the carrier, not read it"
+    );
+    let transfer = source.drift.as_ref().unwrap().transfer;
+    producer
+        .write_interleaved(&pcm[..(transfer + target - BLOCK * 4) * 2])
+        .unwrap();
+    let recovered = read_block(&mut source, 303);
     assert_eq!(recovered.transferred_frames, BLOCK);
     assert_eq!(recovered.xruns, 0);
+    assert!(source.drift.as_ref().unwrap().primed);
+    assert!(source.drift.as_ref().unwrap().servo.correction() > 500.0);
 }
 
 #[test]

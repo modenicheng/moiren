@@ -452,9 +452,18 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
             // A starved block is an honest, counted xrun. The silence-fill
             // above already advanced the FIR across the gap, and the servo's
             // settled correction is exactly the state that must survive to
-            // recenter the level. The old behavior reset the drift servo and
-            // re-armed the prime gate here, trading one missed packet for
-            // ~50 ms of reprime silence.
+            // recenter the level. A fully starved block additionally re-arms
+            // only the prime gate: consumption pauses while the native side
+            // keeps producing at full rate, so the level rebuilds to
+            // transfer+target in well under a ring time instead of riding
+            // marginal for ~20 s of servo-only recovery - but, unlike the
+            // old reset, no carrier content is discarded, no epoch moves,
+            // and the servo and FIR state survive the rebuild.
+            if transferred == 0
+                && let Some(drift) = &mut self.drift
+            {
+                drift.primed = false;
+            }
             #[cfg(test)]
             tests::before_transfer_return();
             if !self.epoch_current() {
