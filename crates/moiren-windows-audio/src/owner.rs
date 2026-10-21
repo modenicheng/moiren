@@ -135,6 +135,23 @@ impl<C: LeaseClient> Drop for PacketLease<'_, C> {
 }
 
 pub(crate) struct Mmcss(pub HANDLE);
+impl Mmcss {
+    /// Register the calling thread in the Audio MMCSS class for its
+    /// lifetime. Registration failure is non-fatal: the caller keeps its
+    /// default scheduling class.
+    pub(crate) fn audio() -> Option<Self> {
+        let mut index = 0;
+        match unsafe {
+            windows::Win32::System::Threading::AvSetMmThreadCharacteristicsW(
+                windows::core::w!("Audio"),
+                &mut index,
+            )
+        } {
+            Ok(value) => Some(Self(value)),
+            Err(_) => None,
+        }
+    }
+}
 impl Drop for Mmcss {
     fn drop(&mut self) {
         let _ = unsafe { AvRevertMmThreadCharacteristics(self.0) };

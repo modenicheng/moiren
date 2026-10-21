@@ -48,6 +48,10 @@ pub(super) struct MicrophonePump {
     last_phase: Option<Instant>,
     observation_gap: Duration,
     last_observed: Option<Instant>,
+    /// Earliest instant the first fresh submission may go out while the
+    /// carrier has not yet reached `reprime_frames` (see `arm_reprime`).
+    reprime_deadline: Option<Instant>,
+    reprime_frames: usize,
 }
 
 impl MicrophonePump {
@@ -66,7 +70,23 @@ impl MicrophonePump {
                 (u64::from(packet_frames) * 1_000_000_000).div_ceil(u64::from(SAMPLE_RATE)),
             ) + POLL_INTERVAL,
             last_observed: None,
+            reprime_deadline: None,
+            reprime_frames: usize::try_from(packet_frames).unwrap_or(0) * 2,
         }
+    }
+
+    /// After a completed hard reset the carrier was discarded at level zero
+    /// while production roughly equals device-clock consumption: the level
+    /// cannot rebuild on servo authority alone (+/-2000 ppm is ~96 frames/s
+    /// against a 480-frame packet cadence), so every packet would carry a
+    /// silent tail for ~20 s. Instead the first fresh submission waits,
+    /// bounded by 2.5 native periods, until the carrier holds two packets of
+    /// margin; the device absorbs the bounded wait itself (the late WRITE
+    /// completes as a counted drop) and resumption is silent-free. Fresh
+    /// streams do not re-prime: their first packet starts the native phase
+    /// immediately.
+    pub(super) fn arm_reprime(&mut self, now: Instant) {
+        self.reprime_deadline = Some(now + self.period * 5 / 2);
     }
 
     fn remaining(&self, now: Instant) -> Option<Duration> {
@@ -80,14 +100,20 @@ impl MicrophonePump {
             self.next_submit = None;
             self.last_phase = None;
             self.last_observed = None;
+            self.reprime_deadline = None;
             return false;
         }
         true
     }
 
     /// Only a gap strictly greater than one native period plus POLL_INTERVAL
-    /// resets data. The first observation has no history; this is not a source
-    /// sample-age guarantee or a timeout on missing PCM/completions.
+    /// degrades pumping, and it degrades softly: the phase anchor is stale,
+    /// not the carrier content — in-order graph output behind an unchanged
+    /// epoch. The next successful collection re-arms the phase from its own
+    /// timestamp exactly like a dropped completion; no epoch is bumped and
+    /// no data is discarded (the fenced discard stays reserved for real
+    /// epoch events). The first observation has no history; this is not a
+    /// source sample-age guarantee or a timeout on missing PCM/completions.
     fn observe(&mut self, state: &SessionState, epoch: u64, now: Instant) -> bool {
         if !self.current(state, epoch) {
             return false;
@@ -96,16 +122,10 @@ impl MicrophonePump {
             .last_observed
             .is_some_and(|last| now.saturating_duration_since(last) > self.observation_gap)
         {
-            // One native period plus the bounded IO wait is a timeline gap,
-            // not a device fault. Fence and discard even shallow old PCM before
-            // collection can rearm its phase; do not revoke native admission.
-            let _ = state.reset_epoch.compare_exchange(
-                epoch,
-                epoch.wrapping_add(1),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
-            return self.current(state, epoch);
+            self.order = PacketOrder::default();
+            self.next_submit = None;
+            self.last_phase = None;
+            log::debug!(target: "moiren::audio::vad", "event=microphone_observation_gap_soft_reset");
         }
         self.last_observed = Some(now);
         true
@@ -284,6 +304,17 @@ pub(super) fn microphone<C: PcmIo>(
         if !pump.observe(state, epoch, now()) {
             return Ok(PumpState::Reset);
         }
+        // Bounded re-prime after a hard reset: hold the first fresh
+        // submission until the carrier holds two packets of margin or the
+        // deadline expires; wait_for_microphone yields in 1 ms slices.
+        let reprime_hold = match pump.reprime_deadline {
+            Some(deadline) => bridge.available_frames() < pump.reprime_frames && now() < deadline,
+            None => false,
+        };
+        if reprime_hold {
+            return Ok(PumpState::Current);
+        }
+        pump.reprime_deadline = None;
         // Do not consume the carrier or encode until the phase is due. The
         // unchanged PcmOwner samples its real QPC only when submitting this PCM.
         let packet = bridge.encode_packet()?;
@@ -319,8 +350,13 @@ pub(super) fn wait_for_microphone<C: PcmIo>(
                 .unwrap_or(POLL_INTERVAL)
                 .min(POLL_INTERVAL),
         )?;
-    } else if let Some(remaining) = pump.remaining(now)
-        && !remaining.is_zero()
+    } else if let Some(remaining) = pump
+        .remaining(now)
+        .filter(|remaining| !remaining.is_zero())
+        .or_else(|| {
+            pump.reprime_deadline
+                .map(|deadline| deadline.saturating_duration_since(now))
+        })
     {
         // This is the non-RT owner. Yield between control polls without a
         // fixed 10 ms overshoot or spinning while no native request is pending.

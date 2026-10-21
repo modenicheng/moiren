@@ -177,6 +177,13 @@ impl PcmMicrophoneBridge {
         self.pcm_packet.len()
     }
 
+    /// Engine-authored frames currently queued in the carrier. Worker-side
+    /// only: the re-prime wait and diagnostics observe the level; the graph
+    /// producer is the only writer.
+    pub fn available_frames(&self) -> usize {
+        self.carrier.available_frames()
+    }
+
     /// Return the carrier when a native stream is retired so a later stream
     /// generation can rebuild its packet conversion state on the worker.
     pub fn into_carrier(self) -> AudioReader<f32> {

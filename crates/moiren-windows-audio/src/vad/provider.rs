@@ -467,6 +467,9 @@ impl Drop for VadSession {
 }
 
 fn run_worker(config: WorkerConfig, state: Arc<SessionState>) {
+    // Match the physical paths' scheduling class: this thread paces bounded
+    // PCM IO against native deadlines. Registration failure is non-fatal.
+    let _mmcss = crate::owner::Mmcss::audio();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match config {
         WorkerConfig::Playback {
             control,
@@ -636,6 +639,7 @@ fn run_microphone(
     let mut tickets = Vec::with_capacity(super::REQUEST_SLOTS);
     let mut pump = None;
     let mut observed_reset = 0;
+    let mut reprime_after_reset = false;
     let result = (|| {
         while !state.cancel.load(std::sync::atomic::Ordering::Acquire) {
             if state.active.load(std::sync::atomic::Ordering::Acquire) {
@@ -652,6 +656,11 @@ fn run_microphone(
                         thread::sleep(POLL_INTERVAL);
                         continue;
                     }
+                    // A completed fence re-primes the microphone carrier
+                    // before the first fresh submission: a bounded native-
+                    // side wait instead of ~20 s of partial silence (see
+                    // MicrophonePump::arm_reprime).
+                    reprime_after_reset = true;
                 }
                 if current.stream_state() == StreamState::Running
                     && current.gate_open()
@@ -670,7 +679,12 @@ fn run_microphone(
                         )?);
                         owner = Some(control.pcm_owner(current).map_err(client_error)?);
                         tickets.clear();
-                        pump = Some(pcm_worker::MicrophonePump::new(shape.frames()));
+                        let mut fresh = pcm_worker::MicrophonePump::new(shape.frames());
+                        if reprime_after_reset {
+                            fresh.arm_reprime(Instant::now());
+                            reprime_after_reset = false;
+                        }
+                        pump = Some(fresh);
                     }
                     match pcm_worker::microphone(
                         owner.as_mut().expect("microphone owner"),

@@ -198,6 +198,10 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
         let worker = thread::Builder::new()
             .name("moiren-virtual-owner".into())
             .spawn(move || {
+                // Match the physical paths' scheduling class: this thread
+                // paces Engine renders against audio deadlines. Registration
+                // failure is non-fatal.
+                let _mmcss = crate::owner::Mmcss::audio();
                 let mut engine = worker_slot
                     .lock()
                     .unwrap_or_else(|poison| poison.into_inner())
