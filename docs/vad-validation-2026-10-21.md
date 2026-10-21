@@ -489,3 +489,51 @@ The 65 s combined gate therefore still fails on this VM; the
 eight-hour run stays on hold. Builds and evidence:
 `C:\MoirenVadTest\20261021-9641601-*`, `20261021-1528c4a-*`,
 `20261021-50a332e-*`, `20261021-9542513-*`, `20261021-dbg1-combined`.
+
+## Virtual-only observation surface and the water-level verdict (2026-10-21, build EE66F090, commit 8f41a9e)
+
+`8f41a9e` publishes NativeObservations from the virtual-only transport
+itself: `VirtualPreparedTransport` now carries the same streams, bridges
+and boundary probes the Windows transport publishes, attach publishes
+only after every failure path is past, Running status sets the running
+flag, cancel clears the set, and the owner's observation lease removes
+it on teardown (a rejected attach publishes nothing). Virtual-only
+combined runs therefore record a populated probe trail. Host gates
+green: 403 lib tests (two new publication tests), workspace, clippy,
+fmt.
+
+One instrumented combined run (`20261021-8f41a9e-combined2`, 15 s idle +
+65 s PCM, same invocation as the a6b16d1 series) answers the open
+question. The trail held 125 samples at 500 ms:
+
+- Playback carrier level 2,042-2,660 frames (mean 2,362; capacity
+  4,800, servo target ≈2,255) — never near empty, including the samples
+  bracketing the failure window. Microphone carrier 1,668-2,691 (mean
+  2,273). "Level rides low" is refuted.
+- Zero structural events during the soak: playback xruns stayed 0,
+  neither carrier's soft-event counter grew, and gate telemetry shows
+  only the expected 28 ms mic reopen at the validation→soak transition
+  (no epoch churn).
+- The failure this run was one capture discontinuity plus a 23 ms
+  maximum packet gap at ~62 s, with 2,895,360/2,895,360 matching frames
+  and zero silent frames in the soak — the same single transient glitch
+  family as the earlier one-silent-packet runs, at a random time.
+- Native clock diagnostics measured the render-side clock at −1,668 ppm
+  average deviation over the run (capture side +527 ppm): this VM's
+  timing routinely wanders far between instants.
+
+Verdict: the remaining transient class is an environmental supply
+interruption — a 10-25 ms scheduling/clock stall in the guest that
+pauses production while both carriers hold ample margin — not margin
+exhaustion. No margin increase addresses a loss that occurs with the
+level mid-band and no boundary event; the redesigned debt-ledger clock
+and graded resets already absorb these stalls as bounded losses. The
+mic probe's pre-soak counters (2,851 xruns, constant through the soak)
+equal one event per pre-soak packet (idle 15 s + validation ≈ 28.5 s at
+10 ms per packet): the expected tail-drops of an unconsumed mic carrier
+before the native client starts, not a soak defect.
+
+Evidence: `C:\MoirenVadTest\20261021-8f41a9e-combined1` (refused
+pre-created output directory, no probe run) and
+`C:\MoirenVadTest\20261021-8f41a9e-combined2` (launch/exit JSON,
+stdout/stderr, `probe\report.json`).
