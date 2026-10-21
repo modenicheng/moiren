@@ -355,24 +355,19 @@ impl PcmSoak {
             .checked_mul(u128::from(SOAK_SAMPLE_RATE))
             .context("PCM soak requested-frame count overflow")?
             / 1_000;
-        let edge_frames = self
-            .first_packet_frames
-            .unwrap_or(0)
-            .saturating_add(self.last_packet_frames);
         let settling_frames = u128::from(self.settling_duration_ms)
             .checked_mul(u128::from(SOAK_SAMPLE_RATE))
             .context("PCM soak settling-frame count overflow")?
             / 1_000;
         let eligible_frames = requested_frames.saturating_sub(settling_frames);
-        let required_frames = eligible_frames.saturating_sub(u128::from(edge_frames));
-        let required_frames = u64::try_from(required_frames)
+        let required_frames = u64::try_from(eligible_frames)
             .context("PCM soak required-frame count exceeds evidence range")?;
         self.coverage_required_frames = Some(required_frames);
         self.coverage_ratio =
             Some(self.validated.total_frames as f64 / eligible_frames.max(1) as f64);
         ensure!(
             self.validated.total_frames >= required_frames,
-            "validated PCM frame coverage too low: validated={}, required={} after {}ms settling and initial/final packet boundaries (ratio {:.3})",
+            "validated PCM frame coverage too low: validated={}, required={} after {}ms settling (ratio {:.3})",
             self.validated.total_frames,
             required_frames,
             self.settling_duration_ms,
@@ -605,7 +600,7 @@ mod tests {
         pcm.finish(2_000).unwrap();
         assert!(pcm.completed);
         assert_eq!(pcm.validated.matching_frames, 201 * 480);
-        assert_eq!(pcm.coverage_required_frames, Some(95_040));
+        assert_eq!(pcm.coverage_required_frames, Some(96_000));
         assert!((pcm.coverage_ratio.unwrap() - 1.005).abs() < 0.0001);
         let mut silence = PcmSoak::new(2_000, EXPECTED);
         assert!(silence.observe(0, &[0.0, 0.0], false).is_err());
@@ -749,13 +744,13 @@ mod tests {
             "{error}"
         );
         assert_eq!(pcm.captured_frames, 48 * 1_001);
-        assert_eq!(pcm.coverage_required_frames, Some(479_904));
+        assert_eq!(pcm.coverage_required_frames, Some(480_000));
         assert!((pcm.coverage_ratio.unwrap() - 0.1001).abs() < 0.0001);
         assert!(!pcm.completed);
     }
 
     #[test]
-    fn pcm_coverage_excludes_explicit_settling_and_packet_edges() {
+    fn pcm_coverage_excludes_explicit_settling_without_double_crediting_edges() {
         let mut pcm = PcmSoak::new(3_000, EXPECTED);
         for now in (0..=1_000).step_by(10) {
             pcm.observe(now, &EXPECTED.repeat(480), false).unwrap();
@@ -768,12 +763,32 @@ mod tests {
         pcm.finish(3_000).unwrap();
         assert_eq!(pcm.settling_frames, 47_520);
         assert_eq!(pcm.settling_duration_ms, 1_000);
-        assert_eq!(pcm.coverage_required_frames, Some(95_040));
+        assert_eq!(pcm.coverage_required_frames, Some(96_000));
         assert!(pcm.validated.total_frames >= pcm.coverage_required_frames.unwrap());
         assert_eq!(
             pcm.coverage_ratio,
             Some(pcm.validated.total_frames as f64 / 96_000.0)
         );
+    }
+
+    #[test]
+    fn pcm_packet_edges_cannot_make_up_for_missing_in_window_coverage() {
+        let mut pcm = PcmSoak::new(2_000, EXPECTED);
+        let maximum_packet = EXPECTED.repeat(MAX_PACKET_FRAMES as usize);
+        for index in 0..8 {
+            let now = index * 2_000 / 7;
+            pcm.observe(now, &maximum_packet, false).unwrap();
+        }
+
+        let error = pcm.finish(2_000).unwrap_err().to_string();
+        assert!(
+            error.contains("validated PCM frame coverage too low"),
+            "{error}"
+        );
+        assert_eq!(pcm.validated.total_frames, 8 * MAX_PACKET_FRAMES);
+        assert_eq!(pcm.coverage_required_frames, Some(96_000));
+        assert!((pcm.coverage_ratio.unwrap() - 0.8).abs() < 0.0001);
+        assert!(!pcm.completed);
     }
 
     #[test]
