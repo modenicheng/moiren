@@ -5,6 +5,14 @@ use moiren_engine::meter::signal::AudioWindow;
 use serde::Serialize;
 
 const FRESH_MS: u64 = 2_000;
+const SOAK_SAMPLE_RATE: u64 = 48_000;
+const MAX_PACKET_FRAMES: u64 = 9_600;
+const BOUNDARY_SCHEDULING_SLACK_MS: u64 = 50;
+// Audio clocks and QPC should be much closer than this; 5% leaves room for
+// coarse clock implementations while still rejecting grossly slowed streams.
+const MAX_CLOCK_RATE_DEVIATION_PPM: u64 = 50_000;
+// Ignore sub-100ms pairs so API/QPC sampling jitter does not dominate the rate fit.
+const MIN_CLOCK_RATE_INTERVAL_100NS: u64 = 1_000_000;
 pub(super) const PATTERN_MS: u64 = 30_000;
 pub(super) const SETTLE_MS: u64 = 1_000;
 
@@ -137,6 +145,7 @@ pub(super) struct PcmSoak {
     pub qualified_windows: u64,
     pub expected: [f32; 2],
     pub settling_until_ms: u64,
+    pub settling_duration_ms: u64,
     pub settling_frames: u64,
     pub settling_discontinuities: u64,
     pub settling_nonfinite_frames: u64,
@@ -147,6 +156,13 @@ pub(super) struct PcmSoak {
     pub current_window: Observation,
     pub last_packet_ms: Option<u64>,
     pub maximum_packet_gap_ms: u64,
+    pub first_packet_ms: Option<u64>,
+    pub last_packet_observed_ms: Option<u64>,
+    pub captured_frames: u64,
+    pub first_packet_frames: Option<u64>,
+    pub last_packet_frames: u64,
+    pub coverage_required_frames: Option<u64>,
+    pub coverage_ratio: Option<f64>,
 }
 
 impl PcmSoak {
@@ -160,6 +176,7 @@ impl PcmSoak {
             qualified_windows: 0,
             expected,
             settling_until_ms: 0,
+            settling_duration_ms: 0,
             settling_frames: 0,
             settling_discontinuities: 0,
             settling_nonfinite_frames: 0,
@@ -170,6 +187,13 @@ impl PcmSoak {
             current_window: Observation::default(),
             last_packet_ms: None,
             maximum_packet_gap_ms: 0,
+            first_packet_ms: None,
+            last_packet_observed_ms: None,
+            captured_frames: 0,
+            first_packet_frames: None,
+            last_packet_frames: 0,
+            coverage_required_frames: None,
+            coverage_ratio: None,
         }
     }
     pub fn require_fresh(&mut self, now_ms: u64) -> anyhow::Result<()> {
@@ -209,7 +233,20 @@ impl PcmSoak {
         if samples.is_empty() {
             return Ok(());
         }
+        let packet_frames = (samples.len() / 2) as u64;
+        ensure!(
+            packet_frames <= MAX_PACKET_FRAMES,
+            "PCM soak packet exceeds native buffer boundary"
+        );
+        self.first_packet_frames.get_or_insert(packet_frames);
+        self.first_packet_ms.get_or_insert(now_ms);
+        self.last_packet_frames = packet_frames;
+        self.captured_frames = self
+            .captured_frames
+            .checked_add(packet_frames)
+            .context("PCM soak captured-frame counter overflow")?;
         self.last_packet_ms = Some(now_ms);
+        self.last_packet_observed_ms = Some(now_ms);
         if now_ms < self.settling_until_ms {
             self.settling_frames += samples.len() as u64 / 2;
             self.settling_discontinuities += u64::from(discontinuity);
@@ -265,6 +302,10 @@ impl PcmSoak {
     pub fn change_pattern(&mut self, now_ms: u64, expected: [f32; 2]) -> anyhow::Result<()> {
         ensure!(!self.quality_failed, "PCM soak has a failed quality window");
         self.require_fresh(now_ms)?;
+        ensure!(
+            now_ms >= self.settling_until_ms,
+            "cannot change PCM source during settling"
+        );
         self.current_window
             .require_signal()
             .context("preceding soak source window")?;
@@ -273,6 +314,10 @@ impl PcmSoak {
         self.current_window = Observation::default();
         self.expected = expected;
         self.settling_until_ms = now_ms + SETTLE_MS;
+        self.settling_duration_ms = self
+            .settling_duration_ms
+            .checked_add(SETTLE_MS.min(self.requested_ms.saturating_sub(now_ms)))
+            .context("PCM soak settling duration overflow")?;
         Ok(())
     }
     pub fn finish(&mut self, now_ms: u64) -> anyhow::Result<()> {
@@ -283,7 +328,56 @@ impl PcmSoak {
             self.end_observed(),
             "PCM soak lacks a capture packet at/after requested duration"
         );
+        let maximum_initial_edge_ms = self
+            .first_packet_frames
+            .unwrap_or(MAX_PACKET_FRAMES)
+            .saturating_mul(1_000)
+            .div_ceil(SOAK_SAMPLE_RATE)
+            .saturating_add(BOUNDARY_SCHEDULING_SLACK_MS);
+        let maximum_final_edge_ms = self
+            .last_packet_frames
+            .saturating_mul(1_000)
+            .div_ceil(SOAK_SAMPLE_RATE)
+            .saturating_add(BOUNDARY_SCHEDULING_SLACK_MS);
+        ensure!(
+            self.first_packet_ms.unwrap_or(u64::MAX) <= maximum_initial_edge_ms,
+            "PCM soak initial capture boundary was late: first packet at {}ms, limit {maximum_initial_edge_ms}ms",
+            self.first_packet_ms.unwrap_or(u64::MAX)
+        );
+        let last_packet_ms = self.last_packet_observed_ms.unwrap_or(u64::MAX);
+        ensure!(
+            last_packet_ms.saturating_sub(self.requested_ms) <= maximum_final_edge_ms,
+            "PCM soak final capture boundary was late: last packet at {last_packet_ms}ms, requested {}ms, limit {maximum_final_edge_ms}ms",
+            self.requested_ms
+        );
         ensure!(now_ms >= self.settling_until_ms, "PCM soak still settling");
+        let requested_frames = u128::from(self.requested_ms)
+            .checked_mul(u128::from(SOAK_SAMPLE_RATE))
+            .context("PCM soak requested-frame count overflow")?
+            / 1_000;
+        let edge_frames = self
+            .first_packet_frames
+            .unwrap_or(0)
+            .saturating_add(self.last_packet_frames);
+        let settling_frames = u128::from(self.settling_duration_ms)
+            .checked_mul(u128::from(SOAK_SAMPLE_RATE))
+            .context("PCM soak settling-frame count overflow")?
+            / 1_000;
+        let eligible_frames = requested_frames.saturating_sub(settling_frames);
+        let required_frames = eligible_frames.saturating_sub(u128::from(edge_frames));
+        let required_frames = u64::try_from(required_frames)
+            .context("PCM soak required-frame count exceeds evidence range")?;
+        self.coverage_required_frames = Some(required_frames);
+        self.coverage_ratio =
+            Some(self.validated.total_frames as f64 / eligible_frames.max(1) as f64);
+        ensure!(
+            self.validated.total_frames >= required_frames,
+            "validated PCM frame coverage too low: validated={}, required={} after {}ms settling and initial/final packet boundaries (ratio {:.3})",
+            self.validated.total_frames,
+            required_frames,
+            self.settling_duration_ms,
+            self.coverage_ratio.unwrap_or_default()
+        );
         self.current_window.require_signal()?;
         if !self.completed {
             self.qualified_windows += 1;
@@ -354,6 +448,11 @@ impl CapturePosition {
 #[derive(Clone, Debug, Default, Serialize)]
 pub(super) struct ClockProgress {
     pub frequency: u64,
+    pub rate_tolerance_ppm: u64,
+    pub rate_samples: u64,
+    pub measured_rate_units_per_second: Option<f64>,
+    pub measured_rate_deviation_ppm: Option<f64>,
+    pub maximum_abs_rate_deviation_ppm: f64,
     pub samples: u64,
     pub inaccurate_samples: u64,
     pub regressions: u64,
@@ -376,6 +475,7 @@ impl ClockProgress {
     ) -> anyhow::Result<()> {
         self.samples += 1;
         self.last_observed_ms = now_ms;
+        self.rate_tolerance_ppm = MAX_CLOCK_RATE_DEVIATION_PPM;
         ensure!(self.frequency > 0, "invalid native audio clock frequency");
         if accurate {
             if let Some(last) = self.last_position {
@@ -394,6 +494,26 @@ impl ClockProgress {
                     self.last_advance_ms = now_ms;
                 }
             }
+            if let (Some(previous_position), Some(previous_qpc)) =
+                (self.last_position, self.last_qpc_100ns)
+                && let (Some(position_delta), Some(qpc_delta)) = (
+                    position.checked_sub(previous_position),
+                    qpc.checked_sub(previous_qpc),
+                )
+                && qpc_delta >= MIN_CLOCK_RATE_INTERVAL_100NS
+            {
+                let measured_rate = position_delta as f64 * 10_000_000.0 / qpc_delta as f64;
+                let deviation_ppm = (measured_rate / self.frequency as f64 - 1.0) * 1_000_000.0;
+                self.rate_samples += 1;
+                self.measured_rate_units_per_second = Some(measured_rate);
+                self.measured_rate_deviation_ppm = Some(deviation_ppm);
+                self.maximum_abs_rate_deviation_ppm =
+                    self.maximum_abs_rate_deviation_ppm.max(deviation_ppm.abs());
+                ensure!(
+                    deviation_ppm.abs() <= MAX_CLOCK_RATE_DEVIATION_PPM as f64,
+                    "native audio clock rate differs from QPC by {deviation_ppm:.0}ppm (limit {MAX_CLOCK_RATE_DEVIATION_PPM}ppm)"
+                );
+            }
             self.first_position.get_or_insert(position);
             self.first_qpc_100ns.get_or_insert(qpc);
             self.last_position = Some(position);
@@ -409,8 +529,8 @@ impl ClockProgress {
     }
     pub fn require_fresh(&self, now_ms: u64) -> anyhow::Result<()> {
         ensure!(
-            self.forward_advances >= 1 && self.frequency > 0,
-            "native audio clock has no accurate forward samples"
+            self.forward_advances >= 1 && self.rate_samples >= 1 && self.frequency > 0,
+            "native audio clock lacks accurate advancing rate evidence"
         );
         ensure!(
             now_ms.saturating_sub(self.last_advance_ms) <= 3_000,
@@ -485,6 +605,8 @@ mod tests {
         pcm.finish(2_000).unwrap();
         assert!(pcm.completed);
         assert_eq!(pcm.validated.matching_frames, 201 * 480);
+        assert_eq!(pcm.coverage_required_frames, Some(95_040));
+        assert!((pcm.coverage_ratio.unwrap() - 1.005).abs() < 0.0001);
         let mut silence = PcmSoak::new(2_000, EXPECTED);
         assert!(silence.observe(0, &[0.0, 0.0], false).is_err());
         assert_eq!(silence.validated.silent_frames, 1);
@@ -576,9 +698,9 @@ mod tests {
             "old 48k PCM plus elapsed wall time is insufficient"
         );
         idle.poll(2_510, Some(header(480 + 2_510 * 48))).unwrap();
-        pcm.observe(2_510, &EXPECTED, false).unwrap();
+        pcm.observe(2_510, &EXPECTED.repeat(480), false).unwrap();
         idle.finish().unwrap();
-        pcm.finish(2_510).unwrap();
+        assert!(pcm.finish(2_510).is_err());
     }
 
     #[test]
@@ -608,5 +730,114 @@ mod tests {
         assert!(clock.observe(96_000, 10_000_000, true, 2_000).is_err());
         assert!(clock.observe(96_000, 20_000_001, false, 4_001).is_err());
         assert_eq!(clock.inaccurate_samples, 1);
+        assert!((clock.measured_rate_units_per_second.unwrap() - 48_000.0).abs() < 0.1);
+        assert!(clock.maximum_abs_rate_deviation_ppm < 1.0);
+    }
+
+    #[test]
+    fn pcm_soak_rejects_tenfold_slow_capture_even_when_wall_time_elapses() {
+        let duration_ms = 10_000;
+        let mut pcm = PcmSoak::new(duration_ms, EXPECTED);
+        for now in (0..=duration_ms).step_by(10) {
+            // One tenth of nominal 48kHz coverage, while packet timestamps
+            // still span the complete requested wall-clock interval.
+            pcm.observe(now, &EXPECTED.repeat(48), false).unwrap();
+        }
+        let error = pcm.finish(duration_ms).unwrap_err().to_string();
+        assert!(
+            error.contains("validated PCM frame coverage too low"),
+            "{error}"
+        );
+        assert_eq!(pcm.captured_frames, 48 * 1_001);
+        assert_eq!(pcm.coverage_required_frames, Some(479_904));
+        assert!((pcm.coverage_ratio.unwrap() - 0.1001).abs() < 0.0001);
+        assert!(!pcm.completed);
+    }
+
+    #[test]
+    fn pcm_coverage_excludes_explicit_settling_and_packet_edges() {
+        let mut pcm = PcmSoak::new(3_000, EXPECTED);
+        for now in (0..=1_000).step_by(10) {
+            pcm.observe(now, &EXPECTED.repeat(480), false).unwrap();
+        }
+        pcm.change_pattern(1_000, SECOND_EXPECTED).unwrap();
+        for now in (1_010..=3_000).step_by(10) {
+            pcm.observe(now, &SECOND_EXPECTED.repeat(480), false)
+                .unwrap();
+        }
+        pcm.finish(3_000).unwrap();
+        assert_eq!(pcm.settling_frames, 47_520);
+        assert_eq!(pcm.settling_duration_ms, 1_000);
+        assert_eq!(pcm.coverage_required_frames, Some(95_040));
+        assert!(pcm.validated.total_frames >= pcm.coverage_required_frames.unwrap());
+        assert_eq!(
+            pcm.coverage_ratio,
+            Some(pcm.validated.total_frames as f64 / 96_000.0)
+        );
+    }
+
+    #[test]
+    fn pcm_coverage_does_not_let_packet_edges_hide_long_missing_intervals() {
+        let mut late_start = PcmSoak::new(2_000, EXPECTED);
+        late_start
+            .observe(500, &EXPECTED.repeat(4_800), false)
+            .unwrap();
+        late_start
+            .observe(2_000, &EXPECTED.repeat(4_800), false)
+            .unwrap();
+        assert!(late_start.finish(2_000).is_err());
+
+        let mut late_end = PcmSoak::new(2_000, EXPECTED);
+        late_end.observe(0, &EXPECTED.repeat(4_800), false).unwrap();
+        late_end
+            .observe(1_500, &EXPECTED.repeat(4_800), false)
+            .unwrap();
+        late_end
+            .observe(2_500, &EXPECTED.repeat(4_800), false)
+            .unwrap();
+        assert!(late_end.finish(2_500).is_err());
+    }
+
+    #[test]
+    fn clock_rate_is_measured_against_qpc_and_rejects_tenfold_slowdown() {
+        let mut normal = ClockProgress {
+            frequency: 48_000,
+            ..Default::default()
+        };
+        normal.observe(0, 100_000_000, true, 0).unwrap();
+        normal.observe(48_000, 110_000_000, true, 1_000).unwrap();
+        normal.require_fresh(1_000).unwrap();
+        assert_eq!(normal.rate_samples, 1);
+        assert_eq!(normal.measured_rate_units_per_second, Some(48_000.0));
+        assert_eq!(normal.measured_rate_deviation_ppm, Some(0.0));
+
+        let mut slow = ClockProgress {
+            frequency: 48_000,
+            ..Default::default()
+        };
+        slow.observe(0, 100_000_000, true, 0).unwrap();
+        let error = slow
+            .observe(4_800, 110_000_000, true, 1_000)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("differs from QPC by -900000ppm"), "{error}");
+        assert_eq!(slow.rate_samples, 1);
+        assert_eq!(slow.measured_rate_units_per_second, Some(4_800.0));
+        assert_eq!(slow.measured_rate_deviation_ppm, Some(-900_000.0));
+        assert_eq!(slow.rate_tolerance_ppm, 50_000);
+        assert!(slow.maximum_abs_rate_deviation_ppm >= 900_000.0);
+    }
+
+    #[test]
+    fn clock_requires_a_long_enough_qpc_interval_for_rate_evidence() {
+        let mut clock = ClockProgress {
+            frequency: 48_000,
+            ..Default::default()
+        };
+        clock.observe(0, 100_000_000, true, 0).unwrap();
+        clock.observe(480, 100_100_000, true, 10).unwrap();
+        assert_eq!(clock.forward_advances, 1);
+        assert_eq!(clock.rate_samples, 0);
+        assert!(clock.require_fresh(10).is_err());
     }
 }
