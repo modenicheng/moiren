@@ -13,6 +13,7 @@ use std::{
     marker::PhantomData,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     rc::Rc,
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -134,6 +135,14 @@ impl Pair {
 
     pub fn set_signal(&mut self, signal: [f32; 2]) {
         self.render.pattern = signal;
+        self.render.material = None;
+    }
+
+    /// Replace the constant render pattern with looping material samples.
+    /// The cursor starts at the first frame; capture alignment acquisition
+    /// tolerates the buffered transition prefix.
+    pub fn play_material(&mut self, samples: Arc<Vec<f32>>) {
+        self.render.material = Some(MaterialCursor { samples, next: 0 });
     }
 
     pub fn pump(
@@ -198,6 +207,37 @@ fn exact_device(
     Ok(device)
 }
 
+/// Copy looping stereo Float32 material frames into a native render packet
+/// without assuming WASAPI pointer alignment.
+fn fill_material(material: &mut MaterialCursor, pointer: *mut u8, frames: usize) {
+    let total = material.samples.len() / 2;
+    let mut written = 0;
+    while written < frames {
+        let from = material.next;
+        let count = (total - from).min(frames - written);
+        for frame in 0..count {
+            let source = (from + frame) * 2;
+            let target = (written + frame) * 8;
+            // SAFETY: the render lease covers `frames` Float32 stereo frames
+            // and both material samples live for the whole copy.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    material.samples[source].to_le_bytes().as_ptr(),
+                    pointer.add(target),
+                    4,
+                );
+                std::ptr::copy_nonoverlapping(
+                    material.samples[source + 1].to_le_bytes().as_ptr(),
+                    pointer.add(target + 4),
+                    4,
+                );
+            }
+        }
+        written += count;
+        material.next = (from + count) % total;
+    }
+}
+
 fn descriptor() -> WAVEFORMATEXTENSIBLE {
     WAVEFORMATEXTENSIBLE {
         Format: WAVEFORMATEX {
@@ -221,6 +261,11 @@ enum Service {
     Render(IAudioRenderClient),
     Capture(IAudioCaptureClient),
 }
+struct MaterialCursor {
+    samples: Arc<Vec<f32>>,
+    next: usize,
+}
+
 struct Stream {
     client: IAudioClient,
     event: OwnedHandle,
@@ -228,6 +273,7 @@ struct Stream {
     active: bool,
     frames: u32,
     pattern: [f32; 2],
+    material: Option<MaterialCursor>,
     discontinuities: u64,
     decoded: Vec<f32>,
     position: CapturePosition,
@@ -300,14 +346,15 @@ impl Stream {
             active: false,
             frames,
             pattern: validation::SIGNAL,
+            material: None,
             discontinuities: 0,
             decoded: vec![0.0; frames as usize * 2],
             position: CapturePosition::default(),
             clock: None,
             clock_progress: ClockProgress::default(),
         };
-        if let Service::Render(render) = &stream.service {
-            stream.render(render)?;
+        if matches!(stream.service, Service::Render(_)) {
+            stream.render()?;
         }
         // Initialize does not start a client. Stage2 reports starts separately.
         stream.active = false;
@@ -362,22 +409,27 @@ impl Stream {
             status => anyhow::bail!("unexpected event wait {}", status.0),
         }
     }
-    fn poll_render(&self) -> anyhow::Result<()> {
+    fn poll_render(&mut self) -> anyhow::Result<()> {
         if !self.event_ready()? {
             return Ok(());
         }
+        self.render()
+    }
+    fn render(&mut self) -> anyhow::Result<()> {
         let Service::Render(render) = &self.service else {
             anyhow::bail!("not a render client");
         };
-        self.render(render)
-    }
-    fn render(&self, render: &IAudioRenderClient) -> anyhow::Result<()> {
         let pointer = unsafe { render.GetBuffer(self.frames)? };
         let result = (|| -> anyhow::Result<()> {
             ensure!(!pointer.is_null(), "null render packet");
+            if let Some(material) = &mut self.material {
+                fill_material(material, pointer, self.frames as usize);
+                return Ok(());
+            }
+            let pattern = self.pattern;
             // Float32 bytes are copied without assuming WASAPI pointer alignment.
             for frame in 0..self.frames as usize {
-                for (channel, sample) in self.pattern.iter().enumerate() {
+                for (channel, sample) in pattern.iter().enumerate() {
                     unsafe {
                         std::ptr::copy_nonoverlapping(
                             sample.to_le_bytes().as_ptr(),

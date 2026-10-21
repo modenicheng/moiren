@@ -9,6 +9,9 @@ pub(super) struct Options {
     pub timeout_seconds: u64,
     pub soak_idle_seconds: u64,
     pub soak_pcm_seconds: u64,
+    /// Looping WAV material driving the PCM soak instead of alternating
+    /// constant sources; requires a PCM soak.
+    pub soak_pcm_file: Option<PathBuf>,
     pub output_dir: Option<PathBuf>,
 }
 
@@ -21,6 +24,7 @@ impl Options {
             timeout_seconds: 30,
             soak_idle_seconds: 0,
             soak_pcm_seconds: 0,
+            soak_pcm_file: None,
             output_dir: None,
         };
         let mut timeout_seen = false;
@@ -55,6 +59,16 @@ impl Options {
                     );
                     options.output_dir = Some(path.into());
                 }
+                value
+                    if value.starts_with("--soak-pcm-file=") && options.soak_pcm_file.is_none() =>
+                {
+                    let path = &value["--soak-pcm-file=".len()..];
+                    ensure!(
+                        !path.trim().is_empty() && !path.contains('\0'),
+                        "--soak-pcm-file requires a nonempty path without NUL"
+                    );
+                    options.soak_pcm_file = Some(path.into());
+                }
                 _ => bail!("unknown or repeated argument: {argument}"),
             }
         }
@@ -67,6 +81,17 @@ impl Options {
             "--pcm and soak durations require --exercise"
         );
         options.pcm |= options.soak_pcm_seconds > 0;
+        if let Some(path) = &options.soak_pcm_file {
+            ensure!(
+                options.exercise && options.soak_pcm_seconds > 0,
+                "--soak-pcm-file requires --exercise with --soak-pcm-seconds"
+            );
+            ensure!(
+                path.is_file(),
+                "--soak-pcm-file is not a readable file: {}",
+                path.display()
+            );
+        }
         if options.soaking() {
             let requested = options
                 .soak_idle_seconds
@@ -226,8 +251,8 @@ mod tests {
     #[test]
     fn soak_rejects_missing_opt_in_overflow_duplicates_and_short_aggregate_budget() {
         for invalid in [
-            vec!["--soak-idle-seconds=10"],
-            vec!["--soak-pcm-seconds=10"],
+            vec!["soak-idle-seconds=10"],
+            vec!["soak-pcm-seconds=10"],
             vec!["--exercise", "--soak-idle-seconds=0"],
             vec!["--exercise", "--soak-pcm-seconds=28801"],
             vec!["--exercise", "--soak-idle-seconds=18446744073709551615"],
@@ -248,5 +273,57 @@ mod tests {
         ] {
             assert!(parse(&invalid).is_err(), "accepted {invalid:?}");
         }
+    }
+
+    #[test]
+    fn music_material_requires_exercise_pcm_soak_and_a_readable_file() {
+        let material =
+            std::env::temp_dir().join(format!("moiren-soak-material-{}", std::process::id()));
+        std::fs::write(&material, b"RIFF").unwrap();
+        let file = material.display().to_string();
+        let accepted = parse(&[
+            "--exercise",
+            "--soak-pcm-seconds=60",
+            &format!("--soak-pcm-file={file}"),
+        ])
+        .unwrap();
+        assert_eq!(accepted.soak_pcm_file, Some(material.clone()));
+        for invalid in [
+            vec![format!("--soak-pcm-file={file}")],
+            vec!["--exercise".into(), format!("--soak-pcm-file={file}")],
+            vec![
+                "--exercise".into(),
+                "--soak-idle-seconds=8".into(),
+                format!("--soak-pcm-file={file}"),
+            ],
+            vec![
+                "--exercise".into(),
+                "--soak-pcm-seconds=8".into(),
+                "--soak-pcm-file=".into(),
+            ],
+            vec![
+                "--exercise".into(),
+                "--soak-pcm-seconds=8".into(),
+                format!("--soak-pcm-file={file}"),
+                format!("--soak-pcm-file={file}"),
+            ],
+            vec![
+                "--exercise".into(),
+                "--soak-pcm-seconds=8".into(),
+                format!("--soak-pcm-file={}\\0", material.display()),
+            ],
+            vec![
+                "--exercise".into(),
+                "--soak-pcm-seconds=8".into(),
+                format!(
+                    "--soak-pcm-file={}\\missing.wav",
+                    std::env::temp_dir().display()
+                ),
+            ],
+        ] {
+            let arguments = invalid.iter().map(String::as_str).collect::<Vec<_>>();
+            assert!(parse(&arguments).is_err(), "accepted {invalid:?}");
+        }
+        std::fs::remove_file(&material).unwrap();
     }
 }

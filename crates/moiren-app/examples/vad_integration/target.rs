@@ -1,6 +1,6 @@
 //! Control-side coordinator; only ManagedDriver owns the driver control file.
 use super::{
-    native,
+    material, native,
     options::Options,
     progress, project,
     report::{Checkpoint, Evidence, IdleHoldEvidence, PcmEvidence, Report},
@@ -171,6 +171,9 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
             report.limitations.push("Native packet positions infer capture gaps; private driver drop counters and render underrun counts are unavailable through App/native clients.");
             report.limitations.push("Idle checks actual signal frame_end every observation and two advances per one-second window; snapshot publications are freshness checks only.");
             report.limitations.push("PCM soak alternates source every 30s with a fixed 1s finite-only settling interval; all other capture samples must match gain exactly within 0.0001, with no silence/discontinuities.");
+            if options.soak_pcm_file.is_some() {
+                report.limitations.push("Music soak replaces the alternating constant source with looping WAV material; per-second alignment-tracked correlation windows (>= 0.95) replace exact constant matching, with >= 0.99 qualified windows, <= 3 consecutive failed windows, and unchanged freshness/discontinuity/coverage gates.");
+            }
             if !pcm {
                 report.limitations.push("Idle-only soak starts no probe native clients and makes no PCM or native audio clock claim.");
             }
@@ -181,128 +184,149 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
     // Long soak keeps a fixed cleanup reserve; a ratio would truncate 16h work.
     let work_deadline = started + options.work_budget();
     let overall_deadline = started + timeout;
-    let outcome = (|| -> anyhow::Result<()> {
-        let startup = project::persist(directory)?;
-        report.persisted_project_verified = true;
-        publish(shared, &report);
-        let document = startup
-            .project
-            .as_ref()
-            .context("startup did not restore project")?;
-        let ids: [String; 2] = document
-            .exports
-            .iter()
-            .map(|export| export.endpoint_id.to_string())
-            .collect::<Vec<_>>()
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("fixture must have two exports"))?;
-        let stable_ids: [StableEndpointId; 2] = document
-            .exports
-            .iter()
-            .map(|export| StableEndpointId::from_virtual_endpoint_id(export.endpoint_id))
-            .collect::<Vec<_>>()
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("fixture needs two stable IDs"))?;
-        // Only the production factory discovers/opens the single control owner.
-        let service = ServiceRuntime::spawn_with_startup(ManagedDriver::windows(), startup)?;
-        let handle = service.handle();
-        shared
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .handle = Some(handle.clone());
-        runtime = Some(service);
-        let initial = handle.try_snapshot().context("missing startup snapshot")?;
-        ensure!(
-            initial.phase == SessionPhase::Idle && initial.graph.active_revision.is_none(),
-            "restored project started without Apply"
-        );
-        ensure!(
-            initial.exports.iter().all(|export| !export.gate_open),
-            "startup gate was open"
-        );
-        report.checkpoints.push(Checkpoint {
-            stage: "startup_restored_before_apply".into(),
-            evidence: Evidence::from(initial.as_ref()),
-        });
-        publish(shared, &report);
-        let applied = handle
-            .try_request_tracked(AppRequest::ApplyGraph)
-            .map_err(|error| anyhow::anyhow!("Apply enqueue: {error:?}"))?;
-        let apply_deadline = if options.soaking() {
-            (Instant::now() + Duration::from_secs(15)).min(work_deadline)
-        } else {
-            work_deadline
-        };
-        let running = wait(
-            &handle,
-            apply_deadline,
-            "apply_no_probe_clients",
-            &mut report,
-            shared,
-            |evidence| evidence.running(&ids, applied.0),
-        )?;
-        ensure!(
-            running.active_revision.is_some(),
-            "missing Engine confirmation"
-        );
-        if pcm || options.soaking() {
-            let session = LiveSession {
-                handle: &handle,
-                ids: &ids,
-                apply_request: applied.0,
-                revision: running.active_revision.expect("checked"),
-                deadline: work_deadline,
-                started,
-                last_snapshot: RefCell::new(None),
+    let outcome =
+        (|| -> anyhow::Result<()> {
+            let startup = project::persist(directory)?;
+            report.persisted_project_verified = true;
+            publish(shared, &report);
+            // Load soak material before any driver/service work so a rejected
+            // file fails without touching native audio.
+            let material = match &options.soak_pcm_file {
+                Some(path) => Some(material::load(path).context("music soak material")?),
+                None => None,
             };
-            report.gate_transitions = running
+            let document = startup
+                .project
+                .as_ref()
+                .context("startup did not restore project")?;
+            let ids: [String; 2] = document
                 .exports
                 .iter()
-                .map(|export| {
-                    validation::GateProgress::new(
-                        export.endpoint_id.clone(),
-                        export.native_stamp,
-                        started.elapsed().as_millis(),
-                    )
-                })
-                .collect::<anyhow::Result<_>>()?;
+                .map(|export| export.endpoint_id.to_string())
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("fixture must have two exports"))?;
+            let stable_ids: [StableEndpointId; 2] = document
+                .exports
+                .iter()
+                .map(|export| StableEndpointId::from_virtual_endpoint_id(export.endpoint_id))
+                .collect::<Vec<_>>()
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("fixture needs two stable IDs"))?;
+            // Only the production factory discovers/opens the single control owner.
+            let service = ServiceRuntime::spawn_with_startup(ManagedDriver::windows(), startup)?;
+            let handle = service.handle();
+            shared
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .handle = Some(handle.clone());
+            runtime = Some(service);
+            let initial = handle.try_snapshot().context("missing startup snapshot")?;
+            ensure!(
+                initial.phase == SessionPhase::Idle && initial.graph.active_revision.is_none(),
+                "restored project started without Apply"
+            );
+            ensure!(
+                initial.exports.iter().all(|export| !export.gate_open),
+                "startup gate was open"
+            );
+            report.checkpoints.push(Checkpoint {
+                stage: "startup_restored_before_apply".into(),
+                evidence: Evidence::from(initial.as_ref()),
+            });
             publish(shared, &report);
-            session.hold_without_clients(options.soak_idle_seconds, &mut report, shared)?;
-            if pcm {
-                session.exercise_pcm(stable_ids, options.soak_pcm_seconds, &mut report, shared)?;
-                return Ok(());
-            }
-        }
-        let stopped = handle
-            .try_request_tracked(AppRequest::Stop)
-            .map_err(|error| anyhow::anyhow!("Stop enqueue: {error:?}"))?;
-        wait(
-            &handle,
-            if options.soaking() {
-                (Instant::now() + PCM_PHASE_LIMIT).min(work_deadline)
+            let applied = handle
+                .try_request_tracked(AppRequest::ApplyGraph)
+                .map_err(|error| anyhow::anyhow!("Apply enqueue: {error:?}"))?;
+            let apply_deadline = if options.soaking() {
+                (Instant::now() + Duration::from_secs(15)).min(work_deadline)
             } else {
                 work_deadline
-            },
-            "stop_closed_gates_retained_endpoints",
-            &mut report,
-            shared,
-            |evidence| evidence.stopped(&ids, stopped.0),
-        )?;
-        ensure!(
-            options.soak_idle_seconds == 0
-                || report
-                    .soak_idle
-                    .as_ref()
-                    .is_some_and(|soak| soak.completed
+            };
+            let running = wait(
+                &handle,
+                apply_deadline,
+                "apply_no_probe_clients",
+                &mut report,
+                shared,
+                |evidence| evidence.running(&ids, applied.0),
+            )?;
+            ensure!(
+                running.active_revision.is_some(),
+                "missing Engine confirmation"
+            );
+            if pcm || options.soaking() {
+                let session = LiveSession {
+                    handle: &handle,
+                    ids: &ids,
+                    apply_request: applied.0,
+                    revision: running.active_revision.expect("checked"),
+                    deadline: work_deadline,
+                    started,
+                    last_snapshot: RefCell::new(None),
+                };
+                report.gate_transitions = running
+                    .exports
+                    .iter()
+                    .map(|export| {
+                        validation::GateProgress::new(
+                            export.endpoint_id.clone(),
+                            export.native_stamp,
+                            started.elapsed().as_millis(),
+                        )
+                    })
+                    .collect::<anyhow::Result<_>>()?;
+                publish(shared, &report);
+                session.hold_without_clients(options.soak_idle_seconds, &mut report, shared)?;
+                if pcm {
+                    session.exercise_pcm(
+                        stable_ids,
+                        options.soak_pcm_seconds,
+                        material.as_ref(),
+                        &mut report,
+                        shared,
+                    )?;
+                    return Ok(());
+                }
+            }
+            let stopped = handle
+                .try_request_tracked(AppRequest::Stop)
+                .map_err(|error| anyhow::anyhow!("Stop enqueue: {error:?}"))?;
+            wait(
+                &handle,
+                if options.soaking() {
+                    (Instant::now() + PCM_PHASE_LIMIT).min(work_deadline)
+                } else {
+                    work_deadline
+                },
+                "stop_closed_gates_retained_endpoints",
+                &mut report,
+                shared,
+                |evidence| evidence.stopped(&ids, stopped.0),
+            )?;
+            ensure!(
+                options.soak_idle_seconds == 0
+                    || report.soak_idle.as_ref().is_some_and(|soak| soak.completed
                         && soak.elapsed_ms >= options.soak_idle_seconds * 1_000),
-            "requested idle soak incomplete"
-        );
-        Ok(())
-    })();
+                "requested idle soak incomplete"
+            );
+            Ok(())
+        })();
     if let Err(error) = outcome {
         report.error = Some(format!("{error:#}"));
     }
     if report.error.is_none() {
+        let pcm_completed = if options.soak_pcm_file.is_some() {
+            report
+                .soak_music
+                .as_ref()
+                .map(|soak| (soak.completed, soak.requested_ms, soak.elapsed_ms))
+        } else {
+            report
+                .soak_pcm
+                .as_ref()
+                .map(|soak| (soak.completed, soak.requested_ms, soak.elapsed_ms))
+        };
         for (requested, completed) in [
             (
                 options.soak_idle_seconds,
@@ -311,13 +335,7 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
                     .as_ref()
                     .map(|soak| (soak.completed, soak.requested_ms, soak.elapsed_ms)),
             ),
-            (
-                options.soak_pcm_seconds,
-                report
-                    .soak_pcm
-                    .as_ref()
-                    .map(|soak| (soak.completed, soak.requested_ms, soak.elapsed_ms)),
-            ),
+            (options.soak_pcm_seconds, pcm_completed),
         ] {
             if requested != 0
                 && !completed.is_some_and(|(done, duration, elapsed)| {
@@ -623,6 +641,7 @@ impl LiveSession<'_> {
         &self,
         stable_ids: [StableEndpointId; 2],
         soak_seconds: u64,
+        material: Option<&material::Material>,
         report: &mut Report,
         shared: &Shared,
     ) -> anyhow::Result<()> {
@@ -653,7 +672,7 @@ impl LiveSession<'_> {
             clients.set_signal(validation::SECOND_SIGNAL);
             self.signal_phase(&mut clients, true, report, shared)?;
             if soak_seconds > 0 {
-                self.soak_pcm(&mut clients, soak_seconds, report, shared)?;
+                self.soak_pcm(&mut clients, soak_seconds, material, report, shared)?;
             }
             let evidence = report.pcm.as_mut().expect("PCM evidence");
             evidence.capture_running_at_stop_request = clients.capture_running();
@@ -764,9 +783,13 @@ impl LiveSession<'_> {
         &self,
         clients: &mut native::Pair,
         seconds: u64,
+        material: Option<&material::Material>,
         report: &mut Report,
         shared: &Shared,
     ) -> anyhow::Result<()> {
+        if let Some(material) = material {
+            return self.soak_music(clients, seconds, material, report, shared);
+        }
         eprintln!("PCM soak: {seconds}s, one continuously RUN native pair");
         // Continue the already-qualified second source with the existing pair;
         // every later pattern switch gets exactly the fixed 1s settling budget.
@@ -841,6 +864,162 @@ impl LiveSession<'_> {
             {
                 report.soak_pcm.as_mut().expect("soak PCM").finish(now_ms)?;
                 publish(shared, report);
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Continuous music soak: the native render client loops the material and
+    /// every completed one-second capture window must correlate with the
+    /// alignment-tracked expected waveform. Freshness, discontinuity, packet
+    /// shape, clock-rate, and coverage gates are unchanged from the constant
+    /// pattern soak.
+    fn soak_music(
+        &self,
+        clients: &mut native::Pair,
+        seconds: u64,
+        material: &material::Material,
+        report: &mut Report,
+        shared: &Shared,
+    ) -> anyhow::Result<()> {
+        eprintln!(
+            "music soak: {seconds}s looping {} frames of material",
+            material.frames
+        );
+        clients.enable_soak_diagnostics()?;
+        clients.play_material(std::sync::Arc::new(material.samples.clone()));
+        let started = Instant::now();
+        let duration = Duration::from_secs(seconds);
+        let deadline = (started + duration + Duration::from_secs(5)).min(self.deadline);
+        report.soak_music = Some(soak::MusicSoak::new(seconds * 1_000, material));
+        // The alignment search runs on its own thread: the pumping loop must
+        // service exclusive-mode events every few milliseconds.
+        let material_mono = std::sync::Arc::new(soak::mono(&material.samples));
+        let material_decimated =
+            std::sync::Arc::new(soak::decimate(&material_mono, soak::MUSIC_GRID_STRIDE));
+        let (job_tx, job_rx) = mpsc::sync_channel::<soak::MusicJob>(2);
+        let (result_tx, result_rx) = mpsc::channel::<soak::MusicWindow>();
+        let analysis_mono = material_mono.clone();
+        let analysis_decimated = material_decimated.clone();
+        let analyzer = thread::Builder::new()
+            .name("vad-music-analyzer".into())
+            .spawn(move || {
+                while let Ok(job) = job_rx.recv() {
+                    let window = soak::analyze_window(&analysis_mono, &analysis_decimated, job);
+                    if result_tx.send(window).is_err() {
+                        break;
+                    }
+                }
+            })
+            .context("start music analyzer thread")?;
+        let outcome = self.run_music_loop(
+            clients, started, duration, deadline, &job_tx, &result_rx, report, shared,
+        );
+        // The analyzer exits once every dispatched window is analyzed.
+        drop(job_tx);
+        let analyzer_result = analyzer.join();
+        while let Ok(window) = result_rx.try_recv() {
+            report
+                .soak_music
+                .as_mut()
+                .expect("music soak evidence")
+                .fold_window(window);
+        }
+        publish(shared, report);
+        outcome?;
+        analyzer_result.map_err(|_| anyhow::anyhow!("music analyzer panicked"))?;
+        let progress = report.soak_music.as_mut().expect("music soak evidence");
+        progress.finish(started.elapsed().as_millis() as u64)?;
+        publish(shared, report);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_music_loop(
+        &self,
+        clients: &mut native::Pair,
+        started: Instant,
+        duration: Duration,
+        deadline: Instant,
+        job_tx: &mpsc::SyncSender<soak::MusicJob>,
+        result_rx: &mpsc::Receiver<soak::MusicWindow>,
+        report: &mut Report,
+        shared: &Shared,
+    ) -> anyhow::Result<()> {
+        let mut next_clock_ms = 0;
+        let mut next_control_ms = 0;
+        let mut next_publish_ms = 0;
+        loop {
+            ensure!(Instant::now() < deadline, "music soak phase/work deadline");
+            let now_ms = started.elapsed().as_millis() as u64;
+            if now_ms >= next_control_ms {
+                self.require_running(
+                    "soak_music_continuous_native_pair",
+                    report,
+                    shared,
+                    deadline,
+                )?;
+                next_control_ms = now_ms + 20;
+            }
+            let progress = report.soak_music.as_mut().expect("music soak evidence");
+            progress.require_fresh(now_ms)?;
+            let sampled = clients.pump(|samples, discontinuity| {
+                progress.observe_packet(
+                    started.elapsed().as_millis() as u64,
+                    samples,
+                    discontinuity,
+                )
+            });
+            // Preserve packet position gaps and the failed window before cleanup.
+            report.native_diagnostics = Some(clients.diagnostics());
+            if let Err(error) = sampled {
+                publish(shared, report);
+                return Err(error.context("continuous music soak"));
+            }
+            let now_ms = started.elapsed().as_millis() as u64;
+            while let Some(job) = report
+                .soak_music
+                .as_mut()
+                .expect("music soak evidence")
+                .take_window(now_ms)
+            {
+                job_tx
+                    .send(job)
+                    .context("music analyzer stopped accepting windows")?;
+            }
+            while let Ok(window) = result_rx.try_recv() {
+                report
+                    .soak_music
+                    .as_mut()
+                    .expect("music soak evidence")
+                    .fold_window(window);
+            }
+            if now_ms >= next_clock_ms {
+                let sampled = clients.sample_clocks(now_ms);
+                report.native_diagnostics = Some(clients.diagnostics());
+                publish(shared, report);
+                sampled?;
+                next_clock_ms = now_ms + 1_000;
+            }
+            if now_ms >= next_publish_ms {
+                publish(shared, report);
+                next_publish_ms = now_ms + 100;
+            }
+            if started.elapsed() >= duration
+                && report
+                    .soak_music
+                    .as_ref()
+                    .expect("music soak evidence")
+                    .end_observed()
+                && clients.require_clocks(now_ms).is_ok()
+                && self.require_running(
+                    "soak_music_continuous_native_pair",
+                    report,
+                    shared,
+                    deadline,
+                )?
+            {
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(1));

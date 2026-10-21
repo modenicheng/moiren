@@ -1,4 +1,7 @@
 //! Opt-in real service/VAD integration. No native client or driver opens by default.
+#[cfg(any(windows, test))]
+#[path = "vad_integration/material.rs"]
+mod material;
 #[path = "vad_integration/options.rs"]
 mod options;
 #[cfg(any(windows, test))]
@@ -29,6 +32,7 @@ mod target;
 
 const HELP: &str = "vad_integration --exercise [--pcm] [--timeout-seconds=N] [--output-dir=NEW_DIRECTORY]\n\
     [--soak-idle-seconds=1..28800] [--soak-pcm-seconds=1..28800]\n\
+    [--soak-pcm-file=material.wav (48kHz stereo PCM16/Float32, >=1s)]\n\
     Stage1: persisted v2 stereo VirtualPlayback -> Gain(0.5) -> VirtualMicrophone;\n\
     production service startup/discovery, Apply with no probe native clients,\n\
     Stop with closed gates and retained endpoints, then service exit/join.\n\
@@ -46,6 +50,10 @@ const HELP: &str = "vad_integration --exercise [--pcm] [--timeout-seconds=N] [--
     PCM soak implies --pcm and keeps the same real native pair RUN; alternates\n\
     source every 30s with exactly 1s finite-only settling, otherwise validates\n\
     every frame against Gain(.5), rejects silence/gaps and samples native clocks.\n\
+    --soak-pcm-file replaces the alternating sources with looping WAV material;\n\
+    per-second alignment-tracked correlation windows (>=0.95, >=99% qualified,\n\
+    <=3 consecutive failures) replace exact constant matching, with unchanged\n\
+    freshness/discontinuity/coverage/clock gates. \n\
     Both soak phases require their complete requested duration and fresh state.\n\
     Soak timeout defaults to idle+pcm+180s; explicit budget is aggregate +90..3600s,\n\
     with a fixed 30s cleanup reserve. Eight hours each: --timeout-seconds=57780.\n\
