@@ -1,5 +1,5 @@
 use super::{
-    NativeObservations, NativeStreamObservation,
+    NativeObservations, NativeStreamKind, NativeStreamObservation,
     preparation::{Diagnostics, capture_error, render_error},
     resources::Resources,
 };
@@ -37,6 +37,11 @@ pub(super) struct WindowsTransport {
     pub(super) observations: NativeObservations,
     pub(super) streams: Vec<NativeStreamObservation>,
     pub(super) bridges: Vec<(NodeId, crate::clock_bridge::BridgeObserver)>,
+    pub(super) probes: Vec<(
+        NodeId,
+        NativeStreamKind,
+        std::sync::Arc<crate::virtual_owner::BoundaryProbe>,
+    )>,
     pub(super) output: Option<AudioReader<f32>>,
     pub(super) sink: NodeId,
     pub(super) stop: StopSignal,
@@ -177,6 +182,7 @@ impl PreparedTransport<f32> for WindowsTransport {
             self.generation,
             std::mem::take(&mut self.streams),
             std::mem::take(&mut self.bridges),
+            std::mem::take(&mut self.probes),
         );
         Ok(Box::new(WindowsOwner {
             render,

@@ -9,6 +9,7 @@ use super::{
 use anyhow::{Context, bail, ensure};
 use moiren_app::service::{AppHandle, AppRequest, ManagedDriver, ServiceRuntime, SessionPhase};
 use moiren_core::graph::NodeKind;
+use moiren_windows_audio::engine_backend::NativeStreamKind;
 use moiren_windows_audio::vad::StableEndpointId;
 use std::{
     cell::RefCell,
@@ -397,7 +398,70 @@ struct LiveSession<'a> {
     last_snapshot: RefCell<Option<(Arc<moiren_app::service::AppSnapshot>, Instant)>>,
 }
 
+/// One control-side sample of the service's virtual boundary carrier
+/// probes, taken from the service snapshot during a soak.
+#[derive(Clone, Debug, serde::Serialize)]
+pub(super) struct ProbeTrail {
+    pub elapsed_ms: u64,
+    pub playback_level_frames: Option<u32>,
+    pub microphone_level_frames: Option<u32>,
+    pub playback_milli_ppm: Option<i32>,
+    pub microphone_milli_ppm: Option<i32>,
+    pub playback_xruns: Option<u64>,
+    pub microphone_xruns: Option<u64>,
+    pub playback_soft_events: Option<u64>,
+    pub microphone_soft_events: Option<u64>,
+}
+
 impl LiveSession<'_> {
+    /// Sample the virtual boundary water levels from the latest service
+    /// snapshot. Missing probes stay None; the trail records what the
+    /// control side could observe, never an inference.
+    fn record_probe_trail(&self, report: &mut Report, now_ms: u64) {
+        let borrowed = self.last_snapshot.borrow();
+        let Some((snapshot, _)) = borrowed.as_ref() else {
+            return;
+        };
+        let Some(native) = snapshot.native_observations.as_ref() else {
+            return;
+        };
+        let mut trail = ProbeTrail {
+            elapsed_ms: now_ms,
+            playback_level_frames: None,
+            microphone_level_frames: None,
+            playback_milli_ppm: None,
+            microphone_milli_ppm: None,
+            playback_xruns: None,
+            microphone_xruns: None,
+            playback_soft_events: None,
+            microphone_soft_events: None,
+        };
+        for probe in &native.observation.boundary_probes {
+            let (level, ppm, xruns, soft) = (
+                Some(probe.level_frames),
+                Some(probe.applied_milli_ppm),
+                Some(probe.xruns),
+                Some(probe.soft_events),
+            );
+            match probe.kind {
+                NativeStreamKind::VirtualPlayback => {
+                    trail.playback_level_frames = level;
+                    trail.playback_milli_ppm = ppm;
+                    trail.playback_xruns = xruns;
+                    trail.playback_soft_events = soft;
+                }
+                NativeStreamKind::VirtualMicrophone => {
+                    trail.microphone_level_frames = level;
+                    trail.microphone_milli_ppm = ppm;
+                    trail.microphone_xruns = xruns;
+                    trail.microphone_soft_events = soft;
+                }
+                _ => {}
+            }
+        }
+        report.probe_trail.push(trail);
+    }
+
     fn require_running(
         &self,
         stage: &str,
@@ -805,9 +869,14 @@ impl LiveSession<'_> {
         let mut next_clock_ms = 0;
         let mut next_control_ms = 0;
         let mut next_publish_ms = 0;
+        let mut next_probe_ms = 0;
         loop {
             ensure!(Instant::now() < deadline, "PCM soak phase/work deadline");
             let now_ms = started.elapsed().as_millis() as u64;
+            if now_ms >= next_probe_ms {
+                self.record_probe_trail(report, now_ms);
+                next_probe_ms = now_ms + 500;
+            }
             if now_ms >= next_control_ms {
                 self.require_running("soak_pcm_continuous_native_pair", report, shared, deadline)?;
                 next_control_ms = now_ms + 20;
@@ -950,9 +1019,14 @@ impl LiveSession<'_> {
         let mut next_clock_ms = 0;
         let mut next_control_ms = 0;
         let mut next_publish_ms = 0;
+        let mut next_probe_ms = 0;
         loop {
             ensure!(Instant::now() < deadline, "music soak phase/work deadline");
             let now_ms = started.elapsed().as_millis() as u64;
+            if now_ms >= next_probe_ms {
+                self.record_probe_trail(report, now_ms);
+                next_probe_ms = now_ms + 500;
+            }
             if now_ms >= next_control_ms {
                 self.require_running(
                     "soak_music_continuous_native_pair",

@@ -164,6 +164,7 @@ impl WindowsBackend {
         let mut group = PreparationGroup::new(stop.clone(), self.diagnostics.clone());
         let mut streams = Vec::new();
         let mut bridges = Vec::new();
+        let mut probes = Vec::new();
         let mut endpoints = Vec::new();
         let mut virtual_sessions = VirtualSessions::default();
         let mut virtual_sinks = Vec::new();
@@ -226,6 +227,11 @@ impl WindowsBackend {
                         render_queue: None,
                         input_queue: None,
                     });
+                    probes.push((
+                        node,
+                        NativeStreamKind::VirtualMicrophone,
+                        prepared.probe.clone(),
+                    ));
                     continue;
                 }
                 _ => unreachable!("validated output intent"),
@@ -365,6 +371,11 @@ impl WindowsBackend {
                     bindings
                         .bind_source(node, source)
                         .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+                    probes.push((
+                        node,
+                        NativeStreamKind::VirtualPlayback,
+                        prepared.probe.clone(),
+                    ));
                     streams.push(NativeStreamObservation {
                         node,
                         kind: NativeStreamKind::VirtualPlayback,
@@ -582,6 +593,7 @@ impl WindowsBackend {
                 observations: self.observations.clone(),
                 streams,
                 bridges,
+                probes,
                 virtual_sessions,
             })),
         })

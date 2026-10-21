@@ -49,6 +49,19 @@ pub struct NativeObservationSnapshot {
     pub running: bool,
     pub streams: Vec<NativeStreamObservation>,
     pub bridges: Vec<NativeBridgeObservation>,
+    pub boundary_probes: Vec<NativeBoundaryProbe>,
+}
+
+/// Live control-side sample of one virtual boundary's carrier probe.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct NativeBoundaryProbe {
+    #[serde(serialize_with = "serialize_node")]
+    pub node: NodeId,
+    pub kind: NativeStreamKind,
+    pub level_frames: u32,
+    pub applied_milli_ppm: i32,
+    pub xruns: u64,
+    pub soft_events: u64,
 }
 #[derive(Clone, Default)]
 pub struct NativeObservations(Arc<Mutex<Option<Arc<Session>>>>);
@@ -68,6 +81,11 @@ pub(super) struct Session {
     running: AtomicBool,
     streams: Vec<NativeStreamObservation>,
     bridges: Vec<(NodeId, BridgeObserver)>,
+    probes: Vec<(
+        NodeId,
+        NativeStreamKind,
+        std::sync::Arc<crate::virtual_owner::BoundaryProbe>,
+    )>,
 }
 impl NativeObservations {
     #[cfg(any(windows, test))]
@@ -83,6 +101,21 @@ impl NativeObservations {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone()?;
+        let boundary_probes = session
+            .probes
+            .iter()
+            .map(|(node, kind, probe)| {
+                let sample = probe.snapshot();
+                NativeBoundaryProbe {
+                    node: *node,
+                    kind: *kind,
+                    level_frames: sample.level_frames,
+                    applied_milli_ppm: sample.applied_milli_ppm,
+                    xruns: sample.xruns,
+                    soft_events: sample.soft_events,
+                }
+            })
+            .collect();
         Some(NativeObservationSnapshot {
             owner_generation: session.generation,
             running: session.running.load(Ordering::Acquire),
@@ -95,6 +128,7 @@ impl NativeObservations {
                     counters: observer.snapshot(),
                 })
                 .collect(),
+            boundary_probes,
         })
     }
     #[cfg(any(windows, test))]
@@ -103,11 +137,17 @@ impl NativeObservations {
         generation: u64,
         streams: Vec<NativeStreamObservation>,
         bridges: Vec<(NodeId, BridgeObserver)>,
+        probes: Vec<(
+            NodeId,
+            NativeStreamKind,
+            std::sync::Arc<crate::virtual_owner::BoundaryProbe>,
+        )>,
     ) {
         *self.0.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(Arc::new(Session {
             generation,
             running: AtomicBool::new(false),
             streams,
+            probes,
             bridges,
         }));
     }
@@ -141,11 +181,11 @@ mod tests {
     #[test]
     fn stale_owner_cleanup_cannot_clear_replacement_observations() {
         let observations = NativeObservations::default();
-        observations.publish(1, Vec::new(), Vec::new());
+        observations.publish(1, Vec::new(), Vec::new(), Vec::new());
         let old = observations.lease(1);
         observations.running(1);
         assert!(observations.snapshot().unwrap().running);
-        observations.publish(2, Vec::new(), Vec::new());
+        observations.publish(2, Vec::new(), Vec::new(), Vec::new());
         let new = observations.lease(2);
         drop(old);
         observations.running(1);

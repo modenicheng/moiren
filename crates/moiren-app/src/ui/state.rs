@@ -1090,6 +1090,7 @@ mod tests {
                     render_queue: None,
                     input_queue: None,
                 }],
+                boundary_probes: vec![],
                 bridges: vec![NativeBridgeObservation {
                     node,
                     counters: moiren_windows_audio::clock_bridge::BridgeSnapshot {
