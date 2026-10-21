@@ -5,9 +5,11 @@ const CAPACITY: usize = 64;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum GapStage {
+    /// Periods that arrived late and are being repaid (backlog minus one).
     #[default]
     Wake,
-    AfterRender,
+    /// Periods discarded beyond the debt cap: permanently unrendered frames.
+    Clamp,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -126,14 +128,14 @@ mod tests {
     }
 
     #[test]
-    fn gap_trace_distinguishes_wake_and_render_without_reordering() {
+    fn gap_trace_distinguishes_wake_and_clamp_without_reordering() {
         let mut trace = ClockTrace::default();
         trace.start(10, 48_000);
         trace.record(20, 0, 2, GapStage::Wake);
-        trace.record(30, 256, 1, GapStage::AfterRender);
+        trace.record(30, 256, 1, GapStage::Clamp);
         assert_eq!(
             trace.events().map(|gap| gap.stage).collect::<Vec<_>>(),
-            [GapStage::Wake, GapStage::AfterRender]
+            [GapStage::Wake, GapStage::Clamp]
         );
     }
 }

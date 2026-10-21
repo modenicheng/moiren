@@ -110,7 +110,7 @@ impl VirtualRealtimeClock for LateWakeClock {
 }
 
 #[test]
-fn late_clock_wake_discards_old_playback_before_rendering_one_current_block() {
+fn long_late_wake_clamps_debt_and_renders_bounded_catch_up_without_reset() {
     let reset = Arc::new(AtomicU64::new(0));
     let (mut writer, reader) = audio_bridge(2, 8, 4096).unwrap();
     writer.write_interleaved(&[0.75; 16]).unwrap();
@@ -138,10 +138,17 @@ fn late_clock_wake_discards_old_playback_before_rendering_one_current_block() {
     .unwrap();
     assert_eq!(
         trace.observed().collect::<Vec<_>>(),
-        [(48_008, 0, 6000, GapStage::Wake)]
+        [
+            (48_008, 0, 7, GapStage::Wake),
+            (48_008, 0, 5_993, GapStage::Clamp),
+        ]
     );
-    assert_eq!(reset.load(Ordering::Acquire), 1);
-    assert_eq!(engine.timeline(), 8);
+    assert_eq!(
+        reset.load(Ordering::Acquire),
+        0,
+        "one clamped wake is a bounded loss, not a sustained stall"
+    );
+    assert_eq!(engine.timeline(), 64);
     let mut samples = [f32::NAN; 16];
     assert_eq!(
         microphone
@@ -150,15 +157,20 @@ fn late_clock_wake_discards_old_playback_before_rendering_one_current_block() {
             .transferred_frames,
         8
     );
-    assert_eq!(samples, [0.0; 16]);
+    let mut expected = [0.0; 16];
+    for frame in expected.as_chunks_mut::<2>().0 {
+        frame[0] = 0.75;
+    }
+    assert_eq!(samples, expected);
 }
 
 /// One missed period (scheduler jitter) must not trigger the full boundary
-/// reset: the unrendered input stays queued and the rendered block still
-/// carries real carrier content, while the gap itself stays on the clock
+/// reset: the debt ledger keeps the period due, the wake renders it and the
+/// skipped block is repaid back-to-back on the immediate redue, so the
+/// timeline stays on wall clock while the gap itself stays on the clock
 /// trace for diagnostics.
 #[test]
-fn single_skipped_period_is_absorbed_without_resetting_boundaries() {
+fn single_skipped_period_is_repaid_without_resetting_boundaries() {
     struct OnePeriodLateClock(FakeClock);
     impl VirtualRealtimeClock for OnePeriodLateClock {
         fn frequency(&self) -> u64 {
@@ -210,7 +222,11 @@ fn single_skipped_period_is_absorbed_without_resetting_boundaries() {
         0,
         "one missed period is jitter, not a timeline break"
     );
-    assert_eq!(engine.timeline(), 8);
+    assert_eq!(
+        engine.timeline(),
+        16,
+        "the skipped period is repaid on the immediate redue"
+    );
     let mut samples = [f32::NAN; 16];
     assert_eq!(
         microphone
@@ -255,15 +271,22 @@ fn zero_microphone_clients_still_execute_the_single_engine_after_clock_stall() {
         if stall {
             assert_eq!(
                 trace.observed().collect::<Vec<_>>(),
-                [(48_008, 8, 6000, GapStage::AfterRender)]
+                [
+                    (48_008, 8, 7, GapStage::Wake),
+                    (48_008, 8, 5_992, GapStage::Clamp),
+                ]
             );
         } else {
             assert_eq!(trace.observed().count(), 0);
         }
         assert_eq!(clock.wakes, 5);
-        assert_eq!(engine.timeline(), 40);
-        assert_eq!(published.snapshot().unwrap().frame, 40);
-        assert_eq!(reset.load(Ordering::Acquire), u64::from(stall));
+        assert_eq!(engine.timeline(), if stall { 104 } else { 40 });
+        assert_eq!(published.snapshot().unwrap().frame, engine.timeline());
+        assert_eq!(
+            reset.load(Ordering::Acquire),
+            0,
+            "a single clamped wake must keep the engine running without a reset"
+        );
     }
 }
 
@@ -312,8 +335,10 @@ fn persistently_late_owner_observes_stop_without_waiting_for_clock_headroom() {
         &mut ClockTrace::default(),
     )
     .unwrap();
-    assert_eq!(clock.reads, 21);
-    assert_eq!(engine.timeline(), 80);
+    assert_eq!(clock.reads, 20);
+    // One now_ticks is consumed by run() itself as the schedule origin; every
+    // remaining read drives one immediate clamped render until stop is polled.
+    assert_eq!(engine.timeline(), 152);
 }
 
 #[test]

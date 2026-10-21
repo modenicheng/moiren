@@ -263,15 +263,16 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
     }
 }
 
-/// One missed period is ordinary scheduler jitter, not a timeline break: the
-/// unrendered input stays queued in the boundary carriers (they are queues,
-/// not wall-clock slots) and the follower servo absorbs the level shift, so
-/// the client keeps a continuous waveform. Resetting every fence for it would
-/// discard ~50 ms of valid audio and force an FIR re-prime — the combined-soak
-/// silent-packet failure. A wake this late covers less than two periods
-/// (< ~10.7 ms at Graph256/48 kHz); two or more missed periods are treated as
-/// a real stall and keep the full reset handshake.
-const STALL_RESET_SKIPPED_PERIODS: u64 = 2;
+/// Late wakes repay missed periods from the bounded debt ledger in
+/// [`ClockSchedule`]: unrendered periods stay due and this loop renders one
+/// block per immediate redue, so the engine timeline keeps pace with the
+/// wall clock pacing the native side and the boundary carriers never
+/// accumulate a permanent level bias — the defect behind the combined-soak
+/// silent-packet failure. Debt beyond the cap is clamped: a single clamped
+/// wake is a bounded, counted loss. Clamping on consecutive wakes means the
+/// owner cannot keep pace at all (sustained CPU starvation), which is a real
+/// stall and escalates to the full reset handshake.
+const STALL_CLAMPED_WAKE_STREAK: u32 = 3;
 
 fn run<S: ProcessingSample>(
     engine: &mut Engine<S>,
@@ -293,6 +294,8 @@ fn run<S: ProcessingSample>(
     )
     .map_err(|error| BackendError::Failed(error.to_string()))?;
     published.state.store(1, Ordering::Release);
+    let mut clamped_streak = 0_u32;
+    let mut burst_open = false;
     loop {
         // A persistently late clock may never enter wait_ticks. Poll the same
         // prepared stop event without blocking so overload cannot prevent join.
@@ -315,32 +318,42 @@ fn run<S: ProcessingSample>(
         else {
             continue;
         };
-        if tick.skipped_periods > 0 {
-            clock_trace.record(now, engine.timeline(), tick.skipped_periods, GapStage::Wake);
-            if tick.skipped_periods >= STALL_RESET_SKIPPED_PERIODS {
-                reset_timeline(timeline_resets);
+        // One trace event per late burst: the redue loop drains the backlog
+        // without waiting, so only the burst's first wake is the news.
+        if tick.backlog_periods > 1 {
+            if !burst_open {
+                clock_trace.record(
+                    now,
+                    engine.timeline(),
+                    tick.backlog_periods - 1,
+                    GapStage::Wake,
+                );
+                burst_open = true;
             }
+        } else {
+            burst_open = false;
         }
-        // Exactly one Engine executes one bounded block per due wake. External
-        // microphone client counts are deliberately absent from this decision.
+        if tick.clamped_periods > 0 {
+            clock_trace.record(
+                now,
+                engine.timeline(),
+                tick.clamped_periods,
+                GapStage::Clamp,
+            );
+            clamped_streak += 1;
+            if clamped_streak >= STALL_CLAMPED_WAKE_STREAK {
+                reset_timeline(timeline_resets);
+                clamped_streak = 0;
+            }
+        } else {
+            clamped_streak = 0;
+        }
+        // Exactly one Engine executes one bounded block per due wake, repaying
+        // at most the capped backlog. External microphone client counts are
+        // deliberately absent from this decision.
         let rendered = engine.render(tick.frames);
         published.publish(engine);
         rendered.map_err(|error| BackendError::Failed(error.to_string()))?;
-        let after_render = clock.now_ticks()?;
-        let skipped = schedule
-            .skip_past(after_render)
-            .map_err(|error| BackendError::Failed(error.to_string()))?;
-        if skipped > 0 {
-            clock_trace.record(
-                after_render,
-                engine.timeline(),
-                skipped,
-                GapStage::AfterRender,
-            );
-            if skipped >= STALL_RESET_SKIPPED_PERIODS {
-                reset_timeline(timeline_resets);
-            }
-        }
     }
 }
 

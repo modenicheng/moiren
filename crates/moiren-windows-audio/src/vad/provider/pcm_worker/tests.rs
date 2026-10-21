@@ -1943,7 +1943,8 @@ mod owner_reset_regression {
             native.complete_native_io();
             native.playback_step(&playback_state);
             native.microphone_step(&microphone_state);
-            // Delay exactly one wake by one period: skipped_periods == 1.
+            // Delay exactly one wake by one period: backlog_periods == 2 and
+            // the debt ledger repays the missed block on the immediate redue.
             let ticks = if step == skip_step {
                 (ENGINE_FRAMES * 2) as u64
             } else {
@@ -1954,7 +1955,13 @@ mod owner_reset_regression {
 
         let returned = owner.stop_and_join();
         assert!(returned.error.is_none());
-        assert_eq!(returned.engine.timeline(), (total * ENGINE_FRAMES) as u64);
+        // The timeline must equal the granted wall-clock periods exactly: the
+        // skipped period is repaid, not discarded (the discarded-skip design
+        // ran a permanent frame deficit on both carriers at once).
+        assert_eq!(
+            returned.engine.timeline(),
+            ((total + 1) * ENGINE_FRAMES) as u64
+        );
 
         // The single skipped period is absorbed as jitter: no boundary reset
         // was requested, no fence moved, and the packet stream stayed audible.

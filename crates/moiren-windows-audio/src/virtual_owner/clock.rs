@@ -1,10 +1,26 @@
 use std::fmt;
 
+/// One due wake of the virtual realtime schedule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClockTick {
     pub frames: usize,
-    pub skipped_periods: u64,
+    /// Periods due at this wake including the one about to render. Late
+    /// periods stay due, so the owner repays them by rendering one block per
+    /// immediate redue instead of discarding the missed work.
+    pub backlog_periods: u64,
+    /// Periods dropped to keep the repayable debt within
+    /// [`DEBT_CAP_PERIODS`]: permanently unrendered frames. An honest,
+    /// counted loss — never a silent rate bias on the boundary carriers.
+    pub clamped_periods: u64,
 }
+
+/// Repayable debt ceiling in periods. A late wake repays its missed periods
+/// by rendering them back-to-back; debt beyond this cap is discarded and
+/// reported so the owner can escalate. The cap must stay below the boundary
+/// carriers' servo target headroom (2255 frames at the VAD shape) so a full
+/// repayment burst cannot itself starve or flood a carrier: 8 Graph256
+/// periods are 2048 frames (~42.7 ms).
+pub const DEBT_CAP_PERIODS: u64 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClockError {
@@ -49,31 +65,32 @@ impl ClockSchedule {
         })
     }
 
+    /// One due wake consumes exactly one period and reports the backlog.
+    /// Late periods stay due: calling again at the same instant returns the
+    /// next overdue period until the debt is repaid or clamped, so rendered
+    /// frames keep pace with the wall clock that paces the native side. The
+    /// previous design jumped `next` past every missed period — each skip
+    /// was a permanent mic-side production deficit and playback-side surplus
+    /// at once, which drained both carriers monotonically.
     pub fn due(&mut self, now: u64) -> Result<Option<ClockTick>, ClockError> {
         self.observe(now)?;
         if now < self.deadline()? {
             return Ok(None);
         }
         let elapsed = self.elapsed_periods(now)?;
-        let skipped_periods = elapsed.saturating_sub(self.next);
-        self.next = elapsed.checked_add(1).ok_or(ClockError::Overflow)?;
+        let mut backlog = elapsed.saturating_sub(self.next - 1);
+        let mut clamped = 0;
+        if backlog > DEBT_CAP_PERIODS {
+            clamped = backlog - DEBT_CAP_PERIODS;
+            self.next = self.next.checked_add(clamped).ok_or(ClockError::Overflow)?;
+            backlog = DEBT_CAP_PERIODS;
+        }
+        self.next = self.next.checked_add(1).ok_or(ClockError::Overflow)?;
         Ok(Some(ClockTick {
             frames: self.frames,
-            skipped_periods,
+            backlog_periods: backlog,
+            clamped_periods: clamped,
         }))
-    }
-
-    /// Recheck after DSP finishes. Missed wall-clock periods are discarded,
-    /// never recursively executed. Engine frames advance only for actual work.
-    pub fn skip_past(&mut self, now: u64) -> Result<u64, ClockError> {
-        self.observe(now)?;
-        let previous = self.next;
-        self.next = self.next.max(
-            self.elapsed_periods(now)?
-                .checked_add(1)
-                .ok_or(ClockError::Overflow)?,
-        );
-        Ok(self.next - previous)
     }
 
     pub fn remaining_ticks(&mut self, now: u64) -> Result<u64, ClockError> {
@@ -116,34 +133,70 @@ mod tests {
     use super::*;
 
     #[test]
-    fn one_due_wake_renders_one_block_even_after_a_long_stall() {
+    fn long_stall_clamps_debt_to_the_cap_and_renders_it_back_to_back() {
         let mut schedule = ClockSchedule::new(10_000_000, 480, 48_000, 0).unwrap();
         assert_eq!(schedule.due(99_999).unwrap(), None);
         assert_eq!(
             schedule.due(100_000).unwrap(),
             Some(ClockTick {
                 frames: 480,
-                skipped_periods: 0
+                backlog_periods: 1,
+                clamped_periods: 0
             })
         );
-        assert_eq!(
-            schedule.due(10_000_000).unwrap(),
-            Some(ClockTick {
-                frames: 480,
-                skipped_periods: 98
-            })
-        );
+        let tick = schedule.due(10_000_000).unwrap().unwrap();
+        assert_eq!(tick.backlog_periods, DEBT_CAP_PERIODS);
+        assert_eq!(tick.clamped_periods, 91);
+        for backlog in (1..DEBT_CAP_PERIODS).rev() {
+            assert_eq!(
+                schedule.due(10_000_000).unwrap(),
+                Some(ClockTick {
+                    frames: 480,
+                    backlog_periods: backlog,
+                    clamped_periods: 0
+                })
+            );
+        }
         assert_eq!(schedule.due(10_000_000).unwrap(), None);
+        assert!(schedule.remaining_ticks(10_000_000).unwrap() > 0);
     }
 
+    /// The anti-bias invariant: periodic late wakes must repay in full, so
+    /// the rendered timeline stays exactly on wall clock. The discarded-skip
+    /// design lost every skipped period permanently (−1791 ppm on the
+    /// failed target run) and drained both carriers monotonically.
     #[test]
-    fn render_stalls_skip_wall_clock_work_and_always_leave_a_future_deadline() {
-        let mut schedule = ClockSchedule::new(10_000_000, 480, 48_000, 0).unwrap();
-        schedule.due(100_000).unwrap().unwrap();
-        assert_eq!(schedule.skip_past(9_000_001).unwrap(), 89);
-        assert_eq!(schedule.due(9_000_001).unwrap(), None);
-        assert_eq!(schedule.remaining_ticks(9_000_001).unwrap(), 99_999);
-        assert_eq!(schedule.due(9_100_000).unwrap().unwrap().frames, 480);
+    fn periodic_late_wakes_repay_debt_with_zero_long_term_drift() {
+        let frequency = 10_000_000_u64;
+        let frames = 256_u64;
+        let rate = 48_000_u64;
+        let deadline = |period: u64| -> u64 {
+            u64::try_from(
+                (u128::from(period) * u128::from(frames) * u128::from(frequency))
+                    .div_ceil(u128::from(rate)),
+            )
+            .unwrap()
+        };
+        let mut schedule = ClockSchedule::new(frequency, frames as usize, rate, 0).unwrap();
+        let total_periods = 3_000_u64;
+        let mut rendered_periods = 0_u64;
+        let mut clamped_periods = 0_u64;
+        let mut period = 1_u64;
+        while period <= total_periods {
+            let late = u64::from(period.is_multiple_of(64)) * 2;
+            let now = deadline(period + late);
+            while let Some(tick) = schedule.due(now).unwrap() {
+                rendered_periods += 1;
+                clamped_periods += tick.clamped_periods;
+            }
+            period += 1 + late;
+        }
+        assert_eq!(clamped_periods, 0, "two-period jitter never clamps");
+        assert_eq!(
+            rendered_periods, total_periods,
+            "every wall-clock period must render exactly once"
+        );
+        assert!(schedule.remaining_ticks(deadline(total_periods)).unwrap() > 0);
     }
 
     #[test]
@@ -153,7 +206,8 @@ mod tests {
         for block in 1..=3000_u64 {
             let now = 7 + (u128::from(block) * 128 * 10_000_000).div_ceil(48_000) as u64;
             assert_eq!(schedule.due(now - 1).unwrap(), None);
-            assert_eq!(schedule.due(now).unwrap().unwrap().skipped_periods, 0);
+            let tick = schedule.due(now).unwrap().unwrap();
+            assert_eq!((tick.backlog_periods, tick.clamped_periods), (1, 0));
         }
         assert_eq!(schedule.remaining_ticks(80_000_007).unwrap(), 26_667);
     }
