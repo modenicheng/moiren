@@ -203,3 +203,77 @@ target-driver validation, not an incidental pacing patch.
 These checks do not close eight-hour duration/resource-growth, repeatable
 native matrices, shared/software-volume behavior, power transitions, Verifier,
 100 lifecycle/crash rounds, installation/rollback, or production signing gates.
+
+## Deterministic owner-reset regression: 2026-10-21 (host)
+
+A user-mode regression now reproduces the combined-soak silent-packet signature
+without a driver. It drives the real `VirtualPreparedTransport` owner thread
+through a step-controlled fake clock (one Graph256 period per granted wake),
+renders through the real fenced `VirtualPlaybackSource`/`VirtualMicrophoneSink`
+pair with clock-drift FIRs and 4800-frame carriers, and runs the native halves
+with the same `quiesce_playback`/`quiesce_microphone`/`playback`/`microphone`
+call sequence as `run_playback`/`run_microphone` over fake PCM IO and an
+independently advanced native instant line.
+
+The measured sequence, from a baseline whose packets are fully non-silent:
+
+1. Exactly one wake delayed by one period (`skipped_periods == 1`, `Wake`
+   stage) bumps both boundaries' reset epochs in the same owner batch.
+2. During that render the microphone sink publishes its producer fence.
+3. The next native poll completes `quiesce_microphone` (the producer fence is
+   already set), discards the whole carrier, acknowledges the consumer fence,
+   and rebuilds the bridge, owner and a fresh `MicrophonePump` whose
+   `next_submit` is unset.
+4. `microphone` treats the unset phase as due (`remaining() == None` passes
+   `is_none_or`) and encodes immediately: 480/480 silent frames from the
+   still-empty carrier — the target machine's `0/480` signature, one native
+   step (~5.3 ms) after the wake observation.
+5. Playback then re-primes (2544-frame threshold): about eight more fully
+   silent packets, one 433/480 transition packet, then clean audio. Epochs
+   converge and stop advancing; recovery is bounded, not a permanent loop.
+
+This closes the attribution question left open by the target runs: an
+owner-requested reset after one skipped period is sufficient to produce the
+observed empty-carrier encode. No kernel starvation, expiry, or gate change is
+required. It also refutes an unbounded-liveness hypothesis: the microphone
+carrier refills after the handshake; the earlier reading of the sink's
+`available_frames` check as an empty-carrier branch was wrong (it is the
+free-space/backpressure branch and did not fire here).
+
+### Contract and fix
+
+A skipped period discards a render opportunity, not audio data: the unrendered
+input stays queued in the boundary carriers, which are queues, not wall-clock
+slots. The carriers' servo residency (about 2255 frames) absorbs the level
+shift and the client receives a continuous waveform. Resetting every fence for
+one missed period converts ~5.3 ms of ordinary scheduler jitter (a lateness
+covering less than two periods, < ~10.7 ms) into a dual-carrier discard, an
+FIR re-prime and a ~50 ms silence window — strictly worse than the jitter it
+answers.
+
+The owner therefore still records one skipped period on the clock trace but no
+longer resets boundaries for it; `skipped_periods >= 2` keeps the full existing
+reset handshake. No reset was removed for real stalls, and no timeout,
+half-period constant, queue, slot count, or acceptance rule changed;
+stale-epoch crossings remain fenced. The regression asserts zero silent
+packets across the single skip, so reintroducing the failure fails the host
+suite.
+
+The worker-side immediate encode from an empty carrier remains unchanged and
+is honest for genuine (>= 2 period) stalls: audio was actually missed there,
+and the fence handshake stays the recovery path.
+
+### Host verification (this slice)
+
+- `cargo test --locked --workspace`: passed (exit 0, no failures), including
+  the new regression and the new owner single-skip absorption test.
+- `cargo test --locked -p moiren-windows-audio --lib`: 392 passed, 2 ignored.
+- `virtual_owner::owner` subset: 8 passed; the existing 6000-period stall
+  tests still reset and discard.
+- Strict workspace Clippy with both probe features, `cargo fmt --all --
+  --check`, `git diff --check`, and `tools/rt-check` (79 passed).
+
+Not claimed: any target-machine result. The guest executable predates this
+change; before any combined-short or soak qualification the probe must be
+rebuilt, its commit and SHA256 recorded, and the standalone PCM, combined
+short, and repetition gates re-run in order.
