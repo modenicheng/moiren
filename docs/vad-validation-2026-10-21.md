@@ -277,3 +277,108 @@ Not claimed: any target-machine result. The guest executable predates this
 change; before any combined-short or soak qualification the probe must be
 rebuilt, its commit and SHA256 recorded, and the standalone PCM, combined
 short, and repetition gates re-run in order.
+
+## Post-fix target revalidation: 2026-10-21 (combined still fails, longer clean span)
+
+Probe rebuilt from `44ca0ed2de226faa1dbba92996cbfeba3baa3b88`
+(includes the single-skip absorption fix and the new music-material soak
+mode), SHA256 `52B430A8B5DF9A2E49A37C471F67F32075E3F99D80776E3B20AE902C24F522FA`.
+
+- `20261021-44ca0ed-pcm-short1`: PASS. Both 48,000-frame signals match
+  exactly; Stop-while-RUN silence verified; service joined, control released.
+- `20261021-44ca0ed-combined1`: 15s idle PASS, both signal phases PASS,
+  sustained PCM fails at 25.549s with **1,225,920 matching + 480 silent**
+  frames (previous builds failed at 12-16s / 600k-774k matching). The fix
+  extended the clean span roughly 2x but did not eliminate the failure.
+  Exit was a normal quality failure: no kill, no outer timeout, service
+  joined, control released.
+
+Owner clock trace for the failed run (13/13 retained; elapsed from owner
+start; engine frames cumulative): twelve `skipped=1` gaps and one
+`skipped=3` gap (the only reset-triggering event, at 1.59s). The final two
+gaps are 10ms apart at 44.757s/44.767s, immediately before the failing
+encode. The soak failure coincides with those back-to-back single skips.
+
+Additional evidence from the same run:
+
+- `maximum_packet_gap_ms = 16` in the soak observer: the worker's own
+  observation cadence was within 4ms of its 20ms observation-gap threshold.
+- Native audio clocks vs QPC over 25 samples: render clock averages
+  47,978.6/s (**-445ppm**, peak |deviation| 1264.8ppm); capture clock
+  averages 47,993.5/s (-135.8ppm, peak 1038.3ppm).
+- Engine production over the run: 2,144,512 frames in 44.767s
+  (**-231ppm** vs 48kHz), equal to the fifteen discarded periods.
+- No expired WRITE, no request-shape error, no capture position gap or
+  regression; discontinuity count zero.
+
+Working hypothesis (not yet proven, handed to an independent read-only
+architecture audit): the owner schedule permanently discards missed
+production while native consumption advances on device/wall clocks, so each
+skipped period is an unrecoverable microphone-side deficit; the follower
+servo's authority and the pump's phase anchoring do not reliably rebalance
+the carrier level, and clustered skips deplete it below one 480-frame
+packet. Per user direction, no further patches are being applied before the
+audit concludes; the eight-hour run is on hold.
+
+## Independent architecture audit verdict: 2026-10-21
+
+A read-only independent audit (no code changes, no test runs) of the whole
+clocking chain confirmed the working hypothesis and corrected it in three
+places. Headline findings, all reproducible from code plus the failed run:
+
+1. **Proven root cause.** `ClockSchedule` discards missed wall-clock periods
+   forever (`clock.rs:66-77`): every skip is a permanent mic-side production
+   deficit of 256 frames and, symmetrically, a permanent playback-side
+   consumption deficit. This run lost 15 periods over 44.767s = **-1791ppm
+   one-sided bias** on both directions simultaneously (mic starves, playback
+   floods). An earlier note in this ledger read the engine rate as -231ppm;
+   the correct arithmetic is 2,144,512/44.767s = 47,904 f/s, of which the
+   skip term alone is -85.8 f/s = -1791ppm.
+2. **Proven servo authority defect.** `FollowerServo` effective authority is
+   **±500ppm, not the nominal ±2000ppm**: `desired = relative_error x 500ppm`
+   and carrier geometry (4800 frames, target 2255) bounds relative error to
+   ±100%, so the ±2000ppm clamp is unreachable (would need |level-target| =
+   9020 frames in a 4800-frame ring). Gain, clamp, and geometry contradict
+   each other — a design arithmetic flaw, not a tuning issue.
+3. **Proven inevitability.** Net deficit 1650-2130ppm >> 500ppm; the servo
+   pseudo-equilibrium sits 7460 frames below target — outside the carrier.
+   The level drains monotonically from ~2256 frames in 29-41s; observed
+   failure at 25.549s matches. The two final skipped=1 events were the last
+   512 frames on an already-collapsed level, not the cause.
+4. **Proven: reset during active PCM is unrecoverable.** After a mic reset
+   the level restarts at 0 while production (<=47,928 f/s at full servo)
+   stays below device-clock consumption — the level can never rebuild;
+   every subsequent packet is silence. The single skipped=3 reset in this
+   run landed in the idle phase, which is the only reason the run reached
+   25.5s.
+5. **High confidence: playback is a second independent death path.** The
+   symmetric surplus (+50..75 f/s after servo) overflows the 2256-frame
+   headroom above reprime level in ~45-95s -> decode-full reset -> 53ms
+   reprime silence -> five 480-frame silent packets. Mic simply died first.
+6. Also flagged: worker observation-gap threshold 20ms vs observed 16ms
+   worst gap (4ms margin) with a discard-everything remedy; owner/worker
+   threads lack MMCSS while every physical path sets it; control IOCTL and
+   PCM completions serialize on the worker thread; idle-phase mic carrier
+   overflow/discard limit cycle randomizes soak start level; the
+   `STALL_RESET_SKIPPED_PERIODS` rationale comment in `owner.rs` (servo
+   absorbs the level shift) is quantitatively false and must be revised
+   with the real fix.
+
+Recommended fix contract from the audit (directions only; nothing
+implemented): (A) bounded deficit repayment — the owner records skipped
+periods as frame debt and repays up to a capped D (1-2 carrier periods,
+~20-40ms) across later wakes, with debt pinned at the cap still escalating
+to the existing stall reset; (B) make servo authority genuinely reachable
+(gain >= 2000ppm) — necessary, not sufficient alone; (C) reset policy
+redesign for active PCM: absorb skips within the debt cap, raise and grade
+the observation-gap response (phase reset without carrier discard; discard
+reserved for real epoch events), and raise owner/worker thread scheduling
+class to match physical paths. Not recommended: larger carriers, encode
+water-level gating (moves silence into the kernel), or any timeout-style
+device-death heuristics. Verification for any direction: deterministic host
+regression with periodic injected skips asserting bounded level, zero
+silent packets, and non-pinned debt, plus a carrier water-level probe
+observed from the control side before the next target soak.
+
+Per user direction, no product code was changed after the audit; the
+eight-hour run remains on hold pending a decision on the fix contract.
