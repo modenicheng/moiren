@@ -42,6 +42,8 @@ impl PacketOrder {
 
 pub(super) struct MicrophonePump {
     order: PacketOrder,
+    half_period: Duration,
+    next_submit: Option<Instant>,
     observation_gap: Duration,
     last_observed: Option<Instant>,
 }
@@ -50,6 +52,10 @@ impl MicrophonePump {
     pub(super) fn new(packet_frames: u32) -> Self {
         Self {
             order: PacketOrder::default(),
+            half_period: Duration::from_nanos(
+                (u64::from(packet_frames) * 1_000_000_000).div_ceil(u64::from(SAMPLE_RATE) * 2),
+            ),
+            next_submit: None,
             observation_gap: Duration::from_nanos(
                 (u64::from(packet_frames) * 1_000_000_000).div_ceil(u64::from(SAMPLE_RATE)),
             ) + POLL_INTERVAL,
@@ -57,9 +63,15 @@ impl MicrophonePump {
         }
     }
 
+    fn remaining(&self, now: Instant) -> Option<Duration> {
+        self.next_submit
+            .map(|deadline| deadline.saturating_duration_since(now))
+    }
+
     fn current(&mut self, state: &SessionState, epoch: u64) -> bool {
         if state.cancel.load(Ordering::Acquire) || !epoch_ready(state, epoch) {
             self.order = PacketOrder::default();
+            self.next_submit = None;
             self.last_observed = None;
             return false;
         }
@@ -224,24 +236,39 @@ pub(super) fn microphone<C: PcmIo>(
             }
             None => break,
         };
+        let collected_at = now();
+        if !pump.observe(state, epoch, collected_at) {
+            return Ok(PumpState::Reset);
+        }
         if !pump.order.accept(stamp) {
             return Err(BackendError::Failed(
                 "microphone completion sequence regressed".into(),
             ));
         }
         tickets.remove(0);
+        // Shift replenishment away from the one-period freshness cliff. The
+        // driver still checks the real submission age at native consumption.
+        pump.next_submit =
+            Some(collected_at.checked_add(pump.half_period).ok_or_else(|| {
+                BackendError::Failed("microphone phase deadline overflow".into())
+            })?);
     }
-    if tickets.is_empty() {
+    if tickets.is_empty()
+        && pump
+            .remaining(now())
+            .is_none_or(|remaining| remaining.is_zero())
+    {
         if !pump.observe(state, epoch, now()) {
             return Ok(PumpState::Reset);
         }
-        // Replenish before returning to the worker wait. A deliberate half-period
-        // gap leaves capture dependent on worker scheduling for the next WRITE.
+        // Do not consume the carrier or encode until the phase is due. The
+        // unchanged PcmOwner samples its real QPC only when submitting this PCM.
         let packet = bridge.encode_packet()?;
         if !pump.observe(state, epoch, now()) {
             return Ok(PumpState::Reset);
         }
         tickets.push(owner.write(packet)?);
+        pump.next_submit = None;
     }
     Ok(PumpState::Current)
 }
@@ -249,17 +276,30 @@ pub(super) fn microphone<C: PcmIo>(
 pub(super) fn wait_for_microphone<C: PcmIo>(
     owner: &mut C,
     tickets: &[PcmTicket],
+    pump: &mut MicrophonePump,
     state: &SessionState,
     epoch: u64,
+    now: Instant,
+    sleep: impl FnOnce(Duration),
 ) -> Result<(), BackendError> {
-    if state.cancel.load(Ordering::Acquire) || !epoch_ready(state, epoch) {
+    if !pump.current(state, epoch) {
         return Ok(());
     }
     if let Some(&ticket) = tickets.first() {
-        owner.wait_activity(ticket, POLL_INTERVAL)
-    } else {
-        Ok(())
+        owner.wait_activity(
+            ticket,
+            pump.remaining(now)
+                .unwrap_or(POLL_INTERVAL)
+                .min(POLL_INTERVAL),
+        )?;
+    } else if let Some(remaining) = pump.remaining(now)
+        && !remaining.is_zero()
+    {
+        // This is the non-RT owner. Yield between control polls without a
+        // fixed 10 ms overshoot or spinning while no native request is pending.
+        sleep(remaining.min(Duration::from_millis(1)));
     }
+    Ok(())
 }
 
 /// Native events pace the IO worker, not Engine render. Waiting for the first

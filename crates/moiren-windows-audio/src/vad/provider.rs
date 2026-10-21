@@ -685,8 +685,11 @@ fn run_microphone(
                             if let Err(error) = pcm_worker::wait_for_microphone(
                                 owner.as_mut().expect("microphone owner"),
                                 &tickets,
+                                pump.as_mut().expect("microphone pump"),
                                 state,
                                 observed_reset,
+                                Instant::now(),
+                                thread::sleep,
                             ) {
                                 current =
                                     transport::after_io_error(&mut control, current, state, error)?;
