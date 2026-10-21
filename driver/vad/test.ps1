@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup')]
+    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal')]
     [string]$Test = 'all'
 )
 $ErrorActionPreference = 'Stop'
@@ -15,12 +15,17 @@ $version = (Get-Content -LiteralPath "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVe
 $tools = Join-Path $vs "VC\Tools\MSVC\$version"
 $sdk = "${env:ProgramFiles(x86)}\Windows Kits\10"
 $compiler = Join-Path $tools 'bin\Hostx64\x64\cl.exe'
-foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup') } else { @($Test) })) {
+foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal') } else { @($Test) })) {
     if ($testName -eq 'cleanup') {
         # Compile the real cleanup functions against host DDI stubs, not a copy.
         & python (Join-Path $PSScriptRoot 'tests\extract-cleanup.py') `
             (Join-Path $PSScriptRoot 'src\Device.cpp') (Join-Path $buildRoot 'cleanup-production.inc')
         if ($LASTEXITCODE -ne 0) { throw "Cleanup source extraction failed ($LASTEXITCODE)." }
+    }
+    if ($testName -eq 'removal') {
+        & python (Join-Path $PSScriptRoot 'tests\extract-cleanup.py') --kind removal `
+            (Join-Path $PSScriptRoot 'src\Children.cpp') (Join-Path $buildRoot 'removal-production.inc')
+        if ($LASTEXITCODE -ne 0) { throw "Removal source extraction failed ($LASTEXITCODE)." }
     }
     & $compiler /nologo /std:c++17 /W4 /WX /EHsc /MT `
         "/I$buildRoot" `
