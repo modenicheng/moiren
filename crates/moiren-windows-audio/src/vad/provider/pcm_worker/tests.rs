@@ -67,6 +67,11 @@ struct FakeIo {
     collected: Vec<u64>,
     waits: Vec<(PcmTicket, Duration)>,
     signal_on_wait: bool,
+    /// Stereo frames per fabricated playback READ packet; 1 keeps the
+    /// historical single-frame behavior used by the pump-only tests above.
+    render_frames: usize,
+    /// Constant sample value for those packets; None keeps sequence numbers.
+    render_value: Option<f32>,
 }
 impl Default for FakeIo {
     fn default() -> Self {
@@ -88,6 +93,8 @@ impl Default for FakeIo {
             collected: vec![],
             waits: vec![],
             signal_on_wait: false,
+            render_frames: 1,
+            render_value: None,
         }
     }
 }
@@ -134,13 +141,14 @@ impl PcmIo for FakeIo {
     fn read(&mut self) -> Result<PcmTicket, BackendError> {
         let ticket = self.book.reserve().unwrap();
         self.reads += 1;
+        let value = self.render_value.unwrap_or(self.reads as f32);
         self.slots[ticket.slot] = Slot {
             ready: false,
             stamp: PcmPacketStamp {
                 sequence: self.reads,
                 qpc: self.reads,
             },
-            packet: [self.reads as f32; 2]
+            packet: vec![value; self.render_frames * 2]
                 .into_iter()
                 .flat_map(f32::to_le_bytes)
                 .collect(),
@@ -1475,4 +1483,535 @@ fn activity_wait_targets_oldest_and_timeout_keeps_request_pending() {
         waits,
         "reset must return to quiescence, not wait"
     );
+}
+
+/// Deterministic reproduction of the target-machine combined-soak failure:
+/// one skipped Graph256 owner period resets both fenced boundaries, the
+/// microphone worker completes its discard handshake and re-arms a fresh
+/// pump, and the first post-reset `encode_packet` runs while the Graph has
+/// not yet published any fresh frames (the observed `0/480` silent packet).
+/// The real prepared owner renders through the real fenced boundaries; only
+/// the native PCM IO and both clocks are fakes.
+#[cfg(windows)]
+mod owner_reset_regression {
+    use super::*;
+    use crate::virtual_owner::{
+        ClockWake, VirtualMicrophoneSink, VirtualPlaybackSource, VirtualPreparedTransport,
+        VirtualRealtimeClock, VirtualResourceSession, VirtualSessions,
+    };
+    use crate::{ActivationGate, StopSignal};
+    use moiren_core::graph::NodeId;
+    use moiren_engine::compiler::CompiledBindings;
+    use moiren_engine::host::PreparedTransport;
+    use std::sync::Condvar;
+
+    const ENGINE_FRAMES: usize = 256;
+    const NATIVE_PACKET_FRAMES: usize = 480;
+    const CARRIER_FRAMES: usize = 4_800;
+    const BASELINE_PERIODS: usize = 64;
+    const RECOVERY_PERIODS: usize = 48;
+    /// One Graph256 period at 48 kHz: 256/48000 s.
+    const PERIOD: Duration = Duration::from_nanos(ENGINE_FRAMES as u64 * 1_000_000_000 / 48_000);
+    const RENDEZVOUS_SLICE: Duration = Duration::from_millis(50);
+    const RENDEZVOUS_DEADLINE: Duration = Duration::from_secs(30);
+
+    /// Owner clock whose time advances only on explicit test grants. Each
+    /// granted wake is acknowledged by the owner parking on its next timer
+    /// wait, so native-side steps never overlap a render.
+    struct StepClockState {
+        now: u64,
+        granted: usize,
+        entered: usize,
+        limit: usize,
+    }
+
+    #[derive(Clone)]
+    struct StepClock(Arc<(Mutex<StepClockState>, Condvar)>);
+
+    impl StepClock {
+        fn new(limit: usize) -> Self {
+            Self(Arc::new((
+                Mutex::new(StepClockState {
+                    now: 0,
+                    granted: 0,
+                    entered: 0,
+                    limit,
+                }),
+                Condvar::new(),
+            )))
+        }
+
+        fn await_owner_parked(&self) {
+            let (lock, signal) = &*self.0;
+            let mut state = lock.lock().unwrap();
+            let deadline = Instant::now() + RENDEZVOUS_DEADLINE;
+            while state.entered == 0 {
+                assert!(Instant::now() < deadline, "owner never parked on its clock");
+                let (guard, _) = signal
+                    .wait_timeout(state, RENDEZVOUS_SLICE)
+                    .expect("step clock");
+                state = guard;
+            }
+        }
+
+        /// Grant one schedule step and wait until the owner finished the
+        /// resulting render and parked again (or stopped after the limit).
+        fn advance(&self, ticks: u64) {
+            let (lock, signal) = &*self.0;
+            let mut state = lock.lock().unwrap();
+            state.now += ticks;
+            state.granted += 1;
+            signal.notify_all();
+            let parked = state.granted + 1;
+            let deadline = Instant::now() + RENDEZVOUS_DEADLINE;
+            while state.entered < parked {
+                assert!(
+                    Instant::now() < deadline,
+                    "owner never finished the granted period"
+                );
+                let (guard, _) = signal
+                    .wait_timeout(state, RENDEZVOUS_SLICE)
+                    .expect("step clock");
+                state = guard;
+            }
+        }
+    }
+
+    impl VirtualRealtimeClock for StepClock {
+        fn frequency(&self) -> u64 {
+            48_000
+        }
+        fn now_ticks(&mut self) -> Result<u64, BackendError> {
+            Ok(self.0.0.lock().unwrap().now)
+        }
+        fn wait_ticks(&mut self, ticks: u64) -> Result<ClockWake, BackendError> {
+            assert_eq!(
+                ticks, ENGINE_FRAMES as u64,
+                "wakes must stay exactly one Graph256 period apart"
+            );
+            let (lock, signal) = &*self.0;
+            let mut state = lock.lock().unwrap();
+            state.entered += 1;
+            signal.notify_all();
+            let deadline = Instant::now() + RENDEZVOUS_DEADLINE;
+            while state.granted < state.entered && state.entered <= state.limit {
+                assert!(Instant::now() < deadline, "owner wake was never granted");
+                let (guard, _) = signal
+                    .wait_timeout(state, RENDEZVOUS_SLICE)
+                    .expect("step clock");
+                state = guard;
+            }
+            Ok(if state.entered > state.limit {
+                ClockWake::Stopped
+            } else {
+                ClockWake::Timer
+            })
+        }
+    }
+
+    struct StubResourceSession;
+    impl VirtualResourceSession for StubResourceSession {
+        fn activate(&self) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn cancel(&self) {}
+        fn status(&self) -> OwnerStatus {
+            OwnerStatus::Running
+        }
+        fn stop_and_join(self: Box<Self>) -> Result<(), BackendError> {
+            Ok(())
+        }
+    }
+
+    struct PacketObservation {
+        silent_frames: usize,
+        native_step: usize,
+        reset_epoch: u64,
+        producer_epoch: u64,
+        consumer_epoch: u64,
+    }
+
+    fn silent_frames(packet: &[u8]) -> usize {
+        packet
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .filter(|frame| {
+                f32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]) == 0.0
+                    && f32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]]) == 0.0
+            })
+            .count()
+    }
+
+    /// The native worker halves of the VAD pair, driven with the same call
+    /// sequence as `run_playback`/`run_microphone` but without a driver.
+    struct NativeSide {
+        step: usize,
+        now: FakeClock,
+        playback_io: FakeIo,
+        playback_tickets: Vec<PcmTicket>,
+        playback_bridge: Option<PcmPlaybackBridge>,
+        playback_writer: Option<AudioWriter<f32>>,
+        playback_order: PacketOrder,
+        playback_observed: u64,
+        microphone_io: FakeIo,
+        microphone_tickets: Vec<PcmTicket>,
+        microphone_bridge: Option<PcmMicrophoneBridge>,
+        microphone_reader: Option<AudioReader<f32>>,
+        microphone_pump: Option<MicrophonePump>,
+        microphone_observed: u64,
+        packets: Vec<PacketObservation>,
+    }
+
+    impl NativeSide {
+        fn new(playback_writer: AudioWriter<f32>, microphone_reader: AudioReader<f32>) -> Self {
+            let playback_io = FakeIo {
+                render_frames: NATIVE_PACKET_FRAMES,
+                render_value: Some(0.25),
+                ..FakeIo::default()
+            };
+            Self {
+                step: 0,
+                now: FakeClock::default(),
+                playback_io,
+                playback_tickets: Vec::with_capacity(crate::vad::REQUEST_SLOTS),
+                playback_bridge: None,
+                playback_writer: Some(playback_writer),
+                playback_order: PacketOrder::default(),
+                playback_observed: 0,
+                microphone_io: FakeIo::default(),
+                microphone_tickets: vec![],
+                microphone_bridge: None,
+                microphone_reader: Some(microphone_reader),
+                microphone_pump: None,
+                microphone_observed: 0,
+                packets: vec![],
+            }
+        }
+
+        /// Native time advances with owner time but on its own instant line,
+        /// one period per step, so the 480-frame cadence stays rate-true.
+        fn advance_native_time(&mut self) {
+            self.now.advance(PERIOD);
+        }
+
+        /// The native client provides one 480-frame packet and the driver
+        /// finishes one outstanding microphone WRITE every other step.
+        fn complete_native_io(&mut self) {
+            if self.step.is_multiple_of(2) {
+                if let Some(&ticket) = self.playback_tickets.first() {
+                    self.playback_io.slots[ticket.slot].ready = true;
+                }
+                for &ticket in &self.microphone_tickets {
+                    self.microphone_io.slots[ticket.slot].ready = true;
+                }
+            }
+            self.step += 1;
+        }
+
+        fn playback_step(&mut self, state: &SessionState) {
+            if state.reset_epoch.load(Ordering::Acquire) != self.playback_observed
+                && !quiesce_playback(state, &mut self.playback_observed, || {
+                    self.playback_io.drain(&mut self.playback_tickets);
+                    if let Some(bridge) = self.playback_bridge.take() {
+                        self.playback_writer = Some(bridge.into_carrier());
+                    }
+                })
+            {
+                return;
+            }
+            if self.playback_bridge.is_none() {
+                self.playback_bridge = Some(
+                    PcmPlaybackBridge::new(
+                        Channels::Stereo,
+                        SampleFormat::Float32,
+                        NATIVE_PACKET_FRAMES,
+                        1 << 20,
+                        self.playback_writer
+                            .take()
+                            .expect("playback carrier is free"),
+                    )
+                    .expect("playback bridge shape"),
+                );
+                self.playback_order = PacketOrder::default();
+            }
+            playback(
+                &mut self.playback_io,
+                self.playback_bridge.as_mut().expect("playback bridge"),
+                &mut self.playback_tickets,
+                &mut self.playback_order,
+                state,
+                self.playback_observed,
+            )
+            .expect("playback pump");
+        }
+
+        fn microphone_step(&mut self, state: &SessionState) {
+            if state.reset_epoch.load(Ordering::Acquire) != self.microphone_observed {
+                self.microphone_io.drain(&mut self.microphone_tickets);
+                if let Some(bridge) = self.microphone_bridge.take() {
+                    self.microphone_reader = Some(bridge.into_carrier());
+                }
+                if !quiesce_microphone(
+                    state,
+                    &mut self.microphone_observed,
+                    self.microphone_reader
+                        .as_mut()
+                        .expect("microphone carrier is free"),
+                ) {
+                    return;
+                }
+                self.microphone_bridge = Some(
+                    PcmMicrophoneBridge::new(
+                        Channels::Stereo,
+                        SampleFormat::Float32,
+                        NATIVE_PACKET_FRAMES,
+                        1 << 20,
+                        self.microphone_reader
+                            .take()
+                            .expect("microphone carrier is free"),
+                    )
+                    .expect("microphone bridge shape"),
+                );
+                self.microphone_pump = Some(MicrophonePump::new(NATIVE_PACKET_FRAMES as u32));
+            }
+            if self.microphone_bridge.is_none() {
+                // First admission of the native stream, exactly like the
+                // worker building its bridge once the stream is running.
+                self.microphone_bridge = Some(
+                    PcmMicrophoneBridge::new(
+                        Channels::Stereo,
+                        SampleFormat::Float32,
+                        NATIVE_PACKET_FRAMES,
+                        1 << 20,
+                        self.microphone_reader
+                            .take()
+                            .expect("microphone carrier is free"),
+                    )
+                    .expect("microphone bridge shape"),
+                );
+                self.microphone_pump = Some(MicrophonePump::new(NATIVE_PACKET_FRAMES as u32));
+            }
+            let before = self.microphone_io.written.len();
+            microphone(
+                &mut self.microphone_io,
+                self.microphone_bridge.as_mut().expect("microphone bridge"),
+                &mut self.microphone_tickets,
+                self.microphone_pump.as_mut().expect("microphone pump"),
+                state,
+                self.microphone_observed,
+                || self.now.now(),
+            )
+            .expect("microphone pump");
+            let reset_epoch = state.reset_epoch.load(Ordering::Acquire);
+            let producer_epoch = state.producer_quiesced_epoch.load(Ordering::Acquire);
+            let consumer_epoch = state.consumer_quiesced_epoch.load(Ordering::Acquire);
+            for packet in &self.microphone_io.written[before..] {
+                self.packets.push(PacketObservation {
+                    silent_frames: silent_frames(packet),
+                    native_step: self.step,
+                    reset_epoch,
+                    producer_epoch,
+                    consumer_epoch,
+                });
+            }
+        }
+    }
+
+    fn passthrough_engine(
+        source: VirtualPlaybackSource,
+        sink: VirtualMicrophoneSink,
+    ) -> (Engine<f32>, CompiledBindings, NodeId) {
+        let mut graph = LogicalGraph::new();
+        let input = graph.create_node(NodeKind::Source, 2).unwrap();
+        let output = graph.create_node(NodeKind::Sink, 2).unwrap();
+        graph
+            .connect(
+                graph.get_node(input).unwrap().outputs()[0].id(),
+                graph.get_node(output).unwrap().inputs()[0].id(),
+                SendParams::default(),
+            )
+            .unwrap();
+        let mut bindings = NodeBindings::new();
+        bindings.bind_source(input, source).unwrap();
+        bindings.bind_sink(output, sink).unwrap();
+        let mut compiled = compile(
+            &graph,
+            bindings,
+            CompileConfig {
+                engine: EngineConfig {
+                    processing_sr: 48_000.0,
+                    max_block_frames: ENGINE_FRAMES,
+                    max_events_per_block: 8,
+                },
+                audio_byte_budget: 1 << 20,
+                plan_revision: 1,
+                timeline_epoch: 1,
+                control_capacity: 8,
+                control_horizon_frames: 48_000,
+            },
+        )
+        .unwrap();
+        let plans = compiled.engine.enable_plan_switching(1).unwrap();
+        drop(plans);
+        (compiled.engine, compiled.bindings, output)
+    }
+
+    #[test]
+    fn one_skipped_owner_period_leaves_no_silent_microphone_packet() {
+        let playback_state = Arc::new(state());
+        let microphone_state = Arc::new(state());
+        let (playback_writer, playback_reader) = audio_bridge(2, CARRIER_FRAMES, 1 << 20).unwrap();
+        let (microphone_writer, microphone_reader) =
+            audio_bridge(2, CARRIER_FRAMES, 1 << 20).unwrap();
+        let source = VirtualPlaybackSource::new(playback_reader, 2, ENGINE_FRAMES, 48_000, 1 << 20)
+            .unwrap()
+            .with_reset_fence(
+                playback_state.reset_epoch.clone(),
+                playback_state.producer_quiesced_epoch.clone(),
+                playback_state.consumer_quiesced_epoch.clone(),
+            )
+            .with_clock_drift()
+            .unwrap();
+        let sink = VirtualMicrophoneSink::new(microphone_writer, 2, ENGINE_FRAMES, 48_000, 1 << 20)
+            .unwrap()
+            .with_reset_fence(
+                microphone_state.reset_epoch.clone(),
+                microphone_state.producer_quiesced_epoch.clone(),
+                microphone_state.consumer_quiesced_epoch.clone(),
+            )
+            .with_clock_drift()
+            .unwrap();
+        let (engine, bindings, sink_node) = passthrough_engine(source, sink);
+
+        let total = BASELINE_PERIODS + RECOVERY_PERIODS;
+        let clock = StepClock::new(total);
+        let mut sessions = VirtualSessions::default();
+        sessions.push_with_reset_epoch(
+            Box::new(StubResourceSession),
+            playback_state.reset_epoch.clone(),
+        );
+        sessions.push_with_reset_epoch(
+            Box::new(StubResourceSession),
+            microphone_state.reset_epoch.clone(),
+        );
+        let stop = StopSignal::new().unwrap();
+        let gate = ActivationGate::new(stop.clone()).unwrap();
+        let transport = Box::new(VirtualPreparedTransport::new(
+            vec![sink_node],
+            sessions,
+            stop,
+            gate,
+            Box::new(clock.clone()),
+        ));
+        let owner = transport
+            .attach(engine, &bindings, CancellationToken::default())
+            .unwrap_or_else(|failure| panic!("virtual attachment failed: {:?}", failure.error));
+        owner.activate().unwrap();
+        clock.await_owner_parked();
+
+        let mut native = NativeSide::new(playback_writer, microphone_reader);
+        let skip_step = BASELINE_PERIODS;
+        let mut baseline_packets = 0;
+        for step in 0..total {
+            if step == skip_step {
+                assert_eq!(
+                    playback_state.reset_epoch.load(Ordering::Acquire),
+                    0,
+                    "baseline must not trigger resets"
+                );
+                assert_eq!(microphone_state.reset_epoch.load(Ordering::Acquire), 0);
+                baseline_packets = native.packets.len();
+                let recent = native
+                    .packets
+                    .iter()
+                    .rev()
+                    .take(10)
+                    .map(|packet| packet.silent_frames)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    recent.len(),
+                    10,
+                    "baseline must submit at least ten packets"
+                );
+                assert!(
+                    recent.iter().all(|&silent| silent == 0),
+                    "baseline never reached continuous non-zero audio: {recent:?}"
+                );
+            }
+            native.advance_native_time();
+            native.complete_native_io();
+            native.playback_step(&playback_state);
+            native.microphone_step(&microphone_state);
+            // Delay exactly one wake by one period: skipped_periods == 1.
+            let ticks = if step == skip_step {
+                (ENGINE_FRAMES * 2) as u64
+            } else {
+                ENGINE_FRAMES as u64
+            };
+            clock.advance(ticks);
+        }
+
+        let returned = owner.stop_and_join();
+        assert!(returned.error.is_none());
+        assert_eq!(returned.engine.timeline(), (total * ENGINE_FRAMES) as u64);
+
+        // The single skipped period is absorbed as jitter: no boundary reset
+        // was requested, no fence moved, and the packet stream stayed audible.
+        assert_eq!(
+            playback_state.reset_epoch.load(Ordering::Acquire),
+            0,
+            "one skipped period must not reset the playback boundary"
+        );
+        assert_eq!(
+            microphone_state.reset_epoch.load(Ordering::Acquire),
+            0,
+            "one skipped period must not reset the microphone boundary"
+        );
+        assert_eq!(
+            microphone_state
+                .producer_quiesced_epoch
+                .load(Ordering::Acquire),
+            0
+        );
+        assert_eq!(
+            microphone_state
+                .consumer_quiesced_epoch
+                .load(Ordering::Acquire),
+            0
+        );
+        // Steady state legitimately keeps four playback READs and one
+        // microphone WRITE in flight; the reset must not orphan book slots.
+        assert_eq!(
+            native.playback_io.book.pending(),
+            native.playback_tickets.len(),
+            "every playback book slot must belong to a live request"
+        );
+        assert_eq!(
+            native.microphone_io.book.pending(),
+            native.microphone_tickets.len(),
+            "every microphone book slot must belong to a live request"
+        );
+
+        let post: Vec<(usize, usize, u64, u64, u64)> = native.packets[baseline_packets..]
+            .iter()
+            .map(|packet| {
+                (
+                    packet.native_step,
+                    packet.silent_frames,
+                    packet.reset_epoch,
+                    packet.producer_epoch,
+                    packet.consumer_epoch,
+                )
+            })
+            .collect();
+        let silent: Vec<_> = post.iter().filter(|(_, silent, ..)| *silent > 0).collect();
+        assert!(
+            silent.is_empty(),
+            "a single skipped owner period must not silence any microphone \
+             packet (target signature: first post-reset packet is 0/480); \
+             post-skip packets (native_step, silent_frames, reset_epoch, \
+             producer_epoch, consumer_epoch): {post:?}"
+        );
+    }
 }

@@ -263,6 +263,16 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
     }
 }
 
+/// One missed period is ordinary scheduler jitter, not a timeline break: the
+/// unrendered input stays queued in the boundary carriers (they are queues,
+/// not wall-clock slots) and the follower servo absorbs the level shift, so
+/// the client keeps a continuous waveform. Resetting every fence for it would
+/// discard ~50 ms of valid audio and force an FIR re-prime — the combined-soak
+/// silent-packet failure. A wake this late covers less than two periods
+/// (< ~10.7 ms at Graph256/48 kHz); two or more missed periods are treated as
+/// a real stall and keep the full reset handshake.
+const STALL_RESET_SKIPPED_PERIODS: u64 = 2;
+
 fn run<S: ProcessingSample>(
     engine: &mut Engine<S>,
     clock: &mut dyn VirtualRealtimeClock,
@@ -307,7 +317,9 @@ fn run<S: ProcessingSample>(
         };
         if tick.skipped_periods > 0 {
             clock_trace.record(now, engine.timeline(), tick.skipped_periods, GapStage::Wake);
-            reset_timeline(timeline_resets);
+            if tick.skipped_periods >= STALL_RESET_SKIPPED_PERIODS {
+                reset_timeline(timeline_resets);
+            }
         }
         // Exactly one Engine executes one bounded block per due wake. External
         // microphone client counts are deliberately absent from this decision.
@@ -325,7 +337,9 @@ fn run<S: ProcessingSample>(
                 skipped,
                 GapStage::AfterRender,
             );
-            reset_timeline(timeline_resets);
+            if skipped >= STALL_RESET_SKIPPED_PERIODS {
+                reset_timeline(timeline_resets);
+            }
         }
     }
 }

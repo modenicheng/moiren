@@ -153,6 +153,82 @@ fn late_clock_wake_discards_old_playback_before_rendering_one_current_block() {
     assert_eq!(samples, [0.0; 16]);
 }
 
+/// One missed period (scheduler jitter) must not trigger the full boundary
+/// reset: the unrendered input stays queued and the rendered block still
+/// carries real carrier content, while the gap itself stays on the clock
+/// trace for diagnostics.
+#[test]
+fn single_skipped_period_is_absorbed_without_resetting_boundaries() {
+    struct OnePeriodLateClock(FakeClock);
+    impl VirtualRealtimeClock for OnePeriodLateClock {
+        fn frequency(&self) -> u64 {
+            self.0.frequency()
+        }
+        fn now_ticks(&mut self) -> Result<u64, BackendError> {
+            self.0.now_ticks()
+        }
+        fn wait_ticks(&mut self, ticks: u64) -> Result<ClockWake, BackendError> {
+            let wake = self.0.wait_ticks(ticks)?;
+            if wake == ClockWake::Timer && self.0.wakes == 1 {
+                self.0.now += 8;
+            }
+            Ok(wake)
+        }
+    }
+
+    let reset = Arc::new(AtomicU64::new(0));
+    let (mut writer, reader) = audio_bridge(2, 8, 4096).unwrap();
+    writer.write_interleaved(&[0.75; 16]).unwrap();
+    let source = VirtualPlaybackSource::new(reader, 1, 8, 48_000, 4096)
+        .unwrap()
+        .with_reset_epoch(reset.clone());
+    let (mut engine, _, _, mut microphone) = engine_with_source(source);
+    let published = Published::new(&engine);
+    let mut clock = OnePeriodLateClock(FakeClock {
+        now: 0,
+        wakes: 0,
+        limit: 1,
+        stall_after_first_render: false,
+        reads_after_wait: 0,
+    });
+    let mut trace = ClockTrace::default();
+    run(
+        &mut engine,
+        &mut clock,
+        &published,
+        std::slice::from_ref(&reset),
+        &StopSignal::new().unwrap(),
+        &mut trace,
+    )
+    .unwrap();
+    assert_eq!(
+        trace.observed().collect::<Vec<_>>(),
+        [(16, 0, 1, GapStage::Wake)]
+    );
+    assert_eq!(
+        reset.load(Ordering::Acquire),
+        0,
+        "one missed period is jitter, not a timeline break"
+    );
+    assert_eq!(engine.timeline(), 8);
+    let mut samples = [f32::NAN; 16];
+    assert_eq!(
+        microphone
+            .read_interleaved(&mut samples)
+            .unwrap()
+            .transferred_frames,
+        8
+    );
+    let mut expected = [0.0; 16];
+    for frame in expected.as_chunks_mut::<2>().0 {
+        frame[0] = 0.75;
+    }
+    assert_eq!(
+        samples, expected,
+        "queued input must render through without a discard"
+    );
+}
+
 #[test]
 fn zero_microphone_clients_still_execute_the_single_engine_after_clock_stall() {
     for stall in [false, true] {
