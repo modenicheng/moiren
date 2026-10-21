@@ -212,7 +212,7 @@ impl VirtualPlaybackSource {
         })
     }
 
-    /// Off-RT opt-in for a physical master crossing the driver's QPC clock.
+    /// Off-RT opt-in for independently paced native and Engine callbacks.
     /// Uses the existing carrier's headroom and the bounded follower servo;
     /// playback content may prime, but Engine/owner activation never waits.
     /// Unlike `new`, this prepares a FIR even at equal 48 kHz rates.
@@ -484,7 +484,7 @@ impl VirtualMicrophoneSink {
         })
     }
 
-    /// Off-RT physical-master drift adaptation without an additional carrier.
+    /// Off-RT packet-phase/drift adaptation without an additional carrier.
     /// The free-space servo has the inverse sign: more free space means the
     /// FIR must produce faster, not consume Engine input faster.
     /// Uses the same ring-derived, unqualified residency policy as

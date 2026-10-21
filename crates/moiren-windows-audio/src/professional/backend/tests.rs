@@ -10,6 +10,9 @@ mod fakes;
 use fakes::*;
 use std::sync::atomic::Ordering;
 
+#[path = "packet_phase_tests.rs"]
+mod packet_phase;
+
 fn virtual_project(channels: usize, rate: u32) -> EngineProject {
     let mut project = EngineProject::default();
     project.processing.engine.processing_sr = f64::from(rate);
@@ -204,6 +207,16 @@ fn virtual_matrix<S: ProcessingSample>() {
                     request.max_block_frames,
                     project.processing.engine.max_block_frames
                 );
+            }
+            // The finite provider seed can sit below the drift boundary's
+            // content-prime threshold. Supply real native packets before the
+            // owner starts; never bypass priming or weaken the PCM assertions.
+            let packet = [0.25, -0.5].repeat(480);
+            for playback in probe.playback.lock().unwrap().iter_mut() {
+                let target = playback.capacity_frames() * 3 / 4;
+                while playback.capacity_frames() - playback.available_frames() < target {
+                    assert!(playback.write_interleaved_exact(&packet).unwrap());
+                }
             }
             let owner = attach(&project, prepared, cancel);
             assert_eq!(owner.timeline().unwrap().frame, 0);

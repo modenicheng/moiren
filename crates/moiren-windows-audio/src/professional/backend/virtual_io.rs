@@ -38,9 +38,6 @@ pub(super) fn prepare<S: ProcessingSample>(
     let mut sessions = VirtualSessions::default();
     let mut sinks = Vec::new();
     let config = request.project.processing;
-    let physical_master = request.project.nodes.values().any(|node| {
-        matches!(node, NodeConfig::Output(output) if matches!(output.target, OutputTarget::Physical(_)))
-    });
     for (&node, config_node) in &request.project.nodes {
         if cancel.is_cancelled() {
             return Err(BackendError::Cancelled);
@@ -81,12 +78,10 @@ pub(super) fn prepare<S: ProcessingSample>(
                 prepared.reset_epoch,
                 prepared.producer_quiesced_epoch,
                 prepared.consumer_quiesced_epoch,
-            );
-            let source = if physical_master {
-                source.with_clock_drift()?
-            } else {
-                source
-            };
+            )
+            // Native packet publication and a virtual QPC owner's block wakes
+            // have independent phases even at the same nominal sample rate.
+            .with_clock_drift()?;
             bindings.bind_source(node, source).map_err(unsupported)?;
         } else {
             let prepared = provider.prepare_microphone(boundary, cancel)?;
@@ -102,12 +97,8 @@ pub(super) fn prepare<S: ProcessingSample>(
                 prepared.reset_epoch,
                 prepared.producer_quiesced_epoch,
                 prepared.consumer_quiesced_epoch,
-            );
-            let sink = if physical_master {
-                sink.with_clock_drift()?
-            } else {
-                sink
-            };
+            )
+            .with_clock_drift()?;
             bindings.bind_sink(node, sink).map_err(unsupported)?;
             sinks.push(node);
         }

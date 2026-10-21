@@ -211,12 +211,8 @@ impl WindowsBackend {
                         prepared.reset_epoch,
                         prepared.producer_quiesced_epoch,
                         prepared.consumer_quiesced_epoch,
-                    );
-                    let sink = if matches!(project_clock, ProjectClock::Physical(_)) {
-                        sink.with_clock_drift()?
-                    } else {
-                        sink
-                    };
+                    )
+                    .with_clock_drift()?;
                     bindings
                         .bind_sink(node, sink)
                         .map_err(|error| BackendError::Unsupported(error.to_string()))?;
@@ -358,12 +354,12 @@ impl WindowsBackend {
                         prepared.reset_epoch,
                         prepared.producer_quiesced_epoch,
                         prepared.consumer_quiesced_epoch,
-                    );
-                    let source = if matches!(project_clock, ProjectClock::Physical(_)) {
-                        source.with_clock_drift()?
-                    } else {
-                        source
-                    };
+                    )
+                    // Equal QPC rates do not synchronize the native packet and
+                    // Graph wake phases. Reserve existing carrier headroom for
+                    // both virtual and physical masters, without delaying owner
+                    // activation or adding a second Graph executor.
+                    .with_clock_drift()?;
                     bindings
                         .bind_source(node, source)
                         .map_err(|error| BackendError::Unsupported(error.to_string()))?;

@@ -16,7 +16,7 @@ use moiren_engine::{
 };
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
 #[derive(Default)]
@@ -338,4 +338,104 @@ fn virtual_io_refuses_unadmitted_latency_profiles_before_opening_resources() {
         assert_eq!(state.prepared_playback.load(Ordering::Acquire), 0);
         assert_eq!(state.prepared_microphone.load(Ordering::Acquire), 0);
     }
+}
+
+#[test]
+fn virtual_qpc_owner_adapts_packet_phase_without_a_physical_master() {
+    use moiren_engine::boundary::{AudioReader, AudioWriter};
+    struct PacketProvider {
+        producer: Mutex<Option<AudioWriter<f32>>>,
+        consumer: Mutex<Option<AudioReader<f32>>>,
+    }
+    impl VirtualBoundaryProvider for PacketProvider {
+        fn prepare_playback(
+            &self,
+            request: VirtualBoundaryRequest,
+            _: &CancellationToken,
+        ) -> Result<PreparedVirtualPlayback, BackendError> {
+            let (writer, reader) = audio_bridge(2, 4800, request.audio_byte_budget).unwrap();
+            *self.producer.lock().unwrap() = Some(writer);
+            Ok(PreparedVirtualPlayback {
+                carrier: reader,
+                reset_epoch: Arc::new(AtomicU64::new(0)),
+                producer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
+                consumer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
+                session: Box::new(FakeSession::new(Arc::default())),
+            })
+        }
+        fn prepare_microphone(
+            &self,
+            request: VirtualBoundaryRequest,
+            _: &CancellationToken,
+        ) -> Result<PreparedVirtualMicrophone, BackendError> {
+            let (writer, reader) = audio_bridge(2, 4800, request.audio_byte_budget).unwrap();
+            *self.consumer.lock().unwrap() = Some(reader);
+            Ok(PreparedVirtualMicrophone {
+                carrier: writer,
+                reset_epoch: Arc::new(AtomicU64::new(0)),
+                producer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
+                consumer_quiesced_epoch: Arc::new(AtomicU64::new(0)),
+                session: Box::new(FakeSession::new(Arc::default())),
+            })
+        }
+    }
+    let mut project = virtual_project();
+    project.processing.engine.max_block_frames = 256;
+    project.processing.engine.processing_sr = 48_000.0;
+    project.processing.audio_byte_budget = 1 << 20;
+    let provider = Arc::new(PacketProvider {
+        producer: Mutex::new(None),
+        consumer: Mutex::new(None),
+    });
+    let backend = WindowsBackend::new(Default::default())
+        .unwrap()
+        .with_virtual_provider(provider.clone());
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let prepared = backend
+        .prepare(
+            prepare_request(&project, &host),
+            &CancellationToken::default(),
+        )
+        .unwrap();
+    let mut engine = compile(
+        &project.graph,
+        prepared.bindings,
+        project.processing.compile_config(1, 1),
+    )
+    .unwrap()
+    .engine;
+    let mut producer = provider.producer.lock().unwrap().take().unwrap();
+    let mut consumer = provider.consumer.lock().unwrap().take().unwrap();
+    let mut next_packet = 480_u64;
+    let mut packets = 0;
+    let mut samples = [f32::NAN; 1024];
+    let mut silent = 0;
+    let mut checked = 0;
+    // Native and Engine use the same nominal QPC rate but independent phases.
+    // A one-ms delivery shift after settling must not drain a zero-reserve
+    // source. All scheduling is simulated; no audio device or sleeps occur.
+    for now in (256_u64..=480_000).step_by(256) {
+        let jitter = if packets >= 200 { 48 } else { 0 };
+        if next_packet + jitter <= now {
+            assert!(producer.write_interleaved_exact(&[0.25; 960]).unwrap());
+            next_packet += 480;
+            packets += 1;
+        }
+        engine.render(256).unwrap();
+        let frames = consumer.available_frames();
+        assert!(frames <= samples.len() / 2);
+        consumer
+            .read_interleaved(&mut samples[..frames * 2])
+            .unwrap();
+        if now > 48_000 {
+            checked += frames;
+            for frame in samples[..frames * 2].as_chunks::<2>().0 {
+                silent += usize::from(frame[0].abs() <= 0.0001);
+                assert_eq!(frame[1], 0.0, "mono never duplicates its channel");
+            }
+        }
+    }
+    assert!(checked > 400_000);
+    assert_eq!(silent, 0, "packet-phase starvation after settling");
 }
