@@ -66,7 +66,7 @@ pub struct NativeBoundaryProbe {
 #[derive(Clone, Default)]
 pub struct NativeObservations(Arc<Mutex<Option<Arc<Session>>>>);
 #[cfg(any(windows, test))]
-pub(super) struct ObservationLease {
+pub(crate) struct ObservationLease {
     observations: NativeObservations,
     generation: u64,
 }
@@ -89,7 +89,7 @@ pub(super) struct Session {
 }
 impl NativeObservations {
     #[cfg(any(windows, test))]
-    pub(super) fn lease(&self, generation: u64) -> ObservationLease {
+    pub(crate) fn lease(&self, generation: u64) -> ObservationLease {
         ObservationLease {
             observations: self.clone(),
             generation,
@@ -132,7 +132,7 @@ impl NativeObservations {
         })
     }
     #[cfg(any(windows, test))]
-    pub(super) fn publish(
+    pub(crate) fn publish(
         &self,
         generation: u64,
         streams: Vec<NativeStreamObservation>,
@@ -152,7 +152,7 @@ impl NativeObservations {
         }));
     }
     #[cfg(any(windows, test))]
-    pub(super) fn running(&self, generation: u64) {
+    pub(crate) fn running(&self, generation: u64) {
         if let Some(session) = self
             .0
             .lock()
@@ -164,7 +164,7 @@ impl NativeObservations {
         }
     }
     #[cfg(any(windows, test))]
-    pub(super) fn clear(&self, generation: u64) {
+    pub(crate) fn clear(&self, generation: u64) {
         let mut state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
         if state
             .as_ref()

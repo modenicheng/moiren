@@ -443,3 +443,123 @@ fn virtual_qpc_owner_adapts_packet_phase_without_a_physical_master() {
     assert!(checked > 400_000);
     assert_eq!(silent, 0, "packet-phase starvation after settling");
 }
+
+#[test]
+fn virtual_only_owner_publishes_native_observations_with_boundary_probes() {
+    let project = virtual_project();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (signal_host, _rt_host) = bus.create_host(8).unwrap();
+    let backend = WindowsBackend::new(Default::default())
+        .unwrap()
+        .with_virtual_provider(Arc::new(FakeProvider {
+            state: Arc::new(SessionState::default()),
+        }))
+        .with_virtual_clock_factory(Arc::new(FakeClockFactory));
+
+    let prepared = backend
+        .prepare(
+            prepare_request(&project, &signal_host),
+            &CancellationToken::default(),
+        )
+        .unwrap();
+    assert!(
+        backend.observations().snapshot().is_none(),
+        "observations publish only with an attached owner"
+    );
+    let transport = prepared.transport.expect("virtual owner transport");
+    let compiled = compile(
+        &project.graph,
+        prepared.bindings,
+        project.processing.compile_config(1, 1),
+    )
+    .unwrap();
+    let mut engine = compiled.engine;
+    engine.enable_plan_switching(1).unwrap();
+    let owner = match transport.attach(engine, &compiled.bindings, CancellationToken::default()) {
+        Ok(owner) => owner,
+        Err(failure) => panic!("virtual owner attachment failed: {}", failure.error),
+    };
+
+    let snapshot = backend
+        .observations()
+        .snapshot()
+        .expect("attached virtual owner publishes its observation set");
+    assert_eq!(snapshot.owner_generation, 7);
+    assert!(!snapshot.running, "running flips only at owner Running");
+    let kinds = snapshot
+        .streams
+        .iter()
+        .map(|stream| (stream.kind, stream.timing.is_none()))
+        .collect::<Vec<_>>();
+    assert!(kinds.contains(&(NativeStreamKind::VirtualPlayback, true)));
+    assert!(kinds.contains(&(NativeStreamKind::VirtualMicrophone, true)));
+    let probe_kinds = snapshot
+        .boundary_probes
+        .iter()
+        .map(|probe| probe.kind)
+        .collect::<Vec<_>>();
+    assert!(probe_kinds.contains(&NativeStreamKind::VirtualPlayback));
+    assert!(probe_kinds.contains(&NativeStreamKind::VirtualMicrophone));
+
+    owner.activate().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while owner.status() != OwnerStatus::Running {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "virtual backend owner did not reach Running"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        backend.observations().snapshot().unwrap().running,
+        "Running status publishes the running flag"
+    );
+
+    let returned = owner.stop_and_join();
+    assert!(
+        returned.error.is_none(),
+        "owner failed: {:?}",
+        returned.error
+    );
+    assert!(
+        backend.observations().snapshot().is_none(),
+        "owner teardown clears the published observation set"
+    );
+}
+
+#[test]
+fn cancelled_virtual_attach_publishes_no_observations() {
+    let project = virtual_project();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (signal_host, _rt_host) = bus.create_host(8).unwrap();
+    let backend = WindowsBackend::new(Default::default())
+        .unwrap()
+        .with_virtual_provider(Arc::new(FakeProvider {
+            state: Arc::new(SessionState::default()),
+        }))
+        .with_virtual_clock_factory(Arc::new(FakeClockFactory));
+    let prepared = backend
+        .prepare(
+            prepare_request(&project, &signal_host),
+            &CancellationToken::default(),
+        )
+        .unwrap();
+    let transport = prepared.transport.expect("virtual owner transport");
+    let compiled = compile(
+        &project.graph,
+        prepared.bindings,
+        project.processing.compile_config(1, 1),
+    )
+    .unwrap();
+    let cancelled = CancellationToken::default();
+    cancelled.cancel();
+    let error = match transport.attach(compiled.engine, &compiled.bindings, cancelled) {
+        Ok(_) => panic!("cancelled attach must fail"),
+        Err(failure) => failure.error,
+    };
+    assert!(matches!(error, BackendError::Cancelled));
+    assert!(
+        backend.observations().snapshot().is_none(),
+        "a rejected attach must not publish observations"
+    );
+}
