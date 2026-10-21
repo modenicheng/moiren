@@ -8,6 +8,14 @@ pub(super) fn poll<C: EndpointControl>(
     state: &SessionState,
 ) -> Result<(super::super::EndpointSnapshot, bool), BackendError> {
     let queried = control.query(previous)?;
+    if queried.dropped_packets() != previous.dropped_packets()
+        || queried.silence_packets() != previous.silence_packets()
+    {
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=transport_pcm_counters previous={previous:?} queried={queried:?}",
+        );
+    }
     let admitted_before = state.admitted();
     if queried.stream_generation() != previous.stream_generation() {
         state.revoke();

@@ -228,7 +228,13 @@ pub(super) fn microphone<C: PcmIo>(
             Some(PcmCompletion::Capture { stamp, bytes }) if bytes == bridge.packet_bytes() => {
                 stamp
             }
-            Some(PcmCompletion::CaptureDropped { stamp }) => stamp,
+            Some(PcmCompletion::CaptureDropped { stamp }) => {
+                log::debug!(
+                    target: "moiren::audio::vad",
+                    "event=microphone_request_expired epoch={epoch} stamp={stamp:?}",
+                );
+                stamp
+            }
             Some(_) => {
                 return Err(BackendError::Failed(
                     "microphone completion shape changed".into(),

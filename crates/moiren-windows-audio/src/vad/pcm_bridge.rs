@@ -185,9 +185,18 @@ impl PcmMicrophoneBridge {
 
     /// Drains one fixed-size packet; any missing Engine frames are silence.
     pub fn encode_packet(&mut self) -> Result<&[u8], PcmBoundaryError> {
-        self.carrier
+        let report = self
+            .carrier
             .read_interleaved(&mut self.engine_packet)
             .expect("prepared stereo carrier accepts interleaved frames");
+        if report.transferred_frames < self.engine_packet.len() / 2 {
+            log::debug!(
+                target: "moiren::audio::vad",
+                "event=microphone_carrier_short requested_frames={} transferred_frames={} report={report:?}",
+                self.engine_packet.len() / 2,
+                report.transferred_frames,
+            );
+        }
         encode_interleaved(
             &self.engine_packet,
             &mut self.pcm_packet,
