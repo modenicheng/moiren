@@ -43,7 +43,9 @@ impl PacketOrder {
 pub(super) struct MicrophonePump {
     order: PacketOrder,
     half_period: Duration,
+    period: Duration,
     next_submit: Option<Instant>,
+    last_phase: Option<Instant>,
     observation_gap: Duration,
     last_observed: Option<Instant>,
 }
@@ -55,7 +57,11 @@ impl MicrophonePump {
             half_period: Duration::from_nanos(
                 (u64::from(packet_frames) * 1_000_000_000).div_ceil(u64::from(SAMPLE_RATE) * 2),
             ),
+            period: Duration::from_nanos(
+                (u64::from(packet_frames) * 1_000_000_000).div_ceil(u64::from(SAMPLE_RATE)),
+            ),
             next_submit: None,
+            last_phase: None,
             observation_gap: Duration::from_nanos(
                 (u64::from(packet_frames) * 1_000_000_000).div_ceil(u64::from(SAMPLE_RATE)),
             ) + POLL_INTERVAL,
@@ -72,6 +78,7 @@ impl MicrophonePump {
         if state.cancel.load(Ordering::Acquire) || !epoch_ready(state, epoch) {
             self.order = PacketOrder::default();
             self.next_submit = None;
+            self.last_phase = None;
             self.last_observed = None;
             return false;
         }
@@ -224,16 +231,16 @@ pub(super) fn microphone<C: PcmIo>(
         if !pump.observe(state, epoch, now()) {
             return Ok(PumpState::Reset);
         }
-        let stamp = match owner.complete(ticket)? {
+        let (stamp, dropped) = match owner.complete(ticket)? {
             Some(PcmCompletion::Capture { stamp, bytes }) if bytes == bridge.packet_bytes() => {
-                stamp
+                (stamp, false)
             }
             Some(PcmCompletion::CaptureDropped { stamp }) => {
                 log::debug!(
                     target: "moiren::audio::vad",
                     "event=microphone_request_expired epoch={epoch} stamp={stamp:?}",
                 );
-                stamp
+                (stamp, true)
             }
             Some(_) => {
                 return Err(BackendError::Failed(
@@ -252,12 +259,22 @@ pub(super) fn microphone<C: PcmIo>(
             ));
         }
         tickets.remove(0);
-        // Shift replenishment away from the one-period freshness cliff. The
-        // driver still checks the real submission age at native consumption.
-        pump.next_submit =
-            Some(collected_at.checked_add(pump.half_period).ok_or_else(|| {
-                BackendError::Failed("microphone phase deadline overflow".into())
-            })?);
+        // Only the first completion establishes the halfway phase. Later
+        // collection can be delayed by scheduling or control IO; using it as
+        // a fresh origin would push a future WRITE past the native deadline.
+        // A successful but late collection submits one freshly encoded packet
+        // immediately, never a burst. Expiry cannot establish a native phase.
+        let cadence = (!dropped)
+            .then_some(pump.last_phase)
+            .flatten()
+            .and_then(|phase| phase.checked_add(pump.period))
+            .map(|phase| phase.max(collected_at));
+        pump.next_submit = Some(match cadence {
+            Some(phase) => phase,
+            None => collected_at
+                .checked_add(pump.half_period)
+                .ok_or_else(|| BackendError::Failed("microphone phase deadline overflow".into()))?,
+        });
     }
     if tickets.is_empty()
         && pump
@@ -273,8 +290,12 @@ pub(super) fn microphone<C: PcmIo>(
         if !pump.observe(state, epoch, now()) {
             return Ok(PumpState::Reset);
         }
+        let submitted_at = now();
         tickets.push(owner.write(packet)?);
-        pump.next_submit = None;
+        pump.last_phase = pump
+            .next_submit
+            .take()
+            .filter(|&phase| submitted_at.saturating_duration_since(phase) < pump.period);
     }
     Ok(PumpState::Current)
 }

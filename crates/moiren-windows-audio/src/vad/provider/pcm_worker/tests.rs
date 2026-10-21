@@ -1212,6 +1212,79 @@ fn microphone_phase_reads_carrier_only_when_due() {
 }
 
 #[test]
+fn microphone_delayed_collection_does_not_shift_the_next_native_phase() {
+    let mut f = MicrophoneFixture::new(480);
+    f.cycle().unwrap();
+    // Native consumes at 10 ms; the first collected completion establishes
+    // a halfway replenishment phase at 15 ms.
+    f.clock.advance(Duration::from_millis(10));
+    f.collect(false);
+    f.clock.advance(Duration::from_millis(5));
+    f.cycle().unwrap();
+    assert_eq!(f.io.written.len(), 2);
+
+    // The second request was consumed at 20 ms, but a scheduling delay makes
+    // that completion observable at 23 ms. This is not a new native phase.
+    f.clock.advance(Duration::from_millis(8));
+    f.collect(false);
+    f.writer.write_interleaved_exact(&vec![3.; 960]).unwrap();
+    f.clock.advance(Duration::from_millis(2));
+    f.cycle().unwrap();
+    assert_eq!(f.io.written.len(), 3, "preserve the 25 ms phase");
+    assert_eq!(f.io.written[2], 3.0_f32.to_le_bytes().repeat(960));
+    assert_eq!(f.tickets.len(), 1);
+}
+
+#[test]
+fn microphone_successful_collection_at_or_past_phase_submits_one_fresh_packet() {
+    for collected_ms in [25, 26, 31] {
+        let mut f = MicrophoneFixture::new(480);
+        f.cycle().unwrap();
+        f.clock.advance(Duration::from_millis(10));
+        f.collect(false);
+        f.clock.advance(Duration::from_millis(5));
+        f.cycle().unwrap();
+        f.writer.write_interleaved_exact(&vec![4.; 960]).unwrap();
+        f.clock.advance(Duration::from_millis(collected_ms - 15));
+        let ticket = f.tickets[0];
+        f.io.slots[ticket.slot].ready = true;
+        f.cycle().unwrap();
+        assert_eq!(f.io.written.len(), 3, "collected at {collected_ms} ms");
+        assert_eq!(f.io.written[2], 4.0_f32.to_le_bytes().repeat(960));
+        f.cycle().unwrap();
+        assert_eq!(f.io.written.len(), 3, "no burst catch-up");
+        assert_eq!(f.tickets.len(), 1);
+    }
+}
+
+#[test]
+fn microphone_reset_and_drop_clear_an_established_phase() {
+    for reset in [false, true] {
+        let mut f = MicrophoneFixture::new(480);
+        f.cycle().unwrap();
+        f.clock.advance(Duration::from_millis(10));
+        f.collect(false);
+        f.clock.advance(Duration::from_millis(5));
+        f.cycle().unwrap();
+        assert!(f.pump.last_phase.is_some());
+        f.clock.advance(Duration::from_millis(8));
+        if reset {
+            f.state.reset_epoch.fetch_add(1, Ordering::AcqRel);
+            assert_eq!(f.cycle().unwrap(), PumpState::Reset);
+            assert!(f.pump.last_phase.is_none());
+            assert!(f.pump.next_submit.is_none());
+        } else {
+            f.collect(true);
+            assert_eq!(
+                f.pump.next_submit,
+                Some(f.clock.now() + Duration::from_millis(5)),
+                "an expired request cannot anchor the next native phase"
+            );
+        }
+    }
+}
+
+#[test]
 fn microphone_dropped_completion_rearms_from_collection_without_catch_up() {
     let mut f = MicrophoneFixture::new(480);
     f.cycle().unwrap();
