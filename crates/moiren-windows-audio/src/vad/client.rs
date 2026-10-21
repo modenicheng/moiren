@@ -276,13 +276,14 @@ impl ControlClient {
         self.remove_at(key, deadline_after(REQUEST_TIMEOUT)?)
     }
 
-    /// Compare the caller's exact gate epoch; never silently refresh a stale
-    /// snapshot and authorize a different native stream.
+    /// Compare the caller's exact gate epoch. A stale close can only confirm
+    /// the same stream is now closed; it never retries SET_GATE.
     pub fn close_gate(
         &mut self,
         snapshot: EndpointSnapshot,
     ) -> Result<EndpointSnapshot, ClientError> {
-        self.set_gate(snapshot, false)
+        let result = self.set_gate(snapshot, false);
+        finish_close(snapshot, result, || self.query(snapshot.key()))
     }
     pub fn open_gate(
         &mut self,
@@ -409,6 +410,33 @@ fn finish_created_endpoint<T>(
     }
 }
 
+fn finish_close(
+    previous: EndpointSnapshot,
+    result: Result<EndpointSnapshot, ClientError>,
+    query: impl FnOnce() -> Result<EndpointSnapshot, ClientError>,
+) -> Result<EndpointSnapshot, ClientError> {
+    let Err(error) = result else { return result };
+    if !matches!(
+        &error,
+        ClientError::Windows { source, .. }
+            if source.code() == windows::Win32::Foundation::ERROR_REVISION_MISMATCH.to_hresult()
+    ) {
+        return Err(error);
+    }
+    // Lifecycle and PCM workers share the file but can race to close the same
+    // gate. Confirm only the same stream is now closed. Never retry SET_GATE
+    // using a refreshed epoch: that could close a newly admitted stream/revision.
+    let current = query()?.require_progress_after(previous)?;
+    if !current.gate_open()
+        && current.stream_generation() == previous.stream_generation()
+        && current.gate_epoch() > previous.gate_epoch()
+    {
+        Ok(current)
+    } else {
+        Err(error)
+    }
+}
+
 fn poll_delay(deadline: Instant) -> Result<(), ClientError> {
     let remaining = deadline
         .checked_duration_since(Instant::now())
@@ -424,6 +452,150 @@ mod tests {
 
     fn test_key() -> EndpointKey {
         EndpointKey::new(crate::vad::RuntimePdoToken::new(1).unwrap(), 2, 3).unwrap()
+    }
+
+    fn gate_snapshot(stream: u64, gate: u64, open: bool) -> EndpointSnapshot {
+        gate_snapshot_for(7, 11, stream, gate, open)
+    }
+
+    fn gate_snapshot_for(
+        session: u64,
+        token: u64,
+        stream: u64,
+        gate: u64,
+        open: bool,
+    ) -> EndpointSnapshot {
+        let mut caps = [0_u8; CAPABILITIES_SIZE];
+        for (offset, value) in [
+            (0, 64_u32),
+            (4, 2),
+            (8, 31),
+            (12, 64),
+            (16, 1),
+            (20, 48_000),
+            (24, 3),
+            (28, 6),
+            (32, 6),
+            (36, 4),
+            (48, 4800),
+        ] {
+            caps[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        caps[40..48].copy_from_slice(&session.to_le_bytes());
+        let mut bytes = [0_u8; SNAPSHOT_SIZE];
+        for (offset, value) in [
+            (0, 128_u32),
+            (4, 2),
+            (16, PdoState::Present as u32),
+            (20, Intent::Microphone as u32),
+            (24, 2),
+            (28, u32::from(open)),
+            (32, 1),
+            (36, 1),
+            (88, 2),
+            (92, 480),
+            (100, 2),
+        ] {
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        for (offset, value) in [
+            (8, token),
+            (40, session),
+            (48, token),
+            (56, stream),
+            (64, gate),
+        ] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        EndpointSnapshot::decode(&bytes, Capabilities::decode(&caps).unwrap()).unwrap()
+    }
+
+    fn revision_mismatch() -> ClientError {
+        ClientError::windows(
+            "GetOverlappedResultEx(VAD)",
+            windows::core::Error::from_hresult(
+                windows::Win32::Foundation::ERROR_REVISION_MISMATCH.to_hresult(),
+            ),
+        )
+    }
+
+    #[test]
+    fn concurrent_close_confirms_already_closed_same_stream_without_retry() {
+        let previous = gate_snapshot(3, 5, true);
+        let closed = gate_snapshot(3, 6, false);
+        let calls = std::cell::Cell::new(0);
+        let result = finish_close(previous, Err(revision_mismatch()), || {
+            calls.set(calls.get() + 1);
+            Ok(closed)
+        });
+        assert_eq!(result.unwrap(), closed);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn close_confirmation_never_accepts_reopened_or_changed_streams() {
+        let previous = gate_snapshot(3, 5, true);
+        for current in [
+            gate_snapshot(3, 6, true),
+            gate_snapshot(4, 6, false),
+            gate_snapshot(3, 5, false),
+        ] {
+            let result = finish_close(previous, Err(revision_mismatch()), || Ok(current));
+            assert!(matches!(result, Err(ClientError::Windows { .. })));
+        }
+    }
+
+    #[test]
+    fn close_confirmation_preserves_real_errors_without_querying() {
+        let previous = gate_snapshot(3, 5, true);
+        for error in [
+            ClientError::DeadlineExceeded,
+            ClientError::SessionUncertain,
+            ClientError::windows(
+                "GetOverlappedResultEx(VAD)",
+                windows::core::Error::from_hresult(
+                    windows::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED.to_hresult(),
+                ),
+            ),
+        ] {
+            assert!(finish_close(previous, Err(error), || panic!("not a close race")).is_err());
+        }
+        assert!(matches!(
+            finish_close(previous, Err(revision_mismatch()), || Err(
+                ClientError::DeadlineExceeded
+            )),
+            Err(ClientError::DeadlineExceeded)
+        ));
+        let regressed = gate_snapshot(2, 6, false);
+        assert!(matches!(
+            finish_close(previous, Err(revision_mismatch()), || Ok(regressed)),
+            Err(ClientError::Protocol(_))
+        ));
+    }
+
+    #[test]
+    fn close_confirmation_rejects_foreign_identity_and_regressed_epochs() {
+        let previous = gate_snapshot(3, 5, true);
+        for current in [
+            gate_snapshot_for(8, 11, 3, 6, false),
+            gate_snapshot_for(7, 12, 3, 6, false),
+            gate_snapshot(3, 4, false),
+        ] {
+            assert!(matches!(
+                finish_close(previous, Err(revision_mismatch()), || Ok(current)),
+                Err(ClientError::Protocol(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn successful_close_never_adds_a_query() {
+        let previous = gate_snapshot(3, 5, true);
+        let closed = gate_snapshot(3, 6, false);
+        assert_eq!(
+            finish_close(previous, Ok(closed), || panic!("already complete")).unwrap(),
+            closed
+        );
     }
 
     #[test]

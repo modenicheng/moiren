@@ -10,8 +10,8 @@ use std::{
 use windows::{
     Win32::{
         Foundation::{
-            ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, HANDLE,
-            WAIT_TIMEOUT,
+            ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_REVISION_MISMATCH, GENERIC_READ,
+            GENERIC_WRITE, HANDLE, WAIT_TIMEOUT,
         },
         Storage::FileSystem::{
             CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED, FILE_SHARE_MODE,
@@ -240,33 +240,26 @@ impl ControlHandle {
             None => Err(Error::from_hresult(HRESULT::from_win32(WAIT_TIMEOUT.0))),
         };
         if let Err(error) = completed {
-            self.poisoned = true;
-            // SAFETY: cancellation targets exactly this live request. Completion
-            // may have raced, so a cancellation error alone does not free buffers.
-            let _ = unsafe { CancelIoEx(raw(&self.owner.handle), Some(&request.overlapped)) };
-            // SAFETY: a nonblocking result check distinguishes pending storage
-            // from a completed request (including completed IOCTL failures).
-            let drained = unsafe {
-                GetOverlappedResult(
-                    raw(&self.owner.handle),
-                    &request.overlapped,
-                    &mut request.returned,
-                    false,
-                )
-            };
-            if drained
-                .as_ref()
-                .is_err_and(|error| error.code() == ERROR_IO_INCOMPLETE.to_hresult())
-            {
-                // A timed-out request can still be owned by the kernel. Keep its
-                // storage and event until Drop finishes cancellation on control.
-                self.pending = Some(request);
-            }
-            return Err(if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {
-                ClientError::DeadlineExceeded
-            } else {
-                ClientError::windows("GetOverlappedResultEx(VAD)", error)
-            });
+            let handle = raw(&self.owner.handle);
+            return Err(self.finish_failed_exchange(
+                request,
+                error,
+                |request| {
+                    // SAFETY: the request still owns its OVERLAPPED and buffers.
+                    unsafe {
+                        GetOverlappedResult(
+                            handle,
+                            &request.overlapped,
+                            &mut request.returned,
+                            false,
+                        )
+                    }
+                },
+                |request| {
+                    // SAFETY: cancellation targets exactly this live request.
+                    let _ = unsafe { CancelIoEx(handle, Some(&request.overlapped)) };
+                },
+            ));
         }
         if request.returned as usize != N {
             return Err(ProtocolError::BufferSize {
@@ -276,6 +269,49 @@ impl ControlHandle {
             .into());
         }
         Ok(request.output[..N].try_into().expect("bounded output"))
+    }
+
+    fn finish_failed_exchange(
+        &mut self,
+        mut request: Box<Request>,
+        error: Error,
+        mut probe: impl FnMut(&mut Request) -> windows::core::Result<()>,
+        cancel: impl FnOnce(&Request),
+    ) -> ClientError {
+        // A peer close can return a terminal revision refusal. Confirm that
+        // exact status before allowing a subsequent QUERY on the same view.
+        if error.code() == ERROR_REVISION_MISMATCH.to_hresult()
+            && probe(&mut request).is_err_and(|terminal| terminal.code() == error.code())
+        {
+            return ClientError::windows("GetOverlappedResultEx(VAD)", error);
+        }
+        self.poisoned = true;
+        cancel(&request);
+        let drained = probe(&mut request);
+        if drained
+            .as_ref()
+            .is_err_and(|error| error.code() == ERROR_IO_INCOMPLETE.to_hresult())
+        {
+            // Cancellation alone is not a drain. Retain the buffers and event
+            // until Drop collects terminal completion on the control thread.
+            self.pending = Some(request);
+        }
+        if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {
+            ClientError::DeadlineExceeded
+        } else {
+            ClientError::windows("GetOverlappedResultEx(VAD)", error)
+        }
+    }
+
+    fn drain_pending(
+        &mut self,
+        cancel: impl FnOnce(&Request),
+        complete: impl FnOnce(&mut Request) -> windows::core::Result<()>,
+    ) {
+        if let Some(mut request) = self.pending.take() {
+            cancel(&request);
+            let _ = complete(&mut request);
+        }
     }
 }
 
@@ -295,20 +331,20 @@ pub(super) fn wait_milliseconds(deadline: Instant, now: Instant) -> Option<u32> 
 
 impl Drop for ControlHandle {
     fn drop(&mut self) {
-        if let Some(mut request) = self.pending.take() {
-            // SAFETY: the kernel must release the OVERLAPPED and buffers before
-            // Rust reclaims them. This cancellation drain can block for a broken
-            // driver; the entire client, including Drop, is control-thread only.
-            unsafe {
-                let _ = CancelIoEx(raw(&self.owner.handle), Some(&request.overlapped));
-                let _ = GetOverlappedResult(
-                    raw(&self.owner.handle),
-                    &request.overlapped,
-                    &mut request.returned,
-                    true,
-                );
-            }
-        }
+        let handle = raw(&self.owner.handle);
+        self.drain_pending(
+            |request| {
+                // SAFETY: cancellation targets exactly this retained request.
+                let _ = unsafe { CancelIoEx(handle, Some(&request.overlapped)) };
+            },
+            |request| {
+                // SAFETY: block until the kernel releases this request's storage.
+                // The entire client, including Drop, is control-thread only.
+                unsafe {
+                    GetOverlappedResult(handle, &request.overlapped, &mut request.returned, true)
+                }
+            },
+        );
         // PCM leases retain the original handle until their own cancellation
         // drains finish. Only the last same-file handle triggers owner cleanup.
     }
@@ -317,7 +353,254 @@ impl Drop for ControlHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::{cell::Cell, time::Duration};
+    use windows::Win32::Foundation::{ERROR_DEVICE_NOT_CONNECTED, ERROR_OPERATION_ABORTED};
+
+    fn test_event() -> OwnedHandle {
+        // SAFETY: an unnamed event is owned only by this test, never a driver.
+        let event = unsafe { CreateEventW(None, true, false, None) }.unwrap();
+        unsafe { OwnedHandle::from_raw_handle(event.0) }
+    }
+
+    fn test_control() -> ControlHandle {
+        ControlHandle {
+            owner: Arc::new(SessionHandle {
+                // The expired exchange below returns before any native IO.
+                handle: test_event(),
+                pcm_endpoints: Mutex::new([None; MAX_ENDPOINTS as usize]),
+                pcm_sequence: AtomicU64::new(0),
+            }),
+            pending: None,
+            poisoned: false,
+        }
+    }
+
+    fn test_request() -> Box<Request> {
+        let event = test_event();
+        Box::new(Request {
+            input: [0; CREATE_SIZE],
+            output: [0; 128],
+            overlapped: OVERLAPPED {
+                hEvent: raw(&event),
+                ..Default::default()
+            },
+            returned: 0,
+            _event: event,
+        })
+    }
+
+    fn next_expired_exchange(control: &mut ControlHandle) -> ClientError {
+        control
+            .exchange::<0>(crate::vad::IOCTL_QUERY, &[], Instant::now())
+            .unwrap_err()
+    }
+
+    fn assert_native_error(error: ClientError, expected: HRESULT) {
+        assert!(matches!(
+            error,
+            ClientError::Windows { operation: "GetOverlappedResultEx(VAD)", source }
+                if source.code() == expected
+        ));
+    }
+
+    fn finish_retained_request(control: &mut ControlHandle, expected: *const Request) {
+        assert!(std::ptr::eq(control.pending.as_deref().unwrap(), expected,));
+        let steps = Cell::new(0);
+        control.drain_pending(
+            |request| {
+                assert!(std::ptr::eq(request, expected));
+                assert_eq!(steps.replace(1), 0);
+            },
+            |request| {
+                assert!(std::ptr::eq(request, expected));
+                assert_eq!(steps.replace(2), 1);
+                Err(Error::from_hresult(ERROR_OPERATION_ABORTED.to_hresult()))
+            },
+        );
+        assert_eq!(steps.get(), 2);
+        assert!(control.pending.is_none());
+        assert!(matches!(
+            next_expired_exchange(control),
+            ClientError::SessionUncertain
+        ));
+    }
+
+    #[test]
+    fn terminal_revision_mismatch_allows_the_next_exchange_without_cancellation() {
+        let mut control = test_control();
+        let mismatch = ERROR_REVISION_MISMATCH.to_hresult();
+        let probes = Cell::new(0);
+        let error = control.finish_failed_exchange(
+            test_request(),
+            Error::from_hresult(mismatch),
+            |_| {
+                probes.set(probes.get() + 1);
+                Err(Error::from_hresult(mismatch))
+            },
+            |_| panic!("a confirmed terminal refusal needs no cancellation"),
+        );
+        assert_native_error(error, mismatch);
+        assert_eq!(probes.get(), 1);
+        assert!(control.pending.is_none());
+        assert!(matches!(
+            next_expired_exchange(&mut control),
+            ClientError::DeadlineExceeded
+        ));
+    }
+
+    #[test]
+    fn unconfirmed_revision_mismatch_retains_pending_storage_until_terminal_drain() {
+        for after_cancel in [
+            ERROR_IO_INCOMPLETE.to_hresult(),
+            ERROR_REVISION_MISMATCH.to_hresult(),
+        ] {
+            let mut control = test_control();
+            let request = test_request();
+            let address = &*request as *const Request;
+            let mismatch = ERROR_REVISION_MISMATCH.to_hresult();
+            let probes = Cell::new(0);
+            let cancelled = Cell::new(false);
+            let error = control.finish_failed_exchange(
+                request,
+                Error::from_hresult(mismatch),
+                |_| {
+                    let attempt = probes.get();
+                    assert_eq!(cancelled.get(), attempt != 0);
+                    probes.set(attempt + 1);
+                    Err(Error::from_hresult(if attempt == 0 {
+                        ERROR_IO_INCOMPLETE.to_hresult()
+                    } else {
+                        after_cancel
+                    }))
+                },
+                |_| assert!(!cancelled.replace(true)),
+            );
+            assert_native_error(error, mismatch);
+            assert_eq!(probes.get(), 2);
+            assert!(cancelled.get());
+            assert!(matches!(
+                next_expired_exchange(&mut control),
+                ClientError::SessionUncertain
+            ));
+            if after_cancel == ERROR_IO_INCOMPLETE.to_hresult() {
+                finish_retained_request(&mut control, address);
+            } else {
+                assert!(control.pending.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn timeout_and_incomplete_waits_keep_cancellation_poison_and_pending_storage() {
+        for code in [
+            HRESULT::from_win32(WAIT_TIMEOUT.0),
+            ERROR_IO_INCOMPLETE.to_hresult(),
+        ] {
+            let mut control = test_control();
+            let request = test_request();
+            let address = &*request as *const Request;
+            let cancelled = Cell::new(false);
+            let probes = Cell::new(0);
+            let error = control.finish_failed_exchange(
+                request,
+                Error::from_hresult(code),
+                |_| {
+                    assert!(cancelled.get());
+                    probes.set(probes.get() + 1);
+                    Err(Error::from_hresult(ERROR_IO_INCOMPLETE.to_hresult()))
+                },
+                |_| assert!(!cancelled.replace(true)),
+            );
+            if code == HRESULT::from_win32(WAIT_TIMEOUT.0) {
+                assert!(matches!(error, ClientError::DeadlineExceeded));
+            } else {
+                assert_native_error(error, code);
+            }
+            assert_eq!(probes.get(), 1);
+            assert!(matches!(
+                next_expired_exchange(&mut control),
+                ClientError::SessionUncertain
+            ));
+            finish_retained_request(&mut control, address);
+        }
+    }
+
+    #[test]
+    fn different_terminal_probe_results_never_confirm_revision_mismatch() {
+        for probe_code in [None, Some(ERROR_DEVICE_NOT_CONNECTED.to_hresult())] {
+            let mut control = test_control();
+            let mismatch = ERROR_REVISION_MISMATCH.to_hresult();
+            let cancelled = Cell::new(false);
+            let probes = Cell::new(0);
+            let error = control.finish_failed_exchange(
+                test_request(),
+                Error::from_hresult(mismatch),
+                |_| {
+                    let attempt = probes.get();
+                    assert_eq!(cancelled.get(), attempt != 0);
+                    probes.set(attempt + 1);
+                    probe_code.map_or(Ok(()), |code| Err(Error::from_hresult(code)))
+                },
+                |_| assert!(!cancelled.replace(true)),
+            );
+            assert_native_error(error, mismatch);
+            assert_eq!(probes.get(), 2);
+            assert!(control.pending.is_none());
+            assert!(matches!(
+                next_expired_exchange(&mut control),
+                ClientError::SessionUncertain
+            ));
+        }
+    }
+
+    #[test]
+    fn other_wait_errors_racing_a_terminal_revision_mismatch_remain_poisoned() {
+        for code in [
+            HRESULT::from_win32(WAIT_TIMEOUT.0),
+            ERROR_DEVICE_NOT_CONNECTED.to_hresult(),
+        ] {
+            let mut control = test_control();
+            let cancelled = Cell::new(false);
+            let error = control.finish_failed_exchange(
+                test_request(),
+                Error::from_hresult(code),
+                |_| {
+                    assert!(cancelled.get());
+                    Err(Error::from_hresult(ERROR_REVISION_MISMATCH.to_hresult()))
+                },
+                |_| assert!(!cancelled.replace(true)),
+            );
+            if code == HRESULT::from_win32(WAIT_TIMEOUT.0) {
+                assert!(matches!(error, ClientError::DeadlineExceeded));
+            } else {
+                assert_native_error(error, code);
+            }
+            assert!(control.pending.is_none());
+            assert!(matches!(
+                next_expired_exchange(&mut control),
+                ClientError::SessionUncertain
+            ));
+        }
+    }
+
+    #[test]
+    fn terminal_revision_mismatch_never_clears_existing_poison() {
+        let mut control = test_control();
+        control.poisoned = true;
+        let mismatch = ERROR_REVISION_MISMATCH.to_hresult();
+        let error = control.finish_failed_exchange(
+            test_request(),
+            Error::from_hresult(mismatch),
+            |_| Err(Error::from_hresult(mismatch)),
+            |_| panic!("terminal request"),
+        );
+        assert_native_error(error, mismatch);
+        assert!(control.pending.is_none());
+        assert!(matches!(
+            next_expired_exchange(&mut control),
+            ClientError::SessionUncertain
+        ));
+    }
 
     #[test]
     fn pcm_helper_replacement_and_other_endpoints_cannot_rewind_session_sequence() {
