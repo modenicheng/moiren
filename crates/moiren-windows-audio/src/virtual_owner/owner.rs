@@ -24,6 +24,9 @@ use windows::Win32::{
     System::Threading::WaitForSingleObject,
 };
 
+mod trace;
+use trace::{ClockTrace, GapStage};
+
 /// A prepared virtual-only clock owner. Physical-master projects never create
 /// this transport; their native owner receives these same boundary bindings.
 pub struct VirtualPreparedTransport {
@@ -118,6 +121,7 @@ impl Published {
 struct Exit<S: ProcessingSample> {
     engine: Engine<S>,
     error: Option<BackendError>,
+    clock_trace: ClockTrace,
     _clock: Box<dyn VirtualRealtimeClock>,
     _timeline_resets: Vec<Arc<AtomicU64>>,
 }
@@ -190,6 +194,7 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
         let stop = self.stop.clone();
         let timeline_resets = self.sessions.timeline_resets();
         let mut clock = self.clock.take().expect("prepared virtual clock");
+        let mut clock_trace = ClockTrace::default();
         let worker = thread::Builder::new()
             .name("moiren-virtual-owner".into())
             .spawn(move || {
@@ -212,6 +217,7 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
                         &worker_published,
                         &timeline_resets,
                         &stop,
+                        &mut clock_trace,
                     )
                 })) {
                     Ok(result) => result.err(),
@@ -227,6 +233,7 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
                 Exit {
                     engine,
                     error,
+                    clock_trace,
                     _clock: clock,
                     _timeline_resets: timeline_resets,
                 }
@@ -262,11 +269,14 @@ fn run<S: ProcessingSample>(
     published: &Published,
     timeline_resets: &[Arc<AtomicU64>],
     stop: &StopSignal,
+    clock_trace: &mut ClockTrace,
 ) -> Result<(), BackendError> {
     let origin = clock.now_ticks()?;
+    let frequency = clock.frequency();
+    clock_trace.start(origin, frequency);
     let sample_rate = engine.config().processing_sr as u64;
     let mut schedule = ClockSchedule::new(
-        clock.frequency(),
+        frequency,
         engine.config().max_block_frames,
         sample_rate,
         origin,
@@ -296,6 +306,7 @@ fn run<S: ProcessingSample>(
             continue;
         };
         if tick.skipped_periods > 0 {
+            clock_trace.record(now, engine.timeline(), tick.skipped_periods, GapStage::Wake);
             reset_timeline(timeline_resets);
         }
         // Exactly one Engine executes one bounded block per due wake. External
@@ -303,10 +314,17 @@ fn run<S: ProcessingSample>(
         let rendered = engine.render(tick.frames);
         published.publish(engine);
         rendered.map_err(|error| BackendError::Failed(error.to_string()))?;
+        let after_render = clock.now_ticks()?;
         let skipped = schedule
-            .skip_past(clock.now_ticks()?)
+            .skip_past(after_render)
             .map_err(|error| BackendError::Failed(error.to_string()))?;
         if skipped > 0 {
+            clock_trace.record(
+                after_render,
+                engine.timeline(),
+                skipped,
+                GapStage::AfterRender,
+            );
             reset_timeline(timeline_resets);
         }
     }
@@ -399,6 +417,7 @@ impl<S: ProcessingSample> BackendOwner<S> for VirtualOwner<S> {
             .expect("single owner join")
             .join()
             .expect("virtual worker catches unwind while retaining Engine");
+        exit.clock_trace.emit();
         let mut error = exit.error;
         for capture in self.captures.drain(..) {
             if let Err(failure) = capture.join() {
@@ -421,7 +440,9 @@ impl<S: ProcessingSample> Drop for VirtualOwner<S> {
         if let Some(worker) = self.worker.take() {
             // BackendOwner's normal path returns the Engine explicitly. A
             // defensive drop still joins before control-side reclamation.
-            let _ = worker.join();
+            if let Ok(exit) = worker.join() {
+                exit.clock_trace.emit();
+            }
         }
         for capture in self.captures.drain(..) {
             let _ = capture.join();

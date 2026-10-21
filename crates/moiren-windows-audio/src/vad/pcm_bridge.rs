@@ -192,9 +192,10 @@ impl PcmMicrophoneBridge {
         if report.transferred_frames < self.engine_packet.len() / 2 {
             log::debug!(
                 target: "moiren::audio::vad",
-                "event=microphone_carrier_short requested_frames={} transferred_frames={} report={report:?}",
+                "event=microphone_carrier_short requested_frames={} transferred_frames={} qpc={:?} report={report:?}",
                 self.engine_packet.len() / 2,
                 report.transferred_frames,
+                diagnostic_qpc(),
             );
         }
         encode_interleaved(
@@ -204,6 +205,21 @@ impl PcmMicrophoneBridge {
             self.channels,
         )?;
         Ok(&self.pcm_packet)
+    }
+}
+
+fn diagnostic_qpc() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        let mut value = 0;
+        // SAFETY: this worker-only diagnostic owns writable counter storage.
+        // It runs after a short read, never from Engine render.
+        unsafe { windows::Win32::System::Performance::QueryPerformanceCounter(&mut value) }.ok()?;
+        (value > 0).then_some(value as u64)
+    }
+    #[cfg(not(windows))]
+    {
+        None
     }
 }
 

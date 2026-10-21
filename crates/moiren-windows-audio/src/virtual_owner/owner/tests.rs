@@ -126,14 +126,20 @@ fn late_clock_wake_discards_old_playback_before_rendering_one_current_block() {
         stall_after_first_render: false,
         reads_after_wait: 0,
     });
+    let mut trace = ClockTrace::default();
     run(
         &mut engine,
         &mut clock,
         &published,
         std::slice::from_ref(&reset),
         &StopSignal::new().unwrap(),
+        &mut trace,
     )
     .unwrap();
+    assert_eq!(
+        trace.observed().collect::<Vec<_>>(),
+        [(48_008, 0, 6000, GapStage::Wake)]
+    );
     assert_eq!(reset.load(Ordering::Acquire), 1);
     assert_eq!(engine.timeline(), 8);
     let mut samples = [f32::NAN; 16];
@@ -160,14 +166,24 @@ fn zero_microphone_clients_still_execute_the_single_engine_after_clock_stall() {
             reads_after_wait: 0,
         };
         let reset = Arc::new(AtomicU64::new(0));
+        let mut trace = ClockTrace::default();
         run(
             &mut engine,
             &mut clock,
             &published,
             std::slice::from_ref(&reset),
             &StopSignal::new().unwrap(),
+            &mut trace,
         )
         .unwrap();
+        if stall {
+            assert_eq!(
+                trace.observed().collect::<Vec<_>>(),
+                [(48_008, 8, 6000, GapStage::AfterRender)]
+            );
+        } else {
+            assert_eq!(trace.observed().count(), 0);
+        }
         assert_eq!(clock.wakes, 5);
         assert_eq!(engine.timeline(), 40);
         assert_eq!(published.snapshot().unwrap().frame, 40);
@@ -211,7 +227,15 @@ fn persistently_late_owner_observes_stop_without_waiting_for_clock_headroom() {
         reads: 0,
         stop: stop.clone(),
     };
-    run(&mut engine, &mut clock, &published, &[], &stop).unwrap();
+    run(
+        &mut engine,
+        &mut clock,
+        &published,
+        &[],
+        &stop,
+        &mut ClockTrace::default(),
+    )
+    .unwrap();
     assert_eq!(clock.reads, 21);
     assert_eq!(engine.timeline(), 80);
 }
