@@ -1,6 +1,7 @@
 //! Apartment-local native clients only; never creates a driver control owner.
 use super::{
     identity,
+    soak::{CapturePosition, ClockProgress, NativeDiagnostics},
     validation::{self, Candidate},
 };
 use anyhow::{Context, ensure};
@@ -20,8 +21,9 @@ use windows::{
         Foundation::{HANDLE, S_OK, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Media::Audio::{
             AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
-            AUDCLNT_E_BUFFER_ERROR, AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE_EXCLUSIVE,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioCaptureClient, IAudioClient,
+            AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_E_BUFFER_ERROR,
+            AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE_EXCLUSIVE,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioCaptureClient, IAudioClient, IAudioClock,
             IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
             WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
         },
@@ -32,7 +34,7 @@ use windows::{
             Threading::{CreateEventW, WaitForSingleObject},
         },
     },
-    core::{GUID, HSTRING},
+    core::{GUID, HSTRING, Interface},
 };
 
 struct Apartment(PhantomData<Rc<()>>);
@@ -149,6 +151,29 @@ impl Pair {
         self.capture.discontinuities
     }
 
+    pub fn enable_soak_diagnostics(&mut self) -> anyhow::Result<()> {
+        self.render.enable_diagnostics()?;
+        self.capture.enable_diagnostics()
+    }
+
+    pub fn sample_clocks(&mut self, now_ms: u64) -> anyhow::Result<()> {
+        self.render.sample_clock(now_ms)?;
+        self.capture.sample_clock(now_ms)
+    }
+
+    pub fn diagnostics(&self) -> NativeDiagnostics {
+        NativeDiagnostics {
+            capture: self.capture.position.clone(),
+            render_clock: self.render.clock_progress.clone(),
+            capture_clock: self.capture.clock_progress.clone(),
+        }
+    }
+
+    pub fn require_clocks(&self, now_ms: u64) -> anyhow::Result<()> {
+        self.render.clock_progress.require_fresh(now_ms)?;
+        self.capture.clock_progress.require_fresh(now_ms)
+    }
+
     pub fn stop(&mut self) -> anyhow::Result<()> {
         // Attempt both stops even if one fails; Drop repeats any failed Stop.
         let render = self.render.stop();
@@ -205,6 +230,9 @@ struct Stream {
     pattern: [f32; 2],
     discontinuities: u64,
     decoded: Vec<f32>,
+    position: CapturePosition,
+    clock: Option<IAudioClock>,
+    clock_progress: ClockProgress,
 }
 impl Stream {
     fn prepare(device: &IMMDevice, intent: Intent) -> anyhow::Result<Self> {
@@ -274,6 +302,9 @@ impl Stream {
             pattern: validation::SIGNAL,
             discontinuities: 0,
             decoded: vec![0.0; frames as usize * 2],
+            position: CapturePosition::default(),
+            clock: None,
+            clock_progress: ClockProgress::default(),
         };
         if let Service::Render(render) = &stream.service {
             stream.render(render)?;
@@ -293,6 +324,35 @@ impl Stream {
             self.active = false;
         }
         Ok(())
+    }
+    fn enable_diagnostics(&mut self) -> anyhow::Result<()> {
+        let clock: IAudioClock =
+            unsafe { self.client.GetService() }.context("GetService(soak audio clock)")?;
+        let frequency =
+            unsafe { clock.GetFrequency() }.context("GetFrequency(soak audio clock)")?;
+        ensure!(frequency > 0, "zero soak native clock frequency");
+        self.clock_progress = ClockProgress {
+            frequency,
+            ..Default::default()
+        };
+        self.clock = Some(clock);
+        self.position = CapturePosition::default();
+        Ok(())
+    }
+    fn sample_clock(&mut self, now_ms: u64) -> anyhow::Result<()> {
+        let clock = self.clock.as_ref().context("soak clock was not enabled")?;
+        let (mut position, mut qpc) = (0, 0);
+        // Keep S_FALSE distinguishable from an accurate clock sample.
+        let status = unsafe {
+            (Interface::vtable(clock).GetPosition)(
+                Interface::as_raw(clock),
+                &mut position,
+                &mut qpc,
+            )
+        };
+        status.ok().context("GetPosition(soak audio clock)")?;
+        self.clock_progress
+            .observe(position, qpc, status == S_OK, now_ms)
     }
     fn event_ready(&self) -> anyhow::Result<bool> {
         match unsafe { WaitForSingleObject(HANDLE(self.event.as_raw_handle()), 0) } {
@@ -344,7 +404,16 @@ impl Stream {
             anyhow::bail!("not a capture client");
         };
         let (mut pointer, mut frames, mut flags) = (std::ptr::null_mut(), 0, 0);
-        match unsafe { capture.GetBuffer(&mut pointer, &mut frames, &mut flags, None, None) } {
+        let (mut device_position, mut qpc) = (0, 0);
+        match unsafe {
+            capture.GetBuffer(
+                &mut pointer,
+                &mut frames,
+                &mut flags,
+                Some(&mut device_position),
+                Some(&mut qpc),
+            )
+        } {
             Err(error) if error.code() == AUDCLNT_E_BUFFER_ERROR => return Ok(()),
             result => result.context("GetBuffer(capture)")?,
         }
@@ -368,7 +437,16 @@ impl Stream {
             if discontinuity {
                 self.discontinuities += 1;
             }
-            observe(decoded, discontinuity)
+            let timestamp_error = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0;
+            let position_gap =
+                self.position
+                    .observe(device_position, qpc, frames, discontinuity, timestamp_error);
+            // Short Stage2 retains its existing discontinuity criterion. Soak
+            // additionally rejects missing/untrusted native packet positions.
+            observe(
+                decoded,
+                discontinuity || (self.clock.is_some() && position_gap),
+            )
         })();
         let released = unsafe { capture.ReleaseBuffer(frames) };
         result?;

@@ -1,4 +1,4 @@
-use anyhow::{bail, ensure};
+use anyhow::{Context, bail, ensure};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7,6 +7,8 @@ pub(super) struct Options {
     pub pcm: bool,
     pub help: bool,
     pub timeout_seconds: u64,
+    pub soak_idle_seconds: u64,
+    pub soak_pcm_seconds: u64,
     pub output_dir: Option<PathBuf>,
 }
 
@@ -17,6 +19,8 @@ impl Options {
             pcm: false,
             help: false,
             timeout_seconds: 30,
+            soak_idle_seconds: 0,
+            soak_pcm_seconds: 0,
             output_dir: None,
         };
         let mut timeout_seen = false;
@@ -28,10 +32,20 @@ impl Options {
                 value if value.starts_with("--timeout-seconds=") && !timeout_seen => {
                     timeout_seen = true;
                     options.timeout_seconds = value["--timeout-seconds=".len()..].parse()?;
-                    ensure!(
-                        (10..=120).contains(&options.timeout_seconds),
-                        "--timeout-seconds must be in 10..=120"
-                    );
+                }
+                value
+                    if value.starts_with("--soak-idle-seconds=")
+                        && options.soak_idle_seconds == 0 =>
+                {
+                    options.soak_idle_seconds =
+                        soak_duration(&value["--soak-idle-seconds=".len()..])?;
+                }
+                value
+                    if value.starts_with("--soak-pcm-seconds=")
+                        && options.soak_pcm_seconds == 0 =>
+                {
+                    options.soak_pcm_seconds =
+                        soak_duration(&value["--soak-pcm-seconds=".len()..])?;
                 }
                 value if value.starts_with("--output-dir=") && options.output_dir.is_none() => {
                     let path = &value["--output-dir=".len()..];
@@ -49,10 +63,35 @@ impl Options {
             "--timeout-seconds and --output-dir require --exercise"
         );
         ensure!(
-            options.exercise || !options.pcm,
-            "--pcm requires --exercise"
+            options.exercise || (!options.pcm && !options.soaking()),
+            "--pcm and soak durations require --exercise"
         );
-        if options.pcm {
+        options.pcm |= options.soak_pcm_seconds > 0;
+        if options.soaking() {
+            let requested = options
+                .soak_idle_seconds
+                .checked_add(options.soak_pcm_seconds)
+                .ok_or_else(|| anyhow::anyhow!("aggregate soak duration overflow"))?;
+            let minimum = requested.checked_add(90).context("soak timeout overflow")?;
+            let maximum = requested
+                .checked_add(3_600)
+                .context("soak timeout overflow")?;
+            if !timeout_seen {
+                options.timeout_seconds = requested
+                    .checked_add(180)
+                    .context("soak timeout overflow")?;
+            }
+            ensure!(
+                (minimum..=maximum).contains(&options.timeout_seconds),
+                "soak timeout must be aggregate requested seconds + 90..=3600 seconds"
+            );
+        } else {
+            ensure!(
+                (10..=120).contains(&options.timeout_seconds),
+                "--timeout-seconds must be in 10..=120 without soak"
+            );
+        }
+        if options.pcm && !options.soaking() {
             if !timeout_seen {
                 options.timeout_seconds = 90;
             }
@@ -63,8 +102,30 @@ impl Options {
         }
         Ok(options)
     }
+
+    pub fn soaking(&self) -> bool {
+        self.soak_idle_seconds != 0 || self.soak_pcm_seconds != 0
+    }
+
+    #[cfg(any(windows, test))]
+    pub fn work_budget(&self) -> std::time::Duration {
+        let timeout = std::time::Duration::from_secs(self.timeout_seconds);
+        if self.soaking() {
+            timeout.saturating_sub(std::time::Duration::from_secs(30))
+        } else {
+            timeout.mul_f64(2.0 / 3.0)
+        }
+    }
 }
 
+fn soak_duration(value: &str) -> anyhow::Result<u64> {
+    let seconds = value.parse()?;
+    ensure!(
+        (1..=28_800).contains(&seconds),
+        "soak duration must be in 1..=28800 seconds"
+    );
+    Ok(seconds)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +200,53 @@ mod tests {
         );
         assert!(parse(&["--exercise", "--pcm", "--timeout-seconds=59"]).is_err());
         assert!(parse(&["--exercise", "--pcm", "--pcm"]).is_err());
+    }
+
+    #[test]
+    fn soak_accepts_eight_hours_each_and_checked_aggregate_watchdog() {
+        let options = parse(&[
+            "--exercise",
+            "--soak-idle-seconds=28800",
+            "--soak-pcm-seconds=28800",
+            "--timeout-seconds=57780",
+        ])
+        .expect("explicit eight-hour idle and PCM soak");
+        assert!(options.pcm, "PCM soak implies native PCM exercise");
+        assert_eq!(options.timeout_seconds, 57_780);
+        assert_eq!(options.work_budget().as_secs(), 57_750);
+        assert_eq!(
+            parse(&["--exercise", "--soak-idle-seconds=8"])
+                .unwrap()
+                .timeout_seconds,
+            188
+        );
+        assert!(!parse(&["--exercise", "--soak-idle-seconds=8"]).unwrap().pcm);
+    }
+
+    #[test]
+    fn soak_rejects_missing_opt_in_overflow_duplicates_and_short_aggregate_budget() {
+        for invalid in [
+            vec!["--soak-idle-seconds=10"],
+            vec!["--soak-pcm-seconds=10"],
+            vec!["--exercise", "--soak-idle-seconds=0"],
+            vec!["--exercise", "--soak-pcm-seconds=28801"],
+            vec!["--exercise", "--soak-idle-seconds=18446744073709551615"],
+            vec!["--exercise", "--soak-pcm-seconds=18446744073709551616"],
+            vec![
+                "--exercise",
+                "--soak-idle-seconds=1",
+                "--soak-idle-seconds=2",
+            ],
+            vec!["--exercise", "--soak-pcm-seconds=1", "--soak-pcm-seconds=2"],
+            vec![
+                "--exercise",
+                "--soak-idle-seconds=28800",
+                "--timeout-seconds=28900",
+                "--soak-pcm-seconds=28800",
+            ],
+            vec!["--exercise", "--soak-pcm-seconds=1", "--timeout-seconds=90"],
+        ] {
+            assert!(parse(&invalid).is_err(), "accepted {invalid:?}");
+        }
     }
 }

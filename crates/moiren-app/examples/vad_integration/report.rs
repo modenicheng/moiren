@@ -17,6 +17,11 @@ pub(super) struct Report {
     pub pcm_verified: bool,
     pub idle_hold: Option<IdleHoldEvidence>,
     pub pcm: Option<PcmEvidence>,
+    pub soak_idle: Option<super::soak::IdleSoak>,
+    pub soak_pcm: Option<super::soak::PcmSoak>,
+    pub native_diagnostics: Option<super::soak::NativeDiagnostics>,
+    pub current_phase: String,
+    pub last_snapshot_observed_ms: Option<u128>,
     pub gate_transitions: Vec<super::validation::GateProgress>,
     pub service_joined: bool,
     pub control_session_released: bool,
@@ -39,6 +44,11 @@ impl Default for Report {
             pcm_verified: false,
             idle_hold: None,
             pcm: None,
+            soak_idle: None,
+            soak_pcm: None,
+            native_diagnostics: None,
+            current_phase: "preparing".into(),
+            last_snapshot_observed_ms: None,
             gate_transitions: Vec::new(),
             service_joined: false,
             control_session_released: false,
@@ -52,6 +62,24 @@ impl Default for Report {
                 "Exited plus join proves service teardown/control-file release, not final PDO absence.",
                 "Same control owner and one Engine owner use production ManagedDriver wiring; raw driver epochs are not public service observations.",
             ],
+        }
+    }
+}
+
+impl Report {
+    pub fn checkpoint(&mut self, stage: &str, evidence: Evidence) {
+        self.current_phase = stage.into();
+        if let Some(checkpoint) = self
+            .checkpoints
+            .iter_mut()
+            .find(|entry| entry.stage == stage)
+        {
+            checkpoint.evidence = evidence;
+        } else {
+            self.checkpoints.push(Checkpoint {
+                stage: stage.into(),
+                evidence,
+            });
         }
     }
 }
@@ -322,5 +350,15 @@ mod tests {
         assert_eq!(json["service_joined"], false);
         assert_eq!(json["control_session_released"], false);
         assert_eq!(json["endpoint_absence_confirmed"], false);
+    }
+
+    #[test]
+    fn alternating_soak_phases_keep_only_one_checkpoint_per_fixed_stage() {
+        let mut report = Report::default();
+        for _ in 0..10_000 {
+            report.checkpoint("soak_pcm", running());
+            report.checkpoint("soak_clock", running());
+        }
+        assert_eq!(report.checkpoints.len(), 2);
     }
 }

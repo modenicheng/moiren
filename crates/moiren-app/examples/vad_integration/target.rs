@@ -2,15 +2,16 @@
 use super::{
     native,
     options::Options,
-    project,
+    progress, project,
     report::{Checkpoint, Evidence, IdleHoldEvidence, PcmEvidence, Report},
-    validation,
+    soak, validation,
 };
 use anyhow::{Context, bail, ensure};
 use moiren_app::service::{AppHandle, AppRequest, ManagedDriver, ServiceRuntime, SessionPhase};
 use moiren_core::graph::NodeKind;
 use moiren_windows_audio::vad::StableEndpointId;
 use std::{
+    cell::RefCell,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -23,6 +24,7 @@ use std::{
 struct Progress {
     report: Report,
     handle: Option<AppHandle>,
+    updated: Option<Instant>,
 }
 
 type Shared = Arc<Mutex<Progress>>;
@@ -30,8 +32,8 @@ type Shared = Arc<Mutex<Progress>>;
 pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
     let started = Instant::now();
     let timeout = Duration::from_secs(options.timeout_seconds);
-    let directory = output_directory(options.output_dir)?;
-    let pcm = options.pcm;
+    let directory = output_directory(options.output_dir.clone())?;
+    let soaking = options.soaking();
     eprintln!("integration evidence directory: {}", directory.display());
     let shared = Arc::new(Mutex::new(Progress::default()));
     let worker_shared = shared.clone();
@@ -39,19 +41,58 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::sync_channel(1);
     // Discovery, startup, and join can cross native waits. The main thread is
     // an overall watchdog; no blocking Drop/join runs on its timeout path.
+    let overall_deadline = started
+        .checked_add(timeout)
+        .context("outer deadline overflow")?;
+    let mut progress_sequence = 0;
+    persist_progress(
+        &directory,
+        &Report::default(),
+        progress_sequence,
+        started,
+        false,
+    )?;
     let worker = thread::Builder::new()
         .name("vad-integration".into())
         .spawn(move || {
-            let report = run(&worker_directory, started, timeout, pcm, &worker_shared);
+            let report = run(&worker_directory, started, &options, &worker_shared);
             let _ = tx.send(report);
         })?;
-    let remaining = timeout.saturating_sub(started.elapsed());
-    match rx.recv_timeout(remaining) {
+    let result: anyhow::Result<Report> = loop {
+        let remaining = overall_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break Err(anyhow::anyhow!("overall watchdog deadline exceeded"));
+        }
+        match rx.recv_timeout(remaining.min(Duration::from_secs(5))) {
+            Ok(report) => break Ok(report),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break Err(anyhow::anyhow!("coordinator disconnected"));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let report = current_report(&shared, started);
+                progress_sequence += 1;
+                if let Err(error) =
+                    persist_progress(&directory, &report, progress_sequence, started, false)
+                {
+                    break Err(error.context("durable progress publication failed"));
+                }
+                if soaking {
+                    eprintln!(
+                        "soak progress: {}ms phase={}",
+                        started.elapsed().as_millis(),
+                        report.current_phase
+                    );
+                }
+            }
+        }
+    };
+    match result {
         Ok(report) => {
             worker
                 .join()
                 .map_err(|_| anyhow::anyhow!("probe coordinator panicked"))?;
             emit_report(&directory, &report)?;
+            persist_progress(&directory, &report, progress_sequence + 1, started, true)?;
             ensure!(
                 report.status == "passed",
                 "integration failed; inspect report.json"
@@ -66,7 +107,7 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
                 }
                 progress.report.clone()
             };
-            report.status = if matches!(error, mpsc::RecvTimeoutError::Timeout) {
+            report.status = if Instant::now() >= overall_deadline {
                 "timed_out"
             } else {
                 "failed"
@@ -77,6 +118,11 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
             ));
             if let Err(error) = emit_report(&directory, &report) {
                 eprintln!("could not persist timeout report: {error:#}");
+            }
+            if let Err(error) =
+                persist_progress(&directory, &report, progress_sequence + 1, started, true)
+            {
+                eprintln!("could not persist final failure progress: {error:#}");
             }
             // This standalone process owns every worker and driver handle it
             // opened. OS file cleanup is preferable to waiting indefinitely;
@@ -104,15 +150,10 @@ fn output_directory(requested: Option<PathBuf>) -> anyhow::Result<PathBuf> {
         .context("resolving output directory")
 }
 
-fn run(
-    directory: &Path,
-    started: Instant,
-    timeout: Duration,
-    pcm: bool,
-    shared: &Shared,
-) -> Report {
+fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -> Report {
     let mut report = Report::default();
-    if pcm {
+    let pcm = options.pcm;
+    if pcm || options.soaking() {
         report.stage = "stage2_real_graph_native_pcm";
         report.limitations = vec![
             "Only exact 48kHz stereo Float32 exclusive event-driven clients are exercised; no timer/shared-mode/physical coverage.",
@@ -124,10 +165,21 @@ fn run(
             "Known PCM and Stop silence are bounded observations, not long stress/Verifier/release qualification.",
             "Exited plus join proves service teardown/control-file release, not final PDO absence.",
         ];
+        if options.soaking() {
+            report.stage = "real_app_continuous_graph_soak";
+            report.limitations.push("Soak is opt-in target evidence only, not Verifier, sleep/resume, physical endpoint, or release qualification.");
+            report.limitations.push("Native packet positions infer capture gaps; private driver drop counters and render underrun counts are unavailable through App/native clients.");
+            report.limitations.push("Idle checks actual signal frame_end every observation and two advances per one-second window; snapshot publications are freshness checks only.");
+            report.limitations.push("PCM soak alternates source every 30s with a fixed 1s finite-only settling interval; all other capture samples must match gain exactly within 0.0001, with no silence/discontinuities.");
+            if !pcm {
+                report.limitations.push("Idle-only soak starts no probe native clients and makes no PCM or native audio clock claim.");
+            }
+        }
     }
     let mut runtime = None;
-    // Reserve a third of the total interval for stop/exit even after failure.
-    let work_deadline = started + timeout.mul_f64(2.0 / 3.0);
+    let timeout = Duration::from_secs(options.timeout_seconds);
+    // Long soak keeps a fixed cleanup reserve; a ratio would truncate 16h work.
+    let work_deadline = started + options.work_budget();
     let overall_deadline = started + timeout;
     let outcome = (|| -> anyhow::Result<()> {
         let startup = project::persist(directory)?;
@@ -176,9 +228,14 @@ fn run(
         let applied = handle
             .try_request_tracked(AppRequest::ApplyGraph)
             .map_err(|error| anyhow::anyhow!("Apply enqueue: {error:?}"))?;
+        let apply_deadline = if options.soaking() {
+            (Instant::now() + Duration::from_secs(15)).min(work_deadline)
+        } else {
+            work_deadline
+        };
         let running = wait(
             &handle,
-            work_deadline,
+            apply_deadline,
             "apply_no_probe_clients",
             &mut report,
             shared,
@@ -188,7 +245,7 @@ fn run(
             running.active_revision.is_some(),
             "missing Engine confirmation"
         );
-        if pcm {
+        if pcm || options.soaking() {
             let session = LiveSession {
                 handle: &handle,
                 ids: &ids,
@@ -196,6 +253,7 @@ fn run(
                 revision: running.active_revision.expect("checked"),
                 deadline: work_deadline,
                 started,
+                last_snapshot: RefCell::new(None),
             };
             report.gate_transitions = running
                 .exports
@@ -209,25 +267,66 @@ fn run(
                 })
                 .collect::<anyhow::Result<_>>()?;
             publish(shared, &report);
-            session.hold_without_clients(&mut report, shared)?;
-            session.exercise_pcm(stable_ids, &mut report, shared)?;
-            return Ok(());
+            session.hold_without_clients(options.soak_idle_seconds, &mut report, shared)?;
+            if pcm {
+                session.exercise_pcm(stable_ids, options.soak_pcm_seconds, &mut report, shared)?;
+                return Ok(());
+            }
         }
         let stopped = handle
             .try_request_tracked(AppRequest::Stop)
             .map_err(|error| anyhow::anyhow!("Stop enqueue: {error:?}"))?;
         wait(
             &handle,
-            work_deadline,
+            if options.soaking() {
+                (Instant::now() + PCM_PHASE_LIMIT).min(work_deadline)
+            } else {
+                work_deadline
+            },
             "stop_closed_gates_retained_endpoints",
             &mut report,
             shared,
             |evidence| evidence.stopped(&ids, stopped.0),
         )?;
+        ensure!(
+            options.soak_idle_seconds == 0
+                || report
+                    .soak_idle
+                    .as_ref()
+                    .is_some_and(|soak| soak.completed
+                        && soak.elapsed_ms >= options.soak_idle_seconds * 1_000),
+            "requested idle soak incomplete"
+        );
         Ok(())
     })();
     if let Err(error) = outcome {
         report.error = Some(format!("{error:#}"));
+    }
+    if report.error.is_none() {
+        for (requested, completed) in [
+            (
+                options.soak_idle_seconds,
+                report
+                    .soak_idle
+                    .as_ref()
+                    .map(|soak| (soak.completed, soak.requested_ms, soak.elapsed_ms)),
+            ),
+            (
+                options.soak_pcm_seconds,
+                report
+                    .soak_pcm
+                    .as_ref()
+                    .map(|soak| (soak.completed, soak.requested_ms, soak.elapsed_ms)),
+            ),
+        ] {
+            if requested != 0
+                && !completed.is_some_and(|(done, duration, elapsed)| {
+                    done && duration == requested * 1_000 && elapsed >= duration
+                })
+            {
+                report.error = Some("requested soak duration was not completed".into());
+            }
+        }
     }
     let mut cleanup_ok = runtime.is_none();
     if let Some(service) = runtime {
@@ -277,6 +376,7 @@ struct LiveSession<'a> {
     revision: u64,
     deadline: Instant,
     started: Instant,
+    last_snapshot: RefCell<Option<(Arc<moiren_app::service::AppSnapshot>, Instant)>>,
 }
 
 impl LiveSession<'_> {
@@ -297,7 +397,14 @@ impl LiveSession<'_> {
         for transition in &report.gate_transitions {
             transition.require_deadline(now_ms)?;
         }
+        if let Some((_, observed)) = self.last_snapshot.borrow().as_ref() {
+            ensure!(
+                observed.elapsed() <= Duration::from_secs(2),
+                "{stage}: service snapshot publication stale"
+            );
+        }
         if let Some(snapshot) = self.handle.try_snapshot() {
+            self.observe_snapshot(&snapshot, report)?;
             let evidence = Evidence::from(snapshot.as_ref());
             record(report, stage, evidence.clone(), shared);
             ensure!(
@@ -337,8 +444,16 @@ impl LiveSession<'_> {
         request: u64,
         report: &mut Report,
         shared: &Shared,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
+        if let Some((_, observed)) = self.last_snapshot.borrow().as_ref() {
+            ensure!(
+                observed.elapsed() <= Duration::from_secs(2),
+                "stopped service snapshot publication stale"
+            );
+        }
+        let mut observed = false;
         if let Some(snapshot) = self.handle.try_snapshot() {
+            self.observe_snapshot(&snapshot, report)?;
             let evidence = Evidence::from(snapshot.as_ref());
             record(
                 report,
@@ -350,13 +465,46 @@ impl LiveSession<'_> {
                 evidence.stopped(self.ids, request),
                 "Stop state/gates/endpoints changed: {evidence:?}"
             );
+            observed = true;
         }
         ensure!(Instant::now() < self.deadline, "stopped capture deadline");
+        Ok(observed)
+    }
+
+    fn observe_snapshot(
+        &self,
+        snapshot: &Arc<moiren_app::service::AppSnapshot>,
+        report: &mut Report,
+    ) -> anyhow::Result<()> {
+        let now = Instant::now();
+        let mut last = self.last_snapshot.borrow_mut();
+        if last
+            .as_ref()
+            .is_none_or(|(previous, _)| !Arc::ptr_eq(previous, snapshot))
+        {
+            *last = Some((snapshot.clone(), now));
+            report.last_snapshot_observed_ms = Some(self.started.elapsed().as_millis());
+        }
+        ensure!(
+            last.as_ref().is_some_and(
+                |(_, observed)| now.duration_since(*observed) <= Duration::from_secs(2)
+            ),
+            "service snapshot publication stale"
+        );
         Ok(())
     }
 
-    fn hold_without_clients(&self, report: &mut Report, shared: &Shared) -> anyhow::Result<()> {
-        eprintln!("stage2: 4s no-client hold, actual Gain node signal headers");
+    fn hold_without_clients(
+        &self,
+        soak_seconds: u64,
+        report: &mut Report,
+        shared: &Shared,
+    ) -> anyhow::Result<()> {
+        let duration = IDLE_HOLD.max(Duration::from_secs(soak_seconds));
+        eprintln!(
+            "no-client hold: {}s, actual Gain node signal headers",
+            duration.as_secs()
+        );
         let started = Instant::now();
         let subscription_deadline = (started + Duration::from_secs(5)).min(self.deadline);
         report.idle_hold = Some(IdleHoldEvidence {
@@ -411,15 +559,20 @@ impl LiveSession<'_> {
             thread::sleep(Duration::from_millis(5));
         };
         let hold_started = Instant::now();
+        let hold_deadline = (hold_started + duration + Duration::from_secs(5)).min(self.deadline);
+        if soak_seconds > 0 {
+            report.soak_idle = Some(soak::IdleSoak::new(soak_seconds * 1_000));
+        }
         loop {
             let gates_open =
-                self.require_running("no_clients_four_second_hold", report, shared, self.deadline)?;
+                self.require_running("no_clients_timeline_hold", report, shared, hold_deadline)?;
             let elapsed = hold_started.elapsed();
             let hold = report
                 .idle_hold
                 .as_mut()
                 .expect("initialized hold evidence");
             hold.observed_wall_ms = elapsed.as_millis();
+            let mut header = None;
             if let Some(window) = subscriber.read_latest()
                 && window.header().frame_end > window.header().frame_start
             {
@@ -432,13 +585,25 @@ impl LiveSession<'_> {
                     "invalid stereo Gain signal window"
                 );
                 hold.timeline.observe(*window.header())?;
+                header = Some(*window.header());
                 if elapsed >= Duration::from_secs(3) {
                     hold.after_old_three_second_threshold
                         .observe(*window.header())?;
                 }
             }
+            if let Some(soak) = &mut report.soak_idle {
+                let observed = soak.poll(elapsed.as_millis() as u64, header);
+                publish(shared, report);
+                observed?;
+            }
             publish(shared, report);
-            if elapsed >= IDLE_HOLD && gates_open {
+            if elapsed >= duration
+                && gates_open
+                && report
+                    .soak_idle
+                    .as_ref()
+                    .is_none_or(soak::IdleSoak::end_observed)
+            {
                 break;
             }
             thread::sleep(Duration::from_millis(5));
@@ -447,6 +612,9 @@ impl LiveSession<'_> {
         hold.timeline.require_progress()?;
         hold.after_old_three_second_threshold.require_progress()?;
         hold.timeline_verified = true;
+        if let Some(soak) = &mut report.soak_idle {
+            soak.finish()?;
+        }
         publish(shared, report);
         Ok(())
     }
@@ -454,6 +622,7 @@ impl LiveSession<'_> {
     fn exercise_pcm(
         &self,
         stable_ids: [StableEndpointId; 2],
+        soak_seconds: u64,
         report: &mut Report,
         shared: &Shared,
     ) -> anyhow::Result<()> {
@@ -483,6 +652,9 @@ impl LiveSession<'_> {
             self.signal_phase(&mut clients, false, report, shared)?;
             clients.set_signal(validation::SECOND_SIGNAL);
             self.signal_phase(&mut clients, true, report, shared)?;
+            if soak_seconds > 0 {
+                self.soak_pcm(&mut clients, soak_seconds, report, shared)?;
+            }
             let evidence = report.pcm.as_mut().expect("PCM evidence");
             evidence.capture_running_at_stop_request = clients.capture_running();
             ensure!(
@@ -494,7 +666,12 @@ impl LiveSession<'_> {
                 .try_request_tracked(AppRequest::Stop)
                 .map_err(|error| anyhow::anyhow!("Stop enqueue: {error:?}"))?;
             eprintln!("stage2: Stop while capture RUN, retaining native endpoints");
+            let stop_deadline = (Instant::now() + PCM_PHASE_LIMIT).min(self.deadline);
             loop {
+                ensure!(
+                    Instant::now() < stop_deadline,
+                    "service Stop deadline with capture RUN"
+                );
                 // Do not stop capture/render during service Stop; drain while the
                 // graph retires so a later silent packet is not a stopped client.
                 clients.pump(|samples, _| validate_finite(samples))?;
@@ -550,7 +727,10 @@ impl LiveSession<'_> {
                     }
                 })?;
                 evidence.capture_running_during_silence = true;
-                if !settling && evidence.stopped_silence.require_silence().is_ok() {
+                if !settling
+                    && evidence.stopped_silence.require_silence().is_ok()
+                    && self.require_stopped(stopped.0, report, shared)?
+                {
                     break;
                 }
                 publish(shared, report);
@@ -565,6 +745,9 @@ impl LiveSession<'_> {
         })();
         let evidence = report.pcm.as_mut().expect("PCM evidence");
         evidence.native_discontinuities = clients.discontinuities();
+        if soak_seconds > 0 {
+            report.native_diagnostics = Some(clients.diagnostics());
+        }
         let stopped = clients.stop();
         evidence.native_clients_stopped = stopped.is_ok();
         // Pair releases both WASAPI leases before service exit/control removal.
@@ -575,6 +758,93 @@ impl LiveSession<'_> {
         report.pcm_verified = true;
         publish(shared, report);
         Ok(())
+    }
+
+    fn soak_pcm(
+        &self,
+        clients: &mut native::Pair,
+        seconds: u64,
+        report: &mut Report,
+        shared: &Shared,
+    ) -> anyhow::Result<()> {
+        eprintln!("PCM soak: {seconds}s, one continuously RUN native pair");
+        // Continue the already-qualified second source with the existing pair;
+        // every later pattern switch gets exactly the fixed 1s settling budget.
+        clients.enable_soak_diagnostics()?;
+        let started = Instant::now();
+        let duration = Duration::from_secs(seconds);
+        let deadline = (started + duration + Duration::from_secs(5)).min(self.deadline);
+        report.soak_pcm = Some(soak::PcmSoak::new(
+            seconds * 1_000,
+            validation::SECOND_EXPECTED,
+        ));
+        let mut next_pattern_ms = soak::PATTERN_MS;
+        let mut next_clock_ms = 0;
+        let mut next_control_ms = 0;
+        let mut next_publish_ms = 0;
+        loop {
+            ensure!(Instant::now() < deadline, "PCM soak phase/work deadline");
+            let now_ms = started.elapsed().as_millis() as u64;
+            if now_ms >= next_control_ms {
+                self.require_running("soak_pcm_continuous_native_pair", report, shared, deadline)?;
+                next_control_ms = now_ms + 20;
+            }
+            let progress = report.soak_pcm.as_mut().expect("soak PCM evidence");
+            progress.require_fresh(now_ms)?;
+            if now_ms >= next_pattern_ms && progress.requested_ms.saturating_sub(now_ms) >= 3_000 {
+                let (source, expected) = if progress.source_changes.is_multiple_of(2) {
+                    (validation::SIGNAL, validation::EXPECTED)
+                } else {
+                    (validation::SECOND_SIGNAL, validation::SECOND_EXPECTED)
+                };
+                progress.change_pattern(now_ms, expected)?;
+                clients.set_signal(source);
+                next_pattern_ms = now_ms + soak::PATTERN_MS;
+            }
+            let sampled = clients.pump(|samples, discontinuity| {
+                progress.observe(started.elapsed().as_millis() as u64, samples, discontinuity)
+            });
+            // Preserve packet position gaps and the failed window before cleanup.
+            report.native_diagnostics = Some(clients.diagnostics());
+            if let Err(error) = sampled {
+                publish(shared, report);
+                return Err(error.context("continuous PCM soak"));
+            }
+            let now_ms = started.elapsed().as_millis() as u64;
+            if now_ms >= next_clock_ms {
+                let sampled = clients.sample_clocks(now_ms);
+                report.native_diagnostics = Some(clients.diagnostics());
+                publish(shared, report);
+                sampled?;
+                next_clock_ms = now_ms + 1_000;
+            }
+            if now_ms >= next_publish_ms {
+                publish(shared, report);
+                next_publish_ms = now_ms + 100;
+            }
+            if started.elapsed() >= duration
+                && report.soak_pcm.as_ref().expect("soak PCM").end_observed()
+                && report
+                    .soak_pcm
+                    .as_ref()
+                    .expect("soak PCM")
+                    .current_window
+                    .require_signal()
+                    .is_ok()
+                && clients.require_clocks(now_ms).is_ok()
+                && self.require_running(
+                    "soak_pcm_continuous_native_pair",
+                    report,
+                    shared,
+                    deadline,
+                )?
+            {
+                report.soak_pcm.as_mut().expect("soak PCM").finish(now_ms)?;
+                publish(shared, report);
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 
     fn signal_phase(
@@ -674,6 +944,10 @@ fn wait(
     eprintln!("integration: {stage}");
     let mut last = None;
     loop {
+        ensure!(
+            Instant::now() < deadline,
+            "{stage} timed out; last evidence: {last:?}"
+        );
         if let Some(snapshot) = handle.try_snapshot() {
             let evidence = Evidence::from(snapshot.as_ref());
             let complete = ready(&evidence);
@@ -682,6 +956,10 @@ fn wait(
                 .flatten();
             last = Some(evidence.clone());
             record(report, stage, evidence, shared);
+            ensure!(
+                Instant::now() < deadline,
+                "{stage}: snapshot arrived after deadline"
+            );
             if complete {
                 return Ok(last.expect("observed snapshot"));
             }
@@ -700,26 +978,43 @@ fn wait(
 }
 
 fn record(report: &mut Report, stage: &str, evidence: Evidence, shared: &Shared) {
-    if let Some(checkpoint) = report
-        .checkpoints
-        .last_mut()
-        .filter(|checkpoint| checkpoint.stage == stage)
-    {
-        checkpoint.evidence = evidence;
-    } else {
-        report.checkpoints.push(Checkpoint {
-            stage: stage.into(),
-            evidence,
-        });
-    }
+    report.checkpoint(stage, evidence);
     publish(shared, report);
 }
 
 fn publish(shared: &Shared, report: &Report) {
-    shared
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-        .report = report.clone();
+    let mut progress = shared.lock().unwrap_or_else(|poison| poison.into_inner());
+    progress.report = report.clone();
+    progress.updated = Some(Instant::now());
+}
+
+fn current_report(shared: &Shared, started: Instant) -> Report {
+    let progress = shared.lock().unwrap_or_else(|poison| poison.into_inner());
+    let mut report = progress.report.clone();
+    report.status = "in_progress";
+    report.elapsed_ms = progress
+        .updated
+        .unwrap_or(started)
+        .saturating_duration_since(started)
+        .as_millis();
+    report
+}
+
+fn persist_progress(
+    directory: &Path,
+    report: &Report,
+    sequence: u64,
+    started: Instant,
+    finished: bool,
+) -> anyhow::Result<()> {
+    progress::persist(
+        directory,
+        report,
+        sequence,
+        started.elapsed().as_millis(),
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+        finished,
+    )
 }
 
 fn emit_report(directory: &Path, report: &Report) -> anyhow::Result<()> {
@@ -730,6 +1025,7 @@ fn emit_report(directory: &Path, report: &Report) -> anyhow::Result<()> {
         .open(directory.join("report.json"))?;
     file.write_all(&json)?;
     file.write_all(b"\n")?;
+    file.sync_all()?;
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
     output.write_all(&json)?;

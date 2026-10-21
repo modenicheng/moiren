@@ -9,7 +9,7 @@ pub(super) const EXPECTED: [f32; 2] = [0.125, -0.25];
 pub(super) const SECOND_SIGNAL: [f32; 2] = [-0.375, 0.125];
 pub(super) const SECOND_EXPECTED: [f32; 2] = [-0.1875, 0.0625];
 pub(super) const REQUIRED_FRAMES: u64 = 48_000;
-const TOLERANCE: f32 = 0.0001;
+pub(super) const TOLERANCE: f32 = 0.0001;
 const READMISSION_LIMIT_MS: u128 = 5_000;
 const GATE_EVENT_CAPACITY: usize = 32;
 
