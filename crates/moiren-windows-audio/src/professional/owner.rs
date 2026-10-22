@@ -255,6 +255,9 @@ fn native_owner<S: ProcessingSample>(
     sender: &mpsc::SyncSender<Result<NativeStreamInfo, BackendError>>,
     started: &AtomicBool,
 ) {
+    // Match the physical and virtual paths' scheduling class: this thread
+    // paces exclusive native deadlines. Registration failure is non-fatal.
+    let _mmcss = crate::owner::Mmcss::audio();
     let native = (request.factory)();
     let mut stream = match native {
         Ok(stream) => stream,
