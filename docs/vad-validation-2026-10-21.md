@@ -624,3 +624,48 @@ daytime host's render-side clock wandered up to ±1 % instantaneously
 playback-carrier dip to 93 frames with 4 xruns from material-supply
 starvation. A clean music baseline requires a quiet host window; the
 snap mechanism's refusal behavior is itself now verified on target.
+
+## Night music-soak campaign (2026-10-22/23, build 3D4BB79F, commits ea51775/ab9c8ac)
+
+Five scheduled attempts across the 01:00-09:00 window after the lag snap
+fix, each a full runner-launched 8h music soak (no idle phase; that gate
+passed the previous night):
+
+1. `night` 11 s — PCM validation signal-switch flake: signal 1
+   48000/48000 perfect, signal-2 switch (gate epoch 2→3) brought
+   playback drops 0→4 and all-silent capture with 0 matching frames.
+   No clock-noise correlation: a real intermittent defect in the switch
+   path, still to reproduce (the same binary passed the switch twice on
+   10-22 and twice more tonight).
+2. `night2` 16.5 s — guest wuauserv nightly maintenance burst
+   (2,400-frame inferred gap, 19,810 ppm render deviation). Mitigated
+   for the rest of the campaign: wuauserv/UsoSvc stopped and disabled,
+   NoAutoUpdate=1, Defender exclusion for C:\MoirenVadTest (realtime
+   itself is tamper-protected and cannot be disabled remotely).
+3. `night3` 10.8 s — validation broken while the host was actively
+   used: 9 clock gaps inside 1.4 s (skipped up to 4) made the mic
+   payload stale at driver consumption (6 freshness drops), breaking
+   the 48,000-consecutive requirement in signal 1.
+4. `night4` 111 s — validation passed; music died on host-activity
+   content wander (corr 0.58-0.90, zero re-anchors: correct refusal
+   with no good alignment anywhere).
+5. `night5` 02:30 launch, validation passed, music ran **86.9 min**
+   (longest ever): 4696/5205 windows qualified (90.2%), minimum
+   correlation 0.9501, **64 lag re-anchors** averaging ~81 s apart —
+   the snap fix demonstrably tracking a persistent ~513 ppm
+   render/capture clock differential (render −574.5 ppm avg, capture
+   −61.4 ppm). A 03:44-03:47 host disturbance cluster (mic xruns +15,
+   Wake storm, playback soft +96) produced one 480-frame capture gap
+   and the zero-discontinuity gate ended the run at 03:56:57. Resources
+   flat (331 MB peak, ~7% of one core, no leak); 11 clock gaps all
+   Wake, zero Clamps; teardown orderly.
+
+Assessment: with the guest's own noise sources removed, the remaining
+disturbances are host-side (user activity until ~02:30, then sporadic
+host background bursts). The audio path itself behaves as designed
+under all of it — carriers healthy, debt ledger repaying, re-anchors
+locking the drift. The 8h music qualification needs either glitch
+tolerance (product decision) or a host that can go eight hours without
+a single ≥10 ms capture supply hole. Open daytime items: reproduce the
+signal-switch drop flake (attempt 1), and decide whether to restore the
+guest's disabled update services.
