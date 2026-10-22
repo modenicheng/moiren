@@ -14,6 +14,39 @@ These are bounded target results, not stable-repeatability or complete product
 qualification: earlier timer runs aborted on real long-stall epoch mismatches,
 and a fresh-OS installation has not been qualified.
 
+## Audit follow-up - 2026-10-21
+
+The reported Removing-state retry defect is absent in the current source:
+`Revoke` accepts Removing, `VadRemoveChild` retains the PDO and retries
+`MarkMissing`, and failed ACX removal leaves the added flag set and returns its
+failure. Commit `7ac7283` adds production-extracted removal/cleanup/destroy tests
+covering repeated failures, successful submission idempotence, callback timing,
+identity checks, quota retirement and reference balance. All six MSVC and
+portable host suites pass. Three scratch mutations (skip the retry, swallow
+failure, remove the accepted-submission guard) are rejected by the regression.
+No kernel source change or new target package is required for this finding.
+
+Commit `93a9c0c` ignores only local driver project settings and generated
+x64/ARM64 Debug/Release directories. The separate user-owned `driver/moiren`
+template never entered the repository and was removed from the working tree on
+2026-10-22.
+
+The authenticated-user control ACL remains the deliberate standard-user,
+single-owner design. It does not authenticate the Moiren executable or isolate
+mutually untrusted local users. A competing permitted process can open an idle
+bus first. See the [access boundary and continuous-test procedure](../../docs/vad-soak-validation.md).
+An attempted limited S4U diagnostic task still received an administrator token;
+its preflight refused to launch the probe. The temporary task was removed.
+This is not a standard-user target PASS.
+
+Fresh host checks pass: workspace tests (1,322 passed, zero failed, six ignored),
+workspace all-target check and strict Clippy, gpui-test acceptance, and the WDK
+analyzed build/INF validation. These host results do not establish target
+long-duration stability. The opt-in continuous soak and its runner require
+their own completed target evidence; starting or rehearsing them is not an
+eight-hour PASS. Historical timer failures and outstanding release gates below
+remain open.
+
 ## Implemented source
 
 - Independent x64 Debug ACX 1.1/KMDF 1.31 package, WDK 10.0.28000.0, MEDIA root
