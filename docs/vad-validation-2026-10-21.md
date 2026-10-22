@@ -594,3 +594,33 @@ discontinuity gate immediately, and the lag tracker's hysteresis
 multiplies each glitch into hundreds of failed windows. Qualifying the
 full run needs either a lag-tracker snap fix (measurement artifact,
 not a threshold change) plus glitch tolerance, or steadier hardware.
+
+## Lag-tracker snap fix and daytime rehearsals (2026-10-22, commit ea51775)
+
+Attempt 2's evidence misled the first diagnosis: in-range steps
+(512-660 frames) were always recoverable within one window by the
+ordinary per-window search. The 269-window streak was structural: a
+failed window never updated the tracked lag and never widened the
+search, so once a misalignment left the ±2,400-frame drift
+neighborhood every following window failed against noise sidelobes
+forever. `ea51775` (subagent-implemented, TDD first): a failed tracked
+window re-searches the full bounded pipeline-delay neighborhood
+(±192,000 frames — the same bound as initial acquisition,
+deterministic, loop-wrap aware) and snaps only onto a peak that
+independently clears the same 0.95 window threshold; the report gains
+`lag_re_anchors` and per-window `re_anchored`. No threshold, gate, or
+streak rule changed. Host gates: 57 example tests (RED→GREEN: one
+4,096-frame step now fails only the straddling window and re-qualifies
+next window; a 640-frame step still rides the ordinary search with no
+re-anchor; silence never snaps), clippy/fmt, full moiren-app suite.
+
+Two daytime rehearsals with build 3D4BB79F (90 s music each,
+`20261022-ea51775-rehearsal{,2}`) both failed the ratio gate at 4-5/88
+qualified windows with zero re-anchors — refusal was correct: the
+daytime host's render-side clock wandered up to ±1 % instantaneously
+(max deviation 9,632-10,057 ppm), capping window correlation at
+0.65-0.94 with no good alignment anywhere; the engine side stayed calm
+(3 late wakes, zero clamps), and one run additionally showed a
+playback-carrier dip to 93 frames with 4 xruns from material-supply
+starvation. A clean music baseline requires a quiet host window; the
+snap mechanism's refusal behavior is itself now verified on target.
