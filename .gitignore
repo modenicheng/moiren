@@ -27,6 +27,7 @@ rustc-ice-*.txt
 # AI Slops
 .tmp/
 .v2c/
+.zcode/
 
 # Visual Studio IDE state
 .vs/
