@@ -16,8 +16,8 @@ use crate::{
     shared_stream::SharedPeriodPolicy,
     virtual_owner::{
         ProjectClock, QpcClockFactory, VirtualBoundaryProvider, VirtualBoundaryRequest,
-        VirtualClockFactory, VirtualMicrophoneSink, VirtualPlaybackSource,
-        VirtualPreparedTransport, VirtualSessions,
+        VirtualClockFactory, VirtualPreparedTransport, VirtualSessions, bind_microphone_sink,
+        bind_playback_source,
     },
 };
 use moiren_engine::{
@@ -179,42 +179,24 @@ impl WindowsBackend {
             let endpoint = match &output.target {
                 OutputTarget::Physical(endpoint) => endpoint,
                 OutputTarget::VirtualMicrophone { endpoint_id } => {
-                    let prepared = self
+                    let provider = self
                         .virtual_provider
-                        .as_ref()
-                        .expect("validated virtual provider")
-                        .prepare_microphone(
-                            VirtualBoundaryRequest {
-                                endpoint_id: *endpoint_id,
-                                channels: output.channels,
-                                engine_sample_rate: request.project.processing.engine.processing_sr
-                                    as u32,
-                                max_block_frames: request
-                                    .project
-                                    .processing
-                                    .engine
-                                    .max_block_frames,
-                                audio_byte_budget: request.project.processing.audio_byte_budget,
-                                owner_generation: request.owner_generation,
-                            },
-                            cancel,
-                        )?;
-                    virtual_sessions
-                        .push_with_reset_epoch(prepared.session, prepared.reset_epoch.clone());
-                    let sink = VirtualMicrophoneSink::new(
-                        prepared.carrier,
-                        output.channels,
-                        request.project.processing.engine.max_block_frames,
-                        request.project.processing.engine.processing_sr as u32,
-                        request.project.processing.audio_byte_budget,
-                    )?
-                    .with_reset_fence(
-                        prepared.reset_epoch,
-                        prepared.producer_quiesced_epoch,
-                        prepared.consumer_quiesced_epoch,
-                    )
-                    .with_probe(prepared.probe.clone())
-                    .with_clock_drift()?;
+                        .as_deref()
+                        .expect("validated virtual provider");
+                    let (sink, probe) = bind_microphone_sink(
+                        provider,
+                        VirtualBoundaryRequest {
+                            endpoint_id: *endpoint_id,
+                            channels: output.channels,
+                            engine_sample_rate: request.project.processing.engine.processing_sr
+                                as u32,
+                            max_block_frames: request.project.processing.engine.max_block_frames,
+                            audio_byte_budget: request.project.processing.audio_byte_budget,
+                            owner_generation: request.owner_generation,
+                        },
+                        cancel,
+                        &mut virtual_sessions,
+                    )?;
                     bindings
                         .bind_sink(node, sink)
                         .map_err(|error| BackendError::Unsupported(error.to_string()))?;
@@ -227,11 +209,7 @@ impl WindowsBackend {
                         render_queue: None,
                         input_queue: None,
                     });
-                    probes.push((
-                        node,
-                        NativeStreamKind::VirtualMicrophone,
-                        prepared.probe.clone(),
-                    ));
+                    probes.push((node, NativeStreamKind::VirtualMicrophone, probe));
                     continue;
                 }
                 _ => unreachable!("validated output intent"),
@@ -328,54 +306,27 @@ impl WindowsBackend {
                             "virtual boundary requires an integral Engine rate in 8..384kHz".into(),
                         ));
                     }
-                    let prepared = self
+                    let provider = self
                         .virtual_provider
-                        .as_ref()
-                        .expect("validated virtual provider")
-                        .prepare_playback(
-                            VirtualBoundaryRequest {
-                                endpoint_id: *endpoint_id,
-                                channels: input.channels,
-                                engine_sample_rate: request.project.processing.engine.processing_sr
-                                    as u32,
-                                max_block_frames: request
-                                    .project
-                                    .processing
-                                    .engine
-                                    .max_block_frames,
-                                audio_byte_budget: request.project.processing.audio_byte_budget,
-                                owner_generation: request.owner_generation,
-                            },
-                            cancel,
-                        )?;
-                    virtual_sessions
-                        .push_with_reset_epoch(prepared.session, prepared.reset_epoch.clone());
-                    let source = VirtualPlaybackSource::new(
-                        prepared.carrier,
-                        input.channels,
-                        request.project.processing.engine.max_block_frames,
-                        request.project.processing.engine.processing_sr as u32,
-                        request.project.processing.audio_byte_budget,
-                    )?
-                    .with_reset_fence(
-                        prepared.reset_epoch,
-                        prepared.producer_quiesced_epoch,
-                        prepared.consumer_quiesced_epoch,
-                    )
-                    .with_probe(prepared.probe.clone())
-                    // Equal QPC rates do not synchronize the native packet and
-                    // Graph wake phases. Reserve existing carrier headroom for
-                    // both virtual and physical masters, without delaying owner
-                    // activation or adding a second Graph executor.
-                    .with_clock_drift()?;
+                        .as_deref()
+                        .expect("validated virtual provider");
+                    let (source, probe) = bind_playback_source(
+                        provider,
+                        VirtualBoundaryRequest {
+                            endpoint_id: *endpoint_id,
+                            channels: input.channels,
+                            engine_sample_rate: engine_rate as u32,
+                            max_block_frames: request.project.processing.engine.max_block_frames,
+                            audio_byte_budget: request.project.processing.audio_byte_budget,
+                            owner_generation: request.owner_generation,
+                        },
+                        cancel,
+                        &mut virtual_sessions,
+                    )?;
                     bindings
                         .bind_source(node, source)
                         .map_err(|error| BackendError::Unsupported(error.to_string()))?;
-                    probes.push((
-                        node,
-                        NativeStreamKind::VirtualPlayback,
-                        prepared.probe.clone(),
-                    ));
+                    probes.push((node, NativeStreamKind::VirtualPlayback, probe));
                     streams.push(NativeStreamObservation {
                         node,
                         kind: NativeStreamKind::VirtualPlayback,

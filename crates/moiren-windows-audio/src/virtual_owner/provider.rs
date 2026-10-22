@@ -1,11 +1,10 @@
+use super::boundary::{BoundaryProbe, VirtualMicrophoneSink, VirtualPlaybackSource};
 use moiren_engine::{
     boundary::{AudioReader, AudioWriter},
     host::{BackendError, CancellationToken, OwnerStatus, ResourceEvent},
     node::VirtualEndpointId,
 };
 use std::sync::{Arc, atomic::AtomicU64};
-
-use super::boundary::BoundaryProbe;
 
 /// Persistent desired resource identity is resolved here, never on render.
 #[derive(Debug, Clone, Copy)]
@@ -71,6 +70,64 @@ pub trait VirtualBoundaryProvider: Send + Sync + 'static {
     fn poll_resource(&self) -> Option<ResourceEvent> {
         None
     }
+}
+
+/// Prepare a playback boundary and bind its carrier in one step: the session
+/// joins `sessions` under its reset epoch, and the returned source is fully
+/// fenced, probed and drift-tracked. Both native backends must route virtual
+/// IO through these so a boundary behaves identically wherever it prepares.
+pub fn bind_playback_source(
+    provider: &dyn VirtualBoundaryProvider,
+    request: VirtualBoundaryRequest,
+    cancel: &CancellationToken,
+    sessions: &mut VirtualSessions,
+) -> Result<(VirtualPlaybackSource, Arc<BoundaryProbe>), BackendError> {
+    let prepared = provider.prepare_playback(request, cancel)?;
+    sessions.push_with_reset_epoch(prepared.session, prepared.reset_epoch.clone());
+    let source = VirtualPlaybackSource::new(
+        prepared.carrier,
+        request.channels,
+        request.max_block_frames,
+        request.engine_sample_rate,
+        request.audio_byte_budget,
+    )?
+    .with_reset_fence(
+        prepared.reset_epoch,
+        prepared.producer_quiesced_epoch,
+        prepared.consumer_quiesced_epoch,
+    )
+    .with_probe(prepared.probe.clone())
+    // Native packet publication and Engine block wakes keep independent
+    // phases even at one nominal rate; the boundary carries the drift cost.
+    .with_clock_drift()?;
+    Ok((source, prepared.probe))
+}
+
+/// Prepare a microphone boundary and bind its carrier in one step, with the
+/// same session/fence/probe/drift semantics as [`bind_playback_source`].
+pub fn bind_microphone_sink(
+    provider: &dyn VirtualBoundaryProvider,
+    request: VirtualBoundaryRequest,
+    cancel: &CancellationToken,
+    sessions: &mut VirtualSessions,
+) -> Result<(VirtualMicrophoneSink, Arc<BoundaryProbe>), BackendError> {
+    let prepared = provider.prepare_microphone(request, cancel)?;
+    sessions.push_with_reset_epoch(prepared.session, prepared.reset_epoch.clone());
+    let sink = VirtualMicrophoneSink::new(
+        prepared.carrier,
+        request.channels,
+        request.max_block_frames,
+        request.engine_sample_rate,
+        request.audio_byte_budget,
+    )?
+    .with_reset_fence(
+        prepared.reset_epoch,
+        prepared.producer_quiesced_epoch,
+        prepared.consumer_quiesced_epoch,
+    )
+    .with_probe(prepared.probe.clone())
+    .with_clock_drift()?;
+    Ok((sink, prepared.probe))
 }
 
 /// Keeps resources on the control side through compiler/attachment failures.

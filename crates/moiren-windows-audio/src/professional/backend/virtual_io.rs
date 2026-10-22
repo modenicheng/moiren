@@ -1,7 +1,7 @@
 //! Provider sessions enter a control-side guard before any fallible binding.
 use super::*;
 use crate::virtual_owner::{
-    VirtualBoundaryRequest, VirtualMicrophoneSink, VirtualPlaybackSource, VirtualSessions,
+    VirtualBoundaryRequest, VirtualSessions, bind_microphone_sink, bind_playback_source,
 };
 use moiren_engine::host::OwnerStatus;
 
@@ -65,42 +65,10 @@ pub(super) fn prepare<S: ProcessingSample>(
             owner_generation: request.owner_generation,
         };
         if playback {
-            let prepared = provider.prepare_playback(boundary, cancel)?;
-            sessions.push_with_reset_epoch(prepared.session, prepared.reset_epoch.clone());
-            let source = VirtualPlaybackSource::new(
-                prepared.carrier,
-                channels,
-                boundary.max_block_frames,
-                rate,
-                boundary.audio_byte_budget,
-            )?
-            .with_reset_fence(
-                prepared.reset_epoch,
-                prepared.producer_quiesced_epoch,
-                prepared.consumer_quiesced_epoch,
-            )
-            .with_probe(prepared.probe.clone())
-            // Native packet publication and a virtual QPC owner's block wakes
-            // have independent phases even at the same nominal sample rate.
-            .with_clock_drift()?;
+            let (source, _) = bind_playback_source(provider, boundary, cancel, &mut sessions)?;
             bindings.bind_source(node, source).map_err(unsupported)?;
         } else {
-            let prepared = provider.prepare_microphone(boundary, cancel)?;
-            sessions.push_with_reset_epoch(prepared.session, prepared.reset_epoch.clone());
-            let sink = VirtualMicrophoneSink::new(
-                prepared.carrier,
-                channels,
-                boundary.max_block_frames,
-                rate,
-                boundary.audio_byte_budget,
-            )?
-            .with_reset_fence(
-                prepared.reset_epoch,
-                prepared.producer_quiesced_epoch,
-                prepared.consumer_quiesced_epoch,
-            )
-            .with_probe(prepared.probe.clone())
-            .with_clock_drift()?;
+            let (sink, _) = bind_microphone_sink(provider, boundary, cancel, &mut sessions)?;
             bindings.bind_sink(node, sink).map_err(unsupported)?;
             sinks.push(node);
         }

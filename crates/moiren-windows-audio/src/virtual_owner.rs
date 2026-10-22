@@ -22,7 +22,8 @@ pub use clock::{ClockError, ClockSchedule, ClockTick};
 #[allow(unused_imports)]
 pub use provider::{
     PreparedVirtualMicrophone, PreparedVirtualPlayback, VirtualBoundaryProvider,
-    VirtualBoundaryRequest, VirtualResourceSession, VirtualSessions,
+    VirtualBoundaryRequest, VirtualResourceSession, VirtualSessions, bind_microphone_sink,
+    bind_playback_source,
 };
 
 #[cfg(windows)]
