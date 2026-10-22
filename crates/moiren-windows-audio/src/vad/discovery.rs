@@ -17,7 +17,8 @@ use windows::{
     core::{GUID, PCWSTR},
 };
 
-pub const CONTROL_INTERFACE_GUID: GUID = GUID::from_u128(0x4c7ef487_61a1_4a21_8d63_9d45115a7a5b);
+pub const CONTROL_INTERFACE_GUID: GUID =
+    GUID::from_u128(super::protocol::CONTROL_INTERFACE_GUID_U128);
 
 /// A NUL-terminated interface path obtained from a present SetupAPI interface.
 ///
