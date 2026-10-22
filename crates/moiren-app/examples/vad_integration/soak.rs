@@ -419,6 +419,10 @@ pub(super) struct MusicWindow {
     pub correlation: f32,
     pub both_quiet: bool,
     pub qualified: bool,
+    /// The window qualified by snapping to a re-searched alignment peak
+    /// after the tracked lag's neighborhood failed qualification.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub re_anchored: bool,
 }
 
 /// One completed capture window handed to the analysis thread. The job
@@ -449,6 +453,9 @@ pub(super) struct MusicSoak {
     pub windows_both_quiet: u64,
     pub windows_failed: u64,
     pub longest_failed_streak: u64,
+    /// Windows re-qualified by snapping the tracked lag to a re-searched
+    /// alignment peak after the tracking neighborhood failed qualification.
+    pub lag_re_anchors: u64,
     pub minimum_correlation: f32,
     pub maximum_abs_lag_frames: i64,
     pub maximum_lag_step_frames: i64,
@@ -492,6 +499,7 @@ impl MusicSoak {
             windows_both_quiet: 0,
             windows_failed: 0,
             longest_failed_streak: 0,
+            lag_re_anchors: 0,
             minimum_correlation: 1.0,
             maximum_abs_lag_frames: 0,
             maximum_lag_step_frames: 0,
@@ -625,6 +633,7 @@ impl MusicSoak {
             self.alignment_acquired = true;
             self.minimum_correlation = self.minimum_correlation.min(window.correlation);
             self.windows_qualified += 1;
+            self.lag_re_anchors += u64::from(window.re_anchored);
             self.failed_streak = 0;
         } else {
             self.windows_failed += 1;
@@ -787,17 +796,20 @@ fn decimated_dot(
     score
 }
 
-/// Alignment search for one capture window. The coarse stage scans grid
-/// lags in the box-decimated domain, where the correlation peak is wide
-/// enough that a grid point always lands inside it; exact refinement then
-/// walks every full-rate frame around the best distinct candidates, and the
-/// full-window normalized correlation gates the result. Loop-equivalent
-/// candidates are deduplicated by residue, visiting outward from the search
-/// center so the smallest magnitude wins exact ties.
-pub(super) fn analyze_window(
+/// Alignment search for one capture window over a bounded lag interval. The
+/// coarse stage scans grid lags in the box-decimated domain, where the
+/// correlation peak is wide enough that a grid point always lands inside it;
+/// exact refinement then walks every full-rate frame around the best distinct
+/// candidates, and the full-window normalized correlation gates the result.
+/// Loop-equivalent candidates are deduplicated by residue, visiting outward
+/// from the search center so the smallest magnitude wins exact ties.
+fn search_alignment(
     material_mono: &[f32],
     material_decimated: &[f32],
-    job: MusicJob,
+    job: &MusicJob,
+    low: i64,
+    high: i64,
+    center: i64,
 ) -> MusicWindow {
     let frames = material_mono.len() as i64;
     let captured = &job.mono[..job.mono.len().min(MUSIC_WINDOW_FRAMES)];
@@ -807,19 +819,11 @@ pub(super) fn analyze_window(
         correlation: 0.0,
         both_quiet: false,
         qualified: false,
+        re_anchored: false,
     };
     let stride = MUSIC_GRID_STRIDE as i64;
-    let (low, high) = if job.acquired {
-        (
-            job.previous_lag - MUSIC_TRACK_LAG_FRAMES,
-            job.previous_lag + MUSIC_TRACK_LAG_FRAMES,
-        )
-    } else {
-        (-MUSIC_ACQUIRE_LAG_FRAMES, MUSIC_ACQUIRE_LAG_FRAMES)
-    };
     let low = low - low.rem_euclid(stride);
     let high = high - high.rem_euclid(stride);
-    let center = if job.acquired { job.previous_lag } else { 0 };
     let captured_decimated = decimate(captured, MUSIC_GRID_STRIDE);
     let base_blocks = (job.captured_base / MUSIC_GRID_STRIDE as u64) as i64;
     let mut candidates: Vec<(i64, f32)> = Vec::new();
@@ -889,6 +893,55 @@ pub(super) fn analyze_window(
         dot / (captured_energy * expected_energy).sqrt().max(f32::EPSILON)
     };
     window.qualified = window.both_quiet || window.correlation >= MUSIC_MIN_CORRELATION;
+    window
+}
+
+/// Qualification for one capture window. Tracked windows search only the
+/// clock-drift neighborhood around the tracked lag; when that neighborhood
+/// holds no qualifying alignment — one glitch stepped the content beyond
+/// drift range — the bounded full pipeline-delay neighborhood is searched
+/// once more and the tracker snaps directly onto a peak that independently
+/// clears the same window threshold. With no good alignment anywhere the
+/// tracked lag stands, the re-search is not recorded, and the window fails
+/// exactly as before; no window or run threshold is relaxed.
+pub(super) fn analyze_window(
+    material_mono: &[f32],
+    material_decimated: &[f32],
+    job: MusicJob,
+) -> MusicWindow {
+    let mut window = if job.acquired {
+        search_alignment(
+            material_mono,
+            material_decimated,
+            &job,
+            job.previous_lag - MUSIC_TRACK_LAG_FRAMES,
+            job.previous_lag + MUSIC_TRACK_LAG_FRAMES,
+            job.previous_lag,
+        )
+    } else {
+        search_alignment(
+            material_mono,
+            material_decimated,
+            &job,
+            -MUSIC_ACQUIRE_LAG_FRAMES,
+            MUSIC_ACQUIRE_LAG_FRAMES,
+            0,
+        )
+    };
+    if !window.qualified && job.acquired {
+        let mut re_anchored = search_alignment(
+            material_mono,
+            material_decimated,
+            &job,
+            -MUSIC_ACQUIRE_LAG_FRAMES,
+            MUSIC_ACQUIRE_LAG_FRAMES,
+            0,
+        );
+        if re_anchored.qualified {
+            re_anchored.re_anchored = true;
+            window = re_anchored;
+        }
+    }
     window
 }
 #[derive(Clone, Debug, Default, Serialize)]
@@ -1439,6 +1492,38 @@ mod music_tests {
         }
     }
 
+    /// Feed one window whose content steps forward by `step` frames at the
+    /// window midpoint, like a capture gap: delivered frames after the glitch
+    /// read the material `step` frames ahead of the pre-glitch alignment, so
+    /// no single lag aligns the whole window.
+    fn feed_step_window(
+        soak: &mut MusicSoak,
+        material: &Material,
+        lag: i64,
+        step: i64,
+        now_ms: &mut u64,
+    ) {
+        let (material_mono, material_decimated) = analysis(material);
+        let mut samples = Vec::with_capacity(MUSIC_WINDOW_FRAMES * 2);
+        for frame in 0..MUSIC_WINDOW_FRAMES {
+            let offset = lag
+                + frame as i64
+                + if frame >= MUSIC_WINDOW_FRAMES / 2 {
+                    step
+                } else {
+                    0
+                };
+            let position = offset.rem_euclid(material.frames as i64) as usize;
+            samples.push(material.samples[position * 2]);
+            samples.push(material.samples[position * 2 + 1]);
+        }
+        for packet in samples.as_chunks::<{ MUSIC_WINDOW_FRAMES * 2 / 10 }>().0 {
+            *now_ms += 100;
+            soak.observe_packet(*now_ms, packet, false).unwrap();
+        }
+        soak.qualify_window(&material_mono, &material_decimated, *now_ms);
+    }
+
     #[test]
     fn music_soak_acquires_alignment_qualifies_windows_and_tracks_drift() {
         let material = test_material(48_000);
@@ -1457,6 +1542,7 @@ mod music_tests {
         assert_eq!(soak.windows_qualified, 4);
         assert_eq!(soak.lag_frames, 9_509);
         assert_eq!(soak.maximum_lag_step_frames, 6);
+        assert_eq!(soak.lag_re_anchors, 0, "clean tracking never re-anchors");
         assert!(soak.recent_windows.iter().all(|window| window.qualified));
         assert!(serde_json::to_vec(&soak).unwrap().len() < 4_096);
     }
@@ -1475,6 +1561,9 @@ mod music_tests {
         assert_eq!(soak.windows_failed, 1);
         assert_eq!(soak.longest_failed_streak, 1);
         assert!(!soak.quality_failed, "failed windows gate at finish only");
+        // Silence has no good alignment anywhere: no snap, tracker keeps its lag.
+        assert_eq!(soak.lag_re_anchors, 0);
+        assert_eq!(soak.lag_frames, 0);
         // A genuinely quiet material stretch on both sides qualifies.
         let quiet = Material {
             samples: vec![0.0; 96_000],
@@ -1532,5 +1621,51 @@ mod music_tests {
                 .is_err()
         );
         assert!(discontinuous.quality_failed);
+    }
+
+    #[test]
+    fn music_soak_re_anchors_within_two_windows_after_beyond_drift_step_misalignment() {
+        let material = test_material(48_000);
+        // One glitch steps the captured content by 4_096 frames, beyond the
+        // +-2_400 tracking neighborhood; without a re-anchor the tracker then
+        // fails every following window against noise sidelobes.
+        const STEP: i64 = 4_096;
+        let mut soak = MusicSoak::new(404_000, &material);
+        let mut now_ms = 0;
+        settle(&mut soak, &material, &mut now_ms);
+        feed_windows(&mut soak, &material, 200, 9_500, &mut now_ms, 0);
+        assert_eq!(soak.lag_frames, 9_500);
+        assert_eq!(soak.lag_re_anchors, 0);
+        feed_step_window(&mut soak, &material, 9_500, STEP, &mut now_ms);
+        feed_windows(&mut soak, &material, 201, 9_500 + STEP, &mut now_ms, 0);
+        // The straddling window fails; the next window snaps and re-qualifies.
+        assert_eq!(soak.windows_failed, 1);
+        assert!(soak.longest_failed_streak <= 2);
+        assert_eq!(soak.lag_frames, 9_500 + STEP);
+        assert_eq!(soak.lag_re_anchors, 1);
+        now_ms += 100;
+        soak.observe_packet(now_ms, &material.samples[..960], false)
+            .unwrap();
+        // The whole-run ratio gate (0.99) recovers with thresholds unchanged.
+        soak.finish(now_ms).unwrap();
+        assert!(soak.completed);
+    }
+
+    #[test]
+    fn music_soak_tracks_in_range_step_misalignment_without_re_anchor() {
+        let material = test_material(48_000);
+        // A 640-frame step stays inside the tracking neighborhood, so the
+        // ordinary per-window search recovers it and no re-anchor is needed.
+        const STEP: i64 = 640;
+        let mut soak = MusicSoak::new(10_000, &material);
+        let mut now_ms = 0;
+        settle(&mut soak, &material, &mut now_ms);
+        feed_windows(&mut soak, &material, 2, 9_500, &mut now_ms, 0);
+        feed_step_window(&mut soak, &material, 9_500, STEP, &mut now_ms);
+        feed_windows(&mut soak, &material, 2, 9_500 + STEP, &mut now_ms, 0);
+        assert_eq!(soak.windows_failed, 1, "only the straddling window fails");
+        assert_eq!(soak.longest_failed_streak, 1);
+        assert_eq!(soak.lag_frames, 9_500 + STEP);
+        assert_eq!(soak.lag_re_anchors, 0);
     }
 }
