@@ -537,3 +537,60 @@ Evidence: `C:\MoirenVadTest\20261021-8f41a9e-combined1` (refused
 pre-created output directory, no probe run) and
 `C:\MoirenVadTest\20261021-8f41a9e-combined2` (launch/exit JSON,
 stdout/stderr, `probe\report.json`).
+
+## Long-soak attempt 1 (2026-10-21 night): 33-minute idle-gate failure
+
+The first 8h+8h run (`20261021-soak-8h-music`, scheduled task, upgraded
+4C/8G VM after the 23:10 reboot) failed its idle gate at 33 minutes:
+`idle window lacks two actual frame_end advances` — the engine timeline
+froze ~951 ms while the probe's own poll loop froze only 619 ms, so the
+advance window detector caught a render-specific stall. Zero epochs,
+zero gate events; guest System/Application event logs were completely
+clean across the window, and the timeline carried a permanent ~250-730
+ppm deficit from debt clamps during the freeze. Diagnosis: VM-wide
+host-side freeze (co-scheduled vCPUs), not a driver or engine defect.
+The owner's Wake/Clamp trace never reached the logs — it logs at debug
+on `moiren::audio::vad` while the runner exported `RUST_LOG=info` — so
+`ed2545c` raised that one target to debug in the runner. Attempt-1
+launch mechanics also bit twice: SSH-session teardown killed
+Start-Process children (use a scheduled task), and the task needed
+`-RunLevel Highest` for `powercfg /hibernate off`.
+
+## Long-soak attempt 2 (2026-10-22 morning): idle 8h passes, music gate is environmental
+
+`20261022-soak-8h-music` (00:03→08:25 local, same probe EE66F090):
+
+- **Idle phase completed 28,800 s for the first time** — 28,730/28,800
+  verified windows, zero epochs, timeline-wall offset a fixed −1.9 s
+  start artifact with no drift. Note `maximum_advance_gap_ms=1336` with
+  all windows passing: a VM-wide freeze freezes the observer with the
+  render, and the post-thaw burst-advance lands inside the stretched
+  window — the window gate is intentionally blind to freezes that stop
+  the whole machine including itself.
+- **Music phase failed at 22.5 min**: one 480-frame inferred capture
+  gap (packet positions; `discontinuities=0`, `timestamp_errors=0`)
+  tripped the zero-discontinuity gate. The correlation qualification
+  was simultaneously far below gate — 376/1,348 windows (27.9%), a
+  269-window failing streak at corr 0.4-0.88 — driven by ±800-frame
+  (±17 ms) capture-to-material lag wander against the tracker's ~5
+  frames/window re-convergence.
+- **Clock trace (now visible)**: 1,430 gap events, every retained one
+  `stage=Wake skipped=1`, **zero Clamps** — each late wake was a single
+  period repaid immediately by the debt ledger. The redesigned clock
+  behaves exactly as designed under sustained VM jitter (~1 late wake
+  per 14-21 s).
+- Carriers healthy throughout: mic 855-4,788 frames oscillating with
+  the servo working ±1,600 ppm, playback stable ~2,300; one mic
+  overflow touch (+1 soft event) in 22.5 min. Resources over 8h22m:
+  private bytes flat after the first hour (no leak), probe CPU 3.5%
+  idle / 6.7% music, pool nonpaged +1.5%.
+
+Verdict: the 8h idle pass plus the flat resource trend is real
+stability evidence; the music-phase gates (zero discontinuities, 0.99
+correlation ratio) exceed what this host's timing stability sustains.
+Full 16h PASS on this VM is not achievable — each single glitch
+(~1 per 20 min here, 1 per 65 s in the earlier short runs) trips the
+discontinuity gate immediately, and the lag tracker's hysteresis
+multiplies each glitch into hundreds of failed windows. Qualifying the
+full run needs either a lag-tracker snap fix (measurement artifact,
+not a threshold change) plus glitch tolerance, or steadier hardware.
