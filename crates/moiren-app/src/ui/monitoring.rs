@@ -21,13 +21,22 @@ const STALE_AFTER: Duration = Duration::from_millis(500);
 // Display ballistics. Raw windows arrive at the analysis cadence (~100 Hz
 // with the default 480-frame window); these time constants interpolate the
 // readings onto the display frame rate so the meter motion is continuous
-// between publications instead of stepping at the window rate.
-/// RMS rise time constant toward louder readings.
-const RMS_ATTACK: Duration = Duration::from_millis(15);
-/// RMS fall time constant toward quieter readings.
-const RMS_RELEASE: Duration = Duration::from_millis(220);
-/// How long the peak marker holds its maximum before starting to fall.
-const PEAK_HOLD: Duration = Duration::from_millis(900);
+// between publications instead of stepping at the window rate. Calibrated to
+// standard meter practice: a ~10 ms RMS window tracks the program envelope
+// (bass cycles below 100 Hz are longer than the window), so the display must
+// integrate it, not pass it through.
+/// RMS rise time constant toward louder readings. Smooths window-RMS
+/// envelope ripple (~15 dB at 5 Hz) while keeping a VU-like transient kick.
+const RMS_ATTACK: Duration = Duration::from_millis(150);
+/// RMS fall time constant toward quieter readings. A one-pole fall in the
+/// linear-amplitude domain is a constant dB/s glide: 700 ms ≈ 12.4 dB/s,
+/// matching standard peak-program meters (DIN 20 dB/1.7 s ≈ 11.8 dB/s).
+const RMS_RELEASE: Duration = Duration::from_millis(700);
+/// How long the peak marker holds its maximum before starting to fall. Kept
+/// short so the marker tracks the recent peak a few dB above instantaneous
+/// readings, the way consumer peak bars appear, instead of pinning at the
+/// running maximum of the last second.
+const PEAK_HOLD: Duration = Duration::from_millis(500);
 /// Peak marker fall speed once the hold expires, in dB per second.
 const PEAK_FALL_DB_PER_S: f32 = 30.;
 /// Display floor for the falling peak marker (−120 dBFS ≈ digital zero).
@@ -729,6 +738,58 @@ mod tests {
             start + PEAK_HOLD + Duration::from_millis(200),
         );
         assert!((channel.level().peak - 0.8).abs() < 0.000001);
+    }
+
+    #[test]
+    fn rms_release_glides_at_a_standard_db_rate_instead_of_dropping_to_silence() {
+        let start = Instant::now();
+        let mut channel = ChannelBallistics::new();
+        channel.observe(ChannelLevel { peak: 0., rms: 0.5 }, start);
+        // One second of digital silence: the bar glides down at the
+        // constant pole rate (8.686 dB per release constant) rather than
+        // stepping to zero, matching a program meter's visible fall.
+        channel.observe(
+            ChannelLevel { peak: 0., rms: 0. },
+            start + Duration::from_secs(1),
+        );
+        let expected_db = 20. * f32::log10(0.5) - 8.686 / RMS_RELEASE.as_secs_f32();
+        let display_db = 20. * channel.level().rms.max(f32::MIN_POSITIVE).log10();
+        assert!((display_db - expected_db).abs() < 0.05);
+    }
+
+    #[test]
+    fn rms_attack_flattens_window_envelope_ripple() {
+        // A 10 ms RMS window swings with the bass envelope; feed that swing
+        // (±6 dB at 5 Hz, ticked at 20 Hz) and require the display to keep
+        // it to a fraction of the input swing.
+        let start = Instant::now();
+        let mut channel = ChannelBallistics::new();
+        channel.observe(
+            ChannelLevel {
+                peak: 0.,
+                rms: 0.5625,
+            },
+            start,
+        );
+        let mut high: f32 = 0.;
+        let mut low: f32 = 1.;
+        for step in 0..40 {
+            let rms = if step % 2 == 0 { 1. } else { 0.25 };
+            channel.observe(
+                ChannelLevel { peak: 0., rms },
+                start + Duration::from_millis(50 * (step + 1)),
+            );
+            // Skip the settling transient (three release constants).
+            if step >= 20 {
+                high = high.max(channel.level().rms);
+                low = low.min(channel.level().rms);
+            }
+        }
+        let swing_db = 20. * (high / low).log10();
+        assert!(
+            swing_db < 3.,
+            "displayed swing {swing_db} dB is not smoothed against the 12 dB input swing"
+        );
     }
 
     use crate::service::{RunLimit, ServiceContext, ServiceMailbox, SessionSpec};
