@@ -29,7 +29,7 @@ use windows::{
         },
         System::{
             Com::{CLSCTX_ALL, CoCreateInstance},
-            Threading::{AvSetMmThreadCharacteristicsW, WaitForMultipleObjects},
+            Threading::WaitForMultipleObjects,
         },
     },
     core::{HSTRING, Interface, Result},
@@ -219,11 +219,7 @@ fn serve(
     report.last_stage = "prime exclusive silence";
     submit(&service, capacity)?;
     report.submitted_frames += u64::from(capacity);
-    let mut task_index = 0;
-    let _mmcss =
-        unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Audio"), &mut task_index) }
-            .ok()
-            .map(Mmcss);
+    let _mmcss = Mmcss::audio_detailed().ok();
     report.last_stage = "Start(Exclusive)";
     let mut streaming = Streaming::start(&client)?;
     report.started = true;

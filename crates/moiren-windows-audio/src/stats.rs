@@ -1,6 +1,10 @@
 use serde::Serialize;
 use thiserror::Error;
 
+// The AUDCLNT_BUFFERFLAGS_{DISCONTINUITY,SILENT,TIMESTAMPERROR} contract
+// values, as plain u32 for packet bookkeeping compared against GetBuffer
+// flags. The windows crate is target-gated so the SDK constants cannot be
+// referenced here; a cfg(windows) test pins the mapping instead.
 pub const DISCONTINUITY: u32 = 1;
 pub const SILENT: u32 = 2;
 pub const TIMESTAMP_ERROR: u32 = 4;
@@ -165,6 +169,24 @@ impl CaptureStats {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn buffer_flag_constants_match_the_wasapi_contract() {
+        use windows::Win32::Media::Audio::{
+            AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY, AUDCLNT_BUFFERFLAGS_SILENT,
+            AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR,
+        };
+        assert_eq!(
+            super::DISCONTINUITY,
+            AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32
+        );
+        assert_eq!(super::SILENT, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32);
+        assert_eq!(
+            super::TIMESTAMP_ERROR,
+            AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32
+        );
+    }
+
     use super::*;
 
     fn bytes(samples: &[f32]) -> Vec<u8> {

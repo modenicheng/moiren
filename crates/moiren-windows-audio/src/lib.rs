@@ -16,6 +16,11 @@ pub mod vad;
 pub mod virtual_owner;
 pub use duration::{DurationError, SessionDuration};
 
+/// Native WASAPI/virtual-endpoint sample rate every owner in this crate
+/// targets. The engine may still run at another rate; owners adapt through
+/// the clock bridge and boundary resamplers.
+pub(crate) const NATIVE_SAMPLE_RATE: u32 = 48_000;
+
 #[cfg(windows)]
 mod session;
 #[cfg(windows)]

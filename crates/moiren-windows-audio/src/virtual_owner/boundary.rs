@@ -11,7 +11,7 @@ use std::sync::{
     atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
 };
 
-const NATIVE_SAMPLE_RATE: u32 = 48_000;
+use crate::NATIVE_SAMPLE_RATE;
 const SRC_HEADROOM_FRAMES: usize = 32;
 
 /// Control-side observation of one virtual boundary's carrier. The realtime

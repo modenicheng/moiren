@@ -123,7 +123,7 @@ fn owner(
             stop,
             duration: options.duration,
             latency_telemetry: options.latency_telemetry,
-            sample_rate: 48000,
+            sample_rate: crate::NATIVE_SAMPLE_RATE,
             channels: 2,
         },
         sender,
@@ -134,7 +134,7 @@ pub(crate) fn capture_format() -> WAVEFORMATEX {
     WAVEFORMATEX {
         wFormatTag: WAVE_FORMAT_IEEE_FLOAT as u16,
         nChannels: 2,
-        nSamplesPerSec: 48000,
+        nSamplesPerSec: crate::NATIVE_SAMPLE_RATE,
         nAvgBytesPerSec: 384000,
         nBlockAlign: 8,
         wBitsPerSample: 32,

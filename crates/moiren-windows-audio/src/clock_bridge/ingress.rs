@@ -178,7 +178,7 @@ impl moiren_engine::boundary::RtAudioSink<f32> for CaptureIngress {
         use moiren_engine::boundary::BoundaryReport;
         if input.channel_count() != 2
             || self.config.input_channels != 2
-            || self.config.input_sample_rate != 48_000
+            || self.config.input_sample_rate != crate::NATIVE_SAMPLE_RATE
         {
             return BoundaryReport {
                 discontinuity: true,

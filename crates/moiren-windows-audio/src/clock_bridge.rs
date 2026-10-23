@@ -16,7 +16,7 @@ use telemetry::Counters;
 pub use telemetry::{BridgeObserver, BridgeSnapshot};
 pub use timing::{QueuedFrameAge, QueuedFrameStamp};
 
-pub const OUTPUT_SAMPLE_RATE: u32 = 48_000;
+pub const OUTPUT_SAMPLE_RATE: u32 = crate::NATIVE_SAMPLE_RATE;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClockBridgeConfig {
@@ -47,7 +47,7 @@ pub struct ClockBridgeConfig {
 impl Default for ClockBridgeConfig {
     fn default() -> Self {
         Self {
-            input_sample_rate: 48_000,
+            input_sample_rate: crate::NATIVE_SAMPLE_RATE,
             output_sample_rate: OUTPUT_SAMPLE_RATE,
             input_channels: 2,
             capacity_frames: 8192,

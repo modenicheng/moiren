@@ -37,7 +37,7 @@ impl PreparedNativeCapture {
         self.info
     }
     pub fn attach(self, input: PreparedInputQueue) -> Result<PreparedCapture, CaptureError> {
-        self.attach_returning(input, 48_000)
+        self.attach_returning(input, crate::NATIVE_SAMPLE_RATE)
             .map_err(|failure| failure.error)
     }
     pub(crate) fn cancel_with_report(self) -> Result<CaptureReport, CaptureError> {

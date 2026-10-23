@@ -66,7 +66,8 @@ pub struct ExclusiveProbeReport {
 fn sustained_signal(window: &WindowReport) -> bool {
     // Require signal over >=80% of wall-clock time, not just one residual packet.
     window.elapsed_seconds > 0.0
-        && window.signal_frames as f64 >= window.elapsed_seconds * 48_000.0 * 0.8
+        && window.signal_frames as f64
+            >= window.elapsed_seconds * f64::from(crate::NATIVE_SAMPLE_RATE) * 0.8
         && window.summary.non_finite_samples == 0
 }
 
