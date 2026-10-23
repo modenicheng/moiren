@@ -13,10 +13,21 @@ use super::branding::{self, TrayTheme};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 
+/// Tray icon rectangle in physical screen pixels; anchors the mixer flyout
+/// next to the notification area.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrayAnchor {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 /// Semantic actions produced by tray interactions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TrayAction {
     ShowWindow,
+    ShowMixer(TrayAnchor),
     StopSession,
     ExitApp,
 }
@@ -81,22 +92,28 @@ impl AppTray {
             let _ = tx_menu.send(action);
         }));
 
-        // Left-click / double-click shows the window (Windows convention).
+        // Single left-click opens the tray mixer flyout anchored to the icon;
+        // double-click still shows the main window (Windows convention).
         TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
-            let show = matches!(
-                event,
+            let action = match event {
                 TrayIconEvent::Click {
                     button: tray_icon::MouseButton::Left,
                     button_state: tray_icon::MouseButtonState::Up,
+                    rect,
                     ..
-                } | TrayIconEvent::DoubleClick {
+                } => TrayAction::ShowMixer(TrayAnchor {
+                    x: rect.position.x,
+                    y: rect.position.y,
+                    width: f64::from(rect.size.width),
+                    height: f64::from(rect.size.height),
+                }),
+                TrayIconEvent::DoubleClick {
                     button: tray_icon::MouseButton::Left,
                     ..
-                }
-            );
-            if show {
-                let _ = tx_click.send(TrayAction::ShowWindow);
-            }
+                } => TrayAction::ShowWindow,
+                _ => return,
+            };
+            let _ = tx_click.send(action);
         }));
 
         Ok(Self {

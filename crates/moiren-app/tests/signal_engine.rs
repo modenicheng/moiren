@@ -5,6 +5,7 @@ use moiren_app::{
 };
 use moiren_engine::{
     boundary::{AudioReader, ConstantSource},
+    meter::DEFAULT_WINDOW_FRAMES,
     meter::signal::{AudioWindow, ChannelLevel},
     runtime::Engine,
 };
@@ -66,10 +67,14 @@ fn tone_publishes_only_complete_demanded_windows_and_rebind_keeps_sequence() {
         ..ToneConfig::default()
     };
     let mut tone = prepare_tone_with_signals(config, &mut preparation).unwrap();
+    // Three full default windows render before any demand exists; the
+    // observer keeps accumulating, but nothing may publish without a
+    // subscriber.
     render(&mut tone.compiled.engine, &mut tone.output, 6);
     assert_eq!(topic.stats().attempts, 0);
     let mut subscriber = bus.subscribe(&topic, Default::default()).unwrap();
-    render(&mut tone.compiled.engine, &mut tone.output, 5);
+    // One 256-frame block leaves the 480-frame window partial.
+    render(&mut tone.compiled.engine, &mut tone.output, 1);
     pump(&mut bus);
     assert!(subscriber.read_latest().is_none());
     render(&mut tone.compiled.engine, &mut tone.output, 1);
@@ -79,7 +84,7 @@ fn tone_publishes_only_complete_demanded_windows_and_rebind_keeps_sequence() {
         let window = subscriber.read_latest().unwrap();
         assert_eq!(
             window.header().frame_end - window.header().frame_start,
-            1536
+            DEFAULT_WINDOW_FRAMES as u64
         );
         assert_eq!(window.header().sample_rate, 48_000.0);
         assert_eq!(
@@ -104,7 +109,9 @@ fn tone_publishes_only_complete_demanded_windows_and_rebind_keeps_sequence() {
     let mut subscriber = bus.subscribe(&topic, Default::default()).unwrap();
     pump(&mut bus);
     assert!(subscriber.read_latest().is_none());
-    render(&mut tone.compiled.engine, &mut tone.output, 6);
+    // One complete window publishes; the sequence continues from before
+    // the rebind instead of resetting.
+    render(&mut tone.compiled.engine, &mut tone.output, 2);
     pump(&mut bus);
     assert_eq!(
         subscriber.read_latest().unwrap().meta().sequence,
@@ -203,12 +210,13 @@ fn retained_subscriber_distinguishes_restarted_tone_and_monitor_timelines() {
             .unwrap();
             (monitor.compiled, monitor.output)
         };
-        render(&mut compiled.engine, &mut output, 6);
+        // Two 256-frame blocks complete exactly one default window.
+        render(&mut compiled.engine, &mut output, 2);
         pump(&mut bus);
         {
             let window = subscriber.read_latest().unwrap();
             assert_eq!(window.header().frame_start, 0);
-            assert_eq!(window.header().frame_end, 1536);
+            assert_eq!(window.header().frame_end, DEFAULT_WINDOW_FRAMES as u64);
             assert_ne!(window.header().timeline_epoch, 0);
             if let Some(epoch) = previous_epoch {
                 assert_ne!(window.header().timeline_epoch, epoch);

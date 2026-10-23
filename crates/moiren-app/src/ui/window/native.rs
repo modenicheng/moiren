@@ -4,6 +4,62 @@ pub(super) fn toggle_maximize(window: &gpui_kit::Window) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Monitor geometry at a physical screen point: the monitor rectangle, its
+/// work area, and the DPI scale gpui uses for that monitor. Queried with the
+/// same Win32 APIs gpui's displays use, so the values line up with
+/// `cx.displays()`.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub(super) fn monitor_geometry_at(
+    x: f64,
+    y: f64,
+) -> Option<(
+    super::desktop::PhysicalRect,
+    super::desktop::PhysicalRect,
+    f64,
+)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    };
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+
+    fn rect(value: windows::Win32::Foundation::RECT) -> super::desktop::PhysicalRect {
+        super::desktop::PhysicalRect {
+            x: f64::from(value.left),
+            y: f64::from(value.top),
+            width: f64::from(value.right - value.left),
+            height: f64::from(value.bottom - value.top),
+        }
+    }
+
+    unsafe {
+        let point = POINT {
+            x: x as i32,
+            y: y as i32,
+        };
+        let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_invalid() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return None;
+        }
+        let mut dpi_x = 0u32;
+        let mut dpi_y = 0u32;
+        GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y).ok()?;
+        Some((
+            rect(info.rcMonitor),
+            rect(info.rcWork),
+            f64::from(dpi_x) / 96.,
+        ))
+    }
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 pub(super) fn saved_maximized(window: &gpui_kit::Window) -> Option<bool> {

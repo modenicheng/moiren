@@ -1029,7 +1029,8 @@ CI 常规矩阵覆盖整个 workspace 的编译、测试、Clippy 与格式检�
 12. VAD 与用户态共享内存协议；
 13. 插件 sandbox；
 14. CLAP / VST3 优先顺序；
-15. Network Audio / Remote Control。
+15. Network Audio / Remote Control；
+16. **hytao-music-player 接入方式**（2026-10-23）：候选方案是通用音频端点接入（hytao 作为普通 Windows 应用，经 Process Loopback / 虚拟 Endpoint 进入 Graph），或为它另设低延迟、高音质、低占用的专用通路。需评估是否有必要为此设计独立插件系统或自定义 Node 功能；当前判断：插件 / 自定义 Node 路线在技术上没有明显改进，且大概率显著推高代码复杂度，倾向先走通用端点接入，待实测延迟 / 音质 / 占用不达标再重估。
 
 ---
 

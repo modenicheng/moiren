@@ -651,7 +651,15 @@ fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_ki
     view.update(cx, |shell, cx| {
         shell.selected_node = Some(node);
         shell.node_meter_points.borrow_mut().clear();
-        assert!(shell.update_node_meters(true, cx));
+        // Frame-driven pumping may already have created the subscription
+        // for the canvas-visible node, so the change flag is not stable
+        // here; the selected node must end up demanded either way.
+        shell.update_node_meters(true, cx);
+        assert_eq!(
+            shell.node_meters.status(node),
+            crate::ui::monitoring::MeterStatus::NoPublisher,
+            "selected node keeps its subscription polled"
+        );
         cx.notify();
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

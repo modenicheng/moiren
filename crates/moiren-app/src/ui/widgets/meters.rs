@@ -149,6 +149,73 @@ pub(crate) fn meter_height(value: f32) -> f32 {
     }
 }
 
+/// Flyout-scale stereo meter: two slim bars and a clip dot, no scale readouts.
+pub fn compact_stereo_meter(levels: Option<[ChannelLevel; 2]>, clips: [bool; 2]) -> Div {
+    let mut pair = div()
+        .flex()
+        .flex_none()
+        .flex_col()
+        .items_center()
+        .gap(px(3.))
+        .line_height(px(10.));
+    let mut bars = div().flex().flex_none().gap(px(2.));
+    for index in 0..2 {
+        let channel = levels.map(|l| l[index]);
+        let amount = channel.map(|l| meter_height(l.rms)).unwrap_or(0.);
+        bars = bars.child(
+            div()
+                .relative()
+                .w(px(7.))
+                .h(px(176.))
+                .flex_none()
+                .overflow_hidden()
+                .rounded(px(1.))
+                .bg(theme::BORDER)
+                .when(channel.is_some(), |v| {
+                    let mut view = v;
+                    for (bottom, top, color) in [
+                        (0., 0.8, theme::SUCCESS),
+                        (0.8, 0.95, theme::WARNING),
+                        (0.95, 1., theme::DANGER),
+                    ] {
+                        let height = (amount.min(top) - bottom).max(0.);
+                        if height > 0. {
+                            view = view.child(
+                                div()
+                                    .absolute()
+                                    .bottom(relative(bottom))
+                                    .w_full()
+                                    .h(relative(height))
+                                    .bg(color),
+                            );
+                        }
+                    }
+                    view
+                })
+                .when_some(channel, |v, l| {
+                    v.child(
+                        div()
+                            .absolute()
+                            .bottom(relative(meter_height(l.peak)))
+                            .w_full()
+                            .h(px(2.))
+                            .bg(theme::TEXT),
+                    )
+                }),
+        );
+    }
+    pair = pair
+        .child(bars)
+        .child(div().w(px(10.)).h(px(3.)).flex_none().rounded(px(1.)).bg(
+            if clips[0] || clips[1] {
+                theme::DANGER
+            } else {
+                theme::BORDER
+            },
+        ));
+    pair
+}
+
 #[cfg(test)]
 mod tests {
     use super::meter_height;

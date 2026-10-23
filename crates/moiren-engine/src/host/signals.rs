@@ -353,7 +353,7 @@ impl SignalHub {
                 .map_err(|e| BackendError::Failed(e.to_string()))?;
             let window_frames = match project.nodes.get(&node.id()) {
                 Some(NodeConfig::Meter(settings)) => settings.window_frames,
-                _ => 1536,
+                _ => crate::meter::DEFAULT_WINDOW_FRAMES,
             };
             let meter = SignalLevelMeter::new(port.channels(), window_frames, publisher)
                 .map_err(|e| BackendError::Failed(e.to_string()))?;

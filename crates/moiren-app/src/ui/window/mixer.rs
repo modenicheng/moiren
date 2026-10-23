@@ -4,8 +4,8 @@ use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
 
 mod model;
-pub(super) use model::MixerPresentation;
-use model::{StripDrag, gain_db, reorder};
+pub(super) use model::{MixerPresentation, SliderEdit, gain_db, linear_gain, sync_sliders};
+use model::{StripDrag, reorder};
 
 impl StudioShell {
     pub(super) fn update_node_meters(&mut self, visible: bool, cx: &App) -> bool {
@@ -179,6 +179,15 @@ fn resize_handle(
         .gpui_test_observe()
 }
 
+pub(super) fn node_kind_color(kind: NodeKind) -> Hsla {
+    match kind {
+        NodeKind::Source => theme::NODE_SOURCE,
+        NodeKind::Sink => theme::NODE_SINK,
+        NodeKind::Bus => theme::NODE_UTILITY,
+        _ => theme::NODE_DSP,
+    }
+}
+
 fn strip(
     shell: &StudioShell,
     entry: &GraphNodeState,
@@ -188,12 +197,7 @@ fn strip(
 ) -> impl IntoElement {
     let id = entry.id;
     let selected = shell.selected_node == Some(id);
-    let color = match kind {
-        NodeKind::Source => theme::NODE_SOURCE,
-        NodeKind::Sink => theme::NODE_SINK,
-        NodeKind::Bus => theme::NODE_UTILITY,
-        _ => theme::NODE_DSP,
-    };
+    let color = node_kind_color(kind);
     let title = div()
         .id(SharedString::from(format!("strip-header-{id:?}")))
         .flex()
@@ -486,12 +490,10 @@ fn meter(
             }
         });
     let levels = eligible
-        .then_some({
-            if input {
-                shell.meters.input
-            } else {
-                shell.meters.output
-            }
+        .then_some(if input {
+            shell.meters.display_input()
+        } else {
+            shell.meters.display_output()
         })
         .flatten();
     let levels = (state.snapshot.graph.active_revision
@@ -579,6 +581,17 @@ fn fader(state: &Entity<base::slider::SliderState>, gain: f64) -> impl IntoEleme
         .flex_none()
         .w(px(26.))
         .h(px(230.))
+        .child(
+            // Records the geometry the pointer-to-value mapping needs;
+            // without an indicator the state keeps zero bounds and drags
+            // map to NaN.
+            base::slider::SliderIndicator::new(state)
+                .absolute()
+                .left(px(12.))
+                .top(px(7.))
+                .w(px(3.))
+                .h(px(216.)),
+        )
         .child(
             base::slider::SliderTrack::new(state)
                 .axis(Axis::Vertical)
