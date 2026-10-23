@@ -732,3 +732,24 @@ settling budget. Open driver-contract item noted for the next target pass:
 retirement now overlaps old cancelled IRPs with a new owner's requests (up to
 8 outstanding per endpoint) — standard IRP semantics, but worth confirming
 the driver's queue tolerates it under load.
+
+Target validation of 5c88800 (2026-10-23, daytime, probe SHA256
+`4208E1AE073BBD1F…`, guest `DRIVER-TEST`): fifteen short validation
+rehearsals (`20261023-5c88800-r1…r15`, each exercising the full
+signal-1 → switch → signal-2 path) plus one 300 s PCM soak
+(`20261023-5c88800-soak300`). Fourteen rehearsals passed; every completed
+switch produced 48,000/48,000 consecutive frames with zero silent frames
+and zero discontinuities, and the second phase typically qualified in
+~2.0 s. The night1 signature — mid-run gate-epoch roll at the switch,
+both pumps frozen ~1 s, all-silent capture — did not occur once. The two
+failures are the previously classified environmental single-glitch class
+on the daytime-loaded host, neither touching the switch or the retire
+path: `r5` broke mid-signal-1 (3,264-frame run, 6 silent packets, then a
+0.97×-amplitude resampler recovery edge; no epoch roll) and the soak died
+16 s into steady streaming, before its first pattern change
+(`source_changes=0`), on one unexpected silent frame. No
+`pcm_retire_parked` events were logged — the driver returned every
+cancelled request inside the 20 ms quick bound on this hardware, so the
+park path remains covered by host tests and the boundary between quick
+drain and parking is visible in `pcm_retire_parked` logs whenever a
+slower driver exercises it.
