@@ -499,7 +499,13 @@ fn microphone_clock_reset_stops_old_slots_before_encoding_fresh_carrier() {
     let mut owner: Option<PcmOwner> = None;
     let mut bridge = Some(bridge);
     let mut reader = None;
-    super::super::teardown_microphone(&mut owner, &mut bridge, &mut reader, &mut tickets);
+    super::super::teardown_microphone(
+        &mut super::super::RetiredPcm::new(),
+        &mut owner,
+        &mut bridge,
+        &mut reader,
+        &mut tickets,
+    );
     let mut observed = 0;
     assert!(!quiesce_microphone(
         &state,
@@ -592,7 +598,13 @@ fn microphone_reset_waits_for_late_graph_write_before_discard() {
         "even a new-epoch consumer cannot encode before graph quiescence"
     );
     assert!(io.written.is_empty());
-    super::super::teardown_microphone(&mut owner, &mut bridge, &mut reader, &mut tickets);
+    super::super::teardown_microphone(
+        &mut super::super::RetiredPcm::new(),
+        &mut owner,
+        &mut bridge,
+        &mut reader,
+        &mut tickets,
+    );
     let mut reader = reader.unwrap();
     let mut observed = 0;
     assert!(!quiesce_microphone(&state, &mut observed, &mut reader));

@@ -404,6 +404,28 @@ impl PcmOwner {
         Ok(())
     }
 
+    /// Cancel every outstanding request and collect what the driver completes
+    /// within `quick`. Returns true when everything drained. Requests the
+    /// driver still holds move the whole owner into `residual` — a pure move,
+    /// no allocation — for the worker to drain opportunistically between pump
+    /// iterations.
+    ///
+    /// A driver may hold cancelled overlapped requests through its own gate
+    /// cycle: on the 2026-10-23 night run both transport workers froze for
+    /// the full `PCM_SHUTDOWN_TIMEOUT` this way during a gate-epoch recovery,
+    /// so a pump thread must never wait for the final drain. Retiring also
+    /// releases the session's single lease slot immediately, letting the
+    /// worker prepare a replacement owner while the residual drains.
+    pub fn retire(mut self, quick: Duration, residual: &mut Option<ResidualPcm>) -> bool {
+        if self.shutdown(quick).is_ok() {
+            // Nothing is pending; the Drop drain is instant.
+            return true;
+        }
+        self.lease.release_endpoint_slot();
+        *residual = Some(ResidualPcm { owner: self });
+        false
+    }
+
     fn cancel_all(&mut self) {
         self.poisoned = true;
         for slot in &mut self.slots {
@@ -466,6 +488,31 @@ impl Drop for PcmOwner {
             };
             slot.pending = false;
         }
+    }
+}
+
+/// A retired [`PcmOwner`] whose cancelled requests the driver had not
+/// completed by the retire bound. The session lease slot is already released;
+/// only the duplicate handle and the still-pending slots remain. Ownership
+/// stays with the pumping worker, parked in preallocated slots and collected
+/// by non-blocking probes between iterations — never a second thread, lock,
+/// or heap allocation.
+pub struct ResidualPcm {
+    owner: PcmOwner,
+}
+
+impl ResidualPcm {
+    /// Requests the driver still holds. Diagnostics only.
+    pub fn pending(&self) -> usize {
+        self.owner.pending()
+    }
+
+    /// Collect completions until `timeout` elapses; `Duration::ZERO` is a pure
+    /// non-blocking probe. Returns whether every cancelled request reached
+    /// terminal status. A false return leaves the residual valid for a later
+    /// retry; Drop performs the final drain.
+    pub fn drain(&mut self, timeout: Duration) -> bool {
+        self.owner.shutdown(timeout).is_ok()
     }
 }
 

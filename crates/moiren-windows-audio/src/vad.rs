@@ -30,7 +30,7 @@ pub use client::{ClientError, ControlClient};
 pub use discovery::{CONTROL_INTERFACE_GUID, DeviceInterface, discover_present_interfaces};
 pub use format::{PcmFormatError, decode_interleaved, encode_interleaved};
 #[cfg(windows)]
-pub use pcm::{PcmCompletion, PcmOwner};
+pub use pcm::{PcmCompletion, PcmOwner, ResidualPcm};
 pub use pcm_bridge::{PcmBoundaryError, PcmMicrophoneBridge, PcmPlaybackBridge};
 pub use pcm_slots::PcmTicket;
 #[cfg(windows)]

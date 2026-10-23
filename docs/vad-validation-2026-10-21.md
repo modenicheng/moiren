@@ -669,3 +669,66 @@ tolerance (product decision) or a host that can go eight hours without
 a single ≥10 ms capture supply hole. Open daytime items: reproduce the
 signal-switch drop flake (attempt 1), and decide whether to restore the
 guest's disabled update services.
+
+## Signal-switch drop flake — root cause and bounded retirement (2026-10-23, daytime)
+
+The attempt-1 flake was reproduced from evidence and fixed on the app side.
+Timeline rebuilt from `20261023-soak-8h-music-night` (`report.json` gate
+transitions, driver `transport_pcm_counters` snapshots, and phase-relative
+observations):
+
+1. Native clients started at ~6.5 s: the driver recycled both streams
+   (generation 0→1, epoch 1→2); the app's transport closed/reopened its gate,
+   re-admitted, re-primed (the 480 silent frames in signal 1), and signal 1
+   passed 48,000/48,000.
+2. The probe switched its render pattern (signal 2) at ~9.2 s. Within ~0.1 s
+   both endpoints' `gate_epoch` rolled 2→3 with stream generation unchanged —
+   a driver-side session gate cycle. Gate-epoch rolls are routine: night4/5
+   rolled to epoch 3/7/9 while music kept flowing, so the roll itself is an
+   environmental input the app must survive.
+3. Each transport worker entered the epoch-recovery path. `quiesce_playback`
+   retires the old `PcmOwner` before publishing `producer_quiesced_epoch`, and
+   retirement called `pcm.shutdown(PCM_SHUTDOWN_TIMEOUT = 1 s)` on the worker
+   thread. The driver did not promptly complete the cancelled overlapped
+   requests, so **both workers blocked for ~0.9-1.0 s**: no reads (playback
+   `dropped_packets` 0→4, then the probe's render stalled on the full buffer),
+   no writes (driver silence-filled ~7 packets), engine fenced to silence.
+4. The phase-2 settling budget (1 s) expired during the outage; observation
+   sampled 6,452 silent frames and then the recovery's FIR-tail leak
+   (`[0.00017, −0.00006]`), and the exact-match gate failed the run at
+   10.37 s — with recovery actually in progress.
+
+An independent read-only audit confirmed the causal chain end-to-end
+(transport poll bump sites, quiesce ordering, engine fence silence) and
+corrected one bound: the pre-fix stall was 1 s **plus potentially unbounded**
+— on shutdown timeout, teardown dropped the owner and `PcmOwner::Drop` drains
+with `GetOverlappedResult(bWait=true)`, an INFINITE wait on the pump thread.
+It also verified no other ~1 s-or-worse blocking call sits on the recovery
+path (control exchanges are 5 s-bounded but poison the session on failure,
+which did not happen; lease acquisition and waits are fast), and that
+sequence/quiesce/Send semantics tolerate the fix.
+
+**Fix (zero allocation on the recovery path, per the architecture rules):**
+
+- `PcmOwner::retire(quick, residual_out)`: cancel, collect within
+  `PCM_RETIRE_QUICK_DRAIN = 20 ms`, then hand the whole owner back as a
+  `ResidualPcm` if the driver still holds requests — a pure move. Retirement
+  releases the session's single lease slot immediately so the replacement
+  owner can be prepared while the residual drains.
+- Each worker keeps a stack-allocated `RetiredPcm` park of two residuals;
+  every pump iteration probes them with zero-timeout collects (a no-op when
+  empty), and worker exit drains them with the existing 1 s budget before
+  `Drop`'s final safety drain. No thread, lock, or heap allocation anywhere
+  on the path; a full park (two stuck generations) falls back to the bounded
+  pre-fix drain for the oldest, with `pcm_retire_park_full` evidence logs.
+- The lease registry now clears by grant identity
+  (`retired_lease_dropping_after_replacement_never_clears_the_new_grant`),
+  fixing a latent corruption where a residual lease dropping after its slot
+  was reused could clear the replacement's registration.
+
+Recovery after a gate-epoch roll now costs ~20 ms + the fence handshake +
+carrier re-prime instead of up to 1 s (or unbounded), well inside every
+settling budget. Open driver-contract item noted for the next target pass:
+retirement now overlaps old cancelled IRPs with a new owner's requests (up to
+8 outstanding per endpoint) — standard IRP semantics, but worth confirming
+the driver's queue tolerates it under load.

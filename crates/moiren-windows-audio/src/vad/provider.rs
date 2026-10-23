@@ -6,8 +6,8 @@
 
 use super::{
     Channels, ClientError, ControlClient, DeviceInterface, Intent, PcmCompletion,
-    PcmMicrophoneBridge, PcmOwner, PcmPlaybackBridge, PcmTicket, PdoState, StableEndpointId,
-    StreamState, discover_present_interfaces,
+    PcmMicrophoneBridge, PcmOwner, PcmPlaybackBridge, PcmTicket, PdoState, ResidualPcm,
+    StableEndpointId, StreamState, discover_present_interfaces,
 };
 use crate::virtual_owner::{
     BoundaryProbe, PreparedVirtualMicrophone, PreparedVirtualPlayback, VirtualBoundaryProvider,
@@ -28,6 +28,11 @@ use std::{
 
 const REMOVE_TIMEOUT: Duration = Duration::from_secs(15);
 const PCM_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+/// Worker-side retire bound: cancel, collect what a healthy driver returns
+/// within two packet periods, then detach the rest. A driver holding
+/// cancelled requests through its own gate cycle (the 2026-10-23 night1
+/// outage) must not freeze the only thread pumping this endpoint.
+const PCM_RETIRE_QUICK_DRAIN: Duration = Duration::from_millis(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 mod lifecycle;
@@ -528,6 +533,7 @@ fn run_playback(
     let mut bridge = None;
     let mut tickets = Vec::with_capacity(super::REQUEST_SLOTS);
     let mut order = pcm_worker::PacketOrder::default();
+    let mut retired = RetiredPcm::new();
     // A newly prepared carrier belongs to epoch zero, even when a reset was
     // requested before this worker started. Never skip that first handshake.
     let mut observed_reset = 0;
@@ -538,7 +544,13 @@ fn run_playback(
                 let (queried, _) = transport::poll(&mut control, current, state)?;
                 current = queried;
                 if !pcm_worker::quiesce_playback(state, &mut observed_reset, || {
-                    teardown_playback(&mut owner, &mut bridge, &mut writer, &mut tickets)
+                    teardown_playback(
+                        &mut retired,
+                        &mut owner,
+                        &mut bridge,
+                        &mut writer,
+                        &mut tickets,
+                    )
                 }) {
                     thread::sleep(POLL_INTERVAL);
                     continue;
@@ -580,6 +592,7 @@ fn run_playback(
                                 current =
                                     transport::after_io_error(&mut control, current, state, error)?;
                                 teardown_playback(
+                                    &mut retired,
                                     &mut owner,
                                     &mut bridge,
                                     &mut writer,
@@ -593,33 +606,151 @@ fn run_playback(
                                 current =
                                     transport::after_io_error(&mut control, current, state, error)?;
                             }
-                            teardown_playback(&mut owner, &mut bridge, &mut writer, &mut tickets);
+                            teardown_playback(
+                                &mut retired,
+                                &mut owner,
+                                &mut bridge,
+                                &mut writer,
+                                &mut tickets,
+                            );
                         }
                     }
                 } else {
-                    teardown_playback(&mut owner, &mut bridge, &mut writer, &mut tickets);
+                    teardown_playback(
+                        &mut retired,
+                        &mut owner,
+                        &mut bridge,
+                        &mut writer,
+                        &mut tickets,
+                    );
                 }
             } else {
-                teardown_playback(&mut owner, &mut bridge, &mut writer, &mut tickets);
+                teardown_playback(
+                    &mut retired,
+                    &mut owner,
+                    &mut bridge,
+                    &mut writer,
+                    &mut tickets,
+                );
             }
+            retired.poll();
             thread::sleep(POLL_INTERVAL);
         }
         Ok(())
     })();
     state.revoke();
     let close_result = close_worker_gate(&mut control, &mut current);
-    teardown_playback(&mut owner, &mut bridge, &mut writer, &mut tickets);
+    teardown_playback(
+        &mut retired,
+        &mut owner,
+        &mut bridge,
+        &mut writer,
+        &mut tickets,
+    );
+    retired.finish();
     result.and(close_result)
 }
 
+/// Parked retired PCM owners whose cancelled requests the driver has not yet
+/// completed. Stack-allocated inside each transport worker; `poll` runs once
+/// per pump iteration and is a no-op when empty. No thread, lock, or heap
+/// allocation exists anywhere on this path.
+///
+/// Capacity two bounds the pathological case: a fresh retire while two
+/// generations of requests are still stuck falls back to the bounded blocking
+/// drain for the oldest (the pre-fix behavior), keeping the park finite.
+struct RetiredPcm {
+    parked: [Option<ResidualPcm>; RETIRE_PARK_SLOTS],
+}
+
+const RETIRE_PARK_SLOTS: usize = 2;
+
+impl RetiredPcm {
+    fn new() -> Self {
+        Self {
+            parked: [None, None],
+        }
+    }
+
+    /// Retire `owner`, parking any residual. The only slow path is a full
+    /// park: the oldest residual then gets the full bounded budget and its
+    /// Drop's final safety drain, and the new residual takes its slot.
+    fn retire(&mut self, owner: PcmOwner, endpoint: &'static str) {
+        let mut residual = None;
+        if owner.retire(PCM_RETIRE_QUICK_DRAIN, &mut residual) {
+            return;
+        }
+        let Some(slot) = self.parked.iter_mut().find(|slot| slot.is_none()) else {
+            // Two residual generations already outstanding: the driver has
+            // stalled every recovery for the quick bound twice over. Fall
+            // back to the pre-fix bounded blocking drain for the oldest.
+            if let Some(mut oldest) = self.parked[0].take() {
+                log::warn!(
+                    target: "moiren::audio::vad",
+                    "event=pcm_retire_park_full endpoint={endpoint} oldest_pending={}",
+                    oldest.pending()
+                );
+                let completed = oldest.drain(PCM_SHUTDOWN_TIMEOUT);
+                if !completed {
+                    log::warn!(
+                        target: "moiren::audio::vad",
+                        "event=pcm_retire_park_full_timeout endpoint={endpoint}"
+                    );
+                }
+                drop(oldest);
+            }
+            self.parked[0] = residual;
+            return;
+        };
+        *slot = residual;
+        log::debug!(
+            target: "moiren::audio::vad",
+            "event=pcm_retire_parked endpoint={endpoint} pending={}",
+            self.parked
+                .iter()
+                .flatten()
+                .map(|residual| residual.pending())
+                .sum::<usize>()
+        );
+    }
+
+    /// Non-blocking collect pass over every parked residual.
+    fn poll(&mut self) {
+        for slot in &mut self.parked {
+            if let Some(residual) = slot
+                && residual.drain(Duration::ZERO)
+            {
+                *slot = None;
+            }
+        }
+    }
+
+    /// Worker-exit drain: bounded collect, then Drop's final safety drain.
+    fn finish(&mut self) {
+        for slot in &mut self.parked {
+            if let Some(mut residual) = slot.take() {
+                if !residual.drain(PCM_SHUTDOWN_TIMEOUT) {
+                    log::warn!(
+                        target: "moiren::audio::vad",
+                        "event=pcm_retire_exit_timeout pending={}",
+                        residual.pending()
+                    );
+                }
+                let _ = residual;
+            }
+        }
+    }
+}
+
 fn teardown_playback(
+    retired: &mut RetiredPcm,
     owner: &mut Option<PcmOwner>,
     bridge: &mut Option<PcmPlaybackBridge>,
     writer: &mut Option<AudioWriter<f32>>,
     tickets: &mut Vec<PcmTicket>,
 ) {
-    if let Some(mut pcm) = owner.take() {
-        let _ = pcm.shutdown(PCM_SHUTDOWN_TIMEOUT);
+    if let Some(pcm) = owner.take() {
+        retired.retire(pcm, "playback");
     }
     tickets.clear();
     if let Some(bridge) = bridge.take() {
@@ -642,6 +773,7 @@ fn run_microphone(
     let mut pump = None;
     let mut observed_reset = 0;
     let mut reprime_after_reset = false;
+    let mut retired = RetiredPcm::new();
     let result = (|| {
         while !state.cancel.load(std::sync::atomic::Ordering::Acquire) {
             if state.active.load(std::sync::atomic::Ordering::Acquire) {
@@ -649,7 +781,13 @@ fn run_microphone(
                 let (queried, _) = transport::poll(&mut control, current, state)?;
                 current = queried;
                 if state.reset_epoch.load(Ordering::Acquire) != observed_reset {
-                    teardown_microphone(&mut owner, &mut bridge, &mut reader, &mut tickets);
+                    teardown_microphone(
+                        &mut retired,
+                        &mut owner,
+                        &mut bridge,
+                        &mut reader,
+                        &mut tickets,
+                    );
                     if !pcm_worker::quiesce_microphone(
                         state,
                         &mut observed_reset,
@@ -710,6 +848,7 @@ fn run_microphone(
                                 current =
                                     transport::after_io_error(&mut control, current, state, error)?;
                                 teardown_microphone(
+                                    &mut retired,
                                     &mut owner,
                                     &mut bridge,
                                     &mut reader,
@@ -723,33 +862,60 @@ fn run_microphone(
                                 current =
                                     transport::after_io_error(&mut control, current, state, error)?;
                             }
-                            teardown_microphone(&mut owner, &mut bridge, &mut reader, &mut tickets);
+                            teardown_microphone(
+                                &mut retired,
+                                &mut owner,
+                                &mut bridge,
+                                &mut reader,
+                                &mut tickets,
+                            );
                         }
                     }
                 } else {
-                    teardown_microphone(&mut owner, &mut bridge, &mut reader, &mut tickets);
+                    teardown_microphone(
+                        &mut retired,
+                        &mut owner,
+                        &mut bridge,
+                        &mut reader,
+                        &mut tickets,
+                    );
                 }
             } else {
-                teardown_microphone(&mut owner, &mut bridge, &mut reader, &mut tickets);
+                teardown_microphone(
+                    &mut retired,
+                    &mut owner,
+                    &mut bridge,
+                    &mut reader,
+                    &mut tickets,
+                );
             }
+            retired.poll();
             thread::sleep(POLL_INTERVAL);
         }
         Ok(())
     })();
     state.revoke();
     let close_result = close_worker_gate(&mut control, &mut current);
-    teardown_microphone(&mut owner, &mut bridge, &mut reader, &mut tickets);
+    teardown_microphone(
+        &mut retired,
+        &mut owner,
+        &mut bridge,
+        &mut reader,
+        &mut tickets,
+    );
+    retired.finish();
     result.and(close_result)
 }
 
 fn teardown_microphone(
+    retired: &mut RetiredPcm,
     owner: &mut Option<PcmOwner>,
     bridge: &mut Option<PcmMicrophoneBridge>,
     reader: &mut Option<AudioReader<f32>>,
     tickets: &mut Vec<PcmTicket>,
 ) {
-    if let Some(mut pcm) = owner.take() {
-        let _ = pcm.shutdown(PCM_SHUTDOWN_TIMEOUT);
+    if let Some(pcm) = owner.take() {
+        retired.retire(pcm, "microphone");
     }
     tickets.clear();
     if let Some(bridge) = bridge.take() {

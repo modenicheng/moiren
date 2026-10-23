@@ -55,8 +55,13 @@ pub(super) fn raw(handle: &OwnedHandle) -> HANDLE {
 
 struct SessionHandle {
     handle: OwnedHandle,
-    pcm_endpoints: Mutex<[Option<EndpointKey>; MAX_ENDPOINTS as usize]>,
+    /// Granted PCM leases by registry slot: endpoint key plus the lease's
+    /// unique grant. Releasing clears only an exact (key, grant) match, so a
+    /// residual lease dropping after its slot was reused can never clear a
+    /// replacement lease's registration.
+    pcm_endpoints: Mutex<[Option<(EndpointKey, u64)>; MAX_ENDPOINTS as usize]>,
     pcm_sequence: AtomicU64,
+    lease_grants: AtomicU64,
 }
 
 /// Holds the original owning handle open as well as a same-file duplicate.
@@ -65,11 +70,30 @@ pub(super) struct PcmLease {
     pub(super) handle: OwnedHandle,
     owner: Arc<SessionHandle>,
     key: EndpointKey,
+    slot: usize,
+    grant: u64,
 }
 
 impl PcmLease {
     pub(super) fn next_sequence(&self) -> Result<u64, ClientError> {
         next_pcm_sequence(&self.owner.pcm_sequence)
+    }
+
+    /// Free this lease's registry slot before the lease itself drops.
+    /// Idempotent and identity-checked: a later Drop finds the slot either
+    /// already cleared or reused by a different grant, and touches neither.
+    /// Retiring a PCM owner calls this so a replacement owner can be prepared
+    /// while the retired owner's residual drain still owns the duplicate
+    /// handle.
+    pub(super) fn release_endpoint_slot(&self) {
+        let mut endpoints = self
+            .owner
+            .pcm_endpoints
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if endpoints[self.slot] == Some((self.key, self.grant)) {
+            endpoints[self.slot] = None;
+        }
     }
 }
 
@@ -87,14 +111,7 @@ fn next_pcm_sequence(sequence: &AtomicU64) -> Result<u64, ClientError> {
 }
 impl Drop for PcmLease {
     fn drop(&mut self) {
-        let mut endpoints = self
-            .owner
-            .pcm_endpoints
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(slot) = endpoints.iter_mut().find(|slot| **slot == Some(self.key)) {
-            *slot = None;
-        }
+        self.release_endpoint_slot();
     }
 }
 
@@ -121,6 +138,7 @@ impl ControlHandle {
                 handle: unsafe { OwnedHandle::from_raw_handle(handle.0) },
                 pcm_endpoints: Mutex::new([None; MAX_ENDPOINTS as usize]),
                 pcm_sequence: AtomicU64::new(0),
+                lease_grants: AtomicU64::new(1),
             }),
             pending: None,
             poisoned: false,
@@ -136,12 +154,15 @@ impl ControlHandle {
             .pcm_endpoints
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if endpoints.contains(&Some(key)) {
+        if endpoints
+            .iter()
+            .any(|slot| matches!(slot, Some((held, _)) if *held == key))
+        {
             return Err(ClientError::PcmOwnerExists);
         }
         let slot = endpoints
-            .iter_mut()
-            .find(|slot| slot.is_none())
+            .iter()
+            .position(Option::is_none)
             .ok_or(ClientError::PcmOwnerExists)?;
         // OwnedHandle::try_clone creates a non-inheritable same-file handle.
         let handle = self
@@ -152,11 +173,17 @@ impl ControlHandle {
                 operation: "clone VAD PCM handle",
                 source,
             })?;
-        *slot = Some(key);
+        let grant = self
+            .owner
+            .lease_grants
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        endpoints[slot] = Some((key, grant));
         Ok(PcmLease {
             handle,
             owner: Arc::clone(&self.owner),
             key,
+            slot,
+            grant,
         })
     }
 
@@ -369,6 +396,7 @@ mod tests {
                 handle: test_event(),
                 pcm_endpoints: Mutex::new([None; MAX_ENDPOINTS as usize]),
                 pcm_sequence: AtomicU64::new(0),
+                lease_grants: AtomicU64::new(1),
             }),
             pending: None,
             poisoned: false,
@@ -618,6 +646,27 @@ mod tests {
             Err(ClientError::SequenceExhausted)
         ));
         assert_eq!(sequence.load(Ordering::Relaxed), u64::MAX);
+    }
+
+    #[test]
+    fn retired_lease_dropping_after_replacement_never_clears_the_new_grant() {
+        let control = test_control();
+        let key = EndpointKey::new(crate::vad::RuntimePdoToken::new(1).unwrap(), 2, 3).unwrap();
+        let residual = control.pcm_lease(key).unwrap();
+        // An owner retire frees the registry slot before the residual lease
+        // drops; the replacement may be granted in that same slot.
+        residual.release_endpoint_slot();
+        let replacement = control.pcm_lease(key).unwrap();
+        // The residual lease outlives the grant: its Drop must not clear the
+        // replacement's registration.
+        drop(residual);
+        assert!(
+            matches!(control.pcm_lease(key), Err(ClientError::PcmOwnerExists)),
+            "a late residual drop must not clear the replacement lease's grant"
+        );
+        drop(replacement);
+        // With the replacement gone the endpoint is leaseable again.
+        assert!(control.pcm_lease(key).is_ok());
     }
 
     #[test]
