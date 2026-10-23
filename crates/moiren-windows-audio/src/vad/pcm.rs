@@ -16,8 +16,8 @@ use std::{
 };
 use windows::Win32::{
     Foundation::{
-        ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_SEM_TIMEOUT, WAIT_FAILED, WAIT_OBJECT_0,
-        WAIT_TIMEOUT,
+        ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NOT_ENOUGH_QUOTA, ERROR_SEM_TIMEOUT,
+        WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     System::{
         IO::{CancelIoEx, DeviceIoControl, GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED},
@@ -238,6 +238,9 @@ impl PcmOwner {
         if let Err(error) = submitted
             && error.code() != ERROR_IO_PENDING.to_hresult()
         {
+            if kernel_quota_rejection(error.code()) {
+                return Err(ClientError::KernelPcmQuotaFull);
+            }
             return Err(ClientError::windows("DeviceIoControl(VAD PCM)", error));
         }
         // Immediate completion also needs collection before slot reuse.
@@ -328,6 +331,9 @@ impl PcmOwner {
             if writing_completion_timeout(error.code(), writing) {
                 return Ok(Some(PcmCompletion::CaptureDropped { stamp: slot.stamp }));
             }
+            if kernel_quota_rejection(error.code()) {
+                return Err(ClientError::KernelPcmQuotaFull);
+            }
             return Err(ClientError::windows("GetOverlappedResult(VAD PCM)", error));
         }
         slot.pending = false;
@@ -369,26 +375,44 @@ impl PcmOwner {
 
     /// Cancel all four slots first, then collect within one overall deadline.
     /// A timeout retains pending memory. Drop always performs the final drain.
+    /// `Duration::ZERO` is a pure non-blocking probe: it still cancels, then
+    /// collects only requests that already reached terminal status, so parked
+    /// residuals release as soon as the driver completes them. It must never
+    /// short-circuit before cancelling — a parked slot that cannot be probed
+    /// turns the retire park back into a blocking drain (2026-10-24 audit).
     pub fn shutdown(&mut self, timeout: Duration) -> Result<(), ClientError> {
-        let deadline = deadline_after(timeout)?;
+        let deadline = if timeout.is_zero() {
+            None
+        } else {
+            Some(deadline_after(timeout)?)
+        };
         self.cancel_all();
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if !slot.pending {
                 continue;
             }
-            let milliseconds =
-                wait_milliseconds(deadline, Instant::now()).ok_or(ClientError::DeadlineExceeded)?;
             let storage = slot.storage.get();
             let mut returned = 0;
             // SAFETY: no storage is reclaimed until terminal completion.
             let result = unsafe {
-                GetOverlappedResultEx(
-                    raw(&self.lease.handle),
-                    addr_of!((*storage).overlapped),
-                    &mut returned,
-                    milliseconds,
-                    false,
-                )
+                if let Some(deadline) = deadline {
+                    let milliseconds = wait_milliseconds(deadline, Instant::now())
+                        .ok_or(ClientError::DeadlineExceeded)?;
+                    GetOverlappedResultEx(
+                        raw(&self.lease.handle),
+                        addr_of!((*storage).overlapped),
+                        &mut returned,
+                        milliseconds,
+                        false,
+                    )
+                } else {
+                    GetOverlappedResult(
+                        raw(&self.lease.handle),
+                        addr_of!((*storage).overlapped),
+                        &mut returned,
+                        false,
+                    )
+                }
             };
             if let Err(error) = result
                 && (error.code() == ERROR_IO_INCOMPLETE.to_hresult()
@@ -468,6 +492,15 @@ fn writing_completion_timeout(code: HRESULT, writing: bool) -> bool {
     writing && code == ERROR_SEM_TIMEOUT.to_hresult()
 }
 
+/// The driver reserves one of the endpoint's four kernel request slots at
+/// submission; while a retired owner's cancelled requests still occupy them,
+/// a replacement owner's submissions complete with the quota rejection. The
+/// kernel audit (2026-10-24) confirmed this is a clean transient rejection,
+/// not queue corruption — the pump must defer, never poison, on it.
+fn kernel_quota_rejection(code: HRESULT) -> bool {
+    code == ERROR_NOT_ENOUGH_QUOTA.to_hresult()
+}
+
 impl Drop for PcmOwner {
     fn drop(&mut self) {
         self.cancel_all();
@@ -538,7 +571,8 @@ fn slot_error(error: SlotError) -> ClientError {
 mod tests {
     use super::*;
     use windows::Win32::Foundation::{
-        ERROR_OPERATION_ABORTED, RtlNtStatusToDosError, STATUS_IO_TIMEOUT,
+        ERROR_OPERATION_ABORTED, ERROR_SEM_TIMEOUT, RtlNtStatusToDosError, STATUS_IO_TIMEOUT,
+        STATUS_QUOTA_EXCEEDED,
     };
     use windows::Win32::System::Threading::SetEvent;
 
@@ -558,6 +592,18 @@ mod tests {
             HRESULT::from_win32(WAIT_TIMEOUT.0),
             true
         ));
+    }
+
+    #[test]
+    fn kernel_quota_rejection_uses_the_windows_completion_error_domain() {
+        // SAFETY: pure OS status translation; no device or request is opened.
+        let translated = unsafe { RtlNtStatusToDosError(STATUS_QUOTA_EXCEEDED) };
+        assert_eq!(translated, ERROR_NOT_ENOUGH_QUOTA.0);
+        assert!(kernel_quota_rejection(HRESULT::from_win32(translated)));
+        assert!(!kernel_quota_rejection(
+            ERROR_OPERATION_ABORTED.to_hresult()
+        ));
+        assert!(!kernel_quota_rejection(HRESULT::from_win32(WAIT_TIMEOUT.0)));
     }
 
     #[test]

@@ -753,3 +753,56 @@ cancelled request inside the 20 ms quick bound on this hardware, so the
 park path remains covered by host tests and the boundary between quick
 drain and parking is visible in `pcm_retire_parked` logs whenever a
 slower driver exercises it.
+
+## Parallel stability audit and park-probe fix (2026-10-24 night)
+
+Before repeating the 8h music soak, three read-only subagent audits ran
+against the committed 5c88800 state: kernel lifecycle/control core, kernel
+PCM data path, and the user-mode VAD plumbing.
+
+**Kernel PCM path — the open retire-interleave contract item is answered:
+yes, the queue tolerates it.** WDF owns cancellation via
+`EvtIoCanceledOnQueue` on the manual queue; requests retrieved by the DPC
+complete inside the same callback (never held across ticks);
+`PendingRequests` decrements exactly once on every path via the
+`InterlockedExchange(Counted)` guard; at most 4 counted + 4 in-batch
+requests coexist, and anything beyond completes immediately with
+`STATUS_QUOTA_EXCEEDED` — a clean rejection, no queue exhaustion,
+assertion, deadlock or sequence corruption. Stale-epoch entries drain via
+`SameStream` revision-mismatch within one or two packet periods.
+
+**User-mode audit found the park machinery broken in exactly the scenario
+it exists for (F1, critical):** `ResidualPcm::drain(Duration::ZERO)`
+routes into `PcmOwner::shutdown`, whose first line
+`deadline_after(timeout)?` rejects a zero timeout with `InvalidDeadline`
+before `cancel_all` or any `GetOverlappedResult` runs. The "non-blocking
+probe" was therefore a total no-op: `RetiredPcm::poll` could never release
+a parked residual, the park degenerated into a two-slot delay queue, and
+the third stuck retire hit the park-full fallback — the pre-fix 1 s
+blocking drain plus `PcmOwner::Drop`'s INFINITE tail, i.e. the original
+outage. The 15 rehearsals and soak300 could not see it because this
+driver completes cancellations inside the 20 ms quick bound; the bug only
+bites when the driver is slow, which is precisely the case the park
+exists for. Two adjacent findings: park-full eviction picked `parked[0]`
+(only accidentally the oldest while F1 kept slots ordered), and the final
+INFINITE safety drains plus unbounded `join()` remain a deliberate
+shutdown-resilience gap (no watchdog) rather than a pump-path defect.
+
+**Fix (same commit as this section):** `shutdown(Duration::ZERO)` now
+cancels and then collects via non-blocking `GetOverlappedResult(…, false)`
+— a true probe that releases parked residuals the moment the driver
+completes them; park entries carry a monotonic retire age and park-full
+evicts the genuinely oldest generation; and, per the kernel audit's
+contract note, a `STATUS_QUOTA_EXCEEDED` completion (`ERROR_NOT_ENOUGH_
+QUOTA`, mapping pinned by test) now surfaces as
+`ClientError::KernelPcmQuotaFull`, which the pump loops consume in-pass —
+a quota'd READ defers the fill, a quota'd WRITE is a bounded one-packet
+drop, a quota'd completion drops the terminal ticket and refills —
+instead of failing the whole session through `after_io_error` while a
+retired owner still occupies the kernel quota. Host gates: 414 lib tests
+green (new: quota error-domain mapping, playback/microphone quota
+deferral and bounded-drop pump tests, park-full eviction policy), clippy
+with `vad-probe` clean, fmt clean. The `PcmOwner`-level park paths still
+cannot be driven without a real device; the repeat soak's
+`pcm_retire_parked`/`pcm_kernel_quota_deferred` debug logs are the
+target-side evidence channels.

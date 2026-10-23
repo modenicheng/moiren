@@ -35,6 +35,11 @@ pub enum ClientError {
     NoFreePcmSlot,
     InvalidPcmTicket,
     SequenceExhausted,
+    /// The driver rejected a PCM request because this endpoint's kernel
+    /// request quota is still occupied — typically cancelled-but-unprocessed
+    /// requests of a just-retired owner. Transient by contract; the pump
+    /// retries on a later pass instead of failing the session.
+    KernelPcmQuotaFull,
 }
 
 impl ClientError {
@@ -64,6 +69,9 @@ impl fmt::Display for ClientError {
             Self::NoFreePcmSlot => f.write_str("all four VAD PCM slots are occupied"),
             Self::InvalidPcmTicket => f.write_str("invalid or retired VAD PCM ticket"),
             Self::SequenceExhausted => f.write_str("VAD PCM sequence or ticket counter exhausted"),
+            Self::KernelPcmQuotaFull => {
+                f.write_str("VAD kernel PCM request quota is temporarily full")
+            }
         }
     }
 }

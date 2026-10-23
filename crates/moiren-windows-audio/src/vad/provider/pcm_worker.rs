@@ -5,23 +5,23 @@ use crate::vad::{PcmPacketStamp, SAMPLE_RATE};
 use std::time::Instant;
 
 pub(super) trait PcmIo {
-    fn wait_activity(&mut self, ticket: PcmTicket, timeout: Duration) -> Result<(), BackendError>;
-    fn complete(&mut self, ticket: PcmTicket) -> Result<Option<PcmCompletion<'_>>, BackendError>;
-    fn read(&mut self) -> Result<PcmTicket, BackendError>;
-    fn write(&mut self, packet: &[u8]) -> Result<PcmTicket, BackendError>;
+    fn wait_activity(&mut self, ticket: PcmTicket, timeout: Duration) -> Result<(), ClientError>;
+    fn complete(&mut self, ticket: PcmTicket) -> Result<Option<PcmCompletion<'_>>, ClientError>;
+    fn read(&mut self) -> Result<PcmTicket, ClientError>;
+    fn write(&mut self, packet: &[u8]) -> Result<PcmTicket, ClientError>;
 }
 impl PcmIo for PcmOwner {
-    fn wait_activity(&mut self, ticket: PcmTicket, timeout: Duration) -> Result<(), BackendError> {
-        self.wait_activity(ticket, timeout).map_err(client_error)
+    fn wait_activity(&mut self, ticket: PcmTicket, timeout: Duration) -> Result<(), ClientError> {
+        self.wait_activity(ticket, timeout)
     }
-    fn complete(&mut self, ticket: PcmTicket) -> Result<Option<PcmCompletion<'_>>, BackendError> {
-        self.try_complete(ticket).map_err(client_error)
+    fn complete(&mut self, ticket: PcmTicket) -> Result<Option<PcmCompletion<'_>>, ClientError> {
+        self.try_complete(ticket)
     }
-    fn read(&mut self) -> Result<PcmTicket, BackendError> {
-        self.submit_read().map_err(client_error)
+    fn read(&mut self) -> Result<PcmTicket, ClientError> {
+        self.submit_read()
     }
-    fn write(&mut self, packet: &[u8]) -> Result<PcmTicket, BackendError> {
-        self.submit_write(packet).map_err(client_error)
+    fn write(&mut self, packet: &[u8]) -> Result<PcmTicket, ClientError> {
+        self.submit_write(packet)
     }
 }
 
@@ -203,7 +203,23 @@ pub(super) fn playback<C: PcmIo>(
         if state.reset_epoch.load(Ordering::Acquire) != epoch {
             return Ok(PumpState::Reset);
         }
-        match owner.complete(ticket)? {
+        // A kernel quota completion is terminal for the ticket but transient
+        // for the owner: drop it and refill on a later pass. Propagating it
+        // would fail the whole session while a retired owner's cancelled
+        // requests still occupy the endpoint quota (kernel audit 2026-10-24).
+        let completion = match owner.complete(ticket) {
+            Ok(completion) => completion,
+            Err(ClientError::KernelPcmQuotaFull) => {
+                log::debug!(
+                    target: "moiren::audio::vad",
+                    "event=pcm_kernel_quota_deferred endpoint=playback stage=complete"
+                );
+                tickets.remove(0);
+                break;
+            }
+            Err(error) => return Err(client_error(error)),
+        };
+        match completion {
             Some(PcmCompletion::Render { stamp, pcm }) => {
                 if state.reset_epoch.load(Ordering::Acquire) != epoch {
                     return Ok(PumpState::Reset);
@@ -230,7 +246,17 @@ pub(super) fn playback<C: PcmIo>(
         if state.reset_epoch.load(Ordering::Acquire) != epoch {
             return Ok(PumpState::Reset);
         }
-        tickets.push(owner.read()?);
+        match owner.read() {
+            Ok(ticket) => tickets.push(ticket),
+            Err(ClientError::KernelPcmQuotaFull) => {
+                log::debug!(
+                    target: "moiren::audio::vad",
+                    "event=pcm_kernel_quota_deferred endpoint=playback stage=read"
+                );
+                break;
+            }
+            Err(error) => return Err(client_error(error)),
+        }
     }
     Ok(PumpState::Current)
 }
@@ -251,7 +277,22 @@ pub(super) fn microphone<C: PcmIo>(
         if !pump.observe(state, epoch, now()) {
             return Ok(PumpState::Reset);
         }
-        let (stamp, dropped) = match owner.complete(ticket)? {
+        // Quota completions are terminal for the ticket, transient for the
+        // owner (see `playback`); drop the ticket and let the fill path
+        // resubmit once the retired owner's requests stop occupying quota.
+        let completion = match owner.complete(ticket) {
+            Ok(completion) => completion,
+            Err(ClientError::KernelPcmQuotaFull) => {
+                log::debug!(
+                    target: "moiren::audio::vad",
+                    "event=pcm_kernel_quota_deferred endpoint=microphone stage=complete"
+                );
+                tickets.remove(0);
+                break;
+            }
+            Err(error) => return Err(client_error(error)),
+        };
+        let (stamp, dropped) = match completion {
             Some(PcmCompletion::Capture { stamp, bytes }) if bytes == bridge.packet_bytes() => {
                 (stamp, false)
             }
@@ -322,11 +363,26 @@ pub(super) fn microphone<C: PcmIo>(
             return Ok(PumpState::Reset);
         }
         let submitted_at = now();
-        tickets.push(owner.write(packet)?);
-        pump.last_phase = pump
-            .next_submit
-            .take()
-            .filter(|&phase| submitted_at.saturating_duration_since(phase) < pump.period);
+        match owner.write(packet) {
+            Ok(ticket) => {
+                tickets.push(ticket);
+                pump.last_phase = pump
+                    .next_submit
+                    .take()
+                    .filter(|&phase| submitted_at.saturating_duration_since(phase) < pump.period);
+            }
+            // The packet was already consumed from the carrier: the kernel
+            // quota rejection is a bounded drop (the driver's own backpressure
+            // semantics), never a session fault. The phase stays due, so the
+            // next pass encodes the next packet immediately.
+            Err(ClientError::KernelPcmQuotaFull) => {
+                log::debug!(
+                    target: "moiren::audio::vad",
+                    "event=pcm_kernel_quota_dropped endpoint=microphone stage=write"
+                );
+            }
+            Err(error) => return Err(client_error(error)),
+        }
     }
     Ok(PumpState::Current)
 }
@@ -344,12 +400,14 @@ pub(super) fn wait_for_microphone<C: PcmIo>(
         return Ok(());
     }
     if let Some(&ticket) = tickets.first() {
-        owner.wait_activity(
-            ticket,
-            pump.remaining(now)
-                .unwrap_or(POLL_INTERVAL)
-                .min(POLL_INTERVAL),
-        )?;
+        owner
+            .wait_activity(
+                ticket,
+                pump.remaining(now)
+                    .unwrap_or(POLL_INTERVAL)
+                    .min(POLL_INTERVAL),
+            )
+            .map_err(client_error)?;
     } else if let Some(remaining) = pump
         .remaining(now)
         .filter(|remaining| !remaining.is_zero())
@@ -377,7 +435,9 @@ pub(super) fn wait_for_activity<C: PcmIo>(
         return Ok(());
     }
     if let Some(&ticket) = tickets.first() {
-        owner.wait_activity(ticket, POLL_INTERVAL)?;
+        owner
+            .wait_activity(ticket, POLL_INTERVAL)
+            .map_err(client_error)?;
     }
     Ok(())
 }

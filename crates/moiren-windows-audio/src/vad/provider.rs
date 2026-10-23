@@ -233,6 +233,9 @@ fn client_error(error: ClientError) -> BackendError {
             BackendError::ResourceUnavailable(error.to_string())
         }
         ClientError::SessionUncertain => BackendError::Failed(error.to_string()),
+        // The pump loops consume quota rejections in-pass; one reaching here
+        // means a deferral site was missed, which is a fault, not load.
+        ClientError::KernelPcmQuotaFull => BackendError::Failed(error.to_string()),
         _ => BackendError::Unsupported(error.to_string()),
     }
 }
@@ -659,8 +662,11 @@ fn run_playback(
 /// Capacity two bounds the pathological case: a fresh retire while two
 /// generations of requests are still stuck falls back to the bounded blocking
 /// drain for the oldest (the pre-fix behavior), keeping the park finite.
+/// Each entry carries the retire age so eviction always selects the true
+/// oldest generation once `poll` starts recycling slots.
 struct RetiredPcm {
-    parked: [Option<ResidualPcm>; RETIRE_PARK_SLOTS],
+    parked: [(Option<ResidualPcm>, u64); RETIRE_PARK_SLOTS],
+    next_age: u64,
 }
 
 const RETIRE_PARK_SLOTS: usize = 2;
@@ -668,7 +674,18 @@ const RETIRE_PARK_SLOTS: usize = 2;
 impl RetiredPcm {
     fn new() -> Self {
         Self {
-            parked: [None, None],
+            parked: std::array::from_fn(|_| (None, 0)),
+            next_age: 0,
+        }
+    }
+
+    /// Index of the oldest parked generation. Ages persist across `poll`
+    /// recycling, so a freed-then-refilled slot never masquerades as oldest.
+    fn oldest(&self) -> usize {
+        if self.parked[0].1 <= self.parked[1].1 {
+            0
+        } else {
+            1
         }
     }
 
@@ -676,39 +693,45 @@ impl RetiredPcm {
     /// park: the oldest residual then gets the full bounded budget and its
     /// Drop's final safety drain, and the new residual takes its slot.
     fn retire(&mut self, owner: PcmOwner, endpoint: &'static str) {
+        let age = self.next_age;
+        self.next_age = self.next_age.wrapping_add(1);
         let mut residual = None;
         if owner.retire(PCM_RETIRE_QUICK_DRAIN, &mut residual) {
             return;
         }
-        let Some(slot) = self.parked.iter_mut().find(|slot| slot.is_none()) else {
+        let Some(residual) = residual else {
+            return;
+        };
+        if let Some(index) = self.parked.iter().position(|(slot, _)| slot.is_none()) {
+            self.parked[index] = (Some(residual), age);
+        } else {
             // Two residual generations already outstanding: the driver has
             // stalled every recovery for the quick bound twice over. Fall
             // back to the pre-fix bounded blocking drain for the oldest.
-            if let Some(mut oldest) = self.parked[0].take() {
+            let victim = self.oldest();
+            let (mut oldest, _) = std::mem::take(&mut self.parked[victim]);
+            if let Some(oldest) = oldest.as_mut() {
                 log::warn!(
                     target: "moiren::audio::vad",
                     "event=pcm_retire_park_full endpoint={endpoint} oldest_pending={}",
                     oldest.pending()
                 );
-                let completed = oldest.drain(PCM_SHUTDOWN_TIMEOUT);
-                if !completed {
+                if !oldest.drain(PCM_SHUTDOWN_TIMEOUT) {
                     log::warn!(
                         target: "moiren::audio::vad",
                         "event=pcm_retire_park_full_timeout endpoint={endpoint}"
                     );
                 }
-                drop(oldest);
             }
-            self.parked[0] = residual;
+            self.parked[victim] = (Some(residual), age);
             return;
-        };
-        *slot = residual;
+        }
         log::debug!(
             target: "moiren::audio::vad",
             "event=pcm_retire_parked endpoint={endpoint} pending={}",
             self.parked
                 .iter()
-                .flatten()
+                .filter_map(|(residual, _)| residual.as_ref())
                 .map(|residual| residual.pending())
                 .sum::<usize>()
         );
@@ -716,7 +739,7 @@ impl RetiredPcm {
 
     /// Non-blocking collect pass over every parked residual.
     fn poll(&mut self) {
-        for slot in &mut self.parked {
+        for (slot, _) in &mut self.parked {
             if let Some(residual) = slot
                 && residual.drain(Duration::ZERO)
             {
@@ -727,7 +750,7 @@ impl RetiredPcm {
 
     /// Worker-exit drain: bounded collect, then Drop's final safety drain.
     fn finish(&mut self) {
-        for slot in &mut self.parked {
+        for (slot, _) in &mut self.parked {
             if let Some(mut residual) = slot.take() {
                 if !residual.drain(PCM_SHUTDOWN_TIMEOUT) {
                     log::warn!(
@@ -936,4 +959,29 @@ fn close_worker_gate(
         *current = control.close_gate(*current).map_err(client_error)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn park_full_eviction_selects_the_oldest_generation_not_the_lowest_slot() {
+        let mut retired = RetiredPcm::new();
+        // Simulate retire order: slot 0 age 5, slot 1 age 3 — slot 1 parked
+        // second but slot 0 is older only if ages say so. Pin the policy:
+        // eviction picks the smallest age, and `poll` recycling a slot never
+        // turns a younger generation into the victim by slot index alone.
+        retired.parked[0].1 = 5;
+        retired.parked[1].1 = 3;
+        assert_eq!(retired.oldest(), 1);
+        // A recycled slot keeps a stale age until refilled; the comparison
+        // stays age-driven. Ages never compare equal in practice because
+        // `next_age` is monotonic, but ties must resolve deterministically.
+        retired.parked[1].1 = 5;
+        assert_eq!(retired.oldest(), 0);
+        retired.parked[0].1 = u64::MAX;
+        retired.parked[1].1 = 0;
+        assert_eq!(retired.oldest(), 1);
+    }
 }

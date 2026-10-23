@@ -72,6 +72,12 @@ struct FakeIo {
     render_frames: usize,
     /// Constant sample value for those packets; None keeps sequence numbers.
     render_value: Option<f32>,
+    /// Next `read` calls rejected with a transient kernel quota error.
+    defer_reads: u32,
+    /// Next `complete` calls finishing a ticket with a kernel quota error.
+    quota_completions: u32,
+    /// Next `write` calls rejected with a transient kernel quota error.
+    quota_writes: u32,
 }
 impl Default for FakeIo {
     fn default() -> Self {
@@ -95,6 +101,9 @@ impl Default for FakeIo {
             signal_on_wait: false,
             render_frames: 1,
             render_value: None,
+            defer_reads: 0,
+            quota_completions: 0,
+            quota_writes: 0,
         }
     }
 }
@@ -108,7 +117,7 @@ impl FakeIo {
     }
 }
 impl PcmIo for FakeIo {
-    fn wait_activity(&mut self, ticket: PcmTicket, timeout: Duration) -> Result<(), BackendError> {
+    fn wait_activity(&mut self, ticket: PcmTicket, timeout: Duration) -> Result<(), ClientError> {
         self.book.check(ticket).unwrap();
         self.waits.push((ticket, timeout));
         if self.signal_on_wait {
@@ -116,7 +125,14 @@ impl PcmIo for FakeIo {
         }
         Ok(())
     }
-    fn complete(&mut self, ticket: PcmTicket) -> Result<Option<PcmCompletion<'_>>, BackendError> {
+    fn complete(&mut self, ticket: PcmTicket) -> Result<Option<PcmCompletion<'_>>, ClientError> {
+        if self.quota_completions > 0 {
+            // Mirror the real owner: the request reached terminal status and
+            // finished its slot; the quota rejection is for the pump to defer.
+            self.quota_completions -= 1;
+            self.book.finish(ticket).unwrap();
+            return Err(ClientError::KernelPcmQuotaFull);
+        }
         let slot = &mut self.slots[ticket.slot];
         if !slot.ready {
             return Ok(None);
@@ -138,7 +154,11 @@ impl PcmIo for FakeIo {
             }
         }))
     }
-    fn read(&mut self) -> Result<PcmTicket, BackendError> {
+    fn read(&mut self) -> Result<PcmTicket, ClientError> {
+        if self.defer_reads > 0 {
+            self.defer_reads -= 1;
+            return Err(ClientError::KernelPcmQuotaFull);
+        }
         let ticket = self.book.reserve().unwrap();
         self.reads += 1;
         let value = self.render_value.unwrap_or(self.reads as f32);
@@ -158,7 +178,11 @@ impl PcmIo for FakeIo {
         };
         Ok(ticket)
     }
-    fn write(&mut self, packet: &[u8]) -> Result<PcmTicket, BackendError> {
+    fn write(&mut self, packet: &[u8]) -> Result<PcmTicket, ClientError> {
+        if self.quota_writes > 0 {
+            self.quota_writes -= 1;
+            return Err(ClientError::KernelPcmQuotaFull);
+        }
         let ticket = self.book.reserve().unwrap();
         self.written.push(packet.to_vec());
         self.slots[ticket.slot] = Slot {
@@ -912,6 +936,124 @@ fn microphone_submits_one_packet_and_replenishes_only_after_completion() {
     for (packet, value) in io.written.iter().zip([1.0_f32, 2.0]) {
         assert_eq!(packet, &value.to_le_bytes().repeat(2));
     }
+}
+
+#[test]
+fn playback_defers_kernel_quota_reads_without_failing_the_session() {
+    let mut io = FakeIo {
+        defer_reads: 1,
+        ..Default::default()
+    };
+    let mut tickets = vec![];
+    let (writer, _reader) = audio_bridge(2, 8, 4096).unwrap();
+    let mut bridge =
+        PcmPlaybackBridge::new(Channels::Stereo, SampleFormat::Float32, 1, 4096, writer).unwrap();
+    let mut order = PacketOrder::default();
+    let state = state();
+    assert_eq!(
+        playback(&mut io, &mut bridge, &mut tickets, &mut order, &state, 0).unwrap(),
+        PumpState::Current,
+        "a transient kernel quota rejection must defer the fill, not fail"
+    );
+    assert!(
+        tickets.is_empty(),
+        "a deferred read must not leave a ticket behind"
+    );
+    assert_eq!(io.reads, 0);
+    // The next pass submits normally once the retired owner's cancelled
+    // requests stop occupying the endpoint quota.
+    assert_eq!(
+        playback(&mut io, &mut bridge, &mut tickets, &mut order, &state, 0).unwrap(),
+        PumpState::Current
+    );
+    assert_eq!(tickets.len(), crate::vad::REQUEST_SLOTS);
+}
+
+#[test]
+fn playback_treats_kernel_quota_completion_as_terminal_ticket_and_refills() {
+    let mut io = FakeIo {
+        quota_completions: 1,
+        ..Default::default()
+    };
+    let mut tickets = pending_reads(&mut io);
+    let (writer, _reader) = audio_bridge(2, 8, 4096).unwrap();
+    let mut bridge =
+        PcmPlaybackBridge::new(Channels::Stereo, SampleFormat::Float32, 1, 4096, writer).unwrap();
+    let mut order = PacketOrder::default();
+    let state = state();
+    assert_eq!(
+        playback(&mut io, &mut bridge, &mut tickets, &mut order, &state, 0).unwrap(),
+        PumpState::Current,
+        "a quota-rejected completion must not poison the session"
+    );
+    assert_eq!(
+        tickets.len(),
+        crate::vad::REQUEST_SLOTS,
+        "the finished ticket is dropped and the fill resubmits"
+    );
+    assert!(
+        io.collected.is_empty(),
+        "a quota completion carries no packet"
+    );
+    assert_eq!(
+        io.reads,
+        u64::try_from(crate::vad::REQUEST_SLOTS + 1).unwrap()
+    );
+}
+
+#[test]
+fn microphone_treats_kernel_quota_write_as_a_bounded_drop() {
+    let state = state();
+    let (mut writer, reader) = audio_bridge(2, 8, 4096).unwrap();
+    writer
+        .write_interleaved(&[1., 1., 2., 2., 3., 3., 4., 4.])
+        .unwrap();
+    let mut bridge =
+        PcmMicrophoneBridge::new(Channels::Stereo, SampleFormat::Float32, 1, 4096, reader).unwrap();
+    let mut io = FakeIo {
+        quota_writes: 1,
+        ..Default::default()
+    };
+    let mut tickets = vec![];
+    let mut pump = MicrophonePump::new(1);
+    let clock = FakeClock::default();
+    assert_eq!(
+        microphone(
+            &mut io,
+            &mut bridge,
+            &mut tickets,
+            &mut pump,
+            &state,
+            0,
+            || clock.now(),
+        )
+        .unwrap(),
+        PumpState::Current,
+        "a quota-rejected WRITE is bounded backpressure, not a session fault"
+    );
+    assert!(
+        tickets.is_empty(),
+        "the rejected packet leaves no ticket; its frames are dropped"
+    );
+    assert!(io.written.is_empty());
+    // The phase stays due, so the very next pass encodes the next packet —
+    // the cadence continues and the loss stays bounded to one packet.
+    assert_eq!(
+        microphone(
+            &mut io,
+            &mut bridge,
+            &mut tickets,
+            &mut pump,
+            &state,
+            0,
+            || clock.now(),
+        )
+        .unwrap(),
+        PumpState::Current
+    );
+    assert_eq!(tickets.len(), 1);
+    assert_eq!(io.written.len(), 1);
+    assert_eq!(io.written[0], 2.0_f32.to_le_bytes().repeat(2));
 }
 
 struct MicrophoneFixture {
