@@ -806,3 +806,25 @@ with `vad-probe` clean, fmt clean. The `PcmOwner`-level park paths still
 cannot be driven without a real device; the repeat soak's
 `pcm_retire_parked`/`pcm_kernel_quota_deferred` debug logs are the
 target-side evidence channels.
+
+## Repeat-soak attempts on the park-probe fix build (2026-10-24 night)
+
+The repeat 8h music soak uses probe `db4e55d41cdabd0b0362cb630f30ebf0a20ef36982b93c671db719981285a239`
+built from 755831f (in a clean worktree; the developer tree carried unrelated
+uncommitted app-UI edits). Guest noise sources were re-checked: wuauserv had
+been resurrected (WaaSMedicSvc) and was stopped/disabled again before launch.
+
+- `20261024-soak-8h-music` — failed at 23.5 s, validation passed, one capture
+  gap at the validation→soak transition tripped the zero-discontinuity gate.
+- `20261024-soak-8h-music2` — failed at 130.3 s of music, same single-gap
+  signature. Decisive negatives: zero `pcm_kernel_quota_deferred`, zero
+  `pcm_retire_parked`, zero `transport_io_error`, and
+  `virtual_clock_gap_summary total=0` — none of the changed recovery paths
+  executed; both failures overlapped host-side cargo builds on the VM host,
+  matching the classified environmental single-glitch family (host activity,
+  not margin exhaustion).
+
+`20261024-soak-8h-music3` launched at ~01:40 local on the now-quiet host;
+its outcome lands in the next entry. If early single-glitch failures recur
+on a quiet host, the next diagnostic step is a control run of the surviving
+`vad_integration-5c88800.exe` to fully exclude the binary as a variable.
