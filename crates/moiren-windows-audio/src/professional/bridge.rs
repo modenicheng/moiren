@@ -1,9 +1,6 @@
 //! Complete stereo frames cross bounded SPSC rings. Only graph boundaries cast S.
-use super::{
-    native::StereoFrame,
-    observations::Counters,
-    resample::{CORRECTION_PPM_LIMIT, StereoResampler},
-};
+pub(super) use super::servo::FollowerServo;
+use super::{native::StereoFrame, observations::Counters, resample::StereoResampler};
 use moiren_engine::{
     boundary::{BoundaryReport, RtAudioSink, RtAudioSource},
     buffer::{AudioBlock, AudioBlockMut},
@@ -41,51 +38,6 @@ impl<S: ProcessingSample> RtAudioSink<S> for RingSink<S> {
             .dropped
             .fetch_add(dropped as u64, Ordering::Relaxed);
         report(count, input.frames())
-    }
-}
-
-/// Proportional gain: ppm of desired correction per unit of relative queue
-/// deviation from the target.
-const FOLLOWER_GAIN_PPM: f64 = 500.0;
-/// Low-pass factor applied to the desired correction on every observation.
-const FOLLOWER_SMOOTHING: f64 = 0.01;
-
-/// Drift servo shared by the follower bridges on both sides of the rings: the
-/// engine-side [`RingSource`] and the native-side pump in `owner.rs`. It
-/// measures queue occupancy against a fixed startup target and low-passes a
-/// ppm correction for the SRC. Pure arithmetic: no allocation, locking or
-/// clock reads on the audio path.
-pub(super) struct FollowerServo {
-    /// Engine-rate frames the follower wants queued (two native periods).
-    target: usize,
-    /// Low-passed correction in ppm.
-    correction: f64,
-}
-
-impl FollowerServo {
-    /// Startup target in engine-rate frames: two periods, floored at 64
-    /// frames and capped at half the ring capacity.
-    pub(super) fn start_target(period: usize, capacity: usize) -> usize {
-        (period * 2).max(64).min(capacity / 2)
-    }
-    pub(super) fn new(target: usize) -> Self {
-        Self {
-            target,
-            correction: 0.0,
-        }
-    }
-    /// Priming/fullness watermark the follower waits for before starting.
-    pub(super) fn target(&self) -> usize {
-        self.target
-    }
-    /// Feed the current queued frame depth; returns the smoothed correction
-    /// in ppm for `StereoResampler::set_correction_ppm`.
-    pub(super) fn observe(&mut self, queued: usize) -> f64 {
-        let desired = ((queued as f64 - self.target as f64) / self.target as f64
-            * FOLLOWER_GAIN_PPM)
-            .clamp(-CORRECTION_PPM_LIMIT, CORRECTION_PPM_LIMIT);
-        self.correction += (desired - self.correction) * FOLLOWER_SMOOTHING;
-        self.correction
     }
 }
 

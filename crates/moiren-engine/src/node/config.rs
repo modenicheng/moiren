@@ -1,4 +1,5 @@
 //! Control-side IO intent. These values never open devices or own audio buffers.
+use super::VirtualEndpointId;
 use crate::audio_config::{AudioBackend, SampleFormat};
 use crate::boundary::{CaptureIntent, ClockRole};
 use serde::{Deserialize, Serialize};
@@ -47,6 +48,11 @@ pub struct DeviceOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputSource {
     Physical(EndpointSelector),
+    /// Audio rendered by external clients into a virtual playback endpoint.
+    /// This is a graph source; backend preparation resolves the persistent ID.
+    VirtualPlayback {
+        endpoint_id: VirtualEndpointId,
+    },
     /// Persistent selector; the backend resolves a live process identity.
     Application {
         executable: String,
@@ -60,7 +66,14 @@ pub enum InputSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputTarget {
     Physical(EndpointSelector),
-    Software { name: String },
+    /// Graph audio supplied to external clients through a virtual microphone.
+    /// This is a graph sink, independent of the physical device backend setting.
+    VirtualMicrophone {
+        endpoint_id: VirtualEndpointId,
+    },
+    Software {
+        name: String,
+    },
 }
 
 /// One multichannel output port, no graph input ports.
@@ -83,6 +96,8 @@ pub struct OutputConfig {
 pub enum IoConfigError {
     #[error("an IO port must carry at least one channel")]
     InvalidChannels,
+    #[error("a virtual endpoint must carry one or two channels")]
+    InvalidVirtualChannels,
     #[error("an endpoint, executable or software selector is empty")]
     InvalidSelector,
     #[error("requested hardware sample rate or period is zero")]
@@ -131,6 +146,7 @@ impl InputConfig {
         self.device.validate()?;
         match &self.source {
             InputSource::Physical(endpoint) => endpoint.validate(),
+            InputSource::VirtualPlayback { .. } => validate_virtual_channels(self.channels),
             InputSource::Application { executable, .. } => validate_text(executable),
             InputSource::Software { name } => validate_text(name),
         }
@@ -145,7 +161,16 @@ impl OutputConfig {
         self.device.validate()?;
         match &self.target {
             OutputTarget::Physical(endpoint) => endpoint.validate(),
+            OutputTarget::VirtualMicrophone { .. } => validate_virtual_channels(self.channels),
             OutputTarget::Software { name } => validate_text(name),
         }
+    }
+}
+
+fn validate_virtual_channels(channels: usize) -> Result<(), IoConfigError> {
+    if (1..=2).contains(&channels) {
+        Ok(())
+    } else {
+        Err(IoConfigError::InvalidVirtualChannels)
     }
 }

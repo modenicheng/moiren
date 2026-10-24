@@ -19,7 +19,7 @@ use windows::{
         },
         System::{
             Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance},
-            Threading::{AvSetMmThreadCharacteristicsW, WaitForSingleObject},
+            Threading::WaitForSingleObject,
         },
     },
     core::{GUID, HSTRING, Interface, Result},
@@ -83,7 +83,7 @@ pub(super) fn prepare_and_sample(report: &mut EndpointReport, seconds: u32) -> R
         || base.nSamplesPerSec == 0
         || base.nBlockAlign != base.nChannels.checked_mul(4).ok_or_else(unexpected)?
     {
-        // This W00 slice deliberately supports the formats needed on this machine.
+        // This hardware probe deliberately supports native f32 only.
         return Err(windows::core::Error::from_hresult(
             AUDCLNT_E_UNSUPPORTED_FORMAT,
         ));
@@ -103,7 +103,8 @@ pub(super) fn prepare_and_sample(report: &mut EndpointReport, seconds: u32) -> R
     }
     // Attenuation preference applies to our render session. Capture sessions on
     // the tested drivers reject this method with AUDCLNT_E_WRONG_ENDPOINT_TYPE.
-    // Never call it on QQMusic's session; category Other is set for both flows.
+    // Never call it on other processes' sessions; category Other is set for
+    // both flows.
     if flow == eRender {
         report.last_stage = "GetService(IAudioSessionControl)";
         let session: IAudioSessionControl2 =
@@ -182,21 +183,18 @@ pub(super) fn prepare_and_sample(report: &mut EndpointReport, seconds: u32) -> R
             ..Default::default()
         });
     }
-    let mut task_index = 0;
-    let _mmcss =
-        match unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Audio"), &mut task_index) }
-        {
-            Ok(handle) => {
-                report.mmcss_registered = true;
-                Some(Mmcss(handle))
-            }
-            Err(error) => {
-                report
-                    .errors
-                    .push(ApiFailure::new("MMCSS (optional)", error));
-                None
-            }
-        };
+    let _mmcss = match Mmcss::audio_detailed() {
+        Ok(mmcss) => {
+            report.mmcss_registered = true;
+            Some(mmcss)
+        }
+        Err(error) => {
+            report
+                .errors
+                .push(ApiFailure::new("MMCSS (optional)", error));
+            None
+        }
+    };
     report.last_stage = "Start";
     let mut streaming = Streaming::start(&client)?;
     let window = SamplingWindow {

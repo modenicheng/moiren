@@ -374,6 +374,15 @@ impl BackendDriver {
 impl ServiceDriver for BackendDriver {
     fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
         match request {
+            AppRequest::SetExportAuthorizations(values) => {
+                if let Err(error) = c.exports.set_authorizations(&values) {
+                    c.graph.record_error(error);
+                }
+            }
+            AppRequest::LoadProject(document) => match c.load_project(document) {
+                Ok(()) => self.candidate_identity_matches_session = false,
+                Err(error) => c.graph.record_error(error),
+            },
             AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
             AppRequest::SetAudioSettings(settings) => {
                 if c.set_audio_settings(settings) && c.audio_settings != AudioSettings::default() {
@@ -381,6 +390,10 @@ impl ServiceDriver for BackendDriver {
                 }
             }
             AppRequest::Start(spec) => {
+                if let Err(error) = c.exports.preflight_audio(&c.graph.snapshot().exports) {
+                    c.graph.record_error(error);
+                    return;
+                }
                 if c.audio_settings != AudioSettings::default() {
                     c.graph.record_error(PROFESSIONAL_SETTINGS_UNSUPPORTED);
                     return;
@@ -494,7 +507,11 @@ impl ServiceDriver for BackendDriver {
             AppRequest::ApplyGraph if c.audio_settings != AudioSettings::default() => {
                 c.graph.record_error(PROFESSIONAL_SETTINGS_UNSUPPORTED);
             }
-            AppRequest::ApplyGraph => match c.graph.session_spec(c.core.desired()) {
+            AppRequest::ApplyGraph => match c
+                .exports
+                .preflight_audio(&c.graph.snapshot().exports)
+                .and_then(|()| c.graph.session_spec(c.core.desired()))
+            {
                 Ok(spec) => match c.core.start(spec) {
                     Ok(_) => self.session_started(c),
                     Err(error) => c.graph.record_error(format!("{error:?}")),

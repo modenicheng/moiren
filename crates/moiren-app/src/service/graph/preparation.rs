@@ -40,11 +40,19 @@ impl GraphPreparation {
         project.processing.engine.max_block_frames = max_block_frames;
         project.processing.control_horizon_frames = u64::from(settings.processing.sample_rate);
         project.strips.extend(self.mixer_configs());
+        // Only a physical render endpoint can own the native device clock.
+        // An all-virtual project is paced by the single Engine realtime owner.
         let master = self
             .graph
             .nodes()
             .iter()
             .filter(|n| n.kind() == NodeKind::Sink)
+            .filter(|n| {
+                !self
+                    .exports
+                    .iter()
+                    .any(|export| export.enabled && export.binding == Some(n.id()))
+            })
             .map(|n| n.id())
             .min();
         let mut endpoints = std::collections::BTreeSet::new();
@@ -60,6 +68,33 @@ impl GraphPreparation {
                 .find(|s| s.id == node.id())
                 .expect("validated node state");
             let config = match node.kind() {
+                NodeKind::Source if self.enabled_export(node.id()).is_some() => {
+                    let export = self.enabled_export(node.id()).expect("matched export");
+                    NodeConfig::Input(InputConfig {
+                        source: InputSource::VirtualPlayback {
+                            endpoint_id: export.endpoint_id,
+                        },
+                        channels: export.channels,
+                        device: DeviceOptions::default(),
+                    })
+                }
+                NodeKind::Sink if self.enabled_export(node.id()).is_some() => {
+                    let export = self.enabled_export(node.id()).expect("matched export");
+                    NodeConfig::Output(OutputConfig {
+                        target: OutputTarget::VirtualMicrophone {
+                            endpoint_id: export.endpoint_id,
+                        },
+                        channels: export.channels,
+                        device: DeviceOptions {
+                            clock_role: if Some(node.id()) == master {
+                                ClockRole::Master
+                            } else {
+                                ClockRole::Follower
+                            },
+                            ..DeviceOptions::default()
+                        },
+                    })
+                }
                 NodeKind::Source => {
                     let mut device = DeviceOptions::default();
                     let source = match state.source.as_ref().ok_or("输入节点尚未绑定音源")?
@@ -211,6 +246,7 @@ impl GraphPreparation {
     }
     pub(super) fn validate_state(&self) -> Result<(), String> {
         self.graph.validate().map_err(|e| e.to_string())?;
+        validate_exports(&self.exports, &self.graph)?;
         if self.graph.nodes().len() > 4096 || self.nodes.len() != self.graph.nodes().len() {
             return Err("节点状态数量不匹配或图超过 4096 个节点".into());
         }
@@ -237,6 +273,11 @@ impl GraphPreparation {
             )?;
         }
         Ok(())
+    }
+    fn enabled_export(&self, node: NodeId) -> Option<&ExportIntent> {
+        self.exports
+            .iter()
+            .find(|export| export.enabled && export.binding == Some(node))
     }
     pub fn io_nodes(&self) -> Result<(NodeId, NodeId), String> {
         self.validate_state()?;

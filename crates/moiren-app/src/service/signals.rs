@@ -557,7 +557,9 @@ mod tests {
         assert!(ui.subscriber().unwrap().is_none());
         assert_eq!(topic.business_subscribers(), 1);
         assert_eq!(topic.demand_snapshot().generation, generation);
-        for _ in 0..6 {
+        // Two 256-frame blocks complete exactly one default (480-frame)
+        // window beyond the three published before the hide.
+        for _ in 0..2 {
             tone.compiled.engine.render(256).unwrap();
             tone.output.read_interleaved(&mut [0.0; 512]).unwrap();
         }
@@ -566,8 +568,8 @@ mod tests {
             let window = analysis.read_latest().unwrap();
             assert_eq!(window.meta().sequence, first_sequence + 1);
             assert_eq!(window.meta().activation_generation, generation);
-            assert_eq!(window.header().frame_start, 1536);
-            assert_eq!(window.header().frame_end, 3072);
+            assert_eq!(window.header().frame_start, 1440);
+            assert_eq!(window.header().frame_end, 1920);
             for level in window.elements() {
                 assert!((level.peak - 0.01).abs() < 0.00001);
                 assert!((level.rms - 0.01 / 2.0_f32.sqrt()).abs() < 0.0001);

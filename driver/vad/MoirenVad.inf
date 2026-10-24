@@ -1,0 +1,74 @@
+; Adapted from Microsoft AudioCodec.inf at the pinned commit.
+; Copyright (c) Microsoft Corporation. All rights reserved.
+; SPDX-License-Identifier: MS-PL
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=MEDIA
+ClassGuid={4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider=%Provider%
+DriverVer=10/20/2026,0.2.0.0
+CatalogFile=MoirenVad.cat
+PnpLockDown=1
+
+[DestinationDirs]
+DefaultDestDir=13
+
+[Manufacturer]
+%Provider%=Models,NTamd64.10.0...22621
+
+[Models.NTamd64.10.0...22621]
+%DeviceDescription%=Root,ROOT\MoirenVad
+%ChildDeviceDescription%=Child,MOIREN\VAD_RAW
+
+; ACX owns the raw child stack. Install MEDIA metadata only, with no child
+; function service, WDF binding, copied binary, or static audio interfaces.
+[Child.NT]
+
+[Child.NT.Services]
+AddService=,2
+
+[Root.NT]
+CopyFiles=Driver.Copy
+
+[Driver.Copy]
+MoirenVad.sys
+
+[Root.NT.HW]
+AddReg=Root.Security
+
+[Root.Security]
+; One standard-user owner is enforced additionally by the driver's file callback.
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"
+
+[Root.NT.Services]
+AddService=MoirenVad,0x00000002,Service
+
+[Service]
+DisplayName=%DeviceDescription%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\MoirenVad.sys
+
+[Root.NT.Wdf]
+KmdfService=MoirenVad,Wdf
+
+[Wdf]
+KmdfLibraryVersion=$KMDFVERSION$
+
+; Deliberately no Root.NT.Interfaces / audio AddInterface entries.
+; The root enumerates zero audio circuits. Child policy is staged at runtime
+; on DISABLED interfaces in child PrepareHardware before ACX adds its circuit.
+
+[SourceDisksNames]
+1=%Disk%,,,""
+
+[SourceDisksFiles]
+MoirenVad.sys=1,,
+
+[Strings]
+Provider="Moiren"
+DeviceDescription="Moiren VAD control bus"
+ChildDeviceDescription="Moiren virtual audio endpoint"
+Disk="Moiren VAD unsigned development package"

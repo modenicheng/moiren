@@ -15,6 +15,7 @@ use moiren_engine::{
 #[cfg(windows)]
 use moiren_windows_audio::clock_bridge;
 use moiren_windows_audio::professional::native;
+use moiren_windows_audio::virtual_owner;
 use std::{
     marker::PhantomData,
     sync::{
@@ -42,6 +43,8 @@ mod recovery;
 mod recovery_host_tests;
 #[path = "../../../crates/moiren-windows-audio/src/professional/resample.rs"]
 mod resample;
+#[path = "../../../crates/moiren-windows-audio/src/professional/servo.rs"]
+mod servo;
 use bridge::{RingSink, RingSource, Tone};
 use native::{NativeStream, NativeStreamInfo, StereoFrame};
 use observations::{Counters, ProfessionalObservations};
@@ -55,6 +58,44 @@ mod alloc_guard;
 
 fn measured<T>(f: impl FnOnce() -> T) -> T {
     alloc_guard::assert_allocates_nothing(f)
+}
+
+#[test]
+fn resampler_reset_and_input_planning_are_allocation_free_without_stale_audio() {
+    for input_rate in [44_100, 48_000, 88_200, 96_000] {
+        for output_rate in [44_100, 48_000, 88_200, 96_000] {
+            let capacity = 512;
+            assert!(resample::StereoResampler::storage_bytes(capacity).unwrap() > capacity * 16);
+            assert!(resample::StereoResampler::storage_bytes(usize::MAX).is_none());
+            let mut src =
+                resample::StereoResampler::new(input_rate, output_rate, capacity).unwrap();
+            let mut output = [[0.0; 2]; 128];
+            measured(|| {
+                let needed = src.input_frames_needed(output.len()).unwrap();
+                for _ in 0..needed {
+                    assert!(src.push_frame([0.75, -0.25]));
+                }
+                assert_eq!(src.produce(&mut output), output.len());
+                assert!(output.iter().any(|frame| frame[0] > 0.5));
+                src.set_correction_ppm(2000.0);
+                src.reset();
+
+                assert_eq!(src.input_frames_needed(0), Some(0));
+                let needed = src.input_frames_needed(output.len()).unwrap();
+                assert!(needed <= src.free_frames());
+                for _ in 0..needed - 1 {
+                    assert!(src.push_frame([0.0; 2]));
+                }
+                let first = src.produce(&mut output);
+                assert!(first < output.len());
+                assert_eq!(src.input_frames_needed(output.len() - first), Some(1));
+                assert!(src.push_frame([0.0; 2]));
+                let rest = src.produce(&mut output[first..]);
+                assert_eq!(first + rest, output.len());
+                assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+            });
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

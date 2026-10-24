@@ -207,6 +207,57 @@ fn deferred_capture_invalid_attachment_joins_and_cancels_peer() {
 }
 
 #[test]
+fn deferred_capture_adapts_native_frames_to_the_requested_engine_rate() {
+    for engine_rate in [44_100_u32, 48_000, 88_200, 96_000] {
+        let stop = StopSignal::new().unwrap();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let prepared = start_native_owner(stop, move |stop, preparation, _| {
+            let mut report = report();
+            let ingress = preparation
+                .prepare(timing(), 2, &stop, &mut report, None)
+                .unwrap();
+            sender.send(ingress).unwrap();
+            preparation.finish(Ok(CaptureStatus::Stopped), &stop, report)
+        })
+        .unwrap();
+        let mut capture = prepared
+            .attach_returning(input(), engine_rate)
+            .unwrap_or_else(|failure| panic!("{}", failure.error));
+        let mut ingress = receiver.recv().unwrap();
+        capture.session.join().unwrap();
+        let pcm: Vec<_> = (0..2048)
+            .flat_map(|frame| [frame as f32, -(frame as f32)])
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        ingress
+            .push_packet(
+                &pcm,
+                crate::clock_bridge::CapturePacket {
+                    frames: 2048,
+                    flags: 0,
+                    device_position_frames: 0,
+                    qpc_100ns: 1,
+                },
+            )
+            .unwrap();
+        let mut output = [f32::NAN; 32];
+        assert_eq!(
+            capture
+                .source
+                .read_interleaved(&mut output)
+                .unwrap()
+                .transferred_frames,
+            16
+        );
+        let step = 48_000.0 / engine_rate as f32;
+        for frame in 1..16 {
+            assert!((output[frame * 2] - output[0] - frame as f32 * step).abs() < 0.001);
+            assert_eq!(output[frame * 2 + 1], -output[frame * 2]);
+        }
+    }
+}
+
+#[test]
 fn deferred_capture_attaches_joint_budget_and_waits_for_activation_or_stop() {
     for cancel in [false, true] {
         let stop = StopSignal::new().unwrap();

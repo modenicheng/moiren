@@ -60,8 +60,7 @@ fn io_error(operation: &'static str, path: &Path, source: io::Error) -> Persiste
 
 pub fn load_project(path: impl AsRef<Path>) -> Result<ProjectDocument, PersistenceError> {
     let document: ProjectDocument = read_json(path.as_ref())?;
-    document.validate()?;
-    Ok(document)
+    document.migrate()
 }
 
 pub fn save_project(
@@ -102,10 +101,7 @@ pub fn save_preferences(preferences: &AppPreferences) -> Result<(), PersistenceE
 /// A missing preference file is a first launch; corrupted files remain errors.
 pub fn load_preferences_at(path: impl AsRef<Path>) -> Result<AppPreferences, PersistenceError> {
     match read_json::<AppPreferences>(path.as_ref()) {
-        Ok(preferences) => {
-            preferences.validate()?;
-            Ok(preferences)
-        }
+        Ok(preferences) => preferences.migrate(),
         Err(PersistenceError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
             Ok(AppPreferences::default())
         }

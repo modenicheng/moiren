@@ -20,7 +20,7 @@ use std::{
 use windows::Win32::{
     Foundation::HANDLE,
     Media::Audio::{IAudioCaptureClient, IAudioClient},
-    System::Threading::{AvSetMmThreadCharacteristicsW, SetEvent},
+    System::Threading::SetEvent,
 };
 
 pub(crate) struct StreamInput<'a> {
@@ -92,18 +92,16 @@ pub(super) fn run_prepared(
     if activation == Activation::Cancelled {
         return Ok(CaptureStatus::Stopped);
     }
-    let mut index = 0;
-    let _mmcss =
-        match unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Audio"), &mut index) } {
-            Ok(value) => {
-                report.mmcss_registered = true;
-                Some(Mmcss(value))
-            }
-            Err(error) => {
-                report.mmcss_hresult = Some(error.code().0);
-                None
-            }
-        };
+    let _mmcss = match Mmcss::audio_detailed() {
+        Ok(mmcss) => {
+            report.mmcss_registered = true;
+            Some(mmcss)
+        }
+        Err(error) => {
+            report.mmcss_hresult = Some(error.code().0);
+            None
+        }
+    };
     let mut streaming = api("Start(capture)", Streaming::start(input.client))?;
     report.stream_started = true;
     input.started.store(true, Ordering::Release);

@@ -46,6 +46,7 @@ struct Owner {
     document: u64,
     profile: AudioLatencyProfile,
     audio_settings: AudioSettings,
+    exports: Vec<ExportIntent>,
     active_revision: (u64, u64),
     /// The Apply whose matching ACKs established `active_revision`.
     active_apply_id: u64,
@@ -78,9 +79,11 @@ struct PendingParameter {
 enum Completion {
     Reaped(SessionGeneration),
     Catalog(Result<DeviceCatalog, BackendError>),
+    Exports(Result<super::exports::runtime::Batch, String>),
 }
 
 pub struct ManagedDriver {
+    exports_runtime: super::exports::runtime::Runtime,
     factory: Arc<Factory<f32>>,
     f64_factory: Option<Arc<Factory<f64>>>,
     catalog_backend: Option<Arc<dyn BackendAdapter>>,
@@ -108,6 +111,8 @@ pub struct ManagedDriver {
     professional_observations: Option<
         Arc<std::sync::Mutex<Option<moiren_windows_audio::professional::ProfessionalObservations>>>,
     >,
+    #[cfg(windows)]
+    virtual_provider: Option<Arc<moiren_windows_audio::vad::WindowsVadProvider>>,
 }
 impl ManagedDriver {
     pub fn new(
@@ -117,6 +122,7 @@ impl ManagedDriver {
         + 'static,
     ) -> Self {
         Self {
+            exports_runtime: Default::default(),
             factory: Arc::new(move |profile, _| factory(profile)),
             f64_factory: None,
             catalog_backend: None,
@@ -150,6 +156,8 @@ impl ManagedDriver {
             observations: None,
             #[cfg(windows)]
             professional_observations: None,
+            #[cfg(windows)]
+            virtual_provider: None,
         }
     }
     /// The original constructor remains an f32 factory for native observation
@@ -180,12 +188,20 @@ impl ManagedDriver {
         let publisher = observations.clone();
         let professional_publisher = professional_observations.clone();
         let f64_publisher = professional_observations.clone();
+        let virtual_provider = moiren_windows_audio::vad::WindowsVadProvider::discover().ok();
+        let provider_for_factory = virtual_provider.clone();
+        let provider_for_f64 = virtual_provider.clone();
         let mut driver = Self::new(|_| unreachable!("Windows factory replaced before use"))
             .with_catalog(Arc::new(WindowsBackend::default()));
         driver.factory = Arc::new(move |profile, settings| {
             if settings != &AudioSettings::default() {
                 let backend =
                     moiren_windows_audio::professional::ProfessionalBackend::<f32>::new()?;
+                let backend = if let Some(provider) = provider_for_factory.as_ref() {
+                    backend.with_virtual_provider(provider.clone())
+                } else {
+                    backend
+                };
                 *publisher.lock().unwrap_or_else(|p| p.into_inner()) = None;
                 *professional_publisher
                     .lock()
@@ -195,6 +211,11 @@ impl ManagedDriver {
             let backend = moiren_windows_audio::engine_backend::WindowsBackend::new(
                 profile.windows_backend_config(),
             )?;
+            let backend = if let Some(provider) = provider_for_factory.as_ref() {
+                backend.with_virtual_provider(provider.clone())
+            } else {
+                backend
+            };
             *publisher.lock().unwrap_or_else(|p| p.into_inner()) = Some(backend.observations());
             *professional_publisher
                 .lock()
@@ -203,11 +224,22 @@ impl ManagedDriver {
         });
         driver.f64_factory = Some(Arc::new(move |_, _| {
             let backend = moiren_windows_audio::professional::ProfessionalBackend::<f64>::new()?;
+            let backend = if let Some(provider) = provider_for_f64.as_ref() {
+                backend.with_virtual_provider(provider.clone())
+            } else {
+                backend
+            };
             *f64_publisher.lock().unwrap_or_else(|p| p.into_inner()) = Some(backend.observations());
             Ok(Box::new(backend))
         }));
         driver.observations = Some(observations);
         driver.professional_observations = Some(professional_observations);
+        driver.virtual_provider = virtual_provider;
+        if let Some(provider) = &driver.virtual_provider {
+            driver.exports_runtime.adapter = Some(Arc::new(
+                super::exports::runtime::WindowsAdapter(provider.clone()),
+            ));
+        }
         driver
     }
     fn queue(&mut self) -> &CompletionQueue<Completion> {

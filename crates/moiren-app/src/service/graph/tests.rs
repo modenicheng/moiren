@@ -426,6 +426,35 @@ fn managed_project_translates_every_io_and_stereo_parameter() {
     project.validate().unwrap();
 }
 
+#[test]
+fn virtual_microphone_only_projects_do_not_assign_a_physical_master_clock() {
+    use crate::service::{ExportDirection, ExportIntent};
+    use moiren_engine::{boundary::ClockRole, host::NodeConfig, node::VirtualEndpointId};
+
+    let mut service = ServiceGraph::default();
+    let sink = service.snapshot().graph.nodes()[3].id();
+    service
+        .edit(GraphEdit::SetExports(vec![ExportIntent {
+            endpoint_id: VirtualEndpointId::from_bytes([0x91; 16]),
+            direction: ExportDirection::Microphone,
+            name: "Virtual microphone".into(),
+            channels: 2,
+            enabled: true,
+            binding: Some(sink),
+        }]))
+        .unwrap();
+
+    let project = service.preparation().engine_project(256).unwrap();
+    let NodeConfig::Output(output) = &project.nodes[&sink] else {
+        panic!("expected virtual microphone output");
+    };
+    assert!(matches!(
+        output.target,
+        moiren_engine::node::OutputTarget::VirtualMicrophone { .. }
+    ));
+    assert_eq!(output.device.clock_role, ClockRole::Follower);
+}
+
 fn ids(service: &ServiceGraph) -> (NodeId, NodeId, NodeId, NodeId) {
     let nodes = service.snapshot.graph.nodes();
     (nodes[0].id(), nodes[1].id(), nodes[2].id(), nodes[3].id())

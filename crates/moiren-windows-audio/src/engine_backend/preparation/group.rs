@@ -104,6 +104,7 @@ impl PreparationGroup {
         &mut self,
         native: PreparedNativeCapture,
         requested_rate: Option<u32>,
+        engine_rate: u32,
         profile: NativeLatencyProfile,
         output: NativeStreamTiming,
         policy: LatencyBudgetPolicy,
@@ -130,7 +131,7 @@ impl PreparationGroup {
             .pending_captures
             .pop()
             .expect("registered native capture");
-        match native.attach_returning(input) {
+        match native.attach_returning(input, engine_rate) {
             Ok(capture) => Ok((capture, info, input)),
             Err(failure) => {
                 if let Some(report) = failure.report {

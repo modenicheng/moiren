@@ -6,6 +6,8 @@ use thiserror::Error;
 
 mod config;
 pub use config::*;
+mod virtual_endpoint;
+pub use virtual_endpoint::{ParseVirtualEndpointIdError, VirtualEndpointId};
 
 use crate::{
     boundary::{

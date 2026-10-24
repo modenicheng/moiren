@@ -14,7 +14,7 @@ use windows::{
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
             AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient, WAVEFORMATEX,
         },
-        System::Threading::{AvSetMmThreadCharacteristicsW, WaitForSingleObject},
+        System::Threading::WaitForSingleObject,
     },
     core::Result,
 };
@@ -54,13 +54,10 @@ pub(super) fn capture(process: &Process, report: &mut CaptureReport) -> Result<(
     // Allocated before streaming; if the bound is reached, count lost metadata.
     report.packets = Vec::with_capacity(report.requested_seconds as usize * 1000);
     let mut stats = CaptureStats::default();
-    let mut task_index = 0;
-    let mmcss =
-        unsafe { AvSetMmThreadCharacteristicsW(windows::core::w!("Audio"), &mut task_index) };
-    let _mmcss = match mmcss {
-        Ok(handle) => {
+    let _mmcss = match Mmcss::audio_detailed() {
+        Ok(mmcss) => {
             report.mmcss_registered = true;
-            Some(Mmcss(handle))
+            Some(mmcss)
         }
         Err(error) => {
             report

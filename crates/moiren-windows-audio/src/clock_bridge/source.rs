@@ -1,5 +1,5 @@
 //! Continuous linear interpolation and a bounded fill servo on the render owner.
-use super::{ClockBridgeConfig, ClockBridgeError, Frame, OUTPUT_SAMPLE_RATE, telemetry::Counters};
+use super::{ClockBridgeConfig, ClockBridgeError, Frame, telemetry::Counters};
 use crate::latency::clock::QpcClock;
 use moiren_engine::{
     boundary::{BoundaryReport, RtAudioSource},
@@ -29,6 +29,21 @@ pub struct ClockSource {
     age_clock: Option<QpcClock>,
 }
 impl ClockSource {
+    /// Control-side handoff for a prepared process-loopback capture. Its native
+    /// client remains at 48 kHz while its graph boundary follows Engine rate.
+    #[cfg(windows)]
+    pub(crate) fn with_output_sample_rate(mut self, rate: u32) -> Result<Self, ClockBridgeError> {
+        if !moiren_engine::audio_config::SAMPLE_RATES.contains(&rate)
+            || self.current.is_some()
+            || self.next.is_some()
+        {
+            return Err(ClockBridgeError::InvalidConfig);
+        }
+        self.config.output_sample_rate = rate;
+        self.step = f64::from(self.config.input_sample_rate) / f64::from(rate);
+        Ok(self)
+    }
+
     /// Non-consuming owner-local fill, with approximate scalar counters.
     /// Concurrent producer writes can advance immediately after this sample.
     pub fn snapshot(&self) -> super::BridgeSnapshot {
@@ -60,7 +75,7 @@ impl ClockSource {
     /// A returned stamp does not imply enough lookahead to render the frame.
     pub fn oldest_frame_stamp(&self) -> Option<super::QueuedFrameStamp> {
         // Phase advancement is deferred until the next output iteration. At
-        // most two native frames are owed for the supported rates/SRC bound.
+        // Pending frames still belong to the same bounded native FIFO.
         let frame = if self.current.is_none() || self.phase >= 2.0 {
             self.rx.peek().ok()
         } else if self.phase >= 1.0 {
@@ -94,7 +109,7 @@ impl ClockSource {
             phase: 0.0,
             filtered_fill: config.servo_reference() as f64,
             integral: 0.0,
-            step: f64::from(config.input_sample_rate) / f64::from(OUTPUT_SAMPLE_RATE),
+            step: f64::from(config.input_sample_rate) / f64::from(config.output_sample_rate),
             servo_frames_remaining: 0,
             low_water_guard: false,
             fade_remaining: 0,
@@ -133,7 +148,8 @@ impl ClockSource {
         self.phase = 0.0;
         self.filtered_fill = self.config.servo_reference() as f64;
         self.integral = 0.0;
-        self.step = f64::from(self.config.input_sample_rate) / f64::from(OUTPUT_SAMPLE_RATE);
+        self.step =
+            f64::from(self.config.input_sample_rate) / f64::from(self.config.output_sample_rate);
         self.servo_frames_remaining = 0;
         self.low_water_guard = false;
         self.fade_remaining = 0;
@@ -224,7 +240,7 @@ impl ClockSource {
     fn ratio(&mut self, fill: usize, rate_correction_ppm: Option<i64>) -> f64 {
         // A fixed output-frame cadence samples the same FIFO trajectory even
         // when parameter events divide one Engine block into many segments.
-        let dt = SERVO_QUANTUM_FRAMES as f64 / f64::from(OUTPUT_SAMPLE_RATE);
+        let dt = SERVO_QUANTUM_FRAMES as f64 / f64::from(self.config.output_sample_rate);
         self.filtered_fill += dt / (0.25 + dt) * (fill as f64 - self.filtered_fill);
         let error_seconds = (self.filtered_fill - self.config.servo_reference() as f64)
             / f64::from(self.config.input_sample_rate);
@@ -262,7 +278,7 @@ impl ClockSource {
         self.counters
             .correction_bits
             .store((correction * 1_000_000.0).to_bits(), Relaxed);
-        f64::from(self.config.input_sample_rate) / f64::from(OUTPUT_SAMPLE_RATE)
+        f64::from(self.config.input_sample_rate) / f64::from(self.config.output_sample_rate)
             * (1.0 + correction)
     }
     fn read_to(

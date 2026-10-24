@@ -82,6 +82,8 @@ pub enum DispatchError {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppRequest {
+    LoadProject(crate::project::ProjectDocument),
+    SetExportAuthorizations(Vec<super::ExportAuthorization>),
     SetLatencyProfile(super::AudioLatencyProfile),
     SetAudioSettings(super::AudioSettings),
     EditGraph(super::GraphEdit),
@@ -141,6 +143,9 @@ pub struct ControlSummary {
 pub struct RequestId(pub u64);
 #[derive(Debug, Clone)]
 pub struct AppSnapshot {
+    pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
+    pub exports: Vec<super::ExportStatus>,
+    pub export_plan: super::ExportReconcilePlan,
     #[cfg(windows)]
     pub native_observations: Option<NativeSessionObservations>,
     #[cfg(windows)]

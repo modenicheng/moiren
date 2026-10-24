@@ -4,11 +4,25 @@ use std::time::{Duration, Instant};
 /// releases the owner slot, including when a newer request supersedes it.
 pub struct ServiceCore {
     generation: SessionGeneration,
-    desired: Option<SessionSpec>,
+    desired: Option<DesiredIntent>,
     owner: Option<SessionGeneration>,
     phase: SessionPhase,
     error: Option<String>,
     running_since: Option<Instant>,
+}
+enum DesiredIntent {
+    Session(SessionSpec),
+    // Graph resource bindings are typed in EngineProject, not physical IDs in
+    // the legacy two-endpoint summary. Keep lifecycle intent independently.
+    Graph { limit: RunLimit },
+}
+impl DesiredIntent {
+    fn limit(&self) -> RunLimit {
+        match self {
+            Self::Session(spec) => spec.limit,
+            Self::Graph { limit } => *limit,
+        }
+    }
 }
 impl Default for ServiceCore {
     fn default() -> Self {
@@ -26,14 +40,49 @@ impl ServiceCore {
     /// Managed graph updates keep the same service owner identity. Session
     /// controls may update run limits/defaults without pretending it restarted.
     pub(crate) fn managed_desired(&mut self, spec: SessionSpec) -> Result<(), DispatchError> {
+        self.managed_graph_desired(Some(spec))
+    }
+    pub(crate) fn managed_graph_desired(
+        &mut self,
+        summary: Option<SessionSpec>,
+    ) -> Result<(), DispatchError> {
         self.check_open()?;
-        spec.validate()?;
         if self.desired.is_none() {
-            self.start(spec)?;
+            self.restart_managed_graph(summary)?;
         } else {
-            self.desired = Some(spec);
+            self.desired = Some(self.graph_intent(summary)?);
         }
         Ok(())
+    }
+    pub(crate) fn restart_managed_graph(
+        &mut self,
+        summary: Option<SessionSpec>,
+    ) -> Result<(), DispatchError> {
+        self.check_open()?;
+        let intent = self.graph_intent(summary)?;
+        self.advance()?;
+        self.desired = Some(intent);
+        self.error = None;
+        self.phase = if self.owner.is_some() {
+            SessionPhase::Stopping
+        } else {
+            SessionPhase::Starting
+        };
+        Ok(())
+    }
+    fn graph_intent(&self, summary: Option<SessionSpec>) -> Result<DesiredIntent, DispatchError> {
+        match summary {
+            Some(spec) => {
+                spec.validate()?;
+                Ok(DesiredIntent::Session(spec))
+            }
+            None => Ok(DesiredIntent::Graph {
+                limit: self.run_limit().unwrap_or(RunLimit::UntilStopped),
+            }),
+        }
+    }
+    pub(crate) fn run_limit(&self) -> Option<RunLimit> {
+        self.desired.as_ref().map(DesiredIntent::limit)
     }
     /// A managed host can wait for resources and later recover without a new
     /// user request. Keep its intent/identity while projecting actual execution.
@@ -64,7 +113,7 @@ impl ServiceCore {
     }
     pub fn update_gain_pan(&mut self, gain: f64, pan: f64) {
         if valid_gain_pan(gain, pan)
-            && let Some(spec) = self.desired.as_mut()
+            && let Some(DesiredIntent::Session(spec)) = self.desired.as_mut()
         {
             spec.gain = gain;
             spec.pan = pan;
@@ -81,7 +130,7 @@ impl ServiceCore {
         self.check_open()?;
         spec.validate()?;
         self.advance()?;
-        self.desired = Some(spec);
+        self.desired = Some(DesiredIntent::Session(spec));
         self.error = None;
         self.phase = if self.owner.is_some() {
             SessionPhase::Stopping
@@ -208,8 +257,13 @@ impl ServiceCore {
     pub fn owner_generation(&self) -> Option<SessionGeneration> {
         self.owner
     }
+    /// Legacy single-input/output summary only. A managed graph may be running
+    /// without one; its actual resources and revision live in the graph host.
     pub fn desired(&self) -> Option<&SessionSpec> {
-        self.desired.as_ref()
+        match &self.desired {
+            Some(DesiredIntent::Session(spec)) => Some(spec),
+            _ => None,
+        }
     }
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
@@ -221,6 +275,59 @@ impl ServiceCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn graph_intent_retains_identity_until_restart_and_stop_revokes_it() {
+        let mut c = ServiceCore::default();
+        c.managed_graph_desired(None).unwrap();
+        let first = c.generation();
+        assert!(c.desired().is_none());
+        assert!(c.may_activate(first));
+        c.managed_execution(first, true, None);
+        c.managed_graph_desired(None).unwrap();
+        assert_eq!(c.generation(), first);
+        assert_eq!(c.phase(), SessionPhase::Running);
+        c.restart_managed_graph(None).unwrap();
+        let next = c.generation();
+        assert_ne!(next, first);
+        assert_eq!(c.phase(), SessionPhase::Stopping);
+        assert!(!c.may_activate(next));
+        assert!(c.owner_reaped(first));
+        assert!(c.may_activate(next));
+        c.managed_execution(first, true, None);
+        assert_eq!(c.owner_generation(), None);
+        c.managed_execution(next, true, None);
+        c.stop().unwrap();
+        c.managed_execution(next, true, None);
+        assert_eq!(c.phase(), SessionPhase::Stopping);
+        c.owner_reaped(next);
+        assert_eq!(c.phase(), SessionPhase::Idle);
+    }
+    #[test]
+    fn graph_intent_preserves_explicit_run_limit_and_exit_cannot_restart() {
+        let mut c = ServiceCore::default();
+        c.start(SessionSpec {
+            source: InputSelection::Tone {
+                frequency_hz: 440.0,
+            },
+            output_endpoint_id: "physical-output".into(),
+            limit: RunLimit::Seconds(12),
+            gain: 1.0,
+            pan: 0.0,
+            max_block_frames: 256,
+        })
+        .unwrap();
+        c.managed_graph_desired(None).unwrap();
+        assert_eq!(c.run_limit(), Some(RunLimit::Seconds(12)));
+        c.restart_managed_graph(None).unwrap();
+        assert_eq!(c.run_limit(), Some(RunLimit::Seconds(12)));
+        c.stop().unwrap();
+        c.managed_graph_desired(None).unwrap();
+        assert_eq!(c.run_limit(), Some(RunLimit::UntilStopped));
+        c.begin_exit();
+        assert_eq!(c.managed_graph_desired(None), Err(DispatchError::Exiting));
+        assert_eq!(c.restart_managed_graph(None), Err(DispatchError::Exiting));
+        assert!(c.finish_exit());
+    }
     #[test]
     fn exit_revokes_permits_even_when_generation_is_exhausted() {
         let mut c = ServiceCore {

@@ -81,6 +81,8 @@ impl AssetSource for ActionAssets {
             )),
             "icons/mic.svg" => Some(include_bytes!("../../../assets/icons/mic.svg")),
             "icons/headphones.svg" => Some(include_bytes!("../../../assets/icons/headphones.svg")),
+            "icons/activity.svg" => Some(include_bytes!("../../../assets/icons/activity.svg")),
+            "icons/radio.svg" => Some(include_bytes!("../../../assets/icons/radio.svg")),
             "icons/sliders.svg" => Some(include_bytes!("../../../assets/icons/sliders.svg")),
             "icons/wave.svg" => Some(include_bytes!("../../../assets/icons/wave.svg")),
             "icons/app.svg" => Some(include_bytes!("../../../assets/icons/app.svg")),
@@ -125,6 +127,40 @@ impl AssetSource for ActionAssets {
             )
         } else {
             gpui_kit::assets::Assets.list(path)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every icon the node canvas and library can paint must resolve through
+    /// this source; a name missed here falls through to the Kit bundle, which
+    /// errors on every painted frame instead of skipping quietly.
+    #[test]
+    fn every_painted_node_icon_is_registered() {
+        for template in crate::ui::pages::node_catalog::NodeTemplate::ALL {
+            let path = format!("icons/{}.svg", template.icon());
+            assert!(
+                ActionAssets.load(&path).ok().flatten().is_some(),
+                "unregistered node icon asset: {path}"
+            );
+        }
+        for name in [
+            "input",
+            "output",
+            "bus",
+            "fader",
+            "more",
+            "input-port",
+            "output-port",
+        ] {
+            let path = format!("figma-nodes/{name}.svg");
+            assert!(
+                ActionAssets.load(&path).ok().flatten().is_some(),
+                "unregistered node icon asset: {path}"
+            );
         }
     }
 }

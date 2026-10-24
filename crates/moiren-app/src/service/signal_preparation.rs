@@ -59,8 +59,11 @@ impl SignalPreparation {
             .chain(std::iter::once((output_port, &self.output)))
         {
             let publisher = self.control.prepare(topic, self.control.new_binding()?)?;
-            let observer =
-                SignalLevelMeter::new(graph.get_port(port)?.channels(), 1536, publisher)?;
+            let observer = SignalLevelMeter::new(
+                graph.get_port(port)?.channels(),
+                moiren_engine::meter::DEFAULT_WINDOW_FRAMES,
+                publisher,
+            )?;
             match graph.get_port(port)?.role() {
                 PortRole::Input => bindings.observe_input(port, observer)?,
                 PortRole::Output => bindings.observe_output(port, observer)?,

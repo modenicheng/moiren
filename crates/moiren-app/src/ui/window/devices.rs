@@ -2,6 +2,8 @@ use super::*;
 use crate::ui::state::{SourceMode, input_rows, output_name, output_rows, source_name};
 use controls::*;
 
+mod exports;
+pub(super) use exports::ExportControls;
 mod overrides;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -10,6 +12,7 @@ pub(super) enum DeviceTab {
     #[default]
     Outputs,
     Applications,
+    Exports,
     Clock,
 }
 
@@ -23,6 +26,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         ("devices-inputs", "Inputs", DeviceTab::Inputs),
         ("devices-outputs", "Outputs", DeviceTab::Outputs),
         ("devices-apps", "Applications", DeviceTab::Applications),
+        ("devices-exports", "Exports", DeviceTab::Exports),
         ("devices-clock", "Clock", DeviceTab::Clock),
     ] {
         let this = cx.entity();
@@ -52,6 +56,9 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .gap(px(8.))
         .overflow_y_scroll();
     match shell.device_tab {
+        DeviceTab::Exports => {
+            list = exports::list(shell, cx);
+        }
         DeviceTab::Inputs | DeviceTab::Outputs => {
             let input = shell.device_tab == DeviceTab::Inputs;
             let available = if input {

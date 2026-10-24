@@ -87,6 +87,12 @@ impl<S: ProcessingSample> AudioWriter<S> {
     pub fn capacity_frames(&self) -> usize {
         self.capacity_frames
     }
+    /// Capacity visible to this single producer at the time of the query.
+    /// A consumer can only increase it, so a successful snapshot is a safe
+    /// upper bound for one subsequent exact packet write.
+    pub fn available_frames(&self) -> usize {
+        self.tx.slots() / self.channels
+    }
 
     /// Accept the prefix that fits at call start; drop the new tail on overflow.
     /// Empty requests succeed. Malformed slices do not change the ring.
@@ -95,6 +101,22 @@ impl<S: ProcessingSample> AudioWriter<S> {
             return Err(BridgeError::InvalidInterleaved);
         }
         Ok(self.push(samples.len() / self.channels, samples.iter().copied()))
+    }
+
+    /// Publish either the complete frame packet or nothing. Transport workers
+    /// use this for fixed-size native packets so a full carrier cannot expose
+    /// a partial packet to Engine.
+    pub fn write_interleaved_exact(&mut self, samples: &[S]) -> Result<bool, BridgeError> {
+        if !samples.len().is_multiple_of(self.channels) {
+            return Err(BridgeError::InvalidInterleaved);
+        }
+        let frames = samples.len() / self.channels;
+        if self.tx.is_abandoned() || frames > self.tx.slots() / self.channels {
+            return Ok(false);
+        }
+        let report = self.push(frames, samples.iter().copied());
+        debug_assert_eq!(report.transferred_frames, frames);
+        Ok(true)
     }
 
     fn push(&mut self, requested: usize, samples: impl Iterator<Item = S>) -> BoundaryReport {
@@ -125,6 +147,28 @@ impl<S: ProcessingSample> AudioReader<S> {
     }
     pub fn capacity_frames(&self) -> usize {
         self.capacity_frames
+    }
+
+    /// Complete frames visible to this consumer without advancing its cursor.
+    /// The producer may publish more frames immediately after this snapshot.
+    pub fn available_frames(&self) -> usize {
+        self.rx.slots() / self.channels
+    }
+
+    /// Drop all currently queued frames without allocating a temporary audio
+    /// buffer. Control-side transport workers use this when a native stream or
+    /// activation gate changes generation and old audio must not be replayed.
+    pub fn discard(&mut self) -> usize {
+        let frames = self.rx.slots() / self.channels;
+        if frames == 0 {
+            return 0;
+        }
+        let chunk = self
+            .rx
+            .read_chunk(frames * self.channels)
+            .expect("reserved consumer data");
+        chunk.commit_all();
+        frames
     }
 
     /// Drain the initial available prefix, then initialize every missing sample

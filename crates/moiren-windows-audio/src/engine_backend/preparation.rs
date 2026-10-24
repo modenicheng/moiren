@@ -14,6 +14,11 @@ use crate::{
     },
     render::{RenderOptions, prepare_render_native_with_gate},
     shared_stream::SharedPeriodPolicy,
+    virtual_owner::{
+        ProjectClock, QpcClockFactory, VirtualBoundaryProvider, VirtualBoundaryRequest,
+        VirtualClockFactory, VirtualPreparedTransport, VirtualSessions, bind_microphone_sink,
+        bind_playback_source,
+    },
 };
 use moiren_engine::{
     boundary::{CaptureIntent, ClockRole, audio_bridge},
@@ -40,6 +45,8 @@ pub struct WindowsBackend {
     pub(super) resources: Arc<Resources>,
     pub(super) diagnostics: Diagnostics,
     observations: NativeObservations,
+    virtual_provider: Option<Arc<dyn VirtualBoundaryProvider>>,
+    virtual_clock: Arc<dyn VirtualClockFactory>,
 }
 
 impl WindowsBackend {
@@ -50,7 +57,30 @@ impl WindowsBackend {
             resources: Arc::new(Resources::new(config)?),
             diagnostics: Arc::new(Mutex::new(None)),
             observations: NativeObservations::default(),
+            virtual_provider: None,
+            virtual_clock: Arc::new(QpcClockFactory),
         })
+    }
+
+    /// Attach actual off-thread virtual transport preparation. The default has
+    /// no provider and continues to reject virtual resources before probing.
+    pub fn with_virtual_provider(mut self, provider: Arc<dyn VirtualBoundaryProvider>) -> Self {
+        self.virtual_provider = Some(provider);
+        self
+    }
+
+    /// Replace only the virtual-only project's clock factory (e.g. deterministic
+    /// tests). A physical master never uses this factory, including after loss.
+    pub fn with_virtual_clock_factory(mut self, clock: Arc<dyn VirtualClockFactory>) -> Self {
+        self.virtual_clock = clock;
+        self
+    }
+
+    pub fn validate_project(
+        &self,
+        project: &moiren_engine::host::EngineProject,
+    ) -> Result<ProjectClock, BackendError> {
+        super::validation::validate_with_virtual(project, self.virtual_provider.is_some())
     }
 
     pub fn observations(&self) -> NativeObservations {
@@ -72,7 +102,23 @@ impl WindowsBackend {
         if cancel.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
-        super::validate_native_project(request.project)?;
+        let project_clock = self.validate_project(request.project)?;
+        let has_virtual = request.project.nodes.values().any(|config| {
+            matches!(config, NodeConfig::Input(input) if matches!(input.source, InputSource::VirtualPlayback { .. }))
+                || matches!(config, NodeConfig::Output(output) if matches!(output.target, OutputTarget::VirtualMicrophone { .. }))
+        });
+        if has_virtual
+            && (self.config.latency_profile != super::NativeLatencyProfile::Compatible
+                || self.config.latency_budget != crate::latency::LatencyBudgetPolicy::Compatible
+                || self.config.render_queue != crate::latency::RenderQueuePolicy::FullCapacity)
+        {
+            // No negotiated virtual packet/jitter budget exists yet. Refuse
+            // explicit latency intent instead of silently using ring headroom
+            // that can exceed the selected profile by several native periods.
+            return Err(BackendError::Unsupported(
+                "virtual IO latency-profile admission requires negotiated packet/jitter timing; only unqualified Compatible timing is available".into(),
+            ));
+        }
         if matches!(self.config.latency_budget, crate::latency::LatencyBudgetPolicy::Custom { .. })
             && request.project.nodes.values().any(|config| matches!(config, NodeConfig::Input(input) if matches!(input.source, InputSource::Application { .. })))
         { return Err(BackendError::Unsupported("custom input budgets require physical capture negotiation".into())); }
@@ -118,7 +164,10 @@ impl WindowsBackend {
         let mut group = PreparationGroup::new(stop.clone(), self.diagnostics.clone());
         let mut streams = Vec::new();
         let mut bridges = Vec::new();
+        let mut probes = Vec::new();
         let mut endpoints = Vec::new();
+        let mut virtual_sessions = VirtualSessions::default();
+        let mut virtual_sinks = Vec::new();
         let mut master_index = 0;
         for (&node, config) in &request.project.nodes {
             let NodeConfig::Output(output) = config else {
@@ -127,8 +176,43 @@ impl WindowsBackend {
             if cancel.is_cancelled() {
                 return Err(BackendError::Cancelled);
             }
-            let OutputTarget::Physical(endpoint) = &output.target else {
-                unreachable!("validated native output");
+            let endpoint = match &output.target {
+                OutputTarget::Physical(endpoint) => endpoint,
+                OutputTarget::VirtualMicrophone { endpoint_id } => {
+                    let provider = self
+                        .virtual_provider
+                        .as_deref()
+                        .expect("validated virtual provider");
+                    let (sink, probe) = bind_microphone_sink(
+                        provider,
+                        VirtualBoundaryRequest {
+                            endpoint_id: *endpoint_id,
+                            channels: output.channels,
+                            engine_sample_rate: request.project.processing.engine.processing_sr
+                                as u32,
+                            max_block_frames: request.project.processing.engine.max_block_frames,
+                            audio_byte_budget: request.project.processing.audio_byte_budget,
+                            owner_generation: request.owner_generation,
+                        },
+                        cancel,
+                        &mut virtual_sessions,
+                    )?;
+                    bindings
+                        .bind_sink(node, sink)
+                        .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+                    virtual_sinks.push(node);
+                    streams.push(NativeStreamObservation {
+                        node,
+                        kind: NativeStreamKind::VirtualMicrophone,
+                        timing: None,
+                        shared_period: None,
+                        render_queue: None,
+                        input_queue: None,
+                    });
+                    probes.push((node, NativeStreamKind::VirtualMicrophone, probe));
+                    continue;
+                }
+                _ => unreachable!("validated output intent"),
             };
             let endpoint_id = self.resources.resolve(
                 node,
@@ -183,11 +267,26 @@ impl WindowsBackend {
                 master_index = group.prepared.len() - 1;
             }
         }
-        let (sink, native, queue) = group.prepared.swap_remove(master_index);
-        let output_timing = native.info().timing;
-        // Keep the master owner in the cancellation group while capture and
-        // follower preparation can still fail.
-        group.prepared.push((sink, native, queue));
+        let output_timing = match project_clock {
+            ProjectClock::Physical(_) => {
+                let (sink, native, queue) = group.prepared.swap_remove(master_index);
+                let timing = native.info().timing;
+                // Retain the master while later preparation can still fail.
+                group.prepared.push((sink, native, queue));
+                timing
+            }
+            ProjectClock::VirtualRealtime => {
+                let block = u32::try_from(request.project.processing.engine.max_block_frames)
+                    .map_err(|_| {
+                        BackendError::Unsupported("virtual clock block exceeds u32 frames".into())
+                    })?;
+                crate::latency::NativeStreamTiming {
+                    sample_rate: request.project.processing.engine.processing_sr as u32,
+                    period_frames: Some(block),
+                    capacity_frames: block,
+                }
+            }
+        };
         let mut capture_endpoints = Vec::new();
         for (&node, config) in &request.project.nodes {
             let NodeConfig::Input(input) = config else {
@@ -197,6 +296,46 @@ impl WindowsBackend {
                 return Err(BackendError::Cancelled);
             }
             match &input.source {
+                InputSource::VirtualPlayback { endpoint_id } => {
+                    let engine_rate = request.project.processing.engine.processing_sr;
+                    if !engine_rate.is_finite()
+                        || engine_rate.fract() != 0.0
+                        || !(8_000.0..=384_000.0).contains(&engine_rate)
+                    {
+                        return Err(BackendError::Unsupported(
+                            "virtual boundary requires an integral Engine rate in 8..384kHz".into(),
+                        ));
+                    }
+                    let provider = self
+                        .virtual_provider
+                        .as_deref()
+                        .expect("validated virtual provider");
+                    let (source, probe) = bind_playback_source(
+                        provider,
+                        VirtualBoundaryRequest {
+                            endpoint_id: *endpoint_id,
+                            channels: input.channels,
+                            engine_sample_rate: engine_rate as u32,
+                            max_block_frames: request.project.processing.engine.max_block_frames,
+                            audio_byte_budget: request.project.processing.audio_byte_budget,
+                            owner_generation: request.owner_generation,
+                        },
+                        cancel,
+                        &mut virtual_sessions,
+                    )?;
+                    bindings
+                        .bind_source(node, source)
+                        .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+                    probes.push((node, NativeStreamKind::VirtualPlayback, probe));
+                    streams.push(NativeStreamObservation {
+                        node,
+                        kind: NativeStreamKind::VirtualPlayback,
+                        timing: None,
+                        shared_period: None,
+                        render_queue: None,
+                        input_queue: None,
+                    });
+                }
                 InputSource::Software { name } => bindings
                     .bind_source(node, Tone::new(selectors::tone(name)?))
                     .map_err(|error| BackendError::Unsupported(error.to_string()))?,
@@ -228,6 +367,7 @@ impl WindowsBackend {
                     let (capture, info, input_queue) = group.admit_capture(
                         native_capture,
                         input.device.hardware_sample_rate,
+                        request.project.processing.engine.processing_sr as u32,
                         self.config.latency_profile,
                         output_timing,
                         self.config.latency_budget,
@@ -261,7 +401,7 @@ impl WindowsBackend {
                             "selected process identity changed".into(),
                         ));
                     }
-                    let capture = prepare_process_capture_with_gate(
+                    let mut capture = prepare_process_capture_with_gate(
                         ProcessLoopbackOptions {
                             target,
                             duration: SessionDuration::UntilStopped,
@@ -271,6 +411,12 @@ impl WindowsBackend {
                         gate.clone(),
                     )
                     .map_err(capture_error)?;
+                    capture.source = capture
+                        .source
+                        .with_output_sample_rate(
+                            request.project.processing.engine.processing_sr as u32,
+                        )
+                        .map_err(|error| BackendError::Unsupported(error.to_string()))?;
                     streams.push(NativeStreamObservation {
                         node,
                         kind: NativeStreamKind::ProcessInput,
@@ -294,14 +440,45 @@ impl WindowsBackend {
                 }
             }
         }
+        if project_clock == ProjectClock::VirtualRealtime {
+            if cancel.is_cancelled() {
+                return Err(BackendError::Cancelled);
+            }
+            let clock = self.virtual_clock.prepare(stop.clone())?;
+            return Ok(PreparedBackend {
+                bindings,
+                transport: Some(Box::new(
+                    VirtualPreparedTransport::new(
+                        virtual_sinks,
+                        virtual_sessions,
+                        stop,
+                        gate,
+                        clock,
+                    )
+                    .with_captures(std::mem::take(&mut group.captures))
+                    .with_native_observations(
+                        self.observations.clone(),
+                        request.owner_generation,
+                        streams,
+                        bridges,
+                        probes,
+                    ),
+                )),
+            });
+        }
+        let (_, _, queue) = group.prepared.last().expect("prepared physical master");
+        let queue = *queue;
+        let sink = group.prepared.last().expect("prepared physical master").0;
         let block = request.project.processing.engine.max_block_frames;
+        let engine_rate = request.project.processing.engine.processing_sr as u32;
         let (writer, reader) =
             audio_bridge::<f32>(2, block, request.project.processing.audio_byte_budget)
                 .map_err(|error| BackendError::Unsupported(error.to_string()))?;
         bindings
             .bind_sink(sink, writer)
             .map_err(|error| BackendError::Unsupported(error.to_string()))?;
-        let mut sinks = vec![sink];
+        let mut sinks = virtual_sinks;
+        sinks.push(sink);
         // All followers consume their own graph sink. The capture bridge's
         // continuous fill servo corrects their independent native clock drift;
         // none receives or executes another Engine.
@@ -320,7 +497,7 @@ impl WindowsBackend {
                     )
                     .map_err(|error| BackendError::Unsupported(error.to_string())),
             )?;
-            let mut config = ClockBridgeConfig::with_prepared_input(48_000, 2, input);
+            let mut config = ClockBridgeConfig::with_prepared_input(engine_rate, 2, input);
             config.byte_budget = request.project.processing.audio_byte_budget;
             let (writer, source, observer) = group.check(
                 capture_bridge(config)
@@ -374,6 +551,8 @@ impl WindowsBackend {
                 observations: self.observations.clone(),
                 streams,
                 bridges,
+                probes,
+                virtual_sessions,
             })),
         })
     }
@@ -414,6 +593,13 @@ impl EngineBackend<f32> for WindowsBackend {
         result
     }
     fn poll_resource(&self) -> Option<ResourceEvent> {
-        self.resources.poll()
+        self.resources.poll().or_else(|| {
+            self.virtual_provider
+                .as_ref()
+                .and_then(|provider| provider.poll_resource())
+        })
     }
 }
+
+#[cfg(all(test, windows))]
+mod virtual_tests;

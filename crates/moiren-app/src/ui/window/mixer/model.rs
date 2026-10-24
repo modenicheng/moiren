@@ -24,7 +24,7 @@ impl Default for MixerPresentation {
     }
 }
 
-pub(super) fn gain_db(gain: f64) -> f32 {
+pub(in crate::ui::window) fn gain_db(gain: f64) -> f32 {
     if gain <= 0. {
         -60.
     } else {
@@ -32,7 +32,7 @@ pub(super) fn gain_db(gain: f64) -> f32 {
     }
 }
 
-pub(super) fn linear_gain(value: f32) -> f64 {
+pub(in crate::ui::window) fn linear_gain(value: f32) -> f64 {
     if value <= -60. {
         0.
     } else {
@@ -42,15 +42,19 @@ pub(super) fn linear_gain(value: f32) -> f64 {
 
 /// Builds the real-time edit for a slider's new value from the current
 /// snapshot; None when the target vanished since the slider was created.
-type SliderEdit = Box<dyn Fn(f32, &GraphSnapshot) -> Option<AppRequest>>;
+pub(in crate::ui::window) type SliderEdit = Box<dyn Fn(f32, &GraphSnapshot) -> Option<AppRequest>>;
 
 /// Slider construction and value sync shared by the fader (node) and send
-/// (edge) columns; only the current-value lookup and edit construction differ.
-fn sync_sliders<K: Ord + Clone>(
+/// (edge) columns; only the current-value lookup and edit construction
+/// differ. With `release_applies` a slider release additionally applies the
+/// candidate graph, so quick edits (tray flyout) take effect immediately.
+pub(in crate::ui::window) fn sync_sliders<K: Ord + Clone, T: 'static>(
     window: &mut Window,
-    cx: &mut Context<StudioShell>,
+    cx: &mut Context<T>,
+    state: &Entity<UiState>,
     sliders: &mut BTreeMap<K, Entity<base::slider::SliderState>>,
     rows: Vec<(K, f32, SliderEdit)>,
+    release_applies: bool,
 ) {
     for (id, value, edit) in rows {
         let slider = sliders.entry(id).or_insert_with(|| {
@@ -61,16 +65,33 @@ fn sync_sliders<K: Ord + Clone>(
                     .step(0.1)
                     .default_value(value)
             });
+            let state = state.clone();
             cx.subscribe(
                 &slider,
-                move |shell, _, event: &base::slider::SliderEvent, cx| {
-                    if let base::slider::SliderEvent::Change(value) = event {
-                        shell.state.update(cx, |state, _| {
-                            if let Some(edit) = edit(value.end(), &state.snapshot.graph) {
-                                state.dispatch(edit);
-                            }
-                        });
-                        cx.notify();
+                move |_, _, event: &base::slider::SliderEvent, cx| {
+                    match event {
+                        base::slider::SliderEvent::Change(value) => {
+                            state.update(cx, |state, _| {
+                                if let Some(edit) = edit(value.end(), &state.snapshot.graph) {
+                                    state.dispatch(edit);
+                                }
+                            });
+                            cx.notify();
+                        }
+                        base::slider::SliderEvent::Release(_) if release_applies => {
+                            // The local snapshot may not have polled the edits
+                            // yet, so this mirrors the Apply button: fire
+                            // whenever no apply is already in flight.
+                            state.update(cx, |state, _| {
+                                if state.snapshot.graph.pending_revision.is_none()
+                                    && !state.pending_request
+                                {
+                                    state.dispatch(AppRequest::ApplyGraph);
+                                }
+                            });
+                            cx.notify();
+                        }
+                        _ => {}
                     }
                 },
             )
@@ -122,7 +143,14 @@ impl StudioShell {
                 )
             })
             .collect();
-        sync_sliders(window, cx, &mut self.mixer.faders, faders);
+        sync_sliders(
+            window,
+            cx,
+            &self.state,
+            &mut self.mixer.faders,
+            faders,
+            false,
+        );
         let sends = graph
             .graph
             .edges()
@@ -146,7 +174,7 @@ impl StudioShell {
                 )
             })
             .collect();
-        sync_sliders(window, cx, &mut self.mixer.sends, sends);
+        sync_sliders(window, cx, &self.state, &mut self.mixer.sends, sends, false);
     }
 }
 

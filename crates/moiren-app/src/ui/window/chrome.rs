@@ -113,7 +113,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                                         | SessionPhase::Exiting
                                         | SessionPhase::Exited
                                 )
-                                || (!running && state.candidate_spec().is_none()),
+                                || (!running && !state.can_start_transport()),
                         )
                         .on_click({
                             let this = this.clone();

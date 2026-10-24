@@ -4,6 +4,45 @@ use super::*;
 impl ServiceDriver for ManagedDriver {
     fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
         match request {
+            AppRequest::SetExportAuthorizations(values) => {
+                let previous = c.exports.authorizations.clone();
+                if let Err(error) = c.exports.set_authorizations(&values) {
+                    c.graph.record_error(error);
+                } else if c.exports.authorizations != previous {
+                    self.exports_runtime.revoke();
+                    // Eligibility is fixed before native exposure. Drain the
+                    // owner before the lifecycle worker replaces its resource;
+                    // resuming requires a fresh Apply and Engine confirmation.
+                    if self.owner.as_ref().is_some_and(|owner| {
+                        owner.exports.iter().any(|intent| {
+                            intent.enabled
+                                && previous.get(&intent.endpoint_id).copied().unwrap_or(false)
+                                    != c.exports.allow_default(intent.endpoint_id)
+                        })
+                    }) {
+                        self.apply = false;
+                        self.apply_audio_settings = None;
+                        let _ = c.core.stop();
+                        self.retire(c);
+                    }
+                }
+            }
+            AppRequest::LoadProject(document) => match c.load_project(document) {
+                Ok(()) => {
+                    self.exports_runtime.revoke();
+                    self.automatic_startup = false;
+                    self.document = self
+                        .document
+                        .checked_add(1)
+                        .expect("document identity exhausted");
+                    self.clear_parameters(c);
+                    self.edits.clear();
+                    c.graph.clear_pending();
+                    self.apply = false;
+                    self.apply_audio_settings = None;
+                }
+                Err(error) => c.graph.record_error(error),
+            },
             AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
             AppRequest::SetAudioSettings(settings) => {
                 c.set_audio_settings(settings);
@@ -44,6 +83,7 @@ impl ServiceDriver for ManagedDriver {
             }
             AppRequest::ReplaceGraph { graph, nodes } => {
                 if c.graph.replace(graph, nodes).is_ok() {
+                    self.exports_runtime.revoke();
                     self.document = self
                         .document
                         .checked_add(1)
@@ -93,18 +133,18 @@ impl ServiceDriver for ManagedDriver {
         if self.apply {
             self.apply(c);
         }
-        let Some(owner) = self.owner.as_ref() else {
-            return;
-        };
-        let snapshot = owner.observer.read();
-        self.poll_observations(c, &snapshot, owner.generation);
-        self.poll_execution(c, &snapshot);
-        self.poll_edits(c);
-        self.poll_parameters(c);
-        self.pump_parameters(c, budget);
-        self.finish_apply_confirmation(c, &snapshot);
-        self.poll_meters(c);
-        self.poll_run_limit(c);
+        if let Some(owner) = self.owner.as_ref() {
+            let snapshot = owner.observer.read();
+            self.poll_observations(c, &snapshot, owner.generation);
+            self.poll_execution(c, &snapshot);
+            self.poll_edits(c);
+            self.poll_parameters(c);
+            self.pump_parameters(c, budget);
+            self.finish_apply_confirmation(c, &snapshot);
+            self.poll_meters(c);
+            self.poll_run_limit(c);
+        }
+        self.poll_exports(c, pool);
     }
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
         self.exiting = true;
@@ -116,6 +156,7 @@ impl ServiceDriver for ManagedDriver {
         self.owner.is_none()
             && self.cleaning == 0
             && !self.catalog.is_running()
+            && self.exports_runtime.is_drained()
             && self
                 .completions
                 .as_ref()
@@ -132,6 +173,11 @@ impl ManagedDriver {
                 break;
             };
             match completion {
+                Completion::Exports(result) => {
+                    for error in self.exports_runtime.complete(&mut c.exports, result) {
+                        c.graph.record_error(error);
+                    }
+                }
                 Completion::Reaped(generation) => {
                     self.cleaning -= 1;
                     log::info!(
@@ -172,6 +218,60 @@ impl ManagedDriver {
                     }
                 }
             }
+        }
+    }
+    fn poll_exports(&mut self, c: &mut ServiceContext, pool: &mut JobPool) {
+        let mut graph = c.graph.snapshot();
+        let active = self
+            .owner
+            .as_ref()
+            .map_or_else(Vec::new, |o| o.exports.clone());
+        let basis = self.owner.as_ref().and_then(|owner| {
+            let host = owner.observer.read();
+            (host.state.execution == ExecutionState::Running
+                && host.state.active_revision == Some(owner.active_revision.0)
+                && graph.active_revision == Some(owner.active_revision.1)
+                && graph.pending_revision.is_none()
+                && !self.apply
+                && owner.document == self.document
+                && !self.exiting)
+                .then_some([
+                    owner.generation.0,
+                    host.state.owner_generation,
+                    owner.active_revision.0,
+                    owner.active_revision.1,
+                    owner.active_apply_id,
+                ])
+        });
+        self.exports_runtime
+            .project(&mut c.exports, &graph, &active, basis);
+        if self.exiting {
+            graph.exports.clear();
+        } else {
+            // Unapplied candidate changes cannot replace a resource still used
+            // by the current Engine owner. Retirement also waits for its reap.
+            for intent in &active {
+                graph
+                    .exports
+                    .retain(|i| i.endpoint_id != intent.endpoint_id);
+                graph.exports.push(intent.clone());
+            }
+        }
+        // Reconciliation retains every export leased by the current owner.
+        // Once old owners are reaped, unrelated endpoints may retire while a
+        // replacement owner runs. The provider also checks each PCM drain.
+        let drained = self.cleaning == 0;
+        let work = if self.exiting {
+            self.exports_runtime
+                .shutdown_work(drained && self.owner.is_none())
+        } else {
+            self.exports_runtime.work(&c.exports, &graph, drained)
+        };
+        if let Some(work) = work
+            && let Ok(completion) = self.queue().port().try_reserve()
+        {
+            self.exports_runtime
+                .submit(pool, completion, work, Completion::Exports);
         }
     }
     /// Kick a catalog refresh when the refresh interval elapsed.
@@ -496,8 +596,7 @@ impl ManagedDriver {
         let Some(owner) = self.owner.as_ref() else {
             return;
         };
-        if let Some(spec) = c.core.desired()
-            && let RunLimit::Seconds(seconds) = spec.limit
+        if let Some(RunLimit::Seconds(seconds)) = c.core.run_limit()
             && owner
                 .started
                 .is_some_and(|t| t.elapsed() >= Duration::from_secs(u64::from(seconds)))

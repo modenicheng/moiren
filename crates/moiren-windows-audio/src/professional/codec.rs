@@ -1,9 +1,13 @@
 //! Bounded little-endian PCM/IEEE conversion, including left-aligned valid bits.
+#[cfg(any(windows, test))]
 use moiren_engine::audio_config::SampleFormat;
+#[cfg(any(windows, test))]
 use thiserror::Error;
 
+#[cfg(any(windows, test))]
 use super::native::StereoFrame;
 
+#[cfg(any(windows, test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum CodecError {
     #[error("unsupported PCM layout")]
@@ -14,6 +18,7 @@ pub enum CodecError {
     ShortBuffer,
 }
 
+#[cfg(any(windows, test))]
 #[derive(Debug, Clone, Copy)]
 pub struct SampleCodec {
     format: SampleFormat,
@@ -22,6 +27,7 @@ pub struct SampleCodec {
     valid_bits: u16,
 }
 
+#[cfg(any(windows, test))]
 impl SampleCodec {
     /// Convenience constructor for the canonical layouts used by the test
     /// harnesses; production builds negotiate via [`SampleCodec::with_layout`]

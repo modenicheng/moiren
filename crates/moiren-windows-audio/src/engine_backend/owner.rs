@@ -1,5 +1,5 @@
 use super::{
-    NativeObservations, NativeStreamObservation,
+    NativeObservations, NativeStreamKind, NativeStreamObservation,
     preparation::{Diagnostics, capture_error, render_error},
     resources::Resources,
 };
@@ -11,6 +11,7 @@ use crate::{
         DemandRenderer, PreparedNativeRender, RenderReport, RenderSession, RenderStatus,
         TimelineObserver,
     },
+    virtual_owner::VirtualSessions,
 };
 use moiren_core::graph::NodeId;
 use moiren_engine::{
@@ -36,6 +37,11 @@ pub(super) struct WindowsTransport {
     pub(super) observations: NativeObservations,
     pub(super) streams: Vec<NativeStreamObservation>,
     pub(super) bridges: Vec<(NodeId, crate::clock_bridge::BridgeObserver)>,
+    pub(super) probes: Vec<(
+        NodeId,
+        NativeStreamKind,
+        std::sync::Arc<crate::virtual_owner::BoundaryProbe>,
+    )>,
     pub(super) output: Option<AudioReader<f32>>,
     pub(super) sink: NodeId,
     pub(super) stop: StopSignal,
@@ -44,11 +50,16 @@ pub(super) struct WindowsTransport {
     pub(super) queue: RenderQueuePolicy,
     pub(super) diagnostics: Diagnostics,
     pub(super) resources: Arc<Resources>,
+    pub(super) virtual_sessions: VirtualSessions,
 }
 
 impl Drop for WindowsTransport {
     fn drop(&mut self) {
-        if self.native.is_some() || !self.captures.is_empty() || !self.followers.is_empty() {
+        if self.native.is_some()
+            || !self.captures.is_empty()
+            || !self.followers.is_empty()
+            || !self.virtual_sessions.is_empty()
+        {
             // A compiler rejection may drop an unattached transport. Reclaim
             // all owners here too, retaining their reports on the control side.
             self.cancel_and_report(None, &BackendError::Cancelled);
@@ -59,6 +70,7 @@ impl Drop for WindowsTransport {
 impl WindowsTransport {
     fn cancel_and_report(&mut self, report: Option<RenderReport>, failure: &BackendError) {
         let _ = self.stop.request_stop();
+        let _ = self.virtual_sessions.stop_and_join();
         let render = report.or_else(|| {
             self.native
                 .take()
@@ -170,6 +182,7 @@ impl PreparedTransport<f32> for WindowsTransport {
             self.generation,
             std::mem::take(&mut self.streams),
             std::mem::take(&mut self.bridges),
+            std::mem::take(&mut self.probes),
         );
         Ok(Box::new(WindowsOwner {
             render,
@@ -185,6 +198,7 @@ impl PreparedTransport<f32> for WindowsTransport {
             reported_failure: AtomicBool::new(false),
             gate: self.gate.clone(),
             cancellation: cancel,
+            virtual_sessions: std::mem::take(&mut self.virtual_sessions),
         }))
     }
 }
@@ -203,6 +217,7 @@ struct WindowsOwner {
     reported_failure: AtomicBool,
     gate: ActivationGate,
     cancellation: CancellationToken,
+    virtual_sessions: VirtualSessions,
 }
 
 impl BackendOwner<f32> for WindowsOwner {
@@ -210,17 +225,29 @@ impl BackendOwner<f32> for WindowsOwner {
         if self.cancellation.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
-        self.gate
-            .activate()
-            .map_err(|error| BackendError::Failed(error.to_string()))
+        if let Err(error) = self.virtual_sessions.activate() {
+            let _ = self.stop.request_stop();
+            return Err(error);
+        }
+        if let Err(error) = self.gate.activate() {
+            self.virtual_sessions.cancel();
+            let _ = self.stop.request_stop();
+            return Err(BackendError::Failed(error.to_string()));
+        }
+        Ok(())
     }
 
     fn cancel(&self) {
         self.observations.clear(self.generation);
+        self.virtual_sessions.cancel();
         let _ = self.stop.request_stop();
     }
 
     fn status(&self) -> OwnerStatus {
+        if let OwnerStatus::Failed(error) = self.virtual_sessions.status() {
+            self.cancel();
+            return OwnerStatus::Failed(error);
+        }
         if self.render.is_finished()
             || self.captures.iter().any(CaptureSession::is_finished)
             || self.followers.iter().any(RenderSession::is_finished)
@@ -236,6 +263,7 @@ impl BackendOwner<f32> for WindowsOwner {
         } else if self.render.has_started()
             && self.captures.iter().all(CaptureSession::has_started)
             && self.followers.iter().all(RenderSession::has_started)
+            && self.virtual_sessions.status() == OwnerStatus::Running
         {
             self.observations.running(self.generation);
             OwnerStatus::Running
@@ -261,6 +289,7 @@ impl BackendOwner<f32> for WindowsOwner {
             generation,
             stop,
             diagnostics,
+            mut virtual_sessions,
             ..
         } = *self;
         observations.clear(generation);
@@ -268,6 +297,9 @@ impl BackendOwner<f32> for WindowsOwner {
             .request_stop()
             .err()
             .map(|error| BackendError::Failed(error.to_string()));
+        if let Err(error) = virtual_sessions.stop_and_join() {
+            failure.get_or_insert(error);
+        }
         // Both sides share stop. Always join every capture even if render or a
         // peer fails, and keep the returned Engine for host control retirement.
         let rendered = render.join_with_renderer();

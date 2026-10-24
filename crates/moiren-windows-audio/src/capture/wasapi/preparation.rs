@@ -37,7 +37,7 @@ impl PreparedNativeCapture {
         self.info
     }
     pub fn attach(self, input: PreparedInputQueue) -> Result<PreparedCapture, CaptureError> {
-        self.attach_returning(input)
+        self.attach_returning(input, crate::NATIVE_SAMPLE_RATE)
             .map_err(|failure| failure.error)
     }
     pub(crate) fn cancel_with_report(self) -> Result<CaptureReport, CaptureError> {
@@ -49,10 +49,12 @@ impl PreparedNativeCapture {
     pub(crate) fn attach_returning(
         self,
         input: PreparedInputQueue,
+        engine_rate: u32,
     ) -> Result<PreparedCapture, Box<CaptureAttachFailure>> {
         let attachment = (|| {
-            let mut config = ClockBridgeConfig::with_prepared_input(
+            let mut config = ClockBridgeConfig::with_engine_input(
                 self.info.timing.sample_rate,
+                engine_rate,
                 self.info.channels,
                 input,
             );

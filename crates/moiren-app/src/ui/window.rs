@@ -119,6 +119,7 @@ pub struct StudioShell {
     preferences_quitting: std::sync::Arc<std::sync::atomic::AtomicBool>,
     device_tab: devices::DeviceTab,
     selected_device: Option<String>,
+    export_controls: devices::ExportControls,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     meters: MeterSubscriptions,
     node_meters: super::monitoring::NodeMeters,
@@ -255,6 +256,7 @@ impl StudioShell {
             _ => Density::Comfortable,
         };
         let settings = settings::SettingsEditor::new(&preferences, cx);
+        let export_controls = devices::ExportControls::new(window, cx);
         let mut shell = Self {
             state,
             settings_open: false,
@@ -271,6 +273,7 @@ impl StudioShell {
             preferences_quitting: Default::default(),
             device_tab: devices::DeviceTab::Outputs,
             selected_device: None,
+            export_controls,
             selected_route: None,
             meters,
             node_meters,
@@ -311,6 +314,15 @@ impl StudioShell {
             touchpad,
         };
         shell.presentation.show();
+        let restored = shell
+            .state
+            .update(cx, |state, _| state.startup_project.take());
+        if let Some(document) = restored {
+            if let Err(error) = shell.apply_project_presentation(&document, cx) {
+                shell.project_message = Some(error.to_string());
+            }
+            shell.project_path = shell.preferences.last_project_path.clone();
+        }
         cx.observe_window_bounds(window, |shell, window, _| {
             if shell.presentation.visible {
                 shell.window_state = desktop::capture_window_state(window, shell.presentation.page);
@@ -368,18 +380,7 @@ impl StudioShell {
                             changed
                         });
                         shell.finish_project_load(cx);
-                        let visible = shell.presentation.visible
-                            && !shell.presentation.minimized
-                            && matches!(shell.presentation.page, Page::Graph | Page::Mixer);
-                        let points = shell.meter_points.get();
-                        let meter_changed = shell.meters.update_points(
-                            &shell.state.read(cx).snapshot,
-                            visible && points.0,
-                            visible && points.1,
-                        );
-                        let node_meter_changed = shell.update_node_meters(visible, cx);
-                        let meter_changed = meter_changed || node_meter_changed;
-                        if changed || meter_changed {
+                        if changed || shell.pump_meters(cx) {
                             cx.notify();
                         }
                     })
@@ -390,6 +391,35 @@ impl StudioShell {
             }
         })
         .detach();
+    }
+
+    /// Whether any meter observation is on screen right now. While true the
+    /// render loop requests animation frames so meter motion runs at the
+    /// display refresh rate.
+    fn meters_frame_active(&self) -> bool {
+        self.presentation.visible
+            && !self.presentation.minimized
+            && !self.settings_open
+            && matches!(self.presentation.page, Page::Graph | Page::Mixer)
+    }
+
+    /// Refresh every meter observation once: reads the latest windows,
+    /// advances display ballistics, and reconciles subscriptions with the
+    /// current visibility. Called per display frame while
+    /// [`Self::meters_frame_active`] holds, and from the slower control-side
+    /// loops otherwise. Returns whether a raw reading or status changed;
+    /// ballistics motion alone does not, because animation frames (not
+    /// notify) carry it.
+    pub(super) fn pump_meters(&mut self, cx: &App) -> bool {
+        let visible = self.meters_frame_active();
+        let points = self.meter_points.get();
+        let meter_changed = self.meters.update_points(
+            &self.state.read(cx).snapshot,
+            visible && points.0,
+            visible && points.1,
+        );
+        let node_meter_changed = self.update_node_meters(visible, cx);
+        meter_changed || node_meter_changed
     }
 
     fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
@@ -492,6 +522,7 @@ pub use test_harness::{finish_service, initial_projection, spawn_service, wait_f
 pub use test_harness::{shell_with_state, test_shell};
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
+mod tray_mixer;
 
 impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -499,6 +530,7 @@ impl Render for StudioShell {
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
         self.sync_node_name(window, cx);
+        self.sync_export_controls(window, cx);
         self.sync_mixer_controls(window, cx);
         self.sync_compressor_controls(window, cx);
         #[cfg(feature = "gpui-test")]
@@ -513,6 +545,14 @@ impl Render for StudioShell {
         self.compact = compact;
         let visible =
             window.is_visible() && matches!(self.presentation.page, Page::Graph | Page::Mixer);
+        if self.meters_frame_active() {
+            // Frame-driven meters: advance observations every display frame
+            // (this frame builds from the pumped state) and keep the
+            // vsync loop running. Must run before the per-frame reset of
+            // `meter_points` below so visibility comes from the last frame.
+            self.pump_meters(cx);
+            window.request_animation_frame();
+        }
         self.refresh_observation_nodes(cx);
         self.meter_points.set((false, false));
         self.node_meter_points.borrow_mut().clear();

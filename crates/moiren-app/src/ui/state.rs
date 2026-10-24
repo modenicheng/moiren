@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use crate::service::{
-    AppHandle, AppRequest, AppSnapshot, AudioBackend, DeviceCatalog, DeviceRow, InputSelection,
-    RequestId, RunLimit, SessionPhase, SessionSpec,
+    AppHandle, AppRequest, AppSnapshot, AudioBackend, DeviceCatalog, DeviceRow, GraphPreparation,
+    InputSelection, RequestId, RunLimit, SessionPhase, SessionSpec,
 };
 
 pub(crate) fn input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> &[DeviceRow] {
@@ -141,6 +141,7 @@ impl SelectionState {
 /// The text projections and the display-level stale guard live in
 /// [`crate::ui::presentation`].
 pub struct UiState {
+    pub(crate) startup_project: Option<std::sync::Arc<crate::project::ProjectDocument>>,
     pub handle: AppHandle,
     pub selection: SelectionState,
     pub snapshot: Arc<AppSnapshot>,
@@ -164,6 +165,7 @@ impl UiState {
         let (gain, pan) = primary_parameters(&initial);
         let max_block_frames = initial.audio_settings.processing.block_frames as usize;
         let mut state = Self {
+            startup_project: initial.loaded_project.clone(),
             handle,
             selection,
             snapshot: initial,
@@ -391,6 +393,58 @@ impl UiState {
         available.then_some(spec)
     }
 
+    fn candidate_preparation(&self) -> GraphPreparation {
+        let graph = &self.snapshot.graph;
+        GraphPreparation {
+            exports: graph.exports.clone(),
+            graph: graph.graph.clone(),
+            nodes: graph.nodes.clone(),
+            revision: graph.candidate_revision,
+        }
+    }
+
+    /// Validate the actual graph before choosing the legacy physical request.
+    /// Virtual primary IO must stay in the typed graph path, even when stale
+    /// physical selectors are still present in the UI selection state.
+    fn transport_request(&self) -> Result<AppRequest, String> {
+        let mut preparation = self.candidate_preparation();
+        let (source, output) = preparation.primary_io_nodes()?;
+        let primary_is_virtual = preparation.exports.iter().any(|export| {
+            export.enabled
+                && matches!(export.binding, Some(node) if node == source || node == output)
+        });
+        let (request, block_frames) = if primary_is_virtual {
+            (
+                AppRequest::ApplyGraph,
+                self.snapshot.audio_settings.processing.block_frames as usize,
+            )
+        } else {
+            let spec = self.candidate_spec().ok_or_else(|| {
+                "Choose an available source and output before starting.".to_string()
+            })?;
+            // Start applies these selectors to primary IO in the service.
+            // Validate the same candidate without editing the shared snapshot.
+            let mut graph = crate::service::ServiceGraph::default();
+            graph.replace_with_exports(
+                preparation.graph,
+                preparation.nodes,
+                preparation.exports,
+            )?;
+            graph.configure_session(&spec)?;
+            preparation = graph.preparation();
+            let block_frames = spec.max_block_frames;
+            (AppRequest::Start(spec), block_frames)
+        };
+        preparation
+            .configured_engine_project(block_frames, &self.snapshot.audio_settings)
+            .map_err(|error| format!("Graph is not ready: {error}"))?;
+        Ok(request)
+    }
+
+    pub fn can_start_transport(&self) -> bool {
+        self.transport_request().is_ok()
+    }
+
     fn sync_graph_resources(&mut self, source: Option<InputSelection>, output: Option<String>) {
         if let Some(source) = source {
             self.apply_source(source);
@@ -442,14 +496,10 @@ impl UiState {
     pub fn toggle_transport(&mut self) {
         match self.snapshot.phase {
             SessionPhase::Running | SessionPhase::Starting => self.dispatch(AppRequest::Stop),
-            SessionPhase::Idle | SessionPhase::Failed => {
-                if let Some(spec) = self.candidate_spec() {
-                    self.dispatch(AppRequest::Start(spec));
-                } else {
-                    self.dispatch_error =
-                        Some("Choose an available source and output before starting.".into());
-                }
-            }
+            SessionPhase::Idle | SessionPhase::Failed => match self.transport_request() {
+                Ok(request) => self.dispatch(request),
+                Err(error) => self.dispatch_error = Some(error),
+            },
             _ => {}
         }
     }
@@ -571,6 +621,10 @@ pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
             .unwrap_or_else(|| format!("Unavailable application (PID {pid})")),
     }
 }
+
+#[cfg(test)]
+#[path = "state/transport_tests.rs"]
+mod transport_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1028,6 +1082,7 @@ mod tests {
                     render_queue: None,
                     input_queue: None,
                 }],
+                boundary_probes: vec![],
                 bridges: vec![NativeBridgeObservation {
                     node,
                     counters: moiren_windows_audio::clock_bridge::BridgeSnapshot {

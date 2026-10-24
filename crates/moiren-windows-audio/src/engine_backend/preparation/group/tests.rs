@@ -211,7 +211,8 @@ fn capture_rate_budget_and_attachment_rejections_preserve_native_and_peer_report
                 },
             ),
         };
-        let failure = match group.admit_capture(capture, requested, profile, output, policy) {
+        let failure = match group.admit_capture(capture, requested, 48_000, profile, output, policy)
+        {
             Err(error) => error,
             Ok(_) => panic!("invalid capture admission succeeded"),
         };

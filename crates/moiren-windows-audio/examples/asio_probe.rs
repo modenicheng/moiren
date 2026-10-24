@@ -4,11 +4,14 @@
 //! probe` (unit-tested there); this example keeps the CLI entry and the
 //! win64 stream-driving report.
 
-use anyhow::{Result, ensure};
+use anyhow::Result;
+#[cfg(all(windows, target_pointer_width = "64"))]
 use moiren_windows_audio::professional::asio::probe::{APPROVED_DRIVER, Options, parse_options};
 
+#[cfg(all(windows, target_pointer_width = "64"))]
 struct StderrTrace;
 
+#[cfg(all(windows, target_pointer_width = "64"))]
 impl log::Log for StderrTrace {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
         metadata.level() <= log::Level::Debug
@@ -38,6 +41,7 @@ impl log::Log for StderrTrace {
     }
 }
 
+#[cfg(all(windows, target_pointer_width = "64"))]
 fn initialize_trace(explicit: bool) -> Result<()> {
     if explicit || std::env::var_os("MOIREN_ASIO_TRACE").is_some() {
         static LOGGER: StderrTrace = StderrTrace;
@@ -52,6 +56,7 @@ fn initialize_trace(explicit: bool) -> Result<()> {
 #[cfg(all(windows, target_pointer_width = "64"))]
 mod probe {
     use super::*;
+    use anyhow::ensure;
     use moiren_windows_audio::professional::{
         asio::{
             AsioCapabilities, AsioStream,
@@ -263,6 +268,7 @@ mod probe {
     }
 }
 
+#[cfg(all(windows, target_pointer_width = "64"))]
 fn main() -> Result<()> {
     let Some(options) = parse_options(std::env::args().skip(1))? else {
         println!(
@@ -275,11 +281,10 @@ fn main() -> Result<()> {
         return Ok(());
     };
     initialize_trace(options.trace)?;
-    #[cfg(all(windows, target_pointer_width = "64"))]
-    return probe::run(options);
-    #[cfg(not(all(windows, target_pointer_width = "64")))]
-    {
-        let _ = options;
-        anyhow::bail!("asio_probe requires 64-bit Windows");
-    }
+    probe::run(options)
+}
+
+#[cfg(not(all(windows, target_pointer_width = "64")))]
+fn main() -> Result<()> {
+    anyhow::bail!("asio_probe requires 64-bit Windows");
 }

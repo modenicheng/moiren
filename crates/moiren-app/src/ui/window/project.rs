@@ -352,28 +352,18 @@ impl StudioShell {
         cx: &mut Context<Self>,
     ) -> Result<(), crate::project::PersistenceError> {
         document.validate()?;
-        if let Some(graph) = &document.graph {
-            let (logical, nodes) = graph.restore()?;
-            let request = self
-                .state
-                .update(cx, |state, _| {
-                    state.try_dispatch(AppRequest::ReplaceGraph {
-                        graph: logical,
-                        nodes,
-                    })
-                })
-                .map_err(|error| crate::project::PersistenceError::Invalid {
-                    field: "service request".into(),
-                    reason: format!("{error:?}"),
-                })?;
-            self.project_busy = true;
-            self.project_message = Some("Project load requested".into());
-            self.pending_project = Some((request, document, path));
-        } else {
-            self.apply_project_presentation(&document, cx)?;
-            self.project_path = Some(path);
-            self.project_message = Some("Session settings loaded for next start".into());
-        }
+        let request = self
+            .state
+            .update(cx, |state, _| {
+                state.try_dispatch(AppRequest::LoadProject(document.clone()))
+            })
+            .map_err(|error| crate::project::PersistenceError::Invalid {
+                field: "service request".into(),
+                reason: format!("{error:?}"),
+            })?;
+        self.project_busy = true;
+        self.project_message = Some("Project load requested".into());
+        self.pending_project = Some((request, document, path));
         Ok(())
     }
 

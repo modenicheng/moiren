@@ -3,6 +3,7 @@
 pub(crate) mod codec;
 pub mod native;
 pub(crate) mod resample;
+pub(crate) mod servo;
 
 #[cfg(windows)]
 pub mod asio;

@@ -27,6 +27,14 @@ rustc-ice-*.txt
 # AI Slops
 .tmp/
 .v2c/
+.zcode/
 
-# Visual Studio IDE state (driver/ experiments stay out of the repo for now)
+# Visual Studio IDE state
 .vs/
+
+# Local driver project settings and VS/WDK configuration outputs
+/driver/**/*.vcxproj.user
+/driver/**/x64/Debug/
+/driver/**/x64/Release/
+/driver/**/ARM64/Debug/
+/driver/**/ARM64/Release/

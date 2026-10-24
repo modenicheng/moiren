@@ -9,6 +9,11 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 pub mod signal;
 
+/// Default level analysis window: 480 frames ≈ 10 ms at 48 kHz, so
+/// observations arrive at ~100 Hz and the display ballistics interpolate
+/// them to the frame rate. The window delays the display, never the audio.
+pub const DEFAULT_WINDOW_FRAMES: usize = 480;
+
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MeterSettings {
@@ -17,7 +22,7 @@ pub struct MeterSettings {
 impl Default for MeterSettings {
     fn default() -> Self {
         Self {
-            window_frames: 1536,
+            window_frames: DEFAULT_WINDOW_FRAMES,
         }
     }
 }

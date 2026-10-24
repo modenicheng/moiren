@@ -95,6 +95,26 @@ fn interleaved_bridge_preserves_complete_frames_through_wrap_and_shortfall() {
 }
 
 #[test]
+fn reader_available_frames_is_a_non_consuming_complete_frame_snapshot() {
+    let (mut writer, mut reader) = audio_bridge::<f32>(2, 3, 1024).unwrap();
+    assert_eq!(reader.available_frames(), 0);
+    writer.write_interleaved(&[1.0; 6]).unwrap();
+    assert_eq!(reader.available_frames(), 3);
+    assert_eq!(reader.available_frames(), 3);
+    reader.read_interleaved(&mut [0.0; 2]).unwrap();
+    assert_eq!(reader.available_frames(), 2);
+    writer.write_interleaved(&[2.0; 2]).unwrap();
+    assert_eq!(reader.available_frames(), 3);
+    assert_eq!(reader.discard(), 3);
+    assert_eq!(reader.available_frames(), 0);
+    writer.write_interleaved(&[3.0; 4]).unwrap();
+    assert!(reader.read_interleaved(&mut [0.0; 3]).is_err());
+    assert_eq!(reader.available_frames(), 2);
+    reader.read_interleaved(&mut [0.0; 6]).unwrap();
+    assert_eq!(reader.available_frames(), 0);
+}
+
+#[test]
 fn bridge_rejects_invalid_shapes_sizes_and_budgets_without_consuming_audio() {
     assert!(matches!(
         audio_bridge::<f32>(0, 3, 1024),

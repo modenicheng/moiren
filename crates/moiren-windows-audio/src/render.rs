@@ -31,7 +31,7 @@ pub use wasapi::{
     start_render_prepared_with_gate, start_render_with_stop,
 };
 
-pub const SAMPLE_RATE: u32 = 48_000;
+pub const SAMPLE_RATE: u32 = crate::NATIVE_SAMPLE_RATE;
 pub const CHANNELS: usize = 2;
 
 mod timeline;
