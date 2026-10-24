@@ -54,6 +54,9 @@ pub const DANGER: Hsla = controls::DANGER;
 pub const METER_LOW: Hsla = SIGNAL_DEVICE;
 pub const METER_MID: Hsla = PRIMARY;
 pub const METER_HIGH: Hsla = WARNING;
+/// Translucent overlay that darkens the transient zone between the bright
+/// RMS body and the peak reading.
+pub const METER_PEAK_ZONE: Hsla = hsla(0., 0., 0., 0.45);
 
 // --- Spacing scale (4pt based) ---------------------------------------------
 pub const SPACE_1: f32 = 4.;

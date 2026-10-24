@@ -39,13 +39,29 @@ const RMS_RELEASE: Duration = Duration::from_millis(700);
 const PEAK_HOLD: Duration = Duration::from_millis(500);
 /// Peak marker fall speed once the hold expires, in dB per second.
 const PEAK_FALL_DB_PER_S: f32 = 30.;
-/// Display floor for the falling peak marker (−120 dBFS ≈ digital zero).
+/// Peak-bar fallback rate. The bar fill rises with the window peak reading
+/// and falls immediately — never holds — at the IEC 60268-10 type I (DIN)
+/// programme-meter rate: 20 dB in 1.7 s ≈ 11.8 dB/s, so the fill keeps
+/// moving with the program while the marker remembers the recent maximum.
+const BAR_FALL_DB_PER_S: f32 = 11.8;
+/// Display floor for falling values (−120 dBFS ≈ digital zero).
 const DISPLAY_FLOOR_DB: f32 = -120.;
+
+/// Ballistics-processed presentation reading for one channel: the moving
+/// peak-programme bar fill, the held recent-maximum marker, and the smoothed
+/// RMS body.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DisplayLevel {
+    pub bar: f32,
+    pub marker: f32,
+    pub rms: f32,
+}
 
 #[derive(Debug, Clone)]
 struct ChannelBallistics {
+    bar: f32,
     rms: f32,
-    peak: f32,
+    marker: f32,
     hold_until: Option<Instant>,
     ticked_at: Option<Instant>,
 }
@@ -53,20 +69,23 @@ struct ChannelBallistics {
 impl ChannelBallistics {
     fn new() -> Self {
         Self {
+            bar: 0.,
             rms: 0.,
-            peak: 0.,
+            marker: 0.,
             hold_until: None,
             ticked_at: None,
         }
     }
 
     /// Advance toward `raw`. The first observation snaps to it; afterwards
-    /// RMS follows asymmetric attack/release time constants while the peak
-    /// rises instantly, holds, then falls at a fixed dB rate.
+    /// the bar rises instantly and falls at a constant dB rate without any
+    /// hold, the marker rises instantly then holds and falls, and RMS
+    /// follows asymmetric attack/release time constants.
     fn observe(&mut self, raw: ChannelLevel, now: Instant) {
         let Some(ticked_at) = self.ticked_at else {
+            self.bar = raw.peak;
             self.rms = raw.rms;
-            self.peak = raw.peak;
+            self.marker = raw.peak;
             self.hold_until = Some(now + PEAK_HOLD);
             self.ticked_at = Some(now);
             return;
@@ -79,13 +98,18 @@ impl ChannelBallistics {
         };
         let alpha = 1. - (-dt.as_secs_f32() / tau.as_secs_f32()).exp();
         self.rms += (raw.rms - self.rms) * alpha;
+        self.bar = if raw.peak >= self.bar {
+            raw.peak
+        } else {
+            fall_db_at(self.bar, dt, BAR_FALL_DB_PER_S)
+        };
         match self.hold_until {
             None => {
-                self.peak = raw.peak;
+                self.marker = raw.peak;
                 self.hold_until = Some(now + PEAK_HOLD);
             }
-            Some(_) if raw.peak >= self.peak => {
-                self.peak = raw.peak;
+            Some(_) if raw.peak >= self.marker => {
+                self.marker = raw.peak;
                 self.hold_until = Some(now + PEAK_HOLD);
             }
             // The anchor is the hold deadline until it expires, then the
@@ -93,28 +117,33 @@ impl ChannelBallistics {
             // ticks and starts exactly when the hold ends.
             Some(anchor) if now < anchor => {}
             Some(anchor) => {
-                self.peak = fall_db(self.peak, now.saturating_duration_since(anchor));
+                self.marker = fall_db_at(
+                    self.marker,
+                    now.saturating_duration_since(anchor),
+                    PEAK_FALL_DB_PER_S,
+                );
                 self.hold_until = Some(now);
             }
         }
         self.ticked_at = Some(now);
     }
 
-    fn level(&self) -> ChannelLevel {
-        ChannelLevel {
-            peak: self.peak,
+    fn level(&self) -> DisplayLevel {
+        DisplayLevel {
+            bar: self.bar,
+            marker: self.marker,
             rms: self.rms,
         }
     }
 }
 
-fn fall_db(value: f32, dt: Duration) -> f32 {
+fn fall_db_at(value: f32, dt: Duration, db_per_s: f32) -> f32 {
     let db = if value <= 0. {
         DISPLAY_FLOOR_DB
     } else {
         (20. * value.log10()).max(DISPLAY_FLOOR_DB)
     };
-    10f32.powf((db - PEAK_FALL_DB_PER_S * dt.as_secs_f32()).max(DISPLAY_FLOOR_DB) / 20.)
+    10f32.powf((db - db_per_s * dt.as_secs_f32()).max(DISPLAY_FLOOR_DB) / 20.)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,18 +219,18 @@ impl MeterSubscriptions {
 
     /// Ballistics-smoothed source reading for presentation; `None` exactly
     /// when the raw observation ([`Self::input`]) is unavailable.
-    pub fn display_input(&self) -> Option<[ChannelLevel; 2]> {
+    pub fn display_input(&self) -> Option<[DisplayLevel; 2]> {
         self.input_subscription
             .as_ref()
-            .and_then(|subscription| stereo_levels(subscription.display.as_deref()))
+            .and_then(|subscription| stereo_display(subscription.display.as_deref()))
     }
 
     /// Ballistics-smoothed output reading for presentation; `None` exactly
     /// when the raw observation ([`Self::output`]) is unavailable.
-    pub fn display_output(&self) -> Option<[ChannelLevel; 2]> {
+    pub fn display_output(&self) -> Option<[DisplayLevel; 2]> {
         self.output_subscription
             .as_ref()
-            .and_then(|subscription| stereo_levels(subscription.display.as_deref()))
+            .and_then(|subscription| stereo_display(subscription.display.as_deref()))
     }
 
     #[cfg(test)]
@@ -335,6 +364,14 @@ fn stereo_levels(levels: Option<&[ChannelLevel]>) -> Option<[ChannelLevel; 2]> {
     Some([*left, *right])
 }
 
+fn stereo_display(display: Option<&[DisplayLevel]>) -> Option<[DisplayLevel; 2]> {
+    let levels = display?;
+    let [left, right] = levels else {
+        return None;
+    };
+    Some([*left, *right])
+}
+
 struct MeterSubscription {
     topic: Topic<LevelTopic>,
     visible: VisibleSignal<LevelTopic>,
@@ -345,7 +382,7 @@ struct MeterSubscription {
     channels: usize,
     status: MeterStatus,
     ballistics: Vec<ChannelBallistics>,
-    display: Option<Box<[ChannelLevel]>>,
+    display: Option<Box<[DisplayLevel]>>,
 }
 
 pub struct NodeMeters {
@@ -431,13 +468,13 @@ impl NodeMeters {
     }
 
     /// Ballistics-smoothed stereo projection for presentation.
-    pub fn levels(&self, id: moiren_core::graph::NodeId) -> Option<[ChannelLevel; 2]> {
-        let levels: &[ChannelLevel; 2] = self.channel_levels(id)?.try_into().ok()?;
+    pub fn levels(&self, id: moiren_core::graph::NodeId) -> Option<[DisplayLevel; 2]> {
+        let levels: &[DisplayLevel; 2] = self.channel_levels(id)?.try_into().ok()?;
         Some(*levels)
     }
 
     /// Ballistics-smoothed per-channel readings for presentation.
-    pub fn channel_levels(&self, id: moiren_core::graph::NodeId) -> Option<&[ChannelLevel]> {
+    pub fn channel_levels(&self, id: moiren_core::graph::NodeId) -> Option<&[DisplayLevel]> {
         self.subscriptions
             .get(&id)
             .and_then(|subscription| subscription.display.as_deref())
@@ -566,7 +603,17 @@ impl MeterSubscription {
                 .is_none_or(|display| display.len() != levels.len())
         {
             self.ballistics = levels.iter().map(|_| ChannelBallistics::new()).collect();
-            self.display = Some(vec![ChannelLevel { peak: 0., rms: 0. }; levels.len()].into());
+            self.display = Some(
+                vec![
+                    DisplayLevel {
+                        bar: 0.,
+                        marker: 0.,
+                        rms: 0.
+                    };
+                    levels.len()
+                ]
+                .into(),
+            );
         }
         let display = self.display.as_deref_mut().expect("sized with ballistics");
         for ((channel, level), shown) in self
@@ -682,8 +729,9 @@ mod tests {
         );
         assert_eq!(
             channel.level(),
-            ChannelLevel {
-                peak: 0.5,
+            DisplayLevel {
+                bar: 0.5,
+                marker: 0.5,
                 rms: 0.3
             },
             "the first observation snaps to the raw window"
@@ -712,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn ballistics_peak_holds_then_falls_at_a_fixed_db_rate() {
+    fn ballistics_marker_holds_then_falls_at_a_fixed_db_rate() {
         let start = Instant::now();
         let mut channel = ChannelBallistics::new();
         channel.observe(ChannelLevel { peak: 0.5, rms: 0. }, start);
@@ -722,14 +770,14 @@ mod tests {
             start + Duration::from_millis(100),
         );
         channel.observe(ChannelLevel { peak: 0.1, rms: 0. }, start + PEAK_HOLD);
-        assert!((channel.level().peak - 0.5).abs() < 0.000001);
+        assert!((channel.level().marker - 0.5).abs() < 0.000001);
 
         // 100 ms into the fall: −6.02 dB fell by 3 dB (30 dB/s).
         channel.observe(
             ChannelLevel { peak: 0., rms: 0. },
             start + PEAK_HOLD + Duration::from_millis(100),
         );
-        let db = 20. * channel.level().peak.max(f32::MIN_POSITIVE).log10();
+        let db = 20. * channel.level().marker.max(f32::MIN_POSITIVE).log10();
         assert!((db - (-6.0206 - 3.)).abs() < 0.01);
 
         // A later, louder window raises the marker instantly and re-holds.
@@ -737,7 +785,32 @@ mod tests {
             ChannelLevel { peak: 0.8, rms: 0. },
             start + PEAK_HOLD + Duration::from_millis(200),
         );
-        assert!((channel.level().peak - 0.8).abs() < 0.000001);
+        assert!((channel.level().marker - 0.8).abs() < 0.000001);
+    }
+
+    #[test]
+    fn ballistics_peak_bar_moves_immediately_without_hold() {
+        let start = Instant::now();
+        let mut channel = ChannelBallistics::new();
+        channel.observe(ChannelLevel { peak: 0.5, rms: 0. }, start);
+        // A quieter window starts the fallback at once — the bar never pins
+        // at the recent maximum the way the marker does.
+        channel.observe(
+            ChannelLevel { peak: 0.1, rms: 0. },
+            start + Duration::from_millis(100),
+        );
+        let level = channel.level();
+        assert!((level.marker - 0.5).abs() < 0.000001, "marker still holds");
+        // 100 ms at 11.8 dB/s below −6.02 dB.
+        let db = 20. * level.bar.max(f32::MIN_POSITIVE).log10();
+        assert!((db - (-6.0206 - 1.18)).abs() < 0.01, "bar fell to {db} dB");
+
+        // A louder window raises the bar instantly.
+        channel.observe(
+            ChannelLevel { peak: 0.8, rms: 0. },
+            start + Duration::from_millis(200),
+        );
+        assert!((channel.level().bar - 0.8).abs() < 0.000001);
     }
 
     #[test]
@@ -967,7 +1040,20 @@ mod tests {
         assert_eq!(meters.input, None);
         assert_eq!(
             meters.display_output(),
-            meters.output,
+            meters.output.map(|[left, right]| {
+                [
+                    DisplayLevel {
+                        bar: left.peak,
+                        marker: left.peak,
+                        rms: left.rms,
+                    },
+                    DisplayLevel {
+                        bar: right.peak,
+                        marker: right.peak,
+                        rms: right.rms,
+                    },
+                ]
+            }),
             "the first live window snaps the display to the raw reading"
         );
         assert!(!meters.update_at(&snapshot, true, received));

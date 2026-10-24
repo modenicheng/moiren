@@ -421,7 +421,7 @@ fn node_observation(
             readings = readings
                 .child(detail(
                     &format!("Peak {}", channel + 1),
-                    level_db(level.peak),
+                    level_db(level.marker),
                 ))
                 .child(detail(&format!("RMS {}", channel + 1), level_db(level.rms)));
         }

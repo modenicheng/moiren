@@ -77,7 +77,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
             node.peaks = node
                 .node_id
                 .and_then(|id| shell.node_meters.levels(id))
-                .map(|levels| levels.map(|level| level.peak));
+                .map(|levels| levels.map(|level| level.bar));
         }
     }
     let world = std::sync::Arc::new(projected);
