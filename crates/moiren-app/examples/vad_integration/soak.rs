@@ -16,6 +16,47 @@ const MIN_CLOCK_RATE_INTERVAL_100NS: u64 = 1_000_000;
 pub(super) const PATTERN_MS: u64 = 30_000;
 pub(super) const SETTLE_MS: u64 = 1_000;
 
+/// Bounded ring of recorded quality defects. Soak phases run the requested
+/// duration to completion and qualify at `finish`: every defect is recorded
+/// here and streamed to the log instead of aborting the run, so host/VM
+/// jitter distributions, recovery behavior and resource trends survive a
+/// single glitch. Structural failures — nonfinite PCM, stale or regressed
+/// observation, dead clocks, session errors — still abort immediately.
+const MAX_GLITCHES: usize = 256;
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct SoakGlitch {
+    pub at_ms: u64,
+    pub kind: &'static str,
+    /// Kind-specific magnitude (frames, window count, ...), not a status.
+    pub detail: u64,
+}
+
+impl SoakGlitchTracker {
+    fn record(&mut self, at_ms: u64, kind: &'static str, detail: u64) {
+        self.glitch_count += 1;
+        self.glitches.push(SoakGlitch {
+            at_ms,
+            kind,
+            detail,
+        });
+        if self.glitches.len() > MAX_GLITCHES {
+            self.glitches.remove(0);
+        }
+        log::info!(
+            "event=soak_glitch kind={kind} at_ms={at_ms} detail={detail} total={}",
+            self.glitch_count
+        );
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub(super) struct SoakGlitchTracker {
+    pub glitch_count: u64,
+    /// Most recent defects; older entries drop off the bounded ring.
+    pub glitches: Vec<SoakGlitch>,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub(super) struct NativeDiagnostics {
     pub capture: CapturePosition,
@@ -33,6 +74,7 @@ pub(super) struct IdleSoak {
     pub verified_windows: u64,
     pub maximum_observation_gap_ms: u64,
     pub maximum_advance_gap_ms: u64,
+    pub glitch: SoakGlitchTracker,
     last_poll_ms: u64,
     last_advance_ms: u64,
     window_started_ms: u64,
@@ -50,6 +92,7 @@ impl IdleSoak {
             verified_windows: 0,
             maximum_observation_gap_ms: 0,
             maximum_advance_gap_ms: 0,
+            glitch: SoakGlitchTracker::default(),
             last_poll_ms: 0,
             last_advance_ms: 0,
             window_started_ms: 0,
@@ -57,13 +100,7 @@ impl IdleSoak {
         }
     }
     pub fn poll(&mut self, now_ms: u64, header: Option<AudioWindow>) -> anyhow::Result<()> {
-        ensure!(
-            !self.quality_failed,
-            "idle soak has a failed observation window"
-        );
-        let result = self.poll_window(now_ms, header);
-        self.quality_failed |= result.is_err();
-        result
+        self.poll_window(now_ms, header)
     }
     fn poll_window(&mut self, now_ms: u64, header: Option<AudioWindow>) -> anyhow::Result<()> {
         ensure!(now_ms >= self.elapsed_ms, "idle observation time regressed");
@@ -98,11 +135,17 @@ impl IdleSoak {
         self.maximum_advance_gap_ms = self.maximum_advance_gap_ms.max(age);
         ensure!(age <= FRESH_MS, "idle Graph timeline is stale by {age}ms");
         if now_ms - self.window_started_ms >= 1_000 {
-            ensure!(
-                self.timeline.forward_advances - self.window_baseline >= 2,
-                "idle window lacks two actual frame_end advances"
-            );
-            self.verified_windows += 1;
+            let advances = self.timeline.forward_advances - self.window_baseline;
+            if advances < 2 {
+                // Record and keep going: a VM-wide freeze that stalls the
+                // engine timeline is exactly the jitter the soak should
+                // measure over hours, not a reason to discard the run.
+                self.quality_failed = true;
+                self.glitch
+                    .record(now_ms, "idle_window_without_two_advances", advances);
+            } else {
+                self.verified_windows += 1;
+            }
             self.window_baseline = self.timeline.forward_advances;
             self.window_started_ms = now_ms;
         }
@@ -163,6 +206,7 @@ pub(super) struct PcmSoak {
     pub last_packet_frames: u64,
     pub coverage_required_frames: Option<u64>,
     pub coverage_ratio: Option<f64>,
+    pub glitch: SoakGlitchTracker,
 }
 
 impl PcmSoak {
@@ -194,6 +238,7 @@ impl PcmSoak {
             last_packet_frames: 0,
             coverage_required_frames: None,
             coverage_ratio: None,
+            glitch: SoakGlitchTracker::default(),
         }
     }
     pub fn require_fresh(&mut self, now_ms: u64) -> anyhow::Result<()> {
@@ -212,10 +257,7 @@ impl PcmSoak {
         samples: &[f32],
         discontinuity: bool,
     ) -> anyhow::Result<()> {
-        ensure!(!self.quality_failed, "PCM soak has a failed quality window");
-        let result = self.observe_packet(now_ms, samples, discontinuity);
-        self.quality_failed |= result.is_err();
-        result
+        self.observe_packet(now_ms, samples, discontinuity)
     }
     fn observe_packet(
         &mut self,
@@ -277,9 +319,9 @@ impl PcmSoak {
             .first_frame_ms
             .get_or_insert(now_ms.into());
         self.current_window.last_frame_ms = Some(now_ms.into());
-        let result = self
-            .current_window
-            .observe_packet(samples, self.expected, discontinuity);
+        let result =
+            self.current_window
+                .observe_packet_lenient(samples, self.expected, discontinuity);
         let current = &self.current_window;
         let total = &mut self.validated;
         total.total_frames += current.total_frames - before.total_frames;
@@ -292,24 +334,40 @@ impl PcmSoak {
         total.first_frame_ms.get_or_insert(now_ms.into());
         total.last_frame_ms = Some(now_ms.into());
         result?;
-        ensure!(!discontinuity, "PCM soak capture discontinuity/gap");
-        ensure!(
-            current.silent_frames == 0,
-            "PCM soak unexpected silent/drop frame"
-        );
+        // Quality defects are recorded and the soak continues: the finish
+        // gates still fail the phase, but the run keeps collecting the full
+        // duration's jitter, recovery and resource evidence.
+        if discontinuity {
+            self.quality_failed = true;
+            self.glitch
+                .record(now_ms, "pcm_capture_discontinuity", packet_frames);
+        }
+        let silent = current.silent_frames - before.silent_frames;
+        if silent > 0 {
+            self.quality_failed = true;
+            self.glitch.record(now_ms, "pcm_silent_frames", silent);
+        }
+        let unexpected = current.unexpected_frames - before.unexpected_frames;
+        if unexpected > 0 {
+            self.quality_failed = true;
+            self.glitch
+                .record(now_ms, "pcm_unexpected_frames", unexpected);
+        }
         Ok(())
     }
     pub fn change_pattern(&mut self, now_ms: u64, expected: [f32; 2]) -> anyhow::Result<()> {
-        ensure!(!self.quality_failed, "PCM soak has a failed quality window");
         self.require_fresh(now_ms)?;
         ensure!(
             now_ms >= self.settling_until_ms,
             "cannot change PCM source during settling"
         );
-        self.current_window
-            .require_signal()
-            .context("preceding soak source window")?;
-        self.qualified_windows += 1;
+        if self.current_window.require_signal().is_err() {
+            self.quality_failed = true;
+            self.glitch
+                .record(now_ms, "pcm_window_failed_at_source_change", 0);
+        } else {
+            self.qualified_windows += 1;
+        }
         self.source_changes += 1;
         self.current_window = Observation::default();
         self.expected = expected;
@@ -469,6 +527,7 @@ pub(super) struct MusicSoak {
     pub coverage_required_frames: Option<u64>,
     pub coverage_ratio: Option<f64>,
     pub recent_windows: Vec<MusicWindow>,
+    pub glitch: SoakGlitchTracker,
     #[serde(skip)]
     settling_until_ms: u64,
     #[serde(skip)]
@@ -513,6 +572,7 @@ impl MusicSoak {
             coverage_required_frames: None,
             coverage_ratio: None,
             recent_windows: Vec::new(),
+            glitch: SoakGlitchTracker::default(),
             settling_until_ms: requested_ms.min(MUSIC_INITIAL_SETTLE_MS),
             window_started_ms: 0,
             pending: Vec::with_capacity(MUSIC_WINDOW_FRAMES * 2 + 2 * MAX_PACKET_FRAMES as usize),
@@ -541,13 +601,7 @@ impl MusicSoak {
         samples: &[f32],
         discontinuity: bool,
     ) -> anyhow::Result<()> {
-        ensure!(
-            !self.quality_failed,
-            "music soak has a failed quality window"
-        );
-        let result = self.observe_packet_inner(now_ms, samples, discontinuity);
-        self.quality_failed |= result.is_err();
-        result
+        self.observe_packet_inner(now_ms, samples, discontinuity)
     }
 
     fn observe_packet_inner(
@@ -565,7 +619,18 @@ impl MusicSoak {
             samples.iter().all(|sample| sample.is_finite()),
             "nonfinite music capture sample"
         );
-        ensure!(!discontinuity, "music soak capture discontinuity/gap");
+        if discontinuity {
+            // Record and keep pumping: the alignment tracker re-anchors over
+            // the following windows (the lag snap fix), and the finish gates
+            // still fail the phase on the recorded evidence. Aborting here
+            // would discard the remaining hours of jitter and recovery data.
+            self.quality_failed = true;
+            self.glitch.record(
+                now_ms,
+                "music_capture_discontinuity",
+                (samples.len() / 2) as u64,
+            );
+        }
         if samples.is_empty() {
             return Ok(());
         }
@@ -1117,7 +1182,13 @@ mod tests {
         assert_eq!(idle.verified_windows, 3);
         let mut stalled = IdleSoak::new(8_000);
         stalled.poll(0, Some(header(480))).unwrap();
-        assert!(stalled.poll(1_000, Some(header(480))).is_err());
+        // A window without two advances is recorded, not fatal: the soak
+        // keeps running and the finish gates judge the accumulated evidence.
+        stalled.poll(1_000, Some(header(480))).unwrap();
+        assert!(stalled.quality_failed);
+        assert_eq!(stalled.glitch.glitch_count, 1);
+        assert_eq!(stalled.verified_windows, 0);
+        assert!(stalled.finish().is_err());
         let mut unobserved = IdleSoak::new(8_000);
         unobserved.poll(0, Some(header(480))).unwrap();
         assert!(unobserved.poll(2_001, Some(header(96_480))).is_err());
@@ -1160,13 +1231,16 @@ mod tests {
         assert_eq!(pcm.coverage_required_frames, Some(96_000));
         assert!((pcm.coverage_ratio.unwrap() - 1.005).abs() < 0.0001);
         let mut silence = PcmSoak::new(2_000, EXPECTED);
-        assert!(silence.observe(0, &[0.0, 0.0], false).is_err());
+        silence.observe(0, &[0.0, 0.0], false).unwrap();
+        assert!(silence.quality_failed);
+        assert_eq!(silence.glitch.glitch_count, 1);
+        assert_eq!(silence.glitch.glitches[0].kind, "pcm_silent_frames");
         assert_eq!(silence.validated.silent_frames, 1);
-        assert!(
-            PcmSoak::new(2_000, EXPECTED)
-                .observe(0, &EXPECTED, true)
-                .is_err()
-        );
+        let mut discontinuous = PcmSoak::new(2_000, EXPECTED);
+        discontinuous.observe(0, &EXPECTED, true).unwrap();
+        assert!(discontinuous.quality_failed);
+        assert_eq!(discontinuous.glitch.glitch_count, 1);
+        assert!(discontinuous.glitch.glitches[0].kind == "pcm_capture_discontinuity");
         assert!(PcmSoak::new(8_000, EXPECTED).require_fresh(2_001).is_err());
     }
 
@@ -1179,15 +1253,18 @@ mod tests {
         pcm.change_pattern(1_000, SECOND_EXPECTED).unwrap();
         pcm.observe(1_999, &EXPECTED, false).unwrap();
         assert_eq!(pcm.settling_other_finite_frames, 1);
-        assert!(pcm.observe(2_000, &EXPECTED, false).is_err());
+        pcm.observe(2_000, &EXPECTED, false).unwrap();
         assert_eq!(pcm.source_changes, 1);
         assert_eq!(pcm.validated.unexpected_frames, 1);
+        assert!(pcm.quality_failed);
+        assert_eq!(pcm.glitch.glitch_count, 1);
+        assert_eq!(pcm.glitch.glitches[0].kind, "pcm_unexpected_frames");
         assert!(!pcm.completed);
-        assert!(
-            PcmSoak::new(60_000, EXPECTED)
-                .change_pattern(1, SECOND_EXPECTED)
-                .is_err()
-        );
+        let mut unproven = PcmSoak::new(60_000, EXPECTED);
+        unproven.change_pattern(1, SECOND_EXPECTED).unwrap();
+        assert!(unproven.quality_failed);
+        assert_eq!(unproven.glitch.glitch_count, 1);
+        assert!(unproven.glitch.glitches[0].kind == "pcm_window_failed_at_source_change");
         let mut finite = PcmSoak::new(60_000, EXPECTED);
         finite.settling_until_ms = 1_000;
         assert!(finite.observe(0, &[f32::NAN, 0.0], false).is_err());
@@ -1203,10 +1280,10 @@ mod tests {
             pcm.finish(1_000).is_err(),
             "early 48k frames cannot finish 3s"
         );
-        assert!(pcm.observe(1_010, &[0.0, 0.0], false).is_err());
+        pcm.observe(1_010, &[0.0, 0.0], false).unwrap();
         assert!(
             pcm.finish(3_000).is_err(),
-            "prior 48k cannot hide later failed window"
+            "a recorded glitch still fails the whole soak at finish"
         );
         assert!(!pcm.completed);
         assert_eq!(pcm.validated.silent_frames, 1);
@@ -1253,6 +1330,40 @@ mod tests {
         pcm.observe(2_510, &EXPECTED.repeat(480), false).unwrap();
         idle.finish().unwrap();
         assert!(pcm.finish(2_510).is_err());
+    }
+
+    #[test]
+    fn pcm_soak_runs_to_duration_after_quality_defects_and_fails_only_at_finish() {
+        let mut pcm = PcmSoak::new(3_000, EXPECTED);
+        for now in (0..=1_000).step_by(10) {
+            pcm.observe(now, &EXPECTED.repeat(480), false).unwrap();
+        }
+        // One flagged discontinuity is recorded; pumping continues.
+        pcm.observe(1_010, &EXPECTED.repeat(480), true).unwrap();
+        assert!(pcm.quality_failed);
+        assert_eq!(pcm.glitch.glitch_count, 1);
+        for now in (1_020..=3_000).step_by(10) {
+            pcm.observe(now, &EXPECTED.repeat(480), false).unwrap();
+        }
+        assert!(pcm.finish(3_000).is_err(), "the zero-defect verdict stands");
+        assert!(!pcm.completed);
+    }
+
+    #[test]
+    fn idle_soak_finish_reports_glitch_evidence_not_just_failure() {
+        let mut idle = IdleSoak::new(3_000);
+        for now in (0..=1_000).step_by(100) {
+            idle.poll(now, Some(header(480 + now * 48))).unwrap();
+        }
+        // Freeze the timeline: every following window records one glitch.
+        for now in (1_100..=3_000).step_by(100) {
+            idle.poll(now, Some(header(480 + 1_000 * 48))).unwrap();
+        }
+        assert!(idle.quality_failed);
+        assert_eq!(idle.glitch.glitch_count, 2);
+        assert!(idle.glitch.glitches[0].kind == "idle_window_without_two_advances");
+        assert!(idle.finish().is_err());
+        assert!(!idle.completed);
     }
 
     #[test]
@@ -1615,12 +1726,35 @@ mod music_tests {
                 .is_err()
         );
         let mut discontinuous = MusicSoak::new(2_000, &material);
-        assert!(
-            discontinuous
-                .observe_packet(0, &material.samples[..960], true)
-                .is_err()
-        );
+        discontinuous
+            .observe_packet(0, &material.samples[..960], true)
+            .unwrap();
         assert!(discontinuous.quality_failed);
+        assert_eq!(discontinuous.glitch.glitch_count, 1);
+        assert!(discontinuous.glitch.glitches[0].kind == "music_capture_discontinuity");
+    }
+
+    #[test]
+    fn music_soak_continues_after_capture_discontinuity_and_finish_still_fails() {
+        let material = test_material(48_000);
+        let mut soak = MusicSoak::new(4_000, &material);
+        let mut now_ms = 0;
+        settle(&mut soak, &material, &mut now_ms);
+        feed_windows(&mut soak, &material, 1, 0, &mut now_ms, 0);
+        assert_eq!(soak.windows_qualified, 1);
+        // The trip-wire that used to kill the run now records one glitch and
+        // keeps pumping; the finish gates still fail the phase.
+        soak.observe_packet(now_ms + 100, &material.samples[..960], true)
+            .unwrap();
+        assert!(soak.quality_failed);
+        assert_eq!(soak.glitch.glitch_count, 1);
+        feed_windows(&mut soak, &material, 1, 0, &mut now_ms, 0);
+        now_ms += 100;
+        soak.observe_packet(now_ms, &material.samples[..960], false)
+            .unwrap();
+        let error = soak.finish(now_ms).unwrap_err().to_string();
+        assert!(error.contains("failed quality window"), "{error}");
+        assert!(!soak.completed);
     }
 
     #[test]

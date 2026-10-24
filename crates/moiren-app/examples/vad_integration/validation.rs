@@ -325,7 +325,39 @@ impl Observation {
         self.observe(samples, expected)
     }
 
+    /// `observe_packet` without the strict content gate: soak phases count
+    /// off-pattern frames and gate at finish instead of failing here.
+    pub fn observe_packet_lenient(
+        &mut self,
+        samples: &[f32],
+        expected: [f32; 2],
+        discontinuity: bool,
+    ) -> anyhow::Result<()> {
+        if discontinuity {
+            self.discontinuities += 1;
+            self.consecutive_matching_frames = 0;
+        }
+        self.observe_lenient(samples, expected)
+    }
+
     pub fn observe(&mut self, samples: &[f32], expected: [f32; 2]) -> anyhow::Result<()> {
+        self.observe_with(samples, expected, true)
+    }
+
+    /// Count frames without failing on unexpected content: soak phases run
+    /// to completion and qualify at finish, so off-pattern frames are evidence
+    /// to record, not a reason to abort. Nonfinite PCM still fails because it
+    /// is corruption, not a recoverable quality defect.
+    pub fn observe_lenient(&mut self, samples: &[f32], expected: [f32; 2]) -> anyhow::Result<()> {
+        self.observe_with(samples, expected, false)
+    }
+
+    fn observe_with(
+        &mut self,
+        samples: &[f32],
+        expected: [f32; 2],
+        strict: bool,
+    ) -> anyhow::Result<()> {
         ensure!(
             samples.len().is_multiple_of(2),
             "incomplete stereo capture frame"
@@ -348,7 +380,10 @@ impl Observation {
                 {
                     self.unexpected_frames += 1;
                     self.consecutive_matching_frames = 0;
-                    bail!("unexpected capture frame {frame:?}; expected {expected:?}");
+                    if strict {
+                        bail!("unexpected capture frame {frame:?}; expected {expected:?}");
+                    }
+                    continue;
                 }
                 self.matching_frames += 1;
                 self.consecutive_matching_frames += 1;

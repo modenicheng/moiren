@@ -171,9 +171,9 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
             report.limitations.push("Soak is opt-in target evidence only, not Verifier, sleep/resume, physical endpoint, or release qualification.");
             report.limitations.push("Native packet positions infer capture gaps; private driver drop counters and render underrun counts are unavailable through App/native clients.");
             report.limitations.push("Idle checks actual signal frame_end every observation and two advances per one-second window; snapshot publications are freshness checks only.");
-            report.limitations.push("PCM soak alternates source every 30s with a fixed 1s finite-only settling interval; all other capture samples must match gain exactly within 0.0001, with no silence/discontinuities.");
+            report.limitations.push("PCM soak alternates source every 30s with a fixed 1s finite-only settling interval; quality defects (silence/discontinuity/off-pattern frames) are recorded as glitches and the run continues to the requested duration, with the same zero-defect standard judged at finish.");
             if options.soak_pcm_file.is_some() {
-                report.limitations.push("Music soak replaces the alternating constant source with looping WAV material; per-second alignment-tracked correlation windows (>= 0.95) replace exact constant matching, with >= 0.99 qualified windows, <= 3 consecutive failed windows, and unchanged freshness/discontinuity/coverage gates.");
+                report.limitations.push("Music soak replaces the alternating constant source with looping WAV material; per-second alignment-tracked correlation windows (>= 0.95) replace exact constant matching. Quality defects (capture discontinuities/gaps, failed windows) are recorded as glitches while the run continues to the requested duration, so jitter distributions and recovery behavior survive single host disturbances; the unchanged ratio/streak/coverage/zero-discontinuity standard is judged at finish.");
             }
             if !pcm {
                 report.limitations.push("Idle-only soak starts no probe native clients and makes no PCM or native audio clock claim.");
