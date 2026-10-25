@@ -52,9 +52,13 @@ revision and may drift.
 - **A6/A7/A13** owner teardown/finish and startup-handshake skeletons are
   capture/render twins with light drift; worth a shared helper when either
   side is next touched, not as a standalone churn commit.
-- **A8-A12, A15** small module-level twins (`api()`, `From<StageError>`,
-  tri-handle wait, Client3 period query, OPEN_STAGES table, endpoint
-  projections) — merge opportunistically.
+- **done (A12/B4)** The capture and render `OPEN_STAGES` tables now come
+  from direction-specific `SharedOpenStages` constructors in
+  `negotiation.rs`; observable stage labels remain unchanged and the
+  duplicated header comment is gone.
+- **A8-A11, A15** small module-level twins (`api()`, `From<StageError>`,
+  tri-handle wait, Client3 period query, endpoint projections) — merge
+  opportunistically.
 - **A16 (driver)** six `ClearTimerPacket`+`ZeroPackets` quiesce micro-
   blocks in Streams.cpp with per-site field differences; extract named
   helper(s) so a future reset site cannot miss a field.

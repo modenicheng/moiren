@@ -391,6 +391,46 @@ pub(crate) struct SharedOpenStages {
     pub set_event: &'static str,
 }
 
+impl SharedOpenStages {
+    /// Historic labels for the physical capture owner. These strings are
+    /// surfaced in capture reports, so the shared table centralizes the
+    /// construction without changing the established diagnostics.
+    pub(crate) const fn capture() -> Self {
+        Self {
+            enumerator: "CoCreateInstance(capture)",
+            device: "GetDevice(capture pinned)",
+            endpoint: "IMMEndpoint(capture)",
+            data_flow: "GetDataFlow(capture)",
+            event: "CreateEvent(capture audio)",
+            activate: "Activate(capture)",
+            client2: "IAudioClient2(capture)",
+            client_properties: "SetClientProperties(capture)",
+            mix_format: "GetMixFormat(capture)",
+            session_guid: "CoCreateGuid(capture)",
+            set_event: "SetEventHandle(capture)",
+        }
+    }
+
+    /// Historic labels for the shared render owner. These strings are
+    /// surfaced in render reports, so the shared table centralizes the
+    /// construction without changing the established diagnostics.
+    pub(crate) const fn render() -> Self {
+        Self {
+            enumerator: "CoCreateInstance(MMDeviceEnumerator)",
+            device: "GetDevice(pinned)",
+            endpoint: "IMMEndpoint",
+            data_flow: "GetDataFlow",
+            event: "CreateEvent(audio)",
+            activate: "Activate(IAudioClient)",
+            client2: "IAudioClient2",
+            client_properties: "SetClientProperties",
+            mix_format: "GetMixFormat",
+            session_guid: "CoCreateGuid(session)",
+            set_event: "SetEventHandle",
+        }
+    }
+}
+
 /// Failures of the shared open sequence, before stack-specific mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OpenSharedError {
@@ -670,5 +710,24 @@ mod tests {
         );
         assert_eq!(super::exclusive_frames_duration(480, 48_000), 100_000);
         assert_eq!(super::exclusive_frames_duration(1, 44_100), 227);
+    }
+
+    #[test]
+    fn shared_open_stages_keep_direction_specific_report_labels() {
+        let capture = super::SharedOpenStages::capture();
+        assert_eq!(capture.enumerator, "CoCreateInstance(capture)");
+        assert_eq!(capture.device, "GetDevice(capture pinned)");
+        assert_eq!(capture.endpoint, "IMMEndpoint(capture)");
+        assert_eq!(capture.event, "CreateEvent(capture audio)");
+        assert_eq!(capture.activate, "Activate(capture)");
+        assert_eq!(capture.set_event, "SetEventHandle(capture)");
+
+        let render = super::SharedOpenStages::render();
+        assert_eq!(render.enumerator, "CoCreateInstance(MMDeviceEnumerator)");
+        assert_eq!(render.device, "GetDevice(pinned)");
+        assert_eq!(render.endpoint, "IMMEndpoint");
+        assert_eq!(render.event, "CreateEvent(audio)");
+        assert_eq!(render.activate, "Activate(IAudioClient)");
+        assert_eq!(render.set_event, "SetEventHandle");
     }
 }

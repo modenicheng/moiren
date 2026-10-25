@@ -14,21 +14,7 @@ use std::{
     sync::{Arc, atomic::AtomicBool, mpsc::SyncSender},
 };
 
-/// Historic stage labels for the shared open sequence; the text is observable
-/// in failure reports.
-const OPEN_STAGES: SharedOpenStages = SharedOpenStages {
-    enumerator: "CoCreateInstance(capture)",
-    device: "GetDevice(capture pinned)",
-    endpoint: "IMMEndpoint(capture)",
-    data_flow: "GetDataFlow(capture)",
-    event: "CreateEvent(capture audio)",
-    activate: "Activate(capture)",
-    client2: "IAudioClient2(capture)",
-    client_properties: "SetClientProperties(capture)",
-    mix_format: "GetMixFormat(capture)",
-    session_guid: "CoCreateGuid(capture)",
-    set_event: "SetEventHandle(capture)",
-};
+const OPEN_STAGES: SharedOpenStages = SharedOpenStages::capture();
 
 fn owner(
     options: &CaptureOptions,

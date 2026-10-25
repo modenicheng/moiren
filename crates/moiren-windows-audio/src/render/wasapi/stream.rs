@@ -32,21 +32,7 @@ use windows::{
     core::Interface,
 };
 
-/// Historic stage labels for the shared open sequence; the text is observable
-/// in failure reports.
-const OPEN_STAGES: SharedOpenStages = SharedOpenStages {
-    enumerator: "CoCreateInstance(MMDeviceEnumerator)",
-    device: "GetDevice(pinned)",
-    endpoint: "IMMEndpoint",
-    data_flow: "GetDataFlow",
-    event: "CreateEvent(audio)",
-    activate: "Activate(IAudioClient)",
-    client2: "IAudioClient2",
-    client_properties: "SetClientProperties",
-    mix_format: "GetMixFormat",
-    session_guid: "CoCreateGuid(session)",
-    set_event: "SetEventHandle",
-};
+const OPEN_STAGES: SharedOpenStages = SharedOpenStages::render();
 
 // Optional metadata cannot prevent an otherwise supported stream from starting.
 fn record_optional_properties(client: &IAudioClient, report: &mut RenderReport) {
