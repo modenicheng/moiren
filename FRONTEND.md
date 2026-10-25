@@ -21,7 +21,7 @@
 - Sends 对应实际出边，音量独立可调，单个 PRE/POST 按钮切换取样点。有 Strip 时 PRE 位于节点 DSP 之后、Strip 推子之前，仍受 Mute/Solo 和声道模式影响；POST 位于推子之后。没有 Strip 的底层 Gain 仍可在其输入取样，其他未定义取样点不能冒充支持。
 - Strip 标题可拖动排序；Bus/Output 默认停靠右侧并独立横向滚动。Strip 宽度及右停靠区宽度可拖动分隔条调整；顺序和宽度随项目保存，关闭到托盘再打开也保留。不改变逻辑拓扑顺序。
 - 电平使用各节点独立的真实推子后 Sample Peak/RMS、三色分区（低于 −6 dBFS、−6 至 0 dBFS、0 dBFS 以上）和逐声道 Clip 保持，内部浮点信号保留正值余量；点击电平区域复位 Clip。可见 Strip 才订阅对应节点，滚出视口、隐藏和停止后释放；未绑定、未运行或候选尚未确认时显示未知，不复制别的节点读数。Analysis 暂无处理器，节点库明确禁用，不绘制假 FFT。
-- Strip 和 PRE/POST 修改保留为候选，通过 Apply graph 在控制侧准备并等待引擎确认，不能把点击或 Accepted 当成 Applied。现有 Gain/Balance 和发送音量的实时控制仍沿用服务协议；它们与 Strip 推子是不同参数。
+- 所有编辑直接生效，没有 Apply 步骤。Strip 增益/平衡/模式/静音/独奏/Dim 与发送音量/声像/开关走实时参数通道（下一音频块生效，零重编译）；结构性编辑（增删节点、连线、PRE/POST 切换、绑定）在 200ms 防抖后自动重建并原子切换，失败时继续运行旧图并在下一次编辑时重试。电平表跟随运行中的会话而不是版本号，编辑与重建切换期间不熄灭。
 - 本机验证串行执行 Cargo，统一使用 `-j 2`，测试附加 `-- --test-threads=2`，避免过量并行导致降频。
 
 本文区分 3 类信息：公共要求包括功能保留、组件复用、语义变量和最新范围更正；目标设计规格包括导航、框架与密度方案；当前资源快照包括色值、字体、尺寸和节点 ID。后两类为设计与实现提供基准，可以随新设计更新，不应因写入本文而变成不可调整的要求。
@@ -262,9 +262,11 @@ Geometry：`radius/none = 0`、`radius/sm = 4`、`radius/md = 6`、`radius/lg = 
 
 标准按钮包括 Small / Medium / Large，以及 Default、Hover、Pressed、Focus、Disabled 等适用变体。选择状态、错误状态、Tooltip、Menu、Dialog、Toast、Empty / Loading / Error 等使用各自公共组件。
 
+图编辑错误以 rustc 风格的错误列表呈现在全局状态区：每条错误三行——`错误：<原因>`、`位置：<通道或 route 的用户可见名>`（可定位时）、`提示：<怎么改>`（可推断时）。点击一条错误选中对应通道或 route 并打开 Inspector。整组错误在下一次成功编辑落地或激活时清除。错误文案只说哪里错了、怎么改；禁止出现「图」「引擎」「会话」「plan」「编译」等实现层词汇，也不描述软件内部状态。
+
 2026-10-14 首批源码实现：Filled / Quiet、Standard / Toggle Icon Button、Window Button、Workspace Tab 已移植为 gpui 公共组件，入口由 `moiren_app::ui` 导出。令牌位于 [theme/controls.rs](crates/moiren-app/src/ui/theme/controls.rs)，原生预览与状态边界见 [第一批 gpui 公共组件](docs/designs/12-gpui-ready-action-components.md)。其他组件仍按当前母版逐批实现。
 
-- 「Show in Graph」使用 `Button / Quiet` 实例；「Apply on next start」使用 `Button / Filled` 实例。
+- 「Show in Graph」使用 `Button / Quiet` 实例。
 - 替换时同时核对标签、图标、尺寸、对齐和回调。母版默认的 Plus 图标不能无条件保留到所有操作上；图标必须符合操作语义。
 - 页面切换、浮层关闭和密度变化不能无故重置相机、选择、参数或滚动位置。
 - 目标交互包括可见键盘焦点、Escape 关闭最上层浮层、参数键盘调整与重置；`Ctrl+1…4` 切换工作区，`Ctrl+,` 打开 Settings。关闭窗口、隐藏到托盘、显式退出应用的语义需清楚区分，不能让窗口关闭行为与音频生命周期脱节。重写时明确列出尚未实现的交互。
@@ -303,7 +305,7 @@ Geometry：`radius/none = 0`、`radius/sm = 4`、`radius/md = 6`、`radius/lg = 
 - 推子是平面长矩形手柄。纯 `FaderScale` 同时决定刻度、电平高度、手柄中心和拖动反算；主要锚点为 `+12 / +6 / 0 / −6 / −12 / −24 / −36 / −48 / −60 / −72 / −∞`，0 dB 位于距顶部 24% 处。低于 −72 dB 的有限值停留在有限下限并保留准确读数，最底端才写入零。推子单位为增益 dB，电平为 dBFS。
 - 按实际声道数绘制 Sample Peak/RMS 与逐声道 Clip，不复制单声道读数。峰值即时上升，按幅度指数衰减，默认 20 dB/s、保持 500 ms；右键选择 `13.3 / 20 / 32 dB/s` 和 `Off / 0.5 / 1 / 2 s`，存入全局展示偏好。采用 Ardour 的 DAW 数字峰值下降速率惯例；Studio Pro 未公开精确下降算法，不声称完全复刻或满足 IEC PPM、True Peak、LUFS 标准。
 - 原生动画帧驱动读取和衰减，跟随显示刷新率。隐式 UI 测量窗为 `max(1, floor(sample_rate / 240))`，显式 Meter 节点窗长保持原设置。存在订阅需求时，引擎泵和兼容桥分别使用 1 ms 轮询预算；无需求时恢复空闲节奏。峰值保持仅由实际收到的新窗续期，Latest 覆盖的未收到峰值无法恢复；较大音频回调会成批产出测量窗。
-- 主 Mixer 的 Strip 参数继续通过 Apply graph 确认，候选修改显示 Pending。PRE 位于节点 DSP、声道模式、静音/独奏门控和 Balance 之后、增益与 Dim 之前；POST 位于增益与 Dim 之后。托盘沿用其原有自动应用策略。
+- 主 Mixer 与托盘的 Strip 参数实时生效。PRE 位于节点 DSP、声道模式、静音/独奏门控和 Balance 之后、增益与 Dim 之前；POST 位于增益与 Dim 之后。
 
 实现细节、参考来源与验证要求见 [Mixer 推子改造计划](docs/superpowers/plans/2026-10-25-mixer-strip-redesign.md)。原 Figma v2 组件仅作为历史参考，不再定义当前通道顺序。
 
@@ -325,7 +327,7 @@ Geometry：`radius/none = 0`、`radius/sm = 4`、`radius/md = 6`、`radius/lg = 
 - 已连接、未连接、自路由禁止、不可用等语义可识别。选中格在无边框风格下仍需清晰反馈。
 - 连接值与源推子独立；单元格显示的 dB 不能冒充源的 Fader 值。
 - 选择交点后通过 Inspector 解释连接身份、参数、映射和 Requested / Accepted / Applied。
-- Filter / Search / Show in Graph / Apply 等动作复用组件，不能借紧凑样式取消标准交互状态。
+- Filter / Search / Show in Graph 等动作复用组件，不能借紧凑样式取消标准交互状态。
 
 当前表格 `Matrix Routing Grid` 为 `356:23`，Route Cell 集为 `352:33`；外部 Filter Chip `353:38`、Selection Summary `353:39`、Routing Note `353:47`、Filters `355:26`、Inspector Summary `93:5852`。此分组用于定位改动范围，不表示未来结构必须照搬。
 
@@ -441,7 +443,7 @@ Slint 文件检查与原生 UI 验证可参考下面的历史接入文档，执�
 | [src/project.rs](crates/moiren-app/src/project.rs) | 项目与偏好 JSON，原子保存、版本与结构校验 |
 | [README](crates/moiren-app/README.md) | 运行、实际交互与验证命令 |
 
-未接入的 CPU、端到端延迟、XRUN 等读数保持未知。Compressor 的全部 10 项参数在所选节点 Inspector 中提供精确输入和滑杆，按引擎参数域校验、持久化，并沿实时参数确认通道更新；时间与比率滑杆采用非线性映射以保留小值精度。切换拓扑通过 Apply / restart 准备新会话。载入项目不启动音频，且候选节点不能因 NodeId 数值复用而控制旧活动会话。
+未接入的 CPU、端到端延迟、XRUN 等读数保持未知。Compressor 的全部 10 项参数在所选节点 Inspector 中提供精确输入和滑杆，按引擎参数域校验、持久化，并沿实时参数确认通道更新；时间与比率滑杆采用非线性映射以保留小值精度。切换拓扑由服务自动重建并在成功后原子切换。载入项目不启动音频，且候选节点不能因 NodeId 数值复用而控制旧活动会话。
 
 ### 10.3 后续维护
 

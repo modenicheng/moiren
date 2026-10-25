@@ -1,9 +1,9 @@
 # Auto-Apply Graph Plan
 
-**Status:** Design accepted on 2026-10-25/26. Supersedes the "Keep explicit Apply
-semantics" decision in `2026-10-25-mixer-strip-redesign.md` §9. Implementation
-runs on the `feat/auto-apply-graph` worktree branch, based on a snapshot commit
-of the in-flight mixer strip redesign.
+**Status:** Implemented 2026-10-26 on `feat/auto-apply-graph` (phases 0-6
+landed; native-performance acceptance of the metering plan remains with the
+mixer strip redesign document). Supersedes the "Keep explicit Apply
+semantics" decision in `2026-10-25-mixer-strip-redesign.md` §9.
 
 **Goal:** Every graph edit takes effect by itself. The Apply graph button,
 pending badges, and release-to-apply hacks disappear from all views. Meters
