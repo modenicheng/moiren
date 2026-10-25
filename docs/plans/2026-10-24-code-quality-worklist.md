@@ -71,8 +71,8 @@ revision and may drift.
   in comments; rewritten product/hardware-agnostic.
 - **B2** the WASAPI SILENT-flag contract is explained in three wordings;
   collapse into the A1 helper's doc comment when extracted.
-- **B4** the OPEN_STAGES header comment is duplicated verbatim; collapses
-  with A12.
+- **done (B4)** The duplicated OPEN_STAGES header comment was removed when
+  the direction-specific constructors landed with A12.
 - No commented-out code blocks, no mixed-language, no stale comments
   contradicting code were found in either tree.
 
