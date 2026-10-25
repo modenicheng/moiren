@@ -95,10 +95,20 @@ impl ServiceDriver for ManagedDriver {
             }
             AppRequest::EditGraph(edit) => {
                 let values = graph::edit_parameter_values(&edit);
-                if c.graph.edit(edit).is_ok() {
+                let edited_strip = match &edit {
+                    GraphEdit::SetMixer { node, .. } => Some(*node),
+                    _ => None,
+                };
+                if let Ok(structural) = c.graph.edit(edit) {
                     for (target, value) in values {
                         self.submit_parameter(c, target, value);
                     }
+                    if let Some(node) = edited_strip {
+                        self.sync_effective_strip_parameters(c, node);
+                    }
+                    // Structural edits rebuild automatically once auto-apply
+                    // lands; the flag is already the canonical classification.
+                    let _ = structural;
                 }
             }
             AppRequest::SetGainPan { gain, pan } => {
@@ -480,7 +490,11 @@ impl ManagedDriver {
                     false
                 }
                 ParameterOutcome::Rejected(error) => {
-                    c.graph.record_error(format!("实时参数被拒绝: {error:?}"));
+                    // A target removed by a newer candidate is an expected
+                    // consequence of editing, not a failure to report.
+                    if error != host::ParameterFailure::TargetRemoved {
+                        c.graph.record_error(format!("实时参数被拒绝: {error:?}"));
+                    }
                     parameter_failed |= pending.confirmation.is_some()
                         && pending.confirmation == self.confirm_parameters;
                     false
@@ -532,6 +546,7 @@ impl ManagedDriver {
                         self.confirmation_values.pop_front();
                     }
                     self.parameters.push(PendingParameter {
+                        target,
                         receipt,
                         confirmation: if live { None } else { self.confirm_parameters },
                     });
@@ -562,7 +577,15 @@ impl ManagedDriver {
             return;
         };
         if !self.parameters.iter().any(|pending| {
-            pending.confirmation.is_some() && pending.confirmation == self.confirm_parameters
+            pending.confirmation.is_some()
+                && pending.confirmation == self.confirm_parameters
+                // A value whose target exists only in a pending topology is
+                // parked until that plan activates; its own Activated edit
+                // reconciles it, so it cannot block this Apply's barrier.
+                && snapshot
+                    .active
+                    .as_ref()
+                    .is_none_or(|active| active.target_exists(pending.target))
         }) && self.confirmation_values.is_empty()
             && let Some(ApplyConfirmation {
                 id,

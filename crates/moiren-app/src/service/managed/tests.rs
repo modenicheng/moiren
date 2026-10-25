@@ -1118,11 +1118,12 @@ fn compressor_updates_are_acknowledged_live_without_rebuilding_or_touching_other
 }
 
 #[test]
-fn mixer_edits_wait_for_apply_then_activate_without_changing_sends() {
+fn mixer_edits_apply_live_without_rebuilding_or_waiting_for_apply() {
     let mut rig = Rig::new();
     rig.start();
     let source = rig.node(NodeKind::Source);
     let before = rig.c.graph.snapshot();
+    let prepares = rig.state.prepares.load(Ordering::SeqCst);
     rig.request(AppRequest::EditGraph(GraphEdit::SetMixer {
         node: source,
         state: crate::service::MixerState {
@@ -1130,20 +1131,13 @@ fn mixer_edits_wait_for_apply_then_activate_without_changing_sends() {
             ..Default::default()
         },
     }));
-    for _ in 0..4 {
-        rig.tick();
-    }
-    assert_eq!(rig.sample(), 1.);
+    rig.wait(|rig| rig.sample() == 0.5);
+    assert_eq!(rig.state.prepares.load(Ordering::SeqCst), prepares);
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
     assert_eq!(
         rig.c.graph.snapshot().active_revision,
         before.active_revision
     );
-    rig.request(AppRequest::ApplyGraph);
-    rig.wait(|rig| {
-        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
-            && rig.sample() == 0.5
-    });
-    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
     assert_eq!(rig.c.graph.snapshot().graph.edges(), before.graph.edges());
     rig.request(AppRequest::EditGraph(GraphEdit::SetMixer {
         node: source,
@@ -1152,11 +1146,65 @@ fn mixer_edits_wait_for_apply_then_activate_without_changing_sends() {
             ..Default::default()
         },
     }));
+    rig.wait(|rig| rig.sample() == 0.);
+}
+
+#[test]
+fn solo_edits_fan_out_live_strip_mutes_to_parallel_sources() {
+    let mut rig = Rig::new();
+    rig.start();
+    let source = rig.node(NodeKind::Source);
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Source,
+        channels: 2,
+    }));
+    let other = rig
+        .c
+        .graph
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Source && node.id() != source)
+        .unwrap()
+        .id();
+    rig.request(AppRequest::EditGraph(GraphEdit::BindSource {
+        node: other,
+        source: crate::service::InputSelection::Tone {
+            frequency_hz: 440.0,
+        },
+    }));
     rig.request(AppRequest::ApplyGraph);
     rig.wait(|rig| {
         rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
-            && rig.sample() == 0.
     });
+    let other = rig
+        .c
+        .graph
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Source && node.id() != source)
+        .unwrap()
+        .id();
+    let prepares = rig.state.prepares.load(Ordering::SeqCst);
+    // Soloing the chain source silences the parallel branch live.
+    rig.request(AppRequest::EditGraph(GraphEdit::SetMixer {
+        node: source,
+        state: crate::service::MixerState {
+            solo: true,
+            ..Default::default()
+        },
+    }));
+    rig.wait(|rig| {
+        rig.driver.strip_live.get(&other) == Some(&(1.0, true))
+            && rig.driver.unsent.is_empty()
+            && rig.driver.parameters.is_empty()
+    });
+    assert_eq!(rig.state.prepares.load(Ordering::SeqCst), prepares);
+    // The soloed chain itself stays audible at unity gain.
+    assert_eq!(rig.driver.strip_live.get(&source), Some(&(1.0, false)));
 }
 impl Rig {
     fn new() -> Self {

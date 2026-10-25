@@ -1,13 +1,13 @@
 //! Desktop adapter for the engine's lifecycle owner. The service only projects
 //! receipts and snapshots; compilation, swaps and native ownership stay in host.
 use super::*;
-use moiren_core::protocol::ParamValue;
+use moiren_core::{graph::NodeId, protocol::ParamValue};
 use moiren_engine::host::{
     self, EditOutcome, EditReceipt, EngineBackend, EngineControl, EngineHost, EngineObserver,
     ExecutionState, HostConfig, ParameterOutcome, ParameterReceipt, ParameterTarget,
-    ParameterTiming, UpdateState,
+    ParameterTiming, StripParameter, UpdateState,
 };
-use std::time::Instant;
+use std::{collections::BTreeMap, time::Instant};
 mod driver;
 mod lifecycle;
 mod meters;
@@ -72,6 +72,7 @@ struct ApplyConfirmation {
     host_revision: u64,
 }
 struct PendingParameter {
+    target: ParameterTarget,
     receipt: ParameterReceipt,
     /// Only this Apply's own target/value request can satisfy its barrier.
     confirmation: Option<ApplyConfirmation>,
@@ -102,6 +103,9 @@ pub struct ManagedDriver {
     exiting: bool,
     apply: bool,
     apply_audio_settings: Option<AudioSettings>,
+    /// Last submitted effective strip values (dim-folded gain, solo-audible
+    /// mute) per node; diffs against the candidate drive live submissions.
+    strip_live: BTreeMap<NodeId, (f64, bool)>,
     meters: Option<meters::MeterBridge>,
     #[cfg(windows)]
     observations: Option<
@@ -142,6 +146,7 @@ impl ManagedDriver {
             edits: Vec::with_capacity(16),
             parameters: Vec::with_capacity(64),
             unsent: Vec::with_capacity(64),
+            strip_live: BTreeMap::new(),
             confirm_parameters: None,
             confirmation_values: VecDeque::new(),
             document: 0,
