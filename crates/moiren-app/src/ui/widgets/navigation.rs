@@ -6,6 +6,7 @@ use gpui_kit::*;
 use super::action_assets::ActionIcon;
 use super::action_style::{Paint, SampleState, Skin, styled_control};
 use crate::ui::theme::controls as t;
+use rust_i18n::t;
 
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -84,7 +85,7 @@ impl RenderOnce for WindowControlButton {
             focus: normal,
         };
         styled_control(
-            base::Button::new(self.id).accessibility_label(self.action.label()),
+            base::Button::new(self.id).accessibility_label(t!(self.action.label())),
             skin,
             false,
             self.sample,

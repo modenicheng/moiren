@@ -2,6 +2,7 @@
 use super::*;
 use crate::project::{ProjectDocument, WorkspaceDocument};
 use controls::*;
+use rust_i18n::t;
 
 pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
     let save_pending = shell.project_busy || shell.state.read(cx).pending_request;
@@ -26,10 +27,10 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoE
                 .project_path
                 .as_ref()
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "Not saved to disk".into()),
+                .unwrap_or_else(|| t!("Not saved to disk").into()),
         ))
         .child(
-            button("open-project", "Open project…")
+            button("open-project", t!("Open project…"))
                 .disabled(shell.project_busy)
                 .on_click({
                     let this = cx.entity();
@@ -37,7 +38,7 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoE
                 }),
         )
         .child(
-            button("save-project", "Save project")
+            button("save-project", t!("Save project"))
                 .disabled(save_pending)
                 .on_click({
                     let this = cx.entity();
@@ -45,7 +46,7 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoE
                 }),
         )
         .child(
-            button("save-project-as", "Save project as…")
+            button("save-project-as", t!("Save project as…"))
                 .disabled(save_pending)
                 .on_click({
                     let this = cx.entity();
@@ -55,7 +56,7 @@ pub(super) fn menu(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoE
         .when_some(shell.project_message.clone(), |v, message| {
             v.child(label(message))
         })
-        .child(label("Opening a project keeps audio stopped."))
+        .child(label(t!("Opening a project keeps audio stopped.")))
 }
 
 #[cfg(all(test, feature = "gpui-test"))]
@@ -259,7 +260,11 @@ impl StudioShell {
                 match prompt.expect("save prompt").await {
                     Ok(Ok(path)) => path,
                     other => {
-                        let message = format!("Could not open save dialog: {other:?}");
+                        let message = t!(
+                            "Could not open save dialog: %{error}",
+                            error = format!("{other:?}")
+                        )
+                        .to_string();
                         let _ = this.update(cx, |s, cx| {
                             s.project_busy = false;
                             s.project_message = Some(message);
@@ -286,7 +291,7 @@ impl StudioShell {
                 match result {
                     Ok(()) => {
                         s.project_path = Some(path);
-                        s.project_message = Some("Project saved".into());
+                        s.project_message = Some(t!("Project saved").into());
                     }
                     Err(error) => s.project_message = Some(error.to_string()),
                 }
@@ -301,7 +306,7 @@ impl StudioShell {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Open Moiren project".into()),
+            prompt: Some(t!("Open Moiren project").into()),
         });
         self.project_busy = true;
         cx.notify();
@@ -312,7 +317,13 @@ impl StudioShell {
                 other => {
                     let _ = this.update(cx, |s, cx| {
                         s.project_busy = false;
-                        s.project_message = Some(format!("Could not open file dialog: {other:?}"));
+                        s.project_message = Some(
+                            t!(
+                                "Could not open file dialog: %{error}",
+                                error = format!("{other:?}")
+                            )
+                            .to_string(),
+                        );
                         cx.notify();
                     });
                     return;
@@ -362,7 +373,7 @@ impl StudioShell {
                 reason: format!("{error:?}"),
             })?;
         self.project_busy = true;
-        self.project_message = Some("Project load requested".into());
+        self.project_message = Some(t!("Project load requested").into());
         self.pending_project = Some((request, document, path));
         Ok(())
     }
@@ -378,12 +389,13 @@ impl StudioShell {
         let (_, document, path) = self.pending_project.take().expect("pending project");
         self.project_busy = false;
         if let Some(error) = &snapshot.graph.last_error {
-            self.project_message = Some(format!("Project was not loaded: {error}"));
+            self.project_message =
+                Some(t!("Project was not loaded: %{error}", error = error).to_string());
         } else {
             match self.apply_project_presentation(&document, cx) {
                 Ok(()) => {
                     self.project_path = Some(path);
-                    self.project_message = Some("Project opened".into());
+                    self.project_message = Some(t!("Project opened").into());
                 }
                 Err(error) => self.project_message = Some(error.to_string()),
             }
@@ -418,7 +430,7 @@ impl StudioShell {
         }
         self.node_positions.clear();
         self.pending_node_spawn = None;
-        self.node_name_selection = None;
+        self.node_name_editing = None;
         self.compressor = graph::CompressorControls::default();
         self.mixer.order.clear();
         self.mixer.width = document.layout.mixer_width;

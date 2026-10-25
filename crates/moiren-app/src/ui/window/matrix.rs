@@ -1,4 +1,6 @@
 //! Direct port connections of the same LogicalGraph used by Graph and Mixer.
+use rust_i18n::t;
+
 use super::*;
 use crate::service::GraphEdit;
 use controls::*;
@@ -46,7 +48,11 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .h_full()
                 .p(px(8.))
                 .bg(theme::SURFACE_3)
-                .child(label(format!("{} / in {}", name(node.id()), i + 1))),
+                .child(label(t!(
+                    "%{name} / in %{index}",
+                    name = name(node.id()),
+                    index = i + 1
+                ))),
         );
     }
     let mut row_header = div()
@@ -63,7 +69,11 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .h(px(row_height))
                 .p(px(8.))
                 .bg(theme::SURFACE_3)
-                .child(label(format!("{} / out {}", name(node.id()), i + 1))),
+                .child(label(t!(
+                    "%{name} / out %{index}",
+                    name = name(node.id()),
+                    index = i + 1
+                ))),
         );
     }
     let mut grid = div().flex().flex_col().w(px(width)).h(px(height));
@@ -81,7 +91,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             let value = edge
                 .map(|e| {
                     if e.params().mute {
-                        "Muted".into()
+                        t!("Muted").into()
                     } else {
                         db(e.params().gain)
                     }
@@ -90,11 +100,15 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             let this = cx.entity();
             row = row.child(
                 base::Button::new(SharedString::from(format!("route-{ri}-{ci}")))
-                    .accessibility_label(format!(
-                        "{} to {}: {value}",
-                        name(source.id()),
-                        name(destination.id())
-                    ))
+                    .accessibility_label(
+                        t!(
+                            "%{source} to %{destination}: %{value}",
+                            source = name(source.id()),
+                            destination = name(destination.id()),
+                            value = value
+                        )
+                        .to_string(),
+                    )
                     .w(px(112.))
                     .h(px(row_height))
                     .rounded_none()
@@ -142,7 +156,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .items_center()
                 .justify_between()
                 .px(px(16.))
-                .child(heading("Routing matrix"))
+                .child(heading(t!("Routing matrix")))
                 .child(
                     div()
                         .flex()
@@ -180,7 +194,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                         .flex_none()
                                         .p(px(8.))
                                         .bg(theme::SURFACE_3)
-                                        .child(label("Outputs → Inputs")),
+                                        .child(label(t!("Outputs → Inputs"))),
                                 )
                                 .child(
                                     div()
@@ -221,11 +235,11 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                         .gpui_test_observe(),
                                 ),
                         )
-                        .child(div().flex_none().p(px(12.)).child(label(format!(
-                            "{} output ports · {} input ports · {} direct connections",
-                            outputs.len(),
-                            inputs.len(),
-                            graph.edges().len()
+                        .child(div().flex_none().p(px(12.)).child(label(t!(
+                            "%{outputs} output ports · %{inputs} input ports · %{connections} direct connections",
+                            outputs = outputs.len(),
+                            inputs = inputs.len(),
+                            connections = graph.edges().len()
                         )))),
                 )
                 .when(shell.inspector_open, |v| v.child(inspector(shell, cx))),
@@ -237,13 +251,13 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
 pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot.graph;
-    let mut view = panel("matrix-inspector").child(heading("Connection"));
+    let mut view = panel("matrix-inspector").child(heading(t!("Connection")));
     if let Some((source, destination)) = shell.selected_route {
         if let Some((src, dst, channels)) = find_nodes(snapshot, source, destination) {
             view = view
-                .child(detail("From", src))
-                .child(detail("To", dst))
-                .child(detail("Channels", channels.to_string()));
+                .child(detail(&t!("From"), src))
+                .child(detail(&t!("To"), dst))
+                .child(detail(&t!("Channels"), channels.to_string()));
             if let Some(edge) = snapshot
                 .graph
                 .edges()
@@ -253,18 +267,18 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 let id = edge.id();
                 let params = *edge.params();
                 view = view
-                    .child(badge("Connected", theme::PRIMARY))
-                    .child(detail("Route gain", db(params.gain)))
-                    .child(detail("Route balance", format!("{:+.2}", params.pan)))
+                    .child(badge(t!("Connected"), theme::PRIMARY))
+                    .child(detail(&t!("Route gain"), db(params.gain)))
+                    .child(detail(&t!("Route balance"), format!("{:+.2}", params.pan)))
                     .child(detail(
-                        "Tap",
+                        &t!("Tap"),
                         match params.tap {
-                            moiren_core::graph::SendTap::PreFader => "Pre-fader",
-                            moiren_core::graph::SendTap::PostFader => "Post-fader",
+                            moiren_core::graph::SendTap::PreFader => t!("Pre-fader"),
+                            moiren_core::graph::SendTap::PostFader => t!("Post-fader"),
                         },
                     ))
                     .child(
-                        button("disconnect-route", "Disconnect")
+                        button("disconnect-route", t!("Disconnect"))
                             .variant(ButtonVariant::Danger)
                             .on_click(edit(cx.entity(), GraphEdit::Disconnect(id))),
                     )
@@ -272,9 +286,9 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                         button(
                             "mute-route",
                             if params.mute {
-                                "Unmute route"
+                                t!("Unmute route")
                             } else {
-                                "Mute route"
+                                t!("Mute route")
                             },
                         )
                         .on_click(edit(
@@ -314,37 +328,41 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                             ))),
                     );
             } else {
-                view = view.child(badge("Not connected", theme::TEXT_FAINT)).child(
-                    button("connect-route", "Connect")
-                        .variant(ButtonVariant::Primary)
-                        .on_click(edit(
-                            cx.entity(),
-                            GraphEdit::Connect {
-                                source,
-                                destination,
-                            },
-                        )),
-                );
+                view = view
+                    .child(badge(t!("Not connected"), theme::TEXT_FAINT))
+                    .child(
+                        button("connect-route", t!("Connect"))
+                            .variant(ButtonVariant::Primary)
+                            .on_click(edit(
+                                cx.entity(),
+                                GraphEdit::Connect {
+                                    source,
+                                    destination,
+                                },
+                            )),
+                    );
             }
             let this = cx.entity();
             view = view.when(shell.presentation.page != Page::Graph, |view| {
-                view.child(
-                    button("show-in-graph", "Show in Graph").on_click(move |_, _, cx| {
+                view.child(button("show-in-graph", t!("Show in Graph")).on_click(
+                    move |_, _, cx| {
                         this.update(cx, |s, cx| {
                             s.selected_node = None;
                             s.set_page(Page::Graph, cx);
                             s.inspector_open = true;
                         })
-                    }),
-                )
+                    },
+                ))
             });
         } else {
-            view = view.child(label("This connection no longer exists. Select a cell."));
+            view = view.child(label(t!(
+                "This connection no longer exists. Select a cell."
+            )));
         }
     } else {
-        view = view.child(label(
-            "Select an intersection to inspect or change a direct connection.",
-        ));
+        view = view.child(label(t!(
+            "Select an intersection to inspect or change a direct connection."
+        )));
     }
     view.gpui_test_observe().into_any_element()
 }
@@ -368,14 +386,14 @@ fn find_nodes(
     let mut to = snapshot.node(dst.id())?.label.clone();
     if src.outputs().len() > 1 {
         let index = src.outputs().iter().position(|port| port.id() == source)?;
-        from.push_str(&format!(" · output {}", index + 1));
+        from.push_str(&t!(" · output %{index}", index = index + 1));
     }
     if dst.inputs().len() > 1 {
         let index = dst
             .inputs()
             .iter()
             .position(|port| port.id() == destination)?;
-        to.push_str(&format!(" · input {}", index + 1));
+        to.push_str(&t!(" · input %{index}", index = index + 1));
     }
     Some((from, to, src.channels()))
 }

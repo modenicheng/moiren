@@ -5,6 +5,7 @@ use crate::service::{
 };
 use moiren_core::graph::NodeId;
 use moiren_engine::node::VirtualEndpointId;
+use rust_i18n::t;
 use std::collections::BTreeMap;
 
 #[cfg(test)]
@@ -84,7 +85,7 @@ fn edit_export(
     let export = exports
         .iter_mut()
         .find(|export| export.endpoint_id == endpoint_id)
-        .ok_or("Export is no longer in this project's candidate graph")?;
+        .ok_or(t!("Export is no longer in this project's candidate graph").to_string())?;
     match edit {
         IntentEdit::Rename(name) => export.name = name,
         IntentEdit::Channels(channels) => export.channels = channels,
@@ -190,19 +191,19 @@ pub(super) fn list(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<D
         .min_w_0()
         .gap(px(12.))
         .overflow_y_scroll()
-        .child(heading("Virtual exports"))
-        .child(label("Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed."))
+        .child(heading(t!("Virtual exports")))
+        .child(label(t!("Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.")))
         .child(creation_controls(shell, cx))
-        .child(label("Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export."))
+        .child(label(t!("Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export.")))
         .child(div().id("export-default-help")
-            .aria_label(DEFAULT_ELIGIBILITY_HELP)
-            .child(label(DEFAULT_ELIGIBILITY_HELP))
+            .aria_label(t!(DEFAULT_ELIGIBILITY_HELP))
+            .child(label(t!(DEFAULT_ELIGIBILITY_HELP)))
             .gpui_test_observe())
-        .child(label("Changing channels, a name, or eligibility safely retires and recreates the endpoint. Apply again to resume; unbind incompatible Graph IO before changing channels."));
+        .child(label(t!("Changing channels, a name, or eligibility safely retires and recreates the endpoint. Apply again to resume; unbind incompatible Graph IO before changing channels.")));
     if snapshot.exports.is_empty() {
-        list = list.child(label(
-            "No virtual exports yet. Create one above; it starts unbound.",
-        ));
+        list = list.child(label(t!(
+            "No virtual exports yet. Create one above; it starts unbound."
+        )));
     }
     for status in &snapshot.exports {
         list = list.child(export_row(shell, status, cx));
@@ -218,12 +219,12 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
     for (id, title, direction) in [
         (
             "export-create-playback",
-            "Playback",
+            t!("Playback"),
             ExportDirection::Playback,
         ),
         (
             "export-create-microphone",
-            "Microphone",
+            t!("Microphone"),
             ExportDirection::Microphone,
         ),
     ] {
@@ -245,8 +246,8 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
         );
     }
     for (id, title, channels) in [
-        ("export-create-mono", "Mono", 1),
-        ("export-create-stereo", "Stereo", 2),
+        ("export-create-mono", t!("Mono"), 1),
+        ("export-create-stereo", t!("Stereo"), 2),
     ] {
         let this = cx.entity();
         choices = choices.child(
@@ -274,11 +275,11 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
         .p(px(12.))
         .bg(theme::SURFACE)
         .rounded(px(theme::RADIUS_MD))
-        .child(heading("Create export"))
+        .child(heading(t!("Create export")))
         .child(choices)
-        .child(label(
-            "Endpoint name (1-63 UTF-16 units; no control characters)",
-        ))
+        .child(label(t!(
+            "Endpoint name (1-63 UTF-16 units; no control characters)"
+        )))
         .child(
             component::input::Input::new(&shell.export_controls.name)
                 .id("export-create-name")
@@ -293,7 +294,7 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
                 .items_center()
                 .gap(px(8.))
                 .child(
-                    button("export-create", "Create export")
+                    button("export-create", t!("Create export"))
                         .variant(ButtonVariant::Primary)
                         .disabled(
                             pending
@@ -346,51 +347,51 @@ fn export_row(
             "{:?} / {} / {id}",
             status.intent.direction,
             if status.intent.channels == 1 {
-                "Mono"
+                t!("Mono")
             } else {
-                "Stereo"
+                t!("Stereo")
             }
         )))
         .child(detail(
-            "Endpoint",
+            &t!("Endpoint"),
             match status.resource {
-                ExportResourceState::Unavailable => "Unavailable",
-                ExportResourceState::Absent => "Absent",
-                ExportResourceState::Creating => "Creating",
-                ExportResourceState::Present => "Present (not a flow signal)",
-                ExportResourceState::Removing => "Removing / awaiting confirmation",
+                ExportResourceState::Unavailable => t!("Unavailable"),
+                ExportResourceState::Absent => t!("Absent"),
+                ExportResourceState::Creating => t!("Creating"),
+                ExportResourceState::Present => t!("Present (not a flow signal)"),
+                ExportResourceState::Removing => t!("Removing / awaiting confirmation"),
             },
         ))
         .child(detail(
-            "Gate admission",
+            &t!("Gate admission"),
             if status.gate_open {
-                "Open (not a flow signal)"
+                t!("Open (not a flow signal)")
             } else {
-                "Closed"
+                t!("Closed")
             },
         ))
         .child(detail(
-            "Engine-confirmed binding",
+            &t!("Engine-confirmed binding"),
             status
                 .active_revision
-                .map(|revision| format!("Active revision {revision}"))
-                .unwrap_or_else(|| "Inactive".into()),
+                .map(|revision| t!("Active revision %{revision}", revision = revision).to_string())
+                .unwrap_or_else(|| t!("Inactive").into()),
         ))
         .child(detail(
-            "Candidate graph binding",
+            &t!("Candidate graph binding"),
             desired
                 .and_then(|intent| intent.binding)
                 .and_then(|node| graph.node(node))
                 .map(|node| node.label.clone())
-                .unwrap_or_else(|| "Unbound".into()),
+                .unwrap_or_else(|| t!("Unbound").into()),
         ));
     if let Some(desired) = desired {
         row = row.child(detail(
-            "Candidate intent",
+            &t!("Candidate intent"),
             if desired.enabled {
-                "Enabled"
+                t!("Enabled")
             } else {
-                "Disabled"
+                t!("Disabled")
             },
         ));
         let mut shape = div()
@@ -398,8 +399,8 @@ fn export_row(
             .flex_wrap()
             .items_center()
             .gap(px(6.))
-            .child(label("Channels"));
-        for (key, title, channels) in [("mono", "Mono", 1), ("stereo", "Stereo", 2)] {
+            .child(label(t!("Channels")));
+        for (key, title, channels) in [("mono", t!("Mono"), 1), ("stereo", t!("Stereo"), 2)] {
             let this = cx.entity();
             shape = shape.child(
                 button(SharedString::from(format!("export-{key}-{id}")), title)
@@ -420,7 +421,7 @@ fn export_row(
         if let Some(draft) = shell.export_controls.names.get(&id) {
             let this = cx.entity();
             row = row
-                .child(label("Endpoint name"))
+                .child(label(t!("Endpoint name")))
                 .child(
                     component::input::Input::new(&draft.input)
                         .id(SharedString::from(format!("export-name-{id}")))
@@ -429,19 +430,22 @@ fn export_row(
                         .border_color(theme::BORDER),
                 )
                 .child(
-                    button(SharedString::from(format!("export-rename-{id}")), "Rename")
-                        .disabled(
-                            state.pending_request
-                                || draft.input.read(cx).value().as_ref() == desired.name,
-                        )
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |shell, cx| {
-                                if let Some(draft) = shell.export_controls.names.get(&id) {
-                                    let name = draft.input.read(cx).value().to_string();
-                                    shell.submit_export_edit(id, IntentEdit::Rename(name), cx);
-                                }
-                            });
-                        }),
+                    button(
+                        SharedString::from(format!("export-rename-{id}")),
+                        t!("Rename"),
+                    )
+                    .disabled(
+                        state.pending_request
+                            || draft.input.read(cx).value().as_ref() == desired.name,
+                    )
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |shell, cx| {
+                            if let Some(draft) = shell.export_controls.names.get(&id) {
+                                let name = draft.input.read(cx).value().to_string();
+                                shell.submit_export_edit(id, IntentEdit::Rename(name), cx);
+                            }
+                        });
+                    }),
                 );
         }
         let selected = binding_candidate(graph, id, shell.selected_node);
@@ -459,9 +463,9 @@ fn export_row(
                     button(
                         SharedString::from(format!("export-toggle-{id}")),
                         if desired.enabled {
-                            "Disable intent"
+                            t!("Disable intent")
                         } else {
-                            "Enable intent"
+                            t!("Enable intent")
                         },
                     )
                     .disabled(state.pending_request)
@@ -474,7 +478,7 @@ fn export_row(
                 .child(
                     button(
                         SharedString::from(format!("export-bind-{id}")),
-                        "Bind selected IO",
+                        t!("Bind selected IO"),
                     )
                     .disabled(
                         state.pending_request || selected.is_none() || selected == desired.binding,
@@ -494,18 +498,21 @@ fn export_row(
                     }),
                 )
                 .child(
-                    button(SharedString::from(format!("export-unbind-{id}")), "Unbind")
-                        .disabled(state.pending_request || desired.binding.is_none())
-                        .on_click(move |_, _, cx| {
-                            unbind.update(cx, |shell, cx| {
-                                shell.submit_export_edit(id, IntentEdit::Binding(None), cx)
-                            });
-                        }),
+                    button(
+                        SharedString::from(format!("export-unbind-{id}")),
+                        t!("Unbind"),
+                    )
+                    .disabled(state.pending_request || desired.binding.is_none())
+                    .on_click(move |_, _, cx| {
+                        unbind.update(cx, |shell, cx| {
+                            shell.submit_export_edit(id, IntentEdit::Binding(None), cx)
+                        });
+                    }),
                 )
                 .child(
                     button(
                         SharedString::from(format!("export-remove-{id}")),
-                        "Remove intent",
+                        t!("Remove intent"),
                     )
                     .disabled(state.pending_request)
                     .on_click(move |_, _, cx| {
@@ -517,7 +524,7 @@ fn export_row(
         );
         row = row.child(default_control(shell, status, cx));
     } else {
-        row = row.child(label("Removed from candidate. The service retains lifecycle tracking until safe retirement is confirmed."));
+        row = row.child(label(t!("Removed from candidate. The service retains lifecycle tracking until safe retirement is confirmed.")));
     }
     row.gpui_test_observe()
 }
@@ -532,9 +539,9 @@ fn default_control(
     button(
         SharedString::from(format!("export-default-{id}")),
         if status.allow_default {
-            "Revoke local default eligibility"
+            t!("Revoke local default eligibility")
         } else {
-            "Allow default eligibility on this computer"
+            t!("Allow default eligibility on this computer")
         },
     )
     .disabled(shell.state.read(cx).pending_request)

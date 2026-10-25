@@ -1,6 +1,7 @@
 use super::*;
 use crate::ui::state::{SourceMode, input_rows, output_name, output_rows, source_name};
 use controls::*;
+use rust_i18n::t;
 
 mod exports;
 pub(super) use exports::ExportControls;
@@ -23,11 +24,11 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
     let asio = snapshot.audio_settings.backend == moiren_engine::audio_config::AudioBackend::Asio;
     let mut tabs = div().flex().items_center().gap(px(6.));
     for (id, title, tab) in [
-        ("devices-inputs", "Inputs", DeviceTab::Inputs),
-        ("devices-outputs", "Outputs", DeviceTab::Outputs),
-        ("devices-apps", "Applications", DeviceTab::Applications),
-        ("devices-exports", "Exports", DeviceTab::Exports),
-        ("devices-clock", "Clock", DeviceTab::Clock),
+        ("devices-inputs", t!("Inputs"), DeviceTab::Inputs),
+        ("devices-outputs", t!("Outputs"), DeviceTab::Outputs),
+        ("devices-apps", t!("Applications"), DeviceTab::Applications),
+        ("devices-exports", t!("Exports"), DeviceTab::Exports),
+        ("devices-clock", t!("Clock"), DeviceTab::Clock),
     ] {
         let this = cx.entity();
         tabs = tabs.child(
@@ -76,17 +77,17 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 if !rows.iter().any(|row| &row.endpoint_id == id) {
                     rows.push(crate::service::DeviceRow {
                         endpoint_id: id.clone(),
-                        name: "Unavailable device (saved override)".into(),
+                        name: t!("Unavailable device (saved override)").into(),
                     });
                 }
             }
             if rows.is_empty() {
                 list = list
-                    .child(heading("No devices available"))
+                    .child(heading(t!("No devices available")))
                     .child(label(if asio {
-                        "Refresh to discover installed ASIO drivers."
+                        t!("Refresh to discover installed ASIO drivers.")
                     } else {
-                        "Refresh to discover connected Windows audio endpoints."
+                        t!("Refresh to discover connected Windows audio endpoints.")
                     }));
             }
             for row in &rows {
@@ -132,15 +133,17 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                 .gap(px(4.))
                                 .child(heading(row.name.clone())),
                         )
-                        .when(!present, |v| v.child(badge("Unavailable", theme::WARNING)))
+                        .when(!present, |v| {
+                            v.child(badge(t!("Unavailable"), theme::WARNING))
+                        })
                         .when(saved.contains_key(&id), |v| {
-                            v.child(badge("Override", theme::PRIMARY))
+                            v.child(badge(t!("Override"), theme::PRIMARY))
                         })
                         .when(default && !asio, |v| {
-                            v.child(badge("Default", theme::TEXT_MUTED))
+                            v.child(badge(t!("Default"), theme::TEXT_MUTED))
                         })
                         .child(
-                            button(SharedString::from(format!("inspect-{id}")), "Configure")
+                            button(SharedString::from(format!("inspect-{id}")), t!("Configure"))
                                 .on_click({
                                     let this = cx.entity();
                                     let id = id.clone();
@@ -151,14 +154,14 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                     }
                                 }),
                         )
-                        .when(active, |v| v.child(badge("Active", theme::SUCCESS)))
+                        .when(active, |v| v.child(badge(t!("Active"), theme::SUCCESS)))
                         .child(
                             button(
                                 SharedString::from(format!("choose-{id}")),
                                 if selected {
-                                    "Next start"
+                                    t!("Next start")
                                 } else {
-                                    "Use next start"
+                                    t!("Use next start")
                                 },
                             )
                             .disabled(!present || state.pending_request)
@@ -184,10 +187,10 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         }
         DeviceTab::Applications => {
             if asio {
-                list = list.child(label("Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources."));
+                list = list.child(label(t!("Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.")));
             }
             if catalog.processes.is_empty() {
-                list=list.child(heading("No capturable applications")).child(label("Start an application that plays audio, then refresh. Protected applications may be unavailable."));
+                list=list.child(heading(t!("No capturable applications"))).child(label(t!("Start an application that plays audio, then refresh. Protected applications may be unavailable.")));
             }
             for process in catalog.processes.iter().filter(|_| !asio) {
                 let key = (process.pid, process.creation_time_100ns);
@@ -207,18 +210,19 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                 .flex_col()
                                 .gap(px(4.))
                                 .child(heading(process.name.clone()))
-                                .child(label(format!(
-                                    "PID {} · created {}",
-                                    process.pid, process.creation_time_100ns
+                                .child(label(t!(
+                                    "PID %{pid} · created %{created}",
+                                    pid = process.pid,
+                                    created = process.creation_time_100ns
                                 ))),
                         )
                         .child(
                             button(
                                 SharedString::from(format!("process-{}-{}", key.0, key.1)),
                                 if state.selection.process_key == Some(key) {
-                                    "Next start"
+                                    t!("Next start")
                                 } else {
-                                    "Use next start"
+                                    t!("Use next start")
                                 },
                             )
                             .on_click(move |_, _, cx| {
@@ -236,43 +240,43 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             }
         }
         DeviceTab::Clock => {
-            list = list.child(heading("Active audio clocks"));
+            list = list.child(heading(t!("Active audio clocks")));
             if let Some(diagnostic) = snapshot.monitor_diagnostics.filter(|d| {
                 d.generation == snapshot.generation && snapshot.phase == SessionPhase::Running
             }) {
                 let obs = diagnostic.observation;
-                list=list.child(detail("Input sample rate",format!("{} Hz",obs.prepared.input.sample_rate)))
-                    .child(detail("Output sample rate",format!("{} Hz",obs.prepared.output.sample_rate)))
-                    .child(detail("Clock correction",format!("{:+.2} ppm",obs.correction_ppm)))
-                    .child(detail("Input buffer fill",format!("{} frames",obs.input_fill_frames)))
-                    .child(detail("Processed",format!("{} frames",obs.processed_frames)))
-                    .child(label("Clock correction and buffer inventory come from the active monitor. Buffer fill is not end-to-end latency."));
+                list=list.child(detail(&t!("Input sample rate"),format!("{} Hz",obs.prepared.input.sample_rate)))
+                    .child(detail(&t!("Output sample rate"),format!("{} Hz",obs.prepared.output.sample_rate)))
+                    .child(detail(&t!("Clock correction"),format!("{:+.2} ppm",obs.correction_ppm)))
+                    .child(detail(&t!("Input buffer fill"),format!("{} frames",obs.input_fill_frames)))
+                    .child(detail(&t!("Processed"),format!("{} frames",obs.processed_frames)))
+                    .child(label(t!("Clock correction and buffer inventory come from the active monitor. Buffer fill is not end-to-end latency.")));
             } else {
-                list=list.child(label("No active monitor clock observation. Start a physical input or application session to inspect clock adaptation."));
+                list=list.child(label(t!("No active monitor clock observation. Start a physical input or application session to inspect clock adaptation.")));
             }
         }
     }
-    let mut inspector = panel("device-inspector").child(heading("Session resources"));
+    let mut inspector = panel("device-inspector").child(heading(t!("Session resources")));
     if let Some(active) = snapshot
         .desired
         .as_ref()
         .filter(|_| snapshot.phase == SessionPhase::Running)
     {
         inspector = inspector
-            .child(badge("Active session", theme::SUCCESS))
-            .child(detail("Source", source_name(snapshot, &active.source)))
+            .child(badge(t!("Active session"), theme::SUCCESS))
+            .child(detail(&t!("Source"), source_name(snapshot, &active.source)))
             .child(detail(
-                "Output",
+                &t!("Output"),
                 output_name(snapshot, &active.output_endpoint_id),
             ));
     } else {
-        inspector = inspector.child(label("No active session"));
+        inspector = inspector.child(label(t!("No active session")));
     }
-    inspector=inspector.child(badge("Next start",theme::WARNING))
-        .child(detail("Source mode",state.source_mode.title()))
-        .child(detail("Source",state.candidate_spec().map(|s|source_name(snapshot,&s.source)).unwrap_or_else(||"Select available resources".into())))
-        .child(detail("Output",state.selection.output_id.as_ref().map(|id|output_name(snapshot,id)).unwrap_or_else(||"Not selected".into())))
-        .child(label("Selecting another resource leaves the running session unchanged. Stop and start to switch devices."));
+    inspector=inspector.child(badge(t!("Next start"),theme::WARNING))
+        .child(detail(&t!("Source mode"),t!(state.source_mode.title())))
+        .child(detail(&t!("Source"),state.candidate_spec().map(|s|source_name(snapshot,&s.source)).unwrap_or_else(||t!("Select available resources").into())))
+        .child(detail(&t!("Output"),state.selection.output_id.as_ref().map(|id|output_name(snapshot,id)).unwrap_or_else(||t!("Not selected").into())))
+        .child(label(t!("Selecting another resource leaves the running session unchanged. Stop and start to switch devices.")));
     div()
         .id("devices-page")
         .flex()
@@ -291,7 +295,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .child(tabs)
                 .child(inspector_toggle("toggle-details", cx))
                 .child(
-                    button("refresh-devices", "Refresh devices")
+                    button("refresh-devices", t!("Refresh devices"))
                         .disabled(state.pending_request)
                         .on_click({
                             let this = cx.entity();
@@ -315,8 +319,9 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     .py(px(8.))
                     .bg(theme::soft(theme::DANGER))
                     .text_color(theme::DANGER)
-                    .child(format!(
-                        "ASIO discovery failed: {error}. Refresh devices to retry."
+                    .child(t!(
+                        "ASIO discovery failed: %{error}. Refresh devices to retry.",
+                        error = error
                     ))
                     .gpui_test_observe(),
             )

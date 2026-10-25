@@ -7,6 +7,7 @@
 //! snapshot has not polled the drag yet). The window closes on focus loss
 //! and Escape.
 
+use rust_i18n::t;
 use std::collections::BTreeMap;
 
 use super::controls::{badge, button, db, heading, label};
@@ -179,9 +180,9 @@ impl Render for TrayMixer {
                     .h(px(36.))
                     .border_b_1()
                     .border_color(theme::BORDER)
-                    .child(heading("Mixer"))
+                    .child(heading(t!("Mixer")))
                     .when(pending, |header| {
-                        header.child(badge("Pending", theme::WARNING))
+                        header.child(badge(t!("Pending"), theme::WARNING))
                     })
                     .child(div().flex_1())
                     .child(open_button(self, cx)),
@@ -193,7 +194,7 @@ impl Render for TrayMixer {
                     .items_center()
                     .justify_center()
                     .px(px(16.))
-                    .child(label("No strips · open Moiren to build a graph"))
+                    .child(label(t!("No strips · open Moiren to build a graph")))
                     .into_any_element()
             } else {
                 strips.into_any_element()
@@ -204,7 +205,7 @@ impl Render for TrayMixer {
 fn open_button(flyout: &TrayMixer, cx: &Context<TrayMixer>) -> impl IntoElement {
     let this = cx.entity();
     let desktop = flyout.desktop.clone();
-    button("tray-mixer-open", "Open")
+    button("tray-mixer-open", t!("Open"))
         .variant(ButtonVariant::Ghost)
         .on_click(move |_, _, cx| {
             this.update(cx, |_, cx| {
