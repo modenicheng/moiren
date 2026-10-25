@@ -6,6 +6,8 @@
 
 use std::sync::Arc;
 
+use rust_i18n::t;
+
 use crate::service::{
     AppHandle, AppRequest, AppSnapshot, AudioBackend, DeviceCatalog, DeviceRow, GraphPreparation,
     InputSelection, RequestId, RunLimit, SessionPhase, SessionSpec,
@@ -420,7 +422,7 @@ impl UiState {
             )
         } else {
             let spec = self.candidate_spec().ok_or_else(|| {
-                "Choose an available source and output before starting.".to_string()
+                t!("Choose an available source and output before starting.").to_string()
             })?;
             // Start applies these selectors to primary IO in the service.
             // Validate the same candidate without editing the shared snapshot.
@@ -437,7 +439,7 @@ impl UiState {
         };
         preparation
             .configured_engine_project(block_frames, &self.snapshot.audio_settings)
-            .map_err(|error| format!("Graph is not ready: {error}"))?;
+            .map_err(|error| t!("Graph is not ready: %{error}", error = error).to_string())?;
         Ok(request)
     }
 
@@ -596,18 +598,49 @@ pub fn output_name(snapshot: &AppSnapshot, id: &str) -> String {
         .iter()
         .find(|row| row.endpoint_id == id)
         .map(|row| row.name.clone())
-        .unwrap_or_else(|| "Unavailable output".into())
+        .unwrap_or_else(|| t!("Unavailable output").into())
+}
+
+/// Presentation label for a node. While a Source/Sink still carries its
+/// default label (never renamed), it follows the bound input/output device
+/// name; renaming it once pins the custom name.
+pub fn display_label(
+    snapshot: &AppSnapshot,
+    entry: &crate::service::GraphNodeState,
+    kind: moiren_core::graph::NodeKind,
+) -> String {
+    use moiren_core::graph::NodeKind;
+    if entry.label != crate::service::default_label(kind) {
+        return entry.label.clone();
+    }
+    match kind {
+        NodeKind::Source => entry
+            .source
+            .as_ref()
+            .map(|source| source_name(snapshot, source))
+            .unwrap_or_else(|| entry.label.clone()),
+        NodeKind::Sink => entry
+            .output_endpoint_id
+            .as_ref()
+            .map(|endpoint| output_name(snapshot, endpoint))
+            .unwrap_or_else(|| entry.label.clone()),
+        _ => entry.label.clone(),
+    }
 }
 
 pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
     match source {
-        InputSelection::Tone { frequency_hz } => format!("Test tone · {frequency_hz:.0} Hz"),
+        InputSelection::Tone { frequency_hz } => t!(
+            "Test tone · %{frequency} Hz",
+            frequency = format!("{frequency_hz:.0}")
+        )
+        .to_string(),
         InputSelection::Physical { endpoint_id } => {
             input_rows(&snapshot.catalog, snapshot.audio_settings.backend)
                 .iter()
                 .find(|row| row.endpoint_id == *endpoint_id)
                 .map(|row| row.name.clone())
-                .unwrap_or_else(|| "Unavailable input".into())
+                .unwrap_or_else(|| t!("Unavailable input").into())
         }
         InputSelection::Process {
             pid,
@@ -617,8 +650,8 @@ pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
             .processes
             .iter()
             .find(|row| row.pid == *pid && row.creation_time_100ns == *creation_time_100ns)
-            .map(|row| format!("{} (PID {pid})", row.name))
-            .unwrap_or_else(|| format!("Unavailable application (PID {pid})")),
+            .map(|row| t!("%{name} (PID %{pid})", name = row.name, pid = pid).to_string())
+            .unwrap_or_else(|| t!("Unavailable application (PID %{pid})", pid = pid).to_string()),
     }
 }
 

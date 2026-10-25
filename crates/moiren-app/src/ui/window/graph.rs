@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::*;
 
 mod compressor;
@@ -17,6 +19,18 @@ pub(super) struct ConnectionDrag {
     cursor: (f32, f32),
 }
 
+/// A rubber-band selection drag on the canvas background. Starts as a plain
+/// background click; past the 3 px threshold it becomes a live band that
+/// replaces the selection (or unions with `base` when Ctrl/Shift held).
+pub(super) struct SelectionDrag {
+    anchor: (f32, f32),
+    current: (f32, f32),
+    additive: bool,
+    base: std::collections::BTreeSet<moiren_core::graph::NodeId>,
+    moved: bool,
+    hits: std::collections::BTreeSet<moiren_core::graph::NodeId>,
+}
+
 impl StudioShell {
     /// Shared pointer-session preamble for canvas hit targets: cancel any
     /// in-flight drag or click first; under the hand tool the pointer instead
@@ -25,6 +39,7 @@ impl StudioShell {
         self.node_drag = None;
         self.pan_grab = None;
         self.background_click = None;
+        self.selection_drag = None;
         if self.hand_tool {
             let position = window.mouse_position();
             self.pan_grab = Some((f32::from(position.x), f32::from(position.y)));
@@ -34,31 +49,53 @@ impl StudioShell {
         }
     }
 
+    fn clear_canvas_selection(&mut self) {
+        self.selected_nodes.clear();
+        self.selected_node = None;
+        self.selected_route = None;
+    }
+
     fn delete_graph_selection(&mut self, cx: &mut Context<Self>) {
-        let graph = &self.state.read(cx).snapshot.graph.graph;
-        let edit = self
-            .selected_node
-            .and_then(|selected| {
-                graph
-                    .nodes()
-                    .iter()
-                    .find(|node| node.id() == selected)
-                    .map(|node| crate::service::GraphEdit::RemoveNode(node.id()))
-            })
-            .or_else(|| {
+        // The primary selection may have been set from outside the canvas
+        // (mixer strip, library locator); it always deletes with the band.
+        if let Some(id) = self.selected_node {
+            self.selected_nodes.insert(id);
+        }
+        let mut removed = false;
+        for id in self.selected_nodes.iter().copied().collect::<Vec<_>>() {
+            let removed_here = self.state.update(cx, |state, _| {
+                state
+                    .try_dispatch(AppRequest::EditGraph(
+                        crate::service::GraphEdit::RemoveNode(id),
+                    ))
+                    .is_ok()
+            });
+            removed |= removed_here;
+        }
+        if !removed {
+            let edge_id = {
+                let graph = &self.state.read(cx).snapshot.graph.graph;
                 self.selected_route.and_then(|ports| {
                     graph
                         .edges()
                         .iter()
                         .find(|edge| (edge.src_port(), edge.dst_port()) == ports)
-                        .map(|edge| crate::service::GraphEdit::Disconnect(edge.id()))
+                        .map(|edge| edge.id())
                 })
-            });
-        if let Some(edit) = edit
-            && self.state.update(cx, |state, _| {
-                state.try_dispatch(AppRequest::EditGraph(edit)).is_ok()
-            })
-        {
+            };
+            if let Some(edge_id) = edge_id
+                && self.state.update(cx, |state, _| {
+                    state
+                        .try_dispatch(AppRequest::EditGraph(
+                            crate::service::GraphEdit::Disconnect(edge_id),
+                        ))
+                        .is_ok()
+                })
+            {
+                self.selected_route = None;
+            }
+        } else {
+            self.selected_nodes.clear();
             self.selected_node = None;
             self.selected_route = None;
         }
@@ -84,7 +121,11 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
     let camera = shell.camera;
     // The canvas view identifies nodes by their Debug id string; this is the
     // single NodeId -> canvas-id conversion on the render path.
-    let selected = shell.selected_node.map(|id| format!("{id:?}"));
+    let selected_ids: Vec<String> = shell
+        .selected_nodes
+        .iter()
+        .map(|id| format!("{id:?}"))
+        .collect();
     let selected_wire = shell.selected_route.and_then(|ports| {
         state
             .snapshot
@@ -124,12 +165,37 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                 let Some(node_id) = node.node_id else {
                     return;
                 };
-                shell.selected_node = Some(node_id);
+                let modifiers = window.modifiers();
+                if modifiers.control || modifiers.shift {
+                    if shell.selected_nodes.contains(&node_id) {
+                        shell.selected_nodes.remove(&node_id);
+                        if shell.selected_node == Some(node_id) {
+                            shell.selected_node = None;
+                        }
+                    } else {
+                        shell.selected_nodes.insert(node_id);
+                        shell.selected_node = Some(node_id);
+                    }
+                } else if !shell.selected_nodes.contains(&node_id) {
+                    shell.selected_nodes.clear();
+                    shell.selected_nodes.insert(node_id);
+                    shell.selected_node = Some(node_id);
+                } else {
+                    shell.selected_node = Some(node_id);
+                }
                 shell.selected_route = None;
-                shell
-                    .node_positions
-                    .entry(node_id)
-                    .or_insert((node.x, node.y));
+                // Dragging moves the whole selection; seed every member so the
+                // world positions survive a move of untouched nodes.
+                for selected in shell.selected_nodes.clone() {
+                    if let Some(projected) = nodes
+                        .nodes
+                        .iter()
+                        .find(|node| node.node_id == Some(selected))
+                        .map(|node| (node.x, node.y))
+                    {
+                        shell.node_positions.entry(selected).or_insert(projected);
+                    }
+                }
                 let pos = window.mouse_position();
                 shell.camera.adjusted = true;
                 shell.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
@@ -147,18 +213,30 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
               _window: &mut Window,
               cx: &mut App| {
             this.update(cx, |shell, cx| {
-                // Release the pan grab as soon as neither pan button is held,
-                // even when the release happened outside the canvas (or was a
+                let (x, y) = (f32::from(position.x), f32::from(position.y));
+                // Release the pan grab as soon as no pan button is held, even
+                // when the release happened outside the canvas (or was a
                 // touchpad tap with no physical button at all).
-                let held = matches!(pressed, Some(MouseButton::Left | MouseButton::Middle));
+                let held = matches!(
+                    pressed,
+                    Some(MouseButton::Left | MouseButton::Middle | MouseButton::Right)
+                );
                 if !held {
                     shell.pan_grab = None;
                     shell.node_drag = None;
-                    if shell.background_click.take().is_some_and(|(x, y)| {
-                        (f32::from(position.x) - x).hypot(f32::from(position.y) - y) <= 3.
-                    }) {
-                        shell.selected_node = None;
-                        shell.selected_route = None;
+                    let clicked = shell
+                        .background_click
+                        .take()
+                        .is_some_and(|(bx, by)| (x - bx).hypot(y - by) <= 3.);
+                    if let Some(drag) = shell.selection_drag.take() {
+                        // A plain background click clears the selection; a
+                        // rubber band already applied its live selection.
+                        if !drag.moved && clicked {
+                            shell.clear_canvas_selection();
+                        }
+                        cx.notify();
+                    } else if clicked {
+                        shell.clear_canvas_selection();
                         cx.notify();
                     }
                     if shell.connection_drag.take().is_some() {
@@ -166,29 +244,30 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                     }
                     return;
                 }
+                if let Some(drag) = shell.selection_drag.as_mut() {
+                    drag.current = (x, y);
+                    if !drag.moved && (x - drag.anchor.0).hypot(y - drag.anchor.1) > 3. {
+                        drag.moved = true;
+                        shell.background_click = None;
+                    }
+                }
                 if let Some((id, gx, gy)) = shell.node_drag {
                     shell.camera.adjusted = true;
-                    let delta = shell.camera.canvas_delta_to_world((
-                        f32::from(position.x) - gx,
-                        f32::from(position.y) - gy,
-                    ));
-                    if let Some(pos) = shell.node_positions.get_mut(&id) {
-                        pos.0 += delta.0;
-                        pos.1 += delta.1;
+                    let delta = shell.camera.canvas_delta_to_world((x - gx, y - gy));
+                    let selection: Vec<_> = shell.selected_nodes.iter().copied().collect();
+                    for id in selection {
+                        if let Some(pos) = shell.node_positions.get_mut(&id) {
+                            pos.0 += delta.0;
+                            pos.1 += delta.1;
+                        }
                     }
-                    shell.node_drag = Some((id, f32::from(position.x), f32::from(position.y)));
+                    shell.node_drag = Some((id, x, y));
                     cx.notify();
                 }
                 if let Some((gx, gy)) = shell.pan_grab {
-                    if shell.background_click.is_some_and(|(x, y)| {
-                        (f32::from(position.x) - x).hypot(f32::from(position.y) - y) > 3.
-                    }) {
-                        shell.background_click = None;
-                    }
-                    let (dx, dy) = (f32::from(position.x) - gx, f32::from(position.y) - gy);
-                    shell.camera.pan_by(dx, dy);
+                    shell.camera.pan_by(x - gx, y - gy);
                     shell.node_drag = None;
-                    shell.pan_grab = Some((f32::from(position.x), f32::from(position.y)));
+                    shell.pan_grab = Some((x, y));
                     cx.notify();
                 }
             });
@@ -204,9 +283,76 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                     f32::from(window.mouse_position().x),
                     f32::from(window.mouse_position().y),
                 );
-                shell.pan_grab = Some(anchor);
-                shell.background_click =
-                    (event.button == MouseButton::Left && !shell.hand_tool).then_some(anchor);
+                match event.button {
+                    // Left on the background: plain click clears the selection
+                    // on release; dragging past the threshold rubber-bands.
+                    MouseButton::Left if !shell.hand_tool => {
+                        shell.background_click = Some(anchor);
+                        let modifiers = window.modifiers();
+                        shell.selection_drag = Some(SelectionDrag {
+                            anchor,
+                            current: anchor,
+                            additive: modifiers.control || modifiers.shift,
+                            base: shell.selected_nodes.clone(),
+                            moved: false,
+                            hits: Default::default(),
+                        });
+                    }
+                    // Right and middle button (and the hand tool): pan grab.
+                    _ => {
+                        shell.pan_grab = Some(anchor);
+                        shell.background_click = None;
+                        shell.selection_drag = None;
+                    }
+                }
+                cx.notify();
+            });
+        }
+    };
+    let on_box_select = {
+        let this = this.clone();
+        let nodes = world.clone();
+        move |rect: Option<Bounds<f32>>, _window: &mut Window, cx: &mut App| {
+            // The canvas prepaint reports the active band's world rectangle
+            // once per frame; None means no band and needs no work here.
+            let Some(rect) = rect else {
+                return;
+            };
+            let hits: std::collections::BTreeSet<moiren_core::graph::NodeId> = nodes
+                .nodes
+                .iter()
+                .filter(|node| {
+                    pages::graph_canvas::NodeLayout::new(node)
+                        .card
+                        .intersects(&rect)
+                })
+                .filter_map(|node| node.node_id)
+                .collect();
+            this.update(cx, |shell, cx| {
+                let Some(drag) = shell.selection_drag.as_mut() else {
+                    return;
+                };
+                if !drag.moved {
+                    return;
+                }
+                drag.hits = hits;
+                let selection = if drag.additive {
+                    drag.base.union(&drag.hits).copied().collect()
+                } else {
+                    drag.hits.clone()
+                };
+                shell.selected_nodes = selection;
+                if shell.selected_nodes.len() == 1 {
+                    shell.selected_node = shell.selected_nodes.iter().next().copied();
+                } else if shell
+                    .selected_node
+                    .is_none_or(|id| !shell.selected_nodes.contains(&id))
+                {
+                    shell.selected_node = None;
+                }
+                if !shell.selected_nodes.is_empty() {
+                    shell.selected_route = None;
+                }
                 cx.notify();
             });
         }
@@ -257,11 +403,15 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
     let canvas_view = pages::graph_canvas_view::graph_canvas_view(
         world.clone(),
         camera,
-        selected.as_deref(),
+        &selected_ids,
         selected_wire.as_deref(),
         pages::graph_canvas_view::CanvasCallbacks {
             focus: shell.graph_focus.clone(),
             connection: shell.connection_drag.map(|drag| (drag.port, drag.cursor)),
+            selection_box: shell
+                .selection_drag
+                .as_ref()
+                .map(|drag| (drag.anchor, drag.current)),
             on_port_down: std::rc::Rc::new({
                 let this = this.clone();
                 let nodes = world.clone();
@@ -334,6 +484,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                         shell.node_drag = None;
                         shell.pan_grab = None;
                         shell.background_click = None;
+                        shell.selection_drag = None;
                         cx.notify();
                     })
                 }
@@ -346,6 +497,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
             }),
             on_background_down: std::rc::Rc::new(on_bg_down),
             on_canvas_mouse_move: Box::new(on_bg_move),
+            on_box_select: std::rc::Rc::new(on_box_select),
             on_zoom: std::rc::Rc::new(on_zoom),
             on_pan: Box::new(on_scroll_pan),
             on_select_node: std::rc::Rc::new(on_select_node),
@@ -367,6 +519,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                             .find(|e| format!("{:?}", e.id()) == id)
                             .map(|e| (e.src_port(), e.dst_port()));
                         shell.selected_node = None;
+                        shell.selected_nodes.clear();
                         shell.inspector_open = true;
                         if shell.compact {
                             shell.sidebar_open = false;
@@ -395,7 +548,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                 .justify_between()
                 .px(px(theme::SPACE_3))
                 .child(div().flex().gap(px(8.)).items_center().child(
-                    controls::button("toggle-library", "Node library").on_click({
+                    controls::button("toggle-library", t!("Node library")).on_click({
                         let this = this.clone();
                         move |_, _, cx| {
                             this.update(cx, |s, cx| {
@@ -461,8 +614,8 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
         .border_1()
         .border_color(theme::BORDER);
     for (id, name, hand) in [
-        ("tool-select", "Select", false),
-        ("tool-hand", "Hand", true),
+        ("tool-select", t!("Select"), false),
+        ("tool-hand", t!("Hand"), true),
     ] {
         let this = this.clone();
         view = view.child(
@@ -493,7 +646,7 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
         "{}%",
         (shell.camera.zoom * 100.).round() as i32
     )))
-    .child(button("zoom-fit", "Fit").on_click({
+    .child(button("zoom-fit", t!("Fit")).on_click({
         let this = this.clone();
         move |_, _, cx| {
             this.update(cx, |s, cx| {

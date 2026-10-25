@@ -168,7 +168,9 @@ impl Default for ServiceGraph {
         }
     }
 }
-fn default_label(kind: NodeKind) -> &'static str {
+/// Default label for freshly created nodes. A Source/Sink node still carrying
+/// its default label follows the bound device name in presentation instead.
+pub fn default_label(kind: NodeKind) -> &'static str {
     match kind {
         NodeKind::Source => "Input",
         NodeKind::Sink => "Output",

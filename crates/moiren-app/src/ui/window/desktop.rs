@@ -83,7 +83,7 @@ impl PresentationSnapshot {
         shell.mixer.width = self.mixer_width;
         shell.mixer.dock_width = self.mixer_dock_width;
         shell.pending_node_spawn = self.pending_node_spawn;
-        shell.node_name_selection = None;
+        shell.node_name_editing = None;
         shell.selected_node = self.selected_node;
         shell.selected_route = self.selected_route;
         shell.sidebar_open = self.sidebar_open;

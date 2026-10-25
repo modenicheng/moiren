@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::*;
 use crate::service::{GraphEdit, InputSelection};
 use controls::*;
@@ -48,13 +50,13 @@ pub(in crate::ui::window) fn inspector(
         .nodes()
         .iter()
         .find(|node| shell.selected_node == Some(node.id()));
-    let mut view = panel("graph-inspector").child(heading("Inspector"));
+    let mut view = panel("graph-inspector").child(heading(t!("Inspector")));
     let Some(node) = selected else {
         return view
             .child(
                 div()
                     .id("inspector-empty")
-                    .child(label("Select a node to inspect its properties."))
+                    .child(label(t!("Select a node to inspect its properties.")))
                     .gpui_test_observe(),
             )
             .gpui_test_observe()
@@ -62,42 +64,83 @@ pub(in crate::ui::window) fn inspector(
     };
     let id = node.id();
     let entry = snapshot.graph.node(id).expect("service node metadata");
+    let display = crate::ui::state::display_label(snapshot, entry, node.kind());
+    let editing = shell.node_name_editing == Some(id);
+    // One inline name control: a plain heading until clicked, then the editor
+    // in the same place. There is no separate rename row.
+    let name_control: AnyElement = if editing {
+        div()
+            .id("node-name-editor")
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(
+                component::input::Input::new(&shell.node_name)
+                    .id("node-name")
+                    .bg(theme::SURFACE_3)
+                    .text_color(theme::TEXT)
+                    .border_color(theme::BORDER),
+            )
+            .child(button("node-name-confirm", "✓").on_click({
+                let this = cx.entity();
+                move |_, _, cx| {
+                    this.update(cx, |shell, cx| shell.confirm_node_rename(cx));
+                }
+            }))
+            .child(button("node-name-cancel", "✗").on_click({
+                let this = cx.entity();
+                move |_, _, cx| {
+                    this.update(cx, |shell, cx| shell.cancel_node_rename(cx));
+                }
+            }))
+            .into_any_element()
+    } else {
+        div()
+            .id("node-name-display")
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .cursor_pointer()
+            .child(heading(display.clone()))
+            .child(
+                div()
+                    .id("node-name-edit-hint")
+                    .text_size(px(theme::TEXT_XS))
+                    .text_color(theme::TEXT_FAINT)
+                    .child("rename"),
+            )
+            .on_click({
+                let this = cx.entity();
+                let initial = display.clone();
+                move |_, window, cx| {
+                    this.update(cx, |shell, cx| {
+                        shell.node_name_editing = Some(id);
+                        shell
+                            .node_name
+                            .update(cx, |input, cx| input.set_value(initial.clone(), window, cx));
+                        cx.notify();
+                    });
+                    let input = this.read(cx).node_name.clone();
+                    let handle = input.read(cx).focus_handle(cx);
+                    window.focus(&handle, cx);
+                }
+            })
+            .gpui_test_observe()
+            .into_any_element()
+    };
     view = view
         .child(
             div()
                 .pb(px(12.))
                 .border_b_1()
                 .border_color(theme::BORDER)
-                .child(heading(entry.label.clone()))
+                .child(name_control)
                 .child(label(format!("{:?}", node.kind()))),
         )
-        .child(label("Name"))
-        .child(
-            component::input::Input::new(&shell.node_name)
-                .id("node-name")
-                .bg(theme::SURFACE_3)
-                .text_color(theme::TEXT)
-                .border_color(theme::BORDER),
-        )
-        .child(button("rename-node", "Rename").on_click({
-            let this = cx.entity();
-            move |_, _, cx| {
-                this.update(cx, |shell, cx| {
-                    let label = shell.node_name.read(cx).value().to_string();
-                    shell.state.update(cx, |state, _| {
-                        state.dispatch(AppRequest::EditGraph(GraphEdit::SetLabel {
-                            node: id,
-                            label,
-                        }))
-                    });
-                    cx.notify();
-                })
-            }
-        }))
-        .child(detail("Channels", node.channels().to_string()));
+        .child(detail(&t!("Channels"), node.channels().to_string()));
     view = view
-        .child(heading("Channel strip"))
-        .child(detail("Fader", db(entry.mixer.gain)))
+        .child(heading(t!("Channel strip")))
+        .child(detail(&t!("Fader"), db(entry.mixer.gain)))
         .child(component::slider::Slider::new(&shell.mixer.faders[&id]))
         .child(super::super::mixer::node_controls(
             entry,
@@ -106,20 +149,20 @@ pub(in crate::ui::window) fn inspector(
         ));
     if node.kind() == NodeKind::Source {
         view = view
-            .child(heading("Source"))
+            .child(heading(t!("Source")))
             .child(label(
                 entry
                     .source
                     .as_ref()
                     .map(|source| crate::ui::state::source_name(snapshot, source))
-                    .unwrap_or_else(|| "Not bound · choose a resource".into()),
+                    .unwrap_or_else(|| t!("Not bound · choose a resource").into()),
             ))
             .child(
-                button("unbind-node-source", "Clear binding")
+                button("unbind-node-source", t!("Clear binding"))
                     .on_click(edit(cx.entity(), GraphEdit::ClearBinding(id))),
             )
             .child(
-                button("bind-node-tone", "Tone generator · 440 Hz").on_click(edit(
+                button("bind-node-tone", t!("Tone generator · 440 Hz")).on_click(edit(
                     cx.entity(),
                     GraphEdit::BindSource {
                         node: id,
@@ -129,7 +172,7 @@ pub(in crate::ui::window) fn inspector(
             );
         if let Some(InputSelection::Tone { frequency_hz }) = entry.source {
             view = view
-                .child(detail("Frequency", format!("{frequency_hz:.1} Hz")))
+                .child(detail(&t!("Frequency"), format!("{frequency_hz:.1} Hz")))
                 .child(
                     div()
                         .flex()
@@ -192,7 +235,7 @@ pub(in crate::ui::window) fn inspector(
             );
         }
         view = view.child(
-            button("refresh-node-resources", "Refresh sources").on_click({
+            button("refresh-node-resources", t!("Refresh sources")).on_click({
                 let this = cx.entity();
                 move |_, _, cx| {
                     this.update(cx, |shell, cx| {
@@ -206,15 +249,15 @@ pub(in crate::ui::window) fn inspector(
         );
     }
     if node.kind() == NodeKind::Sink {
-        view = view.child(heading("Output device")).child(label(
+        view = view.child(heading(t!("Output device"))).child(label(
             entry
                 .output_endpoint_id
                 .as_ref()
                 .map(|endpoint| crate::ui::state::output_name(snapshot, endpoint))
-                .unwrap_or_else(|| "Not bound · choose an output".into()),
+                .unwrap_or_else(|| t!("Not bound · choose an output").into()),
         ));
         view = view.child(
-            button("unbind-node-output", "Clear binding")
+            button("unbind-node-output", t!("Clear binding"))
                 .on_click(edit(cx.entity(), GraphEdit::ClearBinding(id))),
         );
         for row in &snapshot.catalog.outputs {
@@ -236,8 +279,8 @@ pub(in crate::ui::window) fn inspector(
     }
     if node.kind() == NodeKind::Gain {
         view = view
-            .child(heading("Gain"))
-            .child(detail("Requested", db(entry.gain)))
+            .child(heading(t!("Gain")))
+            .child(detail(&t!("Requested"), db(entry.gain)))
             .child(
                 div()
                     .flex()
@@ -261,24 +304,24 @@ pub(in crate::ui::window) fn inspector(
                         },
                     )))
                     .child(
-                        button("node-unity", "Unity")
+                        button("node-unity", t!("Unity"))
                             .on_click(edit(cx.entity(), GraphEdit::SetGain { node: id, gain: 1. })),
                     ),
             )
             .child(
-                button("node-silence", "Silence")
+                button("node-silence", t!("Silence"))
                     .on_click(edit(cx.entity(), GraphEdit::SetGain { node: id, gain: 0. })),
             );
     }
     if node.kind() == NodeKind::Pan {
         view = view
-            .child(heading("Stereo controls"))
-            .child(detail("Balance", format!("{:+.2}", entry.pan)))
+            .child(heading(t!("Stereo controls")))
+            .child(detail(&t!("Balance"), format!("{:+.2}", entry.pan)))
             .child(
                 div()
                     .flex()
                     .gap(px(4.))
-                    .child(button("node-left", "Left").on_click(edit(
+                    .child(button("node-left", t!("Left")).on_click(edit(
                         cx.entity(),
                         GraphEdit::SetPan {
                             node: id,
@@ -286,10 +329,10 @@ pub(in crate::ui::window) fn inspector(
                         },
                     )))
                     .child(
-                        button("node-center", "Center")
+                        button("node-center", t!("Center"))
                             .on_click(edit(cx.entity(), GraphEdit::SetPan { node: id, pan: 0. })),
                     )
-                    .child(button("node-right", "Right").on_click(edit(
+                    .child(button("node-right", t!("Right")).on_click(edit(
                         cx.entity(),
                         GraphEdit::SetPan {
                             node: id,
@@ -300,9 +343,9 @@ pub(in crate::ui::window) fn inspector(
             .child(stereo_controls(entry, cx));
     }
     if node.kind() == NodeKind::Compressor {
-        view = view.child(heading("Compressor")).child(label(
-            "Linked peak detector · Enter or leave a field to apply",
-        ));
+        view = view.child(heading(t!("Compressor"))).child(label(t!(
+            "Linked peak detector · Enter or leave a field to apply"
+        )));
         for parameter in crate::service::CompressorParameter::ALL {
             view = view.child(
                 div()
@@ -311,7 +354,7 @@ pub(in crate::ui::window) fn inspector(
                     .flex_col()
                     .gap(px(4.))
                     .child(detail(
-                        parameter.label(),
+                        &t!(parameter.label()),
                         parameter.display(entry.compressor.value(parameter)),
                     ))
                     .child(
@@ -330,27 +373,27 @@ pub(in crate::ui::window) fn inspector(
     }
     view = view.child(builtin_controls(id, node, &entry.builtin, cx));
     view = view.child(node_observation(shell, node, cx));
-    view = view.child(heading("Ports"));
+    view = view.child(heading(t!("Ports")));
     for (index, port) in node.inputs().iter().enumerate() {
         view = view.child(detail(
-            &format!("Input {}", index + 1),
+            &t!("Input %{index}", index = index + 1),
             format!("{} ch", port.channels()),
         ));
     }
     for (index, port) in node.outputs().iter().enumerate() {
         view = view.child(detail(
-            &format!("Output {}", index + 1),
+            &t!("Output %{index}", index = index + 1),
             format!("{} ch", port.channels()),
         ));
     }
     if node.kind() == NodeKind::Bus {
         view = view.child(
-            button("add-bus-input", "Add bus input")
+            button("add-bus-input", t!("Add bus input"))
                 .on_click(edit(cx.entity(), GraphEdit::AddBusInput(id))),
         );
         if let Some(port) = node.inputs().last() {
             view = view.child(
-                button("remove-bus-input", "Remove last input").on_click(edit(
+                button("remove-bus-input", t!("Remove last input")).on_click(edit(
                     cx.entity(),
                     GraphEdit::RemoveBusInput {
                         node: id,
@@ -361,7 +404,7 @@ pub(in crate::ui::window) fn inspector(
         }
     }
     view.child(
-        button("remove-node", "Delete node")
+        button("remove-node", t!("Delete node"))
             .variant(ButtonVariant::Danger)
             .on_click(edit(cx.entity(), GraphEdit::RemoveNode(id))),
     )
@@ -385,32 +428,33 @@ fn node_observation(
         .contains_key(&node.id());
     let eligible = active && managed;
     let status = if eligible {
-        shell.node_meters.status(node.id()).label().to_string()
+        let meter_status = shell.node_meters.status(node.id());
+        t!(meter_status.label()).to_string()
     } else if managed {
-        "Waiting for Apply graph".to_string()
+        t!("Waiting for Apply graph").to_string()
     } else {
-        "Unavailable for this node".to_string()
+        t!("Unavailable for this node").to_string()
     };
     let mut view = div()
         .id("node-observation")
         .flex()
         .flex_col()
         .gap(px(6.))
-        .child(heading("Runtime observation"))
+        .child(heading(t!("Runtime observation")))
         .child(
             div()
                 .id("node-observation-status")
-                .child(detail("Status", status))
+                .child(detail(&t!("Status"), status))
                 .gpui_test_observe(),
         );
     if !active && managed {
-        view = view.child(label(
-            "The candidate graph is not the confirmed runtime. Apply graph to observe this node.",
-        ));
+        view = view.child(label(t!(
+            "The candidate graph is not the confirmed runtime. Apply graph to observe this node."
+        )));
     } else if !managed {
-        view = view.child(label(
-            "This node has no managed level topic in the current service projection.",
-        ));
+        view = view.child(label(t!(
+            "This node has no managed level topic in the current service projection."
+        )));
     }
     if let Some(levels) = eligible
         .then(|| shell.node_meters.channel_levels(node.id()))
@@ -420,10 +464,13 @@ fn node_observation(
         for (channel, level) in levels.iter().enumerate() {
             readings = readings
                 .child(detail(
-                    &format!("Peak {}", channel + 1),
+                    &t!("Peak %{index}", index = channel + 1),
                     level_db(level.marker),
                 ))
-                .child(detail(&format!("RMS {}", channel + 1), level_db(level.rms)));
+                .child(detail(
+                    &t!("RMS %{index}", index = channel + 1),
+                    level_db(level.rms),
+                ));
         }
         view = view.child(readings);
     }
@@ -431,7 +478,7 @@ fn node_observation(
         view = view.child(
             div()
                 .id("node-observation-candidate")
-                .child(label("Candidate graph · audio owner unchanged"))
+                .child(label(t!("Candidate graph · audio owner unchanged")))
                 .gpui_test_observe(),
         );
     }
@@ -457,8 +504,10 @@ fn builtin_controls(
         crate::service::BuiltinState::Eq(settings) => {
             let settings = *settings;
             view = view
-                .child(heading("Parametric EQ"))
-                .child(label("One peaking band · apply to prepare the new kernel"))
+                .child(heading(t!("Parametric EQ")))
+                .child(label(t!(
+                    "One peaking band · apply to prepare the new kernel"
+                )))
                 .child(builtin_step(
                     BuiltinStep {
                         key: "eq-frequency".into(),
@@ -519,8 +568,8 @@ fn builtin_controls(
         }
         crate::service::BuiltinState::Gate(settings) => {
             view = view
-                .child(heading("Gate"))
-                .child(label("Linked downward expander"));
+                .child(heading(t!("Gate")))
+                .child(label(t!("Linked downward expander")));
             for field in gate_fields(*settings) {
                 view = view.child(builtin_field_step(
                     "gate",
@@ -534,8 +583,8 @@ fn builtin_controls(
         }
         crate::service::BuiltinState::Limiter(settings) => {
             view = view
-                .child(heading("Limiter"))
-                .child(label("Zero-latency peak limiter"));
+                .child(heading(t!("Limiter")))
+                .child(label(t!("Zero-latency peak limiter")));
             for field in limiter_fields(*settings) {
                 view = view.child(builtin_field_step(
                     "limiter",
@@ -549,8 +598,8 @@ fn builtin_controls(
         }
         crate::service::BuiltinState::Delay(settings) => {
             view = view
-                .child(heading("Delay"))
-                .child(label("Bounded feedback delay"));
+                .child(heading(t!("Delay")))
+                .child(label(t!("Bounded feedback delay")));
             for field in delay_fields(*settings) {
                 view = view.child(builtin_field_step(
                     "delay",
@@ -564,20 +613,20 @@ fn builtin_controls(
         }
         crate::service::BuiltinState::ChannelMapper(settings) => {
             let mapping = if settings.mapping.is_empty() && settings.matrix.is_empty() {
-                "Identity routing"
+                t!("Identity routing")
             } else if !settings.matrix.is_empty() {
-                "Weighted matrix"
+                t!("Weighted matrix")
             } else {
-                "Explicit channel map"
+                t!("Explicit channel map")
             };
             view = view
-                .child(heading("Channel mapper"))
-                .child(detail("Mode", mapping))
-                .child(label("Static routing is prepared before audio starts."));
+                .child(heading(t!("Channel mapper")))
+                .child(detail(&t!("Mode"), mapping))
+                .child(label(t!("Static routing is prepared before audio starts.")));
             let input_channels = node.inputs().first().map_or(0, |port| port.channels());
             let output_channels = node.channels();
             if input_channels == 2 && output_channels == 2 {
-                view = view.child(button("channel-map-swap", "Swap L/R").on_click(edit(
+                view = view.child(button("channel-map-swap", t!("Swap L/R")).on_click(edit(
                     cx.entity(),
                     GraphEdit::SetBuiltin {
                         node: id,
@@ -588,51 +637,59 @@ fn builtin_controls(
                     },
                 )));
             }
-            view = view.child(button("channel-map-identity", "Identity").on_click(edit(
-                cx.entity(),
-                GraphEdit::SetBuiltin {
-                    node: id,
-                    state: crate::service::BuiltinState::ChannelMapper(
-                        ChannelMapperSettings::default(),
-                    ),
-                },
-            )));
+            view = view.child(
+                button("channel-map-identity", t!("Identity")).on_click(edit(
+                    cx.entity(),
+                    GraphEdit::SetBuiltin {
+                        node: id,
+                        state: crate::service::BuiltinState::ChannelMapper(
+                            ChannelMapperSettings::default(),
+                        ),
+                    },
+                )),
+            );
             if input_channels <= MAX_MATRIX_EDITOR_CHANNELS
                 && output_channels <= MAX_MATRIX_EDITOR_CHANNELS
             {
                 let matrix = channel_mapper_matrix(settings, input_channels, output_channels);
                 if settings.matrix.is_empty() {
                     view = view.child(
-                        button("channel-map-edit-matrix", "Edit weighted matrix").on_click(edit(
-                            cx.entity(),
-                            GraphEdit::SetBuiltin {
-                                node: id,
-                                state: crate::service::BuiltinState::ChannelMapper(
-                                    ChannelMapperSettings {
-                                        mapping: Vec::new(),
-                                        matrix: matrix.clone(),
-                                    },
-                                ),
-                            },
-                        )),
+                        button("channel-map-edit-matrix", t!("Edit weighted matrix")).on_click(
+                            edit(
+                                cx.entity(),
+                                GraphEdit::SetBuiltin {
+                                    node: id,
+                                    state: crate::service::BuiltinState::ChannelMapper(
+                                        ChannelMapperSettings {
+                                            mapping: Vec::new(),
+                                            matrix: matrix.clone(),
+                                        },
+                                    ),
+                                },
+                            ),
+                        ),
                     );
                 } else {
                     view = view
-                        .child(heading("Weight matrix"))
+                        .child(heading(t!("Weight matrix")))
                         .child(detail(
-                            "Layout",
-                            format!("{} outputs x {} inputs", output_channels, input_channels),
+                            &t!("Layout"),
+                            t!(
+                                "%{outputs} outputs x %{inputs} inputs",
+                                outputs = output_channels,
+                                inputs = input_channels
+                            ),
                         ))
-                        .child(label(
-                            "Adjust one output row at a time. Values are clamped to -1..1.",
-                        ));
+                        .child(label(t!(
+                            "Adjust one output row at a time. Values are clamped to -1..1."
+                        )));
                     for output in 0..output_channels {
                         let mut row = div()
                             .id(format!("channel-map-matrix-row-{output}"))
                             .flex()
                             .items_center()
                             .gap(px(4.));
-                        row = row.child(label(format!("Out {}", output + 1)));
+                        row = row.child(label(t!("Out %{index}", index = output + 1)));
                         for input in 0..input_channels {
                             let value = matrix[output][input];
                             let down = matrix_cell_edit(id, &matrix, output, input, -0.25);
@@ -644,7 +701,7 @@ fn builtin_controls(
                                     .flex_col()
                                     .items_center()
                                     .gap(px(2.))
-                                    .child(label(format!("In {}", input + 1)))
+                                    .child(label(t!("In %{index}", index = input + 1)))
                                     .child(
                                         button(
                                             format!(
@@ -671,19 +728,19 @@ fn builtin_controls(
                 }
             } else {
                 view = view.child(label(
-                    "Matrix editor is limited to 8 input and output channels; use a project file for larger layouts.",
+                    t!("Matrix editor is limited to 8 input and output channels; use a project file for larger layouts."),
                 ));
             }
         }
         crate::service::BuiltinState::Recorder(settings) => {
             view = view
-                .child(heading("Recorder"))
+                .child(heading(t!("Recorder")))
                 .child(detail(
-                    "Buffer",
+                    &t!("Buffer"),
                     format!("{} frames", settings.capacity_frames),
                 ))
                 .child(
-                    button("recorder-expand", "Add 1 second").on_click(edit(
+                    button("recorder-expand", t!("Add 1 second")).on_click(edit(
                         cx.entity(),
                         GraphEdit::SetBuiltin {
                             node: id,
@@ -696,25 +753,30 @@ fn builtin_controls(
                         },
                     )),
                 )
-                .child(button("recorder-shrink", "Remove 1 second").on_click(edit(
-                    cx.entity(),
-                    GraphEdit::SetBuiltin {
-                        node: id,
-                        state: crate::service::BuiltinState::Recorder(RecorderSettings {
-                            capacity_frames: settings.capacity_frames.saturating_sub(48_000).max(1),
-                        }),
-                    },
-                )));
+                .child(
+                    button("recorder-shrink", t!("Remove 1 second")).on_click(edit(
+                        cx.entity(),
+                        GraphEdit::SetBuiltin {
+                            node: id,
+                            state: crate::service::BuiltinState::Recorder(RecorderSettings {
+                                capacity_frames: settings
+                                    .capacity_frames
+                                    .saturating_sub(48_000)
+                                    .max(1),
+                            }),
+                        },
+                    )),
+                );
         }
         crate::service::BuiltinState::Meter(settings) => {
             view = view
-                .child(heading("Level meter"))
+                .child(heading(t!("Level meter")))
                 .child(detail(
-                    "Window",
-                    format!("{} frames", settings.window_frames),
+                    &t!("Window"),
+                    t!("%{frames} frames", frames = settings.window_frames).to_string(),
                 ))
                 .child(
-                    button("meter-window", "Use 2048 frame window").on_click(edit(
+                    button("meter-window", t!("Use 2048 frame window")).on_click(edit(
                         cx.entity(),
                         GraphEdit::SetBuiltin {
                             node: id,
@@ -727,19 +789,23 @@ fn builtin_controls(
         }
         crate::service::BuiltinState::SpectrumAnalyzer(settings) => {
             view = view
-                .child(heading("Spectrum analyzer"))
-                .child(detail("FFT", settings.fft_size.to_string()))
-                .child(detail("Hop", settings.hop_frames.to_string()))
-                .child(button("spectrum-size", "Use 2048 point FFT").on_click(edit(
-                    cx.entity(),
-                    GraphEdit::SetBuiltin {
-                        node: id,
-                        state: crate::service::BuiltinState::SpectrumAnalyzer(SpectrumSettings {
-                            fft_size: 2048,
-                            hop_frames: 1024,
-                        }),
-                    },
-                )));
+                .child(heading(t!("Spectrum analyzer")))
+                .child(detail(&t!("FFT"), settings.fft_size.to_string()))
+                .child(detail(&t!("Hop"), settings.hop_frames.to_string()))
+                .child(
+                    button("spectrum-size", t!("Use 2048 point FFT")).on_click(edit(
+                        cx.entity(),
+                        GraphEdit::SetBuiltin {
+                            node: id,
+                            state: crate::service::BuiltinState::SpectrumAnalyzer(
+                                SpectrumSettings {
+                                    fft_size: 2048,
+                                    hop_frames: 1024,
+                                },
+                            ),
+                        },
+                    )),
+                );
         }
         crate::service::BuiltinState::Rack(settings) => {
             let next_slot_id = settings
@@ -759,9 +825,9 @@ fn builtin_controls(
                 route.slots.push(next_slot_id);
             }
             view = view
-                .child(heading("Processor rack"))
-                .child(detail("Stages", settings.slots.len().to_string()))
-                .child(button("rack-add-gain", "Add gain stage").on_click(edit(
+                .child(heading(t!("Processor rack")))
+                .child(detail(&t!("Stages"), settings.slots.len().to_string()))
+                .child(button("rack-add-gain", t!("Add gain stage")).on_click(edit(
                     cx.entity(),
                     GraphEdit::SetBuiltin {
                         node: id,
@@ -771,7 +837,7 @@ fn builtin_controls(
                         }),
                     },
                 )))
-                .child(button("rack-clear", "Clear stages").on_click(edit(
+                .child(button("rack-clear", t!("Clear stages")).on_click(edit(
                     cx.entity(),
                     GraphEdit::SetBuiltin {
                         node: id,
@@ -788,9 +854,9 @@ fn builtin_controls(
         node.kind(),
         NodeKind::Recorder | NodeKind::Meter | NodeKind::SpectrumAnalyzer
     ) {
-        view = view.child(label(
-            "Managed observation becomes available after Apply graph.",
-        ));
+        view = view.child(label(t!(
+            "Managed observation becomes available after Apply graph."
+        )));
     }
     view.into_any_element()
 }
@@ -1000,7 +1066,7 @@ fn builtin_step(
         .items_center()
         .justify_between()
         .gap(px(6.))
-        .child(label(label_text))
+        .child(label(t!(label_text)))
         .child(
             div()
                 .flex()
@@ -1049,26 +1115,52 @@ fn step_button(
 }
 
 impl StudioShell {
+    /// Per-render graph-page housekeeping: exit a name edit whose node is no
+    /// longer selected, drop selection members the graph no longer has, and
+    /// keep the primary selection inside the canvas multi-selection.
     pub(in crate::ui::window) fn sync_node_name(
         &mut self,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.node_name_selection == self.selected_node {
-            return;
+        if let Some(id) = self.node_name_editing
+            && self.selected_node != Some(id)
+        {
+            self.node_name_editing = None;
         }
-        self.node_name_selection = self.selected_node;
-        let label = self
-            .state
-            .read(cx)
-            .snapshot
-            .graph
-            .nodes
-            .iter()
-            .find(|entry| Some(entry.id) == self.selected_node)
-            .map(|entry| entry.label.clone())
-            .unwrap_or_default();
-        self.node_name
-            .update(cx, |input, cx| input.set_value(label, window, cx));
+        let graph = self.state.read(cx).snapshot.graph.clone();
+        self.selected_nodes.retain(|id| graph.node(*id).is_some());
+        if let Some(id) = self.selected_node {
+            if graph.node(id).is_some() {
+                self.selected_nodes.insert(id);
+            } else {
+                self.selected_node = None;
+            }
+        }
+    }
+
+    /// Commits the inline name edit: dispatches SetLabel unless the value is
+    /// empty (treated as cancel). Enter, ✓ and focus loss land here.
+    pub(in crate::ui::window) fn confirm_node_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.node_name_editing.take() else {
+            return;
+        };
+        let label = self.node_name.read(cx).value().trim().to_string();
+        if !label.is_empty() {
+            self.state.update(cx, |state, _| {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::SetLabel {
+                    node: id,
+                    label,
+                }))
+            });
+        }
+        cx.notify();
+    }
+
+    /// Discards the inline name edit without touching the stored label.
+    pub(in crate::ui::window) fn cancel_node_rename(&mut self, cx: &mut Context<Self>) {
+        if self.node_name_editing.take().is_some() {
+            cx.notify();
+        }
     }
 }

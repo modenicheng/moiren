@@ -2,6 +2,7 @@ use super::*;
 use crate::service::{GraphEdit, GraphNodeState, MixerState};
 use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
+use rust_i18n::t;
 
 mod model;
 pub(super) use model::{MixerPresentation, SliderEdit, gain_db, linear_gain, sync_sliders};
@@ -117,7 +118,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .items_center()
                 .justify_between()
                 .px(px(16.))
-                .child(heading("Mixer"))
+                .child(heading(t!("Mixer")))
                 .child(
                     div()
                         .flex()
@@ -146,7 +147,9 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .py(px(8.))
                 .border_t_1()
                 .border_color(theme::BORDER)
-                .child(label("Drag headers to reorder · drag dividers to resize")),
+                .child(label(t!(
+                    "Drag headers to reorder · drag dividers to resize"
+                ))),
         )
         .gpui_test_observe()
         .into_any_element()
@@ -205,7 +208,11 @@ fn strip(
         .gap(px(6.))
         .p(px(12.))
         .cursor_pointer()
-        .child(heading(entry.label.clone()))
+        .child(heading(crate::ui::state::display_label(
+            &shell.state.read(cx).snapshot,
+            entry,
+            kind,
+        )))
         .child(label(format!("{kind:?} · {channels} ch")))
         .on_click({
             let this = cx.entity();
@@ -394,7 +401,7 @@ fn sends(shell: &StudioShell, id: NodeId, cx: &Context<StudioShell>) -> impl Int
         .border_y_1()
         .border_color(theme::BORDER)
         .overflow_y_scroll()
-        .child(label("SENDS"));
+        .child(label(t!("SENDS")));
     let mut count = 0;
     for edge in graph.graph.edges().iter().filter(|edge| edge.src() == id) {
         count += 1;
@@ -419,7 +426,7 @@ fn sends(shell: &StudioShell, id: NodeId, cx: &Context<StudioShell>) -> impl Int
                         .child(
                             button(
                                 SharedString::from(format!("send-pre-{edge_id:?}")),
-                                if pre { "PRE" } else { "POST" },
+                                if pre { t!("PRE") } else { t!("POST") },
                             )
                             .variant(if pre {
                                 ButtonVariant::Secondary
@@ -461,7 +468,7 @@ fn sends(shell: &StudioShell, id: NodeId, cx: &Context<StudioShell>) -> impl Int
         );
     }
     if count == 0 {
-        rows = rows.child(label("No sends · connect in Graph"));
+        rows = rows.child(label(t!("No sends · connect in Graph")));
     }
     rows.gpui_test_observe()
 }

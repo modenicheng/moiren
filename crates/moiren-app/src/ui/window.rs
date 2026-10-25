@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use rust_i18n::t;
 
 use super::app_view;
 use super::monitoring::MeterSubscriptions;
@@ -69,6 +70,7 @@ pub fn run() -> anyhow::Result<()> {
 fn run_app(handle: AppHandle) -> anyhow::Result<()> {
     let initial = super::state::initial_snapshot(&handle)?;
     let preferences = crate::project::load_preferences().unwrap_or_default();
+    crate::i18n::apply(preferences.language);
     gpui_kit::application()
         .with_assets(ActionAssets)
         .run(move |cx| {
@@ -142,12 +144,18 @@ pub struct StudioShell {
     camera: Camera,
     node_positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
     node_drag: Option<(moiren_core::graph::NodeId, f32, f32)>,
+    /// Multi-selection on the graph canvas; `selected_node` is the primary
+    /// (last-clicked) member that drives the inspector.
+    selected_nodes: std::collections::BTreeSet<moiren_core::graph::NodeId>,
+    /// Active rubber-band drag; see [`graph::SelectionDrag`].
+    selection_drag: Option<graph::SelectionDrag>,
     graph_focus: FocusHandle,
     connection_drag: Option<graph::ConnectionDrag>,
     pending_node_spawn: Option<graph::PendingNodeSpawn>,
     node_search: Entity<component::input::InputState>,
     node_name: Entity<component::input::InputState>,
-    node_name_selection: Option<moiren_core::graph::NodeId>,
+    /// Node whose label is being edited inline in the inspector.
+    node_name_editing: Option<moiren_core::graph::NodeId>,
     hand_tool: bool,
     matrix_scroll: ScrollHandle,
     mixer_scroll: ScrollHandle,
@@ -240,14 +248,30 @@ impl StudioShell {
             },
         )
         .detach();
-        let node_search =
-            cx.new(|cx| component::input::InputState::new(window, cx).placeholder("Search nodes"));
+        let node_search = cx.new(|cx| {
+            component::input::InputState::new(window, cx).placeholder(t!("Search nodes"))
+        });
         cx.subscribe(
             &node_search,
             |_, _, _: &component::input::InputEvent, cx| cx.notify(),
         )
         .detach();
         let node_name = cx.new(|cx| component::input::InputState::new(window, cx));
+        cx.subscribe(
+            &node_name,
+            |shell, _, event: &component::input::InputEvent, cx| {
+                match event {
+                    component::input::InputEvent::PressEnter { .. } => {
+                        shell.confirm_node_rename(cx);
+                    }
+                    // Clicking elsewhere commits the edit, like the compressor
+                    // fields; explicit cancel is the ✗ button.
+                    component::input::InputEvent::Blur => shell.confirm_node_rename(cx),
+                    _ => {}
+                }
+            },
+        )
+        .detach();
         let meters = MeterSubscriptions::new(state.read(cx).handle.clone());
         let node_meters = super::monitoring::NodeMeters::new(state.read(cx).handle.clone());
         let preferences = crate::project::load_preferences().unwrap_or_default();
@@ -281,7 +305,7 @@ impl StudioShell {
             gain_slider,
             pan_slider,
             project_path: None,
-            project_name: "Untitled session".into(),
+            project_name: t!("Untitled session").into(),
             project_message: None,
             project_busy: false,
             pending_project: None,
@@ -291,12 +315,14 @@ impl StudioShell {
             camera: Camera::default(),
             node_positions: Default::default(),
             node_drag: None,
+            selected_nodes: Default::default(),
+            selection_drag: None,
             graph_focus: cx.focus_handle(),
             connection_drag: None,
             pending_node_spawn: None,
             node_search,
             node_name,
-            node_name_selection: None,
+            node_name_editing: None,
             hand_tool: false,
             matrix_scroll: ScrollHandle::new(),
             mixer_scroll: ScrollHandle::new(),
@@ -530,6 +556,7 @@ impl Render for StudioShell {
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
         self.sync_node_name(window, cx);
+        self.keep_graph_focus(window, cx);
         self.sync_export_controls(window, cx);
         self.sync_mixer_controls(window, cx);
         self.sync_compressor_controls(window, cx);
@@ -592,7 +619,7 @@ impl Render for StudioShell {
         let error_strip = error.map(|error| {
             let log_path = crate::logging::log_path()
                 .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "Application file logging is unavailable".into());
+                .unwrap_or_else(|| t!("Application file logging is unavailable").into());
             div()
                 .id("error-strip")
                 .flex_none()
@@ -606,7 +633,7 @@ impl Render for StudioShell {
                     div()
                         .pt(px(2.))
                         .text_color(theme::TEXT)
-                        .child(format!("Diagnostics: {log_path}")),
+                        .child(t!("Diagnostics: %{log_path}", log_path = log_path)),
                 )
                 .gpui_test_observe()
         });
@@ -638,6 +665,32 @@ impl Render for StudioShell {
 }
 
 impl StudioShell {
+    /// Keeps Delete/Escape alive on the graph page: whenever no text field of
+    /// the page (and no modal) owns focus, the canvas key handler gets it back.
+    /// Without this, clicking any button or panel leaves keystrokes routed to
+    /// a stale focus target and Delete appears dead.
+    fn keep_graph_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_open
+            || self.presentation.page != Page::Graph
+            || self.graph_focus.contains_focused(window, cx)
+        {
+            return;
+        }
+        let focused = window.focused(cx);
+        let text_input_focused = focused.is_some_and(|focused| {
+            self.node_search.read(cx).focus_handle(cx) == focused
+                || self.node_name.read(cx).focus_handle(cx) == focused
+                || self
+                    .compressor
+                    .inputs
+                    .values()
+                    .any(|input| input.read(cx).focus_handle(cx) == focused)
+        });
+        if !text_input_focused {
+            window.focus(&self.graph_focus, cx);
+        }
+    }
+
     fn refresh_observation_nodes(&mut self, cx: &App) {
         use moiren_core::graph::NodeKind;
         let snapshot = &self.state.read(cx).snapshot;
