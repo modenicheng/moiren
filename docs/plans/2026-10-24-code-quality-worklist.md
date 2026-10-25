@@ -21,14 +21,16 @@ revision and may drift.
   the SDK contract values by a cfg(windows) test.
   The VAD ABI mirror (`vad/protocol.rs`) is deliberately separate: it is
   pinned to the kernel header by the abi_conformance test. Do not merge.
-- **A1 (next, highest value)** WASAPI capture packet consumption exists in
+- **done (A1)** WASAPI capture packet consumption existed in
   five copies whose byte-width calculation has already drifted apart
   (checked-mul frame_bytes vs `nBlockAlign` vs hardcoded stereo-f32 `*8`
   vs `codec.frame_bytes()`): capture/wasapi/packet.rs (production),
   probe/capture.rs, exclusive_probe/capture.rs, physical/stream/
-  sampling.rs, professional/wasapi.rs. Extract a shared
-  `BorrowedCapturePacket`-style helper (frame width + error mapping as
-  parameters) so probes inherit the production overflow checks.
+  sampling.rs, professional/wasapi.rs. All now call
+  `capture_packet::borrow_capture_packet`, which checks frame capacity,
+  byte-length overflow, null data, SILENT, and zero-frame behavior using
+  each format's frame width. Callers keep their own error mapping, packet
+  lease, and `ReleaseBuffer` ordering.
 - **A3 (driver, needs WDK rebuild + host suites)** `Clock.h` mirrors
   `MOIREN_VAD_SAMPLE_RATE`/`MOIREN_VAD_MAX_PACKET_FRAMES` from
   include/moiren_vad.h; `Formats.cpp` hand-writes the IEEE_FLOAT GUID and

@@ -1,6 +1,7 @@
 //! Loopback capture prepares its metadata storage before entering streaming.
 use super::{CaptureReport, PacketRecord, activation::activate};
 use crate::{
+    capture_packet::borrow_capture_packet,
     catalog::ApiFailure,
     owner::{LeaseFallback, Mmcss, OwnedHandle, PacketLease, Process, Streaming},
     stats::{CaptureStats, SILENT, analyze_f32},
@@ -114,24 +115,19 @@ pub(super) fn capture(process: &Process, report: &mut CaptureReport) -> Result<(
                 }
                 report.last_stage = "packet validation / statistics";
                 let lease = PacketLease::new(&service, frames, LeaseFallback::CapturePacket);
-                if frames > buffer_frames {
-                    return Err(windows::core::Error::from_hresult(E_UNEXPECTED));
-                }
                 let silent = flags & SILENT != 0;
-                if !silent && data.is_null() {
-                    return Err(windows::core::Error::from_hresult(E_UNEXPECTED));
+                // SAFETY: data is valid for the live GetBuffer lease until
+                // lease.release() below.
+                let bytes = unsafe {
+                    borrow_capture_packet(
+                        data,
+                        frames,
+                        buffer_frames,
+                        silent,
+                        usize::from(format.nBlockAlign),
+                    )
                 }
-                let bytes = if silent {
-                    &[]
-                } else {
-                    // Bound by GetBuffer's lease, returned frames, and the initialized f32 format.
-                    unsafe {
-                        std::slice::from_raw_parts(
-                            data,
-                            frames as usize * usize::from(format.nBlockAlign),
-                        )
-                    }
-                };
+                .map_err(|_| windows::core::Error::from_hresult(E_UNEXPECTED))?;
                 let metrics = analyze_f32(bytes, frames, format.nChannels, silent)
                     .map_err(|_| windows::core::Error::from_hresult(E_UNEXPECTED))?;
                 if report.packets.len() < report.packets.capacity() {

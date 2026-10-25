@@ -2,6 +2,7 @@
 use super::api;
 use crate::{
     capture::CaptureError,
+    capture_packet::borrow_capture_packet,
     clock_bridge::{CaptureIngress, CapturePacket},
     owner::{LeaseFallback, PacketLease},
     stats::SILENT,
@@ -35,20 +36,15 @@ pub(super) fn transfer_packet(
         return Ok(CaptureTransfer::default());
     }
     let lease = PacketLease::new(client, frames, LeaseFallback::CapturePacket);
-    if frames > capacity || (flags & SILENT == 0 && data.is_null()) {
-        return Err(CaptureError::InvalidPacket);
-    }
-    let bytes = if flags & SILENT != 0 {
-        &[][..]
-    } else {
-        let count = (frames as usize)
-            .checked_mul(ingress.input_channels() * 4)
-            .filter(|&n| n <= isize::MAX as usize)
-            .ok_or(CaptureError::InvalidPacket)?;
-        // SAFETY: validated native f32 layout and bounded frame count describe
-        // this live WASAPI lease. Decoder uses bytes, not aligned f32 references.
-        unsafe { std::slice::from_raw_parts(data, count) }
-    };
+    let frame_bytes = ingress
+        .input_channels()
+        .checked_mul(4)
+        .ok_or(CaptureError::InvalidPacket)?;
+    // SAFETY: data is borrowed from this live GetBuffer lease until the
+    // ReleaseBuffer call below.
+    let bytes =
+        unsafe { borrow_capture_packet(data, frames, capacity, flags & SILENT != 0, frame_bytes) }
+            .map_err(|_| CaptureError::InvalidPacket)?;
     let accepted_frames = ingress.push_packet(
         bytes,
         CapturePacket {

@@ -329,6 +329,7 @@ mod tests {
             running: true,
             streams: Vec::new(),
             bridges: Vec::new(),
+            boundary_probes: Vec::new(),
         };
         check_native(Some(&observation), 7).unwrap();
         observation.running = false;
@@ -349,6 +350,7 @@ mod tests {
                     running: true,
                     streams: Vec::new(),
                     bridges: Vec::new(),
+                    boundary_probes: Vec::new(),
                 }),
             )
             .unwrap();

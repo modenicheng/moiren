@@ -5,6 +5,7 @@ use super::{
     codec::SampleCodec,
     native::{NativeStream, NativeStreamInfo, NativeStreamStats, StereoFrame},
 };
+use crate::capture_packet::borrow_capture_packet;
 use crate::negotiation::{
     EnginePeriodicityPolicy, EnginePeriods, LegacySharedInit, SUBFORMAT_FLOAT, SUBFORMAT_PCM,
     StageError, client3_rejects_format, friendly_name, initialize_legacy_shared, parse_descriptor,
@@ -808,21 +809,22 @@ impl NativeStream for WasapiStream {
                 capture.GetBuffer(&mut data, &mut frames, &mut flags, None, None)
             })?;
             let lease = PacketLease::new(capture, frames, LeaseFallback::CapturePacket);
-            if frames > self.info.buffer_frames {
-                return Err(unsupported("capture packet exceeds negotiated buffer"));
-            }
             let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
+            // SAFETY: data is borrowed from the live GetBuffer lease until
+            // the ReleaseBuffer call below.
+            let bytes = unsafe {
+                borrow_capture_packet(
+                    data,
+                    frames,
+                    self.info.buffer_frames,
+                    silent,
+                    self.codec.frame_bytes(),
+                )
+            }
+            .map_err(|error| unsupported(format!("invalid capture packet: {error:?}")))?;
             if silent {
                 self.captured[..frames as usize].fill([0.0; 2]);
-            } else if frames > 0 {
-                if data.is_null() {
-                    return Err(unsupported("capture packet has a null data pointer"));
-                }
-                // The packet lease supplies exactly frames of the negotiated
-                // descriptor. Copy before ReleaseBuffer, retaining partial reads.
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(data, frames as usize * self.codec.frame_bytes())
-                };
+            } else {
                 self.codec
                     .decode(bytes, &mut self.captured)
                     .map_err(unsupported)?;

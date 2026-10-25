@@ -1,6 +1,7 @@
 //! The same process client remains active across occupation and release.
 use super::WindowReport;
 use crate::{
+    capture_packet::borrow_capture_packet,
     owner::{LeaseFallback, OwnedHandle, PacketLease, Process},
     process_loopback::{activation::activate, capture_format},
     stats::{CaptureStats, SILENT, analyze_f32},
@@ -74,6 +75,7 @@ impl Loopback {
         mut check_peer: impl FnMut() -> anyhow::Result<()>,
     ) -> anyhow::Result<WindowReport> {
         let mut stats = CaptureStats::default();
+        let frame_bytes = usize::from(capture_format().nBlockAlign);
         let mut signal_frames = 0;
         let start = Instant::now();
         let deadline = settle + duration;
@@ -102,18 +104,13 @@ impl Loopback {
                 }
                 .context("GetBuffer(process loopback)")?;
                 let lease = PacketLease::new(&self.service, frames, LeaseFallback::CapturePacket);
-                anyhow::ensure!(frames <= self.capacity, "capture packet exceeds capacity");
                 let silent = flags & SILENT != 0;
-                anyhow::ensure!(
-                    silent || frames == 0 || !data.is_null(),
-                    "null capture packet"
-                );
-                let bytes = if silent || frames == 0 {
-                    &[]
-                } else {
-                    // GetBuffer lease owns exactly frames of initialized stereo f32.
-                    unsafe { std::slice::from_raw_parts(data, frames as usize * 8) }
-                };
+                // SAFETY: data is borrowed only until the matching release
+                // below, and the helper checks the negotiated frame width.
+                let bytes = unsafe {
+                    borrow_capture_packet(data, frames, self.capacity, silent, frame_bytes)
+                }
+                .map_err(|error| anyhow::anyhow!("invalid capture packet: {error:?}"))?;
                 let metrics = analyze_f32(bytes, frames, 2, silent)?;
                 if start.elapsed() >= settle {
                     // An amplitude floor excludes denormals/noise from evidence.

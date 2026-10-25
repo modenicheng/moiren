@@ -1,6 +1,7 @@
 //! Event-loop phases share the owner's time and metadata limits.
 use super::{unexpected, write_silence};
 use crate::{
+    capture_packet::borrow_capture_packet,
     clock::ClockPoint,
     owner::{LeaseFallback, PacketLease},
     physical::{DemandRecord, EndpointReport},
@@ -102,18 +103,18 @@ pub(super) fn capture_packets(
         }
         let lease = PacketLease::new(capture, frames, LeaseFallback::CapturePacket);
         report.last_stage = "capture packet validation";
-        if frames > capacity || (flags & SILENT == 0 && data.is_null()) {
-            return Err(unexpected());
+        // SAFETY: data remains valid until this function releases the live
+        // packet lease after collecting its statistics.
+        let bytes = unsafe {
+            borrow_capture_packet(
+                data,
+                frames,
+                capacity,
+                flags & SILENT != 0,
+                usize::from(base.nBlockAlign),
+            )
         }
-        let bytes = if flags & SILENT != 0 {
-            &[]
-        } else {
-            // SAFETY: native f32 validation fixes the frame width; the checked
-            // packet lies within the live lease, which outlives these statistics.
-            unsafe {
-                std::slice::from_raw_parts(data, frames as usize * usize::from(base.nBlockAlign))
-            }
-        };
+        .map_err(|_| unexpected())?;
         let metrics = analyze_f32(bytes, frames, base.nChannels, flags & SILENT != 0)
             .map_err(|_| unexpected())?;
         if report.capture_packets.len() < window.metadata_limit {
