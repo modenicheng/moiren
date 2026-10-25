@@ -1,9 +1,9 @@
 # Code-quality worklist: driver/vad/src + moiren-windows-audio (2026-10-24)
 
 Produced by a read-only survey (duplicates with verified drift, comment
-hygiene). Items marked **done** landed in the 2026-10-24 cleanup commit;
-the rest are ranked for later passes. File:line refers to the surveyed
-revision and may drift.
+hygiene). Items marked **done** landed in the 2026-10-24 cleanup commit
+or the 2026-10-25 quality pass (dated entries); the rest are ranked for
+later passes. File:line refers to the surveyed revision and may drift.
 
 ## Duplicates
 
@@ -31,12 +31,18 @@ revision and may drift.
   byte-length overflow, null data, SILENT, and zero-frame behavior using
   each format's frame width. Callers keep their own error mapping, packet
   lease, and `ReleaseBuffer` ordering.
-- **A3 (driver, needs WDK rebuild + host suites)** `Clock.h` mirrors
-  `MOIREN_VAD_SAMPLE_RATE`/`MOIREN_VAD_MAX_PACKET_FRAMES` from
-  include/moiren_vad.h; `Formats.cpp` hand-writes the IEEE_FLOAT GUID and
-  format tag that the SDK exports; `Audio.h`/`Policy.cpp` duplicate the
-  `L"MoirenEndpoint"` reference string. Single-source from the ABI header
-  / SDK constants in one pass.
+- **done (2026-10-25, A3)** `Clock.h` now includes `include/moiren_vad.h`
+  (still WDF-independent) and derives `Rate`/`MaxPacketFrames` from
+  `MOIREN_VAD_SAMPLE_RATE`/`MOIREN_VAD_MAX_PACKET_FRAMES`.
+  `Formats.cpp` uses the SDK's `KSDATAFORMAT_SUBTYPE_IEEE_FLOAT` and
+  `WAVE_FORMAT_IEEE_FLOAT`; reaching them needs `mmreg.h` (ksmedia.h
+  gates the IEEE constants on `_INC_MMREG` and the kernel include graph
+  never pulls it in), so `audio/Private.h` and `Guids.cpp` include
+  `mmreg.h` after `ks.h` with `NOBITMAP` to skip its wingdi block.
+  `VadAudioReference` moved to `Driver.h` as the one published circuit
+  name / interface reference string; `Policy.cpp` now uses it.
+  Validated by the portable host suites, the WDK build with code
+  analysis (0 warnings) and InfVerif.
 - **done (A4)** Process Loopback Shared initialization now gets its
   Loopback/EventCallback/AutoConvertPCM/default-quality-SRC flag combination
   from `process_loopback_stream_flags()` in the process_loopback module. The
@@ -59,18 +65,38 @@ revision and may drift.
 - **done (A11)** Capture, render and activation-gate waits now share the
   owner-level `wait_for_handles` kernel. Each caller retains its own wake
   or activation mapping and observable error stage.
-- **A8-A10, A15** small module-level twins (`api()`, `From<StageError>`,
-  Client3 period query, endpoint projections) — merge opportunistically.
-- **A16 (driver)** six `ClearTimerPacket`+`ZeroPackets` quiesce micro-
-  blocks in Streams.cpp with per-site field differences; extract named
-  helper(s) so a future reset site cannot miss a field.
+- **done (2026-10-25, A10)** the Client3 current-period query is one
+  `owner::current_shared_mode_engine_period` primitive returning the
+  period plus the TaskMemory-owned engine format; shared_stream's
+  `current_period`/`record_current_period` and the physical probe use it.
+- **done (2026-10-25, A15, partial)** `negotiation::endpoint_data_flow`
+  (probe-tools gated, like its only callers) merges the cast+GetDataFlow
+  projection at physical/stream.rs and exclusive_probe/render.rs. The
+  negotiation/professional sites keep their own cast and query calls
+  because their per-stage labels (`IMMEndpoint` vs `GetDataFlow`) are
+  observable reporting, not drift.
+- **A8/A9 — evaluated 2026-10-25, intentionally left.** capture/render
+  `api()` are already one-line delegations to `negotiation::stage`, and
+  the per-type `From<StageError>` impls are inherent to each error enum;
+  merging them would only add macro indirection. `GateError` is a public
+  enum and cannot reference the `pub(crate)` StageError.
+- **done (2026-10-25, A16)** Streams.cpp now has a `QuiesceStreamBuffers`
+  helper (ClearTimerPacket + RenderReadyMask + DeliveredPackets +
+  LastCaptureStart + ZeroPackets) used by the three TimerDrivenTick exits,
+  the stale-generation timer exit and VadAudioClearGateBuffers. The
+  pause/resume pair (VadAudioStopLocked with reset=false and
+  VadAudioStreamRun) deliberately preserves LastCaptureStart so a packet
+  completed before a pause still reports its capture time; both sites say
+  so in comments.
 
 ## Comments
 
 - **done (B3)** physical/stream.rs referenced QQMusic and "this machine"
   in comments; rewritten product/hardware-agnostic.
-- **B2** the WASAPI SILENT-flag contract is explained in three wordings;
-  collapse into the A1 helper's doc comment when extracted.
+- **done (2026-10-25, B2)** The WASAPI SILENT-flag contract is documented
+  once on `capture_packet::borrow_capture_packet`; `stats::analyze_f32`,
+  `clock_bridge` ingress and the exclusive-probe render fill now
+  reference it instead of re-explaining it.
 - **done (B4)** The duplicated OPEN_STAGES header comment was removed when
   the direction-specific constructors landed with A12.
 - No commented-out code blocks, no mixed-language, no stale comments
