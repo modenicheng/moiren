@@ -62,25 +62,15 @@ pub(in crate::ui::window) type SliderEdit = Box<dyn Fn(f32, &GraphSnapshot) -> O
 
 /// Slider construction and value sync shared by the fader (node) and send
 /// (edge) columns; only the current-value lookup and edit construction
-/// differ. With `release_applies` a slider release additionally applies the
-/// candidate graph, so quick edits (tray flyout) take effect immediately.
+/// differ. Every edit applies itself; releases carry no extra behavior.
 pub(in crate::ui::window) fn sync_sliders<K: Ord + Clone, T: 'static>(
     window: &mut Window,
     cx: &mut Context<T>,
     state: &Entity<UiState>,
     sliders: &mut BTreeMap<K, Entity<base::slider::SliderState>>,
     rows: Vec<(K, f32, SliderEdit)>,
-    release_applies: bool,
 ) {
-    sync_slider_range(
-        window,
-        cx,
-        state,
-        sliders,
-        rows,
-        release_applies,
-        [-60., 24., 0.1],
-    );
+    sync_slider_range(window, cx, state, sliders, rows, [-60., 24., 0.1]);
 }
 
 fn sync_slider_range<K: Ord + Clone, T: 'static>(
@@ -89,7 +79,6 @@ fn sync_slider_range<K: Ord + Clone, T: 'static>(
     state: &Entity<UiState>,
     sliders: &mut BTreeMap<K, Entity<base::slider::SliderState>>,
     rows: Vec<(K, f32, SliderEdit)>,
-    release_applies: bool,
     range: [f32; 3],
 ) {
     for (id, value, edit) in rows {
@@ -104,31 +93,16 @@ fn sync_slider_range<K: Ord + Clone, T: 'static>(
             let state = state.clone();
             cx.subscribe(
                 &slider,
-                move |_, _, event: &base::slider::SliderEvent, cx| {
-                    match event {
-                        base::slider::SliderEvent::Change(value) => {
-                            state.update(cx, |state, _| {
-                                if let Some(edit) = edit(value.end(), &state.snapshot.graph) {
-                                    state.dispatch(edit);
-                                }
-                            });
-                            cx.notify();
-                        }
-                        base::slider::SliderEvent::Release(_) if release_applies => {
-                            // The local snapshot may not have polled the edits
-                            // yet, so this mirrors the Apply button: fire
-                            // whenever no apply is already in flight.
-                            state.update(cx, |state, _| {
-                                if state.snapshot.graph.pending_revision.is_none()
-                                    && !state.pending_request
-                                {
-                                    state.dispatch(AppRequest::ApplyGraph);
-                                }
-                            });
-                            cx.notify();
-                        }
-                        _ => {}
+                move |_, _, event: &base::slider::SliderEvent, cx| match event {
+                    base::slider::SliderEvent::Change(value) => {
+                        state.update(cx, |state, _| {
+                            if let Some(edit) = edit(value.end(), &state.snapshot.graph) {
+                                state.dispatch(edit);
+                            }
+                        });
+                        cx.notify();
                     }
+                    _ => {}
                 },
             )
             .detach();
@@ -200,7 +174,6 @@ impl StudioShell {
             &self.state,
             &mut self.mixer.faders,
             faders,
-            false,
             [0., 1., 0.0001],
         );
         for edge in graph.graph.edges() {
@@ -279,7 +252,7 @@ impl StudioShell {
                 )
             })
             .collect();
-        sync_sliders(window, cx, &self.state, &mut self.mixer.sends, sends, false);
+        sync_sliders(window, cx, &self.state, &mut self.mixer.sends, sends);
     }
 }
 

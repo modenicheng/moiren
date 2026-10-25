@@ -456,7 +456,9 @@ impl ManagedDriver {
             }
             EditOutcome::Rejected(error) => {
                 if edit.apply_id == owner.latest_apply_id {
-                    c.graph.preparation_failed(owner.generation, error);
+                    let fault = project_fault(&error);
+                    c.graph
+                        .preparation_rejected(owner.generation, fault, error.to_string());
                 }
                 false
             }
@@ -641,5 +643,55 @@ impl ManagedDriver {
             self.retire(c);
             self.apply = false;
         }
+    }
+}
+
+/// Map an engine project rejection to a located, user-language fault.
+fn project_fault(error: &moiren_engine::host::ProjectError) -> super::GraphFault {
+    use moiren_engine::host::ProjectError as E;
+    let (subject, cause, hint) = match error {
+        E::MissingConfiguration(node) => (
+            super::GraphSubject::Node(*node),
+            "这个通道缺少可用的处理器配置".to_string(),
+            Some("删掉这个通道再重新添加一个同类型的"),
+        ),
+        E::ConfigurationKind(node) => (
+            super::GraphSubject::Node(*node),
+            "通道的配置和它的类型不匹配".to_string(),
+            Some("检查这个通道的参数设置，或删除后重新添加"),
+        ),
+        E::UnknownConfiguration(node) => (
+            super::GraphSubject::Node(*node),
+            "配置指向的通道已经不存在".to_string(),
+            None,
+        ),
+        E::IoChannels(node) => (
+            super::GraphSubject::Node(*node),
+            "通道的声道数和连线不一致".to_string(),
+            Some("调整通道声道数，或重连这条 route"),
+        ),
+        E::Io { node, .. } => (
+            super::GraphSubject::Node(*node),
+            "输入/输出设备配置无效".to_string(),
+            Some("换一个设备，或检查采样率/精度设置"),
+        ),
+        E::InvalidProcessor(node) => (
+            super::GraphSubject::Node(*node),
+            "通道参数超出有效范围".to_string(),
+            None,
+        ),
+        E::InvalidParameter => (
+            super::GraphSubject::Graph,
+            "参数超出有效范围".to_string(),
+            None,
+        ),
+        E::Graph(_) | E::InvalidProcessing | E::Capacity => {
+            (super::GraphSubject::Graph, error.to_string(), None)
+        }
+    };
+    super::GraphFault {
+        subject,
+        cause,
+        hint: hint.map(str::to_string),
     }
 }

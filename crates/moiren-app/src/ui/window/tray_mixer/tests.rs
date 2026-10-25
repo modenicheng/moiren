@@ -68,8 +68,7 @@ fn tray_mixer_lists_audio_strips_and_applies_mute_immediately(cx: &mut TestAppCo
             cx,
         );
     });
-    // The mute click follows its edit with an apply, so no revision work
-    // stays pending once the edit lands.
+    // The mute edit lands in the candidate; every edit applies itself.
     poll_until(&view, cx, |snapshot| {
         snapshot
             .graph
@@ -81,7 +80,7 @@ fn tray_mixer_lists_audio_strips_and_applies_mute_immediately(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
-fn tray_mixer_fader_release_applies_the_dragged_gain(cx: &mut TestAppContext) {
+fn tray_mixer_fader_drag_edits_the_gain(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let runtime = ServiceRuntime::spawn().unwrap();
     let handle = runtime.handle();
@@ -100,8 +99,8 @@ fn tray_mixer_fader_release_applies_the_dragged_gain(cx: &mut TestAppContext) {
             .id()
     });
     // Press the track's midpoint and release: the press jumps the value
-    // (candidate edit), the release applies it. The track midpoint maps to
-    // roughly -18 dB.
+    // and the edit applies itself. The track midpoint maps to roughly
+    // -18 dB.
     let target = cx.update(|window, _| {
         let levels = window
             .find(SharedString::from(format!("tray-strip-levels-{source:?}")))

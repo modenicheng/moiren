@@ -563,7 +563,6 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                     div()
                         .flex()
                         .gap(px(8.))
-                        .child(controls::apply(shell, cx))
                         .child(controls::inspector_toggle("toggle-inspector", cx)),
                 ),
         )

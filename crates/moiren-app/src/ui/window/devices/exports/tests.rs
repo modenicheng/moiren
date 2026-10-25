@@ -231,7 +231,6 @@ mod headless {
             "export-create-stereo",
             "export-create-name",
             "export-create",
-            "apply-graph",
         ] {
             scroll_to_control(cx, id);
         }
@@ -332,7 +331,6 @@ mod headless {
                 "export-create-stereo",
                 "export-create-name",
                 "export-create",
-                "apply-graph",
             ] {
                 assert!(window.find(control).visible(), "missing control {control}");
             }

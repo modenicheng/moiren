@@ -130,11 +130,6 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     div()
                         .flex()
                         .gap(px(8.))
-                        .when(
-                            graph.active_revision != Some(graph.candidate_revision),
-                            |row| row.child(badge(t!("Pending"), theme::WARNING)),
-                        )
-                        .child(apply(shell, cx))
                         .child(inspector_toggle("toggle-details", cx)),
                 ),
         )

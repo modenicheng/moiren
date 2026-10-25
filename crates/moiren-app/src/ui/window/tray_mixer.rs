@@ -10,7 +10,7 @@
 use rust_i18n::t;
 use std::collections::BTreeMap;
 
-use super::controls::{badge, button, db, heading, label};
+use super::controls::{button, db, heading, label};
 use super::desktop::Desktop;
 use super::mixer::{SliderEdit, gain_db, linear_gain, node_kind_color, sync_sliders};
 use super::*;
@@ -127,7 +127,7 @@ impl TrayMixer {
                 )
             })
             .collect();
-        sync_sliders(window, cx, &self.state, &mut self.faders, rows, true);
+        sync_sliders(window, cx, &self.state, &mut self.faders, rows);
     }
 }
 
@@ -141,8 +141,6 @@ impl Render for TrayMixer {
 
         let state = self.state.read(cx);
         let graph = &state.snapshot.graph;
-        let pending = graph.pending_revision.is_some()
-            || graph.active_revision != Some(graph.candidate_revision);
         let ids = strip_ids(graph);
         let empty = ids.is_empty();
 
@@ -187,9 +185,6 @@ impl Render for TrayMixer {
                     .border_b_1()
                     .border_color(theme::BORDER)
                     .child(heading(t!("Mixer")))
-                    .when(pending, |header| {
-                        header.child(badge(t!("Pending"), theme::WARNING))
-                    })
                     .child(div().flex_1())
                     .child(open_button(self, cx)),
             )
@@ -388,8 +383,7 @@ fn fader(state: &Entity<base::slider::SliderState>, gain: f64) -> impl IntoEleme
         )
 }
 
-/// Candidate strip edit followed by an immediate apply, so quick flyout
-/// interactions take effect without visiting the main window.
+/// Strip edit; it applies itself through the live parameter path.
 fn mixer_edit(
     state: Entity<UiState>,
     this: Entity<TrayMixer>,
@@ -405,11 +399,6 @@ fn mixer_edit(
                     node: id,
                     state: requested,
                 }));
-                // The snapshot has not polled the edit yet; apply unless one
-                // is already in flight, exactly like the Apply button.
-                if state.snapshot.graph.pending_revision.is_none() && !state.pending_request {
-                    state.dispatch(AppRequest::ApplyGraph);
-                }
             }
         });
         this.update(cx, |_, cx| cx.notify());

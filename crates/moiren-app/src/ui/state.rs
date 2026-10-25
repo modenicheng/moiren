@@ -1062,12 +1062,13 @@ mod tests {
         assert_eq!(state.snapshot.active_latency_profile, None);
         assert_eq!(
             crate::ui::presentation::latency_apply_text(&state.snapshot),
-            "Selected profile applies on next Apply / Start"
+            "Selected profile activates on the next audio start"
         );
         let snapshot = Arc::make_mut(&mut state.snapshot);
         snapshot.active_latency_profile = Some(AudioLatencyProfile::Compatible);
-        assert!(
-            crate::ui::presentation::latency_apply_text(&state.snapshot).starts_with("Pending:")
+        assert_eq!(
+            crate::ui::presentation::latency_apply_text(&state.snapshot),
+            "Selected profile activates on the next audio start"
         );
         Arc::make_mut(&mut state.snapshot).active_latency_profile = Some(AudioLatencyProfile::Low);
         assert_eq!(

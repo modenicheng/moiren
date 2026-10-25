@@ -985,20 +985,14 @@ fn unsupported_topology_application_never_keeps_a_false_active_revision() {
     let h = rt.handle();
     h.try_request(AppRequest::Start(spec())).unwrap();
     phase(&h, SessionPhase::Running);
-    let active = h.try_snapshot().unwrap().graph.active_revision.unwrap();
+    let _active = h.try_snapshot().unwrap().graph.active_revision.unwrap();
     h.try_request(AppRequest::EditGraph(GraphEdit::AddNode {
         kind: NodeKind::Bus,
         channels: 2,
     }))
     .unwrap();
-    wait_until(|| {
-        h.try_snapshot()
-            .is_some_and(|s| s.graph.graph.nodes().len() == 5)
-    });
-    let candidate = h.try_snapshot().unwrap();
-    assert_eq!(candidate.graph.active_revision, Some(active));
-    assert_ne!(candidate.graph.candidate_revision, active);
-    h.try_request(AppRequest::ApplyGraph).unwrap();
+    // The edit applies itself; the rejected rebuild must fail the session
+    // without ever keeping a false active revision.
     phase(&h, SessionPhase::Failed);
     let failed = h.try_snapshot().unwrap();
     assert_eq!(failed.graph.active_revision, None);
@@ -1016,7 +1010,7 @@ fn unsupported_topology_application_never_keeps_a_false_active_revision() {
 }
 
 #[test]
-fn realtime_node_gain_preserves_unapplied_source_selection_and_requires_applied_ack() {
+fn source_binding_applies_itself_and_live_gain_requires_its_ack() {
     use moiren_core::{graph::NodeKind, protocol::ReplyCode};
     let state = Arc::new(State::default());
     state.started.store(true, Ordering::Release);
@@ -1049,6 +1043,18 @@ fn realtime_node_gain_preserves_unapplied_source_selection_and_requires_applied_
         },
     }))
     .unwrap();
+    // The binding edit applies itself: the session rebuilds onto 880 Hz.
+    wait_until(|| {
+        h.try_snapshot().is_some_and(|s| {
+            s.phase == SessionPhase::Running
+                && s.desired.as_ref().is_some_and(|d| {
+                    d.source
+                        == InputSelection::Tone {
+                            frequency_hz: 880.0,
+                        }
+                })
+        })
+    });
     h.try_request(AppRequest::EditGraph(GraphEdit::SetGain {
         node: gain,
         gain: 0.25,
@@ -1067,12 +1073,6 @@ fn realtime_node_gain_preserves_unapplied_source_selection_and_requires_applied_
         Some(InputSelection::Tone {
             frequency_hz: 880.0
         })
-    );
-    assert_eq!(
-        accepted.desired.as_ref().unwrap().source,
-        InputSelection::Tone {
-            frequency_hz: 440.0
-        }
     );
     assert_eq!(accepted.control.accepted_pending, 1);
     state.pump.store(true, Ordering::Release);
