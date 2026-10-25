@@ -18,6 +18,9 @@ mod settings_tests;
 mod signal_preparation;
 mod signals;
 mod startup;
+#[cfg(any(test, feature = "gpui-test"))]
+#[path = "managed/test_backend.rs"]
+pub(crate) mod test_backend;
 #[cfg(windows)]
 mod windows;
 pub use backend::*;

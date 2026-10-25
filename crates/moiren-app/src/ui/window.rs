@@ -380,7 +380,9 @@ impl StudioShell {
                             changed
                         });
                         shell.finish_project_load(cx);
-                        if changed || shell.pump_meters(cx) {
+                        let meters_changed =
+                            !shell.meters_frame_active(cx) && shell.pump_meters(cx);
+                        if changed || meters_changed {
                             cx.notify();
                         }
                     })
@@ -396,11 +398,14 @@ impl StudioShell {
     /// Whether any meter observation is on screen right now. While true the
     /// render loop requests animation frames so meter motion runs at the
     /// display refresh rate.
-    fn meters_frame_active(&self) -> bool {
+    fn meters_frame_active(&self, cx: &App) -> bool {
+        let snapshot = &self.state.read(cx).snapshot;
         self.presentation.visible
             && !self.presentation.minimized
             && !self.settings_open
             && matches!(self.presentation.page, Page::Graph | Page::Mixer)
+            && snapshot.phase == SessionPhase::Running
+            && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision)
     }
 
     /// Refresh every meter observation once: reads the latest windows,
@@ -411,7 +416,9 @@ impl StudioShell {
     /// ballistics motion alone does not, because animation frames (not
     /// notify) carry it.
     pub(super) fn pump_meters(&mut self, cx: &App) -> bool {
-        let visible = self.meters_frame_active();
+        self.meters.set_preferences(self.preferences.meters);
+        self.node_meters.set_preferences(self.preferences.meters);
+        let visible = self.meters_frame_active(cx);
         let points = self.meter_points.get();
         let meter_changed = self.meters.update_points(
             &self.state.read(cx).snapshot,
@@ -526,6 +533,13 @@ mod tray_mixer;
 
 impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "gpui-test")]
+        self.mixer
+            .trace
+            .borrow_mut()
+            .begin(self.presentation.page == Page::Mixer);
+        #[cfg(feature = "gpui-test")]
+        let visible_meter_count = self.node_meter_points.borrow().len();
         self.finish_settings_save(cx);
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
@@ -545,12 +559,16 @@ impl Render for StudioShell {
         self.compact = compact;
         let visible =
             window.is_visible() && matches!(self.presentation.page, Page::Graph | Page::Mixer);
-        if self.meters_frame_active() {
+        if self.meters_frame_active(cx) {
+            #[cfg(feature = "gpui-test")]
+            let meter_began = std::time::Instant::now();
             // Frame-driven meters: advance observations every display frame
             // (this frame builds from the pumped state) and keep the
             // vsync loop running. Must run before the per-frame reset of
             // `meter_points` below so visibility comes from the last frame.
             self.pump_meters(cx);
+            #[cfg(feature = "gpui-test")]
+            self.mixer.trace.borrow_mut().add(meter_began.elapsed());
             window.request_animation_frame();
         }
         self.refresh_observation_nodes(cx);
@@ -610,7 +628,7 @@ impl Render for StudioShell {
                 )
                 .gpui_test_observe()
         });
-        div()
+        let view = div()
             .id("studio-shell")
             .relative()
             .size_full()
@@ -633,7 +651,10 @@ impl Render for StudioShell {
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
             .when(self.settings_open, |v| {
                 v.child(settings::overlay(self, window, cx))
-            })
+            });
+        #[cfg(feature = "gpui-test")]
+        self.mixer.trace.borrow_mut().finish(visible_meter_count);
+        view
     }
 }
 

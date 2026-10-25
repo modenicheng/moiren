@@ -1,125 +1,124 @@
 //! Real source/sink observations; missing windows retain unknown readouts.
 //! Bars are dual-layer: the bright fill is the moving RMS body, the dark
 //! zone above it extends to the peak bar, and the thin marker holds the
-//! recent peak maximum. Zones follow EBU R68/R97 levels: green through the
-//! −18 dBFS alignment level, yellow through the −9 dBFS permitted maximum,
-//! red above.
+//! recent peak maximum. The digital scale uses green below −6 dBFS, yellow
+//! from −6 to 0 dBFS, and red above digital zero.
 use crate::ui::monitoring::DisplayLevel;
 use crate::ui::theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-fn label(text: impl Into<SharedString>) -> Div {
-    div()
-        .text_size(px(10.))
-        .text_color(theme::TEXT_MUTED)
-        .child(text.into())
-}
-fn db(value: f64) -> String {
-    if value <= 0. {
-        "−∞".into()
-    } else {
-        format!("{:.1}", 20. * value.log10())
-    }
-}
-pub fn stereo_meter_with_clip(levels: Option<[DisplayLevel; 2]>, clips: [bool; 2]) -> Div {
-    let mut pair = div()
-        .flex()
-        .flex_none()
-        .h(px(260.))
-        .gap(px(2.))
-        .line_height(px(12.));
-    let mut ticks = div()
-        .relative()
-        .mt(px(16.))
-        .h(px(190.))
-        .flex_none()
-        .w(px(20.))
-        .text_size(px(8.))
-        .text_color(theme::TEXT_FAINT);
-    for db in [0, -9, -18, -36, -60] {
-        ticks = ticks.child(
-            div()
-                .absolute()
-                .top(px((-db as f32 / 60.) * 184.))
-                .child(db.to_string()),
-        );
-    }
-    for (top, name) in [(210., "PK"), (226., "RMS")] {
-        ticks = ticks.child(div().absolute().top(px(top)).child(name));
-    }
-    pair = pair.child(ticks);
-    for (index, name) in ["L", "R"].into_iter().enumerate() {
-        let channel = levels.map(|l| l[index]);
-        pair = pair.child(
-            div()
-                .flex()
-                .flex_col()
-                .flex_none()
-                .w(px(24.))
-                .items_center()
-                .gap(px(4.))
-                .child(
-                    div()
-                        .h(px(12.))
-                        .flex_none()
-                        .px(px(3.))
-                        .rounded(px(2.))
-                        .text_size(px(8.))
-                        .text_color(
-                            if clips[index] || channel.is_some_and(|level| level.marker >= 1.) {
-                                theme::DANGER
-                            } else {
-                                theme::TEXT_FAINT
-                            },
-                        )
-                        .bg(
-                            if clips[index] || channel.is_some_and(|level| level.marker >= 1.) {
-                                theme::soft(theme::DANGER)
-                            } else {
-                                theme::SURFACE
-                            },
-                        )
-                        .child(if channel.is_some() || clips[index] {
-                            "CLIP"
-                        } else {
-                            "—"
-                        }),
-                )
-                .child(meter_bar(
-                    div()
-                        .relative()
-                        .w(px(7.))
-                        .h(px(190.))
-                        .flex_none()
-                        .overflow_hidden()
-                        .bg(theme::BORDER),
-                    channel,
-                ))
-                .child(label(name))
-                .child(
-                    div().font_family(theme::FONT_MONO).text_size(px(8.)).child(
-                        channel
-                            .map(|l| db(f64::from(l.marker)))
-                            .unwrap_or_else(|| "—".into()),
-                    ),
-                )
-                .child(
-                    div().font_family(theme::FONT_MONO).text_size(px(8.)).child(
-                        channel
-                            .map(|level| db(f64::from(level.rms)))
-                            .unwrap_or_else(|| "—".into()),
-                    ),
-                ),
-        );
-    }
-    pair
-}
 
+/// Main Mixer bars fill exactly the shared fader track; there is no second
+/// ruler or independent dB interpolation here. Channel count is never inferred
+/// from a stereo projection of mono/multichannel data.
+pub fn channel_meter(levels: Option<&[DisplayLevel]>, channels: usize, clips: &[bool]) -> Div {
+    use super::fader::{FaderScale, paint_text};
+    let levels = levels.map(<[DisplayLevel]>::to_vec);
+    let clips = clips.to_vec();
+    let count = channels.max(1) as f32;
+    let gap = (8. / count).min(3.);
+    let width = (28. / count)
+        .clamp(2., 10.)
+        .min((40. - gap * (count - 1.)) / count);
+    let total_width = width * count + gap * (count - 1.);
+    // All changing bars share one canvas. This avoids rebuilding a separate
+    // layout tree for every color segment of every channel at display rate.
+    div().h_full().flex_none().w(px(total_width)).child(
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, cx| {
+                for index in 0..channels {
+                    let left = bounds.left() + px(index as f32 * (width + gap));
+                    let track = Bounds::new(
+                        point(left, bounds.top()),
+                        size(px(width), bounds.size.height),
+                    );
+                    window.paint_quad(fill(track, theme::BORDER));
+                    let level = levels.as_deref().and_then(|levels| levels.get(index));
+                    if let Some(level) = level {
+                        let amount = |value| 1. - FaderScale::position(f64::from(value));
+                        let peak = amount(level.bar);
+                        let mut bottom: f32 = 0.;
+                        for (top, color) in [
+                            (meter_height(10f32.powf(-6. / 20.)), theme::SUCCESS),
+                            (meter_height(1.), theme::WARNING),
+                            (1., theme::DANGER),
+                        ] {
+                            let height = (peak.min(top) - bottom).max(0.);
+                            window.paint_quad(fill(
+                                Bounds::new(
+                                    point(
+                                        left,
+                                        bounds.bottom() - bounds.size.height * (bottom + height),
+                                    ),
+                                    size(px(width), bounds.size.height * height),
+                                ),
+                                color,
+                            ));
+                            bottom = top;
+                        }
+                        let rms = amount(level.rms).min(peak);
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                point(left, bounds.bottom() - bounds.size.height * peak),
+                                size(px(width), bounds.size.height * (peak - rms).max(0.)),
+                            ),
+                            theme::METER_PEAK_ZONE,
+                        ));
+                        let y = bounds.top()
+                            + bounds.size.height * FaderScale::position(f64::from(level.marker));
+                        window.paint_quad(fill(
+                            Bounds::new(point(left, y - px(1.)), size(px(width), px(2.)))
+                                .intersect(&track),
+                            theme::TEXT,
+                        ));
+                    }
+                    // A held display marker is not a new overload. Trust the
+                    // raw-window latch so clicking reset clears it immediately.
+                    let clip = clips.get(index).copied().unwrap_or(false);
+                    window.paint_quad(fill(
+                        Bounds::new(point(left, bounds.top() - px(10.)), size(px(width), px(3.))),
+                        if clip { theme::DANGER } else { theme::BORDER },
+                    ));
+                    if width + gap >= 5. {
+                        let label = if channels == 2 {
+                            ["L", "R"][index].to_owned()
+                        } else {
+                            (index + 1).to_string()
+                        };
+                        paint_text(
+                            &label,
+                            point(left, bounds.bottom() + px(6.)),
+                            8.,
+                            TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        );
+                    }
+                }
+                if width + gap < 5. {
+                    paint_text(
+                        &format!("{channels} ch"),
+                        point(bounds.left(), bounds.bottom() + px(6.)),
+                        8.,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                }
+            },
+        )
+        .size_full(),
+    )
+}
 pub(crate) fn meter_height(value: f32) -> f32 {
     if value <= 0. {
         0.
     } else {
-        ((20. * value.log10() + 60.) / 60.).clamp(0., 1.)
+        use super::fader::FaderScale;
+        1. - FaderScale::position(f64::from(value))
     }
 }
 
@@ -134,15 +133,17 @@ struct MeterSpan {
 /// Layers for one channel: the bright segment fill covers the RMS body, and
 /// a translucent dark extension above it reaches the peak bar so the
 /// sustained reading stays light and transients show as the dark tail.
-/// Zone boundaries anchor to EBU R68/R97 levels: −18 dBFS alignment level
-/// (green→yellow) and −9 dBFS permitted maximum (yellow→red).
+/// Zone boundaries use the compact digital reference: −6 dBFS
+/// (green→yellow) and 0 dBFS (yellow→red).
 fn meter_spans(level: DisplayLevel) -> Vec<MeterSpan> {
     let bar_amount = meter_height(level.bar);
     let mut spans = Vec::new();
+    let green_top = meter_height(10f32.powf(-6. / 20.));
+    let red_top = meter_height(1.);
     for (bottom, top, color) in [
-        (0., 0.7, theme::SUCCESS),
-        (0.7, 0.85, theme::WARNING),
-        (0.85, 1., theme::DANGER),
+        (0., green_top, theme::SUCCESS),
+        (green_top, red_top, theme::WARNING),
+        (red_top, 1., theme::DANGER),
     ] {
         let height = (bar_amount.min(top) - bottom).max(0.);
         if height > 0. {
@@ -254,28 +255,33 @@ mod tests {
     #[test]
     fn meter_regions_follow_dbfs_and_clamp_clipping() {
         assert_eq!(meter_height(0.), 0.);
-        assert_eq!(meter_height(1.), 1.);
-        assert_eq!(meter_height(2.), 1.);
-        assert!((meter_height(10f32.powf(-12. / 20.)) - 0.8).abs() < 0.00001);
-        assert!((meter_height(10f32.powf(-3. / 20.)) - 0.95).abs() < 0.00001);
+        assert!((meter_height(1.) - 0.76).abs() < 0.00001);
+        assert!(meter_height(2.) > meter_height(1.));
+        assert_eq!(meter_height(10f32.powf(12. / 20.)), 1.);
+        assert_eq!(meter_height(2. * 10f32.powf(12. / 20.)), 1.);
+        assert!((meter_height(10f32.powf(-6. / 20.)) - 0.62).abs() < 0.00001);
     }
 
     #[test]
     fn meter_spans_light_the_rms_body_and_darken_the_peak_tail() {
-        let spans = meter_spans(level(-6., -30.));
-        // The bar at −6 dB crosses all three zones: green through −18 dB,
-        // yellow through −9 dB, red above (EBU R68/R97 anchors).
+        let spans = meter_spans(level(3., -30.));
+        // The bar at +3 dB crosses all three zones: green through −6 dB,
+        // yellow through 0 dB, red above digital zero.
         assert_eq!(spans.len(), 4);
         assert_eq!(spans[0].bottom, 0.);
-        assert!((spans[0].height - 0.7).abs() < 0.00001);
-        assert!((spans[1].bottom - 0.7).abs() < 0.00001);
-        assert!((spans[1].height - 0.15).abs() < 0.00001);
-        assert!((spans[2].bottom - 0.85).abs() < 0.00001);
-        assert!((spans[2].height - 0.05).abs() < 0.00001);
+        let green_top = meter_height(10f32.powf(-6. / 20.));
+        let red_top = meter_height(1.);
+        let peak = meter_height(10f32.powf(3. / 20.));
+        let rms = meter_height(10f32.powf(-30. / 20.));
+        assert!((spans[0].height - green_top).abs() < 0.00001);
+        assert!((spans[1].bottom - green_top).abs() < 0.00001);
+        assert!((spans[1].height - (red_top - green_top)).abs() < 0.00001);
+        assert!((spans[2].bottom - red_top).abs() < 0.00001);
+        assert!((spans[2].height - (peak - red_top)).abs() < 0.00001);
         // The dark tail covers the transient zone from the −30 dB RMS body
         // up to the peak reading.
-        assert!((spans[3].bottom - 0.5).abs() < 0.00001);
-        assert!((spans[3].height - 0.4).abs() < 0.00001);
+        assert!((spans[3].bottom - rms).abs() < 0.00001);
+        assert!((spans[3].height - (peak - rms)).abs() < 0.00001);
         assert!(same_color(&spans[3], theme::METER_PEAK_ZONE));
     }
 

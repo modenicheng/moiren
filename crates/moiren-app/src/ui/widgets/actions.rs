@@ -73,6 +73,11 @@ pub struct ActionButton {
     icon: Option<ActionIcon>,
     disabled: bool,
     on_click: Option<ClickHandler>,
+    tooltip: Option<SharedString>,
+    full_width: bool,
+    justify_start: bool,
+    trailing: Option<SharedString>,
+    square: bool,
     sample: Option<SampleState>,
 }
 
@@ -87,11 +92,36 @@ impl ActionButton {
             icon: None,
             disabled: false,
             on_click: None,
+            tooltip: None,
+            full_width: false,
+            justify_start: false,
+            trailing: None,
+            square: false,
             sample: None,
         }
     }
     pub fn variant(mut self, variant: ButtonVariant) -> Self {
         self.variant = variant;
+        self
+    }
+    pub fn tooltip(mut self, text: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(text.into());
+        self
+    }
+    pub fn full_width(mut self) -> Self {
+        self.full_width = true;
+        self
+    }
+    pub fn justify_start(mut self) -> Self {
+        self.justify_start = true;
+        self
+    }
+    pub fn trailing(mut self, text: impl Into<SharedString>) -> Self {
+        self.trailing = Some(text.into());
+        self
+    }
+    pub fn square(mut self) -> Self {
+        self.square = true;
         self
     }
     pub fn size(mut self, size: ControlSize) -> Self {
@@ -142,8 +172,17 @@ impl RenderOnce for ActionButton {
         .font_weight(FontWeight::MEDIUM)
         .text_size(px(m.font))
         .line_height(px(m.line_height))
+        .when(self.full_width, |s| s.w_full().justify_center())
+        .when(self.justify_start, |s| s.justify_start())
+        .when(self.square, |s| s.rounded_none())
         .when_some(self.icon, |s, icon| s.child(icon.element()))
         .child(self.label)
+        .when_some(self.trailing, |s, text| s.child(div().flex_1()).child(text))
+        .when_some(self.tooltip, |s, text| {
+            s.tooltip(move |window, cx| {
+                component::tooltip::Tooltip::new(text.clone()).build(window, cx)
+            })
+        })
         .when_some(self.on_click, |s, handler| {
             s.on_click(move |e, w, cx| handler(e, w, cx))
         })

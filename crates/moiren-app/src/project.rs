@@ -5,6 +5,7 @@
 
 mod exports;
 mod graph;
+mod meter;
 mod model;
 mod startup;
 mod storage;
@@ -12,6 +13,7 @@ mod window;
 
 pub use exports::*;
 pub use graph::*;
+pub use meter::*;
 pub use model::*;
 pub use startup::*;
 pub use storage::*;

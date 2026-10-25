@@ -24,6 +24,8 @@ embed-resource = "3.0"
 [features]
 # UI headless tests activate gpui-kit test-support without affecting release builds.
 gpui-test = ["gpui-kit/test-support"]
+# Native capture diagnostics; never enabled in ordinary application builds.
+ui-profiler = ["gpui-test", "gpui-kit/profiler"]
 # Explicit target service/VAD integration probe; ordinary builds never run it.
 vad-integration-probe = []
 

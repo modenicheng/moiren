@@ -68,8 +68,14 @@ impl TrayMixer {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         cx.on_release(|this, cx| this.release_desktop(cx)).detach();
+        let mut node_meters = NodeMeters::new(state.read(cx).handle.clone());
+        node_meters.set_preferences(
+            crate::project::load_preferences()
+                .unwrap_or_default()
+                .meters,
+        );
         Self {
-            node_meters: NodeMeters::new(state.read(cx).handle.clone()),
+            node_meters,
             state,
             desktop,
             faders: BTreeMap::new(),

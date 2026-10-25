@@ -4,8 +4,15 @@ use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
 
 mod model;
+#[cfg(feature = "gpui-test")]
+pub(super) mod performance;
+mod routing;
+pub(super) mod strip_controls;
+use crate::ui::widgets::fader::{FaderScale, fader, ruler};
+use component::menu::ContextMenuExt;
 pub(super) use model::{MixerPresentation, SliderEdit, gain_db, linear_gain, sync_sliders};
 use model::{StripDrag, reorder};
+use routing::{inputs, sends};
 
 impl StudioShell {
     pub(super) fn update_node_meters(&mut self, visible: bool, cx: &App) -> bool {
@@ -113,7 +120,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             div()
                 .flex()
                 .flex_none()
-                .h(px(48.))
+                .h(px(40.))
                 .items_center()
                 .justify_between()
                 .px(px(16.))
@@ -122,6 +129,10 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     div()
                         .flex()
                         .gap(px(8.))
+                        .when(
+                            graph.active_revision != Some(graph.candidate_revision),
+                            |row| row.child(badge("Pending", theme::WARNING)),
+                        )
                         .child(apply(shell, cx))
                         .child(inspector_toggle("toggle-details", cx)),
                 ),
@@ -136,17 +147,12 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .child(resize_handle(shell, true, "mixer-dock-resize", cx))
                 .child(dock_container.child(dock).gpui_test_observe())
                 .when(shell.inspector_open, |view| {
-                    view.child(graph::inspector(shell, cx))
+                    if shell.selected_node.is_none() && shell.selected_route.is_some() {
+                        view.child(matrix::inspector(shell, cx))
+                    } else {
+                        view.child(graph::inspector(shell, cx))
+                    }
                 }),
-        )
-        .child(
-            div()
-                .flex_none()
-                .px(px(16.))
-                .py(px(8.))
-                .border_t_1()
-                .border_color(theme::BORDER)
-                .child(label("Drag headers to reorder · drag dividers to resize")),
         )
         .gpui_test_observe()
         .into_any_element()
@@ -202,34 +208,71 @@ fn strip(
         .id(SharedString::from(format!("strip-header-{id:?}")))
         .flex()
         .flex_col()
-        .gap(px(6.))
-        .p(px(12.))
+        .gap(px(2.))
+        .h(px(if shell.compact { 44. } else { 52. }))
+        .flex_none()
+        .px(px(10.))
+        .justify_center()
+        .border_t_1()
+        .border_color(theme::BORDER)
         .cursor_pointer()
-        .child(heading(entry.label.clone()))
-        .child(label(format!("{kind:?} · {channels} ch")))
+        .child(
+            div()
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(entry.label.clone()),
+        )
+        .child(
+            label(format!(
+                "{} · {kind:?} · {channels} ch",
+                shell
+                    .mixer
+                    .order
+                    .iter()
+                    .position(|node| *node == id)
+                    .unwrap_or(0)
+                    + 1
+            ))
+            .text_size(px(9.)),
+        )
         .on_click({
             let this = cx.entity();
             move |_, _, cx| {
                 this.update(cx, |shell, cx| {
                     shell.selected_node = Some(id);
+                    shell.selected_route = None;
                     shell.inspector_open = true;
                     cx.notify();
                 })
             }
         })
         .on_drag(id, move |_, _, _, cx| cx.new(|_| StripDrag))
+        .tooltip(|window, cx| {
+            component::tooltip::Tooltip::new(
+                "Drag to reorder channels within the same mixer section",
+            )
+            .build(window, cx)
+        })
         .gpui_test_observe();
     div()
         .id(SharedString::from(format!("strip-{id:?}")))
         .flex()
         .flex_none()
         .w(px(shell.mixer.width))
-        .min_h(px(720.))
+        .h_full()
+        .min_h_0()
         .bg(if selected {
             theme::SURFACE_3
         } else {
             theme::SURFACE
         })
+        .relative()
+        .rounded_none()
+        .border_l_1()
+        .border_t_1()
+        .border_b_1()
         .border_r_1()
         .border_color(theme::BORDER)
         .on_drop({
@@ -255,38 +298,49 @@ fn strip(
                 .flex_col()
                 .flex_1()
                 .min_w_0()
-                .child(div().h(px(3.)).bg(color.opacity(0.55)))
-                .child(title)
+                .pt(px(4.))
+                .child(inputs(shell, entry, cx))
                 .child(sends(shell, id, cx))
-                .child(
-                    div()
-                        .flex_none()
-                        .px(px(10.))
-                        .py(px(8.))
-                        .child(node_controls(entry, channels, cx)),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("strip-levels-{id:?}")))
-                        .flex()
-                        .flex_none()
-                        .justify_center()
-                        .gap(px(4.))
-                        .py(px(12.))
-                        .child(scale())
-                        .child(fader(&shell.mixer.faders[&id], entry.mixer.gain))
-                        .child(meter(shell, entry, kind, cx))
-                        .gpui_test_observe(),
-                )
+                .child(strip_controls::balance(shell, entry, channels, cx))
+                .child(node_controls(entry, channels, cx))
                 .child(
                     div()
                         .id(SharedString::from(format!("strip-readout-{id:?}")))
                         .flex_none()
-                        .px(px(12.))
-                        .pb(px(12.))
-                        .child(heading(db(entry.mixer.gain)))
+                        .h(px(24.))
+                        .text_center()
+                        .font_family(theme::FONT_MONO)
+                        .text_size(px(12.))
+                        .child(db(entry.mixer.gain))
                         .gpui_test_observe(),
-                ),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("strip-levels-{id:?}")))
+                        .relative()
+                        .flex()
+                        .flex_1()
+                        .min_h(px(160.))
+                        .justify_center()
+                        .gap(px(6.))
+                        .mt(px(14.))
+                        .mb(px(32.))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("strip-unity-{id:?}")))
+                                .absolute()
+                                .top(relative(FaderScale::position(1.)))
+                                .h(px(1.))
+                                .w_full()
+                                .bg(theme::BORDER_STRONG)
+                                .gpui_test_observe(),
+                        )
+                        .child(meter(shell, entry, kind, channels, cx))
+                        .child(ruler())
+                        .child(fader(&shell.mixer.faders[&id], entry.mixer.gain))
+                        .gpui_test_observe(),
+                )
+                .child(title),
         )
         .child(resize_handle(
             shell,
@@ -294,69 +348,22 @@ fn strip(
             SharedString::from(format!("strip-resize-{id:?}")),
             cx,
         ))
+        // Paint after the resize handle so its surface cannot shorten the bar.
+        .child(
+            div()
+                .id(SharedString::from(format!("strip-color-{id:?}")))
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(4.))
+                .bg(color.opacity(0.8))
+                .gpui_test_observe(),
+        )
         .gpui_test_observe()
 }
 
-pub(super) fn node_controls(
-    entry: &GraphNodeState,
-    channels: usize,
-    cx: &Context<StudioShell>,
-) -> Div {
-    let id = entry.id;
-    let requested = entry.mixer;
-    div()
-        .flex()
-        .flex_col()
-        .flex_none()
-        .gap(px(6.))
-        .child(
-            div()
-                .flex()
-                .gap(px(6.))
-                .child(
-                    button(SharedString::from(format!("strip-mute-{id:?}")), "M")
-                        .variant(if requested.muted {
-                            ButtonVariant::Primary
-                        } else {
-                            ButtonVariant::Secondary
-                        })
-                        .on_click(mixer_edit(cx.entity(), id, |state| {
-                            state.muted = !state.muted
-                        })),
-                )
-                .child(
-                    button(SharedString::from(format!("strip-solo-{id:?}")), "S")
-                        .variant(if requested.solo {
-                            ButtonVariant::Primary
-                        } else {
-                            ButtonVariant::Secondary
-                        })
-                        .on_click(mixer_edit(cx.entity(), id, |state| {
-                            state.solo = !state.solo
-                        })),
-                ),
-        )
-        .child(
-            button(SharedString::from(format!("strip-dim-{id:?}")), "DIM −12")
-                .variant(if requested.dimmed {
-                    ButtonVariant::Secondary
-                } else {
-                    ButtonVariant::Ghost
-                })
-                .on_click(mixer_edit(cx.entity(), id, |state| {
-                    state.dimmed = !state.dimmed
-                })),
-        )
-        .child(
-            button(
-                SharedString::from(format!("strip-mode-{id:?}")),
-                requested.mode_label(channels),
-            )
-            .on_click(mixer_edit(cx.entity(), id, move |state| {
-                *state = state.next_mode(channels)
-            })),
-        )
-}
+pub(super) use strip_controls::node_controls;
 
 fn mixer_edit(
     this: Entity<StudioShell>,
@@ -380,98 +387,15 @@ fn mixer_edit(
     }
 }
 
-fn sends(shell: &StudioShell, id: NodeId, cx: &Context<StudioShell>) -> impl IntoElement {
-    let graph = &shell.state.read(cx).snapshot.graph;
-    let mut rows = div()
-        .id(SharedString::from(format!("sends-{id:?}")))
-        .flex()
-        .flex_col()
-        .gap(px(6.))
-        .h(px(130.))
-        .flex_none()
-        .px(px(10.))
-        .py(px(8.))
-        .border_y_1()
-        .border_color(theme::BORDER)
-        .overflow_y_scroll()
-        .child(label("SENDS"));
-    let mut count = 0;
-    for edge in graph.graph.edges().iter().filter(|edge| edge.src() == id) {
-        count += 1;
-        let edge_id = edge.id();
-        let pre = edge.params().tap == SendTap::PreFader;
-        rows = rows.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(3.))
-                .child(
-                    div()
-                        .flex()
-                        .justify_between()
-                        .items_center()
-                        .child(label(
-                            graph
-                                .node(edge.dst())
-                                .map(|node| node.label.clone())
-                                .unwrap_or_default(),
-                        ))
-                        .child(
-                            button(
-                                SharedString::from(format!("send-pre-{edge_id:?}")),
-                                if pre { "PRE" } else { "POST" },
-                            )
-                            .variant(if pre {
-                                ButtonVariant::Secondary
-                            } else {
-                                ButtonVariant::Ghost
-                            })
-                            .on_click({
-                                let this = cx.entity();
-                                move |_, _, cx| {
-                                    this.update(cx, |shell, cx| {
-                                        shell.state.update(cx, |state, _| {
-                                            if let Ok(edge) =
-                                                state.snapshot.graph.graph.get_edge(edge_id)
-                                            {
-                                                let params = SendParams {
-                                                    tap: if edge.params().tap == SendTap::PreFader {
-                                                        SendTap::PostFader
-                                                    } else {
-                                                        SendTap::PreFader
-                                                    },
-                                                    ..*edge.params()
-                                                };
-                                                state.dispatch(AppRequest::EditGraph(
-                                                    GraphEdit::SetSend {
-                                                        edge: edge_id,
-                                                        params,
-                                                    },
-                                                ));
-                                            }
-                                        });
-                                        cx.notify();
-                                    })
-                                }
-                            }),
-                        ),
-                )
-                .child(label(db(edge.params().gain)))
-                .child(component::slider::Slider::new(&shell.mixer.sends[&edge_id])),
-        );
-    }
-    if count == 0 {
-        rows = rows.child(label("No sends · connect in Graph"));
-    }
-    rows.gpui_test_observe()
-}
-
 fn meter(
     shell: &StudioShell,
     entry: &GraphNodeState,
     kind: NodeKind,
+    channels: usize,
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
+    #[cfg(feature = "gpui-test")]
+    let began = std::time::Instant::now();
     let state = shell.state.read(cx);
     let input = kind == NodeKind::Source;
     let eligible = matches!(kind, NodeKind::Source | NodeKind::Sink)
@@ -501,14 +425,18 @@ fn meter(
     .then(|| shell.node_meters.levels(entry.id))
     .flatten()
     .or(levels);
-    let clips = shell.node_meters.clips(entry.id);
+    let clips = shell.node_meters.channel_clips(entry.id);
     let managed = state
         .snapshot
         .signal_topics
         .node_levels
         .contains_key(&entry.id)
         && state.snapshot.graph.active_revision == Some(state.snapshot.graph.candidate_revision);
-    div()
+    let raw = shell.node_meters.raw_levels(entry.id);
+    let readout = raw.map(|levels| levels.iter().map(|level| level.peak).fold(0f32, f32::max));
+    let view = div()
+        .h_full()
+        .flex_none()
         .id(SharedString::from(format!("meter-reset-{:?}", entry.id)))
         .on_mouse_down(MouseButton::Left, {
             let this = cx.entity();
@@ -543,77 +471,54 @@ fn meter(
         .when(eligible, |view| {
             view.child(meter_probe(shell.meter_points.clone(), input))
         })
-        .child(crate::ui::widgets::meters::stereo_meter_with_clip(
-            levels, clips,
+        .child(crate::ui::widgets::meters::channel_meter(
+            shell.node_meters.channel_levels(entry.id).or_else(|| levels.as_ref().map(|levels| levels.as_slice())), channels, clips,
         ))
+        .child(div().id(SharedString::from(format!("meter-readout-{:?}", entry.id)))
+            .absolute().bottom(px(-28.)).left(px(-10.)).w(px(48.)).h(px(12.)).line_height(px(12.))
+            .text_center().font_family(theme::FONT_MONO).text_size(px(8.)).text_color(theme::TEXT_MUTED)
+            .child(readout.map(|peak| if peak == 0. { "−∞".into() }
+                else { format!("{:.1}", 20. * peak.log10()) }).unwrap_or_else(|| "—".into()))
+            .gpui_test_observe())
+        .tooltip(|window, cx| component::tooltip::Tooltip::new(
+            "Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response."
+        ).build(window, cx))
         .gpui_test_observe()
-}
-
-fn scale() -> Div {
-    let mut view = div()
-        .relative()
-        .flex_none()
-        .w(px(18.))
-        .h(px(230.))
-        .font_family(theme::FONT_MONO)
-        .text_size(px(9.))
-        .text_color(theme::TEXT_FAINT);
-    for db in [24, 12, 0, -6, -12, -24, -48, -60] {
-        view = view.child(
-            div()
-                .absolute()
-                .top(px((24. - db as f32) / 84. * 216.))
-                .child(if db == -60 {
-                    "−∞".into()
-                } else {
-                    db.to_string()
-                }),
-        );
-    }
+        .context_menu({
+            let this = cx.entity();
+            let settings = shell.preferences.meters;
+            move |mut menu, _, _| {
+                use crate::project::{MeterFalloff, PeakHold};
+                use component::menu::PopupMenuItem;
+                menu = menu.label("Peak fall-off · dB/s");
+                for falloff in MeterFalloff::ALL {
+                    let this = this.clone();
+                    menu = menu.item(PopupMenuItem::new(format!("{} dB/s", falloff.db_per_second()))
+                        .checked(settings.falloff == falloff)
+                        .on_click(move |_, _, cx| this.update(cx, |shell, cx| {
+                            shell.preferences.meters.falloff = falloff;
+                            shell.save_preferences(cx);
+                            cx.notify();
+                        })));
+                }
+                menu = menu.separator().label("Peak hold");
+                for hold in PeakHold::ALL {
+                    let this = this.clone();
+                    menu = menu.item(PopupMenuItem::new(if hold == PeakHold::Off { "Off".into() }
+                        else { format!("{} s", hold.duration().as_secs_f32()) })
+                        .checked(settings.peak_hold == hold)
+                        .on_click(move |_, _, cx| this.update(cx, |shell, cx| {
+                            shell.preferences.meters.peak_hold = hold;
+                            shell.save_preferences(cx);
+                            cx.notify();
+                        })));
+                }
+                menu
+            }
+        });
+    #[cfg(feature = "gpui-test")]
+    shell.mixer.trace.borrow_mut().add(began.elapsed());
     view
-}
-
-fn fader(state: &Entity<base::slider::SliderState>, gain: f64) -> impl IntoElement {
-    let normalized = (gain_db(gain) + 60.) / 84.;
-    base::slider::Slider::new(state)
-        .vertical()
-        .relative()
-        .flex_none()
-        .w(px(26.))
-        .h(px(230.))
-        .child(
-            // Records the geometry the pointer-to-value mapping needs;
-            // without an indicator the state keeps zero bounds and drags
-            // map to NaN.
-            base::slider::SliderIndicator::new(state)
-                .absolute()
-                .left(px(12.))
-                .top(px(7.))
-                .w(px(3.))
-                .h(px(216.)),
-        )
-        .child(
-            base::slider::SliderTrack::new(state)
-                .axis(Axis::Vertical)
-                .absolute()
-                .left(px(12.))
-                .top(px(7.))
-                .w(px(3.))
-                .h(px(216.))
-                .bg(theme::BORDER_STRONG),
-        )
-        .child(
-            base::slider::SliderThumb::new(state)
-                .axis(Axis::Vertical)
-                .absolute()
-                .left(px(1.))
-                .top(px((1. - normalized) * 216.))
-                .w(px(24.))
-                .h(px(14.))
-                .rounded(px(3.))
-                .bg(theme::TEXT_MUTED)
-                .child(div().mt(px(6.)).w_full().h(px(2.)).bg(theme::SURFACE)),
-        )
 }
 
 fn meter_probe(

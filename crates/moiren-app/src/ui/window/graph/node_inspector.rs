@@ -99,6 +99,14 @@ pub(in crate::ui::window) fn inspector(
         .child(heading("Channel strip"))
         .child(detail("Fader", db(entry.mixer.gain)))
         .child(component::slider::Slider::new(&shell.mixer.faders[&id]))
+        .when(node.channels() == 2, |view| {
+            view.child(super::super::mixer::strip_controls::balance(
+                shell,
+                entry,
+                node.channels(),
+                cx,
+            ))
+        })
         .child(super::super::mixer::node_controls(
             entry,
             node.channels(),

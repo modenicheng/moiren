@@ -25,6 +25,7 @@ pub(crate) struct SignalService {
     pub topics: SignalTopics,
     next_poll: Instant,
     copy_budget: usize,
+    poll_timer: moiren_engine::meter::MeterPollingTimer,
 }
 
 impl SignalService {
@@ -58,6 +59,7 @@ impl SignalService {
             topics,
             next_poll: Instant::now(),
             copy_budget: 256 * 1024,
+            poll_timer: Default::default(),
         })
     }
 
@@ -66,7 +68,9 @@ impl SignalService {
     }
 
     pub fn pump_if_due(&mut self, now: Instant) -> Option<PumpReport> {
-        if !self.bus.has_business_demand() || now < self.next_poll {
+        let demand = self.bus.has_business_demand();
+        self.poll_timer.set_demand(demand);
+        if !demand || now < self.next_poll {
             return None;
         }
         let report = self.bus.pump(PumpBudget {
@@ -77,7 +81,9 @@ impl SignalService {
         self.copy_budget = (256 * 1024)
             .max(report.required_copy_bytes)
             .min(1024 * 1024);
-        self.next_poll = now + Duration::from_millis(5);
+        // The service loop uses this deadline for both the compatibility
+        // bridge relay and this bus pump; no demand leaves idle waits intact.
+        self.next_poll = now + Duration::from_millis(1);
         Some(report)
     }
 
@@ -245,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn pump_and_service_wait_follow_business_demand_and_the_five_ms_deadline() {
+    fn pump_and_service_wait_follow_business_demand_and_the_one_ms_deadline() {
         let mut service = SignalService::new().unwrap();
         let now = Instant::now();
         assert!(service.pump_if_due(now).is_none());
@@ -258,15 +264,15 @@ mod tests {
         assert!(report.topic_checks <= 524);
         assert!(report.deliveries <= 256);
         assert!(report.copy_bytes <= 256 * 1024);
-        assert_eq!(service.wait_duration(now), Some(Duration::from_millis(5)));
+        assert_eq!(service.wait_duration(now), Some(Duration::from_millis(1)));
         assert!(
             service
-                .pump_if_due(now + Duration::from_millis(4))
+                .pump_if_due(now + Duration::from_micros(500))
                 .is_none()
         );
         assert!(
             service
-                .pump_if_due(now + Duration::from_millis(5))
+                .pump_if_due(now + Duration::from_millis(1))
                 .is_some()
         );
         drop(subscriber);
@@ -440,6 +446,7 @@ mod tests {
             topics,
             next_poll: now,
             copy_budget: 256 * 1024,
+            poll_timer: Default::default(),
         };
         let topic = service
             .bus
@@ -557,8 +564,8 @@ mod tests {
         assert!(ui.subscriber().unwrap().is_none());
         assert_eq!(topic.business_subscribers(), 1);
         assert_eq!(topic.demand_snapshot().generation, generation);
-        // Two 256-frame blocks complete exactly one default (480-frame)
-        // window beyond the three published before the hide.
+        // Two 256-frame blocks complete three more 200-frame windows. Latest
+        // keeps the newest window; skipped windows cannot contribute peaks.
         for _ in 0..2 {
             tone.compiled.engine.render(256).unwrap();
             tone.output.read_interleaved(&mut [0.0; 512]).unwrap();
@@ -566,13 +573,23 @@ mod tests {
         service.pump_if_due(now + Duration::from_millis(5)).unwrap();
         {
             let window = analysis.read_latest().unwrap();
-            assert_eq!(window.meta().sequence, first_sequence + 1);
+            assert_eq!(window.meta().sequence, first_sequence + 3);
             assert_eq!(window.meta().activation_generation, generation);
-            assert_eq!(window.header().frame_start, 1440);
-            assert_eq!(window.header().frame_end, 1920);
+            assert_eq!(window.header().frame_start, 1800);
+            assert_eq!(window.header().frame_end, 2000);
+            let expected_rms = ((1800..2000)
+                .map(|frame| {
+                    (std::f64::consts::TAU * 440.0 * frame as f64 / 48_000.0)
+                        .sin()
+                        .powi(2)
+                })
+                .sum::<f64>()
+                / 200.0)
+                .sqrt()
+                * 0.01;
             for level in window.elements() {
                 assert!((level.peak - 0.01).abs() < 0.00001);
-                assert!((level.rms - 0.01 / 2.0_f32.sqrt()).abs() < 0.0001);
+                assert!((f64::from(level.rms) - expected_rms).abs() < 0.00001);
             }
         }
         drop(ui);

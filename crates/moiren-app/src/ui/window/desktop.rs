@@ -445,7 +445,8 @@ impl Desktop {
         if let Some(shell) = self.shell.clone() {
             let saved = shell.update(cx, |shell, cx| {
                 shell.finish_project_load(cx);
-                if changed || shell.pump_meters(cx) {
+                let meters_changed = !shell.meters_frame_active(cx) && shell.pump_meters(cx);
+                if changed || meters_changed {
                     cx.notify();
                 }
                 shell.window_state.clone()
@@ -455,8 +456,8 @@ impl Desktop {
             }
         }
         if let Some(view) = self.flyout_view.clone() {
-            let pumped = view.update(cx, |flyout, cx| {
-                if changed || flyout.pump_meters(cx) {
+            let pumped = view.update(cx, |_flyout, cx| {
+                if changed {
                     cx.notify();
                 }
             });
