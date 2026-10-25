@@ -20,7 +20,7 @@ fn section(
         .overflow_hidden()
         .child(
             div().flex().items_center().h(px(28.)).flex_none().child(
-                button(SharedString::from(format!("toggle-{title}")), title)
+                button(SharedString::from(format!("toggle-{title}")), t!(title))
                     .full_width()
                     .justify_start()
                     .square()
@@ -71,7 +71,8 @@ pub(super) fn inputs(
     entry: &GraphNodeState,
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
-    let graph = &shell.state.read(cx).snapshot.graph;
+    let snapshot = &shell.state.read(cx).snapshot;
+    let graph = &snapshot.graph;
     let mut view = section(
         format!("inputs-{:?}", entry.id),
         "INPUTS",
@@ -98,8 +99,12 @@ pub(super) fn inputs(
             count += 1;
             let name = graph
                 .node(edge.src())
-                .map(|node| node.label.as_str())
-                .unwrap_or("Unknown");
+                .and_then(|node| {
+                    graph.graph.get_node(node.id).ok().map(|logical| {
+                        crate::ui::state::display_label(snapshot, node, logical.kind())
+                    })
+                })
+                .unwrap_or_else(|| t!("Unknown").into_owned());
             let port = graph
                 .graph
                 .get_node(entry.id)
@@ -132,10 +137,16 @@ pub(super) fn inputs(
                     .overflow_hidden()
                     .text_ellipsis()
                     .cursor_pointer()
-                    .child(format!("{name} → in {port}"))
+                    .child(t!("%{name} → in %{port}", name = name, port = port))
                     .tooltip({
-                        let text =
-                            format!("{name} · out {source_port} → {} · in {port}", entry.label);
+                        let text = t!(
+                            "%{name} · out %{source_port} → %{target} · in %{port}",
+                            name = name,
+                            source_port = source_port,
+                            target = entry.label,
+                            port = port
+                        )
+                        .into_owned();
                         move |window, cx| {
                             component::tooltip::Tooltip::new(text.clone()).build(window, cx)
                         }
@@ -149,13 +160,15 @@ pub(super) fn inputs(
         }
         if count == 0 {
             let resource = entry.source.as_ref().map(|source| {
-                format!(
-                    "Resource · {}",
-                    crate::ui::state::source_name(&shell.state.read(cx).snapshot, source)
+                t!(
+                    "Resource · %{name}",
+                    name = crate::ui::state::source_name(snapshot, source)
                 )
+                .into_owned()
             });
-            rows = rows
-                .child(label(resource.unwrap_or_else(|| "No inputs".into())).text_size(px(10.)));
+            rows = rows.child(
+                label(resource.unwrap_or_else(|| t!("No inputs").into_owned())).text_size(px(10.)),
+            );
         }
         view = view.child(rows);
     }
@@ -189,7 +202,8 @@ pub(super) fn sends(
     id: NodeId,
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
-    let graph = &shell.state.read(cx).snapshot.graph;
+    let snapshot = &shell.state.read(cx).snapshot;
+    let graph = &snapshot.graph;
     let mut view = section(
         format!("sends-{id:?}"),
         "SENDS",
@@ -229,7 +243,7 @@ pub(super) fn sends(
                     )
                     .density(Density::Compact)
                     .square()
-                    .tooltip("Enable send; turning it off preserves its gain")
+                    .tooltip(t!("Enable send; turning it off preserves its gain"))
                     .variant(if edge.params().mute {
                         ButtonVariant::Ghost
                     } else {
@@ -250,7 +264,15 @@ pub(super) fn sends(
                         .child(
                             graph
                                 .node(edge.dst())
-                                .map(|node| node.label.clone())
+                                .and_then(|node| {
+                                    graph.graph.get_node(node.id).ok().map(|logical| {
+                                        crate::ui::state::display_label(
+                                            snapshot,
+                                            node,
+                                            logical.kind(),
+                                        )
+                                    })
+                                })
                                 .unwrap_or_default(),
                         )
                         .on_click(select_route(
@@ -295,7 +317,7 @@ pub(super) fn sends(
             }
             row = row.child(div().id(SharedString::from(format!("send-tap-{edge_id:?}"))).flex_none()
                 .child(button(SharedString::from(format!("send-pre-{edge_id:?}")), if pre { "PRE" } else { "POST" })
-                    .tooltip("PRE: after channel mode, balance and mute; before gain and Dim. POST: after gain and Dim.")
+                    .tooltip(t!("PRE: after channel mode, balance and mute; before gain and Dim. POST: after gain and Dim."))
                     .density(Density::Compact)
                     .square()
                     .variant(if pre { ButtonVariant::Secondary } else { ButtonVariant::Ghost })
@@ -321,7 +343,7 @@ pub(super) fn sends(
             );
         }
         if count == 0 {
-            rows = rows.child(label("No sends").text_size(px(10.)));
+            rows = rows.child(label(t!("No sends")).text_size(px(10.)));
         }
         view = view.child(rows);
     }

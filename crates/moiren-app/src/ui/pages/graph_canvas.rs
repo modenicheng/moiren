@@ -1,6 +1,7 @@
 //! Presentation-only graph projection with shared camera, layout and wire geometry.
 
 use gpui_kit::*;
+use rust_i18n::t;
 
 use crate::service::AppSnapshot;
 use crate::ui::theme;
@@ -150,8 +151,10 @@ impl CanvasWorld {
                     )
                 });
             let detail = match logical.kind() {
-                NodeKind::Source if state.source.is_none() => "Choose a source".into(),
-                NodeKind::Sink if state.output_endpoint_id.is_none() => "Choose an output".into(),
+                NodeKind::Source if state.source.is_none() => t!("Choose a source").to_string(),
+                NodeKind::Sink if state.output_endpoint_id.is_none() => {
+                    t!("Choose an output").to_string()
+                }
                 NodeKind::Eq => state.builtin.eq().map_or_else(
                     || channels.clone(),
                     |settings| {
@@ -164,33 +167,46 @@ impl CanvasWorld {
                 NodeKind::Delay => state.builtin.delay().map_or_else(
                     || channels.clone(),
                     |settings| {
-                        format!(
-                            "{:.0} ms · {:.0}% wet",
-                            settings.delay_ms,
-                            settings.mix * 100.
+                        t!(
+                            "%{ms} ms · %{percent}% wet",
+                            ms = format!("{:.0}", settings.delay_ms),
+                            percent = format!("{:.0}", settings.mix * 100.)
                         )
+                        .to_string()
                     },
                 ),
                 NodeKind::Recorder => state.builtin.recorder().map_or_else(
                     || channels.clone(),
-                    |settings| format!("{} frame buffer", settings.capacity_frames),
+                    |settings| {
+                        t!("%{frames} frame buffer", frames = settings.capacity_frames).to_string()
+                    },
                 ),
                 NodeKind::Meter => state.builtin.meter().map_or_else(
                     || channels.clone(),
-                    |settings| format!("{} frame window", settings.window_frames),
+                    |settings| {
+                        t!("%{frames} frame window", frames = settings.window_frames).to_string()
+                    },
                 ),
                 NodeKind::SpectrumAnalyzer => state.builtin.spectrum().map_or_else(
                     || channels.clone(),
-                    |settings| format!("FFT {} · hop {}", settings.fft_size, settings.hop_frames),
+                    |settings| {
+                        t!(
+                            "FFT %{fft} · hop %{hop}",
+                            fft = settings.fft_size,
+                            hop = settings.hop_frames
+                        )
+                        .to_string()
+                    },
                 ),
                 NodeKind::Rack => state.builtin.rack().map_or_else(
-                    || "Empty rack".into(),
+                    || t!("Empty rack").to_string(),
                     |settings| {
-                        format!(
-                            "{} stage{}",
-                            settings.slots.len(),
-                            if settings.slots.len() == 1 { "" } else { "s" }
-                        )
+                        // English keeps its plural; zh-CN shares one form for both keys.
+                        if settings.slots.len() == 1 {
+                            t!("%{count} stage", count = settings.slots.len()).to_string()
+                        } else {
+                            t!("%{count} stages", count = settings.slots.len()).to_string()
+                        }
                     },
                 ),
                 _ => format.unwrap_or(channels),
@@ -215,11 +231,15 @@ impl CanvasWorld {
                 NodeKind::ChannelMapper | NodeKind::Rack => ("route", theme::NODE_UTILITY),
                 _ => ("figma-fader", theme::NODE_DSP),
             };
-            let mut card = node(&key, &state.label, detail)
-                .at(position.0, position.1)
-                .icon(icon)
-                .ports(!logical.inputs().is_empty(), !logical.outputs().is_empty())
-                .with_tint(tint);
+            let mut card = node(
+                &key,
+                &crate::ui::state::display_label(snapshot, state, logical.kind()),
+                detail,
+            )
+            .at(position.0, position.1)
+            .icon(icon)
+            .ports(!logical.inputs().is_empty(), !logical.outputs().is_empty())
+            .with_tint(tint);
             card.input_count = logical.inputs().len();
             card.node_id = Some(id);
             card.gain = if logical.kind() == NodeKind::Gain {

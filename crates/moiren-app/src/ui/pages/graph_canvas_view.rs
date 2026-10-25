@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use rust_i18n::t;
 
 use super::graph_canvas::{
     Camera, CanvasFrame, CanvasWorld, HitTarget, PortDirection, PortTarget, WireCurve,
@@ -20,11 +21,14 @@ type WindowAppCallback<Argument> = dyn Fn(Argument, &mut Window, &mut App);
 type CameraFitFn = dyn Fn(&Camera, Size<Pixels>, &mut Window, &mut App);
 type SelectFn = dyn Fn(&str, &mut Window, &mut App);
 type ZoomFn = dyn Fn((f32, Point<Pixels>), &mut Window, &mut App);
+type BoxSelectFn = dyn Fn(Option<Bounds<f32>>, &mut Window, &mut App);
 type PreparedFrame = Rc<RefCell<Option<Rc<CanvasFrame>>>>;
 
 pub struct CanvasCallbacks {
     pub focus: FocusHandle,
     pub connection: Option<(PortTarget, (f32, f32))>,
+    /// Active rubber-band selection in window coordinates (anchor, current).
+    pub selection_box: Option<((f32, f32), (f32, f32))>,
     pub on_port_down: Rc<WindowAppCallback<(PortTarget, (f32, f32))>>,
     pub on_port_up: Rc<WindowAppCallback<Option<PortTarget>>>,
     pub on_connection_move: Rc<WindowAppCallback<(f32, f32)>>,
@@ -33,6 +37,9 @@ pub struct CanvasCallbacks {
     pub on_drop_node: Rc<WindowAppCallback<(super::node_catalog::NodeTemplate, (f32, f32))>>,
     pub on_background_down: Rc<WindowAppCallback<(MouseDownEvent, Bounds<Pixels>)>>,
     pub on_canvas_mouse_move: WindowAppFn<(Point<Pixels>, Option<MouseButton>)>,
+    /// Receives the world-space rectangle of the active rubber band once per
+    /// frame (None when no band is active), so the shell can live-select.
+    pub on_box_select: Rc<BoxSelectFn>,
     pub on_zoom: Rc<ZoomFn>,
     pub on_pan: WindowAppFn<(f32, f32)>,
     pub on_select_node: Rc<SelectFn>,
@@ -71,8 +78,9 @@ fn paint_grid(frame: &CanvasFrame, window: &mut Window) {
 
 fn paint_canvas_layer(
     frame: &CanvasFrame,
-    selected_node: Option<&str>,
+    selected_nodes: &[String],
     selected_wire: Option<&str>,
+    selection_box: Option<((f32, f32), (f32, f32))>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -88,8 +96,9 @@ fn paint_canvas_layer(
             );
             for (wire, geometry) in frame.world.wires.iter().zip(&frame.wires) {
                 let selected = selected_wire == Some(wire.id.as_str());
-                let connected = selected_node
-                    .is_some_and(|node| node == wire.source || node == wire.destination);
+                let connected = selected_nodes
+                    .iter()
+                    .any(|node| node == &wire.source || node == &wire.destination);
                 let width = ((if selected {
                     2.8
                 } else if connected {
@@ -118,11 +127,30 @@ fn paint_canvas_layer(
                         frame,
                         node,
                         layout,
-                        selected_node == Some(node.id.as_str()),
+                        selected_nodes.iter().any(|selected| selected == &node.id),
                         window,
                         cx,
                     );
                 }
+            }
+            if let Some((anchor, current)) = selection_box {
+                let a = frame.local_position(anchor);
+                let b = frame.local_position(current);
+                let left = a.0.min(b.0);
+                let top = a.1.min(b.1);
+                let rect = frame.window_rect(Bounds {
+                    origin: point(left, top),
+                    size: size((a.0 - b.0).abs(), (a.1 - b.1).abs()),
+                });
+                window.paint_quad(fill(rect, theme::PRIMARY.opacity(0.10)));
+                window.paint_quad(PaintQuad {
+                    bounds: rect,
+                    corner_radii: 2f32.into(),
+                    background: transparent_black().into(),
+                    border_widths: 1f32.into(),
+                    border_color: theme::PRIMARY.opacity(0.65),
+                    border_style: BorderStyle::default(),
+                });
             }
         },
     );
@@ -144,7 +172,7 @@ fn overview(prepared: PreparedFrame) -> impl IntoElement {
             div()
                 .text_size(px(theme::TEXT_XS))
                 .text_color(theme::TEXT_MUTED)
-                .child("Overview"),
+                .child(t!("Overview")),
         )
         .child(
             canvas(
@@ -189,7 +217,7 @@ fn overview(prepared: PreparedFrame) -> impl IntoElement {
 pub fn graph_canvas_view(
     world: Arc<CanvasWorld>,
     camera: Camera,
-    selected_node: Option<&str>,
+    selected_nodes: &[String],
     selected_wire: Option<&str>,
     callbacks: CanvasCallbacks,
 ) -> impl IntoElement {
@@ -197,6 +225,7 @@ pub fn graph_canvas_view(
         on_drop_node,
         on_background_down,
         on_canvas_mouse_move,
+        on_box_select,
         on_zoom,
         on_pan,
         on_select_node,
@@ -204,6 +233,7 @@ pub fn graph_canvas_view(
         on_camera_fit,
         focus,
         connection,
+        selection_box,
         on_port_down,
         on_port_up,
         on_connection_move,
@@ -211,8 +241,11 @@ pub fn graph_canvas_view(
         on_cancel,
     } = callbacks;
     let prepared: PreparedFrame = Rc::new(RefCell::new(None));
-    let selected_node = selected_node.map(str::to_owned);
+    let selected_nodes = selected_nodes.to_vec();
     let selected_wire = selected_wire.map(str::to_owned);
+    // The left handler moves `focus`; keep one clone for the right handler,
+    // which must also focus the canvas so right-button drags keep keys alive.
+    let right_focus = focus.clone();
     let input_move: Rc<WindowAppCallback<(Point<Pixels>, Option<MouseButton>)>> =
         Rc::from(on_canvas_mouse_move);
     div()
@@ -229,14 +262,31 @@ pub fn graph_canvas_view(
                         let frame = Rc::new(CanvasFrame::new(world.clone(), camera, bounds));
                         *prepared.borrow_mut() = Some(frame.clone());
                         on_camera_fit(&frame.camera, bounds.size, window, cx);
+                        if let Some((anchor, current)) = selection_box {
+                            let a = frame.local_position(anchor);
+                            let b = frame.local_position(current);
+                            let min = frame.camera.canvas_to_world((a.0.min(b.0), a.1.min(b.1)));
+                            let max = frame.camera.canvas_to_world((a.0.max(b.0), a.1.max(b.1)));
+                            on_box_select(
+                                Some(Bounds {
+                                    origin: point(min.0, min.1),
+                                    size: size(max.0 - min.0, max.1 - min.1),
+                                }),
+                                window,
+                                cx,
+                            );
+                        } else {
+                            on_box_select(None, window, cx);
+                        }
                         frame
                     }
                 },
                 move |_, frame, window, cx| {
                     paint_canvas_layer(
                         &frame,
-                        selected_node.as_deref(),
+                        &selected_nodes,
                         selected_wire.as_deref(),
+                        selection_box,
                         window,
                         cx,
                     );
@@ -334,6 +384,16 @@ pub fn graph_canvas_view(
                         }
                     }
                 })
+                .on_mouse_down(MouseButton::Right, {
+                    let prepared = prepared.clone();
+                    let on_background_down = on_background_down.clone();
+                    move |event, window, cx| {
+                        window.focus(&right_focus, cx);
+                        if let Some(frame) = prepared.borrow().as_ref() {
+                            on_background_down((event.clone(), frame.bounds), window, cx);
+                        }
+                    }
+                })
                 .on_mouse_down(MouseButton::Middle, {
                     let prepared = prepared.clone();
                     move |event, window, cx| {
@@ -383,6 +443,14 @@ pub fn graph_canvas_view(
                         on_port_up(None, window, cx);
                         input_move((event.position, None), window, cx);
                     }
+                })
+                .on_mouse_up(MouseButton::Right, {
+                    let input_move = input_move.clone();
+                    move |event, window, cx| input_move((event.position, None), window, cx)
+                })
+                .on_mouse_up_out(MouseButton::Right, {
+                    let input_move = input_move.clone();
+                    move |event, window, cx| input_move((event.position, None), window, cx)
                 })
                 .on_mouse_up(MouseButton::Middle, {
                     let input_move = input_move.clone();

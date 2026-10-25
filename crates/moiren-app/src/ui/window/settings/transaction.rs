@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::model::{Pending, Stage, expected_active_profile};
 use super::*;
 
@@ -14,8 +16,9 @@ impl StudioShell {
         let draft = self.settings.draft_mut(editor);
         draft.changed();
         if self.preferences_path.is_none() {
-            draft.error =
-                Some("User configuration directory is unavailable. Your draft is retained.".into());
+            draft.error = Some(
+                t!("User configuration directory is unavailable. Your draft is retained.").into(),
+            );
             cx.notify();
             return;
         }
@@ -55,9 +58,17 @@ impl StudioShell {
                     restart,
                     submitted,
                 });
-                draft.message = Some("Saving requested settings...".into());
+                draft.message = Some(t!("Saving requested settings...").into());
             }
-            Err(error) => draft.error = Some(format!("Could not save audio settings: {error:?}")),
+            Err(error) => {
+                draft.error = Some(
+                    t!(
+                        "Could not save audio settings: %{error}",
+                        error = format!("{error:?}")
+                    )
+                    .to_string(),
+                )
+            }
         }
         cx.notify();
     }
@@ -85,7 +96,8 @@ impl StudioShell {
             let mut error = None;
             match pending.stage {
                 Stage::Audio | Stage::Profile if !settings_match => {
-                    error = Some(failure.unwrap_or_else(|| "Audio settings were rejected.".into()));
+                    error =
+                        Some(failure.unwrap_or_else(|| t!("Audio settings were rejected.").into()));
                 }
                 Stage::Audio if !profile_match => {
                     next = Some((
@@ -94,7 +106,8 @@ impl StudioShell {
                     ));
                 }
                 Stage::Profile if !profile_match => {
-                    error = Some(failure.unwrap_or_else(|| "Latency policy was rejected.".into()));
+                    error =
+                        Some(failure.unwrap_or_else(|| t!("Latency policy was rejected.").into()));
                 }
                 Stage::Audio | Stage::Profile => {
                     if pending.restart && snapshot.phase == SessionPhase::Running {
@@ -119,7 +132,7 @@ impl StudioShell {
                     } else if let Some(failure) = failure {
                         error = Some(failure);
                     } else if matches!(snapshot.phase, SessionPhase::Idle | SessionPhase::Failed) {
-                        error = Some("Audio did not restart. Your draft is retained.".into());
+                        error = Some(t!("Audio did not restart. Your draft is retained.").into());
                     }
                 }
             }
@@ -136,13 +149,19 @@ impl StudioShell {
                             ..pending.clone()
                         });
                         draft.message = Some(if matches!(stage, Stage::Restart) {
-                            "Restarting audio; waiting for the active session...".into()
+                            t!("Restarting audio; waiting for the active session...").into()
                         } else {
-                            "Saving latency policy...".into()
+                            t!("Saving latency policy...").into()
                         });
                     }
                     Err(failure) => {
-                        error = Some(format!("Could not apply audio settings: {failure:?}"));
+                        error = Some(
+                            t!(
+                                "Could not apply audio settings: %{error}",
+                                error = format!("{failure:?}")
+                            )
+                            .to_string(),
+                        );
                     }
                 }
             }
@@ -166,7 +185,7 @@ impl StudioShell {
                 self.density = draft.density;
                 draft.committed();
                 if matches!(pending.stage, Stage::Restart) {
-                    draft.message = Some("Audio restarted with the saved settings.".into());
+                    draft.message = Some(t!("Audio restarted with the saved settings.").into());
                 }
                 self.save_preferences(cx);
                 self.settings.save_revision = Some((self.preference_save_revision, editor));

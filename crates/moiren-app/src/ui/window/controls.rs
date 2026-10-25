@@ -1,4 +1,6 @@
 //! Small, shared workstation building blocks. Actions always use ActionButton.
+use rust_i18n::t;
+
 use super::*;
 
 pub(super) fn label(text: impl Into<SharedString>) -> Div {
@@ -75,7 +77,7 @@ pub(super) fn apply(shell: &StudioShell, cx: &Context<StudioShell>) -> ActionBut
     let this = cx.entity();
     let state = shell.state.read(cx);
     let graph = &state.snapshot.graph;
-    button("apply-graph", "Apply graph")
+    button("apply-graph", t!("Apply graph"))
         .variant(ButtonVariant::Primary)
         .disabled(graph.pending_revision.is_some() || state.pending_request)
         .on_click(move |_, _, cx| {
@@ -111,7 +113,7 @@ pub(super) fn stereo_controls(
         .flex()
         .gap(px(6.))
         .child(
-            button("mix-mono", "Mono")
+            button("mix-mono", t!("Mono"))
                 .variant(if node.mono {
                     ButtonVariant::Primary
                 } else {
@@ -126,7 +128,7 @@ pub(super) fn stereo_controls(
                 )),
         )
         .child(
-            button("mix-swap", "Swap")
+            button("mix-swap", t!("Swap"))
                 .variant(if node.swap {
                     ButtonVariant::Primary
                 } else {
@@ -147,7 +149,7 @@ pub(super) fn inspector_toggle(
     cx: &Context<StudioShell>,
 ) -> ActionButton {
     let this = cx.entity();
-    button(id, "Inspector").on_click(move |_, _, cx| {
+    button(id, t!("Inspector")).on_click(move |_, _, cx| {
         this.update(cx, |shell, cx| {
             shell.inspector_open = !shell.inspector_open;
             if shell.compact {

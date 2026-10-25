@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use moiren_engine::meter::signal::{AudioWindow, ChannelLevel};
 use moiren_signal::{PublisherStatus, Topic, TopicLifecycle};
+use rust_i18n::t;
 
 use crate::service::{
     AppHandle, AppSnapshot, InputSelection, LevelTopic, SessionGeneration, SessionPhase,
@@ -17,6 +18,10 @@ use super::signals::{PresentationDemand, VisibleSignal};
 /// A complete window must keep arriving; a retained value is not proof that
 /// the audio thread or publisher is still advancing.
 const STALE_AFTER: Duration = Duration::from_millis(500);
+
+/// Keep brief visibility changes from recreating subscriptions and fencing
+/// fresh publications while the graph canvas is panned or zoomed.
+const SUBSCRIPTION_GRACE: Duration = Duration::from_millis(750);
 
 mod ballistics;
 use crate::project::MeterDisplayPreferences;
@@ -288,6 +293,9 @@ pub struct NodeMeters {
     settings: MeterDisplayPreferences,
     subscriptions: std::collections::BTreeMap<moiren_core::graph::NodeId, MeterSubscription>,
     clips: std::collections::BTreeMap<moiren_core::graph::NodeId, ClipHold>,
+    /// Nodes seen visible recently; subscriptions outlive the visible set by
+    /// [`SUBSCRIPTION_GRACE`] instead of flapping with per-frame visibility.
+    seen: std::collections::BTreeMap<moiren_core::graph::NodeId, Instant>,
 }
 
 #[derive(Default)]
@@ -310,6 +318,7 @@ impl NodeMeters {
             settings: MeterDisplayPreferences::default(),
             subscriptions: Default::default(),
             clips: Default::default(),
+            seen: Default::default(),
         }
     }
 
@@ -322,16 +331,35 @@ impl NodeMeters {
         snapshot: &AppSnapshot,
         visible: &std::collections::BTreeSet<moiren_core::graph::NodeId>,
     ) -> bool {
+        self.update_at(snapshot, visible, Instant::now())
+    }
+
+    pub fn update_at(
+        &mut self,
+        snapshot: &AppSnapshot,
+        visible: &std::collections::BTreeSet<moiren_core::graph::NodeId>,
+        now: Instant,
+    ) -> bool {
         if self.generation != Some(snapshot.generation) {
             self.subscriptions.clear();
             self.clips.clear();
+            self.seen.clear();
             self.generation = Some(snapshot.generation);
         }
         let active = snapshot.phase == SessionPhase::Running
             && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision);
+        for id in visible {
+            self.seen.insert(*id, now);
+        }
+        self.seen.retain(|id, seen| {
+            snapshot.graph.node(*id).is_some()
+                && now.saturating_duration_since(*seen) < SUBSCRIPTION_GRACE
+        });
         let before = self.subscriptions.len();
         self.subscriptions.retain(|id, _| {
-            active && visible.contains(id) && snapshot.signal_topics.node_levels.contains_key(id)
+            active
+                && self.seen.contains_key(id)
+                && snapshot.signal_topics.node_levels.contains_key(id)
         });
         self.clips
             .retain(|id, _| snapshot.graph.node(*id).is_some());
@@ -339,34 +367,33 @@ impl NodeMeters {
         if !active {
             return changed;
         }
-        let now = Instant::now();
-        for id in visible {
-            let Some(topic) = snapshot.signal_topics.node_levels.get(id) else {
+        for (id, _) in self.seen.clone() {
+            let Some(topic) = snapshot.signal_topics.node_levels.get(&id) else {
                 continue;
             };
             let Some(channels) = snapshot
                 .graph
                 .graph
-                .get_node(*id)
+                .get_node(id)
                 .ok()
                 .map(|node| node.channels())
             else {
                 continue;
             };
-            let subscription = self.subscriptions.entry(*id).or_insert_with(|| {
+            let subscription = self.subscriptions.entry(id).or_insert_with(|| {
                 MeterSubscription::new(self.handle.clone(), topic.clone(), channels)
             });
             if subscription.topic != *topic || subscription.channels != channels {
                 *subscription =
                     MeterSubscription::new(self.handle.clone(), topic.clone(), channels);
-                self.clips.remove(id);
+                self.clips.remove(&id);
             }
             let status = subscription.status.clone();
             subscription.settings = self.settings;
             let publication = subscription.poll(now);
             changed |= publication || subscription.status != status;
             if publication && let Some(levels) = subscription.levels.as_deref() {
-                self.clips.entry(*id).or_default().observe(levels);
+                self.clips.entry(id).or_default().observe(levels);
             }
         }
         changed
@@ -453,7 +480,9 @@ impl MeterSubscription {
         };
         if let Err(error) = self.visible.update_demand(demand) {
             self.levels = None;
-            self.status = MeterStatus::Error(format!("Meter subscription: {error:?}"));
+            self.status = MeterStatus::Error(
+                t!("Meter subscription: %{error}", error = format!("{error:?}")).to_string(),
+            );
             return false;
         }
         let status = self.topic.status();
@@ -474,7 +503,9 @@ impl MeterSubscription {
             }
             Err(error) => {
                 self.levels = None;
-                self.status = MeterStatus::Error(format!("Meter subscription: {error}"));
+                self.status = MeterStatus::Error(
+                    t!("Meter subscription: %{error}", error = error.to_string()).to_string(),
+                );
                 return false;
             }
         };
@@ -874,7 +905,8 @@ mod tests {
             Some(snapshot.graph.candidate_revision);
         let mut meters = NodeMeters::new(handle);
         let visible = [id].into_iter().collect();
-        meters.update(&snapshot, &visible);
+        let now = Instant::now();
+        meters.update_at(&snapshot, &visible, now);
         drain(&mailbox, &mut context);
         assert_eq!(
             snapshot.signal_topics.node_levels[&id].business_subscribers(),
@@ -885,20 +917,28 @@ mod tests {
             0
         );
         std::sync::Arc::make_mut(&mut snapshot.graph).candidate_revision += 1;
-        meters.update(&snapshot, &visible);
+        meters.update_at(&snapshot, &visible, now);
         assert_eq!(
             snapshot.signal_topics.node_levels[&id].business_subscribers(),
             0
         );
         std::sync::Arc::make_mut(&mut snapshot.graph).active_revision =
             Some(snapshot.graph.candidate_revision);
-        meters.update(&snapshot, &visible);
+        meters.update_at(&snapshot, &visible, now);
         drain(&mailbox, &mut context);
         assert_eq!(
             snapshot.signal_topics.node_levels[&id].business_subscribers(),
             1
         );
-        meters.update(&snapshot, &Default::default());
+        // Leaving visibility keeps the subscription for the grace period so a
+        // one-frame viewport flap cannot reset the RT window, then releases it.
+        meters.update_at(&snapshot, &Default::default(), now);
+        assert_eq!(
+            snapshot.signal_topics.node_levels[&id].business_subscribers(),
+            1,
+            "demand survives a short invisibility gap"
+        );
+        meters.update_at(&snapshot, &Default::default(), now + SUBSCRIPTION_GRACE);
         assert_eq!(
             snapshot.signal_topics.node_levels[&id].business_subscribers(),
             0

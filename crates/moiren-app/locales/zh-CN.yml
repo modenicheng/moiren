@@ -1,0 +1,1453 @@
+_version: 2
+"Settings":
+  en: Settings
+  zh-CN: 设置
+"Search nodes":
+  en: Search nodes
+  zh-CN: 搜索节点
+"Untitled session":
+  en: Untitled session
+  zh-CN: 未命名会话
+"Application file logging is unavailable":
+  en: Application file logging is unavailable
+  zh-CN: 应用文件日志不可用
+"Diagnostics: %{log_path}":
+  en: "Diagnostics: %{log_path}"
+  zh-CN: "诊断：%{log_path}"
+"Start":
+  en: Start
+  zh-CN: 启动
+"Stop":
+  en: Stop
+  zh-CN: 停止
+"%{rate} Hz  ·  period %{frames} frames":
+  en: "%{rate} Hz  ·  period %{frames} frames"
+  zh-CN: "%{rate} Hz  ·  周期 %{frames} 帧"
+"Apply graph":
+  en: Apply graph
+  zh-CN: 应用图
+"Mono":
+  en: Mono
+  zh-CN: 单声道
+"Stereo":
+  en: Stereo
+  zh-CN: 立体声
+"Swap":
+  en: Swap
+  zh-CN: 交换
+"Inspector":
+  en: Inspector
+  zh-CN: 检查器
+"Audio":
+  en: Audio
+  zh-CN: 音频
+"Appearance":
+  en: Appearance
+  zh-CN: 外观
+"Language":
+  en: Language
+  zh-CN: 语言
+"Diagnostics":
+  en: Diagnostics
+  zh-CN: 诊断
+"Audio defaults for this workstation":
+  en: Audio defaults for this workstation
+  zh-CN: 本工作站的音频默认设置
+"Close":
+  en: Close
+  zh-CN: 关闭
+"Audio system":
+  en: Audio system
+  zh-CN: 音频系统
+"Backend":
+  en: Backend
+  zh-CN: 后端
+"Processing sample rate":
+  en: Processing sample rate
+  zh-CN: 处理采样率
+"Processing precision":
+  en: Processing precision
+  zh-CN: 处理精度
+"Processing block (frames / ms)":
+  en: Processing block (frames / ms)
+  zh-CN: 处理块（帧 / 毫秒）
+"Processing precision is independent of the device sample format. Buffers are requests; actual periods are reported in Diagnostics.":
+  en: Processing precision is independent of the device sample format. Buffers are requests; actual periods are reported in Diagnostics.
+  zh-CN: 处理精度与设备采样格式相互独立。缓冲大小为请求值；实际周期在诊断页中报告。
+"Input defaults":
+  en: Input defaults
+  zh-CN: 输入默认设置
+"Output defaults":
+  en: Output defaults
+  zh-CN: 输出默认设置
+"Shared uses Windows client-format conversion without changing the system mix format. Exclusive requires device support and sole access. Unsupported requests report an error.":
+  en: Shared uses Windows client-format conversion without changing the system mix format. Exclusive requires device support and sole access. Unsupported requests report an error.
+  zh-CN: 共享模式通过 Windows 客户端格式转换工作，不改变系统混音格式。独占模式需要设备支持并独占访问。不支持的请求会报错。
+"ASIO uses one driver session for input and output. Rate and buffer requests must agree across that session; encoding is determined by the driver. Select a driver in Devices.":
+  en: ASIO uses one driver session for input and output. Rate and buffer requests must agree across that session; encoding is determined by the driver. Select a driver in Devices.
+  zh-CN: ASIO 的输入与输出共用一个驱动会话。采样率与缓冲请求在整个会话中必须一致；编码由驱动决定。请在设备页中选择驱动。
+"%{input_count} input / %{output_count} output overrides. Configure individual devices in Devices; overrides keep their complete settings when defaults change.":
+  en: "%{input_count} input / %{output_count} output overrides. Configure individual devices in Devices; overrides keep their complete settings when defaults change."
+  zh-CN: "%{input_count} 个输入 / %{output_count} 个输出覆盖配置。可在设备页中配置单个设备；默认设置变化时，覆盖配置会完整保留自身设置。"
+"Explicit audio settings use the requested device buffers. Legacy queue/recovery profiles apply to the default WASAPI shared configuration.":
+  en: Explicit audio settings use the requested device buffers. Legacy queue/recovery profiles apply to the default WASAPI shared configuration.
+  zh-CN: 显式音频设置使用所请求的设备缓冲。旧式队列/恢复策略仅适用于默认的 WASAPI 共享配置。
+"Queue / recovery policy":
+  en: Queue / recovery policy
+  zh-CN: 队列 / 恢复策略
+"Theme":
+  en: Theme
+  zh-CN: 主题
+"Dark workstation":
+  en: Dark workstation
+  zh-CN: 深色工作站
+"Density":
+  en: Density
+  zh-CN: 密度
+"Comfortable":
+  en: Comfortable
+  zh-CN: 宽松
+"Compact":
+  en: Compact
+  zh-CN: 紧凑
+"Save to use this density throughout the workstation.":
+  en: Save to use this density throughout the workstation.
+  zh-CN: 保存后整个工作站将使用此密度。
+"Keyboard":
+  en: Keyboard
+  zh-CN: 键盘
+"Next / previous control":
+  en: Next / previous control
+  zh-CN: 下一个 / 上一个控件
+"Activate focused action":
+  en: Activate focused action
+  zh-CN: 激活焦点操作
+"Dismiss settings":
+  en: Dismiss settings
+  zh-CN: 关闭设置
+"Saved request":
+  en: Saved request
+  zh-CN: 已保存的请求
+"Processing":
+  en: Processing
+  zh-CN: 处理
+"Input":
+  en: Input
+  zh-CN: 输入
+"Output":
+  en: Output
+  zh-CN: 输出
+"Legacy recovery policy":
+  en: Legacy recovery policy
+  zh-CN: 旧式恢复策略
+"Unsaved edits stay in the Audio draft until Save or Restart Audio.":
+  en: Unsaved edits stay in the Audio draft until Save or Restart Audio.
+  zh-CN: 未保存的编辑会保留在音频草稿中，直到保存或重启音频。
+"Active session":
+  en: Active session
+  zh-CN: 活动会话
+"State":
+  en: State
+  zh-CN: 状态
+"Active backend":
+  en: Active backend
+  zh-CN: 活动后端
+"Active processing":
+  en: Active processing
+  zh-CN: 活动处理设置
+"Active input request":
+  en: Active input request
+  zh-CN: 活动输入请求
+"Active output request":
+  en: Active output request
+  zh-CN: 活动输出请求
+"No active audio configuration":
+  en: No active audio configuration
+  zh-CN: 无活动音频配置
+"Actual native timing":
+  en: Actual native timing
+  zh-CN: 实际原生时序
+"Catalog":
+  en: Catalog
+  zh-CN: 设备目录
+"%{inputs} inputs / %{outputs} outputs / %{asio} ASIO drivers / %{apps} applications":
+  en: "%{inputs} inputs / %{outputs} outputs / %{asio} ASIO drivers / %{apps} applications"
+  zh-CN: "%{inputs} 个输入 / %{outputs} 个输出 / %{asio} 个 ASIO 驱动 / %{apps} 个应用"
+"ASIO discovery failed: %{error}":
+  en: "ASIO discovery failed: %{error}"
+  zh-CN: "ASIO 发现失败：%{error}"
+"CPU / physical latency / XRUN":
+  en: CPU / physical latency / XRUN
+  zh-CN: CPU / 物理延迟 / XRUN
+"Unavailable":
+  en: Unavailable
+  zh-CN: 不可用
+"Queue fill and callback timing do not measure CPU load, physical end-to-end latency or XRUN counts.":
+  en: Queue fill and callback timing do not measure CPU load, physical end-to-end latency or XRUN counts.
+  zh-CN: 队列填充与回调时序并不度量 CPU 负载、物理端到端延迟或 XRUN 次数。
+"Quit Moiren":
+  en: Quit Moiren
+  zh-CN: 退出 Moiren
+"Driver encoding":
+  en: Driver encoding
+  zh-CN: 驱动编码
+"Follow processing":
+  en: Follow processing
+  zh-CN: 跟随处理
+"Driver default":
+  en: Driver default
+  zh-CN: 驱动默认
+"WASAPI mode":
+  en: WASAPI mode
+  zh-CN: WASAPI 模式
+"Shared":
+  en: Shared
+  zh-CN: 共享
+"Exclusive":
+  en: Exclusive
+  zh-CN: 独占
+"Requested sample rate":
+  en: Requested sample rate
+  zh-CN: 请求采样率
+"Client sample format":
+  en: Client sample format
+  zh-CN: 客户端采样格式
+"Sample encoding":
+  en: Sample encoding
+  zh-CN: 采样编码
+"Determined by ASIO driver":
+  en: Determined by ASIO driver
+  zh-CN: 由 ASIO 驱动决定
+"Requested device buffer (frames / ms)":
+  en: Requested device buffer (frames / ms)
+  zh-CN: 请求设备缓冲（帧 / 毫秒）
+"Unsaved changes":
+  en: Unsaved changes
+  zh-CN: 有未保存的更改
+"Saved requests and active audio are shown separately in Diagnostics.":
+  en: Saved requests and active audio are shown separately in Diagnostics.
+  zh-CN: 已保存的请求与活动音频在诊断页中分别显示。
+"Audio is stopped. Save keeps it stopped.":
+  en: Audio is stopped. Save keeps it stopped.
+  zh-CN: 音频已停止。保存后仍保持停止。
+"Discard changes":
+  en: Discard changes
+  zh-CN: 放弃更改
+"Save":
+  en: Save
+  zh-CN: 保存
+"Restart Audio":
+  en: Restart Audio
+  zh-CN: 重启音频
+"Saved. Audio settings apply on the next start.":
+  en: Saved. Audio settings apply on the next start.
+  zh-CN: 已保存。音频设置将在下次启动时生效。
+"Recovery policy":
+  en: Recovery policy
+  zh-CN: 恢复策略
+"%{label} changed elsewhere. Your draft is retained. Discard changes to reload the saved settings.":
+  en: "%{label} changed elsewhere. Your draft is retained. Discard changes to reload the saved settings."
+  zh-CN: "%{label}已在其他位置更改。草稿已保留。放弃更改即可重新加载已保存的设置。"
+"%{label} override for %{id}":
+  en: "%{label} override for %{id}"
+  zh-CN: "%{id} 的 %{label}覆盖配置"
+"User configuration directory is unavailable. Your draft is retained.":
+  en: User configuration directory is unavailable. Your draft is retained.
+  zh-CN: 用户配置目录不可用。草稿已保留。
+"Saving requested settings...":
+  en: Saving requested settings...
+  zh-CN: 正在保存请求的设置…
+"Could not save audio settings: %{error}":
+  en: "Could not save audio settings: %{error}"
+  zh-CN: "无法保存音频设置：%{error}"
+"Audio settings were rejected.":
+  en: Audio settings were rejected.
+  zh-CN: 音频设置被拒绝。
+"Latency policy was rejected.":
+  en: Latency policy was rejected.
+  zh-CN: 延迟策略被拒绝。
+"Audio did not restart. Your draft is retained.":
+  en: Audio did not restart. Your draft is retained.
+  zh-CN: 音频未重启。草稿已保留。
+"Restarting audio; waiting for the active session...":
+  en: Restarting audio; waiting for the active session...
+  zh-CN: 正在重启音频；等待活动会话…
+"Saving latency policy...":
+  en: Saving latency policy...
+  zh-CN: 正在保存延迟策略…
+"Could not apply audio settings: %{error}":
+  en: "Could not apply audio settings: %{error}"
+  zh-CN: "无法应用音频设置：%{error}"
+"Audio restarted with the saved settings.":
+  en: Audio restarted with the saved settings.
+  zh-CN: 音频已使用保存的设置重启。
+"User configuration directory is unavailable":
+  en: User configuration directory is unavailable
+  zh-CN: 用户配置目录不可用
+"Could not save preferences: %{error}":
+  en: "Could not save preferences: %{error}"
+  zh-CN: "无法保存偏好设置：%{error}"
+"Preferences saved":
+  en: Preferences saved
+  zh-CN: 偏好设置已保存
+"Preferences save queued":
+  en: Preferences save queued
+  zh-CN: 偏好设置保存已排队
+"Inputs":
+  en: Inputs
+  zh-CN: 输入
+"Outputs":
+  en: Outputs
+  zh-CN: 输出
+"Applications":
+  en: Applications
+  zh-CN: 应用程序
+"Exports":
+  en: Exports
+  zh-CN: 导出
+"Clock":
+  en: Clock
+  zh-CN: 时钟
+"Unavailable device (saved override)":
+  en: Unavailable device (saved override)
+  zh-CN: 设备不可用（已保存覆盖配置）
+"No devices available":
+  en: No devices available
+  zh-CN: 没有可用设备
+"Refresh to discover installed ASIO drivers.":
+  en: Refresh to discover installed ASIO drivers.
+  zh-CN: 刷新以发现已安装的 ASIO 驱动。
+"Refresh to discover connected Windows audio endpoints.":
+  en: Refresh to discover connected Windows audio endpoints.
+  zh-CN: 刷新以发现已连接的 Windows 音频端点。
+"Override":
+  en: Override
+  zh-CN: 覆盖配置
+"Default":
+  en: Default
+  zh-CN: 默认
+"Configure":
+  en: Configure
+  zh-CN: 配置
+"Active":
+  en: Active
+  zh-CN: 活动
+"Next start":
+  en: Next start
+  zh-CN: 下次启动
+"Use next start":
+  en: Use next start
+  zh-CN: 下次启动时使用
+"Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.":
+  en: Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.
+  zh-CN: 应用回环需要 WASAPI。请在设置中选择 WASAPI 以使用应用音源。
+"No capturable applications":
+  en: No capturable applications
+  zh-CN: 没有可捕获的应用程序
+"Start an application that plays audio, then refresh. Protected applications may be unavailable.":
+  en: Start an application that plays audio, then refresh. Protected applications may be unavailable.
+  zh-CN: 先启动一个正在播放音频的应用，再刷新。受保护的应用可能不可用。
+"PID %{pid} · created %{created}":
+  en: "PID %{pid} · created %{created}"
+  zh-CN: "PID %{pid} · 创建于 %{created}"
+"Active audio clocks":
+  en: Active audio clocks
+  zh-CN: 活动音频时钟
+"Input sample rate":
+  en: Input sample rate
+  zh-CN: 输入采样率
+"Output sample rate":
+  en: Output sample rate
+  zh-CN: 输出采样率
+"Clock correction":
+  en: Clock correction
+  zh-CN: 时钟校正
+"Input buffer fill":
+  en: Input buffer fill
+  zh-CN: 输入缓冲填充
+"Processed":
+  en: Processed
+  zh-CN: 已处理
+"Clock correction and buffer inventory come from the active monitor. Buffer fill is not end-to-end latency.":
+  en: Clock correction and buffer inventory come from the active monitor. Buffer fill is not end-to-end latency.
+  zh-CN: 时钟校正与缓冲存量来自活动监视器。缓冲填充量不等于端到端延迟。
+"No active monitor clock observation. Start a physical input or application session to inspect clock adaptation.":
+  en: No active monitor clock observation. Start a physical input or application session to inspect clock adaptation.
+  zh-CN: 没有活动的监视器时钟观测。启动物理输入或应用会话以查看时钟适配。
+"Session resources":
+  en: Session resources
+  zh-CN: 会话资源
+"Source":
+  en: Source
+  zh-CN: 音源
+"No active session":
+  en: No active session
+  zh-CN: 无活动会话
+"Source mode":
+  en: Source mode
+  zh-CN: 音源模式
+"Select available resources":
+  en: Select available resources
+  zh-CN: 选择可用资源
+"Not selected":
+  en: Not selected
+  zh-CN: 未选择
+"Selecting another resource leaves the running session unchanged. Stop and start to switch devices.":
+  en: Selecting another resource leaves the running session unchanged. Stop and start to switch devices.
+  zh-CN: 选择其他资源不会影响正在运行的会话。停止并重新启动即可切换设备。
+"Refresh devices":
+  en: Refresh devices
+  zh-CN: 刷新设备
+"ASIO discovery failed: %{error}. Refresh devices to retry.":
+  en: "ASIO discovery failed: %{error}. Refresh devices to retry."
+  zh-CN: "ASIO 发现失败：%{error}。刷新设备以重试。"
+"Unavailable device":
+  en: Unavailable device
+  zh-CN: 设备不可用
+"Input configuration":
+  en: Input configuration
+  zh-CN: 输入配置
+"Output configuration":
+  en: Output configuration
+  zh-CN: 输出配置
+"Device override":
+  en: Device override
+  zh-CN: 设备覆盖配置
+"Using global defaults":
+  en: Using global defaults
+  zh-CN: 使用全局默认设置
+"Use defaults":
+  en: Use defaults
+  zh-CN: 使用默认设置
+"ASIO input and output share one driver session. Their sample rate and buffer requests must agree.":
+  en: ASIO input and output share one driver session. Their sample rate and buffer requests must agree.
+  zh-CN: ASIO 的输入与输出共用一个驱动会话。二者的采样率与缓冲请求必须一致。
+"This complete override stays independent of global defaults. Use defaults removes it when saved.":
+  en: This complete override stays independent of global defaults. Use defaults removes it when saved.
+  zh-CN: 此完整覆盖配置独立于全局默认设置；保存时点击使用默认设置即可将其移除。
+"This device follows the current global defaults. Choose Override to customize all its stream settings.":
+  en: This device follows the current global defaults. Choose Override to customize all its stream settings.
+  zh-CN: 此设备当前跟随全局默认设置。点击覆盖配置可自定义其全部流设置。
+"Active request":
+  en: Active request
+  zh-CN: 活动请求
+"Observed session timing":
+  en: Observed session timing
+  zh-CN: 观测到的会话时序
+"This device is not bound to the active source/output pair.":
+  en: This device is not bound to the active source/output pair.
+  zh-CN: 此设备未绑定到活动的音源/输出对。
+"Configure never changes routing. Use next start on a device row updates the candidate graph.":
+  en: Configure never changes routing. Use next start on a device row updates the candidate graph.
+  zh-CN: 配置不会改变路由。设备行中的下次启动时使用会更新候选图。
+"Export is no longer in this project's candidate graph":
+  en: Export is no longer in this project's candidate graph
+  zh-CN: 该导出已不在此项目的候选图中
+"Virtual exports":
+  en: Virtual exports
+  zh-CN: 虚拟导出
+"Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.":
+  en: Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.
+  zh-CN: 在此编辑项目意图，然后应用图以请求激活。端点存在并不代表音频正在流动。停止后端点仍保留，但闸门关闭。
+"Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export.":
+  en: "Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export."
+  zh-CN: 将选中的通道数匹配的图 IO 绑定：播放使用源节点；麦克风使用输出节点。一个 IO 只能属于一个导出。
+"Default eligibility is permission on this computer only, not saved in the project. Off prevents both Windows automatic and user manual default selection. On only permits eligibility; it does not set a Windows default.":
+  en: Default eligibility is permission on this computer only, not saved in the project. Off prevents both Windows automatic and user manual default selection. On only permits eligibility; it does not set a Windows default.
+  zh-CN: 默认资格仅是本机上的许可，不会保存到项目中。关闭时既阻止 Windows 自动选择默认，也阻止用户手动设为默认。开启只表示允许成为默认，并不会设置 Windows 默认设备。
+"Changing channels, a name, or eligibility safely retires and recreates the endpoint. Apply again to resume; unbind incompatible Graph IO before changing channels.":
+  en: Changing channels, a name, or eligibility safely retires and recreates the endpoint. Apply again to resume; unbind incompatible Graph IO before changing channels.
+  zh-CN: 更改声道数、名称或默认资格会安全退役并重建端点。再次应用即可恢复；更改声道数前请先解绑不兼容的图 IO。
+"No virtual exports yet. Create one above; it starts unbound.":
+  en: No virtual exports yet. Create one above; it starts unbound.
+  zh-CN: 还没有虚拟导出。在上方创建一个；初始为未绑定状态。
+"Playback":
+  en: Playback
+  zh-CN: 播放
+"Microphone":
+  en: Microphone
+  zh-CN: 麦克风
+"Create export":
+  en: Create export
+  zh-CN: 创建导出
+"Endpoint name (1-63 UTF-16 units; no control characters)":
+  en: Endpoint name (1-63 UTF-16 units; no control characters)
+  zh-CN: 端点名称（1-63 个 UTF-16 单元；不含控制字符）
+"Endpoint":
+  en: Endpoint
+  zh-CN: 端点
+"Absent":
+  en: Absent
+  zh-CN: 不存在
+"Creating":
+  en: Creating
+  zh-CN: 创建中
+"Present (not a flow signal)":
+  en: Present (not a flow signal)
+  zh-CN: 已存在（不代表音频流动）
+"Removing / awaiting confirmation":
+  en: Removing / awaiting confirmation
+  zh-CN: 移除中 / 等待确认
+"Gate admission":
+  en: Gate admission
+  zh-CN: 闸门通断
+"Open (not a flow signal)":
+  en: Open (not a flow signal)
+  zh-CN: 打开（不代表音频流动）
+"Closed":
+  en: Closed
+  zh-CN: 已关闭
+"Engine-confirmed binding":
+  en: Engine-confirmed binding
+  zh-CN: 引擎确认的绑定
+"Active revision %{revision}":
+  en: "Active revision %{revision}"
+  zh-CN: "活动修订 %{revision}"
+"Inactive":
+  en: Inactive
+  zh-CN: 未激活
+"Candidate graph binding":
+  en: Candidate graph binding
+  zh-CN: 候选图绑定
+"Unbound":
+  en: Unbound
+  zh-CN: 未绑定
+"Candidate intent":
+  en: Candidate intent
+  zh-CN: 候选意图
+"Enabled":
+  en: Enabled
+  zh-CN: 已启用
+"Disabled":
+  en: Disabled
+  zh-CN: 已禁用
+"Channels":
+  en: Channels
+  zh-CN: 声道
+"Endpoint name":
+  en: Endpoint name
+  zh-CN: 端点名称
+"Rename":
+  en: Rename
+  zh-CN: 重命名
+"Disable intent":
+  en: Disable intent
+  zh-CN: 禁用意图
+"Enable intent":
+  en: Enable intent
+  zh-CN: 启用意图
+"Bind selected IO":
+  en: Bind selected IO
+  zh-CN: 绑定选中的 IO
+"Unbind":
+  en: Unbind
+  zh-CN: 解绑
+"Remove intent":
+  en: Remove intent
+  zh-CN: 移除意图
+"Removed from candidate. The service retains lifecycle tracking until safe retirement is confirmed.":
+  en: Removed from candidate. The service retains lifecycle tracking until safe retirement is confirmed.
+  zh-CN: 已从候选图移除。服务会保留生命周期跟踪，直到确认安全退役。
+"Revoke local default eligibility":
+  en: Revoke local default eligibility
+  zh-CN: 撤销本机默认资格
+"Allow default eligibility on this computer":
+  en: Allow default eligibility on this computer
+  zh-CN: 允许在本机成为默认
+"Node library":
+  en: Node library
+  zh-CN: 节点库
+"Select":
+  en: Select
+  zh-CN: 选择
+"Hand":
+  en: Hand
+  zh-CN: 抓手
+"Fit":
+  en: Fit
+  zh-CN: 适配
+"No matching nodes":
+  en: No matching nodes
+  zh-CN: 没有匹配的节点
+"Session nodes · %{count}":
+  en: "Session nodes · %{count}"
+  zh-CN: "会话节点 · %{count}"
+"Drag a node onto the graph":
+  en: Drag a node onto the graph
+  zh-CN: 将节点拖到图中
+"Or click to add at the canvas center.":
+  en: Or click to add at the canvas center.
+  zh-CN: 或点击以在画布中心添加。
+"Select a node to inspect its properties.":
+  en: Select a node to inspect its properties.
+  zh-CN: 选择一个节点以查看其属性。
+"Name":
+  en: Name
+  zh-CN: 名称
+"Channel strip":
+  en: Channel strip
+  zh-CN: 通道条
+"Fader":
+  en: Fader
+  zh-CN: 推子
+"Not bound · choose a resource":
+  en: Not bound · choose a resource
+  zh-CN: 未绑定 · 请选择资源
+"Clear binding":
+  en: Clear binding
+  zh-CN: 清除绑定
+"Tone generator · 440 Hz":
+  en: Tone generator · 440 Hz
+  zh-CN: 测试音发生器 · 440 Hz
+"Frequency":
+  en: Frequency
+  zh-CN: 频率
+"Refresh sources":
+  en: Refresh sources
+  zh-CN: 刷新音源
+"Output device":
+  en: Output device
+  zh-CN: 输出设备
+"Not bound · choose an output":
+  en: Not bound · choose an output
+  zh-CN: 未绑定 · 请选择输出
+"Gain":
+  en: Gain
+  zh-CN: 增益
+"Requested":
+  en: Requested
+  zh-CN: 请求值
+"Unity":
+  en: Unity
+  zh-CN: "0 dB"
+"Silence":
+  en: Silence
+  zh-CN: 静音
+"Stereo controls":
+  en: Stereo controls
+  zh-CN: 立体声控制
+"Balance":
+  en: Balance
+  zh-CN: 平衡
+"Left":
+  en: Left
+  zh-CN: 左
+"Center":
+  en: Center
+  zh-CN: 中
+"Right":
+  en: Right
+  zh-CN: 右
+"Compressor":
+  en: Compressor
+  zh-CN: 压缩器
+"Linked peak detector · Enter or leave a field to apply":
+  en: Linked peak detector · Enter or leave a field to apply
+  zh-CN: 联动峰值检测 · 输入或离开输入框即生效
+"Ports":
+  en: Ports
+  zh-CN: 端口
+"Input %{index}":
+  en: "Input %{index}"
+  zh-CN: "输入 %{index}"
+"Output %{index}":
+  en: "Output %{index}"
+  zh-CN: "输出 %{index}"
+"Add bus input":
+  en: Add bus input
+  zh-CN: 添加总线输入
+"Remove last input":
+  en: Remove last input
+  zh-CN: 移除最后一个输入
+"Delete node":
+  en: Delete node
+  zh-CN: 删除节点
+"Waiting for Apply graph":
+  en: Waiting for Apply graph
+  zh-CN: 等待应用图
+"Unavailable for this node":
+  en: Unavailable for this node
+  zh-CN: 此节点不可用
+"Runtime observation":
+  en: Runtime observation
+  zh-CN: 运行时观测
+"Status":
+  en: Status
+  zh-CN: 状态
+"The candidate graph is not the confirmed runtime. Apply graph to observe this node.":
+  en: The candidate graph is not the confirmed runtime. Apply graph to observe this node.
+  zh-CN: 候选图尚未成为确认的运行图。应用图以观测此节点。
+"This node has no managed level topic in the current service projection.":
+  en: This node has no managed level topic in the current service projection.
+  zh-CN: 当前服务投影中此节点没有受管电平主题。
+"Peak %{index}":
+  en: "Peak %{index}"
+  zh-CN: "峰值 %{index}"
+"RMS %{index}":
+  en: "RMS %{index}"
+  zh-CN: "RMS %{index}"
+"Candidate graph · audio owner unchanged":
+  en: Candidate graph · audio owner unchanged
+  zh-CN: 候选图 · 音频所有者未变化
+"Parametric EQ":
+  en: Parametric EQ
+  zh-CN: 参量均衡器
+"One peaking band · apply to prepare the new kernel":
+  en: One peaking band · apply to prepare the new kernel
+  zh-CN: 单个峰值频段 · 应用后准备新内核
+"Q":
+  en: Q
+  zh-CN: Q
+"Gate":
+  en: Gate
+  zh-CN: 噪声门
+"Linked downward expander":
+  en: Linked downward expander
+  zh-CN: 联动向下扩展器
+"Limiter":
+  en: Limiter
+  zh-CN: 限制器
+"Zero-latency peak limiter":
+  en: Zero-latency peak limiter
+  zh-CN: 零延迟峰值限制器
+"Delay":
+  en: Delay
+  zh-CN: 延迟
+"Bounded feedback delay":
+  en: Bounded feedback delay
+  zh-CN: 有界反馈延迟
+"Identity routing":
+  en: Identity routing
+  zh-CN: 恒等路由
+"Weighted matrix":
+  en: Weighted matrix
+  zh-CN: 加权矩阵
+"Explicit channel map":
+  en: Explicit channel map
+  zh-CN: 显式声道映射
+"Channel mapper":
+  en: Channel mapper
+  zh-CN: 声道映射器
+"Mode":
+  en: Mode
+  zh-CN: 模式
+"Static routing is prepared before audio starts.":
+  en: Static routing is prepared before audio starts.
+  zh-CN: 静态路由在音频启动前准备完成。
+"Swap L/R":
+  en: Swap L/R
+  zh-CN: 交换左右声道
+"Identity":
+  en: Identity
+  zh-CN: 恒等映射
+"Edit weighted matrix":
+  en: Edit weighted matrix
+  zh-CN: 编辑加权矩阵
+"Weight matrix":
+  en: Weight matrix
+  zh-CN: 权重矩阵
+"Layout":
+  en: Layout
+  zh-CN: 布局
+"%{outputs} outputs x %{inputs} inputs":
+  en: "%{outputs} outputs x %{inputs} inputs"
+  zh-CN: "%{outputs} 个输出 x %{inputs} 个输入"
+"Adjust one output row at a time. Values are clamped to -1..1.":
+  en: Adjust one output row at a time. Values are clamped to -1..1.
+  zh-CN: 每次调整一行输出。数值限制在 -1..1 范围内。
+"Out %{index}":
+  en: "Out %{index}"
+  zh-CN: "输出 %{index}"
+"In %{index}":
+  en: "In %{index}"
+  zh-CN: "输入 %{index}"
+"Matrix editor is limited to 8 input and output channels; use a project file for larger layouts.":
+  en: Matrix editor is limited to 8 input and output channels; use a project file for larger layouts.
+  zh-CN: 矩阵编辑器最多支持 8 个输入与输出声道；更大布局请使用项目文件。
+"Recorder":
+  en: Recorder
+  zh-CN: 录音机
+"Buffer":
+  en: Buffer
+  zh-CN: 缓冲
+"Add 1 second":
+  en: Add 1 second
+  zh-CN: 增加 1 秒
+"Remove 1 second":
+  en: Remove 1 second
+  zh-CN: 减少 1 秒
+"Level meter":
+  en: Level meter
+  zh-CN: 电平表
+"Window":
+  en: Window
+  zh-CN: 窗口
+"Use 2048 frame window":
+  en: Use 2048 frame window
+  zh-CN: 使用 2048 帧窗口
+"Spectrum analyzer":
+  en: Spectrum analyzer
+  zh-CN: 频谱分析仪
+"FFT":
+  en: FFT
+  zh-CN: FFT
+"Hop":
+  en: Hop
+  zh-CN: 跳点
+"Use 2048 point FFT":
+  en: Use 2048 point FFT
+  zh-CN: 使用 2048 点 FFT
+"Processor rack":
+  en: Processor rack
+  zh-CN: 处理器机架
+"Stages":
+  en: Stages
+  zh-CN: 级数
+"Add gain stage":
+  en: Add gain stage
+  zh-CN: 添加增益级
+"Clear stages":
+  en: Clear stages
+  zh-CN: 清空各级
+"Managed observation becomes available after Apply graph.":
+  en: Managed observation becomes available after Apply graph.
+  zh-CN: 应用图后即可进行受管观测。
+"Threshold":
+  en: Threshold
+  zh-CN: 阈值
+"Attack":
+  en: Attack
+  zh-CN: 启动时间
+"Release":
+  en: Release
+  zh-CN: 释放时间
+"Hold":
+  en: Hold
+  zh-CN: 保持时间
+"Range":
+  en: Range
+  zh-CN: 范围
+"Input gain":
+  en: Input gain
+  zh-CN: 输入增益
+"Time":
+  en: Time
+  zh-CN: 时间
+"Feedback":
+  en: Feedback
+  zh-CN: 反馈
+"Wet mix":
+  en: Wet mix
+  zh-CN: 湿声比例
+"Ratio":
+  en: Ratio
+  zh-CN: 比率
+"Knee":
+  en: Knee
+  zh-CN: 拐点
+"Makeup gain":
+  en: Makeup gain
+  zh-CN: 补偿增益
+"Output gain":
+  en: Output gain
+  zh-CN: 输出增益
+"Dry / wet":
+  en: Dry / wet
+  zh-CN: 干 / 湿
+"%{name} / in %{index}":
+  en: "%{name} / in %{index}"
+  zh-CN: "%{name} / 输入 %{index}"
+"%{name} / out %{index}":
+  en: "%{name} / out %{index}"
+  zh-CN: "%{name} / 输出 %{index}"
+"Muted":
+  en: Muted
+  zh-CN: 已静音
+"%{source} to %{destination}: %{value}":
+  en: "%{source} to %{destination}: %{value}"
+  zh-CN: "%{source} 至 %{destination}：%{value}"
+"Routing matrix":
+  en: Routing matrix
+  zh-CN: 路由矩阵
+"Outputs → Inputs":
+  en: Outputs → Inputs
+  zh-CN: 输出 → 输入
+"%{outputs} output ports · %{inputs} input ports · %{connections} direct connections":
+  en: "%{outputs} output ports · %{inputs} input ports · %{connections} direct connections"
+  zh-CN: "%{outputs} 个输出端口 · %{inputs} 个输入端口 · %{connections} 条直连"
+"Connection":
+  en: Connection
+  zh-CN: 连接
+"From":
+  en: From
+  zh-CN: 来源
+"To":
+  en: To
+  zh-CN: 目标
+"Connected":
+  en: Connected
+  zh-CN: 已连接
+"Route gain":
+  en: Route gain
+  zh-CN: 路由增益
+"Route balance":
+  en: Route balance
+  zh-CN: 路由平衡
+"Tap":
+  en: Tap
+  zh-CN: 取样点
+"Pre-fader":
+  en: Pre-fader
+  zh-CN: 推子前
+"Post-fader":
+  en: Post-fader
+  zh-CN: 推子后
+"Disconnect":
+  en: Disconnect
+  zh-CN: 断开
+"Unmute route":
+  en: Unmute route
+  zh-CN: 取消路由静音
+"Mute route":
+  en: Mute route
+  zh-CN: 路由静音
+"Not connected":
+  en: Not connected
+  zh-CN: 未连接
+"Connect":
+  en: Connect
+  zh-CN: 连接
+"Show in Graph":
+  en: Show in Graph
+  zh-CN: 在图中显示
+"This connection no longer exists. Select a cell.":
+  en: This connection no longer exists. Select a cell.
+  zh-CN: 此连接已不存在。请选择一个单元格。
+"Select an intersection to inspect or change a direct connection.":
+  en: Select an intersection to inspect or change a direct connection.
+  zh-CN: 选择一个交叉点以查看或更改直连。
+" · output %{index}":
+  en: " · output %{index}"
+  zh-CN: " · 输出 %{index}"
+" · input %{index}":
+  en: " · input %{index}"
+  zh-CN: " · 输入 %{index}"
+"Not saved to disk":
+  en: Not saved to disk
+  zh-CN: 未保存到磁盘
+"Open project…":
+  en: Open project…
+  zh-CN: 打开项目…
+"Save project":
+  en: Save project
+  zh-CN: 保存项目
+"Save project as…":
+  en: Save project as…
+  zh-CN: 项目另存为…
+"Opening a project keeps audio stopped.":
+  en: Opening a project keeps audio stopped.
+  zh-CN: 打开项目后音频保持停止。
+"Could not open save dialog: %{error}":
+  en: "Could not open save dialog: %{error}"
+  zh-CN: "无法打开保存对话框：%{error}"
+"Project saved":
+  en: Project saved
+  zh-CN: 项目已保存
+"Open Moiren project":
+  en: Open Moiren project
+  zh-CN: 打开 Moiren 项目
+"Could not open file dialog: %{error}":
+  en: "Could not open file dialog: %{error}"
+  zh-CN: "无法打开文件对话框：%{error}"
+"Project load requested":
+  en: Project load requested
+  zh-CN: 已请求加载项目
+"Project was not loaded: %{error}":
+  en: "Project was not loaded: %{error}"
+  zh-CN: "项目未加载：%{error}"
+"Project opened":
+  en: Project opened
+  zh-CN: 项目已打开
+"Mixer":
+  en: Mixer
+  zh-CN: 调音台
+"Drag headers to reorder · drag dividers to resize":
+  en: Drag headers to reorder · drag dividers to resize
+  zh-CN: 拖动标题排序 · 拖动分隔条调整宽度
+"SENDS":
+  en: SENDS
+  zh-CN: 发送
+"PRE":
+  en: PRE
+  zh-CN: 推子前
+"POST":
+  en: POST
+  zh-CN: 推子后
+"No sends · connect in Graph":
+  en: No sends · connect in Graph
+  zh-CN: 无发送 · 请在图中连接
+"MONO":
+  en: MONO
+  zh-CN: 单声道
+"SWAP":
+  en: SWAP
+  zh-CN: 交换
+"L ONLY":
+  en: L ONLY
+  zh-CN: 仅左声道
+"R ONLY":
+  en: R ONLY
+  zh-CN: 仅右声道
+"CH %{channel} ONLY":
+  en: "CH %{channel} ONLY"
+  zh-CN: "仅第 %{channel} 声道"
+"Move channel":
+  en: Move channel
+  zh-CN: 移动通道
+"Pending":
+  en: Pending
+  zh-CN: 待应用
+"No strips · open Moiren to build a graph":
+  en: No strips · open Moiren to build a graph
+  zh-CN: 没有通道条 · 打开 Moiren 搭建图
+"Open":
+  en: Open
+  zh-CN: 打开
+"Graph":
+  en: Graph
+  zh-CN: 图
+"Matrix":
+  en: Matrix
+  zh-CN: 矩阵
+"Devices":
+  en: Devices
+  zh-CN: 设备
+"Physical input":
+  en: Physical input
+  zh-CN: 物理输入
+"Application audio":
+  en: Application audio
+  zh-CN: 应用音频
+"Tone generator":
+  en: Tone generator
+  zh-CN: 测试音发生器
+"Mix bus":
+  en: Mix bus
+  zh-CN: 混音总线
+"Device output":
+  en: Device output
+  zh-CN: 设备输出
+"SOURCES":
+  en: SOURCES
+  zh-CN: 音源
+"PROCESSING":
+  en: PROCESSING
+  zh-CN: 处理
+"OBSERVATION":
+  en: OBSERVATION
+  zh-CN: 观测
+"ROUTING":
+  en: ROUTING
+  zh-CN: 路由
+"DESTINATIONS":
+  en: DESTINATIONS
+  zh-CN: 输出目标
+"WASAPI capture endpoint":
+  en: WASAPI capture endpoint
+  zh-CN: WASAPI 采集端点
+"Process loopback source":
+  en: Process loopback source
+  zh-CN: 进程回环音源
+"Prepared sine-wave source":
+  en: Prepared sine-wave source
+  zh-CN: 预置正弦波音源
+"Adjust linear amplitude":
+  en: Adjust linear amplitude
+  zh-CN: 调整线性振幅
+"Stereo balance, mono and swap":
+  en: Stereo balance, mono and swap
+  zh-CN: 立体声平衡、单声道与交换
+"Linked peak dynamics":
+  en: Linked peak dynamics
+  zh-CN: 联动峰值动态
+"One parametric peaking band":
+  en: One parametric peaking band
+  zh-CN: 单段参量峰值均衡
+"Static channel routing matrix":
+  en: Static channel routing matrix
+  zh-CN: 静态声道路由矩阵
+"Managed recording tap":
+  en: Managed recording tap
+  zh-CN: 受管录音取样点
+"Peak and RMS observation":
+  en: Peak and RMS observation
+  zh-CN: 峰值与 RMS 观测
+"Managed FFT observation":
+  en: Managed FFT observation
+  zh-CN: 受管 FFT 观测
+"Ordered processor chain":
+  en: Ordered processor chain
+  zh-CN: 有序处理器链
+"Sum dynamic input ports":
+  en: Sum dynamic input ports
+  zh-CN: 汇总动态输入端口
+"WASAPI render endpoint":
+  en: WASAPI render endpoint
+  zh-CN: WASAPI 渲染端点
+"Choose a source":
+  en: Choose a source
+  zh-CN: 选择音源
+"Choose an output":
+  en: Choose an output
+  zh-CN: 选择输出
+"%{ms} ms · %{percent}% wet":
+  en: "%{ms} ms · %{percent}% wet"
+  zh-CN: "%{ms} ms · 湿声 %{percent}%"
+"%{frames} frames":
+  en: "%{frames} frames"
+  zh-CN: "%{frames} 帧"
+"%{frames} frame buffer":
+  en: "%{frames} frame buffer"
+  zh-CN: "%{frames} 帧缓冲"
+"%{frames} frame window":
+  en: "%{frames} frame window"
+  zh-CN: "%{frames} 帧窗口"
+"FFT %{fft} · hop %{hop}":
+  en: "FFT %{fft} · hop %{hop}"
+  zh-CN: "FFT %{fft} · 跳点 %{hop}"
+"Empty rack":
+  en: Empty rack
+  zh-CN: 空机架
+"%{count} stage":
+  en: "%{count} stage"
+  zh-CN: "%{count} 级"
+"%{count} stages":
+  en: "%{count} stages"
+  zh-CN: "%{count} 级"
+"Overview":
+  en: Overview
+  zh-CN: 总览
+"Hidden":
+  en: Hidden
+  zh-CN: 隐藏
+"Stopped":
+  en: Stopped
+  zh-CN: 已停止
+"Waiting for a complete window":
+  en: Waiting for a complete window
+  zh-CN: 等待完整窗口
+"Live":
+  en: Live
+  zh-CN: 实时
+"No recent audio window":
+  en: No recent audio window
+  zh-CN: 最近没有音频窗口
+"No publisher":
+  en: No publisher
+  zh-CN: 无发布者
+"Meter subscription: %{error}":
+  en: "Meter subscription: %{error}"
+  zh-CN: "电平表订阅：%{error}"
+"Idle":
+  en: Idle
+  zh-CN: 空闲
+"Starting":
+  en: Starting
+  zh-CN: 正在启动
+"Running":
+  en: Running
+  zh-CN: 运行中
+"Stopping":
+  en: Stopping
+  zh-CN: 正在停止
+"Failed":
+  en: Failed
+  zh-CN: 失败
+"Exiting":
+  en: Exiting
+  zh-CN: 正在退出
+"Exited":
+  en: Exited
+  zh-CN: 已退出
+"Explicit stream buffers control professional audio latency":
+  en: Explicit stream buffers control professional audio latency
+  zh-CN: 显式流缓冲控制专业音频延迟
+"Active profile matches selection":
+  en: Active profile matches selection
+  zh-CN: 活动策略与所选一致
+"Pending: apply graph or start again to use selected profile":
+  en: "Pending: apply graph or start again to use selected profile"
+  zh-CN: 待生效：应用图或重新启动后使用所选策略
+"Selected profile applies on next Apply / Start":
+  en: Selected profile applies on next Apply / Start
+  zh-CN: 所选策略将在下次应用 / 启动时生效
+"Master output":
+  en: Master output
+  zh-CN: 主输出
+"Follower output":
+  en: Follower output
+  zh-CN: 从属输出
+"%{prefix}: actual stream":
+  en: "%{prefix}: actual stream"
+  zh-CN: "%{prefix}：实际流"
+"ASIO driver (driver owns mode)":
+  en: ASIO driver (driver owns mode)
+  zh-CN: ASIO 驱动（模式由驱动决定）
+"%{prefix}: backend / mode":
+  en: "%{prefix}: backend / mode"
+  zh-CN: "%{prefix}：后端 / 模式"
+"%{prefix}: requested buffer":
+  en: "%{prefix}: requested buffer"
+  zh-CN: "%{prefix}：请求缓冲"
+"%{prefix}: bridge counters":
+  en: "%{prefix}: bridge counters"
+  zh-CN: "%{prefix}：桥接计数"
+"Dropped %{dropped} / silence %{silent} frames":
+  en: "Dropped %{dropped} / silence %{silent} frames"
+  zh-CN: "丢弃 %{dropped} / 静音 %{silent} 帧"
+"%{prefix}: ASIO callback counters":
+  en: "%{prefix}: ASIO callback counters"
+  zh-CN: "%{prefix}：ASIO 回调计数"
+"%{callbacks} callbacks; capture dropped %{dropped} / render silence %{silent} frames (includes startup)":
+  en: "%{callbacks} callbacks; capture dropped %{dropped} / render silence %{silent} frames (includes startup)"
+  zh-CN: "%{callbacks} 次回调；采集丢弃 %{dropped} / 渲染静音 %{silent} 帧（含启动阶段）"
+"%{prefix}: driver-reported latency":
+  en: "%{prefix}: driver-reported latency"
+  zh-CN: "%{prefix}：驱动报告延迟"
+"Input %{input} / output %{output} frames; excludes application queues":
+  en: "Input %{input} / output %{output} frames; excludes application queues"
+  zh-CN: "输入 %{input} / 输出 %{output} 帧；不含应用队列"
+"Unavailable (not measured round-trip latency)":
+  en: Unavailable (not measured round-trip latency)
+  zh-CN: 不可用（未测量往返延迟）
+"Application input":
+  en: Application input
+  zh-CN: 应用输入
+"Virtual playback":
+  en: Virtual playback
+  zh-CN: 虚拟播放
+"Virtual microphone":
+  en: Virtual microphone
+  zh-CN: 虚拟麦克风
+"%{prefix}: actual timing":
+  en: "%{prefix}: actual timing"
+  zh-CN: "%{prefix}：实际时序"
+"period unknown":
+  en: period unknown
+  zh-CN: 周期未知
+"%{rate} Hz; %{period}; capacity %{capacity} frames":
+  en: "%{rate} Hz; %{period}; capacity %{capacity} frames"
+  zh-CN: "%{rate} Hz；%{period}；容量 %{capacity} 帧"
+"Virtual capture; no hardware period":
+  en: Virtual capture; no hardware period
+  zh-CN: 虚拟采集；无硬件周期
+"%{prefix}: period request":
+  en: "%{prefix}: period request"
+  zh-CN: "%{prefix}：周期请求"
+"%{ms} ms requested":
+  en: "%{ms} ms requested"
+  zh-CN: "已请求 %{ms} ms"
+"Device default requested":
+  en: Device default requested
+  zh-CN: 已请求设备默认值
+"%{prefix}: initialization":
+  en: "%{prefix}: initialization"
+  zh-CN: "%{prefix}：初始化"
+"%{prefix}: render queue":
+  en: "%{prefix}: render queue"
+  zh-CN: "%{prefix}：渲染队列"
+"Target %{target} / capacity %{capacity} frames":
+  en: "Target %{target} / capacity %{capacity} frames"
+  zh-CN: "目标 %{target} / 容量 %{capacity} 帧"
+"%{prefix}: bridge queue":
+  en: "%{prefix}: bridge queue"
+  zh-CN: "%{prefix}：桥接队列"
+"Prime %{prime} / capacity %{capacity} frames":
+  en: "Prime %{prime} / capacity %{capacity} frames"
+  zh-CN: "预填充 %{prime} / 容量 %{capacity} 帧"
+"Stream %{index}":
+  en: "Stream %{index}"
+  zh-CN: "流 %{index}"
+"Unmapped stream":
+  en: Unmapped stream
+  zh-CN: 未映射的流
+"%{prefix}: live queue / clock":
+  en: "%{prefix}: live queue / clock"
+  zh-CN: "%{prefix}：实时队列 / 时钟"
+"%{prefix}: faults / recovery":
+  en: "%{prefix}: faults / recovery"
+  zh-CN: "%{prefix}：故障 / 恢复"
+"Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}":
+  en: "Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}"
+  zh-CN: "欠载 %{underrun} / 丢弃 %{dropped} 帧；复位 %{resets} / 积压恢复 %{recoveries}"
+"Applying changes...":
+  en: Applying changes...
+  zh-CN: 正在应用更改…
+"Changes applied":
+  en: Changes applied
+  zh-CN: 更改已应用
+"Audio routing changed. Try again.":
+  en: Audio routing changed. Try again.
+  zh-CN: 音频路由已更改。请重试。
+"This control is no longer available.":
+  en: This control is no longer available.
+  zh-CN: 此控件已不可用。
+"Choose a valid parameter value.":
+  en: Choose a valid parameter value.
+  zh-CN: 请选择有效的参数值。
+"Audio controls are busy. Try again.":
+  en: Audio controls are busy. Try again.
+  zh-CN: 音频控件繁忙。请重试。
+"Unable to apply this change. Try again.":
+  en: Unable to apply this change. Try again.
+  zh-CN: 无法应用此更改。请重试。
+"No parameter changes requested":
+  en: No parameter changes requested
+  zh-CN: 没有请求的参数更改
+"Next start · engine stopped":
+  en: Next start · engine stopped
+  zh-CN: 下次启动 · 引擎已停止
+"Test tone":
+  en: Test tone
+  zh-CN: 测试音
+"Application":
+  en: Application
+  zh-CN: 应用程序
+"Choose an available source and output before starting.":
+  en: Choose an available source and output before starting.
+  zh-CN: 启动前请选择可用的音源与输出。
+"Graph is not ready: %{error}":
+  en: "Graph is not ready: %{error}"
+  zh-CN: "图尚未就绪：%{error}"
+"Unavailable output":
+  en: Unavailable output
+  zh-CN: 输出不可用
+"Test tone · %{frequency} Hz":
+  en: "Test tone · %{frequency} Hz"
+  zh-CN: "测试音 · %{frequency} Hz"
+"Unavailable input":
+  en: Unavailable input
+  zh-CN: 输入不可用
+"%{name} (PID %{pid})":
+  en: "%{name} (PID %{pid})"
+  zh-CN: "%{name}（PID %{pid}）"
+"Unavailable application (PID %{pid})":
+  en: "Unavailable application (PID %{pid})"
+  zh-CN: "应用不可用（PID %{pid}）"
+"Show Moiren":
+  en: Show Moiren
+  zh-CN: 显示 Moiren
+"Stop Session":
+  en: Stop Session
+  zh-CN: 停止会话
+"Exit":
+  en: Exit
+  zh-CN: 退出
+"Minimize window":
+  en: Minimize window
+  zh-CN: 最小化窗口
+"Maximize window":
+  en: Maximize window
+  zh-CN: 最大化窗口
+"Close window":
+  en: Close window
+  zh-CN: 关闭窗口
+"Compatible":
+  en: Compatible
+  zh-CN: 兼容
+"Balanced":
+  en: Balanced
+  zh-CN: 均衡
+"Low":
+  en: Low
+  zh-CN: 低延迟
+"Default device period and full render capacity; generous input queue.":
+  en: Default device period and full render capacity; generous input queue.
+  zh-CN: 使用设备默认周期与完整渲染容量；输入队列宽裕。
+"Request 10 ms periods; queues validated against actual device timing.":
+  en: Request 10 ms periods; queues validated against actual device timing.
+  zh-CN: 请求 10 ms 周期；队列会对照设备实际时序进行校验。
+"Request 5 ms periods; smaller queue margins require device support.":
+  en: Request 5 ms periods; smaller queue margins require device support.
+  zh-CN: 请求 5 ms 周期；更小的队列余量需要设备支持。
+"WASAPI":
+  en: WASAPI
+  zh-CN: WASAPI
+"ASIO":
+  en: ASIO
+  zh-CN: ASIO
+"32-bit float":
+  en: 32-bit float
+  zh-CN: 32 位浮点
+"64-bit float":
+  en: 64-bit float
+  zh-CN: 64 位浮点
+"Device native":
+  en: Device native
+  zh-CN: 设备原生
+"16-bit PCM":
+  en: 16-bit PCM
+  zh-CN: 16 位 PCM
+"24-bit PCM":
+  en: 24-bit PCM
+  zh-CN: 24 位 PCM
+"32-bit PCM":
+  en: 32-bit PCM
+  zh-CN: 32 位 PCM
+"INPUTS":
+  en: INPUTS
+  zh-CN: 输入
+"Unknown":
+  en: Unknown
+  zh-CN: 未知
+"%{name} → in %{port}":
+  en: "%{name} → in %{port}"
+  zh-CN: "%{name} → 输入 %{port}"
+"%{name} · out %{source_port} → %{target} · in %{port}":
+  en: "%{name} · out %{source_port} → %{target} · in %{port}"
+  zh-CN: "%{name} · 输出 %{source_port} → %{target} · 输入 %{port}"
+"Resource · %{name}":
+  en: "Resource · %{name}"
+  zh-CN: "资源 · %{name}"
+"No inputs":
+  en: No inputs
+  zh-CN: 无输入
+"No sends":
+  en: No sends
+  zh-CN: 无发送
+"Enable send; turning it off preserves its gain":
+  en: Enable send; turning it off preserves its gain
+  zh-CN: 启用发送；关闭时保留增益设置
+"PRE: after channel mode, balance and mute; before gain and Dim. POST: after gain and Dim.":
+  en: "PRE: after channel mode, balance and mute; before gain and Dim. POST: after gain and Dim."
+  zh-CN: "PRE：位于声道模式、声像与静音之后，增益与 DIM 之前。POST：位于增益与 DIM 之后。"
+"Mute this channel":
+  en: Mute this channel
+  zh-CN: 静音此通道
+"Solo this channel and its connected signal path":
+  en: Solo this channel and its connected signal path
+  zh-CN: 独奏此通道及其相连的信号路径
+"Stereo -> Mono average -> Left to both -> Right to both -> Swap":
+  en: Stereo -> Mono average -> Left to both -> Right to both -> Swap
+  zh-CN: 立体声 → 单声道平均 → 左声道复制到双侧 → 右声道复制到双侧 → 交换左右
+"Cycle normal, mono average, individual channels, and reverse channel order":
+  en: Cycle normal, mono average, individual channels, and reverse channel order
+  zh-CN: 循环切换正常、单声道平均、独立声道与反转声道顺序
+"Dim attenuates the post-fader signal by 12 dB":
+  en: Dim attenuates the post-fader signal by 12 dB
+  zh-CN: DIM 将推子后信号衰减 12 dB
+"Drag to reorder channels within the same mixer section":
+  en: Drag to reorder channels within the same mixer section
+  zh-CN: 拖动以调整同一混音区域内的通道顺序
+"Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.":
+  en: Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.
+  zh-CN: 显示采样峰值与 RMS（dBFS），与推子增益共用刻度。单击复位削波指示，右键调整响应。
+"Peak fall-off · dB/s":
+  en: Peak fall-off · dB/s
+  zh-CN: 峰值回落 · dB/s
+"Peak hold":
+  en: Peak hold
+  zh-CN: 峰值保持
+"Off":
+  en: Off
+  zh-CN: 关闭

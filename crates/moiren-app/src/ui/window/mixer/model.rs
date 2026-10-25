@@ -1,6 +1,7 @@
 use super::*;
 use crate::service::GraphSnapshot;
 use crate::ui::widgets::fader::FaderScale;
+use rust_i18n::t;
 use std::collections::BTreeMap;
 
 pub(in crate::ui::window) struct MixerPresentation {
@@ -301,6 +302,6 @@ impl Render for StripDrag {
             .p(px(12.))
             .bg(theme::SURFACE_3)
             .text_color(theme::TEXT)
-            .child("Move channel")
+            .child(t!("Move channel"))
     }
 }

@@ -2,6 +2,7 @@ use super::*;
 use crate::service::{GraphEdit, GraphNodeState, MixerState};
 use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
+use rust_i18n::t;
 
 mod model;
 #[cfg(feature = "gpui-test")]
@@ -124,14 +125,14 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .items_center()
                 .justify_between()
                 .px(px(16.))
-                .child(heading("Mixer"))
+                .child(heading(t!("Mixer")))
                 .child(
                     div()
                         .flex()
                         .gap(px(8.))
                         .when(
                             graph.active_revision != Some(graph.candidate_revision),
-                            |row| row.child(badge("Pending", theme::WARNING)),
+                            |row| row.child(badge(t!("Pending"), theme::WARNING)),
                         )
                         .child(apply(shell, cx))
                         .child(inspector_toggle("toggle-details", cx)),
@@ -222,7 +223,11 @@ fn strip(
                 .font_weight(FontWeight::SEMIBOLD)
                 .overflow_hidden()
                 .text_ellipsis()
-                .child(entry.label.clone()),
+                .child(crate::ui::state::display_label(
+                    &shell.state.read(cx).snapshot,
+                    entry,
+                    kind,
+                )),
         )
         .child(
             label(format!(
@@ -251,7 +256,7 @@ fn strip(
         .on_drag(id, move |_, _, _, cx| cx.new(|_| StripDrag))
         .tooltip(|window, cx| {
             component::tooltip::Tooltip::new(
-                "Drag to reorder channels within the same mixer section",
+                t!("Drag to reorder channels within the same mixer section").into_owned(),
             )
             .build(window, cx)
         })
@@ -481,7 +486,7 @@ fn meter(
                 else { format!("{:.1}", 20. * peak.log10()) }).unwrap_or_else(|| "—".into()))
             .gpui_test_observe())
         .tooltip(|window, cx| component::tooltip::Tooltip::new(
-            "Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response."
+            t!("Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.").into_owned()
         ).build(window, cx))
         .gpui_test_observe()
         .context_menu({
@@ -490,7 +495,7 @@ fn meter(
             move |mut menu, _, _| {
                 use crate::project::{MeterFalloff, PeakHold};
                 use component::menu::PopupMenuItem;
-                menu = menu.label("Peak fall-off · dB/s");
+                menu = menu.label(t!("Peak fall-off · dB/s"));
                 for falloff in MeterFalloff::ALL {
                     let this = this.clone();
                     menu = menu.item(PopupMenuItem::new(format!("{} dB/s", falloff.db_per_second()))
@@ -501,10 +506,10 @@ fn meter(
                             cx.notify();
                         })));
                 }
-                menu = menu.separator().label("Peak hold");
+                menu = menu.separator().label(t!("Peak hold"));
                 for hold in PeakHold::ALL {
                     let this = this.clone();
-                    menu = menu.item(PopupMenuItem::new(if hold == PeakHold::Off { "Off".into() }
+                    menu = menu.item(PopupMenuItem::new(if hold == PeakHold::Off { t!("Off").into_owned() }
                         else { format!("{} s", hold.duration().as_secs_f32()) })
                         .checked(settings.peak_hold == hold)
                         .on_click(move |_, _, cx| this.update(cx, |shell, cx| {

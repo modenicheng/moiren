@@ -10,6 +10,7 @@ use std::{
 
 use super::branding::{self, TrayTheme};
 
+use rust_i18n::t;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 
@@ -39,9 +40,11 @@ struct TrayHandle {
 
 impl TrayHandle {
     fn build(theme: TrayTheme) -> anyhow::Result<Self> {
-        let show = MenuItem::with_id("show", "Show Moiren", true, None);
-        let stop = MenuItem::with_id("stop", "Stop Session", true, None);
-        let exit = MenuItem::with_id("exit", "Exit", true, None);
+        // Menu labels resolve once at startup; a mid-run locale switch keeps
+        // the tray in the startup language until the app relaunches.
+        let show = MenuItem::with_id("show", t!("Show Moiren"), true, None);
+        let stop = MenuItem::with_id("stop", t!("Stop Session"), true, None);
+        let exit = MenuItem::with_id("exit", t!("Exit"), true, None);
         let menu = Menu::new();
         menu.append_items(&[&show, &stop, &exit])
             .map_err(|e| anyhow::anyhow!("tray menu: {e}"))?;

@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::*;
 use controls::*;
 
@@ -35,7 +37,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
     ] {
         let this = this.clone();
         tabs = tabs.child(
-            WorkspaceTab::new(id, page.title())
+            WorkspaceTab::new(id, t!(page.title()))
                 .icon(match page {
                     Page::Graph => ActionIcon::Graph,
                     Page::Mixer => ActionIcon::Mixer,
@@ -99,7 +101,7 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 .items_center()
                 .gap(px(4.))
                 .child(
-                    button("transport", if running { "Stop" } else { "Start" })
+                    button("transport", if running { t!("Stop") } else { t!("Start") })
                         .variant(if running {
                             ButtonVariant::Danger
                         } else {
@@ -126,14 +128,15 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                         }),
                 )
                 .child(
-                    IconButton::new("open-settings", "Settings", ActionIcon::Settings).on_click({
-                        let this = this.clone();
-                        move |_, window, cx| {
-                            this.update(cx, |shell, cx| {
-                                shell.open_settings(window, cx);
-                            })
-                        }
-                    }),
+                    IconButton::new("open-settings", t!("Settings"), ActionIcon::Settings)
+                        .on_click({
+                            let this = this.clone();
+                            move |_, window, cx| {
+                                this.update(cx, |shell, cx| {
+                                    shell.open_settings(window, cx);
+                                })
+                            }
+                        }),
                 )
                 .child(
                     WindowControlButton::new("win-min", WindowAction::Minimize)
@@ -183,16 +186,19 @@ pub(super) fn statusbar(state: &UiState) -> Stateful<Div> {
         .monitor_diagnostics
         .filter(|d| d.generation == snapshot.generation && running)
         .map(|d| {
-            format!(
-                "{} Hz  ·  period {} frames",
-                d.observation.prepared.output.sample_rate,
-                d.observation
-                    .prepared
-                    .output
-                    .actual_period_frames
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| "—".into())
+            let frames = d
+                .observation
+                .prepared
+                .output
+                .actual_period_frames
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into());
+            t!(
+                "%{rate} Hz  ·  period %{frames} frames",
+                rate = d.observation.prepared.output.sample_rate,
+                frames = frames
             )
+            .to_string()
         })
         .unwrap_or_default();
     div()

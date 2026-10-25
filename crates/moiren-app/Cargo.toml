@@ -12,6 +12,9 @@ moiren-core = { path = "../moiren-core" }
 moiren-engine = { path = "../moiren-engine" }
 moiren-signal = { path = "../moiren-signal" }
 raw-window-handle = "0.6"
+# Compile-time embedded translations; locale switch is process-global and
+# shared with gpui-component's own translation backend.
+rust-i18n = "4.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = { workspace = true }

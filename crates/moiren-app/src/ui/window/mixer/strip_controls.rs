@@ -25,7 +25,7 @@ pub(in crate::ui::window) fn node_controls(
                 .w_full()
                 .child(control(
                     button(SharedString::from(format!("strip-mute-{id:?}")), "M")
-                        .tooltip("Mute this channel")
+                        .tooltip(t!("Mute this channel"))
                         .variant(if requested.muted {
                             ButtonVariant::Primary
                         } else {
@@ -37,7 +37,7 @@ pub(in crate::ui::window) fn node_controls(
                 ))
                 .child(control(
                     button(SharedString::from(format!("strip-solo-{id:?}")), "S")
-                        .tooltip("Solo this channel and its connected signal path")
+                        .tooltip(t!("Solo this channel and its connected signal path"))
                         .variant(if requested.solo {
                             ButtonVariant::Primary
                         } else {
@@ -63,9 +63,9 @@ pub(in crate::ui::window) fn node_controls(
                         ButtonVariant::Secondary
                     })
                     .tooltip(if channels == 2 {
-                        "Stereo -> Mono average -> Left to both -> Right to both -> Swap"
+                        t!("Stereo -> Mono average -> Left to both -> Right to both -> Swap")
                     } else {
-                        "Cycle normal, mono average, individual channels, and reverse channel order"
+                        t!("Cycle normal, mono average, individual channels, and reverse channel order")
                     })
                     .on_click(mixer_edit(cx.entity(), id, move |state| {
                         *state = state.next_mode(channels)
@@ -73,7 +73,7 @@ pub(in crate::ui::window) fn node_controls(
                 ))
                 .child(control(
                     button(SharedString::from(format!("strip-dim-{id:?}")), "DIM")
-                        .tooltip("Dim attenuates the post-fader signal by 12 dB")
+                        .tooltip(t!("Dim attenuates the post-fader signal by 12 dB"))
                         .variant(if requested.dimmed {
                             ButtonVariant::Primary
                         } else {

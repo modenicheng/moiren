@@ -413,6 +413,7 @@ pub struct AppPreferences {
     pub version: u32,
     pub density: UiDensity,
     pub appearance: Appearance,
+    pub language: crate::i18n::UiLanguage,
     /// Requested for the next audio apply/start, not a measured device result.
     pub latency_profile: AudioLatencyProfile,
     pub audio: AudioSettings,
@@ -428,6 +429,7 @@ impl Default for AppPreferences {
             version: PREFERENCES_VERSION,
             density: UiDensity::Comfortable,
             appearance: Appearance::Dark,
+            language: crate::i18n::UiLanguage::default(),
             latency_profile: AudioLatencyProfile::Compatible,
             audio: AudioSettings::default(),
             restore_last_project: false,

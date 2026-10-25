@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::*;
 
 #[derive(Default)]
@@ -11,7 +13,7 @@ impl StudioShell {
     /// an older background write overwrite the user's latest choice.
     pub(in super::super) fn save_preferences(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.preferences_path.clone() else {
-            self.project_message = Some("User configuration directory is unavailable".into());
+            self.project_message = Some(t!("User configuration directory is unavailable").into());
             return;
         };
         let previous = self.preference_save.take();
@@ -67,19 +69,24 @@ impl StudioShell {
                         && saved_revision == revision
                     {
                         let draft = shell.settings.draft_mut(editor);
-                        draft.error = Some(format!("Could not save preferences: {error}"));
+                        draft.error = Some(
+                            t!("Could not save preferences: %{error}", error = error).to_string(),
+                        );
                         draft.message = None;
                     }
                     shell.project_message = Some(
                         result
-                            .map(|_| "Preferences saved".into())
-                            .unwrap_or_else(|error| format!("Could not save preferences: {error}")),
+                            .map(|_| t!("Preferences saved").into())
+                            .unwrap_or_else(|error| {
+                                t!("Could not save preferences: %{error}", error = error)
+                                    .to_string()
+                            }),
                     );
                     cx.notify();
                 }
             });
         })
         .detach();
-        self.project_message = Some("Preferences save queued".into());
+        self.project_message = Some(t!("Preferences save queued").into());
     }
 }
