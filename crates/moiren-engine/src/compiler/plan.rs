@@ -1,12 +1,12 @@
 //! Lower logical topology to a schedule with explicit signal reads and writes.
 use moiren_core::{
     graph::{GraphError, LogicalGraph, NodeId, NodeKind, SendTap},
-    protocol::ProcessorId,
+    protocol::{ParameterId, ParameterKey, ProcessorId},
 };
 use std::collections::BTreeMap;
 
 use super::{
-    CompileError, CompiledBindings, NodeBindings,
+    CompileError, CompiledBindings, NodeBindings, StripParameterKeys,
     bindings::{Binding, BoundIo},
     send::Send,
 };
@@ -52,10 +52,28 @@ impl<S: ProcessingSample> Builder<S> {
         source: usize,
         channels: usize,
         config: crate::processor::StripConfig,
-    ) -> Result<usize, CompileError> {
+        include_gain: bool,
+    ) -> Result<(usize, StripParameterKeys), CompileError> {
         let slot = self.slot(channels);
-        let processor =
-            self.processor(crate::processor::builtin::ChannelStrip { channels, config })?;
+        let strip = crate::processor::builtin::ChannelStrip { channels, config };
+        let processor = self.processor(strip)?;
+        let specs = crate::processor::builtin::ChannelStrip::parameters(
+            processor,
+            channels,
+            config,
+            include_gain,
+        );
+        let key = |parameter: ParameterId| ParameterKey {
+            processor,
+            parameter,
+        };
+        let keys = StripParameterKeys {
+            gain: include_gain.then(|| key(crate::processor::builtin::ChannelStrip::GAIN)),
+            balance: key(crate::processor::builtin::ChannelStrip::BALANCE),
+            mode: key(crate::processor::builtin::ChannelStrip::MODE),
+            effective_mute: key(crate::processor::builtin::ChannelStrip::EFFECTIVE_MUTE),
+        };
+        self.params.extend(specs);
         self.ops.push(DraftOp {
             processor,
             reads: vec![(0, source)],
@@ -64,7 +82,7 @@ impl<S: ProcessingSample> Builder<S> {
             in_place_candidate: false,
             in_place: false,
         });
-        Ok(slot)
+        Ok((slot, keys))
     }
     pub(super) fn processor(
         &mut self,
@@ -219,6 +237,7 @@ pub(super) fn build<S: ProcessingSample>(
         observers: BTreeMap::new(),
         edges: BTreeMap::new(),
         rack_slots: BTreeMap::new(),
+        strips: BTreeMap::new(),
     };
     let mut builder = Builder {
         frames,
@@ -284,7 +303,9 @@ pub(super) fn build<S: ProcessingSample>(
             let slot = if node.kind() == NodeKind::Sink
                 && let Some(config) = strip
             {
-                builder.strip(slot, node.channels(), config)?
+                let (slot, keys) = builder.strip(slot, node.channels(), config, true)?;
+                mapping.strips.entry(id).or_default().push(keys);
+                slot
             } else {
                 slot
             };
@@ -361,14 +382,17 @@ pub(super) fn build<S: ProcessingSample>(
         // stream retains its own width and pre-fader tap (never a NodeId alias).
         for ((_, raw), port) in writes.into_iter().zip(node.outputs()) {
             if let Some(config) = strip {
-                let before = builder.strip(
+                // PRE keeps the monitoring transform at unity gain.
+                let (before, pre) = builder.strip(
                     raw,
                     port.channels(),
                     crate::processor::StripConfig { gain: 1., ..config },
+                    false,
                 )?;
                 pre_fader.insert(port.id(), before);
-                let after = builder.strip(raw, port.channels(), config)?;
+                let (after, post) = builder.strip(raw, port.channels(), config, true)?;
                 outputs.insert(port.id(), after);
+                mapping.strips.entry(id).or_default().extend([pre, post]);
             }
         }
         for port in node.outputs() {

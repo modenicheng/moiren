@@ -436,3 +436,172 @@ fn send_attenuation_precedes_gain_overflow() {
         assert_eq!(samples[1], f64::INFINITY);
     }
 }
+
+fn strip_set(
+    control: &mut moiren_engine::control::ControlPort,
+    next_id: &mut u64,
+    key: ParameterKey,
+    value: ParamValue,
+    ramp_frames: u32,
+    observed: u64,
+) -> ReplyCode {
+    *next_id += 1;
+    control
+        .submit(
+            ParameterRequest {
+                request_id: *next_id,
+                plan_revision: 7,
+                timeline_epoch: 3,
+                target: key,
+                at: ApplyAt::NextBlock,
+                value,
+                ramp_frames,
+            },
+            observed,
+        )
+        .code
+}
+
+#[test]
+fn strip_parameters_reach_pre_and_post_instances_and_mode_rejects_ramps() {
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 2).unwrap();
+    let pre = graph.create_node(NodeKind::Sink, 2).unwrap();
+    let post = graph.create_node(NodeKind::Sink, 2).unwrap();
+    connect(
+        &mut graph,
+        source,
+        pre,
+        SendParams {
+            tap: SendTap::PreFader,
+            ..SendParams::default()
+        },
+    );
+    connect(&mut graph, source, post, SendParams::default());
+    let (pre_writer, mut pre_reader) = audio_bridge::<f64>(2, 8, 4096).unwrap();
+    let (post_writer, mut post_reader) = audio_bridge::<f64>(2, 8, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.bind_source(source, ChannelSource(2)).unwrap();
+    bindings.bind_strip(source, StripConfig::default());
+    bindings.bind_sink(pre, pre_writer).unwrap();
+    bindings.bind_sink(post, post_writer).unwrap();
+    let mut compiled = compile(&graph, bindings, config()).unwrap();
+    let instances: Vec<_> = compiled.bindings.strips(source).unwrap().to_vec();
+    // One PRE instance (no gain key) and one POST instance per output stream.
+    assert_eq!(instances.len(), 2);
+    let post_keys = instances
+        .iter()
+        .find(|keys| keys.gain.is_some())
+        .expect("POST strip instance");
+
+    let mut id = 0;
+    let mut frame = 0;
+    let mut phase = |compiled: &mut CompiledGraph<f64>,
+                     frame: &mut u64,
+                     expected_pre: [f64; 8],
+                     expected_post: [f64; 8]| {
+        compiled.engine.render(4).unwrap();
+        *frame += 4;
+        let mut before = [0.; 8];
+        let mut after = [0.; 8];
+        pre_reader.read_interleaved(&mut before).unwrap();
+        post_reader.read_interleaved(&mut after).unwrap();
+        assert_eq!(before, expected_pre);
+        assert_eq!(after, expected_post);
+    };
+    phase(
+        &mut compiled,
+        &mut frame,
+        [0.1, 0.2, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2],
+        [0.1, 0.2, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2],
+    );
+
+    // Mute fans out to every instance.
+    for keys in &instances {
+        assert_eq!(
+            strip_set(
+                &mut compiled.control,
+                &mut id,
+                keys.effective_mute,
+                ParamValue::Bool(true),
+                0,
+                frame
+            ),
+            ReplyCode::Accepted
+        );
+    }
+    phase(&mut compiled, &mut frame, [0.; 8], [0.; 8]);
+
+    // Unmute and swap channels; the shared mode index follows each instance.
+    for keys in &instances {
+        strip_set(
+            &mut compiled.control,
+            &mut id,
+            keys.effective_mute,
+            ParamValue::Bool(false),
+            0,
+            frame,
+        );
+        strip_set(
+            &mut compiled.control,
+            &mut id,
+            keys.mode,
+            ParamValue::Enum(4),
+            0,
+            frame,
+        );
+    }
+    phase(
+        &mut compiled,
+        &mut frame,
+        [0.2, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2, 0.1],
+        [0.2, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2, 0.1],
+    );
+
+    // Stereo balance attenuates the left channel fully at +1.
+    for keys in &instances {
+        strip_set(
+            &mut compiled.control,
+            &mut id,
+            keys.balance,
+            ParamValue::Float(1.0),
+            0,
+            frame,
+        );
+    }
+    phase(
+        &mut compiled,
+        &mut frame,
+        [0.0, 0.1, 0.0, 0.1, 0.0, 0.1, 0.0, 0.1],
+        [0.0, 0.1, 0.0, 0.1, 0.0, 0.1, 0.0, 0.1],
+    );
+
+    // Gain exists only on the POST instance; the PRE tap stays at unity.
+    strip_set(
+        &mut compiled.control,
+        &mut id,
+        post_keys.gain.unwrap(),
+        ParamValue::Float(0.5),
+        0,
+        frame,
+    );
+    phase(
+        &mut compiled,
+        &mut frame,
+        [0.0, 0.1, 0.0, 0.1, 0.0, 0.1, 0.0, 0.1],
+        [0.0, 0.05, 0.0, 0.05, 0.0, 0.05, 0.0, 0.05],
+    );
+
+    // Discrete domains never accept ramps.
+    assert_eq!(
+        strip_set(
+            &mut compiled.control,
+            &mut id,
+            post_keys.mode,
+            ParamValue::Enum(0),
+            4,
+            frame
+        ),
+        ReplyCode::InvalidValue
+    );
+}

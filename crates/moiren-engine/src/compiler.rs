@@ -82,6 +82,15 @@ pub struct SendParameterKeys {
     pub pan: ParameterKey,
     pub mute: ParameterKey,
 }
+/// Parameter keys of one compiled strip instance. `gain` is absent on
+/// PRE-fader instances, whose gain stays at unity by construction.
+#[derive(Debug, Clone, Copy)]
+pub struct StripParameterKeys {
+    pub gain: Option<ParameterKey>,
+    pub balance: ParameterKey,
+    pub mode: ParameterKey,
+    pub effective_mute: ParameterKey,
+}
 /// Plan-local bindings. Recompilation requires obtaining the new map and
 /// submitting parameters with that plan's revision/epoch.
 pub struct CompiledBindings {
@@ -89,6 +98,10 @@ pub struct CompiledBindings {
     observers: BTreeMap<NodeId, ProcessorId>,
     edges: BTreeMap<EdgeId, SendParameterKeys>,
     rack_slots: BTreeMap<(NodeId, u32), ProcessorId>,
+    /// Every compiled strip instance of a node: POST per output/sink-input
+    /// stream plus the PRE tap instances. One logical strip target fans out
+    /// to all of them.
+    strips: BTreeMap<NodeId, Vec<StripParameterKeys>>,
 }
 impl CompiledBindings {
     /// The independent observer owned by a Meter, Recorder or SpectrumAnalyzer
@@ -106,6 +119,9 @@ impl CompiledBindings {
     /// Stable slot identity resolved to this plan's processor and parameter keys.
     pub fn rack_slot(&self, node: NodeId, slot: u32) -> Option<ProcessorId> {
         self.rack_slots.get(&(node, slot)).copied()
+    }
+    pub fn strips(&self, node: NodeId) -> Option<&[StripParameterKeys]> {
+        self.strips.get(&node).map(Vec::as_slice)
     }
 }
 

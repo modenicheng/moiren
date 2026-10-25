@@ -32,6 +32,43 @@ fn strip_changes_prepare_a_new_plan_and_reuse_native_io() {
 }
 
 #[test]
+fn strip_value_changes_route_without_recompile() {
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let (mut project, source, _, _) = project();
+    project.strips.insert(
+        source,
+        moiren_engine::processor::StripConfig {
+            gain: 1.0,
+            ..Default::default()
+        },
+    );
+    let host = EngineHost::<f64>::open(HostConfig::default(), project, backend).unwrap();
+    wait(&host.observer(), |snapshot| {
+        snapshot.active_revision == Some(1)
+    });
+    let prepares = state.prepares.load(Ordering::SeqCst);
+    let edit = host
+        .control()
+        .edit(move |project| {
+            project.strips.insert(
+                source,
+                moiren_engine::processor::StripConfig {
+                    gain: 0.5,
+                    ..Default::default()
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(edit.wait(TIMEOUT), EditOutcome::Activated { .. }));
+    wait_sample(&state, 0.5);
+    // A strip value change is a live parameter push, not a recompile.
+    assert_eq!(state.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(state.prepares.load(Ordering::SeqCst), prepares);
+}
+
+#[test]
 fn updates_reuse_io_and_keep_owner_epoch_and_active_confirmation() {
     let backend = FakeBackend::default();
     let state = backend.0.clone();

@@ -15,11 +15,11 @@ use moiren_core::{
 use super::{
     BackendError, BackendOwner, CancellationToken, Diagnostic, EngineBackend, EngineProject,
     HostConfig, NodeConfig, ParameterTarget, PrepareMode, PrepareRequest, PreparedBackend,
-    SendParameter, Shared, signals::PreparedReaders,
+    SendParameter, Shared, StripParameter, signals::PreparedReaders,
 };
 use crate::{
     compiler::{self, CompileConfig, CompiledBindings, CompiledUpdate, NodeBindings},
-    processor::{Compressor, Delay, Eq, Gain, Gate, Limiter, Pan},
+    processor::{Compressor, Delay, Eq, Gain, Gate, Limiter, Pan, builtin::ChannelStrip},
     runtime::{PlanControlPort, PlanSnapshot},
     sample::ProcessingSample,
     spectrum::SignalSpectrumAnalyzer,
@@ -217,7 +217,30 @@ fn bind_host_processors<S: ProcessingSample>(
     readers: &mut PreparedReaders,
 ) -> Result<(), Diagnostic> {
     for (&node, config) in &job.project.strips {
-        bindings.bind_strip(node, *config);
+        // Recorded strip parameter intent overrides the configuration's
+        // defaults, so a recompile keeps live values instead of snapping back.
+        let channels = job.project.strip_width(node).unwrap_or(2);
+        let intent = |parameter, fallback| {
+            let strip = match parameter {
+                ChannelStrip::GAIN => StripParameter::Gain,
+                ChannelStrip::BALANCE => StripParameter::Balance,
+                ChannelStrip::MODE => StripParameter::Mode,
+                _ => StripParameter::EffectiveMute,
+            };
+            job.project
+                .parameters
+                .iter()
+                .find(|value| {
+                    value.target
+                        == ParameterTarget::Strip {
+                            node,
+                            parameter: strip,
+                        }
+                })
+                .map_or(fallback, |value| value.value)
+        };
+        let config = ChannelStrip::resolve(*config, channels, intent);
+        bindings.bind_strip(node, config);
     }
     for (&node, configuration) in &job.project.nodes {
         if matches!(
@@ -405,7 +428,7 @@ fn compile_update_ready<S: ProcessingSample>(
     let initial: Vec<_> = job
         .initial_parameters
         .iter()
-        .filter_map(|&target| super::parameters::resolve(&update.bindings, target))
+        .flat_map(|&target| super::parameters::resolve_all(&update.bindings, target))
         .collect();
     update.plan = update.plan.with_initial_parameters(&initial);
     // Only a successfully validated observer transfer may keep its original

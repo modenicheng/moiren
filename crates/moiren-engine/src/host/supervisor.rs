@@ -356,8 +356,11 @@ fn transport_compatible(previous: &EngineProject, desired: &EngineProject) -> bo
     io(previous) == io(desired)
 }
 fn same_structure(previous: &EngineProject, desired: &EngineProject) -> bool {
+    // Strip values are live parameters (like edge SendParams): changes flow
+    // through send_values without a recompile. Strip presence still recompiles
+    // because instances only materialize at compile time.
     previous.nodes == desired.nodes
-        && previous.strips == desired.strips
+        && previous.strips.keys().eq(desired.strips.keys())
         && previous.processing == desired.processing
         && previous.graph.nodes() == desired.graph.nodes()
         && previous.graph.edges().len() == desired.graph.edges().len()

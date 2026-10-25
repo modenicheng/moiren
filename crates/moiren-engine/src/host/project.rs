@@ -44,6 +44,18 @@ pub enum SendParameter {
     Mute,
 }
 
+/// Live controls of a node's channel strip. `Mode` is an index into the
+/// strip's mode cycle (0 = Normal, 1 = Mono, `2..width+2` = channel-only,
+/// `width+2` = Swap) — the same index the app stores per node, interpreted
+/// against each port's width exactly like a compiled `StripConfig`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StripParameter {
+    Gain,
+    Balance,
+    Mode,
+    EffectiveMute,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParameterTarget {
     Node {
@@ -59,6 +71,12 @@ pub enum ParameterTarget {
     Edge {
         edge: EdgeId,
         parameter: SendParameter,
+    },
+    /// The node's channel strip, fanning out to every compiled instance
+    /// (PRE and POST) of the active plan.
+    Strip {
+        node: NodeId,
+        parameter: StripParameter,
     },
 }
 
@@ -312,6 +330,9 @@ impl EngineProject {
             ParameterTarget::Edge { edge, .. } => {
                 candidate.graph.get_edge(edge).is_ok() || self.graph.get_edge(edge).is_err()
             }
+            ParameterTarget::Strip { node, .. } => {
+                candidate.graph.get_node(node).is_ok() || self.graph.get_node(node).is_err()
+            }
         });
         candidate.parameters = parameters;
         candidate.validate()?;
@@ -324,7 +345,20 @@ impl EngineProject {
             ParameterTarget::Node { node, .. } => self.graph.get_node(node).is_ok(),
             ParameterTarget::RackSlot { node, slot, .. } => self.rack_slot(node, slot).is_some(),
             ParameterTarget::Edge { edge, .. } => self.graph.get_edge(edge).is_ok(),
+            ParameterTarget::Strip { node, .. } => self.strips.contains_key(&node),
         }
+    }
+
+    /// The narrowest port width a strip must satisfy, mirroring the per-port
+    /// validity rule of [`EngineProject::validate`].
+    pub(crate) fn strip_width(&self, node: NodeId) -> Option<usize> {
+        let graph_node = self.graph.get_node(node).ok()?;
+        let ports = if graph_node.kind() == NodeKind::Sink {
+            graph_node.inputs()
+        } else {
+            graph_node.outputs()
+        };
+        ports.iter().map(|port| port.channels()).min()
     }
 
     fn rack_slot(&self, node: NodeId, slot: u32) -> Option<(usize, &crate::rack::RackSlot)> {
@@ -409,6 +443,23 @@ impl EngineProject {
                     .checked_parameters(channels, ProcessorId(0))
                     .is_ok_and(|specs| accepts_parameter(&specs, parameter, value))
             }),
+            ParameterTarget::Strip { node, parameter } => {
+                let width = self.strip_width(node).unwrap_or(usize::MAX);
+                self.strips.contains_key(&node)
+                    && match (parameter, value) {
+                        (StripParameter::Gain, ParamValue::Float(value)) => {
+                            value.is_finite() && (0.0..=16.0).contains(&value)
+                        }
+                        (StripParameter::Balance, ParamValue::Float(value)) => {
+                            value.is_finite() && (-1.0..=1.0).contains(&value)
+                        }
+                        (StripParameter::Mode, ParamValue::Enum(value)) => {
+                            (value as usize) < width.saturating_add(3)
+                        }
+                        (StripParameter::EffectiveMute, ParamValue::Bool(_)) => true,
+                        _ => false,
+                    }
+            }
             ParameterTarget::Edge { edge, parameter } => {
                 self.graph.get_edge(edge).is_ok()
                     && match (parameter, value) {
@@ -526,6 +577,31 @@ impl EngineProject {
                         edge: edge.id(),
                         parameter,
                     },
+                    value,
+                });
+            }
+        }
+        for (&node, config) in &self.strips {
+            let Some(width) = self.strip_width(node) else {
+                continue;
+            };
+            for (parameter, value) in [
+                (StripParameter::Gain, ParamValue::Float(config.gain)),
+                (StripParameter::Balance, ParamValue::Float(config.balance)),
+                (
+                    StripParameter::Mode,
+                    ParamValue::Enum(crate::processor::builtin::ChannelStrip::mode_index(
+                        config.mode,
+                        width,
+                    )),
+                ),
+                (
+                    StripParameter::EffectiveMute,
+                    ParamValue::Bool(config.muted),
+                ),
+            ] {
+                values.push(DesiredParameter {
+                    target: ParameterTarget::Strip { node, parameter },
                     value,
                 });
             }
