@@ -93,8 +93,8 @@ fn sync_slider_range<K: Ord + Clone, T: 'static>(
             let state = state.clone();
             cx.subscribe(
                 &slider,
-                move |_, _, event: &base::slider::SliderEvent, cx| match event {
-                    base::slider::SliderEvent::Change(value) => {
+                move |_, _, event: &base::slider::SliderEvent, cx| {
+                    if let base::slider::SliderEvent::Change(value) = event {
                         state.update(cx, |state, _| {
                             if let Some(edit) = edit(value.end(), &state.snapshot.graph) {
                                 state.dispatch(edit);
@@ -102,7 +102,6 @@ fn sync_slider_range<K: Ord + Clone, T: 'static>(
                         });
                         cx.notify();
                     }
-                    _ => {}
                 },
             )
             .detach();
