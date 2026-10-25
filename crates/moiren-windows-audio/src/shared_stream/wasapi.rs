@@ -8,7 +8,7 @@ use crate::negotiation::{
     EnginePeriodicityPolicy, LegacySharedInit, client3_rejects_format, initialize_legacy_shared,
     periodicity_locked_retry, shared_engine_periods,
 };
-use crate::owner::TaskMemory;
+use crate::owner::current_shared_mode_engine_period;
 use windows::{
     Win32::{
         Foundation::{E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL, E_POINTER},
@@ -107,14 +107,8 @@ impl Client3Api for NativeClient3<'_> {
     }
 
     fn current_period(&self) -> Result<u32, Error> {
-        let mut format = std::ptr::null_mut();
-        let mut period = 0;
-        let queried = unsafe {
-            self.client
-                .GetCurrentSharedModeEnginePeriod(&mut format, &mut period)
-        };
-        let _format = TaskMemory(format);
-        queried?;
+        let (period, format) = current_shared_mode_engine_period(self.client)?;
+        let format = format.0;
         if format.is_null() {
             return Err(Error::from_hresult(E_POINTER));
         }
@@ -292,11 +286,8 @@ fn record_period(
 
 fn record_current_period(client: &IAudioClient, client_rate: u32, report: &mut SharedPeriodReport) {
     let result = client.cast::<IAudioClient3>().and_then(|client3| {
-        let mut format = std::ptr::null_mut();
-        let mut period = 0;
-        let result = unsafe { client3.GetCurrentSharedModeEnginePeriod(&mut format, &mut period) };
-        let _format = TaskMemory(format);
-        result?;
+        let (period, format) = current_shared_mode_engine_period(&client3)?;
+        let format = format.0;
         if format.is_null() {
             return Err(E_POINTER.into());
         }

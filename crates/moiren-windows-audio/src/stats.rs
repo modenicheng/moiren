@@ -40,7 +40,9 @@ impl PacketMetrics {
 }
 
 /// Inspect an interleaved f32 packet without allocation or alignment assumptions.
-/// SILENT packets do not require readable data, per the WASAPI buffer contract.
+/// A SILENT packet has no readable payload (the WASAPI contract is documented
+/// on `capture_packet::borrow_capture_packet`); only the bookkeeping metrics
+/// are reported.
 pub fn analyze_f32(
     data: &[u8],
     frames: u32,

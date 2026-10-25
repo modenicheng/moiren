@@ -4,7 +4,8 @@ use windows::{
     Win32::{
         Foundation::{CloseHandle, E_INVALIDARG, FILETIME, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Media::Audio::{
-            AUDCLNT_BUFFERFLAGS_SILENT, IAudioCaptureClient, IAudioClient, IAudioRenderClient,
+            AUDCLNT_BUFFERFLAGS_SILENT, IAudioCaptureClient, IAudioClient, IAudioClient3,
+            IAudioRenderClient, WAVEFORMATEX,
         },
         System::{
             Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize},
@@ -218,6 +219,18 @@ impl<T> Drop for TaskMemory<T> {
 pub fn take_string(value: PWSTR) -> Result<String> {
     let _memory = TaskMemory(value.0);
     unsafe { Ok(value.to_string()?) }
+}
+
+/// Query `IAudioClient3::GetCurrentSharedModeEnginePeriod` and own the
+/// returned engine-format allocation. The period is engine-rate frames;
+/// callers decide whether the format descriptor matters for their policy.
+pub(crate) fn current_shared_mode_engine_period(
+    client: &IAudioClient3,
+) -> Result<(u32, TaskMemory<WAVEFORMATEX>)> {
+    let mut format = std::ptr::null_mut();
+    let mut period = 0;
+    unsafe { client.GetCurrentSharedModeEnginePeriod(&mut format, &mut period) }?;
+    Ok((period, TaskMemory(format)))
 }
 
 pub struct Process {

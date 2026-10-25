@@ -40,7 +40,8 @@ impl CaptureIngress {
         self.config.input_channels
     }
 
-    /// SILENT packets may have no readable data. Overflow accepts a whole-frame
+    /// SILENT packets carry no readable payload (contract documented on
+    /// `capture_packet::borrow_capture_packet`). Overflow accepts a whole-frame
     /// prefix and drops the new tail; the next packet starts a fresh generation.
     pub fn push_packet(
         &mut self,

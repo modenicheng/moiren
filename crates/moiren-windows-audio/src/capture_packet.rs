@@ -27,6 +27,14 @@ pub(crate) fn packet_byte_len(
 
 /// Borrow the bytes covered by a successful WASAPI GetBuffer call.
 ///
+/// `silent` mirrors the WASAPI `AUDCLNT_BUFFERFLAGS_SILENT` contract: the
+/// producer asserts the packet is silence, so the OS never has to map a
+/// readable buffer and the data pointer may be null. Consumers must not
+/// read the bytes of a silent packet — on capture the flag means there is
+/// nothing behind the pointer, and on render the flag lets the endpoint
+/// skip the buffer entirely. A silent packet therefore borrows as an empty
+/// slice without touching `data`, exactly like a zero-frame packet.
+///
 /// # Safety
 ///
 /// data must point to the native packet returned by the matching GetBuffer

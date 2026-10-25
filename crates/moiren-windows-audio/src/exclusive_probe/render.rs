@@ -3,7 +3,10 @@ use super::ExclusiveReport;
 use crate::{
     StopSignal,
     catalog::{ApiFailure, FormatSnapshot},
-    negotiation::{exclusive_format_supported, exclusive_frames_duration, initialize_exclusive},
+    negotiation::{
+        endpoint_data_flow, exclusive_format_supported, exclusive_frames_duration,
+        initialize_exclusive,
+    },
     owner::{Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory},
 };
 use anyhow::Context;
@@ -25,14 +28,14 @@ use windows::{
         Media::Audio::{
             AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED,
             AUDCLNT_E_UNSUPPORTED_FORMAT, IAudioClient, IAudioRenderClient, IMMDeviceEnumerator,
-            IMMEndpoint, MMDeviceEnumerator, WAVEFORMATEX, eRender,
+            MMDeviceEnumerator, WAVEFORMATEX, eRender,
         },
         System::{
             Com::{CLSCTX_ALL, CoCreateInstance},
             Threading::WaitForMultipleObjects,
         },
     },
-    core::{HSTRING, Interface, Result},
+    core::{HSTRING, Result},
 };
 
 pub(super) struct Owner {
@@ -132,8 +135,7 @@ fn serve(
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
     let device = unsafe { enumerator.GetDevice(&HSTRING::from(endpoint_id))? };
-    let endpoint: IMMEndpoint = device.cast()?;
-    if unsafe { endpoint.GetDataFlow()? } != eRender {
+    if endpoint_data_flow(&device)? != eRender {
         return Err(windows::core::Error::from_hresult(E_INVALIDARG));
     }
     let event = OwnedHandle::event()?;
@@ -256,7 +258,8 @@ fn serve(
 }
 
 fn submit(service: &IAudioRenderClient, capacity: u32) -> Result<()> {
-    // SILENT is defined by WASAPI: the driver need not read the buffer contents.
+    // Flagged SILENT the endpoint never reads these bytes; the contract is
+    // documented on `capture_packet::borrow_capture_packet`.
     let _buffer = unsafe { service.GetBuffer(capacity)? };
     unsafe { service.ReleaseBuffer(capacity, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) }
 }

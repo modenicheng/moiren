@@ -1,4 +1,5 @@
 use super::*;
+use crate::owner::TaskMemory;
 use std::cell::{Cell, RefCell};
 use windows::{
     Win32::Media::Audio::{

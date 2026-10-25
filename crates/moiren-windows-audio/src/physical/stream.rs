@@ -2,7 +2,10 @@
 use super::{EndpointReport, RenderSummary};
 use crate::{
     catalog::{ApiFailure, FormatSnapshot},
-    owner::{Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory},
+    negotiation::endpoint_data_flow,
+    owner::{
+        Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory, current_shared_mode_engine_period,
+    },
     stats::CaptureStats,
 };
 use std::time::{Duration, Instant};
@@ -14,8 +17,8 @@ use windows::{
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_NOPERSIST, AudioCategory_Other,
             AudioClientProperties, IAudioCaptureClient, IAudioClient, IAudioClient2, IAudioClient3,
             IAudioClock, IAudioClock2, IAudioRenderClient, IAudioSessionControl,
-            IAudioSessionControl2, IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator,
-            WAVEFORMATEXTENSIBLE, eCapture, eRender,
+            IAudioSessionControl2, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEXTENSIBLE,
+            eCapture, eRender,
         },
         System::{
             Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance},
@@ -40,8 +43,7 @@ pub(super) fn prepare_and_sample(report: &mut EndpointReport, seconds: u32) -> R
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
     let device = unsafe { enumerator.GetDevice(&HSTRING::from(&report.endpoint_id))? };
-    let endpoint: IMMEndpoint = device.cast()?;
-    let flow = unsafe { endpoint.GetDataFlow()? };
+    let flow = endpoint_data_flow(&device)?;
     report.flow = if flow == eRender {
         "render"
     } else if flow == eCapture {
@@ -120,21 +122,13 @@ pub(super) fn prepare_and_sample(report: &mut EndpointReport, seconds: u32) -> R
     report.buffer_frames = Some(capacity);
     report.stream_latency_100ns = Some(unsafe { client.GetStreamLatency()? });
     match client.cast::<IAudioClient3>() {
-        Ok(client3) => {
-            let mut format_ptr = std::ptr::null_mut();
-            let mut period = 0;
-            match unsafe { client3.GetCurrentSharedModeEnginePeriod(&mut format_ptr, &mut period) }
-            {
-                Ok(()) => {
-                    let _format = TaskMemory(format_ptr);
-                    report.engine_period_frames = Some(period);
-                }
-                Err(error) => report.errors.push(ApiFailure::new(
-                    "GetCurrentSharedModeEnginePeriod (optional)",
-                    error,
-                )),
-            }
-        }
+        Ok(client3) => match current_shared_mode_engine_period(&client3) {
+            Ok((period, _format)) => report.engine_period_frames = Some(period),
+            Err(error) => report.errors.push(ApiFailure::new(
+                "GetCurrentSharedModeEnginePeriod (optional)",
+                error,
+            )),
+        },
         Err(error) => report
             .errors
             .push(ApiFailure::new("IAudioClient3 (optional)", error)),

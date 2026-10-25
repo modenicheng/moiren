@@ -11,6 +11,8 @@
 
 use crate::owner::{OwnedHandle, TaskMemory};
 use crate::shared_stream::format::PreparedSharedFormat;
+#[cfg(feature = "probe-tools")]
+use windows::Win32::Media::Audio::EDataFlow;
 use windows::{
     Win32::{
         Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
@@ -69,6 +71,14 @@ pub(crate) fn stage<T>(
     result: windows::core::Result<T>,
 ) -> Result<T, StageError> {
     result.map_err(|error| StageError::new(label, error))
+}
+
+/// Project a device onto its endpoint data flow. Callers map the two calls
+/// through their own stage reporting; this only shares the projection.
+#[cfg(feature = "probe-tools")]
+pub(crate) fn endpoint_data_flow(device: &IMMDevice) -> windows::core::Result<EDataFlow> {
+    let endpoint: IMMEndpoint = device.cast()?;
+    unsafe { endpoint.GetDataFlow() }
 }
 
 /// A tag-dispatched parse of one owned WAVEFORMATEX allocation.
