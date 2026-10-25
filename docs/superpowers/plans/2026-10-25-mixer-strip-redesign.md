@@ -310,6 +310,12 @@ These are review-sized phases. Each phase should carry its own focused checks.
 
 Keep explicit Apply semantics in this change. Main-strip gain, balance, mute, Dim, solo, and mode remain candidate edits; show pending feedback until engine confirmation. Do not auto-apply unrelated pending topology edits during a fader drag. Preserve managed send runtime updates where already supported.
 
+> **Superseded 2026-10-26:** the explicit-Apply decision above is replaced by
+> `2026-10-26-auto-apply-graph.md`. All edits apply automatically (live
+> parameters for strip controls, automatic rebuild for structure edits), the
+> Apply button and pending badges are removed, and meters are decoupled from
+> revision equality. The layout, scale, balance, and metering decisions of
+> this document remain in force.
 ### Current performance evidence (2026-10-26)
 
 - The explicit short-callback benchmark consumes at 120 Hz with 96-frame callbacks. Across 120 post-warmup ticks, window age P95 was 7.8014 ms, below the 8.333 ms budget, with one tick without a fresh delivery. This is the portable fake backend, not a physical device-latency measurement.
