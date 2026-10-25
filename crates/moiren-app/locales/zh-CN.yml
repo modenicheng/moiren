@@ -1451,3 +1451,28 @@ _version: 2
 "Off":
   en: Off
   zh-CN: 关闭
+
+"Selected profile activates on the next audio start":
+  en: Selected profile activates on the next audio start
+  zh-CN: 所选延迟档位将在下次音频启动时生效
+"Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.":
+  en: Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.
+  zh-CN: 端点存在不代表音频正在流动。停止后端点保留但闸门关闭。
+"Changing channels, a name, or eligibility safely retires and recreates the endpoint; unbind incompatible Graph IO before changing channels.":
+  en: Changing channels, a name, or eligibility safely retires and recreates the endpoint; unbind incompatible Graph IO before changing channels.
+  zh-CN: 修改声道数、名称或资格会安全退役并重建端点；改声道前先解开不兼容的图输入/输出。
+"Not running":
+  en: Not running
+  zh-CN: 未在运行
+"Start audio to observe this node.":
+  en: Start audio to observe this node.
+  zh-CN: 启动音频后可观察此通道。
+"Error: %{cause}":
+  en: "Error: %{cause}"
+  zh-CN: "错误：%{cause}"
+"Channel: %{location}":
+  en: "Channel: %{location}"
+  zh-CN: "通道：%{location}"
+"Hint: %{hint}":
+  en: "Hint: %{hint}"
+  zh-CN: "提示：%{hint}"

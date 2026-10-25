@@ -635,7 +635,7 @@ impl Render for StudioShell {
             (!faults.is_empty() || other.is_some()).then(|| {
                 let log_path = crate::logging::log_path()
                     .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "Application file logging is unavailable".into());
+                    .unwrap_or_else(|| t!("Application file logging is unavailable").into());
                 let this = cx.entity();
                 let graph = state.snapshot.graph.clone();
                 let mut list = div()
@@ -716,17 +716,24 @@ impl Render for StudioShell {
                             div()
                                 .text_color(theme::DANGER)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(format!("错误：{}", fault.cause)),
+                                .child(t!("Error: %{cause}", cause = fault.cause.as_str())),
                         )
                         .when_some(location, |row, location| {
                             row.child(
                                 div()
                                     .text_color(theme::TEXT)
-                                    .child(format!("通道：{location}")),
+                                    .child(t!(
+                                        "Channel: %{location}",
+                                        location = location.as_str()
+                                    )),
                             )
                         })
                         .when_some(fault.hint.as_deref(), |row, hint: &str| {
-                            row.child(div().text_color(theme::TEXT).child(format!("提示：{hint}")))
+                            row.child(
+                                div()
+                                    .text_color(theme::TEXT)
+                                    .child(t!("Hint: %{hint}", hint = hint)),
+                            )
                         });
                     list = list.child(row.gpui_test_observe());
                 }
