@@ -4511,6 +4511,7 @@ dependencies = [
  "moiren-windows-audio",
  "raw-window-handle",
  "resvg 0.46.0",
+ "rust-i18n",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
