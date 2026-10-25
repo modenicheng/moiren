@@ -14,6 +14,8 @@ use moiren_engine::{
 };
 #[cfg(windows)]
 use moiren_windows_audio::clock_bridge;
+#[cfg(windows)]
+use moiren_windows_audio::process_loopback;
 use moiren_windows_audio::professional::native;
 use moiren_windows_audio::virtual_owner;
 use std::{
@@ -36,7 +38,17 @@ mod codec;
 #[path = "../../../crates/moiren-windows-audio/src/professional/observations.rs"]
 mod observations;
 #[path = "../../../crates/moiren-windows-audio/src/professional/owner.rs"]
-mod owner;
+mod professional_owner;
+#[cfg(windows)]
+#[path = "../../../crates/moiren-windows-audio/src/owner.rs"]
+mod windows_owner;
+// Mirror the library's shared native helpers without replacing the workers
+// whose private realtime paths this harness measures.
+mod owner {
+    pub(crate) use super::professional_owner::*;
+    #[cfg(windows)]
+    pub(crate) use super::windows_owner::Mmcss;
+}
 #[path = "../../../crates/moiren-windows-audio/src/professional/recovery.rs"]
 mod recovery;
 #[path = "../../../crates/moiren-windows-audio/src/professional/recovery_host_tests.rs"]

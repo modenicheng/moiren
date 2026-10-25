@@ -1,6 +1,7 @@
 //! Windows audio probes, Shared capture/render and backend clock adaptation.
 
 pub mod capture;
+#[cfg(any(windows, test))]
 pub(crate) mod capture_packet;
 pub mod clock;
 pub mod clock_bridge;

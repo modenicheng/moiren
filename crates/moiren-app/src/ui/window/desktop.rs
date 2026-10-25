@@ -286,6 +286,8 @@ impl Desktop {
         content: Size<Pixels>,
         cx: &Context<Self>,
     ) -> (WindowBounds, Option<DisplayId>) {
+        #[cfg(not(windows))]
+        let _ = anchor;
         #[cfg(windows)]
         if let Some((monitor, work, scale)) =
             native::monitor_geometry_at(anchor.x + anchor.width / 2., anchor.y + anchor.height / 2.)
@@ -549,6 +551,7 @@ fn restored_placement(
 }
 
 /// A rectangle in physical screen pixels (Win32 virtual-screen space).
+#[cfg(any(windows, all(test, feature = "gpui-test")))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct PhysicalRect {
     pub x: f64,
@@ -558,6 +561,7 @@ pub(super) struct PhysicalRect {
 }
 
 /// Monitor geometry used to anchor the tray flyout.
+#[cfg(any(windows, all(test, feature = "gpui-test")))]
 #[derive(Clone, Copy)]
 struct MonitorGeometry {
     /// Full monitor rectangle, physical pixels.
@@ -573,6 +577,7 @@ struct MonitorGeometry {
 /// nearest the icon, clamped into the work area. Returns the physical rect
 /// and the matched monitor's scale; None when no monitor contains the
 /// anchor (topology changed mid-flight).
+#[cfg(any(windows, all(test, feature = "gpui-test")))]
 fn tray_flyout_bounds(
     anchor: &super::super::tray::TrayAnchor,
     content: Size<Pixels>,

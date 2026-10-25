@@ -1,11 +1,14 @@
 //! Pure text projections from [`AppSnapshot`]. These functions format
 //! snapshot state for display; they hold no UI state and dispatch no intent.
 
-use crate::service::{AppSnapshot, AudioBackend, SessionGeneration, SessionPhase};
+use crate::service::{AppSnapshot, SessionPhase};
+#[cfg(windows)]
+use crate::service::{AudioBackend, SessionGeneration};
 
 /// Display-level stale guard mirroring the service's write-side filter. The
 /// owner identity is not published to the UI, so this deliberately checks only
 /// phase, generation, and the observation's own running flag.
+#[cfg(windows)]
 fn fresh_observation(
     phase: SessionPhase,
     generation: SessionGeneration,
@@ -41,6 +44,8 @@ pub fn latency_apply_text(snapshot: &AppSnapshot) -> &'static str {
 /// Only the currently running owner can supply timing. In particular, a
 /// stopped or replaced owner must not leave plausible-looking stale values.
 pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
+    #[cfg(not(windows))]
+    let _ = snapshot;
     #[cfg(windows)]
     {
         use moiren_windows_audio::engine_backend::NativeStreamKind;
