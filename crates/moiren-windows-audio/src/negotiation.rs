@@ -14,15 +14,15 @@ use crate::shared_stream::format::PreparedSharedFormat;
 use windows::{
     Win32::{
         Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
-        Foundation::{E_NOINTERFACE, E_NOTIMPL, E_UNEXPECTED},
+        Foundation::{E_NOINTERFACE, E_NOTIMPL, E_UNEXPECTED, S_OK},
         Media::Audio::{
             AUDCLNT_E_ENGINE_PERIODICITY_LOCKED, AUDCLNT_E_UNSUPPORTED_FORMAT,
-            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_NOPERSIST,
-            AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AudioCategory_Other, AudioClientProperties,
-            IAudioClient, IAudioClient2, IAudioClient3, IMMDevice, IMMDeviceEnumerator,
-            IMMEndpoint, MMDeviceEnumerator, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
-            WAVEFORMATEXTENSIBLE_0, eCapture, eRender,
+            AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+            AUDCLNT_STREAMFLAGS_NOPERSIST, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            AudioCategory_Other, AudioClientProperties, IAudioClient, IAudioClient2, IAudioClient3,
+            IMMDevice, IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator, WAVEFORMATEX,
+            WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eCapture, eRender,
         },
         System::{
             Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance, STGM_READ},
@@ -279,6 +279,57 @@ pub(crate) fn legacy_shared_flags(init: LegacySharedInit) -> u32 {
         flags |= AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
     }
     flags
+}
+
+/// The exclusive event-callback flag used by both the diagnostic probe and
+/// the professional WASAPI owner.
+pub(crate) const fn exclusive_stream_flags() -> u32 {
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+}
+
+/// Convert an exclusive buffer size to the WASAPI 100-ns duration unit.
+/// Callers validate that the negotiated sample rate is non-zero.
+pub(crate) fn exclusive_frames_duration(frames: u32, rate: u32) -> i64 {
+    ((u64::from(frames) * 10_000_000 + u64::from(rate) / 2) / u64::from(rate)) as i64
+}
+
+/// Probe exclusive support while preserving non-format HRESULT failures for
+/// the caller's own error/reporting policy.
+pub(crate) fn exclusive_format_supported(
+    client: &IAudioClient,
+    format: *const WAVEFORMATEX,
+) -> windows::core::Result<bool> {
+    let result = unsafe { client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, format, None) };
+    if result == AUDCLNT_E_UNSUPPORTED_FORMAT {
+        return Ok(false);
+    }
+    result.ok()?;
+    Ok(result == S_OK)
+}
+
+/// Initialize an exclusive event-driven client. The caller keeps the format
+/// descriptor alive and maps the returned HRESULT to its own error type.
+///
+/// # Safety
+///
+/// `format` must point to a valid WAVEFORMATEX descriptor for the duration of
+/// the COM call.
+pub(crate) unsafe fn initialize_exclusive(
+    client: &IAudioClient,
+    format: *const WAVEFORMATEX,
+    duration: i64,
+) -> windows::core::Result<()> {
+    // SAFETY: upheld by the function contract.
+    unsafe {
+        client.Initialize(
+            AUDCLNT_SHAREMODE_EXCLUSIVE,
+            exclusive_stream_flags(),
+            duration,
+            duration,
+            format,
+            None,
+        )
+    }
 }
 
 /// Legacy shared initialization through `IAudioClient::Initialize`.
@@ -609,5 +660,15 @@ mod tests {
                 | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
                 | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
         );
+    }
+
+    #[test]
+    fn exclusive_helpers_keep_event_mode_and_round_frame_duration() {
+        assert_eq!(
+            super::exclusive_stream_flags(),
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+        );
+        assert_eq!(super::exclusive_frames_duration(480, 48_000), 100_000);
+        assert_eq!(super::exclusive_frames_duration(1, 44_100), 227);
     }
 }

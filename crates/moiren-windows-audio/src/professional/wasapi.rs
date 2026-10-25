@@ -8,7 +8,8 @@ use super::{
 use crate::capture_packet::borrow_capture_packet;
 use crate::negotiation::{
     EnginePeriodicityPolicy, EnginePeriods, LegacySharedInit, SUBFORMAT_FLOAT, SUBFORMAT_PCM,
-    StageError, client3_rejects_format, friendly_name, initialize_legacy_shared, parse_descriptor,
+    StageError, client3_rejects_format, exclusive_format_supported, exclusive_frames_duration,
+    friendly_name, initialize_exclusive, initialize_legacy_shared, parse_descriptor,
     shared_engine_periods,
 };
 use crate::owner::{Apartment, LeaseFallback, OwnedHandle, PacketLease, TaskMemory};
@@ -24,7 +25,7 @@ use std::sync::{
 use std::{ptr, time::Duration};
 use windows::{
     Win32::{
-        Foundation::{PROPERTYKEY, S_OK, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{PROPERTYKEY, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Media::Audio::{IMMNotificationClient_Impl, *},
         System::{
             Com::{CLSCTX_ALL, CoCreateInstance, IAgileObject, IAgileObject_Impl},
@@ -551,7 +552,7 @@ fn negotiate_exclusive(
         .device
         .period_frames
         .map_or(default_period, |frames| {
-            frames_duration(frames as u32, rate)
+            exclusive_frames_duration(frames as u32, rate)
         });
     if let Some(requested_frames) = options.device.period_frames
         && let Some(minimum_frames) = minimum_exclusive_frames(minimum_period, rate)
@@ -596,7 +597,8 @@ fn negotiate_exclusive(
         default_period,
         minimum_period,
     );
-    let initialized = initialize_exclusive(&client, &format.Format, duration);
+    // SAFETY: `format.Format` remains part of `selected` for this call.
+    let initialized = unsafe { initialize_exclusive(&client, &format.Format, duration) };
     if initialized
         .as_ref()
         .is_err_and(|e| e.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
@@ -620,7 +622,15 @@ fn negotiate_exclusive(
         })?;
         api(
             "Initialize(Exclusive aligned)",
-            initialize_exclusive(&client, &format.Format, frames_duration(aligned, rate)),
+            // The shared negotiation helper owns the raw COM call; this map
+            // keeps the professional BackendError stage and policy.
+            unsafe {
+                initialize_exclusive(
+                    &client,
+                    &format.Format,
+                    exclusive_frames_duration(aligned, rate),
+                )
+            },
         )?;
     } else {
         api("Initialize(Exclusive)", initialized)?;
@@ -899,10 +909,6 @@ impl Drop for WasapiStream {
     }
 }
 
-fn frames_duration(frames: u32, rate: u32) -> i64 {
-    ((u64::from(frames) * 10_000_000 + u64::from(rate) / 2) / u64::from(rate)) as i64
-}
-
 fn frames_milliseconds(frames: u32, rate: u32) -> f64 {
     f64::from(frames) * 1000.0 / f64::from(rate)
 }
@@ -919,23 +925,6 @@ fn next_exclusive_preset(minimum_frames: u32) -> Option<u32> {
     BUFFER_SIZES
         .into_iter()
         .find(|&frames| frames >= minimum_frames)
-}
-
-fn initialize_exclusive(
-    client: &IAudioClient,
-    format: &WAVEFORMATEX,
-    duration: i64,
-) -> windows::core::Result<()> {
-    unsafe {
-        client.Initialize(
-            AUDCLNT_SHAREMODE_EXCLUSIVE,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            duration,
-            duration,
-            format,
-            None,
-        )
-    }
 }
 
 fn initialize_shared_legacy(
@@ -982,12 +971,12 @@ fn same_format(left: &WAVEFORMATEXTENSIBLE, right: &WAVEFORMATEXTENSIBLE) -> boo
 }
 
 fn supported(client: &IAudioClient, format: &WAVEFORMATEX) -> Result<bool, BackendError> {
-    let hr = unsafe { client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, format, None) };
-    if hr == AUDCLNT_E_UNSUPPORTED_FORMAT {
-        return Ok(false);
+    // Preserve the professional error mapping around the shared raw query.
+    let result = exclusive_format_supported(client, std::ptr::from_ref(format));
+    match result {
+        Ok(supported) => Ok(supported),
+        Err(error) => api("IsFormatSupported(Exclusive)", Err(error)),
     }
-    api("IsFormatSupported(Exclusive)", hr.ok())?;
-    Ok(hr == S_OK)
 }
 fn wave_format(
     format: SampleFormat,

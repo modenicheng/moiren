@@ -3,6 +3,7 @@ use super::ExclusiveReport;
 use crate::{
     StopSignal,
     catalog::{ApiFailure, FormatSnapshot},
+    negotiation::{exclusive_format_supported, exclusive_frames_duration, initialize_exclusive},
     owner::{Apartment, Mmcss, OwnedHandle, Streaming, TaskMemory},
 };
 use anyhow::Context;
@@ -23,9 +24,8 @@ use windows::{
         },
         Media::Audio::{
             AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED,
-            AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_SHAREMODE_EXCLUSIVE,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioClient, IAudioRenderClient,
-            IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator, WAVEFORMATEX, eRender,
+            AUDCLNT_E_UNSUPPORTED_FORMAT, IAudioClient, IAudioRenderClient, IMMDeviceEnumerator,
+            IMMEndpoint, MMDeviceEnumerator, WAVEFORMATEX, eRender,
         },
         System::{
             Com::{CLSCTX_ALL, CoCreateInstance},
@@ -107,16 +107,6 @@ impl Drop for Owner {
     }
 }
 
-fn supported(client: &IAudioClient, format: *const WAVEFORMATEX) -> Result<bool> {
-    let result = unsafe { client.IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, format, None) };
-    if result == AUDCLNT_E_UNSUPPORTED_FORMAT {
-        return Ok(false);
-    }
-    // Do not disguise a driver/permission/device failure as a format mismatch.
-    result.ok()?;
-    Ok(result == windows::Win32::Foundation::S_OK)
-}
-
 fn pcm_format(rate: u32, bits: u16, float: bool) -> WAVEFORMATEX {
     let align = 2 * (bits / 8);
     WAVEFORMATEX {
@@ -162,7 +152,7 @@ fn serve(
             pcm_format(rate, 32, true),
         ]
     });
-    let mut selected = if supported(&client, mix.0)? {
+    let mut selected = if exclusive_format_supported(&client, mix.0)? {
         Some(mix.0.cast_const())
     } else {
         None
@@ -171,7 +161,7 @@ fn serve(
         if selected.is_some() {
             break;
         }
-        if supported(&client, candidate)? {
+        if exclusive_format_supported(&client, candidate)? {
             selected = Some(candidate as *const WAVEFORMATEX);
         }
     }
@@ -190,19 +180,21 @@ fn serve(
     // Favor a relaxed default period over pushing the hardware's minimum.
     period = period.max(100_000);
     report.last_stage = "Initialize(Exclusive)";
-    let initial = initialize(&client, format, period);
+    // SAFETY: `format` points to either the live GetMixFormat allocation or a
+    // candidate kept alive through this owner call.
+    let initial = unsafe { initialize_exclusive(&client, format, period) };
     if initial
         .as_ref()
         .is_err_and(|error| error.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
     {
         let frames = unsafe { client.GetBufferSize()? };
-        period = ((u64::from(frames) * 10_000_000 + u64::from(base.nSamplesPerSec) / 2)
-            / u64::from(base.nSamplesPerSec)) as i64;
+        period = exclusive_frames_duration(frames, base.nSamplesPerSec);
         // A failed client cannot be initialized twice; release and re-Activate.
         drop(client);
         client = unsafe { device.Activate(CLSCTX_ALL, None)? };
         report.alignment_retried = true;
-        initialize(&client, format, period)?;
+        // SAFETY: same live descriptor remains valid across the client retry.
+        unsafe { initialize_exclusive(&client, format, period) }?;
     } else {
         initial?;
     }
@@ -261,19 +253,6 @@ fn serve(
         report.stop_succeeded = true;
     }
     result
-}
-
-fn initialize(client: &IAudioClient, format: *const WAVEFORMATEX, period: i64) -> Result<()> {
-    unsafe {
-        client.Initialize(
-            AUDCLNT_SHAREMODE_EXCLUSIVE,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            period,
-            period,
-            format,
-            None,
-        )
-    }
 }
 
 fn submit(service: &IAudioRenderClient, capacity: u32) -> Result<()> {

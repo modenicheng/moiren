@@ -43,10 +43,12 @@ revision and may drift.
   production owner, probe capture, and exclusive probe capture all use it;
   each caller still owns its event handle, COM client, stage reporting, and
   error mapping.
-- **A5** exclusive-mode negotiation trio (`supported`, exclusive
-  Initialize, alignment-retry formula) duplicated between
-  exclusive_probe/render.rs and professional/wasapi.rs; `frames_duration`
-  already exists on one side only — promote to negotiation.rs.
+- **done (A5)** exclusive-mode negotiation now shares the raw
+  `exclusive_format_supported`, event-callback `initialize_exclusive`, and
+  `exclusive_frames_duration` helpers in `negotiation.rs`. The professional
+  backend keeps its `BackendError` stage mapping and period policy; the
+  exclusive probe keeps its Windows error/reporting behavior and client
+  reactivation after `BUFFER_SIZE_NOT_ALIGNED`.
 - **A6/A7/A13** owner teardown/finish and startup-handshake skeletons are
   capture/render twins with light drift; worth a shared helper when either
   side is next touched, not as a standalone churn commit.
