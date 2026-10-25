@@ -68,6 +68,16 @@ fn cancelled(stop: &StdHandle) -> Result<(), CaptureError> {
         ),
     }
 }
+
+/// Shared Process Loopback flags: event delivery plus Windows conversion into
+/// the fixed bridge format. Every owner waits on the event after initialization.
+pub(crate) fn process_loopback_stream_flags() -> u32 {
+    AUDCLNT_STREAMFLAGS_LOOPBACK
+        | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+}
+
 fn owner(
     options: &ProcessLoopbackOptions,
     stop: &StdHandle,
@@ -100,10 +110,7 @@ fn owner(
     api("Initialize(process Shared)", unsafe {
         client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK
-                | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            process_loopback_stream_flags(),
             0,
             0,
             &format,
@@ -144,6 +151,28 @@ pub(crate) fn capture_format() -> WAVEFORMATEX {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_loopback_stream_flags_request_conversion_and_event_delivery() {
+        let flags = process_loopback_stream_flags();
+        assert_eq!(
+            flags & AUDCLNT_STREAMFLAGS_LOOPBACK,
+            AUDCLNT_STREAMFLAGS_LOOPBACK
+        );
+        assert_eq!(
+            flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+        );
+        assert_eq!(
+            flags & AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+        );
+        assert_eq!(
+            flags & AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+        );
+    }
+
     #[test]
     fn pre_cancelled_preparation_never_activates_or_starts_client() {
         let stop = StopSignal::new().unwrap();

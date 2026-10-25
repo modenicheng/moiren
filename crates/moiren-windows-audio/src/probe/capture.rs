@@ -4,17 +4,14 @@ use crate::{
     capture_packet::borrow_capture_packet,
     catalog::ApiFailure,
     owner::{LeaseFallback, Mmcss, OwnedHandle, PacketLease, Process, Streaming},
+    process_loopback::process_loopback_stream_flags,
     stats::{CaptureStats, SILENT, analyze_f32},
 };
 use std::time::{Duration, Instant};
 use windows::{
     Win32::{
         Foundation::{E_UNEXPECTED, WAIT_OBJECT_0, WAIT_TIMEOUT},
-        Media::Audio::{
-            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-            AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient, WAVEFORMATEX,
-        },
+        Media::Audio::{AUDCLNT_SHAREMODE_SHARED, IAudioCaptureClient, WAVEFORMATEX},
         System::Threading::WaitForSingleObject,
     },
     core::Result,
@@ -35,10 +32,7 @@ pub(super) fn capture(process: &Process, report: &mut CaptureReport) -> Result<(
         report.last_stage = "IAudioClient::Initialize";
         client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK
-                | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+            process_loopback_stream_flags(),
             0,
             0,
             &format,

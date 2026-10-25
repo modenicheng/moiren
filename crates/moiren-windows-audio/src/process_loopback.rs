@@ -13,7 +13,7 @@ mod stream;
 #[cfg(windows)]
 pub use identity::inspect_process;
 #[cfg(all(windows, feature = "probe-tools"))]
-pub(crate) use stream::capture_format;
+pub(crate) use stream::{capture_format, process_loopback_stream_flags};
 #[cfg(windows)]
 pub use stream::{
     prepare_process_capture_with_gate, start_process_capture, start_process_capture_with_stop,

@@ -37,9 +37,12 @@ revision and may drift.
   format tag that the SDK exports; `Audio.h`/`Policy.cpp` duplicate the
   `L"MoirenEndpoint"` reference string. Single-source from the ABI header
   / SDK constants in one pass.
-- **A4** process-loopback Initialize flag combination + SetEventHandle is
-  copied in process_loopback/stream.rs, probe/capture.rs,
-  exclusive_probe/capture.rs — extract into the process_loopback module.
+- **done (A4)** Process Loopback Shared initialization now gets its
+  Loopback/EventCallback/AutoConvertPCM/default-quality-SRC flag combination
+  from `process_loopback_stream_flags()` in the process_loopback module. The
+  production owner, probe capture, and exclusive probe capture all use it;
+  each caller still owns its event handle, COM client, stage reporting, and
+  error mapping.
 - **A5** exclusive-mode negotiation trio (`supported`, exclusive
   Initialize, alignment-retry formula) duplicated between
   exclusive_probe/render.rs and professional/wasapi.rs; `frames_duration`

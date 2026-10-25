@@ -3,18 +3,14 @@ use super::WindowReport;
 use crate::{
     capture_packet::borrow_capture_packet,
     owner::{LeaseFallback, OwnedHandle, PacketLease, Process},
-    process_loopback::{activation::activate, capture_format},
+    process_loopback::{activation::activate, capture_format, process_loopback_stream_flags},
     stats::{CaptureStats, SILENT, analyze_f32},
 };
 use anyhow::Context;
 use std::time::{Duration, Instant};
 use windows::Win32::{
     Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
-    Media::Audio::{
-        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioCaptureClient, IAudioClient,
-    },
+    Media::Audio::{AUDCLNT_SHAREMODE_SHARED, IAudioCaptureClient, IAudioClient},
     System::Threading::WaitForSingleObject,
 };
 
@@ -44,10 +40,7 @@ impl Loopback {
             client
                 .Initialize(
                     AUDCLNT_SHAREMODE_SHARED,
-                    AUDCLNT_STREAMFLAGS_LOOPBACK
-                        | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-                        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                    process_loopback_stream_flags(),
                     0,
                     0,
                     &capture_format(),
