@@ -7,7 +7,10 @@ use moiren_engine::host::{
     ExecutionState, HostConfig, ParameterOutcome, ParameterReceipt, ParameterTarget,
     ParameterTiming, StripParameter, UpdateState,
 };
-use std::{collections::BTreeMap, time::Instant};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 mod driver;
 mod lifecycle;
 mod meters;
@@ -83,6 +86,10 @@ enum Completion {
     Exports(Result<super::exports::runtime::Batch, String>),
 }
 
+/// Delay before a structure edit automatically applies; consecutive edits
+/// within the window coalesce into one rebuild.
+const AUTO_APPLY_DELAY: Duration = Duration::from_millis(200);
+
 pub struct ManagedDriver {
     exports_runtime: super::exports::runtime::Runtime,
     factory: Arc<Factory<f32>>,
@@ -106,6 +113,9 @@ pub struct ManagedDriver {
     /// Last submitted effective strip values (dim-folded gain, solo-audible
     /// mute) per node; diffs against the candidate drive live submissions.
     strip_live: BTreeMap<NodeId, (f64, bool)>,
+    /// Trailing-edge debounce for the automatic apply of structure edits.
+    /// Armed only while an owner runs: a stopped session never auto-starts.
+    auto_apply_deadline: Option<Instant>,
     meters: Option<meters::MeterBridge>,
     #[cfg(windows)]
     observations: Option<
@@ -147,6 +157,7 @@ impl ManagedDriver {
             parameters: Vec::with_capacity(64),
             unsent: Vec::with_capacity(64),
             strip_live: BTreeMap::new(),
+            auto_apply_deadline: None,
             confirm_parameters: None,
             confirmation_values: VecDeque::new(),
             document: 0,

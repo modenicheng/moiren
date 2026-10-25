@@ -59,6 +59,9 @@ impl ManagedDriver {
         c.graph.clear_pending();
     }
     pub(super) fn apply(&mut self, c: &mut ServiceContext) {
+        // Any apply — automatic or explicit — consumes the pending auto-apply
+        // deadline; a structural edit during this apply re-arms it.
+        self.auto_apply_deadline = None;
         let preparation = c.graph.preparation();
         let virtual_transport_ready = self.exports_runtime.adapter.is_some();
         c.exports.set_available(virtual_transport_ready);

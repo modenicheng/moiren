@@ -1150,6 +1150,65 @@ fn mixer_edits_apply_live_without_rebuilding_or_waiting_for_apply() {
 }
 
 #[test]
+fn topology_edits_auto_apply_after_the_debounce_without_a_request() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait(|rig| {
+        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
+    });
+    let starts = rig.state.starts.load(Ordering::SeqCst);
+    let prepares = rig.state.prepares.load(Ordering::SeqCst);
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Bus,
+        channels: 2,
+    }));
+    // No ApplyGraph request is issued: the rebuild fires on its own.
+    rig.wait(|rig| {
+        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
+    });
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), starts);
+    assert!(rig.state.prepares.load(Ordering::SeqCst) > prepares);
+}
+
+#[test]
+fn failed_auto_apply_keeps_audio_running_and_the_next_edit_retries() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait(|rig| {
+        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
+    });
+    let source = rig.node(NodeKind::Source);
+    rig.request(AppRequest::EditGraph(GraphEdit::SetMixer {
+        node: source,
+        state: crate::service::MixerState {
+            gain: 0.5,
+            ..Default::default()
+        },
+    }));
+    rig.wait(|rig| rig.sample() == 0.5);
+    rig.state.fail_update.store(true, Ordering::SeqCst);
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Bus,
+        channels: 2,
+    }));
+    // The automatic rebuild fails; audio keeps running on the old graph.
+    rig.wait(|rig| rig.c.graph.snapshot().last_error.is_some());
+    assert_eq!(rig.c.core.phase(), SessionPhase::Running);
+    assert_eq!(rig.sample(), 0.5);
+    // The next edit retries the rebuild and this time it activates.
+    rig.state.fail_update.store(false, Ordering::SeqCst);
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Bus,
+        channels: 2,
+    }));
+    rig.wait(|rig| {
+        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
+            && rig.c.graph.snapshot().last_error.is_none()
+    });
+    assert_eq!(rig.sample(), 0.5);
+}
+
+#[test]
 fn solo_edits_fan_out_live_strip_mutes_to_parallel_sources() {
     let mut rig = Rig::new();
     rig.start();
@@ -1537,12 +1596,13 @@ fn repeated_same_candidate_apply_keeps_its_own_future_target_ack_barrier() {
         .clone();
     r.request(AppRequest::ApplyGraph);
     r.wait(|_| older.outcome() == ParameterOutcome::Superseded);
-    for _ in 0..3 {
-        r.tick();
-    }
-    assert_eq!(r.c.graph.snapshot().candidate_revision, revision);
-    assert_eq!(r.c.graph.snapshot().pending_revision, Some(revision));
-    assert_eq!(r.confirmation_revision(), Some((revision, 2)));
+    // The repeated apply re-establishes its own barrier once its host edit
+    // activates; the supersede may be observed first.
+    r.wait(|r| {
+        r.c.graph.snapshot().candidate_revision == revision
+            && r.c.graph.snapshot().pending_revision == Some(revision)
+            && r.confirmation_revision() == Some((revision, 2))
+    });
     r.state.block_update.store(false, Ordering::SeqCst);
     r.wait(|r| {
         r.c.graph.snapshot().active_revision == Some(revision) && r.c.control.accepted_pending == 0

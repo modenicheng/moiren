@@ -50,6 +50,7 @@ impl ServiceDriver for ManagedDriver {
             AppRequest::RefreshCatalog => self.catalog.request(),
             AppRequest::Start(spec) => {
                 self.automatic_startup = false;
+                self.auto_apply_deadline = None;
                 let mut settings = c.audio_settings.clone();
                 let Ok(block_frames) = u32::try_from(spec.max_block_frames) else {
                     c.graph
@@ -71,6 +72,7 @@ impl ServiceDriver for ManagedDriver {
             }
             AppRequest::ApplyGraph => {
                 self.automatic_startup = false;
+                self.auto_apply_deadline = None;
                 self.apply_audio_settings = Some(c.audio_settings.clone());
                 self.apply = true;
             }
@@ -78,6 +80,7 @@ impl ServiceDriver for ManagedDriver {
                 self.automatic_startup = false;
                 self.apply = false;
                 self.apply_audio_settings = None;
+                self.auto_apply_deadline = None;
                 let _ = c.core.stop();
                 self.retire(c);
             }
@@ -106,9 +109,9 @@ impl ServiceDriver for ManagedDriver {
                     if let Some(node) = edited_strip {
                         self.sync_effective_strip_parameters(c, node);
                     }
-                    // Structural edits rebuild automatically once auto-apply
-                    // lands; the flag is already the canonical classification.
-                    let _ = structural;
+                    if structural && self.owner.is_some() {
+                        self.auto_apply_deadline = Some(Instant::now() + super::AUTO_APPLY_DELAY);
+                    }
                 }
             }
             AppRequest::SetGainPan { gain, pan } => {
@@ -140,6 +143,14 @@ impl ServiceDriver for ManagedDriver {
     fn poll(&mut self, c: &mut ServiceContext, pool: &mut JobPool, budget: RoundBudget) {
         self.poll_completions(c, budget);
         self.poll_catalog(pool);
+        if let Some(deadline) = self.auto_apply_deadline
+            && deadline <= Instant::now()
+        {
+            self.auto_apply_deadline = None;
+            self.apply_audio_settings
+                .get_or_insert_with(|| c.audio_settings.clone());
+            self.apply = true;
+        }
         if self.apply {
             self.apply(c);
         }
@@ -160,10 +171,12 @@ impl ServiceDriver for ManagedDriver {
         self.exiting = true;
         self.apply = false;
         self.apply_audio_settings = None;
+        self.auto_apply_deadline = None;
         self.retire(c);
     }
     fn is_drained(&self) -> bool {
-        self.owner.is_none()
+        self.auto_apply_deadline.is_none()
+            && self.owner.is_none()
             && self.cleaning == 0
             && !self.catalog.is_running()
             && self.exports_runtime.is_drained()

@@ -132,6 +132,21 @@ impl BackendDriver {
     }
     /// Ownership-transfer block shared by Start and ApplyGraph: the candidate
     /// becomes the desired topology and all startup bookkeeping resets.
+    /// Restart the legacy session from the current candidate — the shared
+    /// body of ApplyGraph and the automatic apply of structural edits.
+    fn apply_candidate(&mut self, c: &mut ServiceContext) {
+        match c
+            .exports
+            .preflight_audio(&c.graph.snapshot().exports)
+            .and_then(|()| c.graph.session_spec(c.core.desired()))
+        {
+            Ok(spec) => match c.core.start(spec) {
+                Ok(_) => self.session_started(c),
+                Err(error) => c.graph.record_error(format!("{error:?}")),
+            },
+            Err(error) => c.graph.record_error(error),
+        }
+    }
     fn session_started(&mut self, c: &mut ServiceContext) {
         self.candidate_identity_matches_session = true;
         c.graph.clear_pending();
@@ -417,17 +432,29 @@ impl ServiceDriver for BackendDriver {
             AppRequest::RefreshCatalog => self.catalog.request(),
             AppRequest::EditGraph(edit) => {
                 // The legacy session exposes only node-addressed control
-                // bindings. Edge-targeted values (SetSend) stay candidate-only
-                // until the next Apply; the managed driver consumes the full
-                // canonical mapping.
+                // bindings. Edge- and strip-targeted values (SetSend,
+                // SetMixer) have no live mapping here, so any such edit
+                // rebuilds the running session automatically; the generation
+                // lifecycle coalesces bursts. The managed driver consumes the
+                // full canonical mapping instead.
+                let legacy_rebuild = matches!(
+                    edit,
+                    super::GraphEdit::SetMixer { .. } | super::GraphEdit::SetSend { .. }
+                );
                 let parameter = match graph::edit_parameter_values(&edit).as_slice() {
                     [(moiren_engine::host::ParameterTarget::Node { node, parameter }, value)] => {
                         Some((*node, *parameter, *value))
                     }
                     _ => None,
                 };
-                if c.graph.edit(edit).is_ok()
+                if let Ok(structural) = c.graph.edit(edit)
                     && self.candidate_identity_matches_session
+                    && c.core.phase() == SessionPhase::Running
+                    && (structural || legacy_rebuild)
+                    && c.audio_settings == AudioSettings::default()
+                {
+                    self.apply_candidate(c);
+                } else if self.candidate_identity_matches_session
                     && c.core.phase() == SessionPhase::Running
                     && let Some((node, parameter, value)) = parameter
                     && let Some(owner) = self.active.as_mut()
@@ -507,17 +534,7 @@ impl ServiceDriver for BackendDriver {
             AppRequest::ApplyGraph if c.audio_settings != AudioSettings::default() => {
                 c.graph.record_error(PROFESSIONAL_SETTINGS_UNSUPPORTED);
             }
-            AppRequest::ApplyGraph => match c
-                .exports
-                .preflight_audio(&c.graph.snapshot().exports)
-                .and_then(|()| c.graph.session_spec(c.core.desired()))
-            {
-                Ok(spec) => match c.core.start(spec) {
-                    Ok(_) => self.session_started(c),
-                    Err(error) => c.graph.record_error(format!("{error:?}")),
-                },
-                Err(error) => c.graph.record_error(error),
-            },
+            AppRequest::ApplyGraph => self.apply_candidate(c),
             AppRequest::SetGainPan { gain, pan } if model::valid_gain_pan(gain, pan) => {
                 if !self.candidate_identity_matches_session {
                     c.graph
