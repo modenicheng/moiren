@@ -66,7 +66,7 @@ static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
 {
     *link = {};
     UNICODE_STRING reference;
-    RtlInitUnicodeString(&reference, L"MoirenEndpoint");
+    RtlInitUnicodeString(&reference, VadAudioReference);
     // Registration alone leaves the interface DISABLED. Never call
     // IoSetDeviceInterfaceState(TRUE) or let WDF automatically enable it.
     NTSTATUS status = IoRegisterDeviceInterface(

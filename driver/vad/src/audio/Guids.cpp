@@ -6,4 +6,6 @@
 #include <initguid.h>
 #include "Audio.h"
 #include <ks.h>
+#define NOBITMAP
+#include <mmreg.h>
 #include <ksmedia.h>

@@ -85,6 +85,20 @@ static void ClearTimerPacket(VAD_AUDIO_STREAM* stream)
     stream->TimerPacket = {};
 }
 
+// State is held. Erase every buffer byte and packet bookkeeping field a late
+// reader could observe, so nothing from a previous admission, generation or
+// epoch survives into the next one. The pause/resume pair (VadAudioStopLocked
+// with reset=false and VadAudioStreamRun) instead preserves LastCaptureStart
+// so a packet completed before the pause still reports its true capture time.
+static void QuiesceStreamBuffers(VAD_AUDIO_STREAM* stream)
+{
+    ClearTimerPacket(stream);
+    stream->RenderReadyMask = 0;
+    stream->DeliveredPackets = stream->CompletedPackets;
+    stream->LastCaptureStart = 0;
+    ZeroPackets(stream);
+}
+
 // Lifecycle held; the caller has already stopped and drained the timer.
 _IRQL_requires_(PASSIVE_LEVEL)
 static void FreePacketStorage(VAD_AUDIO_STREAM* stream)
@@ -152,6 +166,9 @@ void VadAudioStopLocked(VAD_AUDIO_STREAM* stream, bool reset)
         stream->TimerRing.PresentedFrames = 0;
         stream->TimerRing.SegmentSequence = 0;
     }
+    // Deliberately not QuiesceStreamBuffers: across a pause (reset=false) a
+    // packet completed before the stop must still deliver its capture time, so
+    // LastCaptureStart survives and the remaining fields are reset here.
     ClearTimerPacket(stream);
     stream->RenderReadyMask = 0;
     stream->DeliveredPackets = stream->CompletedPackets;
@@ -247,14 +264,12 @@ static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
         stream->Clock, stream->TimerRing, now);
     if (!schedule.Valid) {
         stream->Running = FALSE;
-        ClearTimerPacket(stream);
-        ZeroPackets(stream);
+        QuiesceStreamBuffers(stream);
         return;
     }
     if (schedule.Rebased) {
         VadPcmDiscontinuity(stream->Device, stream->Generation);
-        ClearTimerPacket(stream);
-        ZeroPackets(stream);
+        QuiesceStreamBuffers(stream);
     }
     ULONG remaining = schedule.Frames;
     // A budget no larger than one packet crosses at most one logical and one
@@ -263,8 +278,7 @@ static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
         vad::audio::TimerDrivenSegment segment = {};
         if (!vad::audio::NextTimerDrivenSegment(stream->TimerRing, segment, remaining)) {
             stream->Running = FALSE;
-            ClearTimerPacket(stream);
-            ZeroPackets(stream);
+            QuiesceStreamBuffers(stream);
             return;
         }
         remaining -= segment.Frames;
@@ -296,9 +310,7 @@ VOID VadAudioTimer(WDFTIMER timer)
     if (!VadAudioIsStreamCurrent(stream->Device, stream->Generation)) {
         vad::audio::PauseClock(stream->Clock, now);
         stream->Running = FALSE;
-        ClearTimerPacket(stream);
-        ZeroPackets(stream);
-        stream->DeliveredPackets = stream->CompletedPackets;
+        QuiesceStreamBuffers(stream);
         KeReleaseSpinLock(&stream->State, irql);
         return;
     }
@@ -408,11 +420,7 @@ void VadAudioClearGateBuffers(WDFDEVICE child)
     auto stream = VadAudioStream(device->Stream);
     KIRQL irql;
     KeAcquireSpinLock(&stream->State, &irql);
-    ClearTimerPacket(stream);
-    ZeroPackets(stream);
-    stream->RenderReadyMask = 0;
-    stream->DeliveredPackets = stream->CompletedPackets;
-    stream->LastCaptureStart = 0;
+    QuiesceStreamBuffers(stream);
     KeReleaseSpinLock(&stream->State, irql);
 }
 
@@ -483,6 +491,8 @@ NTSTATUS VadAudioStreamRun(ACXSTREAM stream)
     context->DeliveredPackets = context->CompletedPackets;
     if (resume) {
         VadPcmDiscontinuity(context->Device, context->Generation);
+        // Like VadAudioStopLocked above, LastCaptureStart is preserved so a
+        // pre-pause completion still reports its capture time.
         context->RenderReadyMask = 0;
         ZeroPackets(context); // Discard stale pre-pause PCM, retain first preroll.
         ClearTimerPacket(context);

@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// Independent of WDF so stream clock/packet arithmetic is tested off-target.
+// Pin the PCM clock contract to the user/kernel ABI header so the packet
+// arithmetic can never drift from include/moiren_vad.h. Still independent of
+// WDF so the arithmetic is tested off-target.
+#include "../../include/moiren_vad.h"
+
 #if !defined(MOIREN_VAD_KERNEL)
 #include <stdint.h>
 #endif
 
 namespace vad::audio {
-constexpr uint64_t Rate = 48000;
+constexpr uint64_t Rate = MOIREN_VAD_SAMPLE_RATE;
 constexpr uint64_t HnsPerSecond = 10000000;
 constexpr uint32_t MaxPackets = 2;
 constexpr uint32_t MinPacketFrames = 48;
-constexpr uint32_t MaxPacketFrames = 4800;
+constexpr uint32_t MaxPacketFrames = MOIREN_VAD_MAX_PACKET_FRAMES;
 constexpr uint32_t EndOfStream = 0x200; // KSSTREAM_HEADER_OPTIONSF_ENDOFSTREAM.
 constexpr uint32_t DefaultTimerSegmentFrames = 48; // 1 ms at 48 kHz.
 

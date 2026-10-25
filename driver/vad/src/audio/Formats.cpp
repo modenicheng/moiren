@@ -11,10 +11,6 @@ static ULONG ChannelMask(ULONG channels)
         SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
 }
 
-static const GUID FloatSubtype =
-    {0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
-constexpr USHORT FloatFormatTag = 3;
-
 VAD_PAGE NTSTATUS VadAudioValidateFormat(VAD_AUDIO_DEVICE* device, ACXDATAFORMAT format,
     ULONG* blockAlign)
 {
@@ -32,7 +28,7 @@ VAD_PAGE NTSTATUS VadAudioValidateFormat(VAD_AUDIO_DEVICE* device, ACXDATAFORMAT
     }
     const bool pcm = IsEqualGUID(sub, KSDATAFORMAT_SUBTYPE_PCM) &&
         wave->wBitsPerSample == 16;
-    const bool floating = IsEqualGUID(sub, FloatSubtype) &&
+    const bool floating = IsEqualGUID(sub, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) &&
         wave->wBitsPerSample == 32;
     if (!pcm && !floating) {
         return STATUS_NO_MATCH;
@@ -53,7 +49,7 @@ VAD_PAGE NTSTATUS VadAudioValidateFormat(VAD_AUDIO_DEVICE* device, ACXDATAFORMAT
             return STATUS_NO_MATCH;
         }
     } else if (wave->cbSize != 0 ||
-        wave->wFormatTag != (pcm ? WAVE_FORMAT_PCM : FloatFormatTag)) {
+        wave->wFormatTag != (pcm ? WAVE_FORMAT_PCM : WAVE_FORMAT_IEEE_FLOAT)) {
         return STATUS_NO_MATCH;
     }
     *blockAlign = align;
@@ -98,7 +94,7 @@ VAD_PAGE NTSTATUS VadAudioAddFormats(VAD_AUDIO_DEVICE* device, ACXPIN host)
             ks.DataFormat.SampleSize = device->Channels * bits / 8;
             ks.DataFormat.MajorFormat = KSDATAFORMAT_TYPE_AUDIO;
             ks.DataFormat.SubFormat = bits == 16 ?
-                KSDATAFORMAT_SUBTYPE_PCM : FloatSubtype;
+                KSDATAFORMAT_SUBTYPE_PCM : KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
             ks.DataFormat.Specifier = KSDATAFORMAT_SPECIFIER_WAVEFORMATEX;
             auto& wave = ks.WaveFormatExt;
             wave.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;

@@ -2,9 +2,6 @@
 #pragma once
 #include "../Driver.h"
 
-// Must match Policy.cpp's interface reference string before publication.
-inline constexpr WCHAR VadAudioReference[] = L"MoirenEndpoint";
-
 // PASSIVE_LEVEL, before WdfDeviceCreate. Installs the audio PnP callbacks.
 _IRQL_requires_(PASSIVE_LEVEL)
 VAD_PAGE NTSTATUS VadAudioConfigureInit(PWDFDEVICE_INIT init);

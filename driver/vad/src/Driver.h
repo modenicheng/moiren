@@ -10,6 +10,11 @@
 
 extern const GUID VadControlInterface;
 
+// Published audio identity: the ACX circuit name and the registered device
+// interface reference string are one value shared by Policy and the audio
+// circuit, so they cannot drift apart.
+inline constexpr WCHAR VadAudioReference[] = L"MoirenEndpoint";
+
 struct VAD_SHARED {
     // Root cleanup can precede the final destruction of a referenced PDO.
     // This fixed allocation survives independently of cleaned-up WDF objects.

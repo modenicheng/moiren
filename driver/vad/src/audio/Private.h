@@ -7,6 +7,12 @@
 #include <windef.h>
 #include <mmsystem.h>
 #include <ks.h>
+// mmreg.h supplies the IEEE float format tag and KS subformat GUID that
+// ksmedia.h only defines when _INC_MMREG is set; the kernel include graph
+// does not pull it in on its own. NOBITMAP skips its wingdi-dependent
+// structure block, which a kernel driver never uses.
+#define NOBITMAP
+#include <mmreg.h>
 #include <ksmedia.h>
 
 constexpr ULONG VadAudioHostPin = 0;
