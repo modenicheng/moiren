@@ -11,13 +11,13 @@ use moiren_core::{
     protocol::{ParamValue, ParameterId, ParameterKey, ProcessorId},
 };
 
-pub(super) struct Send {
+pub(crate) struct Send {
     pub channels: usize,
 }
 impl Send {
-    const GAIN: ParameterId = ParameterId(0);
-    const PAN: ParameterId = ParameterId(1);
-    const MUTE: ParameterId = ParameterId(2);
+    pub(crate) const GAIN: ParameterId = ParameterId(0);
+    pub(crate) const PAN: ParameterId = ParameterId(1);
+    pub(crate) const MUTE: ParameterId = ParameterId(2);
 
     pub fn parameters(
         processor: ProcessorId,

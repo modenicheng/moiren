@@ -40,7 +40,7 @@ fn example_ramp<S: ProcessingSample>() {
     let mut compiled = compile(&graph, bindings, config()).unwrap();
     assert_eq!(compiled.stats.node_count, 5);
     assert_eq!(compiled.stats.edge_count, 4);
-    assert_eq!(compiled.stats.operation_count, 9);
+    assert_eq!(compiled.stats.operation_count, 7);
     let id = compiled.bindings.node(pan).unwrap();
     let ack = compiled.control.submit(
         ParameterRequest {

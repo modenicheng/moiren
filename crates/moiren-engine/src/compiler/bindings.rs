@@ -139,6 +139,10 @@ impl<S: ProcessingSample> NodeBindings<S> {
         self.input_observers.remove(&port)
     }
 
+    pub(super) fn has_input_observers(&self, port: PortId) -> bool {
+        self.input_observers.contains_key(&port)
+    }
+
     pub(super) fn validate(&self, graph: &LogicalGraph) -> Result<(), CompileError> {
         for (&node, config) in &self.strips {
             let graph_node = graph.get_node(node)?;

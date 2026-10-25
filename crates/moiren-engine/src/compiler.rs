@@ -1,5 +1,5 @@
-//! Non-RT reference compiler. Every signal has a dedicated slot; no in-place
-//! processing or slot reuse can overwrite a value needed by another consumer.
+//! Non-RT graph lowering, fused Bus mixing, and lifetime-based buffer planning.
+//! The dedicated-slot reference path remains available for equivalence checks.
 use std::{collections::BTreeMap, mem::size_of};
 
 use moiren_core::{
@@ -19,7 +19,8 @@ use crate::{
 mod bindings;
 mod observers;
 mod plan;
-mod send;
+pub(crate) mod send;
+mod storage;
 mod update;
 
 pub use update::{
@@ -115,6 +116,12 @@ pub struct CompileStats {
     pub operation_count: usize,
     pub slot_count: usize,
     pub audio_bytes: usize,
+    /// Scheduled operations replacing a group of logical processors.
+    pub fused_operation_count: usize,
+    /// Fused Send + Bus operations (zero on the reference path).
+    pub mix_operation_count: usize,
+    /// Unary operations whose last-use input also stores their output.
+    pub in_place_count: usize,
 }
 pub struct CompiledGraph<S: ProcessingSample> {
     pub engine: Engine<S>,
@@ -130,7 +137,17 @@ pub fn compile<S: ProcessingSample>(
     bindings: NodeBindings<S>,
     config: CompileConfig,
 ) -> Result<CompiledGraph<S>, CompileError> {
-    compile_inner(graph, bindings, config, None)
+    compile_inner(graph, bindings, config, None, true)
+}
+
+/// Compile using the original one-processor-per-edge schedule. This is kept
+/// as a correctness oracle for optimized lowering and for diagnostics.
+pub fn compile_reference<S: ProcessingSample>(
+    graph: &LogicalGraph,
+    bindings: NodeBindings<S>,
+    config: CompileConfig,
+) -> Result<CompiledGraph<S>, CompileError> {
+    compile_inner(graph, bindings, config, None, false)
 }
 
 pub fn compile_with_signals<S: ProcessingSample>(
@@ -139,7 +156,7 @@ pub fn compile_with_signals<S: ProcessingSample>(
     config: CompileConfig,
     host: &moiren_signal::HostControl,
 ) -> Result<CompiledGraph<S>, CompileError> {
-    compile_inner(graph, bindings, config, Some(host))
+    compile_inner(graph, bindings, config, Some(host), true)
 }
 
 fn compile_inner<S: ProcessingSample>(
@@ -147,6 +164,7 @@ fn compile_inner<S: ProcessingSample>(
     mut bindings: NodeBindings<S>,
     config: CompileConfig,
     host: Option<&moiren_signal::HostControl>,
+    optimized: bool,
 ) -> Result<CompiledGraph<S>, CompileError> {
     let cfg = config.engine;
     cfg.validated()?;
@@ -172,6 +190,7 @@ fn compile_inner<S: ProcessingSample>(
         &mut bindings,
         cfg.max_block_frames,
         cfg.processing_sr,
+        optimized,
     )?;
     for ((node, slot, parameter), value) in bindings.rack_initial {
         let parameter = ParameterId(parameter);
@@ -192,6 +211,9 @@ fn compile_inner<S: ProcessingSample>(
             .ok_or(CompileError::BindingKind { node })?;
         spec.initial = value;
     }
+    if optimized {
+        storage::optimize(&mut builder.ops, &mut builder.layouts);
+    }
     let audio_bytes = builder.layouts.iter().try_fold(0usize, |total, layout| {
         layout
             .channels
@@ -200,15 +222,24 @@ fn compile_inner<S: ProcessingSample>(
             .and_then(|bytes| total.checked_add(bytes))
             .ok_or(BufferError::SizeOverflow)
     })?;
+    let arena = BufferArena::new(&builder.layouts, config.audio_byte_budget)?;
+    let specs = plan::prepare_operations(builder.ops, &arena)?;
     let stats = CompileStats {
         node_count: graph.nodes().len(),
         edge_count: graph.edges().len(),
-        operation_count: builder.ops.len(),
+        operation_count: specs.len(),
         slot_count: builder.layouts.len(),
         audio_bytes,
+        fused_operation_count: specs.iter().filter(|spec| spec.fused.is_some()).count(),
+        mix_operation_count: specs
+            .iter()
+            .filter(|spec| matches!(spec.fused, Some(crate::runtime::FusedOpSpec::Mix { .. })))
+            .count(),
+        in_place_count: specs
+            .iter()
+            .filter(|spec| spec.io.mode() == crate::buffer::IoMode::InPlace)
+            .count(),
     };
-    let arena = BufferArena::new(&builder.layouts, config.audio_byte_budget)?;
-    let specs = plan::prepare_operations(builder.ops, &arena)?;
     let resources = RtResources::new(builder.instances)?;
     let (control, parameters) = parameter_channel(
         builder.params,
@@ -217,12 +248,13 @@ fn compile_inner<S: ProcessingSample>(
         config.control_capacity,
         config.control_horizon_frames,
     )?;
-    let plan = ExecutionPlan::prepare_inner(arena, specs, &resources, &parameters, cfg, host)
-        .map_err(|error| match error {
-            RuntimeError::SignalsRequireHost => CompileError::SignalsRequireHost,
-            RuntimeError::Signal(error) => CompileError::Signal(error),
-            error => CompileError::Runtime(error),
-        })?;
+    let plan =
+        ExecutionPlan::prepare_compiled_inner(arena, specs, &resources, &parameters, cfg, host)
+            .map_err(|error| match error {
+                RuntimeError::SignalsRequireHost => CompileError::SignalsRequireHost,
+                RuntimeError::Signal(error) => CompileError::Signal(error),
+                error => CompileError::Runtime(error),
+            })?;
     let engine = Engine::new(plan, resources, parameters)?;
     Ok(CompiledGraph {
         engine,

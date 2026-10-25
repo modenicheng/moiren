@@ -1,4 +1,4 @@
-//! Dedicated signal slots preserve fan-out and make preparation deterministic.
+//! Lower logical topology to a schedule with explicit signal reads and writes.
 use moiren_core::{
     graph::{GraphError, LogicalGraph, NodeId, NodeKind, SendTap},
     protocol::ProcessorId,
@@ -17,7 +17,7 @@ use crate::{
         Bus, ChannelMapper, ChannelMapperSettings, Compressor, Delay, Eq, Gain, Gate, Limiter, Pan,
         PassThrough, RtProcessor,
     },
-    runtime::{OpSpec, ProcessorInstance},
+    runtime::{CompiledOpSpec, FusedMixInputSpec, FusedOpSpec, ProcessorInstance},
     sample::ProcessingSample,
 };
 
@@ -25,6 +25,9 @@ pub(super) struct DraftOp {
     pub(super) processor: ProcessorId,
     pub(super) reads: Vec<(u16, usize)>,
     pub(super) outputs: Vec<(u16, usize)>,
+    pub(super) fused: Option<FusedOpSpec>,
+    pub(super) in_place_candidate: bool,
+    pub(super) in_place: bool,
 }
 pub(super) struct Builder<S: ProcessingSample> {
     frames: usize,
@@ -57,6 +60,9 @@ impl<S: ProcessingSample> Builder<S> {
             processor,
             reads: vec![(0, source)],
             outputs: vec![(0, slot)],
+            fused: None,
+            in_place_candidate: false,
+            in_place: false,
         });
         Ok(slot)
     }
@@ -203,6 +209,7 @@ pub(super) fn build<S: ProcessingSample>(
     bindings: &mut NodeBindings<S>,
     frames: usize,
     processing_sr: f64,
+    optimized: bool,
 ) -> Result<(Builder<S>, CompiledBindings), CompileError> {
     let incoming: BTreeMap<_, _> = graph.edges().iter().map(|e| (e.dst_port(), e)).collect();
     let mut outputs = BTreeMap::new();
@@ -225,14 +232,26 @@ pub(super) fn build<S: ProcessingSample>(
         let node = graph.get_node(id)?;
         let strip = bindings.strips.get(&id).copied();
         let mut reads = Vec::with_capacity(node.inputs().len());
+        let use_mix = optimized
+            && node.kind() == NodeKind::Bus
+            && !node
+                .inputs()
+                .iter()
+                .any(|port| bindings.has_input_observers(port.id()));
+        let mut mix_inputs = Vec::new();
         for (index, port) in node.inputs().iter().enumerate() {
+            // An unconnected Bus input contributes zero. A fused mix does not
+            // need to materialize that silence; observed inputs use the fallback.
+            if use_mix && !incoming.contains_key(&port.id()) {
+                continue;
+            }
+            let port_index = u16::try_from(index).map_err(|_| GraphError::TooManyPorts)?;
             let slot = if let Some(edge) = incoming.get(&port.id()) {
                 let source = if edge.params().tap == SendTap::PreFader {
                     pre_fader[&edge.src_port()]
                 } else {
                     outputs[&edge.src_port()]
                 };
-                let slot = builder.slot(port.channels());
                 let send = Send {
                     channels: port.channels(),
                 };
@@ -240,17 +259,28 @@ pub(super) fn build<S: ProcessingSample>(
                 let (specs, keys) = Send::parameters(processor, port.channels(), *edge.params());
                 builder.params.extend(specs);
                 mapping.edges.insert(edge.id(), keys);
-                builder.ops.push(DraftOp {
-                    processor,
-                    reads: vec![(0, source)],
-                    outputs: vec![(0, slot)],
-                });
-                slot
+                if use_mix {
+                    mix_inputs.push(FusedMixInputSpec {
+                        processor,
+                        port: port_index,
+                    });
+                    source
+                } else {
+                    let slot = builder.slot(port.channels());
+                    builder.ops.push(DraftOp {
+                        processor,
+                        reads: vec![(0, source)],
+                        outputs: vec![(0, slot)],
+                        fused: None,
+                        in_place_candidate: false,
+                        in_place: false,
+                    });
+                    slot
+                }
             } else {
                 // Dedicated initialized silence. No operation ever writes here.
                 builder.slot(port.channels())
             };
-            let port_index = u16::try_from(index).map_err(|_| GraphError::TooManyPorts)?;
             let slot = if node.kind() == NodeKind::Sink
                 && let Some(config) = strip
             {
@@ -316,6 +346,16 @@ pub(super) fn build<S: ProcessingSample>(
             processor,
             reads,
             outputs: writes.clone(),
+            fused: if use_mix {
+                Some(FusedOpSpec::Mix {
+                    inputs: mix_inputs.into_boxed_slice(),
+                    input_count: node.inputs().len(),
+                })
+            } else {
+                None
+            },
+            in_place_candidate: !use_mix && matches!(node.kind(), NodeKind::Gain | NodeKind::Pan),
+            in_place: false,
         });
         // A strip is a node control shared across its output streams, but each
         // stream retains its own width and pre-fader tap (never a NodeId alias).
@@ -395,6 +435,9 @@ fn lower_rack<S: ProcessingSample>(
             processor: prepared,
             reads: vec![(0, streams[io.route])],
             outputs: vec![(0, output)],
+            fused: None,
+            in_place_candidate: false,
+            in_place: false,
         });
         streams[io.route] = output;
         mapping.rack_slots.insert((id, slot.id), prepared);
@@ -410,26 +453,41 @@ fn lower_rack<S: ProcessingSample>(
 pub(super) fn prepare_operations<S: ProcessingSample>(
     ops: Vec<DraftOp>,
     arena: &BufferArena<S>,
-) -> Result<Vec<OpSpec>, BufferError> {
+) -> Result<Vec<CompiledOpSpec>, BufferError> {
     ops.into_iter()
         .map(|op| {
-            let mut access: Vec<_> = op
-                .reads
-                .into_iter()
-                .map(|(port, slot)| PortAccess::Read {
-                    port,
-                    slot: arena.slot(slot).expect("compiler allocated slot"),
-                })
-                .collect();
-            for (port, slot) in op.outputs {
-                access.push(PortAccess::Write {
-                    port,
-                    slot: arena.slot(slot).expect("compiler allocated slot"),
-                });
-            }
-            Ok(OpSpec {
-                processor: op.processor,
-                io: arena.prepare_io(&access)?,
+            let access = if op.in_place {
+                let (input, input_slot) = op.reads[0];
+                let (output, output_slot) = op.outputs[0];
+                debug_assert_eq!(input_slot, output_slot);
+                vec![PortAccess::InPlace {
+                    input,
+                    output,
+                    slot: arena.slot(input_slot).expect("compiler allocated slot"),
+                }]
+            } else {
+                let mut access: Vec<_> = op
+                    .reads
+                    .into_iter()
+                    .map(|(port, slot)| PortAccess::Read {
+                        port,
+                        slot: arena.slot(slot).expect("compiler allocated slot"),
+                    })
+                    .collect();
+                for (port, slot) in op.outputs {
+                    access.push(PortAccess::Write {
+                        port,
+                        slot: arena.slot(slot).expect("compiler allocated slot"),
+                    });
+                }
+                access
+            };
+            let io = arena.prepare_io(&access)?;
+            let processor = op.processor;
+            Ok(CompiledOpSpec {
+                processor,
+                io,
+                fused: op.fused,
             })
         })
         .collect::<Result<Vec<_>, BufferError>>()

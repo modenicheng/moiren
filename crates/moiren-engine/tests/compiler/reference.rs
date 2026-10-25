@@ -1,6 +1,6 @@
 use super::*;
 
-fn random_dags<S: ProcessingSample>() {
+fn random_dags<S: ProcessingSample>(optimized: bool) {
     let mut rng = 0x73b7_9816_u64;
     let mut next = || {
         rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
@@ -66,7 +66,12 @@ fn random_dags<S: ProcessingSample>() {
             bindings.bind_sink(sink, writer).unwrap();
             sinks.push((reader, expected[index]));
         }
-        let mut compiled = compile(&graph, bindings, config()).unwrap();
+        let mut compiled = if optimized {
+            compile(&graph, bindings, config())
+        } else {
+            compile_reference(&graph, bindings, config())
+        }
+        .unwrap();
         for frames in [1, 8, 3, 2] {
             compiled.engine.render(frames).unwrap();
             for (reader, value) in &mut sinks {
@@ -87,6 +92,8 @@ fn random_dags<S: ProcessingSample>() {
 
 #[test]
 fn random_dags_match_independent_sample_evaluation_for_both_precisions() {
-    random_dags::<f32>();
-    random_dags::<f64>();
+    for optimized in [false, true] {
+        random_dags::<f32>(optimized);
+        random_dags::<f64>(optimized);
+    }
 }

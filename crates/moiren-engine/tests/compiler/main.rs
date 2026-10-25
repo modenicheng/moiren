@@ -11,6 +11,8 @@ mod common;
 mod compressor;
 mod nodes;
 mod observers;
+mod optimization;
+mod optimized_mix;
 mod rack;
 mod rack_initial;
 mod reference;

@@ -14,6 +14,11 @@ impl FloatRamp {
             duration: 0,
         }
     }
+    /// DSP kernels may hoist completed ramps out of their sample loop. An
+    /// active ramp still uses interpolation, including its rounding behavior.
+    pub(crate) fn constant_value(self) -> Option<f64> {
+        (self.elapsed >= self.duration).then_some(self.target)
+    }
     fn at_progress(self, progress: u64) -> f64 {
         if self.duration == 0 || progress >= u64::from(self.duration) {
             return self.target;

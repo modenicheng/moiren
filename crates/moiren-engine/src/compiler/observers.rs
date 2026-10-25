@@ -14,6 +14,9 @@ pub(super) fn push<S: ProcessingSample>(
         processor,
         reads: vec![(0, slot)],
         outputs: Vec::new(),
+        fused: None,
+        in_place_candidate: false,
+        in_place: false,
     });
     Ok(processor)
 }

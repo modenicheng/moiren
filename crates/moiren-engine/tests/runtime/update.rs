@@ -828,3 +828,225 @@ fn every_protected_sink_survives_partial_reuse_rejection_and_slot_migration_with
     assert_samples_exact(&mut output_a, &[2.5, 3.0]);
     assert_samples_exact(&mut output_b, &[5.0, 6.0]);
 }
+
+#[test]
+fn fused_send_ramp_survives_adding_another_bus_input() {
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 1).unwrap();
+    let bus = graph.create_node(NodeKind::Bus, 1).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 1).unwrap();
+    let port = graph.add_input_port(bus, 1).unwrap();
+    let edge = graph
+        .connect(common::output(&graph, source), port, SendParams::default())
+        .unwrap();
+    connect(&mut graph, bus, sink);
+    let (writer, mut output) = audio_bridge::<f64>(1, 32, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings
+        .bind_source(source, common::CountingSource { next: 1.0 })
+        .unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    let mut active = compile(&graph, bindings, config(1)).unwrap();
+    assert_eq!(active.stats.mix_operation_count, 1);
+    let target = active.bindings.edge(edge).unwrap().gain;
+    let basis = active.engine.plan_snapshot();
+    let mut plans = active.engine.enable_plan_switching(1).unwrap();
+    assert_eq!(
+        active
+            .control
+            .submit(
+                ParameterRequest {
+                    request_id: 1,
+                    plan_revision: 1,
+                    timeline_epoch: 17,
+                    target,
+                    at: ApplyAt::NextBlock,
+                    value: ParamValue::Float(0.5),
+                    ramp_frames: 4,
+                },
+                0
+            )
+            .code,
+        ReplyCode::Accepted
+    );
+    active.engine.render(2).unwrap();
+    assert_samples_exact(&mut output, &[0.875, 1.5]);
+    let added = graph.add_input_port(bus, 1).unwrap();
+    graph
+        .connect(
+            common::output(&graph, source),
+            added,
+            SendParams {
+                mute: true,
+                ..SendParams::default()
+            },
+        )
+        .unwrap();
+    let reuse: Vec<_> = [source, sink]
+        .into_iter()
+        .map(|node| (node, active.bindings.node(node).unwrap()))
+        .collect();
+    let update = compile_update_with_reuse(
+        &graph,
+        NodeBindings::new(),
+        config(2),
+        &basis,
+        UpdateReuse {
+            nodes: &reuse,
+            edges: &[(edge, target.processor)],
+            rack_slots: &[],
+        },
+        None,
+    )
+    .unwrap();
+    plans.publish(update.plan).unwrap();
+    let (report, counts) = track_allocations(|| active.engine.render(2));
+    report.unwrap();
+    assert_eq!(counts, (0, 0));
+    assert_samples_exact(&mut output, &[1.875, 2.0]);
+    assert_eq!(
+        plans.poll_retired().unwrap().outcome(),
+        RetireOutcome::Replaced {
+            active_revision: 2,
+            frame: 2
+        }
+    );
+}
+
+#[test]
+fn gain_ramp_survives_prefader_consumers_disabling_in_place() {
+    let (mut graph, [source, gain, sink], mut active, mut output) = initial();
+    assert_eq!(active.stats.in_place_count, 1);
+    let basis = active.engine.plan_snapshot();
+    let mut plans = active.engine.enable_plan_switching(1).unwrap();
+    assert_eq!(
+        active
+            .control
+            .submit(
+                ParameterRequest {
+                    request_id: 1,
+                    plan_revision: 1,
+                    timeline_epoch: 17,
+                    target: ParameterKey {
+                        processor: active.bindings.node(gain).unwrap(),
+                        parameter: Gain::LEVEL
+                    },
+                    at: ApplyAt::NextBlock,
+                    value: ParamValue::Float(0.5),
+                    ramp_frames: 4,
+                },
+                0
+            )
+            .code,
+        ReplyCode::Accepted
+    );
+    active.engine.render(2).unwrap();
+    assert_samples_exact(&mut output, &[0.875, 1.5]);
+    let bus = graph.create_node(NodeKind::Bus, 1).unwrap();
+    let port = graph.add_input_port(bus, 1).unwrap();
+    graph
+        .connect(
+            common::output(&graph, gain),
+            port,
+            SendParams {
+                tap: SendTap::PreFader,
+                ..SendParams::default()
+            },
+        )
+        .unwrap();
+    let reuse: Vec<_> = [source, gain, sink]
+        .into_iter()
+        .map(|node| (node, active.bindings.node(node).unwrap()))
+        .collect();
+    let update =
+        compile_update(&graph, NodeBindings::new(), config(2), &basis, &reuse, None).unwrap();
+    assert_eq!(update.stats.in_place_count, 0);
+    plans.publish(update.plan).unwrap();
+    let (report, counts) = track_allocations(|| active.engine.render(2));
+    report.unwrap();
+    assert_eq!(counts, (0, 0));
+    assert_samples_exact(&mut output, &[1.875, 2.0]);
+    assert!(matches!(
+        plans.poll_retired().unwrap().outcome(),
+        RetireOutcome::Replaced { .. }
+    ));
+}
+
+#[test]
+fn sparse_bus_and_send_reuse_survive_observer_fallback() {
+    let mut graph = LogicalGraph::new();
+    let source = graph.create_node(NodeKind::Source, 1).unwrap();
+    let bus = graph.create_node(NodeKind::Bus, 1).unwrap();
+    let sink = graph.create_node(NodeKind::Sink, 1).unwrap();
+    let disconnected = graph.add_input_port(bus, 1).unwrap();
+    let connected = graph.add_input_port(bus, 1).unwrap();
+    let edge = graph
+        .connect(
+            common::output(&graph, source),
+            connected,
+            SendParams::default(),
+        )
+        .unwrap();
+    connect(&mut graph, bus, sink);
+    let (writer, mut output) = audio_bridge::<f64>(1, 32, 4096).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings
+        .bind_source(source, common::CountingSource { next: 1.0 })
+        .unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    let mut active = compile(&graph, bindings, config(1)).unwrap();
+    let target = active.bindings.edge(edge).unwrap().gain;
+    let basis = active.engine.plan_snapshot();
+    let mut plans = active.engine.enable_plan_switching(1).unwrap();
+    assert_eq!(
+        active
+            .control
+            .submit(
+                ParameterRequest {
+                    request_id: 1,
+                    plan_revision: 1,
+                    timeline_epoch: 17,
+                    target,
+                    at: ApplyAt::NextBlock,
+                    value: ParamValue::Float(0.5),
+                    ramp_frames: 4,
+                },
+                0
+            )
+            .code,
+        ReplyCode::Accepted
+    );
+    active.engine.render(2).unwrap();
+    assert_samples_exact(&mut output, &[0.875, 1.5]);
+    let (observer, mut observed) = moiren_engine::meter::level_meter(1, 8).unwrap();
+    let mut bindings = NodeBindings::new();
+    bindings.observe_input(disconnected, observer).unwrap();
+    let reuse: Vec<_> = [source, bus, sink]
+        .into_iter()
+        .map(|node| (node, active.bindings.node(node).unwrap()))
+        .collect();
+    let update = compile_update_with_reuse(
+        &graph,
+        bindings,
+        config(2),
+        &basis,
+        UpdateReuse {
+            nodes: &reuse,
+            edges: &[(edge, target.processor)],
+            rack_slots: &[],
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(update.stats.mix_operation_count, 0);
+    plans.publish(update.plan).unwrap();
+    let (report, counts) = track_allocations(|| active.engine.render(2));
+    report.unwrap();
+    assert_eq!(counts, (0, 0));
+    assert_samples_exact(&mut output, &[1.875, 2.0]);
+    assert_eq!(observed.latest().unwrap().peak, 0.0);
+    assert!(matches!(
+        plans.poll_retired().unwrap().outcome(),
+        RetireOutcome::Replaced { .. }
+    ));
+}

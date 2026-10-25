@@ -10,7 +10,9 @@ use moiren_core::protocol::ProcessorId;
 use std::{any::TypeId, sync::Arc};
 use thiserror::Error;
 
+mod mix;
 mod swap;
+use mix::{PreparedMixInput, process_mix};
 pub use swap::{
     PlanControlPort, PlanSnapshot, PlanSwapError, PreparedPlan, ProcessorReuse, PublishFailure,
     RetireOutcome, RetiredPlan,
@@ -111,11 +113,50 @@ pub struct OpSpec {
     pub processor: ProcessorId,
     pub io: PreparedIo,
 }
+pub(crate) struct FusedMixInputSpec {
+    pub processor: ProcessorId,
+    pub port: u16,
+}
+pub(crate) enum FusedOpSpec {
+    Mix {
+        inputs: Box<[FusedMixInputSpec]>,
+        input_count: usize,
+    },
+}
+pub(crate) struct CompiledOpSpec {
+    pub processor: ProcessorId,
+    pub io: PreparedIo,
+    pub fused: Option<FusedOpSpec>,
+}
+enum PreparedOpKind {
+    Processor {
+        runtime: usize,
+        params: ParameterBindings,
+    },
+    Mix {
+        runtime: usize,
+        params: ParameterBindings,
+        inputs: Box<[PreparedMixInput]>,
+        input_count: usize,
+    },
+}
 struct PreparedOp {
-    runtime: usize,
     io: PreparedIo,
-    params: ParameterBindings,
+    kind: PreparedOpKind,
+    // Signal permissions belong to the scheduled operation and are prepared
+    // off-thread alongside the processor bindings during plan migration.
     signals: Option<moiren_signal::OpSignalBindings>,
+}
+impl PreparedOp {
+    fn runtime_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        let (runtime, inputs): (_, &[PreparedMixInput]) = match &self.kind {
+            PreparedOpKind::Processor { runtime, .. } => (*runtime, &[]),
+            PreparedOpKind::Mix {
+                runtime, inputs, ..
+            } => (*runtime, inputs),
+        };
+        std::iter::once(runtime).chain(inputs.iter().map(|input| input.runtime))
+    }
 }
 pub struct ExecutionPlan<S: ProcessingSample> {
     arena: BufferArena<S>,
@@ -160,6 +201,25 @@ impl<S: ProcessingSample> ExecutionPlan<S> {
         config: EngineConfig,
         host: Option<&moiren_signal::HostControl>,
     ) -> Result<Self, RuntimeError> {
+        let specs = specs
+            .into_iter()
+            .map(|spec| CompiledOpSpec {
+                processor: spec.processor,
+                io: spec.io,
+                fused: None,
+            })
+            .collect();
+        Self::prepare_compiled_inner(arena, specs, resources, parameters, config, host)
+    }
+
+    pub(crate) fn prepare_compiled_inner(
+        arena: BufferArena<S>,
+        specs: Vec<CompiledOpSpec>,
+        resources: &RtResources<S>,
+        parameters: &ParameterRuntime,
+        config: EngineConfig,
+        host: Option<&moiren_signal::HostControl>,
+    ) -> Result<Self, RuntimeError> {
         config.validated()?;
         let mut ops = Vec::<PreparedOp>::with_capacity(specs.len());
         let mut signal_bindings = Vec::with_capacity(specs.len());
@@ -170,35 +230,112 @@ impl<S: ProcessingSample> ExecutionPlan<S> {
             if spec.io.max_frames() < config.max_block_frames {
                 return Err(RuntimeError::InvalidFrames);
             }
-            let index = resources
-                .instances
-                .iter()
-                .position(|r| r.id == spec.processor)
-                .ok_or(RuntimeError::MissingProcessor)?;
-            if ops.iter().any(|op| op.runtime == index) {
-                return Err(RuntimeError::DuplicateProcessor);
+            let used = |index| {
+                ops.iter()
+                    .any(|op| op.runtime_indices().any(|runtime| runtime == index))
+            };
+            match spec.fused {
+                None => {
+                    let processor_id = spec.processor;
+                    let index = resources
+                        .instances
+                        .iter()
+                        .position(|r| r.id == processor_id)
+                        .ok_or(RuntimeError::MissingProcessor)?;
+                    if used(index) {
+                        return Err(RuntimeError::DuplicateProcessor);
+                    }
+                    let processor = &resources.instances[index].processor;
+                    if processor.role() == ProcessorRole::Observer && spec.io.output_count() != 0 {
+                        return Err(RuntimeError::Processor(ProcessorError::InvalidIo));
+                    }
+                    processor.validate_io(&spec.io)?;
+                    let bindings = parameters.bindings(processor_id);
+                    processor.validate_parameters(parameters.view(&bindings))?;
+                    signal_bindings.push(processor.signal_bindings().to_vec().into_boxed_slice());
+                    ops.push(PreparedOp {
+                        kind: PreparedOpKind::Processor {
+                            runtime: index,
+                            params: bindings,
+                        },
+                        io: spec.io,
+                        signals: None,
+                    });
+                }
+                Some(FusedOpSpec::Mix {
+                    inputs,
+                    input_count,
+                }) => {
+                    let bus_id = spec.processor;
+                    let bus_index = resources
+                        .instances
+                        .iter()
+                        .position(|r| r.id == bus_id)
+                        .ok_or(RuntimeError::MissingProcessor)?;
+                    if used(bus_index)
+                        || resources.instances[bus_index].processor.role()
+                            != ProcessorRole::Transform
+                    {
+                        return Err(RuntimeError::DuplicateProcessor);
+                    }
+                    let bus = &resources.instances[bus_index].processor;
+                    bus.validate_io(&spec.io)?;
+                    let bus_bindings = parameters.bindings(bus_id);
+                    bus.validate_parameters(parameters.view(&bus_bindings))?;
+                    if input_count > usize::from(u16::MAX) + 1
+                        || inputs
+                            .iter()
+                            .any(|input| usize::from(input.port) >= input_count)
+                        || !inputs
+                            .iter()
+                            .map(|input| input.port)
+                            .eq(spec.io.input_ports().map(|(port, _)| port))
+                    {
+                        return Err(RuntimeError::Processor(ProcessorError::InvalidIo));
+                    }
+                    let mut prepared: Vec<PreparedMixInput> = Vec::with_capacity(inputs.len());
+                    for input in inputs {
+                        let index = resources
+                            .instances
+                            .iter()
+                            .position(|r| r.id == input.processor)
+                            .ok_or(RuntimeError::MissingProcessor)?;
+                        if used(index)
+                            || index == bus_index
+                            || prepared.iter().any(|input| input.runtime == index)
+                            || resources.instances[index].processor.role()
+                                != ProcessorRole::Transform
+                        {
+                            return Err(RuntimeError::DuplicateProcessor);
+                        }
+                        let processor = &resources.instances[index].processor;
+                        if !processor.signal_bindings().is_empty() {
+                            return Err(RuntimeError::SignalsRequireHost);
+                        }
+                        let bindings = parameters.bindings(input.processor);
+                        processor.validate_parameters(parameters.view(&bindings))?;
+                        prepared.push(PreparedMixInput::new(index, input.port, bindings));
+                    }
+                    signal_bindings.push(bus.signal_bindings().to_vec().into_boxed_slice());
+                    ops.push(PreparedOp {
+                        io: spec.io,
+                        kind: PreparedOpKind::Mix {
+                            runtime: bus_index,
+                            params: bus_bindings,
+                            inputs: prepared.into_boxed_slice(),
+                            input_count,
+                        },
+                        signals: None,
+                    });
+                }
             }
-            let processor = &resources.instances[index].processor;
-            if processor.role() == ProcessorRole::Observer && spec.io.output_count() != 0 {
-                return Err(RuntimeError::Processor(ProcessorError::InvalidIo));
-            }
-            processor.validate_io(&spec.io)?;
-            let bindings = parameters.bindings(spec.processor);
-            processor.validate_parameters(parameters.view(&bindings))?;
-            signal_bindings.push(processor.signal_bindings().to_vec().into_boxed_slice());
-            ops.push(PreparedOp {
-                runtime: index,
-                io: spec.io,
-                params: bindings,
-                signals: None,
-            });
         }
         let signal_update = match host {
             Some(host) => {
                 let prepared = PreparedSignalPlan::prepare(host, &signal_bindings)?;
                 let (update, operations) = prepared.into_parts();
                 for (op, signals) in ops.iter_mut().zip(operations) {
-                    op.signals = signals;
+                    op.set_signals(signals);
                 }
                 Some(update)
             }
@@ -283,7 +420,11 @@ impl<S: ProcessingSample> Engine<S> {
         }
         if plan.revision != parameters.revision()
             || plan.epoch != parameters.epoch()
-            || plan.ops.iter().any(|op| !parameters.owns(&op.params))
+            || plan
+                .ops
+                .iter()
+                .flat_map(PreparedOp::parameter_bindings)
+                .any(|bindings| !parameters.owns(bindings))
         {
             return Err(RuntimeError::ForeignParameters);
         }
@@ -403,22 +544,32 @@ impl<S: ProcessingSample> Engine<S> {
                 processing_sr: self.plan.config.processing_sr,
             };
             let window = (cursor - start) as usize..(next - start) as usize;
-            for op in &self.plan.ops {
-                let processor = &mut self.resources.instances[op.runtime].processor;
-                let params = self.parameters.view(&op.params);
-                let mut empty = ();
-                let signals = match (&mut self.signal_host, &op.signals) {
-                    (Some(host), Some(bindings)) => {
-                        ProcessSignals::from_scope(host.scope(bindings))
+            for op in &mut self.plan.ops {
+                match &mut op.kind {
+                    PreparedOpKind::Processor {
+                        runtime,
+                        params: bindings,
+                    } => {
+                        let processor = &mut self.resources.instances[*runtime].processor;
+                        let params = self.parameters.view(bindings);
+                        let mut empty = ();
+                        let signals = match (&mut self.signal_host, &op.signals) {
+                            (Some(host), Some(bindings)) => {
+                                ProcessSignals::from_scope(host.scope(bindings))
+                            }
+                            _ => ProcessSignals::empty(&mut empty),
+                        };
+                        self.plan.arena.with_io(&op.io, window.clone(), |mut io| {
+                            io.clear_outputs();
+                            processor.process(&ctx, io, params, signals);
+                        })?;
                     }
-                    _ => ProcessSignals::empty(&mut empty),
-                };
-                self.plan.arena.with_io(&op.io, window.clone(), |mut io| {
-                    // All samples were initialized at allocation. This clear also
-                    // prevents stale output when a safe processor only writes a prefix.
-                    io.clear_outputs();
-                    processor.process(&ctx, io, params, signals);
-                })?;
+                    PreparedOpKind::Mix { inputs, .. } => {
+                        self.plan.arena.with_io(&op.io, window.clone(), |io| {
+                            process_mix(io, inputs, &self.parameters);
+                        })?;
+                    }
+                }
             }
             self.parameters.advance(count);
             cursor = next;
@@ -441,5 +592,24 @@ impl<S: ProcessingSample> Engine<S> {
             parameters: self.parameters,
             signals: self.signal_host,
         }
+    }
+}
+
+impl PreparedOp {
+    fn parameter_bindings(&self) -> impl Iterator<Item = &ParameterBindings> {
+        let (params, inputs): (_, &[PreparedMixInput]) = match &self.kind {
+            PreparedOpKind::Processor { params, .. } => (params, &[]),
+            // Even an empty Bus retains the table identity proof.
+            PreparedOpKind::Mix { params, inputs, .. } => (params, inputs),
+        };
+        std::iter::once(params).chain(inputs.iter().map(|input| &input.params))
+    }
+
+    pub(crate) fn contains_runtime(&self, runtime: usize) -> bool {
+        self.runtime_indices().any(|index| index == runtime)
+    }
+
+    pub(crate) fn set_signals(&mut self, signals: Option<moiren_signal::OpSignalBindings>) {
+        self.signals = signals;
     }
 }

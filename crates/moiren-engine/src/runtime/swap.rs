@@ -511,8 +511,47 @@ impl PlanSnapshot {
                 let io = plan
                     .ops
                     .iter()
-                    .find(|op| op.runtime == index)
-                    .map(|op| IoSchema::from_io(&op.io));
+                    .find(|op| op.contains_runtime(index))
+                    .map(|op| match &op.kind {
+                        PreparedOpKind::Mix { inputs, .. }
+                            if inputs.iter().any(|input| input.runtime == index) =>
+                        {
+                            // A fused Send retains its logical one-in/one-out
+                            // schema, independent of other Bus input ports.
+                            let input = inputs.iter().find(|input| input.runtime == index).unwrap();
+                            let channels = op.io.input_channels(input.port).unwrap();
+                            IoSchema {
+                                mode: IoMode::Separate,
+                                inputs: Box::new([(0, channels)]),
+                                outputs: Box::new([(0, channels)]),
+                            }
+                        }
+                        PreparedOpKind::Mix { input_count, .. } => {
+                            // Omitted silence is a physical optimization. Bus
+                            // reuse still compares the full logical port list,
+                            // including when an observer disables fusion.
+                            let channels = op.io.output_channels(0).unwrap();
+                            IoSchema {
+                                mode: IoMode::Separate,
+                                inputs: (0..*input_count)
+                                    .map(|port| (port as u16, channels))
+                                    .collect(),
+                                outputs: Box::new([(0, channels)]),
+                            }
+                        }
+                        _ => {
+                            let mut schema = IoSchema::from_io(&op.io);
+                            // Gain/Pan accept both transports with identical
+                            // state. Last-use changes may switch storage mode
+                            // without invalidating their parameter ramps.
+                            if instance.state_type == TypeId::of::<crate::processor::Gain>()
+                                || instance.state_type == TypeId::of::<crate::processor::Pan>()
+                            {
+                                schema.mode = IoMode::Separate;
+                            }
+                            schema
+                        }
+                    });
                 ProcessorSchema {
                     id: instance.id,
                     state_type: instance.state_type,
@@ -522,7 +561,7 @@ impl PlanSnapshot {
                     signals: plan
                         .ops
                         .iter()
-                        .position(|op| op.runtime == index)
+                        .position(|op| op.contains_runtime(index))
                         .map(|op| plan.signal_bindings[op].clone())
                         .unwrap_or_else(|| {
                             instance
@@ -734,14 +773,19 @@ impl<S: ProcessingSample> PreparedPlan<S> {
                     .plan
                     .ops
                     .iter()
-                    .map(|op| snapshot.processors[op.runtime].signals.clone())
+                    .map(|op| {
+                        op.runtime_indices()
+                            .next()
+                            .map(|runtime| snapshot.processors[runtime].signals.clone())
+                            .unwrap_or_else(|| Box::new([]))
+                    })
                     .collect();
                 let prepared = PreparedSignalPlan::prepare(host, &bindings)?;
                 let (update, operations) = prepared.into_parts();
                 self.engine.plan.signal_update = Some(update);
                 self.engine.plan.signal_bindings = bindings;
                 for (op, signals) in self.engine.plan.ops.iter_mut().zip(operations) {
-                    op.signals = signals;
+                    op.set_signals(signals);
                 }
             }
             self.engine.snapshot = PlanSnapshot(Arc::new(snapshot));
