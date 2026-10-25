@@ -426,20 +426,18 @@ fn node_observation(
     cx: &Context<StudioShell>,
 ) -> AnyElement {
     let state = shell.state.read(cx);
-    let graph = &state.snapshot.graph;
-    let active = state.snapshot.phase == crate::service::SessionPhase::Running
-        && graph.active_revision == Some(graph.candidate_revision);
+    let running = state.snapshot.phase == crate::service::SessionPhase::Running;
     let managed = state
         .snapshot
         .signal_topics
         .node_levels
         .contains_key(&node.id());
-    let eligible = active && managed;
+    let eligible = running && managed;
     let status = if eligible {
         let meter_status = shell.node_meters.status(node.id());
         t!(meter_status.label()).to_string()
     } else if managed {
-        t!("Waiting for Apply graph").to_string()
+        t!("Not running").to_string()
     } else {
         t!("Unavailable for this node").to_string()
     };
@@ -455,10 +453,8 @@ fn node_observation(
                 .child(detail(&t!("Status"), status))
                 .gpui_test_observe(),
         );
-    if !active && managed {
-        view = view.child(label(t!(
-            "The candidate graph is not the confirmed runtime. Apply graph to observe this node."
-        )));
+    if !running && managed {
+        view = view.child(label(t!("Start audio to observe this node.")));
     } else if !managed {
         view = view.child(label(t!(
             "This node has no managed level topic in the current service projection."
@@ -481,14 +477,6 @@ fn node_observation(
                 ));
         }
         view = view.child(readings);
-    }
-    if !active {
-        view = view.child(
-            div()
-                .id("node-observation-candidate")
-                .child(label(t!("Candidate graph · audio owner unchanged")))
-                .gpui_test_observe(),
-        );
     }
     view.into_any_element()
 }

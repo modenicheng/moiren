@@ -404,7 +404,6 @@ fn meter(
     let state = shell.state.read(cx);
     let input = kind == NodeKind::Source;
     let eligible = matches!(kind, NodeKind::Source | NodeKind::Sink)
-        && state.snapshot.graph.active_revision == Some(state.snapshot.graph.candidate_revision)
         && shell
             .observation_nodes
             .is_some_and(|(generation, source, sink)| {
@@ -425,18 +424,13 @@ fn meter(
             shell.meters.display_output()
         })
         .flatten();
-    let levels = (state.snapshot.graph.active_revision
-        == Some(state.snapshot.graph.candidate_revision))
-    .then(|| shell.node_meters.levels(entry.id))
-    .flatten()
-    .or(levels);
+    let levels = shell.node_meters.levels(entry.id).or(levels);
     let clips = shell.node_meters.channel_clips(entry.id);
     let managed = state
         .snapshot
         .signal_topics
         .node_levels
-        .contains_key(&entry.id)
-        && state.snapshot.graph.active_revision == Some(state.snapshot.graph.candidate_revision);
+        .contains_key(&entry.id);
     let raw = shell.node_meters.raw_levels(entry.id);
     let readout = raw.map(|levels| levels.iter().map(|level| level.peak).fold(0f32, f32::max));
     let view = div()

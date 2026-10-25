@@ -235,9 +235,7 @@ fn strip(
 ) -> impl IntoElement {
     let id = entry.id;
     let color = node_kind_color(kind);
-    let graph = &flyout.state.read(cx).snapshot.graph;
-    let applied = graph.active_revision == Some(graph.candidate_revision);
-    let levels = applied.then(|| flyout.node_meters.levels(id)).flatten();
+    let levels = flyout.node_meters.levels(id);
     let clips = flyout.node_meters.clips(id);
     div()
         .id(SharedString::from(format!("tray-strip-{id:?}")))

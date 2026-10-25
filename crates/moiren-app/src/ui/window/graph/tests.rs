@@ -530,7 +530,7 @@ fn channel_mapper_inspector_edits_a_weighted_matrix_candidate(cx: &mut gpui_kit:
 }
 
 #[gpui_kit::test]
-fn graph_inspector_shows_candidate_runtime_boundary_for_selected_node(
+fn graph_inspector_reports_observation_without_candidate_boundary_copy(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let (view, cx, runtime) = test_shell(cx);
@@ -543,7 +543,8 @@ fn graph_inspector_shows_candidate_runtime_boundary_for_selected_node(
     render(cx);
     cx.update(|window, _| {
         assert!(window.find("node-observation-status").visible());
-        assert!(window.find("node-observation-candidate").visible());
+        // Observation copy no longer narrates internal candidate/active state.
+        assert!(window.try_find("node-observation-candidate").is_none());
     });
 
     finish_service(runtime);

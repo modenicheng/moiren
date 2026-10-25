@@ -431,7 +431,6 @@ impl StudioShell {
             && !self.settings_open
             && matches!(self.presentation.page, Page::Graph | Page::Mixer)
             && snapshot.phase == SessionPhase::Running
-            && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision)
     }
 
     /// Refresh every meter observation once: reads the latest windows,
@@ -723,9 +722,7 @@ impl StudioShell {
             self.observation_nodes = None;
         }
         let graph = &snapshot.graph;
-        if snapshot.phase == SessionPhase::Running
-            && graph.active_revision == Some(graph.candidate_revision)
-        {
+        if snapshot.phase == SessionPhase::Running {
             let source = graph
                 .graph
                 .nodes()

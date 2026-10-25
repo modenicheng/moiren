@@ -109,13 +109,11 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
     let state = shell.state.read(cx);
     let mut projected =
         pages::graph_canvas::CanvasWorld::positioned(&state.snapshot, &shell.node_positions);
-    if state.snapshot.graph.active_revision == Some(state.snapshot.graph.candidate_revision) {
-        for node in &mut projected.nodes {
-            node.peaks = node
-                .node_id
-                .and_then(|id| shell.node_meters.levels(id))
-                .map(|levels| levels.map(|level| level.bar));
-        }
+    for node in &mut projected.nodes {
+        node.peaks = node
+            .node_id
+            .and_then(|id| shell.node_meters.levels(id))
+            .map(|levels| levels.map(|level| level.bar));
     }
     let world = std::sync::Arc::new(projected);
     let camera = shell.camera;
