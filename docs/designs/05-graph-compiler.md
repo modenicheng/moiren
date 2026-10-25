@@ -69,4 +69,4 @@ cargo fmt --all -- --check
 
 覆盖原示例的跨 block ramp、Edge ramp/mute、重复 Bus 来源、fan-out、多声道、空图/空 Bus/未连接输入、修改拓扑后重新编译、错误绑定/预算/参数域。24 张确定性随机 DAG 分别通过 reference/optimized 路径，以 f32/f64 运行四种 block 长度，并与独立样本求值比较。另有逐位等价测试覆盖动态 Send/节点参数 ramp、mute、稀疏输入、PreFader、fan-out 与重复来源，以及溢出顺序和 f32 逐次舍入。计划切换测试覆盖 Bus 增加输入后的 Send ramp，以及 PreFader 使 Gain 从原位切换为独立存储时的参数复用。完整编译链路的两种精度通过线程局部 allocator 计数验证 render 分配与释放均为 0；结论限于被测试的内置与软件桥路径。
 
-`compiler_optimization` 在 release 模式比较编译后纯 render 的耗时，交替运行两种路径，报告五轮各 1000 次调用的中位数。追加 `-- --ramps` 可测量活跃 gain/pan ramp。该测量排除编译、设备和桥传输，不代表端到端音频延迟。
+`compiler_optimization` 在 release 模式比较编译后纯 render 的耗时，交替运行两种路径，报告五轮各 1000 次调用的中位数。追加 `-- --ramps` 可测量活跃 gain/pan ramp。该测量排除编译、设备和桥传输，不代表端到端音频延迟。首个可复现的 portable 记录见 [2026-10-25 Compiler 优化基线](../experiments/portable/2026-10-25-compiler-optimization.md)；它用于后续回归比较，不设跨机器纳秒硬阈值。
