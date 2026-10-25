@@ -2,6 +2,7 @@
 use super::{DemandRenderer, NativeRenderer, RenderError, RenderOptions, RenderReport};
 #[cfg(test)]
 use crate::Activation;
+use crate::owner::{WaitOutcome, wait_for_handles};
 use crate::{ActivationGate, StopSignal};
 #[cfg(test)]
 use std::os::windows::io::FromRawHandle;
@@ -16,10 +17,7 @@ use std::{
 };
 #[cfg(test)]
 use windows::Win32::System::Threading::CreateEventW;
-use windows::Win32::{
-    Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
-    System::Threading::{SetEvent, WaitForMultipleObjects},
-};
+use windows::Win32::{Foundation::HANDLE, System::Threading::SetEvent};
 
 mod endpoint;
 mod format;
@@ -285,13 +283,12 @@ enum Wake {
 fn wait(stop: HANDLE, audio: HANDLE, timeout_ms: u32) -> Result<Wake, RenderError> {
     // Windows returns the lowest signaled index; stop must win over queued audio
     // so shutdown remains responsive even when both events are already signaled.
-    match unsafe { WaitForMultipleObjects(&[stop, audio], false, timeout_ms) } {
-        event if event == WAIT_OBJECT_0 => Ok(Wake::Stop),
-        event if event.0 == WAIT_OBJECT_0.0 + 1 => Ok(Wake::Audio),
-        WAIT_TIMEOUT => Ok(Wake::Timeout),
-        _ => Err(RenderError::Api {
-            stage: "WaitForMultipleObjects",
-            hresult: windows::core::Error::from_thread().code().0,
-        }),
+    match wait_for_handles(&[stop, audio], timeout_ms).map_err(|error| RenderError::Api {
+        stage: "WaitForMultipleObjects",
+        hresult: error.code().0,
+    })? {
+        WaitOutcome::Signaled(0) => Ok(Wake::Stop),
+        WaitOutcome::Signaled(_) => Ok(Wake::Audio),
+        WaitOutcome::Timeout => Ok(Wake::Timeout),
     }
 }

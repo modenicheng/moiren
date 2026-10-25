@@ -1,5 +1,6 @@
 //! One manual-reset event releases all prepared owners; stop wins every race.
 use super::StopSignal;
+use crate::owner::{WaitOutcome, wait_for_handles};
 use std::{
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{
@@ -9,8 +10,8 @@ use std::{
 };
 use thiserror::Error;
 use windows::Win32::{
-    Foundation::{HANDLE, WAIT_OBJECT_0},
-    System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects},
+    Foundation::HANDLE,
+    System::Threading::{CreateEventW, INFINITE, SetEvent},
 };
 
 const PREPARED: u8 = 0;
@@ -104,21 +105,26 @@ impl ActivationGate {
         } else {
             &handles[..2]
         };
-        match unsafe { WaitForMultipleObjects(handles, false, INFINITE) } {
-            event if event == WAIT_OBJECT_0 => Ok(Activation::Cancelled),
-            event if event.0 == WAIT_OBJECT_0.0 + 1 && target.is_some() => {
-                Ok(Activation::Cancelled)
-            }
-            event if event.0 == WAIT_OBJECT_0.0 + handles.len() as u32 - 1 => {
+        match wait_for_handles(handles, INFINITE).map_err(|error| GateError::Api {
+            stage: "WaitForMultipleObjects(activation gate)",
+            hresult: error.code().0,
+        })? {
+            WaitOutcome::Signaled(0) => Ok(Activation::Cancelled),
+            WaitOutcome::Signaled(1) if target.is_some() => Ok(Activation::Cancelled),
+            WaitOutcome::Signaled(index) if index == handles.len() - 1 => {
                 Ok(if self.state.load(Ordering::Acquire) == ACTIVATED {
                     Activation::Start
                 } else {
                     Activation::Cancelled
                 })
             }
-            _ => Err(GateError::Api {
+            WaitOutcome::Timeout => Err(GateError::Api {
                 stage: "WaitForMultipleObjects(activation gate)",
-                hresult: windows::core::Error::from_thread().code().0,
+                hresult: windows::Win32::Foundation::WAIT_TIMEOUT.0 as i32,
+            }),
+            WaitOutcome::Signaled(_) => Err(GateError::Api {
+                stage: "WaitForMultipleObjects(activation gate)",
+                hresult: 0x80070057u32 as i32,
             }),
         }
     }

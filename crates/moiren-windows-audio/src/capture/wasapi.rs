@@ -1,6 +1,7 @@
 //! Only kernel handles, prepared ring endpoints and scalars cross owner threads.
 use super::{CaptureError, CaptureOptions, CaptureReport};
 use crate::clock_bridge::{BridgeObserver, ClockSource};
+use crate::owner::{WaitOutcome, wait_for_handles};
 use crate::{ActivationGate, StopSignal};
 use std::{
     os::windows::io::{AsRawHandle, OwnedHandle as StdHandle},
@@ -11,10 +12,7 @@ use std::{
     },
     thread::{self, JoinHandle},
 };
-use windows::Win32::{
-    Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
-    System::Threading::{SetEvent, WaitForMultipleObjects},
-};
+use windows::Win32::{Foundation::HANDLE, System::Threading::SetEvent};
 
 mod endpoint;
 mod format;
@@ -80,15 +78,14 @@ fn wait_target(
     } else {
         &handles[..2]
     };
-    match unsafe { WaitForMultipleObjects(handles, false, timeout_ms) } {
-        event if event == WAIT_OBJECT_0 => Ok(Wake::Stop),
-        event if event.0 == WAIT_OBJECT_0.0 + 1 && target.is_some() => Ok(Wake::TargetExited),
-        event if event.0 == WAIT_OBJECT_0.0 + handles.len() as u32 - 1 => Ok(Wake::Audio),
-        WAIT_TIMEOUT => Ok(Wake::Timeout),
-        _ => Err(CaptureError::Api {
-            stage: "WaitForMultipleObjects(capture)",
-            hresult: windows::core::Error::from_thread().code().0,
-        }),
+    match wait_for_handles(handles, timeout_ms).map_err(|error| CaptureError::Api {
+        stage: "WaitForMultipleObjects(capture)",
+        hresult: error.code().0,
+    })? {
+        WaitOutcome::Signaled(0) => Ok(Wake::Stop),
+        WaitOutcome::Signaled(1) if target.is_some() => Ok(Wake::TargetExited),
+        WaitOutcome::Signaled(_) => Ok(Wake::Audio),
+        WaitOutcome::Timeout => Ok(Wake::Timeout),
     }
 }
 

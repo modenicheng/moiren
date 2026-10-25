@@ -56,9 +56,11 @@ revision and may drift.
   from direction-specific `SharedOpenStages` constructors in
   `negotiation.rs`; observable stage labels remain unchanged and the
   duplicated header comment is gone.
-- **A8-A11, A15** small module-level twins (`api()`, `From<StageError>`,
-  tri-handle wait, Client3 period query, endpoint projections) — merge
-  opportunistically.
+- **done (A11)** Capture, render and activation-gate waits now share the
+  owner-level `wait_for_handles` kernel. Each caller retains its own wake
+  or activation mapping and observable error stage.
+- **A8-A10, A15** small module-level twins (`api()`, `From<StageError>`,
+  Client3 period query, endpoint projections) — merge opportunistically.
 - **A16 (driver)** six `ClearTimerPacket`+`ZeroPackets` quiesce micro-
   blocks in Streams.cpp with per-site field differences; extract named
   helper(s) so a future reset site cannot miss a field.

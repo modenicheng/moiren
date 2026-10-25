@@ -2,7 +2,7 @@ pub use crate::process_loopback::ProcessIdentity;
 use std::{marker::PhantomData, rc::Rc};
 use windows::{
     Win32::{
-        Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        Foundation::{CloseHandle, E_INVALIDARG, FILETIME, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Media::Audio::{
             AUDCLNT_BUFFERFLAGS_SILENT, IAudioCaptureClient, IAudioClient, IAudioRenderClient,
         },
@@ -11,7 +11,7 @@ use windows::{
             Threading::{
                 AvRevertMmThreadCharacteristics, CreateEventW, GetProcessTimes, OpenProcess,
                 PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-                QueryFullProcessImageNameW, WaitForSingleObject,
+                QueryFullProcessImageNameW, WaitForMultipleObjects, WaitForSingleObject,
             },
         },
     },
@@ -179,6 +179,36 @@ impl Drop for OwnedHandle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WaitOutcome {
+    Signaled(usize),
+    Timeout,
+}
+
+// Win32's WaitForMultipleObjects contract allows at most 64 handles. Keep the
+// bound local so this helper does not widen the crate's Windows feature set for
+// a constant that is stable across supported Windows versions.
+const MAX_WAIT_HANDLES: usize = 64;
+
+/// Wait for a bounded set of Windows handles and normalize the raw wait code.
+/// Callers retain ownership and map the signaled index to their own wake
+/// semantics; the lowest signaled index wins as defined by Win32.
+pub(crate) fn wait_for_handles(
+    handles: &[HANDLE],
+    timeout_ms: u32,
+) -> windows::core::Result<WaitOutcome> {
+    if handles.is_empty() || handles.len() > MAX_WAIT_HANDLES {
+        return Err(windows::core::Error::from_hresult(E_INVALIDARG));
+    }
+    match unsafe { WaitForMultipleObjects(handles, false, timeout_ms) } {
+        WAIT_TIMEOUT => Ok(WaitOutcome::Timeout),
+        event if event.0 < handles.len() as u32 => {
+            Ok(WaitOutcome::Signaled((event.0 - WAIT_OBJECT_0.0) as usize))
+        }
+        _ => Err(windows::core::Error::from_thread()),
+    }
+}
+
 pub struct TaskMemory<T>(pub *mut T);
 impl<T> Drop for TaskMemory<T> {
     fn drop(&mut self) {
@@ -194,6 +224,7 @@ pub struct Process {
     pub handle: OwnedHandle,
     pub identity: ProcessIdentity,
 }
+
 impl Process {
     pub fn open(pid: u32) -> Result<Self> {
         let handle = OwnedHandle(unsafe {
@@ -244,5 +275,26 @@ impl Process {
             WAIT_TIMEOUT => Ok(false),
             _ => Err(windows::core::Error::from_thread()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OwnedHandle, WaitOutcome, wait_for_handles};
+    use windows::Win32::System::Threading::SetEvent;
+
+    #[test]
+    fn wait_for_handles_reports_timeout_and_signaled_index() {
+        let first = OwnedHandle::event().unwrap();
+        let second = OwnedHandle::event().unwrap();
+        assert_eq!(
+            wait_for_handles(&[first.0, second.0], 0).unwrap(),
+            WaitOutcome::Timeout
+        );
+        unsafe { SetEvent(second.0).unwrap() };
+        assert_eq!(
+            wait_for_handles(&[first.0, second.0], 1000).unwrap(),
+            WaitOutcome::Signaled(1)
+        );
     }
 }
