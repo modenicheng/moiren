@@ -15,7 +15,8 @@ mod fade;
 mod source;
 pub use diagnostics::{
     RENDER_EVENT_CAPACITY, RenderCallback, RenderCallbackHistory, RenderClockSample,
-    RenderDiagnostics, RenderDiagnosticsSnapshot, RenderEvent,
+    RenderDiagnostics, RenderDiagnosticsSnapshot, RenderEvent, RenderPaddingObserver,
+    RenderPaddingOwner, RenderPaddingSample, RenderPaddingSnapshot,
 };
 pub use fade::{FadeError, RenderFadeControl};
 #[cfg(windows)]

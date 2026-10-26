@@ -4,6 +4,11 @@ use crate::{clock_bridge::BridgeSnapshot, latency::TelemetryMode};
 use serde::{Serialize, Serializer};
 use std::ops::Deref;
 
+mod padding;
+pub use padding::{
+    RenderPaddingObserver, RenderPaddingOwner, RenderPaddingSample, RenderPaddingSnapshot,
+};
+
 pub const RENDER_EVENT_CAPACITY: usize = 128;
 const HISTORY_CAPACITY: usize = 8;
 
