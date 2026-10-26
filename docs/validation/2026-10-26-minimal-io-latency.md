@@ -794,3 +794,35 @@ calibrated reference endpoint, so no physical latency conclusion follows.
 The `<10 ms` target is not passed by this branch yet. Internal markers,
 software queue timestamps, VM lifecycle results and silent-counter tests are
 necessary diagnostics but are not physical end-to-end evidence.
+
+### 2026-10-27 collection failure evidence after retention repair
+
+The two atomic commits `4850ccf` and `bc90dbd` were pushed to
+`feat/minimal-io-latency`. The first retains native shared-period capability
+and preparation reports; the second propagates those reports through the
+standalone measurement and VAD collection artifacts. Windows-audio validation
+after the repair passed: 478 library tests plus 2 ignored, 109 probe tests,
+strict all-target Clippy, all-target check, format and diff checks.
+
+A host release probe from `bc90dbd0a7eef37d9c9b21b164ab810cf70365f6` was
+copied to the target and verified as 3,748,352 bytes with SHA-256
+`BB42D63E1AF1AEC7F5D8E668DD54B0BBE058EBF68EC83277E7FCA820361648E1` on both
+host and guest. The same 48 kHz, 48,000-frame source schedule, endpoint and
+collection limits were used for a bounded 15-second run. The probe exited 1;
+the run was unqualified and did not produce source, graph or measurement
+success.
+
+The retained native capture report now includes the diagnostic that was
+previously lost: 48 kHz stereo caps were `fundamental=35`, `min=139`,
+`max=488`, `default=488`, with requested period `5.0 ms`; period selection
+failed as `invalid_capabilities`, mapped to `E_INVALIDARG` at
+`choose_shared_period`. The host archive is
+`target/vad-target-archive/20261027-collection-bc90dbd-15s/`; five payloads
+were checked against the guest manifest by length and SHA-256. This is a
+shared-period negotiation failure, not evidence about VAD quality, physical
+latency, or the driver output path.
+
+After verification, the guest retained only the current probe binary, with no
+run directory, input files, runner, old probe, active test process or dynamic
+VAD endpoint; free space was 30.12 GiB. No driver INF/SYS/CAT or system files
+were removed.

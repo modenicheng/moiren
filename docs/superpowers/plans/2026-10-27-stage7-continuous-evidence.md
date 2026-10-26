@@ -240,3 +240,25 @@ free. The first runner's manifest had null SHA fields due to a PowerShell
 serialization mistake; it is not used as evidence. Host-generated
 `task7-collection-671da8d-payload-manifest.json` is the authoritative archive
 checklist for this failed smoke. No driver/system files were removed.
+
+### 2026-10-27 retention repair and capability evidence
+
+`4850ccf` and `bc90dbd` add and push shared-period failure context, native
+preparation report retention, and measurement/VAD collection propagation.
+The repaired path was checked with 478 library tests plus 2 ignored, 109
+probe tests, strict Windows-audio Clippy, all-target check, format and diff
+checks.
+
+The `bc90dbd` release probe was run once for 15 seconds on the target. It
+exited 1 while preparing the independent recorder, retaining these raw
+capabilities in `measurement.native_capture.shared_period`: sample rate
+48,000; stereo; fundamental 35 frames; minimum 139; maximum/default 488;
+requested period 5.0 ms; `period_selection_failure=invalid_capabilities`;
+native stage `period_selection`, HRESULT `0x80070057`. The run remains
+unqualified and is not VAD or physical latency evidence.
+
+Five payloads are retained and verified at
+`target/vad-target-archive/20261027-collection-bc90dbd-15s/`. Guest cleanup
+removed the temporary run, plans, runner, logs and previous probe after hash
+verification. Only the new 3,748,352-byte probe remains on the 64 GB guest;
+free space is 30.12 GiB. No driver/system files were removed.
