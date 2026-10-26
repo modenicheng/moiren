@@ -11,7 +11,7 @@ mod routing;
 pub(super) mod strip_controls;
 use crate::ui::widgets::fader::{FaderScale, fader, ruler};
 use component::menu::ContextMenuExt;
-pub(super) use model::{MixerPresentation, SliderEdit, gain_db, linear_gain, sync_sliders};
+pub(super) use model::{MixerPresentation, fader_rows, sync_faders};
 use model::{StripDrag, reorder};
 use routing::{inputs, sends};
 
@@ -267,7 +267,7 @@ fn strip(
                         )
                         .child(meter(shell, entry, kind, channels, cx))
                         .child(ruler())
-                        .child(fader(&shell.mixer.faders[&id], entry.mixer.gain))
+                        .child(fader(&shell.mixer.faders[&id], cx))
                         .gpui_test_observe(),
                 )
                 .child(title),

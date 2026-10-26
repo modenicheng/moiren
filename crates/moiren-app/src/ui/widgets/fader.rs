@@ -122,7 +122,30 @@ pub(super) fn paint_text(
     let _ = line.paint(origin, px(10.), align, width, window, cx);
 }
 
-pub fn fader(state: &Entity<base::slider::SliderState>, gain: f64) -> impl IntoElement {
+/// Linear position of `value` inside the slider's own value range, 0..1.
+/// Pure so the geometry tests run without a rendered slider.
+fn normalized_value(value: f32, min: f32, max: f32) -> f32 {
+    let span = max - min;
+    if span <= 0. {
+        return 0.;
+    }
+    ((value - min) / span).clamp(0., 1.)
+}
+
+/// Vertical thumb position from the track top. The fader's slider value space
+/// is inverted (1 = top), so the thumb rides at `1 - normalized`.
+fn thumb_top(value: f32, min: f32, max: f32) -> f32 {
+    1. - normalized_value(value, min, max)
+}
+
+/// Vertical channel fader for the main mixer and the tray flyout: a flat
+/// capsule track, a fill from the thumb down to the quiet end, and a 0 dB
+/// detent tick (the flyout has no ruler or unity line of its own). The
+/// widget reads its value from the slider state, so callers never duplicate
+/// the gain mapping.
+pub fn fader(state: &Entity<base::slider::SliderState>, cx: &App) -> impl IntoElement {
+    let slider = state.read(cx);
+    let thumb = thumb_top(slider.value().end(), slider.min_value(), slider.max_value());
     base::slider::Slider::new(state)
         .vertical()
         .relative()
@@ -130,34 +153,60 @@ pub fn fader(state: &Entity<base::slider::SliderState>, gain: f64) -> impl IntoE
         .w(px(32.))
         .h_full()
         // Keep the indicator: gpui uses it to record pointer mapping bounds.
+        // Without it the state keeps zero bounds and drags map to NaN.
         .child(
             base::slider::SliderIndicator::new(state)
                 .absolute()
-                .left(px(15.))
+                .left(px(13.))
                 .top_0()
-                .w(px(2.))
+                .w(px(6.))
                 .h_full(),
         )
         .child(
             base::slider::SliderTrack::new(state)
                 .axis(Axis::Vertical)
                 .absolute()
-                .left(px(15.))
+                .left(px(13.))
                 .top_0()
-                .w(px(2.))
+                .w(px(6.))
                 .h_full()
-                .bg(theme::BORDER_STRONG),
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::WINDOW_BG)
+                .border_1()
+                .border_color(theme::BORDER),
+        )
+        .child(
+            // The value space is inverted: everything louder than the thumb
+            // lights up between it and the bottom (quiet) end.
+            div()
+                .absolute()
+                .left(px(13.))
+                .top(relative(thumb))
+                .bottom_0()
+                .w(px(6.))
+                .rounded(px(theme::RADIUS_SM))
+                .bg(theme::SIGNAL_DEVICE.opacity(0.35)),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(11.))
+                .top(relative(FaderScale::position(1.)))
+                .w(px(10.))
+                .h(px(1.))
+                .bg(theme::SIGNAL_DEVICE.opacity(0.45)),
         )
         .child(
             base::slider::SliderThumb::new(state)
                 .axis(Axis::Vertical)
                 .absolute()
                 .left(px(5.))
-                .top(relative(FaderScale::position(gain)))
-                .mt(px(-16.))
+                .top(relative(thumb))
+                .mt(px(-7.))
                 .w(px(22.))
-                .h(px(32.))
-                .bg(theme::TEXT_MUTED)
+                .h(px(14.))
+                .rounded(px(3.))
+                .bg(theme::SURFACE_3)
                 .border_1()
                 .border_color(theme::BORDER_STRONG)
                 .child(
@@ -165,10 +214,70 @@ pub fn fader(state: &Entity<base::slider::SliderState>, gain: f64) -> impl IntoE
                         .absolute()
                         .left(px(2.))
                         .right(px(2.))
-                        .top(px(14.))
+                        .top(px(6.))
                         .h(px(2.))
                         .bg(theme::TEXT),
                 ),
+        )
+}
+
+/// Minimal horizontal slider for inspector parameters, the channel strip and
+/// sends: a thin capsule track, a fill from the quiet (left) end and a dot
+/// thumb. No detents, ticks or labels; the surrounding row keeps the value.
+pub fn hslider(state: &Entity<base::slider::SliderState>, cx: &App) -> impl IntoElement {
+    let slider = state.read(cx);
+    let fill = normalized_value(slider.value().end(), slider.min_value(), slider.max_value());
+    base::slider::Slider::new(state)
+        .horizontal()
+        .relative()
+        .flex_none()
+        .w_full()
+        .h(px(16.))
+        .child(
+            base::slider::SliderIndicator::new(state)
+                .absolute()
+                .left_0()
+                .top(px(5.))
+                .w_full()
+                .h(px(6.)),
+        )
+        .child(
+            base::slider::SliderTrack::new(state)
+                .axis(Axis::Horizontal)
+                .absolute()
+                .left_0()
+                .top(px(5.))
+                .w_full()
+                .h(px(6.))
+                .rounded_full()
+                .bg(theme::WINDOW_BG)
+                .border_1()
+                .border_color(theme::BORDER),
+        )
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .top(px(5.))
+                .w(relative(fill))
+                .h(px(6.))
+                .rounded_full()
+                .bg(theme::SIGNAL_DEVICE.opacity(0.3)),
+        )
+        .child(
+            base::slider::SliderThumb::new(state)
+                .axis(Axis::Horizontal)
+                .absolute()
+                .left(relative(fill))
+                .ml(px(-6.))
+                .top(px(2.))
+                .w(px(12.))
+                .h(px(12.))
+                .rounded_full()
+                .bg(theme::TEXT_MUTED)
+                .hover(|style| style.bg(theme::TEXT))
+                .border_1()
+                .border_color(theme::BORDER_STRONG),
         )
 }
 
@@ -209,5 +318,30 @@ mod tests {
         assert_eq!(FaderScale::gain(1.), 0.);
         assert_eq!(FaderScale::position(1e-5), 0.97);
         assert!(FaderScale::gain(0.99) > 0.);
+    }
+
+    #[test]
+    fn normalized_maps_values_inside_the_slider_range() {
+        use super::{normalized_value, thumb_top};
+        assert_eq!(normalized_value(0., 0., 1.), 0.);
+        assert_eq!(normalized_value(0.5, 0., 1.), 0.5);
+        assert_eq!(normalized_value(12., -60., 24.), 72. / 84.);
+        assert_eq!(normalized_value(-70., -60., 24.), 0.);
+        assert_eq!(normalized_value(30., -60., 24.), 1.);
+        // A degenerate span keeps the thumb at the quiet end instead of NaN.
+        assert_eq!(normalized_value(5., 5., 5.), 0.);
+        assert_eq!(thumb_top(0., 0., 1.), 1.);
+    }
+
+    #[test]
+    fn vertical_thumb_positions_mirror_the_fader_scale() {
+        use super::thumb_top;
+        // The slider's inverted value space round-trips through the scale: a
+        // value derived from a gain puts the thumb at the gain's position.
+        for (db, position) in FaderScale::ANCHORS {
+            let gain = 10f64.powf(db / 20.);
+            let value = 1. - FaderScale::position(gain);
+            assert!((thumb_top(value, 0., 1.) - position).abs() < 0.00001);
+        }
     }
 }

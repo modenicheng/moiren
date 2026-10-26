@@ -1,5 +1,6 @@
 //! Routing rows retain graph edge/port identity, including parallel connections.
 use super::*;
+use crate::ui::widgets::fader::hslider;
 
 fn section(
     id: String,
@@ -338,7 +339,7 @@ pub(super) fn sends(
                                 }
                             }
                         })
-                        .child(component::slider::Slider::new(&shell.mixer.sends[&edge_id])),
+                        .child(hslider(&shell.mixer.sends[&edge_id], cx)),
                 ),
             );
         }

@@ -1,4 +1,5 @@
 use super::{NodeKind, ServiceRuntime, TrayMixer, UiState};
+use crate::ui::widgets::fader::FaderScale;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AppContext, Entity, Modifiers, MouseButton, SharedString, TestAppContext, VisualTestContext,
@@ -99,8 +100,10 @@ fn tray_mixer_fader_drag_edits_the_gain(cx: &mut TestAppContext) {
             .id()
     });
     // Press the track's midpoint and release: the press jumps the value
-    // and the edit applies itself. The track midpoint maps to roughly
-    // -18 dB.
+    // and the edit applies itself. The tray now shares the main mixer's
+    // perceptual value space, so the midpoint lands near the scale's middle
+    // (about -11.5 dB); derive the window from the scale instead of a
+    // hardcoded amplitude range.
     let target = cx.update(|window, _| {
         let levels = window
             .find(SharedString::from(format!("tray-strip-levels-{source:?}")))
@@ -110,11 +113,12 @@ fn tray_mixer_fader_drag_edits_the_gain(cx: &mut TestAppContext) {
     cx.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
     cx.update(|window, cx| window.render_frame(cx));
     cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let middle = FaderScale::gain(0.5);
     poll_until(&view, cx, |snapshot| {
         snapshot
             .graph
             .node(source)
-            .is_some_and(|node| (0.10..0.16).contains(&node.mixer.gain))
+            .is_some_and(|node| (middle * 0.9..middle * 1.1).contains(&node.mixer.gain))
     });
     handle.request_exit();
     runtime.join().unwrap();
