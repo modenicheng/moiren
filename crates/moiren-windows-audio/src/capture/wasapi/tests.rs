@@ -318,10 +318,10 @@ fn prepared_capture_publishes_bridge_before_gate_and_cancel_never_runs() {
         let report = prepared.session.join().unwrap();
         assert_eq!(report.stream_started, !cancel);
         assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
-        assert_eq!(report.schema_version, 9);
+        assert_eq!(report.schema_version, 10);
         assert_eq!(report.requested_seconds, None);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 9);
+        assert_eq!(json["schema_version"], 10);
         assert_eq!(json["delivery"]["packets"], 0);
         assert!(json["delivery_bound"].is_null());
         assert_eq!(json["shared_period"]["requested_period_frames"], 240);
@@ -341,7 +341,7 @@ fn capture_preparation_failure_joins_owner_before_returning() {
         );
         let report = stream::finish(Err(CaptureError::UnsupportedFormat), &stop, &sender, report);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 9);
+        assert_eq!(json["schema_version"], 10);
         assert_eq!(json["requested_seconds"], 10.0);
         owner_exited.store(true, std::sync::atomic::Ordering::Release);
         report

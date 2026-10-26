@@ -493,7 +493,7 @@ pub(super) fn run_owner_with(
 }
 pub(super) fn new_report(options: &RenderOptions) -> RenderReport {
     RenderReport {
-        schema_version: 8,
+        schema_version: 9,
         queue: None,
         latency: LatencyRecorder::new(options.latency_telemetry).snapshot(),
         diagnostics: {

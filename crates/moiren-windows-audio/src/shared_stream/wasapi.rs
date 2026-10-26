@@ -2,7 +2,7 @@ use super::format::PreparedSharedFormat;
 use super::{
     SharedFallbackReason, SharedInitializationApi, SharedInitializationFailure,
     SharedInitializationStage, SharedPeriodCaps, SharedPeriodPolicy, SharedPeriodReport,
-    choose_shared_period,
+    SharedPeriodSelectionFailure, choose_shared_period,
 };
 use crate::negotiation::{
     EnginePeriodicityPolicy, LegacySharedInit, client3_rejects_format, initialize_legacy_shared,
@@ -135,11 +135,18 @@ fn initialize_client3(
     locked_policy: EnginePeriodicityPolicy,
     report: &mut SharedPeriodReport,
 ) -> Result<(), SharedClient3Error> {
+    report.desired_period_ms = policy.desired_period_ms;
     let caps = api
         .capabilities()
         .map_err(|error| failure(SharedInitializationStage::Capabilities, error, report))?;
     report.caps = Some(caps);
     let period = choose_shared_period(caps, sample_rate, policy).map_err(|error| {
+        report.period_selection_failure = Some(SharedPeriodSelectionFailure {
+            error,
+            sample_rate,
+            desired_period_ms: policy.desired_period_ms,
+            caps,
+        });
         failure(
             SharedInitializationStage::PeriodSelection,
             Error::new(E_INVALIDARG, error.to_string()),

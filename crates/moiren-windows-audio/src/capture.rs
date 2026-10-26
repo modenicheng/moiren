@@ -19,9 +19,10 @@ pub use evidence::{
 pub(crate) mod wasapi;
 #[cfg(windows)]
 pub use wasapi::{
-    CaptureEndpoint, CaptureSession, NativeCaptureInfo, PreparedCapture, PreparedNativeCapture,
-    list_capture_endpoints, prepare_capture_native_with_gate, prepare_capture_with_gate,
-    start_capture, start_capture_with_stop,
+    CaptureEndpoint, CapturePreparationFailure, CaptureSession, NativeCaptureInfo, PreparedCapture,
+    PreparedNativeCapture, list_capture_endpoints, prepare_capture_native_with_gate,
+    prepare_capture_native_with_gate_returning, prepare_capture_with_gate, start_capture,
+    start_capture_with_stop,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -157,7 +158,7 @@ pub struct CaptureReport {
 impl CaptureReport {
     pub(crate) fn new(source: CaptureSource, duration: SessionDuration) -> Self {
         Self {
-            schema_version: 9,
+            schema_version: 10,
             artifact: None,
             artifact_metadata: None,
             artifact_recorder: None,

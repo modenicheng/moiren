@@ -64,7 +64,7 @@ fn capture_evidence_survives_native_error_and_unwind_until_control_join() {
         assert!(reader.is_finished());
         let json = serde_json::to_value(&report).unwrap();
         assert!(json.get("evidence_recorder").is_none());
-        assert_eq!(json["schema_version"], 9);
+        assert_eq!(json["schema_version"], 10);
         assert_eq!(json["evidence_metadata"]["stored_frames"], 2);
     }
 }

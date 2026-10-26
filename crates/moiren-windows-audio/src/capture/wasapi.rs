@@ -21,7 +21,10 @@ mod physical;
 mod preparation;
 #[cfg(test)]
 pub(crate) use preparation::prepare_test_native;
-pub use preparation::{NativeCaptureInfo, PreparedNativeCapture, prepare_capture_native_with_gate};
+pub use preparation::{
+    CapturePreparationFailure, NativeCaptureInfo, PreparedNativeCapture,
+    prepare_capture_native_with_gate, prepare_capture_native_with_gate_returning,
+};
 pub(crate) mod stream;
 #[cfg(test)]
 mod tests;

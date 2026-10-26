@@ -418,6 +418,14 @@ fn query_and_policy_failures_never_attempt_initialization() {
         SharedInitializationStage::PeriodSelection
     );
     assert!(report.caps.is_some());
+    let selection = report.period_selection_failure.unwrap();
+    assert_eq!(
+        selection.error,
+        super::super::SharedPeriodError::InvalidCapabilities
+    );
+    assert_eq!(selection.sample_rate, 48_000);
+    assert_eq!(selection.desired_period_ms, Some(5.0));
+    assert_eq!(selection.caps.fundamental_frames, 0);
     assert_eq!(*api.operations.borrow(), ["capabilities"]);
 }
 

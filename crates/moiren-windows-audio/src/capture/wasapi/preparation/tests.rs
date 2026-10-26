@@ -266,6 +266,54 @@ fn deferred_capture_failure_panic_and_metadata_loss_join_and_cancel_peers() {
 }
 
 #[test]
+fn native_preparation_failure_retains_the_worker_report() {
+    let stop = StopSignal::new().unwrap();
+    let worker_stop = stop.event.clone();
+    let failure = match start_native_owner_returning(stop, move |_stop, preparation, _| {
+        let mut report = report();
+        report.sample_rate = Some(48_000);
+        report.shared_period.period_selection_failure =
+            Some(crate::shared_stream::SharedPeriodSelectionFailure {
+                error: crate::shared_stream::SharedPeriodError::InvalidCapabilities,
+                sample_rate: 48_000,
+                desired_period_ms: Some(5.0),
+                caps: crate::shared_stream::SharedPeriodCaps {
+                    default_frames: 480,
+                    fundamental_frames: 0,
+                    min_frames: 96,
+                    max_frames: 480,
+                },
+            });
+        preparation.finish(
+            Err(CaptureError::Api {
+                stage: "choose_shared_period",
+                hresult: windows::Win32::Foundation::E_INVALIDARG.0,
+            }),
+            &worker_stop,
+            report,
+        )
+    }) {
+        Ok(_) => panic!("expected native preparation failure"),
+        Err(failure) => failure,
+    };
+    assert_eq!(
+        failure.error.to_string(),
+        "choose_shared_period failed (HRESULT 0x80070057)"
+    );
+    let report = failure.report.expect("failed preparation report");
+    assert_eq!(report.sample_rate, Some(48_000));
+    assert_eq!(
+        report
+            .shared_period
+            .period_selection_failure
+            .unwrap()
+            .caps
+            .fundamental_frames,
+        0
+    );
+}
+
+#[test]
 fn deferred_capture_drop_before_attachment_joins_and_wakes_peer_gate() {
     let stop = StopSignal::new().unwrap();
     let gate = ActivationGate::new(stop.clone()).unwrap();
@@ -628,6 +676,38 @@ fn deferred_capture_evidence_invalid_config_or_queue_joins_and_cancels_owner() {
         assert_stopped(&stop);
         assert_eq!(gate.wait().unwrap(), Activation::Cancelled);
     }
+}
+
+#[test]
+fn deferred_capture_evidence_invalid_config_returning_retains_native_report() {
+    use crate::capture::PcmEvidenceError;
+
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let exited = Arc::new(AtomicBool::new(false));
+    let prepared = fake_evidence_prepared(stop.clone(), gate, 2, None, exited.clone(), false);
+    let result = prepared.attach_with_evidence_returning(
+        input(),
+        PcmEvidenceConfig {
+            capacity_frames: 0,
+            ..evidence_config()
+        },
+    );
+    let failure = match result {
+        Ok(_) => panic!("invalid evidence configuration must fail"),
+        Err(failure) => failure,
+    };
+    assert_eq!(
+        failure.error,
+        CaptureError::PcmEvidence(PcmEvidenceError::InvalidConfig)
+    );
+    let report = failure
+        .report
+        .expect("evidence setup failure must retain the native report");
+    assert!(exited.load(Ordering::Acquire));
+    assert_stopped(&stop);
+    assert!(!report.stream_started);
+    assert!(report.evidence_recorder.is_none());
 }
 
 #[test]

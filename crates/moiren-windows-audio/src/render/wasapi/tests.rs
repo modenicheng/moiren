@@ -337,7 +337,7 @@ fn prepared_render_waits_before_dsp_and_returns_renderer_to_joiner() {
         assert_eq!(exit.renderer.timeline(), u64::from(!cancel));
         assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
         let json = serde_json::to_value(&exit.report).unwrap();
-        assert_eq!(json["schema_version"], 8);
+        assert_eq!(json["schema_version"], 9);
         assert_eq!(json["diagnostics"]["enabled"], false);
         assert_eq!(json["shared_period"]["requested_period_frames"], 240);
         assert_eq!(json["shared_period"]["actual_period_frames"], 336);
@@ -394,7 +394,7 @@ fn post_ready_failure_returns_unstarted_renderer_and_finite_report() {
     assert!(!exit.report.stream_started);
     assert_eq!(exit.renderer.timeline(), 0);
     let json = serde_json::to_value(&exit.report).unwrap();
-    assert_eq!(json["schema_version"], 8);
+    assert_eq!(json["schema_version"], 9);
     assert_eq!(json["diagnostics"]["events"], serde_json::json!([]));
     assert_eq!(json["requested_seconds"], 10.0);
     assert!(rx.try_recv().is_err());

@@ -61,6 +61,17 @@ pub struct SharedInitializationFailure {
     pub hresult: i32,
 }
 
+/// Context retained when Client3 period capabilities cannot satisfy the
+/// requested policy. Keep this separate from the native HRESULT so evidence
+/// can distinguish a local policy rejection from a COM call failure.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct SharedPeriodSelectionFailure {
+    pub error: SharedPeriodError,
+    pub sample_rate: u32,
+    pub desired_period_ms: Option<f64>,
+    pub caps: SharedPeriodCaps,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
 pub struct SharedPeriodReport {
     pub mix_format: Option<SharedFormatInfo>,
@@ -74,6 +85,8 @@ pub struct SharedPeriodReport {
     pub engine_period_frames: Option<u32>,
     pub engine_sample_rate: Option<u32>,
     pub caps: Option<SharedPeriodCaps>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period_selection_failure: Option<SharedPeriodSelectionFailure>,
     pub initialization_api: Option<SharedInitializationApi>,
     pub fallback_reason: Option<SharedFallbackReason>,
     pub client3_failure: Option<SharedInitializationFailure>,
@@ -107,7 +120,8 @@ impl SharedPeriodPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SharedPeriodError {
     #[error("shared period capabilities contain invalid bounds or no legal multiple")]
     InvalidCapabilities,

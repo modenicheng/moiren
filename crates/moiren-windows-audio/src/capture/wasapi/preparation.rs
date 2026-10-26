@@ -12,6 +12,7 @@ use crate::{
     preparation,
 };
 use std::{
+    fmt,
     os::windows::io::OwnedHandle,
     sync::{Arc, Mutex, atomic::AtomicBool, mpsc},
     thread,
@@ -36,7 +37,30 @@ type CaptureAttachment = (CaptureIngress, PreparedInputQueue, Option<EvidenceHan
 pub(crate) struct CaptureAttachFailure {
     pub error: CaptureError,
     pub report: Option<CaptureReport>,
+    pub cleanup_error: Option<CaptureError>,
 }
+
+/// Native preparation can fail after the worker has already assembled useful
+/// negotiation evidence. Keep that report available to callers instead of
+/// reducing the failure to only its HRESULT and stage text.
+#[derive(Debug)]
+pub struct CapturePreparationFailure {
+    pub error: CaptureError,
+    pub report: Option<CaptureReport>,
+    pub cleanup_error: Option<CaptureError>,
+}
+
+impl fmt::Display for CapturePreparationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)?;
+        if let Some(error) = self.cleanup_error {
+            write!(formatter, "; native cleanup failed: {error}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for CapturePreparationFailure {}
 impl PreparedNativeCapture {
     pub fn info(&self) -> NativeCaptureInfo {
         self.info
@@ -50,23 +74,61 @@ impl PreparedNativeCapture {
     pub fn attach_with_evidence(
         self,
         input: PreparedInputQueue,
-        mut config: PcmEvidenceConfig,
+        config: PcmEvidenceConfig,
     ) -> Result<(PreparedCapture, PcmEvidenceReader), CaptureError> {
+        self.attach_with_evidence_returning(input, config)
+            .map_err(|failure| failure.error)
+    }
+    /// Like [`Self::attach_with_evidence`], but preserves the native report
+    /// when control-side attachment or evidence setup fails.
+    pub fn attach_with_evidence_returning(
+        self,
+        input: PreparedInputQueue,
+        mut config: PcmEvidenceConfig,
+    ) -> Result<(PreparedCapture, PcmEvidenceReader), Box<CapturePreparationFailure>> {
         config.detect_position_gaps &=
             client_position_clock(self.info.timing, self.info.shared_period);
         let (writer, reader) =
-            pcm_evidence_stream(config, self.info.timing.sample_rate, self.info.channels)?;
+            match pcm_evidence_stream(config, self.info.timing.sample_rate, self.info.channels) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let (report, cleanup_error) = stop_and_join(self.session);
+                    return Err(Box::new(CapturePreparationFailure {
+                        error: CaptureError::PcmEvidence(error),
+                        report,
+                        cleanup_error,
+                    }));
+                }
+            };
         // Both sides retain the prepared writer until attachment is resolved.
         // A failed/closed handoff cannot free its last allocation on the owner.
         let handoff = Arc::new(Mutex::new(Some(writer)));
         let capture = self
             .attach_with_handoff(input, crate::NATIVE_SAMPLE_RATE, Some(handoff.clone()))
-            .map_err(|failure| failure.error)?;
+            .map_err(|failure| {
+                Box::new(CapturePreparationFailure {
+                    error: failure.error,
+                    report: failure.report,
+                    cleanup_error: failure.cleanup_error,
+                })
+            })?;
         Ok((capture, reader))
     }
-    pub(crate) fn cancel_with_report(self) -> Result<CaptureReport, CaptureError> {
-        let _ = self.session.request_stop();
-        self.session.join()
+    /// Stop the prepared native owner and return its final report without
+    /// attaching a graph bridge. This is used when a control-side validation
+    /// fails after native negotiation but before attachment.
+    pub fn cancel_with_report(self) -> Result<CaptureReport, CaptureError> {
+        let (report, cleanup_error) = self.cancel_with_report_returning();
+        match (report, cleanup_error) {
+            (Some(report), None) => Ok(report),
+            (_, Some(error)) => Err(error),
+            (None, None) => Err(CaptureError::WorkerPanicked),
+        }
+    }
+    /// Stop the prepared owner while retaining both a partial report and a
+    /// control-side stop/join error for callers that need failure evidence.
+    pub fn cancel_with_report_returning(self) -> (Option<CaptureReport>, Option<CaptureError>) {
+        stop_and_join(self.session)
     }
     /// Control-side failures retain the negotiated stream report, including a
     /// rejected queue before handoff. The peer stop precedes every blocking join.
@@ -112,9 +174,12 @@ impl PreparedNativeCapture {
                 channels: self.info.channels,
             }),
             Err(error) => {
-                let _ = self.session.request_stop();
-                let report = self.session.join().ok();
-                Err(Box::new(CaptureAttachFailure { error, report }))
+                let (report, cleanup_error) = stop_and_join(self.session);
+                Err(Box::new(CaptureAttachFailure {
+                    error,
+                    report,
+                    cleanup_error,
+                }))
             }
         }
     }
@@ -249,19 +314,54 @@ pub fn prepare_capture_native_with_gate(
     stop: StopSignal,
     gate: ActivationGate,
 ) -> Result<PreparedNativeCapture, CaptureError> {
-    options.validate()?;
-    gate.validate_stop(&stop)?;
-    start_native_owner(stop, move |stop, preparation, started| {
+    prepare_capture_native_with_gate_returning(options, stop, gate).map_err(|failure| failure.error)
+}
+pub fn prepare_capture_native_with_gate_returning(
+    options: CaptureOptions,
+    stop: StopSignal,
+    gate: ActivationGate,
+) -> Result<PreparedNativeCapture, Box<CapturePreparationFailure>> {
+    options.validate().map_err(|error| {
+        Box::new(CapturePreparationFailure {
+            error,
+            report: None,
+            cleanup_error: None,
+        })
+    })?;
+    gate.validate_stop(&stop).map_err(|error| {
+        Box::new(CapturePreparationFailure {
+            error: CaptureError::Gate(error),
+            report: None,
+            cleanup_error: None,
+        })
+    })?;
+    start_native_owner_returning(stop, move |stop, preparation, started| {
         physical::run_owner_prepared(options, stop, preparation, gate, started)
     })
 }
+#[cfg(test)]
 fn start_native_owner(
     stop: StopSignal,
     owner: impl FnOnce(Arc<OwnedHandle>, CapturePreparation, Arc<AtomicBool>) -> CaptureReport
     + Send
     + 'static,
 ) -> Result<PreparedNativeCapture, CaptureError> {
-    let (sender, receiver) = api("Create capture handoff", preparation::channel())?;
+    start_native_owner_returning(stop, owner).map_err(|failure| failure.error)
+}
+fn start_native_owner_returning(
+    stop: StopSignal,
+    owner: impl FnOnce(Arc<OwnedHandle>, CapturePreparation, Arc<AtomicBool>) -> CaptureReport
+    + Send
+    + 'static,
+) -> Result<PreparedNativeCapture, Box<CapturePreparationFailure>> {
+    let (sender, receiver) =
+        api("Create capture handoff", preparation::channel()).map_err(|error| {
+            Box::new(CapturePreparationFailure {
+                error,
+                report: None,
+                cleanup_error: None,
+            })
+        })?;
     let (ready, metadata) = mpsc::sync_channel(1);
     let (attached, attachment) = mpsc::sync_channel(1);
     let started = Arc::new(AtomicBool::new(false));
@@ -281,8 +381,14 @@ fn start_native_owner(
                 worker_started,
             )
         })
-        .map_err(|error| CaptureError::WorkerSpawn {
-            code: error.raw_os_error(),
+        .map_err(|error| {
+            Box::new(CapturePreparationFailure {
+                error: CaptureError::WorkerSpawn {
+                    code: error.raw_os_error(),
+                },
+                report: None,
+                cleanup_error: None,
+            })
         })?;
     let session = CaptureSession {
         started,
@@ -290,11 +396,23 @@ fn start_native_owner(
         worker: Some(worker),
     };
     let info = match metadata.recv() {
-        Ok(result) => result?,
+        Ok(Ok(info)) => info,
+        Ok(Err(error)) => {
+            let (report, cleanup_error) = stop_and_join(session);
+            return Err(Box::new(CapturePreparationFailure {
+                error,
+                report,
+                cleanup_error,
+            }));
+        }
         Err(_) => {
-            let _ = session.request_stop();
-            session.join()?;
-            return Err(CaptureError::StartupLost);
+            let (report, cleanup_error) = stop_and_join(session);
+            let error = cleanup_error.unwrap_or(CaptureError::StartupLost);
+            return Err(Box::new(CapturePreparationFailure {
+                error,
+                report,
+                cleanup_error: None,
+            }));
         }
     };
     Ok(PreparedNativeCapture {
@@ -303,6 +421,14 @@ fn start_native_owner(
         bridge: sender,
         attached: attachment,
     })
+}
+
+fn stop_and_join(session: CaptureSession) -> (Option<CaptureReport>, Option<CaptureError>) {
+    let stop_error = session.request_stop().err();
+    match session.join() {
+        Ok(report) => (Some(report), stop_error),
+        Err(error) => (None, Some(error)),
+    }
 }
 
 #[cfg(test)]

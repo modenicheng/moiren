@@ -6,7 +6,7 @@ use moiren_windows_audio::{
     shared_stream::{
         SharedFallbackReason, SharedInitializationApi, SharedInitializationFailure,
         SharedInitializationStage, SharedPeriodCaps, SharedPeriodError, SharedPeriodPolicy,
-        SharedPeriodReport, choose_shared_period,
+        SharedPeriodReport, SharedPeriodSelectionFailure, choose_shared_period,
     },
 };
 
@@ -192,4 +192,36 @@ fn serializes_actual_period_and_explicit_fallback_without_invented_measurements(
     assert!(json["actual_period_frames"].is_null());
     let json = serde_json::to_value(SharedPeriodReport::default()).unwrap();
     assert!(json["initialization_api"].is_null());
+}
+
+#[test]
+fn serializes_period_selection_failure_with_raw_request_and_capabilities() {
+    let failure = SharedPeriodSelectionFailure {
+        error: SharedPeriodError::InvalidCapabilities,
+        sample_rate: 48_000,
+        desired_period_ms: Some(5.0),
+        caps: SharedPeriodCaps {
+            default_frames: 480,
+            fundamental_frames: 0,
+            min_frames: 96,
+            max_frames: 480,
+        },
+    };
+    let report = SharedPeriodReport {
+        caps: Some(failure.caps),
+        period_selection_failure: Some(failure),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(report).unwrap();
+    assert_eq!(
+        json["period_selection_failure"]["error"],
+        "invalid_capabilities"
+    );
+    assert_eq!(json["period_selection_failure"]["sample_rate"], 48_000);
+    assert_eq!(json["period_selection_failure"]["desired_period_ms"], 5.0);
+    assert_eq!(
+        json["period_selection_failure"]["caps"]["fundamental_frames"],
+        0
+    );
+    assert_eq!(json["caps"]["max_frames"], 480);
 }
