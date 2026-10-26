@@ -10,6 +10,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(any(windows, test))]
+#[path = "measurement_session.rs"]
+pub(crate) mod session;
+
 #[derive(Debug)]
 struct Options {
     input: String,
@@ -20,6 +24,20 @@ struct Options {
     max_metadata_bytes: u64,
     max_packets: u64,
     dry_run: bool,
+}
+
+#[cfg(any(windows, test))]
+impl Options {
+    fn config(&self) -> session::MeasurementConfig {
+        session::MeasurementConfig {
+            input_endpoint_id: self.input.clone(),
+            max_active_duration: std::time::Duration::from_secs(self.seconds),
+            ring_frames: self.ring_frames,
+            max_pcm_bytes: self.max_pcm_bytes,
+            max_metadata_bytes: self.max_metadata_bytes,
+            max_packets: self.max_packets,
+        }
+    }
 }
 
 fn parse(arguments: Vec<String>) -> Result<Options> {
@@ -225,153 +243,117 @@ fn write_report(path: &Path, report: &MeasurementReport) -> Result<()> {
 
 #[cfg(windows)]
 fn collect_native(options: &Options, report: &mut MeasurementReport) -> Result<()> {
-    use crate::measurement_sink::{EvidenceSink, SinkLimits};
-    use moiren_windows_audio::{
-        ActivationGate, SessionDuration, StopSignal,
-        capture::{CaptureOptions, PcmEvidenceConfig, prepare_capture_native_with_gate},
-        latency::{PreparedInputQueue, TelemetryMode},
-    };
-    use std::time::Duration;
-    // Declare sink ownership first: unwinding also drops/joins the native
-    // session before a potentially stalled sink worker can be joined.
-    let mut sink_owner = None;
-    let stop = StopSignal::new().context("create independent measurement stop")?;
-    let gate = ActivationGate::new(stop.clone()).context("create measurement activation gate")?;
-    let native = prepare_capture_native_with_gate(
-        CaptureOptions {
-            artifact: None,
-            latency_telemetry: TelemetryMode::Summary,
-            shared_period: Default::default(),
-            endpoint_id: options.input.clone(),
-            duration: SessionDuration::UntilStopped,
+    use session::{MeasurementPaths, MeasurementSession};
+    let mut owner = MeasurementSession::prepare(
+        options.config(),
+        MeasurementPaths {
+            pcm: report.pcm_path.clone(),
+            packets: report.packet_path.clone(),
         },
-        stop.clone(),
-        gate.clone(),
-    )
-    .context("prepare independent native capture")?;
-    let info = native.info();
-    let (capture, reader) = native
-        .attach_with_evidence(
-            PreparedInputQueue::compatible(),
-            PcmEvidenceConfig {
-                capacity_frames: options.ring_frames,
-                detect_position_gaps: true,
-            },
-        )
-        .context("attach bounded measurement tap")?;
-    // Duration is controlled independently. Derive the frame cap from the
-    // caller's byte budget, not a nominal clock count that drifts over hours.
-    let max_frames = options.max_pcm_bytes / (info.channels as u64 * 4);
-    sink_owner.replace(
-        EvidenceSink::create(
-            reader,
-            info.timing.sample_rate,
-            info.channels,
-            &report.pcm_path,
-            &report.packet_path,
-            SinkLimits {
-                max_frames,
-                max_pcm_bytes: options.max_pcm_bytes,
-                max_metadata_bytes: options.max_metadata_bytes,
-                max_packets: options.max_packets,
-            },
-        )
-        .context("prepare bounded non-RT measurement sink")?,
+    )?;
+    ensure!(
+        owner.info().input_endpoint_id == options.input
+            && owner.info().ring_frames == options.ring_frames,
+        "prepared measurement identity differs from requested input"
     );
-    let sink = sink_owner.as_mut().expect("prepared measurement sink");
-    // Source/observer stay alive through native join, but never enter a graph.
+    drive_session(
+        &mut owner,
+        std::time::Duration::from_secs(options.seconds),
+        report,
+    )
+}
+
+#[cfg(any(windows, test))]
+trait CollectionSession {
+    fn activate(&mut self) -> Result<()>;
+    fn check(&self) -> Result<session::MeasurementProgress>;
+    fn request_stop(&mut self) -> Result<()>;
+    fn finish(&mut self) -> Result<session::MeasurementOutcome>;
+}
+
+#[cfg(any(windows, test))]
+impl CollectionSession for session::MeasurementSession {
+    fn activate(&mut self) -> Result<()> {
+        self.activate()
+    }
+    fn check(&self) -> Result<session::MeasurementProgress> {
+        self.check()
+    }
+    fn request_stop(&mut self) -> Result<()> {
+        self.request_stop()
+    }
+    fn finish(&mut self) -> Result<session::MeasurementOutcome> {
+        self.finish()
+    }
+}
+
+#[cfg(any(windows, test))]
+fn drive_session(
+    owner: &mut impl CollectionSession,
+    duration: std::time::Duration,
+    report: &mut MeasurementReport,
+) -> Result<()> {
     let collection = (|| {
-        gate.activate()
-            .context("activate independent measurement")?;
+        owner.activate()?;
+        // RefCell only shares this synchronous control owner between the two
+        // polling callbacks; neither callback performs disk IO or joins.
+        let owner = std::cell::RefCell::new(&mut *owner);
         crate::live::soak_control::run_until(
-            Duration::from_secs(options.seconds),
-            |_| {
-                sink.check()?;
-                ensure!(
-                    !capture.session.is_finished(),
-                    "measurement owner stopped before deadline"
-                );
-                Ok(())
-            },
-            || {
-                stop.request_stop()
-                    .context("stop independent measurement owner")
-            },
+            duration,
+            |_| owner.borrow().check().map(|_| ()),
+            || owner.borrow_mut().request_stop(),
         )
     })();
-    // Native cancellation and join precede sink join even with blocked disk IO.
-    let stopped = stop
-        .request_stop()
-        .context("cancel measurement after collection");
-    let native_result = capture.session.join().context("join measurement owner");
-    let mut failures = Vec::new();
+    let stopped = owner.request_stop();
+    // Cleanup and typed report retention precede any potentially fallible JSON
+    // conversion, even when activation, health or the stop request failed.
+    let finished = owner.finish();
     for result in [collection, stopped] {
         if let Err(error) = result {
-            failures.push(format!("{error:#}"));
+            merge_failure(&mut report.failure, &format!("{error:#}"));
         }
     }
-    let mut evidence_summary = None;
-    match native_result {
-        Ok(native) => {
-            if let Some(failure) = &native.failure {
-                failures.push(failure.clone());
+    match finished {
+        Ok(outcome) => {
+            if let Some(failure) = outcome.failure {
+                merge_failure(&mut report.failure, &failure);
             }
-            if !native.stream_started || !native.stop_succeeded {
-                failures.push("measurement native stream did not start and stop cleanly".into());
-            }
-            if let Some(summary) = native.evidence_metadata {
-                evidence_summary = Some(summary);
-                if summary.dropped_frames != 0
-                    || summary.overflow_packets != 0
-                    || summary.reader_abandoned_packets != 0
-                    || summary.gap_events != 0
-                    || summary.discontinuity_events != 0
-                    || summary.timestamp_error_packets != 0
-                    || summary.position_overflow_packets != 0
-                    || summary.counters_saturated
-                    || summary.sequence_exhausted
-                {
-                    failures.push(
-                        "measurement evidence has loss or invalid continuity/timestamps".into(),
-                    );
+            for (destination, result) in [
+                (
+                    &mut report.native_capture,
+                    outcome.native_capture.map(serde_json::to_value).transpose(),
+                ),
+                (
+                    &mut report.sink,
+                    outcome.sink.map(serde_json::to_value).transpose(),
+                ),
+            ] {
+                match result {
+                    Ok(value) => *destination = value,
+                    Err(error) => merge_failure(
+                        &mut report.failure,
+                        &format!("serialize measurement outcome: {error}"),
+                    ),
                 }
-            } else {
-                failures.push("measurement evidence summary is missing".into());
             }
-            report.native_capture = Some(serde_json::to_value(native)?);
         }
-        Err(error) => failures.push(format!("{error:#}")),
+        Err(error) => merge_failure(
+            &mut report.failure,
+            &format!("finish measurement session: {error:#}"),
+        ),
     }
-    // Native EOF is now final. Drain even a failed run instead of discarding
-    // queued waveform merely because a quality counter failed.
-    match sink.finish() {
-        Ok(sink_report) => {
-            if let Some(failure) = &sink_report.failure {
-                failures.push(failure.clone());
-            }
-            if let Some(summary) = evidence_summary
-                && (summary.stored_frames == 0
-                    || sink_report.written_frames != summary.stored_frames
-                    || sink_report.complete_packets != summary.packets
-                    || sink_report.nonfinite_samples != 0
-                    || sink_report.missing_packets != 0
-                    || sink_report.incomplete_packets != 0
-                    || sink_report.counters_saturated
-                    || sink_report.cancelled)
-            {
-                failures.push(
-                    "measurement sink and final native evidence are not complete and consistent"
-                        .into(),
-                );
-            }
-            report.sink = Some(serde_json::to_value(sink_report)?);
-        }
-        Err(error) => failures.push(format!("join measurement sink: {error:#}")),
-    }
-    ensure!(failures.is_empty(), "{}", failures.join("; "));
     Ok(())
 }
 
+#[cfg(any(windows, test))]
+fn merge_failure(failure: &mut Option<String>, message: &str) {
+    if let Some(failure) = failure {
+        failure.push_str("; ");
+        failure.push_str(message);
+    } else {
+        *failure = Some(message.to_owned());
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -464,5 +446,92 @@ mod tests {
         assert!(!directory.join("measurement.f32le").exists());
         assert!(run(arguments).is_err());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn measurement_adapter_finalizes_after_poll_error_and_retains_unqualified_partial_report() {
+        use session::{MeasurementInfo, MeasurementOutcome, MeasurementProgress};
+        use std::sync::Mutex;
+        struct FakeCollection {
+            log: Mutex<Vec<&'static str>>,
+        }
+        impl CollectionSession for FakeCollection {
+            fn activate(&mut self) -> Result<()> {
+                self.log.lock().unwrap().push("activate");
+                Ok(())
+            }
+            fn check(&self) -> Result<MeasurementProgress> {
+                self.log.lock().unwrap().push("check");
+                anyhow::bail!("injected polling failure")
+            }
+            fn request_stop(&mut self) -> Result<()> {
+                self.log.lock().unwrap().push("stop");
+                Ok(())
+            }
+            fn finish(&mut self) -> Result<MeasurementOutcome> {
+                self.log.lock().unwrap().push("finish");
+                Ok(MeasurementOutcome {
+                    info: MeasurementInfo {
+                        input_endpoint_id: "independent".into(),
+                        sample_rate: 96_000,
+                        channels: 1,
+                        ring_frames: 2,
+                        max_frames: 2,
+                    },
+                    native_capture: None,
+                    sink: Some(crate::measurement_sink::SinkReport {
+                        schema_version: 1,
+                        sample_rate: 96_000,
+                        channels: 1,
+                        written_frames: 2,
+                        written_pcm_bytes: 8,
+                        written_metadata_bytes: 180,
+                        complete_packets: 1,
+                        sequence_gaps: 0,
+                        missing_packets: 0,
+                        incomplete_packets: 0,
+                        nonfinite_samples: 0,
+                        counters_saturated: false,
+                        cancelled: false,
+                        failure: None,
+                    }),
+                    activation_elapsed: Some(std::time::Duration::from_secs(1)),
+                    failure: Some("retained native failure".into()),
+                })
+            }
+        }
+        let mut owner = FakeCollection {
+            log: Mutex::new(Vec::new()),
+        };
+        let mut report = MeasurementReport {
+            schema_version: 1,
+            mode: "independent_native_measurement",
+            qualified: false,
+            status: "unqualified",
+            input_endpoint_id: "independent".into(),
+            requested_seconds: 1,
+            dry_run: false,
+            pcm_path: "measurement.f32le".into(),
+            packet_path: "measurement.packets.jsonl".into(),
+            ring_frames: 2,
+            max_pcm_bytes: 8,
+            max_metadata_bytes: 1024,
+            max_packets: 1,
+            native_capture: None,
+            sink: None,
+            failure: None,
+            gaps: Vec::new(),
+        };
+        drive_session(&mut owner, std::time::Duration::from_secs(1), &mut report).unwrap();
+        assert_eq!(
+            &*owner.log.lock().unwrap(),
+            &["activate", "check", "stop", "stop", "finish"]
+        );
+        assert_eq!(report.sink.as_ref().unwrap()["sample_rate"], 96_000);
+        assert_eq!(report.sink.as_ref().unwrap()["written_frames"], 2);
+        assert!(!report.qualified);
+        assert_eq!(report.status, "unqualified");
+        let failure = report.failure.unwrap();
+        assert!(failure.contains("polling failure") && failure.contains("retained native failure"));
     }
 }
