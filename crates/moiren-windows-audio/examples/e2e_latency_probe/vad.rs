@@ -5,6 +5,7 @@
 //! writes into the VAD playback MMDevice.
 
 use super::source::{PreparedSource, SourceCursor, SourceProgress, SourceProvenance};
+use super::vad_collection::PlaybackProgress;
 use anyhow::{Context, Result, ensure};
 use moiren_windows_audio::vad::{
     Channels, DeviceInterface, Intent, MAX_PACKET_FRAMES, SampleFormat, StableEndpointId,
@@ -15,7 +16,7 @@ use std::{
     marker::PhantomData,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -58,18 +59,22 @@ use windows::{
 const CONTROL_START_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Serialize)]
-pub struct PlaybackReport {
-    pub stable_endpoint_id: String,
-    pub mmdevice_id: String,
-    pub observed_name: String,
-    pub adapter_instance: String,
-    pub native_buffer_frames: u32,
-    pub packet_format: String,
+pub struct PlaybackOutcome {
+    #[serde(flatten)]
+    pub info: Option<PlaybackInfo>,
     pub submitted_frames: u64,
     pub playback_source: SourceProvenance,
     pub source_progress: SourceProgress,
     pub event_timeouts: u64,
     pub elapsed_seconds: f64,
+    pub started: bool,
+    /// True only after the explicit native Stop call succeeded.
+    pub stopped: bool,
+    pub worker_joined: bool,
+    /// None means no explicit observation (for example worker unwind).
+    pub native_stop_attempted: Option<bool>,
+    pub native_stop_succeeded: Option<bool>,
+    pub failure: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,24 +90,84 @@ pub struct PlaybackInfo {
 pub struct PlaybackSession {
     stop: Arc<AtomicBool>,
     activate: Arc<AtomicBool>,
-    worker: Option<JoinHandle<Result<PlaybackReport>>>,
+    worker: Option<JoinHandle<Result<()>>>,
+    latest: Arc<Mutex<WorkerState>>,
+    provenance: SourceProvenance,
+    activation_attempted: bool,
+    unexpected_exit: AtomicBool,
     pub info: PlaybackInfo,
 }
 
+#[derive(Default)]
+struct WorkerState {
+    info: Option<PlaybackInfo>,
+    provenance: Option<SourceProvenance>,
+    progress: PlaybackProgress,
+    elapsed_seconds: f64,
+    native_stop_attempted: Option<bool>,
+    native_stop_succeeded: Option<bool>,
+}
+
+fn stop_and_publish(
+    active: bool,
+    latest: &Mutex<WorkerState>,
+    primary: Result<()>,
+    stop: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    {
+        let mut state = latest.lock().unwrap_or_else(|p| p.into_inner());
+        state.native_stop_attempted = Some(active);
+        state.native_stop_succeeded = None;
+        state.progress.stopped = false;
+    }
+    let cleanup = if active { stop() } else { Ok(()) };
+    if active {
+        let mut state = latest.lock().unwrap_or_else(|p| p.into_inner());
+        state.native_stop_succeeded = Some(cleanup.is_ok());
+        state.progress.stopped = cleanup.is_ok();
+    }
+    super::soak_cleanup::combine(primary, cleanup)
+}
+
+fn submit_and_publish(
+    source: &mut SourceCursor,
+    latest: &Mutex<WorkerState>,
+    submit: impl FnOnce(&mut SourceCursor) -> Result<()>,
+) -> Result<()> {
+    // The existing source cursor commits only after successful ReleaseBuffer.
+    // Native IO and marker generation run outside this short publication lock.
+    submit(source)?;
+    latest
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .progress
+        .source = source.progress.clone();
+    Ok(())
+}
+
 impl PlaybackSession {
-    /// Prepare the native stream without starting its clock. The VAD provider
-    /// must prepare its worker against this stable stream generation before
-    /// the gate is opened; otherwise the worker treats native stream creation
-    /// as a recovery and closes the newly admitted gate.
     pub fn prepare(
         stable_id: StableEndpointId,
         root_instance: String,
         source_plan: Option<PreparedSource>,
     ) -> Result<Self> {
+        Self::prepare_with_abort(stable_id, root_instance, source_plan, || {}, &mut None)
+    }
+
+    pub(super) fn prepare_with_abort(
+        stable_id: StableEndpointId,
+        root_instance: String,
+        source_plan: Option<PreparedSource>,
+        before_join: impl FnMut(),
+        partial: &mut Option<PlaybackOutcome>,
+    ) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let activate = Arc::new(AtomicBool::new(false));
+        let latest = Arc::new(Mutex::new(WorkerState::default()));
+        let provenance = SourceProvenance::new(source_plan.as_ref());
         let worker_stop = stop.clone();
         let worker_activate = activate.clone();
+        let worker_latest = latest.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("moiren-vad-native-playback".into())
@@ -114,50 +179,167 @@ impl PlaybackSession {
                     worker_stop,
                     worker_activate,
                     &ready_tx,
+                    worker_latest,
                 );
+                // Ready may already occupy the one-slot channel after a startup
+                // timeout. A final error publication must never block the join.
                 if let Err(error) = &result {
-                    let _ = ready_tx.send(Err(format!("{error:#}")));
+                    let _ = ready_tx.try_send(Err(format!("{error:#}")));
                 }
                 result
             })
             .context("spawn VAD native playback worker")?;
+        let mut guard = StartupGuard {
+            worker: Some(worker),
+            stop: stop.clone(),
+            latest: latest.clone(),
+            provenance: provenance.clone(),
+            before_join,
+            partial,
+        };
         let info = match ready_rx.recv_timeout(CONTROL_START_TIMEOUT) {
             Ok(Ok(info)) => info,
-            Ok(Err(error)) => {
-                let _ = worker.join();
-                return Err(anyhow::anyhow!(error));
-            }
-            Err(error) => {
-                stop.store(true, Ordering::Release);
-                let _ = worker.join();
-                return Err(anyhow::anyhow!("VAD native playback startup lost: {error}"));
-            }
+            Ok(Err(error)) => return Err(anyhow::anyhow!(error)),
+            Err(error) => anyhow::bail!("VAD native playback startup lost: {error}"),
         };
+        let worker = guard.worker.take();
         Ok(Self {
             stop,
             activate,
-            worker: Some(worker),
+            worker,
+            latest,
+            provenance,
+            activation_attempted: false,
+            unexpected_exit: AtomicBool::new(false),
             info,
         })
     }
 
-    pub fn activate(&self) {
+    pub fn activate(&mut self) -> Result<()> {
+        ensure!(
+            !self.activation_attempted && !self.stop.load(Ordering::Acquire),
+            "source activation already attempted or stopping"
+        );
+        self.activation_attempted = true;
+        self.check()?;
         self.activate.store(true, Ordering::Release);
+        Ok(())
     }
-
-    pub fn stop(mut self) -> Result<PlaybackReport> {
+    pub fn request_stop(&self) {
+        if !self.stop.load(Ordering::Acquire)
+            && self
+                .worker
+                .as_ref()
+                .is_some_and(|worker| worker.is_finished())
+        {
+            self.unexpected_exit.store(true, Ordering::Release);
+        }
         self.stop.store(true, Ordering::Release);
-        self.worker
+    }
+    pub fn check(&self) -> Result<Option<PlaybackProgress>> {
+        let worker = self
+            .worker
+            .as_ref()
+            .context("source worker missing or finished")?;
+        ensure!(
+            self.stop.load(Ordering::Acquire) || !worker.is_finished(),
+            "source worker exited before requested stop"
+        );
+        match self.latest.try_lock() {
+            Ok(state) => Ok(Some(state.progress.clone())),
+            Err(std::sync::TryLockError::WouldBlock) => Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                anyhow::bail!("source progress publication poisoned")
+            }
+        }
+    }
+    pub fn finish(&mut self) -> Result<PlaybackOutcome> {
+        self.request_stop();
+        let worker = self
+            .worker
             .take()
-            .expect("VAD playback worker")
-            .join()
-            .map_err(|_| anyhow::anyhow!("VAD native playback worker panicked"))?
+            .context("source worker missing or already joined")?;
+        let mut outcome = join_outcome(worker, &self.latest, self.provenance.clone());
+        if self.unexpected_exit.load(Ordering::Acquire) {
+            super::vad_collection::append_failure(
+                &mut outcome.failure,
+                "source worker exited before requested stop",
+            );
+        }
+        Ok(outcome)
+    }
+    pub fn stop(mut self) -> Result<PlaybackOutcome> {
+        self.request_stop();
+        self.finish()
+    }
+}
+
+struct StartupGuard<'a, F: FnMut()> {
+    worker: Option<JoinHandle<Result<()>>>,
+    stop: Arc<AtomicBool>,
+    latest: Arc<Mutex<WorkerState>>,
+    provenance: SourceProvenance,
+    before_join: F,
+    partial: &'a mut Option<PlaybackOutcome>,
+}
+
+impl<F: FnMut()> Drop for StartupGuard<'_, F> {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            // The recorder already exists while this source is half prepared.
+            // Broadcast its stop before the first possible blocking join.
+            let aborted =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut self.before_join));
+            self.stop.store(true, Ordering::Release);
+            let mut outcome = join_outcome(worker, &self.latest, self.provenance.clone());
+            if aborted.is_err() {
+                super::vad_collection::append_failure(
+                    &mut outcome.failure,
+                    "source startup abort callback panicked",
+                );
+            }
+            *self.partial = Some(outcome);
+        }
+    }
+}
+
+fn join_outcome(
+    worker: JoinHandle<Result<()>>,
+    latest: &Mutex<WorkerState>,
+    provenance: SourceProvenance,
+) -> PlaybackOutcome {
+    let message = match worker.join() {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(format!("{error:#}")),
+        Err(_) => Some("VAD native playback worker panicked".into()),
+    };
+    let mut failure = None;
+    if let Some(message) = message {
+        super::vad_collection::append_failure(&mut failure, &message);
+    }
+    if latest.is_poisoned() {
+        super::vad_collection::append_failure(&mut failure, "source progress publication poisoned");
+    }
+    let state = latest.lock().unwrap_or_else(|poison| poison.into_inner());
+    PlaybackOutcome {
+        info: state.info.clone(),
+        submitted_frames: state.progress.source.native_submitted_frames,
+        playback_source: state.provenance.clone().unwrap_or(provenance),
+        source_progress: state.progress.source.clone(),
+        event_timeouts: state.progress.event_timeouts,
+        elapsed_seconds: state.elapsed_seconds,
+        started: state.progress.started,
+        stopped: state.progress.stopped,
+        worker_joined: true,
+        native_stop_attempted: state.native_stop_attempted,
+        native_stop_succeeded: state.native_stop_succeeded,
+        failure,
     }
 }
 
 impl Drop for PlaybackSession {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.request_stop();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -510,6 +692,8 @@ impl Drop for Stream {
     fn drop(&mut self) {
         if self.active {
             // SAFETY: the client remains owned and initialized until Drop.
+            // Explicit worker retirement records Stop errors. This fallback
+            // cannot establish a successful Stop acknowledgement in a report.
             let _ = unsafe { self.client.Stop() };
         }
     }
@@ -522,7 +706,8 @@ fn run_worker(
     stop: Arc<AtomicBool>,
     activate: Arc<AtomicBool>,
     ready_tx: &mpsc::SyncSender<std::result::Result<PlaybackInfo, String>>,
-) -> Result<PlaybackReport> {
+    latest: Arc<Mutex<WorkerState>>,
+) -> Result<()> {
     let _apartment = Apartment::new()?;
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
@@ -530,64 +715,76 @@ fn run_worker(
         wait_playback(&enumerator, stable_id, root)?;
     let mut stream = Stream::prepare(&device)?;
     let mut source = SourceCursor::new(source_plan);
-    stream.fill_and_submit(&mut source, true)?;
+    latest.lock().unwrap_or_else(|p| p.into_inner()).provenance = Some(source.provenance());
     let info = PlaybackInfo {
-        stable_endpoint_id: stable_id.to_string(),
-        mmdevice_id: mmdevice_id.clone(),
-        observed_name: observed_name.clone(),
-        adapter_instance: adapter_instance.clone(),
-        native_buffer_frames: stream.frames,
-        packet_format: format!("{:?}", stream.format),
-    };
-    ready_tx
-        .send(Ok(info.clone()))
-        .map_err(|_| anyhow::anyhow!("VAD playback startup receiver closed"))?;
-    while !activate.load(Ordering::Acquire) {
-        if stop.load(Ordering::Acquire) {
-            return Ok(PlaybackReport {
-                stable_endpoint_id: stable_id.to_string(),
-                mmdevice_id,
-                observed_name,
-                adapter_instance,
-                native_buffer_frames: stream.frames,
-                packet_format: format!("{:?}", stream.format),
-                submitted_frames: source.progress.native_submitted_frames,
-                playback_source: source.provenance(),
-                source_progress: source.progress.clone(),
-                event_timeouts: 0,
-                elapsed_seconds: 0.0,
-            });
-        }
-        thread::sleep(Duration::from_millis(1));
-    }
-    stream.start()?;
-    let started = Instant::now();
-    let mut event_timeouts = 0;
-    // PlaybackSession owns the stop/join fence, including its Drop path. Keep
-    // the native stream alive until control has sampled the running provider.
-    while !stop.load(Ordering::Acquire) {
-        match unsafe { WaitForSingleObject(HANDLE(stream.event.as_raw_handle()), 100) } {
-            WAIT_OBJECT_0 => {
-                stream.fill_and_submit(&mut source, false)?;
-            }
-            WAIT_TIMEOUT => event_timeouts += 1,
-            WAIT_FAILED => return Err(windows::core::Error::from_thread().into()),
-            status => anyhow::bail!("unexpected VAD playback wait result {}", status.0),
-        }
-    }
-    Ok(PlaybackReport {
         stable_endpoint_id: stable_id.to_string(),
         mmdevice_id,
         observed_name,
         adapter_instance,
         native_buffer_frames: stream.frames,
         packet_format: format!("{:?}", stream.format),
-        submitted_frames: source.progress.native_submitted_frames,
-        playback_source: source.provenance(),
-        source_progress: source.progress.clone(),
-        event_timeouts,
-        elapsed_seconds: started.elapsed().as_secs_f64(),
-    })
+    };
+    let mut started = None;
+    let result = (|| -> Result<()> {
+        latest.lock().unwrap_or_else(|p| p.into_inner()).info = Some(info.clone());
+        submit_and_publish(&mut source, &latest, |source| {
+            stream.fill_and_submit(source, true)
+        })?;
+        ready_tx
+            .send(Ok(info))
+            .map_err(|_| anyhow::anyhow!("VAD playback startup receiver closed"))?;
+        while !activate.load(Ordering::Acquire) {
+            if stop.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        if stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        stream.start()?;
+        started = Some(Instant::now());
+        latest
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .progress
+            .started = true;
+        while !stop.load(Ordering::Acquire) {
+            match unsafe { WaitForSingleObject(HANDLE(stream.event.as_raw_handle()), 100) } {
+                WAIT_OBJECT_0 => {
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    submit_and_publish(&mut source, &latest, |source| {
+                        stream.fill_and_submit(source, false)
+                    })?;
+                    let mut state = latest.lock().unwrap_or_else(|p| p.into_inner());
+                    state.elapsed_seconds = started.map_or(0.0, |t| t.elapsed().as_secs_f64());
+                }
+                WAIT_TIMEOUT => {
+                    latest
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .progress
+                        .event_timeouts += 1
+                }
+                WAIT_FAILED => return Err(windows::core::Error::from_thread().into()),
+                status => anyhow::bail!("unexpected VAD playback wait result {}", status.0),
+            }
+        }
+        Ok(())
+    })();
+    let stopped = stop_and_publish(stream.active, &latest, result, || unsafe {
+        stream.client.Stop().map_err(anyhow::Error::from)
+    });
+    {
+        let mut state = latest.lock().unwrap_or_else(|p| p.into_inner());
+        if state.native_stop_succeeded == Some(true) {
+            stream.active = false;
+        }
+        state.elapsed_seconds = started.map_or(0.0, |t| t.elapsed().as_secs_f64());
+    }
+    stopped
 }
 
 pub fn discover_root() -> Result<(DeviceInterface, String)> {
@@ -600,4 +797,256 @@ pub fn discover_root() -> Result<(DeviceInterface, String)> {
     let interface = interfaces.into_iter().next().expect("one interface");
     let root = root_instance(&interface)?;
     Ok((interface, root))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn playback_native_stop_ack_is_distinct_from_join_and_retains_both_errors() {
+        let latest = Mutex::new(WorkerState::default());
+        latest
+            .lock()
+            .unwrap()
+            .progress
+            .source
+            .acknowledged_source_frames = 37;
+        let result = stop_and_publish(
+            true,
+            &latest,
+            Err(anyhow::anyhow!("primary PCM error")),
+            || {
+                assert!(latest.try_lock().is_ok());
+                anyhow::bail!("native Stop HRESULT failure")
+            },
+        );
+        let text = format!("{:#}", result.unwrap_err());
+        assert!(text.contains("primary PCM error") && text.contains("native Stop HRESULT failure"));
+        let state = latest.lock().unwrap();
+        assert_eq!(state.native_stop_attempted, Some(true));
+        assert_eq!(state.native_stop_succeeded, Some(false));
+        assert!(!state.progress.stopped);
+        assert_eq!(state.progress.source.acknowledged_source_frames, 37);
+        drop(state);
+        stop_and_publish(false, &latest, Ok(()), || {
+            panic!("unstarted client must not Stop")
+        })
+        .unwrap();
+        assert_eq!(latest.lock().unwrap().native_stop_attempted, Some(false));
+        assert_eq!(latest.lock().unwrap().native_stop_succeeded, None);
+        assert!(!latest.lock().unwrap().progress.stopped);
+        stop_and_publish(true, &latest, Ok(()), || Ok(())).unwrap();
+        assert!(latest.lock().unwrap().progress.stopped);
+        assert_eq!(latest.lock().unwrap().native_stop_succeeded, Some(true));
+    }
+    #[test]
+    fn playback_submission_publication_is_silent_preroll_and_success_only() {
+        let plan = super::super::source::SourceSchedule {
+            schema_version: 1,
+            schedule_id: "publication".into(),
+            waveform_version: super::super::source::WAVEFORM_VERSION.into(),
+            sample_rate: 48_000,
+            channels: 2,
+            marker_frames: 32,
+            marker_amplitude: 0.1,
+            total_source_frames: 64,
+            starts: vec![0],
+        }
+        .prepare(1)
+        .unwrap();
+        let mut cursor = SourceCursor::new(Some(plan));
+        let latest = Mutex::new(WorkerState::default());
+        let mut samples = [0f32; 128];
+        submit_and_publish(&mut cursor, &latest, |source| {
+            source.submit(&mut samples, true, |pcm| {
+                assert!(pcm.iter().all(|sample| *sample == 0.0));
+                assert!(
+                    latest.try_lock().is_ok(),
+                    "publication lock held across native IO"
+                );
+                Ok(())
+            })
+        })
+        .unwrap();
+        let preroll = latest.lock().unwrap().progress.source.clone();
+        assert_eq!(preroll.native_preroll_frames, 64);
+        assert_eq!(preroll.acknowledged_source_frames, 0);
+        assert!(preroll.origin_submission_frame.is_none());
+        assert!(
+            submit_and_publish(&mut cursor, &latest, |source| source.submit(
+                &mut samples,
+                false,
+                |_| { anyhow::bail!("failed ReleaseBuffer") }
+            ))
+            .is_err()
+        );
+        assert_eq!(latest.lock().unwrap().progress.source, preroll);
+        submit_and_publish(&mut cursor, &latest, |source| {
+            source.submit(&mut samples, false, |_| Ok(()))
+        })
+        .unwrap();
+        let submitted = latest.lock().unwrap().progress.source.clone();
+        assert_eq!(submitted.origin_submission_frame, Some(64));
+        assert_eq!(submitted.acknowledged_source_frames, 64);
+        assert!(submitted.schedule_submitted_complete);
+        submit_and_publish(&mut cursor, &latest, |source| {
+            source.submit(&mut samples, false, |pcm| {
+                assert!(pcm.iter().all(|sample| *sample == 0.0));
+                Ok(())
+            })
+        })
+        .unwrap();
+        let tail = latest.lock().unwrap();
+        assert_eq!(tail.progress.source.acknowledged_source_frames, 64);
+        assert_eq!(tail.progress.source.native_submitted_frames, 192);
+    }
+    fn fake_session(worker: impl FnOnce() -> Result<()> + Send + 'static) -> PlaybackSession {
+        PlaybackSession {
+            stop: Arc::new(AtomicBool::new(false)),
+            activate: Arc::new(AtomicBool::new(false)),
+            worker: Some(thread::spawn(worker)),
+            latest: Arc::new(Mutex::new(WorkerState::default())),
+            provenance: SourceProvenance::new(None),
+            activation_attempted: false,
+            unexpected_exit: AtomicBool::new(false),
+            info: PlaybackInfo {
+                stable_endpoint_id: "test".into(),
+                mmdevice_id: "test".into(),
+                observed_name: "test".into(),
+                adapter_instance: "test".into(),
+                native_buffer_frames: 480,
+                packet_format: "Float32".into(),
+            },
+        }
+    }
+    #[test]
+    fn playback_activation_is_single_use_and_stop_before_start_is_rejected() {
+        let (initial_tx, rx) = mpsc::channel();
+        let mut session = fake_session(move || {
+            rx.recv().unwrap();
+            Ok(())
+        });
+        let tx = initial_tx;
+        session.activate().unwrap();
+        assert!(session.activate().is_err());
+        session.request_stop();
+        tx.send(()).unwrap();
+        session.finish().unwrap();
+        let mut stopped = fake_session(|| Ok(()));
+        stopped.request_stop();
+        assert!(stopped.activate().is_err());
+    }
+    #[test]
+    fn playback_contention_is_unavailable_and_error_or_panic_keeps_partial_snapshot() {
+        for panic in [false, true] {
+            let (initial_tx, rx) = mpsc::channel();
+            let mut session = fake_session(move || {
+                let _ = rx.recv();
+                if panic {
+                    panic!("injected source panic");
+                }
+                anyhow::bail!("injected failed ReleaseBuffer")
+            });
+            let tx = initial_tx;
+            {
+                let mut state = session.latest.lock().unwrap();
+                state.progress.started = true;
+                state.progress.source.acknowledged_source_frames = 37;
+                state.progress.source.origin_submission_frame = Some(480);
+                assert!(session.check().unwrap().is_none());
+            }
+            session.request_stop();
+            tx.send(()).unwrap();
+            let outcome = session.finish().unwrap();
+            assert_eq!(outcome.source_progress.acknowledged_source_frames, 37);
+            assert!(outcome.started && outcome.failure.is_some());
+            assert!(session.finish().is_err());
+        }
+    }
+    #[test]
+    fn playback_startup_abort_requests_peer_stop_before_first_join_and_retains_partial() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let worker_events = events.clone();
+        let worker = thread::spawn(move || {
+            while !worker_stop.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            worker_events.lock().unwrap().push("source_join");
+            anyhow::bail!("startup error")
+        });
+        let peer_events = events.clone();
+        let mut partial = None;
+        {
+            let _guard = StartupGuard {
+                worker: Some(worker),
+                stop,
+                latest: Arc::new(Mutex::new(WorkerState::default())),
+                provenance: SourceProvenance::new(None),
+                before_join: move || {
+                    peer_events.lock().unwrap().push("recorder_stop");
+                },
+                partial: &mut partial,
+            };
+        }
+        assert_eq!(*events.lock().unwrap(), ["recorder_stop", "source_join"]);
+        assert!(partial.unwrap().failure.unwrap().contains("startup error"));
+    }
+
+    #[test]
+    fn playback_unrequested_clean_exit_is_failure_even_after_submission_complete() {
+        let mut session = fake_session(|| Ok(()));
+        while !session.worker.as_ref().unwrap().is_finished() {
+            thread::yield_now();
+        }
+        session
+            .latest
+            .lock()
+            .unwrap()
+            .progress
+            .source
+            .schedule_submitted_complete = true;
+        assert!(session.check().is_err());
+        let outcome = session.finish().unwrap();
+        assert!(
+            outcome
+                .failure
+                .as_deref()
+                .is_some_and(|failure| failure.contains("before requested stop"))
+        );
+    }
+
+    #[test]
+    fn playback_startup_unwind_and_abort_panic_still_join_and_retain_snapshot() {
+        let mut partial = None;
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let latest = Arc::new(Mutex::new(WorkerState::default()));
+        latest.lock().unwrap().progress.source.native_preroll_frames = 480;
+        let joined = Arc::new(AtomicBool::new(false));
+        let worker_joined = joined.clone();
+        let worker = thread::spawn(move || {
+            while !worker_stop.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+            worker_joined.store(true, Ordering::Release);
+            Ok(())
+        });
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = StartupGuard {
+                worker: Some(worker),
+                stop,
+                latest,
+                provenance: SourceProvenance::new(None),
+                before_join: || panic!("injected stop callback panic"),
+                partial: &mut partial,
+            };
+            panic!("injected startup unwind");
+        }));
+        assert!(unwind.is_err() && joined.load(Ordering::Acquire));
+        let outcome = partial.unwrap();
+        assert_eq!(outcome.source_progress.native_preroll_frames, 480);
+        assert!(outcome.failure.unwrap().contains("abort callback panicked"));
+    }
 }

@@ -31,6 +31,9 @@ use std::{
 #[path = "source.rs"]
 mod source;
 
+#[path = "vad_collection.rs"]
+mod vad_collection;
+
 #[cfg(windows)]
 #[path = "vad.rs"]
 mod vad;
@@ -70,6 +73,7 @@ struct LiveOptions {
     measurement_pcm: Option<PathBuf>,
     measurement_schedule: Option<PathBuf>,
     source_schedule: Option<PathBuf>,
+    vad_collection: Option<PathBuf>,
     calibration: Option<PathBuf>,
     seconds: u64,
     max_input_bytes: u64,
@@ -110,6 +114,7 @@ impl Default for LiveOptions {
             measurement_pcm: None,
             measurement_schedule: None,
             source_schedule: None,
+            vad_collection: None,
             calibration: None,
             seconds: 5,
             max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
@@ -149,6 +154,7 @@ struct LiveRunManifest {
     source_name: Option<String>,
     source_identity: Option<Value>,
     playback_source: Option<source::SourceProvenance>,
+    collection: Option<Value>,
     output_endpoint_id: String,
     measurement_boundary: EvidenceBoundary,
     requested_seconds: u64,
@@ -176,6 +182,7 @@ struct LiveRunReport {
     observed_duration_seconds: f64,
     artifacts: ArtifactReport,
     native: NativeReport,
+    collection: Option<Value>,
     qualification: Option<QualificationReport>,
     gaps: Vec<String>,
 }
@@ -203,6 +210,7 @@ struct NativeReport {
     backend_diagnostics: Option<Value>,
     diagnostic_observations: u64,
     error: Option<String>,
+    collection: Option<Value>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -213,6 +221,9 @@ struct ArtifactPaths {
     measurement_pcm: Option<String>,
     measurement_schedule: Option<String>,
     source_schedule: Option<String>,
+    collection_config: Option<String>,
+    collection_report: Option<String>,
+    measurement_packets: Option<String>,
     calibration: Option<String>,
     capture_pcm: Option<String>,
     capture_pcm_metadata: Option<String>,
@@ -238,8 +249,10 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
     if arguments.is_empty() || arguments == ["--help"] {
         println!(
             "live-process-loopback --source-pid PID --output ENDPOINT --artifact-dir DIR [options]\n\
-             Runs production Process Loopback capture -> Bus -> WASAPI render ownership.\n\
-             The command writes a versioned manifest/report and returns 1 when evidence is\n+             missing or cannot qualify physical end-to-end latency. Use --dry-run for\n+             parser/artifact validation without opening Windows audio devices."
+             live-vad --stable-endpoint-id ID --name NAME --output ENDPOINT --artifact-dir DIR [options]\n\
+             live-vad --source-schedule FILE --vad-collection FILE opts into bounded source +\n\
+             production graph + independent waveform collection. --seconds is its total ceiling.\n\
+             All runs remain unqualified. --dry-run validates/persists inputs without native IO."
         );
         return Ok(0);
     }
@@ -252,6 +265,19 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         .map(|path| source::read_plan(path, options.max_input_bytes, options.seconds))
         .transpose()?;
     let source_plan = source_input.as_ref().map(|(_, plan)| plan);
+    let collection_input = options
+        .vad_collection
+        .as_deref()
+        .map(|path| {
+            let provenance = source::SourceProvenance::new(source_plan);
+            let frames = provenance
+                .schedule
+                .as_ref()
+                .context("collection requires source schedule")?
+                .total_source_frames;
+            vad_collection::read_config(path, options.max_input_bytes, frames, options.seconds)
+        })
+        .transpose()?;
     let paths = prepare_paths(&options)?;
     if let Some((bytes, _)) = &source_input {
         persist_source_plan(
@@ -259,6 +285,15 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
                 .source_schedule
                 .as_deref()
                 .context("source artifact path missing")?,
+            bytes,
+        )?;
+    }
+    if let Some((bytes, _)) = &collection_input {
+        persist_source_plan(
+            paths
+                .collection_config
+                .as_deref()
+                .context("collection config artifact missing")?,
             bytes,
         )?;
     }
@@ -273,11 +308,13 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
     if options.dry_run {
         gaps.push("live source/native capture was intentionally skipped (--dry-run)".into());
     }
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut source_identity = source_identity(&options, &mut gaps);
     let measurement = load_measurement(&options, &mut gaps)?;
     let process_bridge = bridge_options(&options)?;
     let render_queue = render_queue(&options)?;
     let mut native = NativeReport::default();
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut observed_duration_seconds = 0.0;
 
     #[cfg(windows)]
@@ -303,6 +340,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             &options,
             &paths,
             source_plan.cloned(),
+            collection_input.as_ref().map(|(_, config)| config),
             &mut native,
             &mut gaps,
         );
@@ -331,6 +369,22 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         gaps.push("live Process Loopback capture/render requires Windows native APIs".into());
     }
 
+    let collection = collection_input.as_ref().map(|(_, config)| {
+        native.collection.take().unwrap_or_else(|| {
+            vad_collection::not_collected(
+                config,
+                source::SourceProvenance::new(source_plan),
+                if options.dry_run {
+                    "dry-run: no native collection attempted"
+                } else {
+                    native
+                        .error
+                        .as_deref()
+                        .unwrap_or("collection setup failed before native collection")
+                },
+            )
+        })
+    });
     if source_identity.is_none() {
         gaps.push("live source identity was not observed".into());
     }
@@ -392,6 +446,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         observed_duration_seconds,
         artifacts,
         native,
+        collection: collection.clone(),
         qualification,
         gaps: gaps.clone(),
     };
@@ -407,6 +462,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         source_identity,
         playback_source: (options.source_kind == EvidenceSourceKind::VadPlayback)
             .then(|| source::SourceProvenance::new(source_plan)),
+        collection: collection.clone(),
         output_endpoint_id: options.output_endpoint.clone(),
         measurement_boundary: options.measurement_boundary,
         requested_seconds: options.seconds,
@@ -417,8 +473,36 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         artifacts: artifact_paths(&paths, &options),
         gaps,
     };
-    write_json(&paths.report, &report)?;
-    write_json(&paths.manifest, &manifest)?;
+    if let Some(value) = &collection {
+        let mut failures = None;
+        // Every artifact gets an attempt after all native/sink owners joined.
+        for result in [
+            write_json(
+                paths
+                    .collection_report
+                    .as_deref()
+                    .context("collection report path missing")?,
+                value,
+            ),
+            write_json(&paths.report, &report),
+            write_json(&paths.manifest, &manifest),
+        ] {
+            if let Err(error) = result {
+                vad_collection::append_failure(
+                    &mut failures,
+                    &format!("write retained collection artifacts: {error:#}"),
+                );
+            }
+        }
+        ensure!(
+            failures.is_none(),
+            "{}",
+            failures.as_deref().unwrap_or_default()
+        );
+    } else {
+        write_json(&paths.report, &report)?;
+        write_json(&paths.manifest, &manifest)?;
+    }
     Ok(1)
 }
 
@@ -450,6 +534,7 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             | "--measurement-pcm"
             | "--schedule"
             | "--source-schedule"
+            | "--vad-collection"
             | "--calibration"
             | "--seconds"
             | "--observation-interval-seconds"
@@ -508,6 +593,17 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
                 options.source_schedule = Some(PathBuf::from(value));
             }
             "--calibration" => options.calibration = Some(PathBuf::from(value)),
+            "--vad-collection" => {
+                ensure!(
+                    options.vad_collection.is_none(),
+                    "duplicate --vad-collection"
+                );
+                ensure!(
+                    !value.is_empty() && value.trim() == value && !value.contains('\0'),
+                    "invalid --vad-collection path"
+                );
+                options.vad_collection = Some(PathBuf::from(value));
+            }
             "--seconds" => options.seconds = value.parse().context("invalid duration")?,
             "--observation-interval-seconds" => {
                 options.observation_interval_seconds =
@@ -569,6 +665,24 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
 }
 
 fn validate(options: &LiveOptions) -> Result<()> {
+    if options.vad_collection.is_some() {
+        ensure!(
+            options.source_kind == EvidenceSourceKind::VadPlayback
+                && options.source_schedule.is_some(),
+            "--vad-collection requires live-vad and --source-schedule"
+        );
+        ensure!(
+            !options.diagnostic_soak
+                && options.measurement_pcm.is_none()
+                && options.measurement_schedule.is_none()
+                && options.calibration.is_none(),
+            "--vad-collection cannot mix diagnostic-soak, analysis or calibration"
+        );
+        ensure!(
+            options.telemetry != TelemetryMode::Disabled,
+            "collection requires native summary observations"
+        );
+    }
     ensure!(
         options.source_schedule.is_none() || options.source_kind == EvidenceSourceKind::VadPlayback,
         "--source-schedule is only valid for live-vad"
@@ -707,6 +821,21 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
     let manifest_key = output_path_key(&manifest)?;
     let source_path = options.artifact_dir.join("source-schedule.json");
     let source_key = output_path_key(&source_path)?;
+    let reserved: Vec<PathBuf> = [
+        "collection-config.json",
+        "measurement.f32le",
+        "measurement.packets.jsonl",
+        "collection.json",
+    ]
+    .iter()
+    .map(|name| output_path_key(&options.artifact_dir.join(name)))
+    .collect::<Result<_>>()?;
+    if options.vad_collection.is_some() {
+        ensure!(
+            !reserved.contains(&report_key) && !reserved.contains(&manifest_key),
+            "report/manifest aliases reserved collection output"
+        );
+    }
     ensure!(
         report_key != source_key && manifest_key != source_key,
         "report and manifest must not alias reserved source-schedule.json"
@@ -716,6 +845,7 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
         &options.measurement_pcm,
         &options.measurement_schedule,
         &options.calibration,
+        &options.vad_collection,
     ]
     .into_iter()
     .flatten()
@@ -724,6 +854,10 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
         ensure!(
             key != source_key && key != report_key && key != manifest_key,
             "input must not alias reserved source plan, report or manifest output"
+        );
+        ensure!(
+            options.vad_collection.is_none() || !reserved.contains(&key),
+            "input aliases reserved collection output"
         );
     }
     ensure!(
@@ -758,7 +892,16 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
         measurement_pcm: options
             .measurement_pcm
             .as_ref()
-            .map(|path| path.to_string_lossy().into_owned()),
+            .map(|path| path.to_string_lossy().into_owned())
+            .or_else(|| {
+                options.vad_collection.as_ref().map(|_| {
+                    options
+                        .artifact_dir
+                        .join("measurement.f32le")
+                        .to_string_lossy()
+                        .into_owned()
+                })
+            }),
         measurement_schedule: options
             .measurement_schedule
             .as_ref()
@@ -767,6 +910,27 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
             .source_schedule
             .as_ref()
             .map(|_| source_path.to_string_lossy().into_owned()),
+        collection_config: options.vad_collection.as_ref().map(|_| {
+            options
+                .artifact_dir
+                .join("collection-config.json")
+                .to_string_lossy()
+                .into_owned()
+        }),
+        collection_report: options.vad_collection.as_ref().map(|_| {
+            options
+                .artifact_dir
+                .join("collection.json")
+                .to_string_lossy()
+                .into_owned()
+        }),
+        measurement_packets: options.vad_collection.as_ref().map(|_| {
+            options
+                .artifact_dir
+                .join("measurement.packets.jsonl")
+                .to_string_lossy()
+                .into_owned()
+        }),
         calibration: options
             .calibration
             .as_ref()
@@ -926,6 +1090,9 @@ impl ArtifactPaths {
             measurement_pcm: self.measurement_pcm.clone(),
             measurement_schedule: self.measurement_schedule.clone(),
             source_schedule: self.source_schedule.clone(),
+            collection_config: self.collection_config.clone(),
+            collection_report: self.collection_report.clone(),
+            measurement_packets: self.measurement_packets.clone(),
             calibration: self.calibration.clone(),
             capture_pcm: self.capture_pcm.clone(),
             capture_pcm_metadata: self.capture_pcm_metadata.clone(),
@@ -943,6 +1110,18 @@ fn artifact_report(
         paths: paths.clone_for_manifest(),
         measurement_pcm_status: if measurement.analysis.is_some() {
             "externally_supplied_and_analyzed"
+        } else if options.vad_collection.is_some() && options.dry_run {
+            "not_collected_dry_run"
+        } else if options.vad_collection.is_some() {
+            if paths
+                .measurement_pcm
+                .as_deref()
+                .is_some_and(|path| Path::new(path).is_file())
+            {
+                "collected_not_analyzed"
+            } else {
+                "not_collected"
+            }
         } else if options.measurement_pcm.is_some() {
             "supplied_but_unusable"
         } else {
@@ -1022,6 +1201,7 @@ fn persist_capture_artifact(
     Ok(())
 }
 
+#[cfg(windows)]
 fn observed_duration(native: &NativeReport) -> f64 {
     [
         native
@@ -1054,6 +1234,11 @@ fn build_qualification_report(
     native: &NativeReport,
     measurement: &MeasurementEvidence,
 ) -> Option<QualificationReport> {
+    if options.vad_collection.is_some() {
+        // Negotiated recorder format and partial counts live in collection.
+        // There is no analyzed waveform/calibration to feed the legacy builder.
+        return None;
+    }
     let (source_identity, source_details) = match options.source_kind {
         EvidenceSourceKind::VadPlayback => {
             let stable_id = options
@@ -1585,6 +1770,7 @@ mod native {
         options: &LiveOptions,
         paths: &ArtifactPaths,
         source_plan: Option<source::PreparedSource>,
+        collection_config: Option<&vad_collection::Config>,
         native_report: &mut NativeReport,
         _gaps: &mut Vec<String>,
     ) -> Result<()> {
@@ -1615,67 +1801,37 @@ mod native {
             playback_info: None,
             startup_samples: Vec::with_capacity(STARTUP_SAMPLE_LIMIT),
             report: native_report,
+            playback_outcome: None,
+            admission: None,
+            last_health: None,
         };
-        let collection = (|| -> Result<()> {
-            provider
-                .create_export(endpoint_id, Intent::Playback, Channels::Stereo, name, false)
-                .context("CREATE VAD playback export")?;
-            wait_vad_ready(&provider, endpoint_id)?;
-            cleanup.playback = Some(
-                vad::PlaybackSession::prepare(stable_from_virtual(endpoint_id), root, source_plan)
-                    .context("prepare VAD native playback")?,
+        if let Some(config) = collection_config {
+            return vad_collection::collect(
+                options,
+                paths,
+                config,
+                source_plan.context("collection source missing")?,
+                root,
+                name,
+                cleanup,
             );
-            let output = EndpointSelector::PinnedEndpoint {
-                endpoint_id: options.output_endpoint.clone(),
-                stable_id: None,
-            };
-            let mut project = minimal_vad_project(endpoint_id, output)?;
-            project.processing.engine.max_block_frames = options.engine_block_frames as usize;
-            let backend_config = WindowsBackendConfig {
-                render_queue: render_queue(options)?,
-                virtual_buffer: virtual_buffer(options)?,
-                telemetry: options.telemetry,
-                ..WindowsBackendConfig::default()
-            };
-            let backend = WindowsBackend::new(backend_config)
-                .context("prepare Windows backend")?
-                .with_virtual_provider(provider.clone());
-            cleanup.backend_diagnostics = Some(backend.diagnostics_handle());
-            cleanup.observations = Some(backend.observations());
-            let host = EngineHost::open(HostConfig::default(), project, backend)
-                .context("open VAD EngineHost")?;
-            cleanup.observer = Some(host.observer());
-            cleanup.host = Some(host);
+        }
+        let collection = (|| -> Result<()> {
+            cleanup.prepare(options, name, root, source_plan, None)?;
             let observer = cleanup.observer.as_ref().expect("prepared host observer");
             let observations = cleanup
                 .observations
                 .as_ref()
                 .expect("prepared native observations");
-            wait_engine_running(observer)?;
-            let active = observer.snapshot();
-            let revision = active
-                .active_revision
-                .context("VAD EngineHost has no active revision")?;
-            let current = provider
-                .export_observations()
-                .into_iter()
-                .find(|view| view.endpoint_id == endpoint_id)
-                .and_then(|view| view.snapshot)
-                .context("VAD export disappeared before gate admission")?;
-            ensure!(
-                current.state() == PdoState::Present,
-                "VAD export is not Present"
-            );
-            ensure!(
-                current.policy_prepared() && current.audio_ready(),
-                "VAD export is not audio-ready"
-            );
-            let ticket = provider.set_active_revision(Some(revision));
-            provider
-                .set_export_gate(endpoint_id, snapshot_stamp(current), true, revision, ticket)
-                .context("open VAD export gate")?;
-            let playback = cleanup.playback.as_ref().expect("prepared VAD playback");
-            playback.activate();
+            let revision = cleanup
+                .admission
+                .as_ref()
+                .expect("admission")
+                .current
+                .revision
+                .context("confirmed revision missing")?;
+            let playback = cleanup.playback.as_mut().expect("prepared VAD playback");
+            playback.activate()?;
             cleanup.playback_info = Some(serde_json::to_value(&playback.info)?);
             // The control side owns the interval and samples while the source still
             // runs. Native client retirement advances stream generations and must
@@ -1740,17 +1896,255 @@ mod native {
         soak_cleanup::combine(result, finish_journal(&mut journal, native_report))
     }
 
-    struct VadCleanup<'a> {
-        provider: &'a WindowsVadProvider,
+    pub(super) struct VadCleanup<'a> {
+        provider: &'a Arc<WindowsVadProvider>,
         endpoint_id: VirtualEndpointId,
-        playback: Option<vad::PlaybackSession>,
+        pub(super) playback: Option<vad::PlaybackSession>,
         host: Option<EngineHost<f32>>,
         observer: Option<moiren_engine::host::EngineObserver>,
         observations: Option<moiren_windows_audio::engine_backend::NativeObservations>,
         backend_diagnostics: Option<Arc<Mutex<Option<String>>>>,
         playback_info: Option<Value>,
         startup_samples: Vec<Value>,
-        report: &'a mut NativeReport,
+        pub(super) report: &'a mut NativeReport,
+        pub(super) playback_outcome: Option<vad::PlaybackOutcome>,
+        pub(super) admission: Option<vad_collection::Admission>,
+        pub(super) last_health: Option<vad_collection::Health>,
+    }
+
+    impl VadCleanup<'_> {
+        pub(super) fn current_health(&mut self) -> Result<vad_collection::Health> {
+            use moiren_windows_audio::engine_backend::NativeStreamKind;
+            let runtime = self
+                .provider
+                .export_observations()
+                .into_iter()
+                .find(|view| view.endpoint_id == self.endpoint_id);
+            let engine = self.observer.as_ref().map(|observer| observer.snapshot());
+            let native = self
+                .observations
+                .as_ref()
+                .and_then(|observations| observations.snapshot());
+            let snapshot = runtime.as_ref().and_then(|view| view.snapshot);
+            let telemetry = runtime.as_ref().and_then(|view| view.telemetry);
+            let mut faults = 0u64;
+            if let Some(value) = telemetry {
+                for count in [
+                    value.dropped_packets,
+                    value.driver_dropped_packets,
+                    value.quota_dropped_packets,
+                    value.carrier_dropped_packets,
+                    value.stale_packets,
+                    value.epoch_resets,
+                    value.recovery_events,
+                    value.completion_clock_regressions,
+                ] {
+                    faults = faults.saturating_add(count);
+                }
+            }
+            if let Some(value) = &native {
+                for probe in &value.boundary_probes {
+                    faults = faults.saturating_add(probe.xruns);
+                }
+                for bridge in &value.bridges {
+                    let count = bridge.counters;
+                    for fault in [
+                        count.dropped_frames,
+                        count.backlog_discarded_frames,
+                        count.age_discarded_frames,
+                        count.underrun_frames,
+                        count.nonfinite_samples,
+                        count.discontinuities,
+                        count.timestamp_errors,
+                        count.resets,
+                    ] {
+                        faults = faults.saturating_add(fault);
+                    }
+                }
+            }
+            let health = vad_collection::Health {
+                stamp: snapshot.map(snapshot_stamp),
+                shape: snapshot.map(|snapshot| {
+                    (
+                        format!("{:?}", snapshot.channels()),
+                        format!("{:?}", snapshot.sample_format()),
+                        snapshot.packet_frames(),
+                    )
+                }),
+                provider_ready: snapshot.is_some_and(|snapshot| {
+                    snapshot.state() == PdoState::Present
+                        && snapshot.policy_prepared()
+                        && snapshot.audio_ready()
+                        && snapshot.gate_open()
+                        && snapshot.channels() == Channels::Stereo
+                        && snapshot.sample_format().is_some()
+                        && snapshot.packet_frames() > 0
+                }) && runtime.as_ref().is_some_and(|view| !view.removing),
+                provider_error: runtime.as_ref().and_then(|view| view.error.clone()),
+                revision: engine.as_ref().and_then(|engine| engine.active_revision),
+                generations: engine.as_ref().map_or([0, 0], |engine| {
+                    [engine.owner_generation, engine.resource_generation]
+                }),
+                engine_running: engine.as_ref().is_some_and(|engine| {
+                    engine.execution == ExecutionState::Running
+                        && engine.timeline.is_some_and(|timeline| timeline.frame > 0)
+                }),
+                engine_fault: engine
+                    .as_ref()
+                    .is_some_and(|engine| engine.fault.is_some() || engine.cleanup_error.is_some()),
+                native_generation: native.as_ref().map(|native| native.owner_generation),
+                native_running: native.as_ref().is_some_and(|native| native.running),
+                quality_known: telemetry.is_some()
+                    && native.as_ref().is_some_and(|native| {
+                        native
+                            .streams
+                            .iter()
+                            .any(|stream| stream.kind == NativeStreamKind::MasterOutput)
+                            && native
+                                .streams
+                                .iter()
+                                .any(|stream| stream.kind == NativeStreamKind::VirtualPlayback)
+                            && native
+                                .boundary_probes
+                                .iter()
+                                .any(|probe| probe.kind == NativeStreamKind::VirtualPlayback)
+                    }),
+                quality_faults: faults,
+            };
+            // Keep the raw failing generation before cleanup changes the stream.
+            // These QUERY observations may block; this is a control policy, not a watchdog.
+            self.report.vad_provider = runtime.as_ref().map(vad_observation_json);
+            if let Some(engine) = &engine {
+                let mut value = engine_snapshot_value(engine);
+                value["observations"] = serde_json::json!(native);
+                self.report.engine = Some(value);
+            }
+            if self.startup_samples.len() < STARTUP_SAMPLE_LIMIT {
+                self.startup_samples.push(serde_json::json!({"health": health, "provider": self.report.vad_provider, "native_observations": native}));
+            }
+            self.last_health = Some(health.clone());
+            Ok(health)
+        }
+        pub(super) fn prepare(
+            &mut self,
+            options: &LiveOptions,
+            name: &str,
+            root: String,
+            source_plan: Option<source::PreparedSource>,
+            before_join: Option<&mut dyn FnMut()>,
+        ) -> Result<()> {
+            let supervised = before_join.is_some();
+            self.provider
+                .create_export(
+                    self.endpoint_id,
+                    Intent::Playback,
+                    Channels::Stereo,
+                    name,
+                    false,
+                )
+                .context("CREATE VAD playback export")?;
+            wait_vad_ready(self.provider, self.endpoint_id)?;
+            self.playback = Some(
+                if let Some(abort) = before_join {
+                    vad::PlaybackSession::prepare_with_abort(
+                        stable_from_virtual(self.endpoint_id),
+                        root,
+                        source_plan,
+                        abort,
+                        &mut self.playback_outcome,
+                    )
+                } else {
+                    vad::PlaybackSession::prepare(
+                        stable_from_virtual(self.endpoint_id),
+                        root,
+                        source_plan,
+                    )
+                }
+                .context("prepare VAD native playback")?,
+            );
+            self.playback_info = self
+                .playback
+                .as_ref()
+                .map(|playback| serde_json::to_value(&playback.info))
+                .transpose()?;
+            let output = EndpointSelector::PinnedEndpoint {
+                endpoint_id: options.output_endpoint.clone(),
+                stable_id: None,
+            };
+            let mut project = minimal_vad_project(self.endpoint_id, output)?;
+            project.processing.engine.max_block_frames = options.engine_block_frames as usize;
+            let backend_config = WindowsBackendConfig {
+                render_queue: render_queue(options)?,
+                virtual_buffer: virtual_buffer(options)?,
+                telemetry: options.telemetry,
+                ..WindowsBackendConfig::default()
+            };
+            let backend = WindowsBackend::new(backend_config)
+                .context("prepare Windows backend")?
+                .with_virtual_provider(self.provider.clone());
+            self.backend_diagnostics = Some(backend.diagnostics_handle());
+            self.observations = Some(backend.observations());
+            let host = EngineHost::open(HostConfig::default(), project, backend)
+                .context("open VAD EngineHost")?;
+            self.observer = Some(host.observer());
+            self.host = Some(host);
+            let observer = self.observer.as_ref().expect("prepared host observer");
+            wait_engine_running(observer)?;
+            let active = observer.snapshot();
+            let revision = active
+                .active_revision
+                .context("VAD EngineHost has no active revision")?;
+            let current = self
+                .provider
+                .export_observations()
+                .into_iter()
+                .find(|view| view.endpoint_id == self.endpoint_id)
+                .and_then(|view| view.snapshot)
+                .context("VAD export disappeared before gate admission")?;
+            ensure!(
+                current.state() == PdoState::Present,
+                "VAD export is not Present"
+            );
+            ensure!(
+                current.policy_prepared() && current.audio_ready(),
+                "VAD export is not audio-ready"
+            );
+            let before_gate = snapshot_stamp(current);
+            let before_shape = (
+                format!("{:?}", current.channels()),
+                format!("{:?}", current.sample_format()),
+                current.packet_frames(),
+            );
+            let ticket = self.provider.set_active_revision(Some(revision));
+            self.provider
+                .set_export_gate(
+                    self.endpoint_id,
+                    snapshot_stamp(current),
+                    true,
+                    revision,
+                    ticket,
+                )
+                .context("open VAD export gate")?;
+            let admitted = self.current_health()?;
+            self.admission = Some(vad_collection::Admission {
+                before_gate,
+                current: admitted,
+            });
+            if supervised {
+                let admitted = &self.admission.as_ref().expect("retained admission").current;
+                ensure!(
+                    admitted
+                        .stamp
+                        .is_some_and(|stamp| stamp[..4] == before_gate[..4])
+                        && admitted.shape.as_ref() == Some(&before_shape)
+                        && admitted.revision == Some(revision)
+                        && admitted.generations
+                            == [active.owner_generation, active.resource_generation],
+                    "VAD stream/shape or graph changed during gate admission"
+                );
+            }
+            Ok(())
+        }
     }
 
     impl soak_cleanup::Cleanup for VadCleanup<'_> {
@@ -1787,7 +2181,15 @@ mod native {
         fn stop_source(&mut self) -> Result<()> {
             if let Some(playback) = self.playback.take() {
                 let report = playback.stop().context("stop VAD native playback")?;
-                self.report.vad_playback = Some(serde_json::to_value(report)?);
+                self.playback_outcome = Some(report);
+            }
+            if let Some(outcome) = &self.playback_outcome {
+                self.report.vad_playback = Some(serde_json::to_value(outcome)?);
+                ensure!(
+                    outcome.failure.is_none(),
+                    "VAD native playback: {}",
+                    outcome.failure.as_deref().unwrap_or_default()
+                );
             }
             Ok(())
         }
@@ -1975,7 +2377,7 @@ mod native {
         })
     }
 
-    fn virtual_buffer(options: &LiveOptions) -> Result<VirtualBufferOptions> {
+    pub(super) fn virtual_buffer(options: &LiveOptions) -> Result<VirtualBufferOptions> {
         let bridge = bridge_options(options)?;
         Ok(VirtualBufferOptions {
             input: bridge.input,
@@ -2095,6 +2497,50 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[test]
+    fn collection_artifacts_never_use_source_format_or_claim_analyzed_or_missing_pcm() {
+        let directory = temp_dir("collection-format-status");
+        fs::create_dir_all(&directory).unwrap();
+        let pcm = directory.join("measurement.f32le");
+        fs::write(&pcm, [0u8; 4]).unwrap();
+        let options = LiveOptions {
+            vad_collection: Some("config.json".into()),
+            ..Default::default()
+        };
+        let paths = ArtifactPaths {
+            measurement_pcm: Some(pcm.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let evidence = MeasurementEvidence {
+            analysis: None,
+            calibration: None,
+            gaps: Vec::new(),
+        };
+        let artifacts = artifact_report(&paths, &options, &evidence);
+        assert_eq!(artifacts.measurement_pcm_status, "collected_not_analyzed");
+        assert!(
+            build_qualification_report(
+                &options,
+                "test",
+                None,
+                0.0,
+                &NativeReport::default(),
+                &evidence
+            )
+            .is_none(),
+            "collection must not synthesize a nominal 48k/stereo qualification configuration"
+        );
+        let dry = LiveOptions {
+            dry_run: true,
+            ..options
+        };
+        assert_eq!(
+            artifact_report(&paths, &dry, &evidence).measurement_pcm_status,
+            "not_collected_dry_run"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("moiren-live-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
@@ -2126,6 +2572,83 @@ mod tests {
 }
 "#
         .to_vec()
+    }
+
+    #[test]
+    fn collection_dry_run_admits_exact_bytes_without_native_or_waveform_claim() {
+        let directory = temp_dir("collection-dry");
+        let source = directory.with_extension("source.json");
+        let config = directory.with_extension("config.json");
+        let bytes = br#"{"schema_version":1,"input_endpoint_id":"independent-input","ring_frames":1024,"max_pcm_bytes":1048576,"max_metadata_bytes":100000,"max_packets":1000,"preroll_ms":100,"postroll_ms":200}"#;
+        fs::write(&source, source_plan_bytes()).unwrap();
+        fs::write(&config, bytes).unwrap();
+        let mut args = source_test_args(&directory);
+        args.extend([
+            "--seconds".into(),
+            "14".into(),
+            "--source-schedule".into(),
+            source.to_string_lossy().into_owned(),
+            "--vad-collection".into(),
+            config.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(run(args.clone()).unwrap(), 1);
+        assert_eq!(
+            fs::read(directory.join("collection-config.json")).unwrap(),
+            bytes
+        );
+        let outcome: Value =
+            serde_json::from_slice(&fs::read(directory.join("collection.json")).unwrap()).unwrap();
+        assert_eq!(outcome["qualified"], false);
+        assert_eq!(outcome["collection_complete"], false);
+        assert_eq!(outcome["status"], "unqualified");
+        assert!(outcome["failure"].as_str().unwrap().contains("dry-run"));
+        assert!(!directory.join("measurement.f32le").exists());
+        for file in ["manifest.json", "report.json"] {
+            let report: Value =
+                serde_json::from_slice(&fs::read(directory.join(file)).unwrap()).unwrap();
+            assert!(report["artifacts"].to_string().contains("collection.json"));
+        }
+        assert!(run(args).is_err());
+        fs::remove_dir_all(&directory).unwrap();
+        fs::remove_file(source).unwrap();
+        fs::remove_file(config).unwrap();
+    }
+
+    #[test]
+    fn collection_rejects_mixed_modes_and_reserved_path_aliases_before_mkdir() {
+        let directory = temp_dir("collection-invalid");
+        let mut base = source_test_args(&directory);
+        base.extend([
+            "--source-schedule".into(),
+            "source.json".into(),
+            "--vad-collection".into(),
+            "config.json".into(),
+        ]);
+        assert!(parse(base.clone()).and_then(|o| validate(&o)).is_ok());
+        for extra in [
+            vec!["--vad-collection", "other.json"],
+            vec!["--diagnostic-soak"],
+            vec!["--measurement-pcm", "pcm", "--schedule", "analysis"],
+            vec!["--calibration", "calibration"],
+        ] {
+            let mut args = base.clone();
+            args.extend(extra.into_iter().map(str::to_owned));
+            assert!(parse(args).and_then(|o| validate(&o)).is_err());
+        }
+        let mut options = parse(base).unwrap();
+        options.source_schedule = None;
+        assert!(validate(&options).is_err());
+        options.source_schedule = Some("source.json".into());
+        for file in [
+            "collection-config.json",
+            "measurement.f32le",
+            "measurement.packets.jsonl",
+            "collection.json",
+        ] {
+            options.report_path = Some(directory.join(file));
+            assert!(prepare_paths(&options).is_err(), "reserved {file}");
+            assert!(!directory.exists());
+        }
     }
 
     #[test]
