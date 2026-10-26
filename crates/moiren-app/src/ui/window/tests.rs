@@ -329,13 +329,15 @@ fn graph_wire_selection_shows_connection_properties_without_selecting_node(
             px(if shell.sidebar_open {
                 theme::LIBRARY_WIDTH
             } else {
-                0.
+                crate::ui::theme::LIBRARY_RAIL_WIDTH
             } + shell.camera.pan_x
                 + (wire.from.0 + wire.to.0) * 0.5 * shell.camera.zoom),
-            px(48. + shell.camera.pan_y + wire.from.1 * shell.camera.zoom),
+            px(shell.camera.pan_y + wire.from.1 * shell.camera.zoom),
         )
     });
     cx.update(|window, cx| {
+        // First click selects the wire; the second opens the inspector.
+        window.click_at("graph-page", position, cx);
         window.click_at("graph-page", position, cx);
         window.render_frame(cx);
         assert!(window.find("matrix-inspector").visible());

@@ -132,7 +132,14 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     .on_click(move |_, _, cx| {
                         this.update(cx, |s, cx| {
                             s.selected_route = Some((src, dst));
-                            s.inspector_open = true;
+                            // Single click selects the cell; a double click
+                            // also opens the inspector.
+                            if s.element_double_clicked(StudioShell::element_key(
+                                "route",
+                                (src, dst),
+                            )) {
+                                s.open_inspector();
+                            }
                             cx.notify();
                         })
                     }),
@@ -151,24 +158,9 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .child(
             div()
                 .flex()
-                .flex_none()
-                .h(px(row_height))
-                .items_center()
-                .justify_between()
-                .px(px(16.))
-                .child(heading(t!("Routing matrix")))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .child(inspector_toggle("toggle-details", cx)),
-                ),
-        )
-        .child(
-            div()
-                .flex()
                 .flex_1()
                 .min_h_0()
+                .min_w_0()
                 .gap(px(12.))
                 .p(px(12.))
                 .child(
@@ -240,8 +232,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                             inputs = inputs.len(),
                             connections = graph.edges().len()
                         )))),
-                )
-                .when(shell.inspector_open, |v| v.child(inspector(shell, cx))),
+                ),
         )
         .gpui_test_observe()
         .into_any_element()
@@ -348,7 +339,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                         this.update(cx, |s, cx| {
                             s.selected_node = None;
                             s.set_page(Page::Graph, cx);
-                            s.inspector_open = true;
+                            s.open_inspector();
                         })
                     },
                 ))

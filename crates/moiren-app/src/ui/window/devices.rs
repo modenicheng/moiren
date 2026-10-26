@@ -256,33 +256,13 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
             }
         }
     }
-    let mut inspector = panel("device-inspector").child(heading(t!("Session resources")));
-    if let Some(active) = snapshot
-        .desired
-        .as_ref()
-        .filter(|_| snapshot.phase == SessionPhase::Running)
-    {
-        inspector = inspector
-            .child(badge(t!("Active session"), theme::SUCCESS))
-            .child(detail(&t!("Source"), source_name(snapshot, &active.source)))
-            .child(detail(
-                &t!("Output"),
-                output_name(snapshot, &active.output_endpoint_id),
-            ));
-    } else {
-        inspector = inspector.child(label(t!("No active session")));
-    }
-    inspector=inspector.child(badge(t!("Next start"),theme::WARNING))
-        .child(detail(&t!("Source mode"),t!(state.source_mode.title())))
-        .child(detail(&t!("Source"),state.candidate_spec().map(|s|source_name(snapshot,&s.source)).unwrap_or_else(||t!("Select available resources").into())))
-        .child(detail(&t!("Output"),state.selection.output_id.as_ref().map(|id|output_name(snapshot,id)).unwrap_or_else(||t!("Not selected").into())))
-        .child(label(t!("Selecting another resource leaves the running session unchanged. Stop and start to switch devices.")));
     div()
         .id("devices-page")
         .flex()
         .flex_col()
         .flex_1()
         .min_h_0()
+        .min_w_0()
         .overflow_hidden()
         .child(
             div()
@@ -292,8 +272,8 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .items_center()
                 .justify_between()
                 .px(px(16.))
+                .gap(px(8.))
                 .child(tabs)
-                .child(inspector_toggle("toggle-details", cx))
                 .child(
                     button("refresh-devices", t!("Refresh devices"))
                         .disabled(state.pending_request)
@@ -331,19 +311,69 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .flex()
                 .flex_1()
                 .min_h_0()
+                .min_w_0()
                 .p(px(16.))
-                .gap(px(16.))
-                .child(list)
-                .when(shell.inspector_open, |v| {
-                    if matches!(shell.device_tab, DeviceTab::Inputs | DeviceTab::Outputs)
-                        && shell.selected_device.is_some()
-                    {
-                        v.child(overrides::inspector(shell, cx))
-                    } else {
-                        v.child(inspector)
-                    }
-                }),
+                .child(list),
         )
+        .gpui_test_observe()
+        .into_any_element()
+}
+
+/// Session-resource summary for the global inspector; a configured device on
+/// the input/output tabs swaps in the override editor instead.
+pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
+    if matches!(shell.device_tab, DeviceTab::Inputs | DeviceTab::Outputs)
+        && shell.selected_device.is_some()
+    {
+        return div()
+            .id("device-override-host")
+            .flex()
+            .flex_none()
+            .w_full()
+            .h_full()
+            .p(px(theme::SPACE_3))
+            .child(overrides::inspector(shell, cx))
+            .into_any_element();
+    }
+    let state = shell.state.read(cx);
+    let snapshot = &state.snapshot;
+    let mut view = panel("device-inspector").child(heading(t!("Session resources")));
+    if let Some(active) = snapshot
+        .desired
+        .as_ref()
+        .filter(|_| snapshot.phase == SessionPhase::Running)
+    {
+        view = view
+            .child(badge(t!("Active session"), theme::SUCCESS))
+            .child(detail(&t!("Source"), source_name(snapshot, &active.source)))
+            .child(detail(
+                &t!("Output"),
+                output_name(snapshot, &active.output_endpoint_id),
+            ));
+    } else {
+        view = view.child(label(t!("No active session")));
+    }
+    view.child(badge(t!("Next start"), theme::WARNING))
+        .child(detail(&t!("Source mode"), t!(state.source_mode.title())))
+        .child(detail(
+            &t!("Source"),
+            state
+                .candidate_spec()
+                .map(|spec| source_name(snapshot, &spec.source))
+                .unwrap_or_else(|| t!("Select available resources").into()),
+        ))
+        .child(detail(
+            &t!("Output"),
+            state
+                .selection
+                .output_id
+                .as_ref()
+                .map(|id| output_name(snapshot, id))
+                .unwrap_or_else(|| t!("Not selected").into()),
+        ))
+        .child(label(t!(
+            "Selecting another resource leaves the running session unchanged. Stop and start to switch devices."
+        )))
         .gpui_test_observe()
         .into_any_element()
 }

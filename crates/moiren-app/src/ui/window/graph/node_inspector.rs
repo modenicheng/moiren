@@ -851,7 +851,7 @@ fn builtin_controls(
         NodeKind::Recorder | NodeKind::Meter | NodeKind::SpectrumAnalyzer
     ) {
         view = view.child(label(t!(
-            "Managed observation becomes available after Apply graph."
+            "Managed observation becomes available once the graph runs live."
         )));
     }
     view.into_any_element()

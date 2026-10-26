@@ -120,35 +120,12 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .child(
             div()
                 .flex()
-                .flex_none()
-                .h(px(40.))
-                .items_center()
-                .justify_between()
-                .px(px(16.))
-                .child(heading(t!("Mixer")))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .child(inspector_toggle("toggle-details", cx)),
-                ),
-        )
-        .child(
-            div()
-                .flex()
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
                 .child(channels.gpui_test_observe())
                 .child(resize_handle(shell, true, "mixer-dock-resize", cx))
-                .child(dock_container.child(dock).gpui_test_observe())
-                .when(shell.inspector_open, |view| {
-                    if shell.selected_node.is_none() && shell.selected_route.is_some() {
-                        view.child(matrix::inspector(shell, cx))
-                    } else {
-                        view.child(graph::inspector(shell, cx))
-                    }
-                }),
+                .child(dock_container.child(dock).gpui_test_observe()),
         )
         .gpui_test_observe()
         .into_any_element()
@@ -242,8 +219,11 @@ fn strip(
             move |_, _, cx| {
                 this.update(cx, |shell, cx| {
                     shell.selected_node = Some(id);
-                    shell.selected_route = None;
-                    shell.inspector_open = true;
+                    // Single click selects the strip; a double click also
+                    // opens the inspector.
+                    if shell.element_double_clicked(StudioShell::element_key("node", id)) {
+                        shell.open_inspector();
+                    }
                     cx.notify();
                 })
             }

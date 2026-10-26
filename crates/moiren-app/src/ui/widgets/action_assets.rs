@@ -92,6 +92,12 @@ impl AssetSource for ActionAssets {
             "icons/monitor.svg" => Some(include_bytes!("../../../assets/icons/monitor.svg")),
             "icons/route.svg" => Some(include_bytes!("../../../assets/icons/route.svg")),
             "icons/devices.svg" => Some(include_bytes!("../../../assets/icons/devices.svg")),
+            "icons/chevron-left.svg" => {
+                Some(include_bytes!("../../../assets/icons/chevron-left.svg"))
+            }
+            "icons/chevron-right.svg" => {
+                Some(include_bytes!("../../../assets/icons/chevron-right.svg"))
+            }
             "figma-actions/plus.svg" => {
                 Some(include_bytes!("../../../assets/figma-actions/plus.svg"))
             }
