@@ -10,6 +10,10 @@ extern crate gpui_kit as gpui;
 mod common;
 
 #[cfg(windows)]
+#[path = "ui_acceptance/export_lifecycle.rs"]
+mod export_lifecycle;
+
+#[cfg(windows)]
 #[path = "ui_acceptance/native_live.rs"]
 mod native_live;
 
