@@ -58,15 +58,10 @@ fn mixer_controls_target_selected_nodes_and_restore_layout(cx: &mut TestAppConte
         assert_eq!(graph.node(source).unwrap().mixer.channel_mode, 0);
         assert_eq!(graph.active_revision, None);
         reorder(&mut shell.mixer.order, gain, source);
-        shell.mixer.width = 208.;
-        shell.mixer.dock_width = 420.;
         let document = shell.project_document(cx).unwrap();
         shell.mixer.order.clear();
-        shell.mixer.width = 140.;
         shell.apply_project_presentation(&document, cx).unwrap();
         assert_eq!(shell.mixer.order[0], gain);
-        assert_eq!(shell.mixer.width, 208.);
-        assert_eq!(shell.mixer.dock_width, 420.);
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -88,7 +83,7 @@ fn mixer_controls_target_selected_nodes_and_restore_layout(cx: &mut TestAppConte
 }
 
 #[gpui_kit::test]
-fn mixer_header_drag_reorders_and_divider_resizes(cx: &mut TestAppContext) {
+fn mixer_header_drag_reorders_channels(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1600.), px(1000.)));
     view.update(cx, |shell, cx| {
@@ -121,31 +116,16 @@ fn mixer_header_drag_reorders_and_divider_resizes(cx: &mut TestAppContext) {
     cx.update(|window, cx| window.render_frame(cx));
     cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     view.update(cx, |shell, _| assert_eq!(shell.mixer.order[0], order[1]));
-    cx.update(|window, cx| window.render_frame(cx));
-    let handle_position = cx.update(|window, _| window.find("mixer-dock-resize").bounds().center());
-    cx.simulate_mouse_down(handle_position, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(
-        handle_position - point(px(40.), px(0.)),
-        Some(MouseButton::Left),
-        Modifiers::default(),
-    );
-    cx.simulate_mouse_up(
-        handle_position - point(px(40.), px(0.)),
-        MouseButton::Left,
-        Modifiers::default(),
-    );
-    view.update(cx, |shell, _| assert_eq!(shell.mixer.dock_width, 400.));
     finish_service(runtime);
 }
 
 #[gpui_kit::test]
-fn compact_mixer_keeps_send_controls_and_minimum_width_meters_unclipped(cx: &mut TestAppContext) {
+fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1024.), px(720.)));
     view.update(cx, |shell, cx| {
         shell.presentation.page = Page::Mixer;
         shell.inspector_open = false;
-        shell.mixer.width = 136.;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -220,7 +200,7 @@ fn compact_mixer_keeps_send_controls_and_minimum_width_meters_unclipped(cx: &mut
                 .bounds();
             assert!(
                 tap.right() <= strip.right() - px(6.),
-                "tap escaped minimum strip width"
+                "tap escaped the fixed strip width"
             );
         }
     });

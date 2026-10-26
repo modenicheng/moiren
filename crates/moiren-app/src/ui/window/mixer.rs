@@ -65,7 +65,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .id("mixer-dock")
         .flex()
         .flex_none()
-        .w(px(shell.mixer.dock_width))
+        .w(px(MixerPresentation::DOCK_WIDTH))
         .max_w(relative(0.55))
         .min_h_0()
         .border_l_1()
@@ -95,28 +95,6 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .flex_1()
         .min_h_0()
         .overflow_hidden()
-        .on_mouse_move({
-            let this = cx.entity();
-            move |event, _, cx| {
-                this.update(cx, |shell, cx| {
-                    if event.pressed_button == Some(MouseButton::Left)
-                        && let Some((docked, origin, width)) = shell.mixer.resize
-                    {
-                        let delta = f32::from(event.position.x) - origin;
-                        if docked {
-                            shell.mixer.dock_width = (width - delta).clamp(160., 640.);
-                        } else {
-                            shell.mixer.width = (width + delta).clamp(136., 280.);
-                        }
-                        cx.notify();
-                    }
-                });
-            }
-        })
-        .on_mouse_up(MouseButton::Left, {
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |shell, _| shell.mixer.resize = None)
-        })
         .child(
             div()
                 .flex()
@@ -124,38 +102,10 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .min_h_0()
                 .min_w_0()
                 .child(channels.gpui_test_observe())
-                .child(resize_handle(shell, true, "mixer-dock-resize", cx))
                 .child(dock_container.child(dock).gpui_test_observe()),
         )
         .gpui_test_observe()
         .into_any_element()
-}
-
-fn resize_handle(
-    shell: &StudioShell,
-    docked: bool,
-    id: impl Into<ElementId>,
-    cx: &Context<StudioShell>,
-) -> impl IntoElement {
-    let width = if docked {
-        shell.mixer.dock_width
-    } else {
-        shell.mixer.width
-    };
-    let this = cx.entity();
-    div()
-        .id(id)
-        .w(px(6.))
-        .h_full()
-        .flex_none()
-        .bg(theme::SURFACE)
-        .on_mouse_down(MouseButton::Left, move |event, _, cx| {
-            cx.stop_propagation();
-            this.update(cx, |shell, _| {
-                shell.mixer.resize = Some((docked, f32::from(event.position.x), width))
-            });
-        })
-        .gpui_test_observe()
 }
 
 pub(super) fn node_kind_color(kind: NodeKind) -> Hsla {
@@ -240,7 +190,7 @@ fn strip(
         .id(SharedString::from(format!("strip-{id:?}")))
         .flex()
         .flex_none()
-        .w(px(shell.mixer.width))
+        .w(px(MixerPresentation::STRIP_WIDTH))
         .h_full()
         .min_h_0()
         .bg(if selected {
@@ -322,13 +272,6 @@ fn strip(
                 )
                 .child(title),
         )
-        .child(resize_handle(
-            shell,
-            false,
-            SharedString::from(format!("strip-resize-{id:?}")),
-            cx,
-        ))
-        // Paint after the resize handle so its surface cannot shorten the bar.
         .child(
             div()
                 .id(SharedString::from(format!("strip-color-{id:?}")))

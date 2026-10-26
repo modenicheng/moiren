@@ -4,11 +4,9 @@ use crate::ui::widgets::fader::FaderScale;
 use rust_i18n::t;
 use std::collections::BTreeMap;
 
+#[derive(Default)]
 pub(in crate::ui::window) struct MixerPresentation {
     pub order: Vec<NodeId>,
-    pub width: f32,
-    pub dock_width: f32,
-    pub resize: Option<(bool, f32, f32)>,
     pub faders: BTreeMap<NodeId, Entity<base::slider::SliderState>>,
     pub sends: BTreeMap<EdgeId, Entity<base::slider::SliderState>>,
     pub send_inputs: BTreeMap<EdgeId, Entity<component::input::InputState>>,
@@ -20,24 +18,10 @@ pub(in crate::ui::window) struct MixerPresentation {
     pub trace: std::cell::RefCell<super::performance::MeterTrace>,
 }
 
-impl Default for MixerPresentation {
-    fn default() -> Self {
-        Self {
-            order: Vec::new(),
-            width: 160.,
-            dock_width: 360.,
-            resize: None,
-            faders: BTreeMap::new(),
-            sends: BTreeMap::new(),
-            send_inputs: BTreeMap::new(),
-            editing_send: None,
-            inputs_collapsed: false,
-            sends_collapsed: false,
-            synced_revision: None,
-            #[cfg(feature = "gpui-test")]
-            trace: Default::default(),
-        }
-    }
+impl MixerPresentation {
+    /// Fixed strip and dock widths; strips are not user-resizable.
+    pub(in crate::ui::window) const STRIP_WIDTH: f32 = 160.;
+    pub(in crate::ui::window) const DOCK_WIDTH: f32 = 360.;
 }
 
 pub(in crate::ui::window) fn gain_db(gain: f64) -> f32 {
