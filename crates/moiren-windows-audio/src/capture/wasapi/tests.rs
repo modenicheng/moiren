@@ -180,7 +180,10 @@ fn capture_lease_releases_complete_packet_on_success_silence_and_validation_fail
         }
         .into();
         let (mut input, _source, observer) = capture_bridge(ClockBridgeConfig::default()).unwrap();
-        assert_eq!(transfer_packet(&client, 2, &mut input, None).is_err(), fails);
+        assert_eq!(
+            transfer_packet(&client, 2, &mut input, None).is_err(),
+            fails
+        );
         assert_eq!(
             *releases.borrow(),
             if frames == 0 { vec![] } else { vec![frames] }
