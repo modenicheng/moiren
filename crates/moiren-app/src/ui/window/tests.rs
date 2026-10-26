@@ -722,6 +722,7 @@ impl crate::service::ServiceDriver for SettingsConfirmationDriver {
             context.graph.preparing(generation, revision);
             context.graph.running(generation, revision);
             context.active_audio_settings = Some(context.audio_settings.clone());
+            context.active_transport_latency = Some(context.transport_latency);
             context.active_latency_profile = if context.audio_settings == Default::default() {
                 Some(context.latency_profile)
             } else {
@@ -733,6 +734,9 @@ impl crate::service::ServiceDriver for SettingsConfirmationDriver {
             let revision = context.graph.snapshot().candidate_revision;
             context.graph.running(context.core.generation(), revision);
             context.active_audio_settings = Some(context.audio_settings.clone());
+            // Match the real owner: transport intent becomes active only when
+            // this fixture confirms the prepared session, not when requested.
+            context.active_transport_latency = Some(context.transport_latency);
             context.active_latency_profile = if context.audio_settings == Default::default() {
                 Some(context.latency_profile)
             } else {
