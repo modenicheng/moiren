@@ -118,9 +118,11 @@ pub struct CaptureReport {
     #[serde(skip)]
     pub artifact: Option<PcmArtifact>,
     pub artifact_metadata: Option<PcmArtifactMetadata>,
+    #[cfg(windows)]
     #[serde(skip)]
     pub(crate) artifact_recorder: Option<PcmRecorder>,
     pub evidence_metadata: Option<PcmEvidenceSummary>,
+    #[cfg(windows)]
     #[serde(skip)]
     pub(crate) evidence_recorder: Option<PcmEvidenceWriter>,
     pub delivery_bound: Option<crate::latency::transport::InputDeliveryTiming>,
