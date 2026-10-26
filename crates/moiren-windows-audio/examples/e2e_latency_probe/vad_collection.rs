@@ -327,6 +327,7 @@ pub(super) fn collect(
         vad,
         measurement: None,
         measurement_outcome: None,
+        measurement_preparation_capture: None,
         failures: None,
         cleanup_failures: None,
         first_failure_observations: None,
@@ -334,28 +335,36 @@ pub(super) fn collect(
     };
     let mut last_running = None;
     let collection = (|| -> Result<()> {
-        guard.measurement = Some(MeasurementSession::prepare(
-            MeasurementConfig {
-                input_endpoint_id: config.input_endpoint_id.clone(),
-                max_active_duration: Duration::from_secs(options.seconds),
-                ring_frames: config.ring_frames,
-                max_pcm_bytes: config.max_pcm_bytes,
-                max_metadata_bytes: config.max_metadata_bytes,
-                max_packets: config.max_packets,
+        guard.measurement = Some(
+            match MeasurementSession::prepare(
+                MeasurementConfig {
+                    input_endpoint_id: config.input_endpoint_id.clone(),
+                    max_active_duration: Duration::from_secs(options.seconds),
+                    ring_frames: config.ring_frames,
+                    max_pcm_bytes: config.max_pcm_bytes,
+                    max_metadata_bytes: config.max_metadata_bytes,
+                    max_packets: config.max_packets,
+                },
+                MeasurementPaths {
+                    pcm: paths
+                        .measurement_pcm
+                        .as_deref()
+                        .context("collection PCM path missing")?
+                        .into(),
+                    packets: paths
+                        .measurement_packets
+                        .as_deref()
+                        .context("collection packet path missing")?
+                        .into(),
+                },
+            ) {
+                Ok(measurement) => measurement,
+                Err(mut error) => {
+                    guard.measurement_preparation_capture = error.native_capture.take();
+                    return Err(error.error);
+                }
             },
-            MeasurementPaths {
-                pcm: paths
-                    .measurement_pcm
-                    .as_deref()
-                    .context("collection PCM path missing")?
-                    .into(),
-                packets: paths
-                    .measurement_packets
-                    .as_deref()
-                    .context("collection packet path missing")?
-                    .into(),
-            },
-        )?);
+        );
         {
             let CollectionGuard {
                 vad,
@@ -499,15 +508,29 @@ pub(super) fn collect(
     }
     let complete = phases_complete && guard.failures.is_none();
     // All joins and typed outcome retention precede report serialization/IO.
-    let measurement = guard.measurement_outcome.as_ref().map(|outcome| -> Result<_> {
-        Ok(serde_json::json!({
+    let measurement = if let Some(outcome) = &guard.measurement_outcome {
+        Some(serde_json::json!({
             "info": measurement_info(&outcome.info),
             "native_capture": outcome.native_capture.as_ref().map(serde_json::to_value).transpose()?,
             "sink": outcome.sink.as_ref().map(serde_json::to_value).transpose()?,
             "activation_elapsed_seconds": outcome.activation_elapsed.map(|value| value.as_secs_f64()),
             "failure": outcome.failure,
         }))
-    }).transpose()?;
+    } else {
+        guard
+            .measurement_preparation_capture
+            .take()
+            .map(|capture| {
+                Ok::<_, anyhow::Error>(serde_json::json!({
+                    "info": null,
+                    "native_capture": serde_json::to_value(capture)?,
+                    "sink": null,
+                    "activation_elapsed_seconds": null,
+                    "failure": guard.failures,
+                }))
+            })
+            .transpose()?
+    };
     guard.vad.report.collection = Some(serde_json::json!({
         "schema_version": 1, "qualified": false, "status": "unqualified",
         "config": config, "playback_source": provenance, "source": guard.vad.playback_outcome,
@@ -541,6 +564,7 @@ struct CollectionGuard<'a> {
     vad: super::native::VadCleanup<'a>,
     measurement: Option<crate::measurement::session::MeasurementSession>,
     measurement_outcome: Option<crate::measurement::session::MeasurementOutcome>,
+    measurement_preparation_capture: Option<Box<moiren_windows_audio::capture::CaptureReport>>,
     failures: Option<String>,
     cleanup_failures: Option<String>,
     first_failure_observations: Option<serde_json::Value>,

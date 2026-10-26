@@ -244,13 +244,23 @@ fn write_report(path: &Path, report: &MeasurementReport) -> Result<()> {
 #[cfg(windows)]
 fn collect_native(options: &Options, report: &mut MeasurementReport) -> Result<()> {
     use session::{MeasurementPaths, MeasurementSession};
-    let mut owner = MeasurementSession::prepare(
+    let mut owner = match MeasurementSession::prepare(
         options.config(),
         MeasurementPaths {
             pcm: report.pcm_path.clone(),
             packets: report.packet_path.clone(),
         },
-    )?;
+    ) {
+        Ok(owner) => owner,
+        Err(mut error) => {
+            report.native_capture = error
+                .native_capture
+                .take()
+                .map(|capture| serde_json::to_value(*capture))
+                .transpose()?;
+            return Err(error.error);
+        }
+    };
     ensure!(
         owner.info().input_endpoint_id == options.input
             && owner.info().ring_frames == options.ring_frames,

@@ -5,6 +5,7 @@ use anyhow::{Context, Result, ensure};
 use moiren_windows_audio::capture::{CaptureReport, PcmEvidenceFrame};
 use std::{
     cell::RefCell,
+    fmt,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -64,6 +65,29 @@ pub(crate) struct MeasurementOutcome {
     pub(crate) sink: Option<SinkReport>,
     pub(crate) activation_elapsed: Option<Duration>,
     pub(crate) failure: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct MeasurementPreparationFailure {
+    pub(crate) error: anyhow::Error,
+    pub(crate) native_capture: Option<Box<CaptureReport>>,
+}
+
+impl fmt::Display for MeasurementPreparationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for MeasurementPreparationFailure {}
+
+impl From<anyhow::Error> for MeasurementPreparationFailure {
+    fn from(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            native_capture: None,
+        }
+    }
 }
 
 trait NativeOwner: Send {
@@ -151,18 +175,25 @@ impl MeasurementConfig {
 
 impl MeasurementSession {
     #[cfg(windows)]
-    pub(crate) fn prepare(config: MeasurementConfig, paths: MeasurementPaths) -> Result<Self> {
+    pub(crate) fn prepare(
+        config: MeasurementConfig,
+        paths: MeasurementPaths,
+    ) -> std::result::Result<Self, MeasurementPreparationFailure> {
         use moiren_windows_audio::{
             ActivationGate, SessionDuration, StopSignal,
-            capture::{CaptureOptions, PcmEvidenceConfig, prepare_capture_native_with_gate},
+            capture::{CaptureOptions, PcmEvidenceConfig},
             latency::{PreparedInputQueue, TelemetryMode},
         };
-        config.validate()?;
-        paths.validate()?;
+        config
+            .validate()
+            .map_err(MeasurementPreparationFailure::from)?;
+        paths
+            .validate()
+            .map_err(MeasurementPreparationFailure::from)?;
         let stop = StopSignal::new().context("create independent measurement stop")?;
         let gate =
             ActivationGate::new(stop.clone()).context("create measurement activation gate")?;
-        let native = prepare_capture_native_with_gate(
+        let native = moiren_windows_audio::capture::prepare_capture_native_with_gate_returning(
             CaptureOptions {
                 artifact: None,
                 latency_telemetry: TelemetryMode::Summary,
@@ -173,18 +204,43 @@ impl MeasurementSession {
             stop.clone(),
             gate.clone(),
         )
-        .context("prepare independent native capture")?;
+        .map_err(|failure| MeasurementPreparationFailure {
+            error: anyhow::anyhow!("prepare independent native capture: {}", failure.error),
+            native_capture: failure.report.map(Box::new),
+        })?;
         let negotiated = native.info();
-        let info = config.negotiated_info(negotiated.timing.sample_rate, negotiated.channels)?;
+        let info = match config.negotiated_info(negotiated.timing.sample_rate, negotiated.channels)
+        {
+            Ok(info) => info,
+            Err(error) => {
+                let (report, cleanup_error) = native.cancel_with_report_returning();
+                return Err(MeasurementPreparationFailure {
+                    error: with_cleanup_error(
+                        error,
+                        cleanup_error
+                            .map(|error| anyhow::anyhow!("native cleanup failed: {error}")),
+                    ),
+                    native_capture: report.map(Box::new),
+                });
+            }
+        };
         let (capture, reader) = native
-            .attach_with_evidence(
+            .attach_with_evidence_returning(
                 PreparedInputQueue::compatible(),
                 PcmEvidenceConfig {
                     capacity_frames: config.ring_frames,
                     detect_position_gaps: true,
                 },
             )
-            .context("attach bounded measurement tap")?;
+            .map_err(|failure| MeasurementPreparationFailure {
+                error: with_cleanup_error(
+                    anyhow::anyhow!("attach bounded measurement tap: {}", failure.error),
+                    failure
+                        .cleanup_error
+                        .map(|error| anyhow::anyhow!("native cleanup failed: {error}")),
+                ),
+                native_capture: failure.report.map(Box::new),
+            })?;
         // Install native ownership before any fallible sink setup. Drop must
         // stop/join the gated native owner before waiting on a filesystem worker.
         let mut owner = Self::own_native(
@@ -196,7 +252,7 @@ impl MeasurementSession {
                 stop,
             },
         );
-        let sink = EvidenceSink::create(
+        let sink = match EvidenceSink::create(
             reader,
             owner.info.sample_rate,
             owner.info.channels,
@@ -208,8 +264,19 @@ impl MeasurementSession {
                 max_metadata_bytes: owner.config.max_metadata_bytes,
                 max_packets: owner.config.max_packets,
             },
-        )
-        .context("prepare bounded non-RT measurement sink")?;
+        ) {
+            Ok(sink) => sink,
+            Err(error) => {
+                let (report, cleanup_error) = owner.stop_and_join_native();
+                return Err(MeasurementPreparationFailure {
+                    error: with_cleanup_error(
+                        anyhow::anyhow!("prepare bounded non-RT measurement sink: {error:#}"),
+                        cleanup_error,
+                    ),
+                    native_capture: report.map(Box::new),
+                });
+            }
+        };
         owner.sink = Some(Box::new(sink));
         Ok(owner)
     }
@@ -233,6 +300,22 @@ impl MeasurementSession {
 
     pub(crate) fn info(&self) -> &MeasurementInfo {
         &self.info
+    }
+
+    fn stop_and_join_native(&mut self) -> (Option<CaptureReport>, Option<anyhow::Error>) {
+        let Some(mut native) = self.native.take() else {
+            return (
+                None,
+                Some(anyhow::anyhow!("measurement native owner missing")),
+            );
+        };
+        let stop_error = native.request_stop().err();
+        let result = join_native(native.as_mut());
+        drop(native);
+        match result {
+            Ok(report) => (Some(report), stop_error),
+            Err(error) => (None, Some(error)),
+        }
     }
 
     pub(crate) fn activate(&mut self) -> Result<()> {
@@ -549,6 +632,15 @@ fn append_failure(failure: &mut Option<String>, message: &str) {
     }
     text.push_str(separator);
     text.push_str(&message[..end]);
+}
+
+fn with_cleanup_error(error: anyhow::Error, cleanup_error: Option<anyhow::Error>) -> anyhow::Error {
+    match cleanup_error {
+        Some(cleanup_error) => {
+            anyhow::anyhow!("{error:#}; native cleanup failed: {cleanup_error:#}")
+        }
+        None => error,
+    }
 }
 
 #[cfg(test)]
