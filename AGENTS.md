@@ -31,7 +31,7 @@ Use four-space indentation and rustfmt defaults. Use `snake_case` for modules/fu
 
 ## Testing Guidelines
 
-Use Rust's `#[test]` harness and descriptive `snake_case` test names. Add regression tests beside affected behavior. Focus checks with `cargo test --locked -p moiren-engine`. Preserve allocation, concurrency, graph-validation, and DSP coverage. No numeric coverage threshold is configured. CI checks Ubuntu/Windows and nightly Miri with default/Tree Borrows modes. Keep hardware verification separate from portable tests.
+Use Rust's `#[test]` harness and descriptive `snake_case` test names. Add regression tests beside affected behavior. Focus checks with `cargo test --locked -p moiren-engine`. Preserve allocation, concurrency, graph-validation, and DSP coverage. No numeric coverage threshold is configured. CI checks Ubuntu/Windows and nightly Miri with default/Tree Borrows modes. Pull requests run only the surfaces the diff touches — the path-to-surface mapping, including the crate dependency closure, lives in `.github/scripts/detect-changes.sh` — while pushes to main always run the full suite. Keep hardware verification separate from portable tests.
 
 ## Architecture Constraints
 

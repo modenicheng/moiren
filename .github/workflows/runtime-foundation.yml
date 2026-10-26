@@ -1,56 +1,175 @@
 name: Runtime foundation
 on:
   push:
-    branches: [main, engine/flat-buffer-control-foundation]
+    branches: [main]
   pull_request:
 permissions:
   contents: read
 concurrency:
   group: runtime-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+# Selective CI: pull requests run only the surfaces the diff touches; the
+# path -> surface mapping and its dependency closure live in
+# .github/scripts/detect-changes.sh. Pushes to main always run everything.
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      pkgs: ${{ steps.surfaces.outputs.pkgs }}
+      lint_pkgs: ${{ steps.surfaces.outputs.lint_pkgs }}
+      miri_pkgs: ${{ steps.surfaces.outputs.miri_pkgs }}
+      rtcheck: ${{ steps.surfaces.outputs.rtcheck }}
+      vad: ${{ steps.surfaces.outputs.vad }}
+      any: ${{ steps.surfaces.outputs.any }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          # Full history so the pull-request base SHA (part of the merge
+          # ref's history) exists for the merge-base diff.
+          fetch-depth: 0
+      - name: Detect affected CI surfaces
+        id: surfaces
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            .github/scripts/detect-changes.sh \
+              --base "$PR_BASE_SHA" \
+              --output "$GITHUB_OUTPUT"
+          else
+            # Pushes to main always validate the whole workspace.
+            {
+              echo 'pkgs=moiren-core moiren-signal moiren-engine moiren-windows-audio moiren-app'
+              echo 'lint_pkgs=moiren-core moiren-signal moiren-engine moiren-windows-audio moiren-app'
+              echo 'miri_pkgs=moiren-core moiren-signal moiren-engine moiren-windows-audio'
+              echo 'rtcheck=true'
+              echo 'vad=true'
+              echo 'any=true'
+            } >> "$GITHUB_OUTPUT"
+          fi
+      - name: Self-test the surface mapping
+        run: .github/scripts/detect-changes.test.sh
+  fmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - run: cargo +stable fmt --all -- --check
   test:
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      # Word-split on purpose: the cargo -p list is space-separated.
+      PKGS: ${{ needs.changes.outputs.pkgs }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      # The Linux desktop stack is only needed when moiren-app builds (gpui).
       - name: Install Linux desktop dependencies
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && contains(needs.changes.outputs.pkgs, 'moiren-app')
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libgtk-3-dev libfontconfig1-dev libxkbcommon-x11-dev \
             libwayland-dev libvulkan-dev libxdo-dev
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
-      - run: cargo +stable check --locked --workspace --all-targets
-      - run: cargo +stable test --locked --workspace
+      - uses: Swatinem/rust-cache@6fd3edff6979b79f87531400ad694fb7f2c84b1f
+      # cargo -p takes one package per flag, so expand the list first.
+      - run: |
+          pkgs=()
+          for p in $PKGS; do pkgs+=(-p "$p"); done
+          cargo +stable check --locked --all-targets "${pkgs[@]}"
+      - run: |
+          pkgs=()
+          for p in $PKGS; do pkgs+=(-p "$p"); done
+          cargo +stable test --locked "${pkgs[@]}"
       - name: Test native-owner realtime contracts
+        if: needs.changes.outputs.rtcheck == 'true'
         run: cargo +stable test --locked --manifest-path tools/rt-check/Cargo.toml
       - name: Test VAD probe contracts without devices
+        if: contains(needs.changes.outputs.pkgs, 'moiren-windows-audio')
         run: cargo +stable test --locked -p moiren-windows-audio --features vad-probe --example vad_lifecycle --example vad_native --example vad_active_lifecycle
       - name: Test VAD application integration contracts without devices
+        if: contains(needs.changes.outputs.pkgs, 'moiren-app')
         run: cargo +stable test --locked -p moiren-app --features vad-integration-probe --example vad_integration
       - name: Test headless desktop UI
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && contains(needs.changes.outputs.pkgs, 'moiren-app')
         run: cargo +stable test --locked -p moiren-app --features gpui-test
-      - if: always()
-        run: cargo +stable clippy --locked --workspace --all-targets --features moiren-windows-audio/vad-probe,moiren-app/vad-integration-probe -- -D warnings
+      - run: cargo +stable run --locked -p moiren-engine --example offline
+        if: contains(needs.changes.outputs.pkgs, 'moiren-engine')
+      - run: cargo +stable run --locked -p moiren-engine --example logical_graph
+        if: contains(needs.changes.outputs.pkgs, 'moiren-engine')
+      - run: cargo +stable run --locked -p moiren-engine --example managed_graph
+        if: contains(needs.changes.outputs.pkgs, 'moiren-engine')
+      - run: cargo +stable run --locked -p moiren-app -- --gain 0.25
+        if: contains(needs.changes.outputs.pkgs, 'moiren-app')
+  clippy:
+    needs: changes
+    if: needs.changes.outputs.lint_pkgs != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      # Word-split on purpose: the cargo -p list is space-separated.
+      LINT_PKGS: ${{ needs.changes.outputs.lint_pkgs }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux' && contains(needs.changes.outputs.lint_pkgs, 'moiren-app')
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libgtk-3-dev libfontconfig1-dev libxkbcommon-x11-dev \
+            libwayland-dev libvulkan-dev libxdo-dev
+      - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - uses: Swatinem/rust-cache@6fd3edff6979b79f87531400ad694fb7f2c84b1f
+      # Runs in parallel with the test job, so lint findings surface even
+      # when compilation or tests fail (and vice versa).
+      - name: Lint changed crates
+        run: |
+          features=()
+          pkgs=()
+          for pkg in $LINT_PKGS; do
+            pkgs+=(-p "$pkg")
+            case "$pkg" in
+              moiren-windows-audio) features+=(moiren-windows-audio/vad-probe) ;;
+              moiren-app) features+=(moiren-app/vad-integration-probe) ;;
+            esac
+          done
+          feature_flags=()
+          if [ "${#features[@]}" -gt 0 ]; then
+            feature_flags+=(--features "$(IFS=,; echo "${features[*]}")")
+          fi
+          cargo +stable clippy --locked --all-targets "${feature_flags[@]}" "${pkgs[@]}" -- -D warnings
       # Probe tools are feature-gated out of the default build (see
       # docs/superpowers/plans/2026-10-19-repo-steward-remediation.md W8).
-      - if: always()
+      - name: Lint probe tools
+        if: contains(needs.changes.outputs.lint_pkgs, 'moiren-windows-audio')
         run: cargo +stable clippy --locked -p moiren-windows-audio --all-targets --features probe-tools -- -D warnings
-      - if: always()
-        run: cargo +stable fmt --all -- --check
-      - run: cargo +stable run --locked -p moiren-engine --example offline
-      - run: cargo +stable run --locked -p moiren-engine --example logical_graph
-      - run: cargo +stable run --locked -p moiren-engine --example managed_graph
-      - run: cargo +stable run --locked -p moiren-app -- --gain 0.25
   vad_driver_host:
+    needs: changes
+    if: needs.changes.outputs.vad == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -60,6 +179,10 @@ jobs:
       - name: Test portable VAD driver helpers without devices
         run: bash driver/vad/test-portable.sh
   miri_suites:
+    needs: changes
+    # Entries whose package is not selected skip only their test step below:
+    # the matrix context is not available in a job-level `if`.
+    if: needs.changes.outputs.miri_pkgs != ''
     strategy:
       fail-fast: false
       # Miri runs a package's tests sequentially in one process, so each suite
@@ -87,17 +210,24 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install nightly --profile minimal --component miri
+      # Also caches the Miri sysroot built by `miri setup` below.
+      - uses: Swatinem/rust-cache@6fd3edff6979b79f87531400ad694fb7f2c84b1f
+        with:
+          cache-directories: /home/runner/.cache/miri
       - run: cargo +nightly miri setup
       # Miri covers the portable RT contracts; native GPUI/GTK is tested above.
       - run: cargo +nightly miri test --locked --no-fail-fast -p ${{ matrix.package }} ${{ matrix.filters }}
+        if: contains(needs.changes.outputs.miri_pkgs, matrix.package)
         env:
           MIRIFLAGS: ${{ matrix.model == 'tree' && '-Zmiri-tree-borrows' || '' }}
   miri:
     if: always()
     needs: miri_suites
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require every Miri suite
         env:
           MIRI_RESULT: ${{ needs.miri_suites.result }}
-        run: test "$MIRI_RESULT" = success
+        # Skipped is a valid outcome: app-only diffs deselect every suite.
+        run: test "$MIRI_RESULT" = success -o "$MIRI_RESULT" = skipped
