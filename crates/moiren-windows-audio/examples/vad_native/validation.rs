@@ -1,4 +1,7 @@
-use moiren_windows_audio::vad::{Channels, Intent, PcmPacketStamp, StableEndpointId};
+use moiren_windows_audio::vad::{
+    Channels, EndpointSnapshot, Intent, PcmPacketStamp, PdoState, SampleFormat, StableEndpointId,
+    StreamState,
+};
 use serde::Serialize;
 
 #[derive(Clone, Debug)]
@@ -211,6 +214,78 @@ pub(super) fn cleanup_all<T: Copy>(
     }
 }
 
+/// Detached diagnostic evidence only. Explicit scalar fields keep the report
+/// portable without parsing Debug output or lending the snapshot new authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(super) struct EndpointDiagnostic {
+    pub stable_id: String,
+    pub pdo_token: u64,
+    pub session_epoch: u64,
+    pub endpoint_generation: u64,
+    pub stream_generation: u64,
+    pub gate_epoch: u64,
+    pub gate_open: bool,
+    pub state: &'static str,
+    pub stream_state: &'static str,
+    pub intent: &'static str,
+    pub sample_format: Option<&'static str>,
+    pub packet_frames: u32,
+    pub channels: u32,
+    pub dropped_packets: u64,
+    pub silence_packets: u64,
+    pub last_status: u32,
+    pub policy_prepared: bool,
+    pub audio_ready: bool,
+}
+
+impl From<EndpointSnapshot> for EndpointDiagnostic {
+    fn from(snapshot: EndpointSnapshot) -> Self {
+        Self {
+            stable_id: snapshot.stable_id().to_string(),
+            pdo_token: snapshot.pdo_token().get(),
+            session_epoch: snapshot.session_epoch(),
+            endpoint_generation: snapshot.endpoint_generation(),
+            stream_generation: snapshot.stream_generation(),
+            gate_epoch: snapshot.gate_epoch(),
+            gate_open: snapshot.gate_open(),
+            state: match snapshot.state() {
+                PdoState::Present => "Present",
+                PdoState::Removing => "Removing",
+                PdoState::Removed => "Removed",
+                PdoState::Creating => "Creating",
+            },
+            stream_state: match snapshot.stream_state() {
+                StreamState::Closed => "Closed",
+                StreamState::Paused => "Paused",
+                StreamState::Running => "Running",
+            },
+            intent: match snapshot.intent() {
+                Intent::Playback => "Playback",
+                Intent::Microphone => "Microphone",
+            },
+            sample_format: snapshot.sample_format().map(|format| match format {
+                SampleFormat::Pcm16 => "Pcm16",
+                SampleFormat::Float32 => "Float32",
+            }),
+            packet_frames: snapshot.packet_frames(),
+            channels: snapshot.channels() as u32,
+            dropped_packets: snapshot.dropped_packets(),
+            silence_packets: snapshot.silence_packets(),
+            last_status: snapshot.last_status(),
+            policy_prepared: snapshot.policy_prepared(),
+            audio_ready: snapshot.audio_ready(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct FailureObservation {
+    pub scope: &'static str,
+    pub current_snapshot: Option<EndpointDiagnostic>,
+    pub query_error: Option<String>,
+    pub progress_validation_error: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub(super) struct FailureCounters {
     pub mode: crate::NativeMode,
@@ -222,6 +297,39 @@ pub(super) struct FailureCounters {
     pub stream_generation: u64,
     pub native_discontinuities: u64,
     pub native_position: Option<PositionProgress>,
+    pub admitted_opened: Option<EndpointDiagnostic>,
+    pub admitted_pcm_shape: Option<EndpointDiagnostic>,
+    pub failure_observation: Option<FailureObservation>,
+}
+
+pub(super) fn observe_signal_failure<T>(
+    outcome: anyhow::Result<T>,
+    admitted: EndpointSnapshot,
+    observation: &mut Option<FailureObservation>,
+    query: impl FnOnce(moiren_windows_audio::vad::EndpointKey) -> anyhow::Result<EndpointSnapshot>,
+) -> anyhow::Result<T> {
+    if outcome.is_err() {
+        let mut evidence = FailureObservation {
+            scope: "Post-failure pre-cleanup QUERY; later observation, not atomic failure instant or admission authority",
+            current_snapshot: None,
+            query_error: None,
+            progress_validation_error: None,
+        };
+        // One best-effort observation, never a retry or a new admission stamp.
+        // Retain decoded evidence even if lifecycle validation rejects it.
+        match query(admitted.key()) {
+            Ok(current) => {
+                evidence.current_snapshot = Some(current.into());
+                evidence.progress_validation_error = current
+                    .require_progress_after(admitted)
+                    .err()
+                    .map(|error| error.to_string());
+            }
+            Err(error) => evidence.query_error = Some(format!("{error:#}")),
+        }
+        *observation = Some(evidence);
+    }
+    outcome
 }
 
 pub(super) fn diagnose_failure<T>(
@@ -268,6 +376,337 @@ mod tests {
 
     fn id() -> StableEndpointId {
         StableEndpointId::new(0x42, 0x1234_5678_9abc_def0)
+    }
+
+    fn put32(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put64(bytes: &mut [u8], offset: usize, value: u64) {
+        bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    // Synthetic protocol fixtures only: these epochs are not target observations.
+    fn endpoint_fixture(adjust: impl FnOnce(&mut [u8; 128])) -> EndpointSnapshot {
+        let mut caps = [0; 64];
+        for (offset, value) in [
+            (0, 64),
+            (4, 2),
+            (8, 31),
+            (12, 64),
+            (16, 1),
+            (20, 48_000),
+            (24, 3),
+            (28, 6),
+            (32, 6),
+            (36, 4),
+            (48, 4800),
+        ] {
+            put32(&mut caps, offset, value);
+        }
+        put64(&mut caps, 40, 7);
+        let mut bytes = [0; 128];
+        for (offset, value) in [
+            (0, 128),
+            (4, 2),
+            (16, 1),
+            (20, 2),
+            (24, 1),
+            (28, 1),
+            (32, 1),
+            (36, 1),
+            (88, 1),
+            (92, 480),
+            (96, 0xc000_0059),
+            (100, 2),
+        ] {
+            put32(&mut bytes, offset, value);
+        }
+        for (offset, value) in [
+            (8, 0x42),
+            (40, 7),
+            (48, 0x42),
+            (56, 11),
+            (64, 13),
+            (104, (1 << 53) + 1),
+            (112, 23),
+        ] {
+            put64(&mut bytes, offset, value);
+        }
+        bytes[72..88].copy_from_slice(&id().to_le_bytes());
+        adjust(&mut bytes);
+        EndpointSnapshot::decode(
+            &bytes,
+            moiren_windows_audio::vad::Capabilities::decode(&caps).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn failure_counters() -> FailureCounters {
+        FailureCounters {
+            mode: crate::NativeMode::Event,
+            signal_frames: 36_960,
+            silent_frames: 9_600,
+            microphone_dropped_packets: 2,
+            native_buffer_frames: 480,
+            driver_packet_frames: 480,
+            stream_generation: 11,
+            native_discontinuities: 0,
+            native_position: None,
+            admitted_opened: Some(endpoint_fixture(|_| {}).into()),
+            admitted_pcm_shape: Some(endpoint_fixture(|_| {}).into()),
+            failure_observation: None,
+        }
+    }
+
+    #[test]
+    fn endpoint_diagnostic_serializes_every_admitted_identity_shape_and_readiness_field() {
+        let diagnostic = EndpointDiagnostic::from(endpoint_fixture(|_| {}));
+        assert_eq!(
+            serde_json::to_value(diagnostic).unwrap(),
+            serde_json::json!({
+                "stable_id": "123456789abcdef00000000000000042",
+                "pdo_token": 66,
+                "session_epoch": 7,
+                "endpoint_generation": 66,
+                "stream_generation": 11,
+                "gate_epoch": 13,
+                "gate_open": true,
+                "state": "Present",
+                "stream_state": "Running",
+                "intent": "Microphone",
+                "sample_format": "Pcm16",
+                "packet_frames": 480,
+                "channels": 1,
+                "dropped_packets": 9_007_199_254_740_993_u64,
+                "silence_packets": 23,
+                "last_status": 0xc000_0059_u32,
+                "policy_prepared": true,
+                "audio_ready": true,
+            })
+        );
+    }
+
+    #[test]
+    fn endpoint_diagnostic_keeps_closed_unready_and_unknown_format_explicit() {
+        let snapshot = endpoint_fixture(|bytes| {
+            for (offset, value) in [
+                (16, 2),
+                (20, 1),
+                (24, 2),
+                (28, 0),
+                (32, 0),
+                (36, 0),
+                (88, 0),
+                (92, 0),
+                (100, 0),
+            ] {
+                put32(bytes, offset, value);
+            }
+        });
+        let value = serde_json::to_value(EndpointDiagnostic::from(snapshot)).unwrap();
+        assert_eq!(value["state"], "Removing");
+        assert_eq!(value["stream_state"], "Closed");
+        assert_eq!(value["intent"], "Playback");
+        assert_eq!(value["channels"], 2);
+        assert_eq!(value["gate_open"], false);
+        assert_eq!(value["audio_ready"], false);
+        assert_eq!(value["policy_prepared"], false);
+        assert!(value["sample_format"].is_null());
+        assert_eq!(value["packet_frames"], 0);
+    }
+
+    #[test]
+    fn successful_signal_phase_does_not_query_or_add_failure_observation() {
+        let mut counters = failure_counters();
+        assert_eq!(
+            observe_signal_failure(
+                Ok(42),
+                endpoint_fixture(|_| {}),
+                &mut counters.failure_observation,
+                |_| panic!("successful signal phase must not issue a diagnostic QUERY"),
+            )
+            .unwrap(),
+            42
+        );
+        assert!(counters.failure_observation.is_none());
+    }
+
+    #[test]
+    fn failed_signal_queries_once_before_revoke_and_drain_then_emits_original_error() {
+        let admitted = endpoint_fixture(|_| {});
+        let mut counters = failure_counters();
+        let actions = std::cell::RefCell::new(Vec::new());
+        let gate = std::cell::Cell::new(13);
+        let original = anyhow::Error::new(std::io::Error::from_raw_os_error(1306))
+            .context("GetOverlappedResult(VAD PCM)");
+        let original_chain = format!("{original:#}");
+        let identity = original.downcast_ref::<std::io::Error>().unwrap() as *const _;
+        let outcome = observe_signal_failure::<()>(
+            Err(original),
+            admitted,
+            &mut counters.failure_observation,
+            |key| {
+                actions.borrow_mut().push("query");
+                assert_eq!(key, admitted.key());
+                Ok(endpoint_fixture(|bytes| put64(bytes, 64, gate.get())))
+            },
+        );
+        let outcome = revoke_and_drain(
+            outcome,
+            || {
+                actions.borrow_mut().push("revoke");
+                gate.set(14);
+                anyhow::bail!("secondary revoke failure")
+            },
+            || {
+                actions.borrow_mut().push("drain");
+                anyhow::bail!("secondary drain failure")
+            },
+        );
+        let mut line = String::new();
+        let error = diagnose_failure(outcome, &counters, |message| {
+            actions.borrow_mut().push("emit");
+            line = message.to_owned();
+        })
+        .unwrap_err();
+        assert_eq!(*actions.borrow(), ["query", "revoke", "drain", "emit"]);
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap() as *const _,
+            identity
+        );
+        assert_eq!(error.to_string(), "GetOverlappedResult(VAD PCM)");
+        let diagnostic: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(diagnostic["error"], original_chain);
+        let evidence = &diagnostic["counters"];
+        assert_eq!(evidence["admitted_opened"]["gate_epoch"], 13);
+        assert_eq!(evidence["admitted_pcm_shape"]["gate_epoch"], 13);
+        let observation = &evidence["failure_observation"];
+        assert_eq!(
+            observation["scope"],
+            "Post-failure pre-cleanup QUERY; later observation, not atomic failure instant or admission authority"
+        );
+        assert_eq!(observation["current_snapshot"]["gate_epoch"], 13);
+        assert!(observation["query_error"].is_null());
+        assert!(observation["progress_validation_error"].is_null());
+        assert_eq!(gate.get(), 14);
+    }
+
+    #[test]
+    fn failed_signal_retains_decoded_query_snapshot_even_when_progress_validation_fails() {
+        let admitted = endpoint_fixture(|_| {});
+        for (current, invalid) in [
+            (admitted, false),
+            (endpoint_fixture(|bytes| put64(bytes, 64, 14)), false),
+            (
+                endpoint_fixture(|bytes| {
+                    put32(bytes, 28, 0);
+                    put32(bytes, 36, 0);
+                    put32(bytes, 100, 1);
+                }),
+                false,
+            ),
+            (
+                endpoint_fixture(|bytes| {
+                    put64(bytes, 56, 12);
+                    put32(bytes, 88, 2);
+                    put32(bytes, 92, 960);
+                }),
+                false,
+            ),
+            (endpoint_fixture(|bytes| put64(bytes, 64, 12)), true),
+            (endpoint_fixture(|bytes| put64(bytes, 72, 0x43)), true),
+        ] {
+            let mut counters = failure_counters();
+            let calls = std::cell::Cell::new(0);
+            let error = observe_signal_failure::<()>(
+                Err(anyhow::anyhow!("original PCM phase failure")),
+                admitted,
+                &mut counters.failure_observation,
+                |key| {
+                    calls.set(calls.get() + 1);
+                    assert_eq!(key, admitted.key());
+                    Ok(current)
+                },
+            )
+            .unwrap_err();
+            assert_eq!(calls.get(), 1);
+            assert_eq!(error.to_string(), "original PCM phase failure");
+            let observation = counters.failure_observation.as_ref().unwrap();
+            assert_eq!(observation.current_snapshot, Some(current.into()));
+            assert!(observation.query_error.is_none());
+            assert_eq!(observation.progress_validation_error.is_some(), invalid);
+            if invalid {
+                assert!(
+                    observation
+                        .progress_validation_error
+                        .as_ref()
+                        .unwrap()
+                        .contains("endpoint identity or lifecycle regressed")
+                );
+            }
+            let value = serde_json::to_value(&counters).unwrap();
+            assert_eq!(
+                value["failure_observation"]["current_snapshot"],
+                serde_json::to_value(EndpointDiagnostic::from(current)).unwrap()
+            );
+            assert_eq!(value["admitted_opened"]["gate_epoch"], 13);
+            assert_eq!(value["admitted_pcm_shape"]["packet_frames"], 480);
+        }
+    }
+
+    #[test]
+    fn failed_diagnostic_query_keeps_full_query_chain_and_original_phase_error() {
+        let admitted = endpoint_fixture(|_| {});
+        let mut counters = failure_counters();
+        let actions = std::cell::RefCell::new(Vec::new());
+        let original = anyhow::Error::new(std::io::Error::from_raw_os_error(1306))
+            .context("original PCM failure context");
+        let original_chain = format!("{original:#}");
+        let identity = original.downcast_ref::<std::io::Error>().unwrap() as *const _;
+        let outcome = observe_signal_failure::<()>(
+            Err(original),
+            admitted,
+            &mut counters.failure_observation,
+            |key| {
+                actions.borrow_mut().push("query");
+                assert_eq!(key, admitted.key());
+                Err(anyhow::anyhow!("diagnostic QUERY transport refused")
+                    .context("best-effort current endpoint QUERY"))
+            },
+        );
+        let outcome = revoke_and_drain(
+            outcome,
+            || {
+                actions.borrow_mut().push("revoke");
+                Ok(())
+            },
+            || {
+                actions.borrow_mut().push("drain");
+                Ok(())
+            },
+        );
+        let mut line = String::new();
+        let error = diagnose_failure(outcome, &counters, |message| {
+            actions.borrow_mut().push("emit");
+            line = message.to_owned();
+        })
+        .unwrap_err();
+        assert_eq!(*actions.borrow(), ["query", "revoke", "drain", "emit"]);
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap() as *const _,
+            identity
+        );
+        assert_eq!(error.to_string(), "original PCM failure context");
+        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let observation = &value["counters"]["failure_observation"];
+        assert!(observation["current_snapshot"].is_null());
+        assert!(observation["progress_validation_error"].is_null());
+        assert_eq!(
+            observation["query_error"],
+            "best-effort current endpoint QUERY: diagnostic QUERY transport refused"
+        );
+        assert_eq!(value["error"], original_chain);
     }
 
     #[test]
@@ -505,6 +944,36 @@ mod tests {
     }
 
     #[test]
+    fn failure_counters_distinguish_unobserved_endpoint_evidence_from_missing_fields() {
+        let counters = FailureCounters {
+            mode: crate::NativeMode::Event,
+            signal_frames: 0,
+            silent_frames: 0,
+            microphone_dropped_packets: 0,
+            native_buffer_frames: 0,
+            driver_packet_frames: 0,
+            stream_generation: 0,
+            native_discontinuities: 0,
+            native_position: None,
+            admitted_opened: None,
+            admitted_pcm_shape: None,
+            failure_observation: None,
+        };
+        let diagnostic = serde_json::to_value(counters).unwrap();
+        for field in [
+            "admitted_opened",
+            "admitted_pcm_shape",
+            "failure_observation",
+        ] {
+            assert_eq!(
+                diagnostic.get(field),
+                Some(&serde_json::Value::Null),
+                "{field} must explicitly report unavailable evidence before gate admission"
+            );
+        }
+    }
+
+    #[test]
     fn failed_outcome_diagnoses_counters_after_cleanup_and_preserves_original_error() {
         let mut position = PositionProgress {
             frequency: 48_000,
@@ -522,6 +991,9 @@ mod tests {
             stream_generation: 7,
             native_discontinuities: 2,
             native_position: Some(position),
+            admitted_opened: None,
+            admitted_pcm_shape: None,
+            failure_observation: None,
         };
         let actions = std::cell::RefCell::new(Vec::new());
         let error = anyhow::Error::new(std::io::Error::from_raw_os_error(5))
@@ -582,6 +1054,9 @@ mod tests {
             stream_generation: 9,
             native_discontinuities: 0,
             native_position: None,
+            admitted_opened: None,
+            admitted_pcm_shape: None,
+            failure_observation: None,
         };
         assert_eq!(
             diagnose_failure(Ok(42), &counters, |_| panic!("success is not failure")).unwrap(),
@@ -607,6 +1082,9 @@ mod tests {
             stream_generation: 9,
             native_discontinuities: 0,
             native_position: None,
+            admitted_opened: None,
+            admitted_pcm_shape: None,
+            failure_observation: None,
         };
         let mut line = String::new();
         let error =
@@ -631,10 +1109,20 @@ mod tests {
             stream_generation: 9,
             native_discontinuities: 0,
             native_position: None,
+            admitted_opened: None,
+            admitted_pcm_shape: None,
+            failure_observation: None,
         };
         let drained = std::cell::Cell::new(false);
-        let outcome = revoke_and_drain(
+        let mut failure_observation = None;
+        let outcome = observe_signal_failure(
             Ok(42),
+            endpoint_fixture(|_| {}),
+            &mut failure_observation,
+            |_| panic!("successful signal phase must not QUERY for a later cleanup failure"),
+        );
+        let outcome = revoke_and_drain(
+            outcome,
             || anyhow::bail!("revoke failed"),
             || {
                 drained.set(true);
@@ -645,6 +1133,7 @@ mod tests {
         let error =
             diagnose_failure(outcome, &counters, |message| line = message.to_owned()).unwrap_err();
         assert!(drained.get());
+        assert!(failure_observation.is_none());
         assert_eq!(error.to_string(), "revoke failed");
         let diagnostic: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(diagnostic["error"], "revoke failed");

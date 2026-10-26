@@ -318,6 +318,9 @@ fn exercise_case(
         stream_generation: endpoint.stream_generation(),
         native_discontinuities: 0,
         native_position: None,
+        admitted_opened: None,
+        admitted_pcm_shape: None,
+        failure_observation: None,
     };
     let outcome = exercise_case_inner(
         control,
@@ -403,6 +406,7 @@ fn exercise_case_inner(
             None
         };
         let opened = control.open_gate(snapshot)?;
+        counters.admitted_opened = Some(opened.into());
         counters.stream_generation = opened.stream_generation();
         counters.driver_packet_frames = opened.packet_frames();
         let mut pcm = match control.pcm_owner(opened) {
@@ -416,6 +420,7 @@ fn exercise_case_inner(
             }
         };
         let shape = pcm.shape();
+        counters.admitted_pcm_shape = Some(shape.snapshot().into());
         counters.driver_packet_frames = shape.frames();
         counters.stream_generation = opened.stream_generation();
         let mut seen = Observation::default();
@@ -461,6 +466,15 @@ fn exercise_case_inner(
         counters.signal_frames = seen.signal_frames;
         counters.silent_frames = seen.silent_frames;
         counters.microphone_dropped_packets = progress.microphone_drops;
+        // Observe only a failed signal phase, before revocation changes its
+        // admission epoch or the native stream is stopped. Never use this later
+        // diagnostic snapshot to rebind the owner or authorize more PCM.
+        let outcome = validation::observe_signal_failure(
+            outcome,
+            opened,
+            &mut counters.failure_observation,
+            |key| Ok(control.query(key)?),
+        );
         // Cut admission first, then drain every outstanding direct request before
         // closing its native stream, including phase and revocation failures.
         let outcome = validation::revoke_and_drain(
