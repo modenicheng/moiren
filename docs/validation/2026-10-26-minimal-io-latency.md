@@ -5,7 +5,7 @@
 - Date: 2026-10-26.
 - Branch: `feat/minimal-io-latency`.
 - Source base: `ec66e85117fbf668c2def334bdb33028afd454e9`.
-- Current implementation commit: `fb71888`.
+- Current implementation commit: `df3f76c`.
 - Worktree: `D:\coding\moiren\.worktrees\minimal-io-latency`.
 - Reference graph: Input -> Bus -> Output, 48 kHz.
 - Target: measured steady p95 <= 10 ms with stable continuous waveform.
@@ -20,9 +20,12 @@
 - A passing window must have zero unexpected drops, silent frames, underruns,
   discontinuities, marker gaps, or epoch/recovery resets.
 - Current state: software transport, VAD source-neutral evidence, and the
-  production VAD integration path are implemented. The dual-machine native VAD
-  smoke has run, but its complete event/timer matrix is not passing; production
-  `live-vad`, rename smoke, and calibrated physical measurement remain pending.
+  production VAD integration path are implemented. A dual-machine production
+  `live-vad` run now reaches `VAD MMDevice -> native PCM -> VirtualPlayback ->
+  Engine -> Bus -> physical render` with nonzero output and zero runtime epoch
+  resets/recovery events. The complete event/timer matrix is still not passing;
+  boundary xrun cleanup, rename smoke, Process comparison, and calibrated
+  physical measurement remain pending.
 - At 48 kHz, 10 ms is 480 frames and 80 ms is 3,840 frames. Audible doubling
   while direct application output and Moiren output are both active is not
   evidence by itself that the delay exceeds 80 ms.
@@ -83,9 +86,17 @@ current probe executable to conserve its 64 GB disk.
 - After both failures, the new probe cleanup left no `vad*`/`moiren*` process
   and no dynamic `MOIREN\VAD_RAW` child; only the control bus and physical
   audio device remained. This validates failure cleanup, not PCM stability.
-- The target has not yet run the current branch's production `live-vad`
-  `VirtualPlayback -> Engine -> Bus -> physical Output` path, a held-client
-  rename through the app, or a calibrated physical marker measurement.
+- The current branch's production `live-vad` path was run on the target with
+  source commit `df3f76c`, binary SHA-256 recorded in the local archive, and a
+  unique stable endpoint. The 10-second run completed 998 VAD packets with
+  zero driver, carrier, stale, silence, epoch-reset, recovery, and delivery
+  bound faults; physical render observed 5,172 nonzero samples with no render
+  failure. The virtual playback boundary still reported 7 xrun events, so the
+  run is a stability diagnostic, not a qualification pass.
+- The retained report and manifest are archived at
+  `target/vad-target-archive/20261027-live-vad-df3f76c/live-vad-df3f76c-final-10s/`.
+  The guest now retains only the current release probe and the historical
+  native probe to conserve its 64 GB disk.
 
 ### Production `live-vad` startup diagnostics
 
@@ -105,6 +116,19 @@ physical latency:
   same bounded 15-second startup window used by the native VAD probes, while
   preserving the last enumeration error. It was pushed but could not be
   rerun because SSH to `192.168.111.128` began resetting during key exchange.
+
+- `0cb4d2f` prepared the native WASAPI client before opening the VAD gate and
+  started it only after Engine admission. The first production run then
+  delivered 203 submissions and 199 completions, but its report mixed the
+  cleanup epoch into the runtime snapshot.
+- `8d4be23` separated runtime and cleanup observations, kept the native source
+  alive for the control-side measurement interval, and surfaced virtual-boundary
+  xrun events in qualification quality. The target still showed one startup
+  recovery and 7 xrun events in a 2-second run.
+- `044b819`, `8bae8ce`, and `df3f76c` distinguished initial gate/stream
+  admission from recovery only until the first PCM owner exists. The final
+  10-second target run has `epoch_resets=0` and `recovery_events=0`; this is a
+  lifecycle correctness fix, not permission to ignore later stream/gate changes.
 
 The target's driver/control state and any endpoint left by the last failed
 `live-vad` attempt must be inspected after SSH recovers. Until that cleanup and
