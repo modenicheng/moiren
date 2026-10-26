@@ -94,6 +94,13 @@ impl WindowsBackend {
             .clone()
     }
 
+    /// Retain a control-side view while the backend is owned by EngineHost.
+    /// Preparation diagnostics are published by native cleanup, which can
+    /// happen after the backend has been moved into the host worker.
+    pub fn diagnostics_handle(&self) -> Arc<Mutex<Option<String>>> {
+        self.diagnostics.clone()
+    }
+
     fn prepare_inner(
         &self,
         request: PrepareRequest<'_>,

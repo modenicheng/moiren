@@ -172,6 +172,7 @@ struct NativeReport {
     vad_playback: Option<Value>,
     vad_provider: Option<Value>,
     engine: Option<Value>,
+    backend_diagnostics: Option<Value>,
     error: Option<String>,
 }
 
@@ -1144,6 +1145,7 @@ mod native {
     };
     use std::{
         str::FromStr,
+        sync::{Arc, Mutex},
         thread,
         time::{Duration, Instant},
     };
@@ -1307,11 +1309,22 @@ mod native {
         let backend = WindowsBackend::new(backend_config)
             .context("prepare Windows backend")?
             .with_virtual_provider(provider.clone());
+        let backend_diagnostics = backend.diagnostics_handle();
         let observations = backend.observations();
-        let host = EngineHost::open(HostConfig::default(), project, backend)
-            .context("open VAD EngineHost")?;
+        let host = match EngineHost::open(HostConfig::default(), project, backend) {
+            Ok(host) => host,
+            Err(error) => {
+                native_report.backend_diagnostics = diagnostics_value(&backend_diagnostics);
+                return Err(error).context("open VAD EngineHost");
+            }
+        };
         let observer = host.observer();
-        wait_engine_running(&observer)?;
+        if let Err(error) = wait_engine_running(&observer) {
+            native_report.engine = Some(engine_snapshot_value(&observer.snapshot()));
+            drop(host);
+            native_report.backend_diagnostics = diagnostics_value(&backend_diagnostics);
+            return Err(error);
+        }
         let active = observer.snapshot();
         let revision = active
             .active_revision
@@ -1362,6 +1375,7 @@ mod native {
                 .context("close VAD export gate")?;
         }
         drop(host);
+        native_report.backend_diagnostics = diagnostics_value(&backend_diagnostics);
 
         provider.set_active_revision(None);
         let final_observation = retire_vad(&provider, endpoint_id)?;
@@ -1469,10 +1483,43 @@ mod native {
             }
             ensure!(
                 Instant::now() < deadline,
-                "VAD EngineHost did not reach Running"
+                "VAD EngineHost did not reach Running; last snapshot: {:?}",
+                observer.snapshot()
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn diagnostics_value(handle: &Arc<Mutex<Option<String>>>) -> Option<Value> {
+        let raw = handle
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()?;
+        serde_json::from_str(&raw).ok().or_else(|| {
+            Some(serde_json::json!({
+                "raw": raw,
+            }))
+        })
+    }
+
+    fn engine_snapshot_value(snapshot: &moiren_engine::host::HostSnapshot) -> Value {
+        serde_json::json!({
+            "host": format!("{:?}", snapshot.host),
+            "execution": format!("{:?}", snapshot.execution),
+            "desired_revision": snapshot.desired_revision,
+            "active_revision": snapshot.active_revision,
+            "plan_revision": snapshot.plan_revision,
+            "owner_generation": snapshot.owner_generation,
+            "resource_generation": snapshot.resource_generation,
+            "timeline": snapshot.timeline.map(|timeline| serde_json::json!({
+                "epoch": timeline.epoch,
+                "revision": timeline.revision,
+                "frame": timeline.frame,
+            })),
+            "update": format!("{:?}", snapshot.update),
+            "fault": format!("{:?}", snapshot.fault),
+            "cleanup_error": format!("{:?}", snapshot.cleanup_error),
+        })
     }
 
     fn virtual_buffer(options: &LiveOptions) -> Result<VirtualBufferOptions> {
