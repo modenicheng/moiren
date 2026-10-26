@@ -1367,7 +1367,33 @@ mod native {
         // The control side owns the interval and samples while the source still
         // runs. Native client retirement advances stream generations and must
         // not overwrite these running observations with cleanup counters.
-        thread::sleep(Duration::from_secs(options.seconds));
+        // Retain a bounded startup trace to distinguish initial admission from
+        // later starvation. Sampling and serialization stay on this control
+        // thread; the final runtime counters still cover the entire interval.
+        const STARTUP_SAMPLE_LIMIT: usize = 256;
+        const STARTUP_SAMPLE_INTERVAL: Duration = Duration::from_millis(10);
+        let measurement_started = Instant::now();
+        let duration = Duration::from_secs(options.seconds);
+        let mut startup_samples = Vec::with_capacity(STARTUP_SAMPLE_LIMIT);
+        loop {
+            let elapsed = measurement_started.elapsed();
+            if elapsed >= duration {
+                break;
+            }
+            if startup_samples.len() < STARTUP_SAMPLE_LIMIT {
+                let runtime = provider
+                    .export_observations()
+                    .into_iter()
+                    .find(|view| view.endpoint_id == endpoint_id);
+                let native = observations.snapshot();
+                startup_samples.push(serde_json::json!({
+                    "elapsed_seconds": elapsed.as_secs_f64(),
+                    "provider": runtime.as_ref().map(vad_observation_json),
+                    "boundary_probes": native.map(|snapshot| snapshot.boundary_probes),
+                }));
+            }
+            thread::sleep(STARTUP_SAMPLE_INTERVAL.min(duration.saturating_sub(elapsed)));
+        }
         let engine_after = observer.snapshot();
         let native_observations = observations.snapshot();
         let running_observation = provider
@@ -1386,6 +1412,12 @@ mod native {
             })),
             "observations": native_observations,
             "playback_info": playback_info,
+            "startup_trace": {
+                "sample_limit": STARTUP_SAMPLE_LIMIT,
+                "sample_interval_ms": STARTUP_SAMPLE_INTERVAL.as_millis(),
+                "scope": "bounded startup diagnostics; final counters cover the full run",
+                "samples": startup_samples,
+            },
         }));
         let playback_report = playback.stop().context("stop VAD native playback")?;
         native_report.vad_playback = Some(serde_json::to_value(playback_report)?);
