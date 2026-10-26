@@ -255,6 +255,20 @@
       "url": "https://api.iconify.design/tabler/square.svg",
       "license": "MIT",
       "sha256": "c202d0cf2be4746e2fcab2af239e146fd91ff711c150e09677de837fa19fd268"
+    },
+    {
+      "file": "cursor-arrow.svg",
+      "icon": "tabler:pointer-2",
+      "url": "https://api.iconify.design/tabler/pointer-2.svg",
+      "license": "MIT",
+      "sha256": "0b546e8fdbf500b8be8651e511983198fadfd075830a79d73c83f1e278daddf8"
+    },
+    {
+      "file": "minus.svg",
+      "icon": "tabler:minus",
+      "url": "https://api.iconify.design/tabler/minus.svg",
+      "license": "MIT",
+      "sha256": "bc58412a29619dbe4ac736b2eae0e7ddc3de4f54a2fb65ae9fcf36e688702e2f"
     }
   ]
 }

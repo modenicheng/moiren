@@ -566,6 +566,12 @@ _version: 2
 "Fit":
   en: Fit
   zh-CN: 适配
+"Zoom in":
+  en: Zoom in
+  zh-CN: 放大
+"Zoom out":
+  en: Zoom out
+  zh-CN: 缩小
 "No matching nodes":
   en: No matching nodes
   zh-CN: 没有匹配的节点
