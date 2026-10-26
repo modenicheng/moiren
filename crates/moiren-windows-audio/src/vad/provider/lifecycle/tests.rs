@@ -40,6 +40,25 @@ fn snapshot_native(
     generation: u64,
     (stream_state, policy_prepared, audio_ready): (StreamState, bool, bool),
 ) -> EndpointSnapshot {
+    snapshot_native_with_status(
+        state,
+        stream,
+        gate,
+        open,
+        generation,
+        (stream_state, policy_prepared, audio_ready),
+        0,
+    )
+}
+fn snapshot_native_with_status(
+    state: PdoState,
+    stream: u64,
+    gate: u64,
+    open: bool,
+    generation: u64,
+    (stream_state, policy_prepared, audio_ready): (StreamState, bool, bool),
+    last_status: u32,
+) -> EndpointSnapshot {
     fn put32(b: &mut [u8], o: usize, v: u32) {
         b[o..o + 4].copy_from_slice(&v.to_le_bytes());
     }
@@ -90,6 +109,7 @@ fn snapshot_native(
                 480
             },
         ),
+        (96, last_status),
         (100, stream_state as u32),
     ] {
         put32(&mut bytes, o, v);
@@ -841,6 +861,69 @@ fn failed_observation_revokes_session_and_removal_retries_only_with_drain() {
     assert_eq!(
         lifecycle.poll()[0].snapshot.unwrap().state(),
         PdoState::Removing
+    );
+}
+
+#[test]
+fn query_failure_marks_cached_diagnostics_without_relabeling_preparation_refusal() {
+    let mut lifecycle = Lifecycle::new(Fake::default());
+    lifecycle.create(spec()).unwrap();
+    let admission = Arc::new(Admission::new());
+    let session = prepared(&mut lifecycle, admission.clone());
+    let ticket = admission.set(Some(9));
+    lifecycle
+        .gate(id(), [11, 7, 11, 3, 5], true, 9, ticket, &admission)
+        .unwrap();
+    session.telemetry.submission_attempt(128, 64);
+    session.telemetry.submission_accepted();
+    let previous = lifecycle.poll().remove(0);
+    assert_eq!(
+        previous.diagnostic_provenance,
+        VadExportDiagnosticProvenance::Fresh
+    );
+    assert_eq!(previous.telemetry.unwrap().submission_attempts, 1);
+    assert!(session.admitted());
+
+    // A drained worker leaves exactly the summary retained by the real poll.
+    session.drained.store(true, Ordering::Release);
+    lifecycle.control.fail_query = true;
+    let failed = lifecycle.poll().remove(0);
+    assert_eq!(
+        failed.diagnostic_provenance,
+        VadExportDiagnosticProvenance::CachedAfterQueryFailure
+    );
+    assert_eq!(failed.snapshot, previous.snapshot);
+    assert_eq!(failed.telemetry, previous.telemetry);
+    assert!(failed.error.is_some());
+    assert!(!session.admitted());
+    let observation = VadExportObservation::from(failed);
+    assert_eq!(
+        observation.diagnostic_provenance,
+        VadExportDiagnosticProvenance::CachedAfterQueryFailure
+    );
+    assert_eq!(observation.telemetry, previous.telemetry);
+
+    lifecycle.control.fail_query = false;
+    lifecycle.control.current = snapshot_native_with_status(
+        PdoState::Present,
+        3,
+        5,
+        false,
+        11,
+        (StreamState::Closed, true, false),
+        0xc000_000d,
+    );
+    let fresh = lifecycle.poll().remove(0);
+    assert_eq!(
+        fresh.diagnostic_provenance,
+        VadExportDiagnosticProvenance::Fresh
+    );
+    assert_eq!(fresh.snapshot.unwrap().last_status(), 0xc000_000d);
+    assert!(fresh.error.is_some());
+    assert_eq!(fresh.telemetry, previous.telemetry);
+    assert_eq!(
+        VadExportObservation::from(fresh).diagnostic_provenance,
+        VadExportDiagnosticProvenance::Fresh
     );
 }
 

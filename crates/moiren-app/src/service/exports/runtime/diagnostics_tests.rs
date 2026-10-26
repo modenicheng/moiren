@@ -1,6 +1,7 @@
 use super::*;
 use moiren_windows_audio::vad::{
-    Channels, Intent, PdoState, StreamState, VadExportObservation, VadPcmTelemetrySnapshot,
+    Channels, Intent, PdoState, StreamState, VadExportDiagnosticProvenance, VadExportObservation,
+    VadPcmTelemetrySnapshot,
 };
 
 fn telemetry() -> VadPcmTelemetrySnapshot {
@@ -43,6 +44,7 @@ fn provider_view(intent: &ExportIntent) -> VadExportObservation {
         transport_prepared: true,
         telemetry: Some(telemetry()),
         error: None,
+        diagnostic_provenance: VadExportDiagnosticProvenance::Fresh,
     }
 }
 
@@ -195,6 +197,134 @@ fn endpoint_error_survives_present_status_without_granting_readiness() {
         .find(|s| s.intent.endpoint_id == other.endpoint_id)
         .unwrap();
     assert_eq!(other_status.diagnostics.as_ref().unwrap().error, None);
+}
+
+#[test]
+fn cached_query_failure_clears_old_measurements_keeps_error_and_preserves_authority_boundaries() {
+    let (mut graph, intent) = runtime_graph();
+    let mut healthy = intent.clone();
+    healthy.endpoint_id = VirtualEndpointId::from_bytes([0x73; 16]);
+    healthy.name = "Healthy endpoint".into();
+    healthy.binding = Some(graph.graph.create_node(NodeKind::Source, 2).unwrap());
+    graph.exports.push(healthy.clone());
+    let active = [intent.clone(), healthy.clone()];
+    let mut runtime = Runtime {
+        adapter: Some(Arc::new(FakeAdapter::default())),
+        ..Default::default()
+    };
+    let mut service = ExportService::default();
+    service.set_available(true);
+    assert!(
+        runtime
+            .complete(
+                &mut service,
+                Ok(Batch {
+                    observations: vec![
+                        NativeObservation::from(provider_view(&intent)),
+                        NativeObservation::from(provider_view(&healthy)),
+                    ],
+                    errors: vec![],
+                })
+            )
+            .is_empty()
+    );
+    runtime.project(
+        &mut service,
+        &graph,
+        &active,
+        Some([1, 1, 1, graph.candidate_revision, 1]),
+    );
+    assert!(runtime.lifecycle_ready_for(&service, &active));
+    assert!(runtime.ready_for(&service, &active));
+    let accepted = service
+        .statuses(&graph)
+        .into_iter()
+        .find(|status| status.intent.endpoint_id == intent.endpoint_id)
+        .unwrap();
+    let old = accepted.diagnostics.unwrap();
+    assert_eq!(old.telemetry, Some(telemetry()));
+    assert_eq!(old.native_stamp, Some([1, 7, 1, 0, 5]));
+
+    // The real provider returns these retained values inside Ok(Batch), not an
+    // outer worker error. Its lifecycle state/stamp are still needed for control.
+    let mut query_failed_view = provider_view(&intent);
+    assert_eq!(query_failed_view.telemetry, old.telemetry);
+    query_failed_view.error = Some("QUERY timeout".into());
+    query_failed_view.diagnostic_provenance =
+        VadExportDiagnosticProvenance::CachedAfterQueryFailure;
+    let query_failed = NativeObservation::from(query_failed_view);
+    assert_eq!(query_failed.snapshot, old.native_stamp);
+    let mut fresh_healthy = provider_view(&healthy);
+    fresh_healthy.telemetry.as_mut().unwrap().completed_packets += 1;
+    let errors = runtime.complete(
+        &mut service,
+        Ok(Batch {
+            observations: vec![query_failed, NativeObservation::from(fresh_healthy.clone())],
+            errors: vec![],
+        }),
+    );
+    assert_eq!(errors, ["QUERY timeout"]);
+    runtime.project(
+        &mut service,
+        &graph,
+        &active,
+        Some([1, 1, 1, graph.candidate_revision, 1]),
+    );
+
+    let statuses = service.statuses(&graph);
+    let failed_status = statuses
+        .iter()
+        .find(|status| status.intent.endpoint_id == intent.endpoint_id)
+        .unwrap();
+    let diagnostics = failed_status.diagnostics.as_ref().unwrap();
+    assert_eq!(diagnostics.native_stamp, None);
+    assert_eq!(diagnostics.telemetry, None);
+    assert_eq!(diagnostics.error.as_deref(), Some("QUERY timeout"));
+    assert!(diagnostics.generation > old.generation);
+    assert!(!runtime.lifecycle_ready_for(&service, std::slice::from_ref(&intent)));
+    assert!(!runtime.ready_for(&service, std::slice::from_ref(&intent)));
+    assert_eq!(failed_status.active_revision, None);
+    assert!(!failed_status.gate_open);
+    assert_eq!(
+        runtime.stamps[&intent.endpoint_id],
+        old.native_stamp.unwrap()
+    );
+
+    let healthy_status = statuses
+        .iter()
+        .find(|status| status.intent.endpoint_id == healthy.endpoint_id)
+        .unwrap();
+    let healthy_diagnostics = healthy_status.diagnostics.as_ref().unwrap();
+    assert_eq!(healthy_diagnostics.telemetry, fresh_healthy.telemetry);
+    assert_eq!(healthy_diagnostics.native_stamp, Some([1, 7, 1, 0, 5]));
+    assert_eq!(healthy_diagnostics.error, None);
+    assert!(runtime.lifecycle_ready_for(&service, std::slice::from_ref(&healthy)));
+    assert!(runtime.ready_for(&service, std::slice::from_ref(&healthy)));
+    assert_eq!(healthy_status.active_revision, graph.active_revision);
+    let work = runtime.work(&service, &graph, false).unwrap();
+    assert_eq!(work.actions.len(), 1);
+    assert!(matches!(work.actions[0].action,
+        ExportAction::SetGate { endpoint_id, open: true } if endpoint_id == healthy.endpoint_id
+    ));
+    assert_eq!(work.actions[0].expected, healthy_diagnostics.native_stamp);
+
+    // A successful preparation-refusal observation is fresh evidence even
+    // when its opaque error text is identical to the previous QUERY error.
+    let mut refusal = provider_view(&intent);
+    refusal.error = Some("QUERY timeout".into());
+    assert_eq!(
+        complete_native(&mut runtime, &mut service, NativeObservation::from(refusal)),
+        ["QUERY timeout"]
+    );
+    let recovered = service
+        .statuses(&graph)
+        .into_iter()
+        .find(|status| status.intent.endpoint_id == intent.endpoint_id)
+        .unwrap();
+    let recovered = recovered.diagnostics.unwrap();
+    assert_eq!(recovered.telemetry, old.telemetry);
+    assert_eq!(recovered.native_stamp, old.native_stamp);
+    assert_eq!(recovered.error.as_deref(), Some("QUERY timeout"));
 }
 
 #[test]

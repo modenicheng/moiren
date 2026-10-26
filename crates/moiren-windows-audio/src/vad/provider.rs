@@ -43,6 +43,14 @@ use lifecycle::{Admission, ExportSpec, ExportView, Lifecycle};
 use telemetry::PcmTelemetry;
 pub use telemetry::VadPcmTelemetrySnapshot;
 
+/// Distinguishes current provider measurements from values retained after a
+/// failed QUERY. The app service uses this only to avoid relabeling evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VadExportDiagnosticProvenance {
+    Fresh,
+    CachedAfterQueryFailure,
+}
+
 /// Control-plane state for one VAD export.
 ///
 /// This is a detached snapshot: callers may retain it without holding the
@@ -59,6 +67,7 @@ pub struct VadExportObservation {
     pub transport_prepared: bool,
     pub telemetry: Option<VadPcmTelemetrySnapshot>,
     pub error: Option<String>,
+    pub diagnostic_provenance: VadExportDiagnosticProvenance,
 }
 
 impl From<ExportView> for VadExportObservation {
@@ -70,6 +79,7 @@ impl From<ExportView> for VadExportObservation {
             transport_prepared,
             telemetry,
             error,
+            diagnostic_provenance,
             ..
         } = view;
         Self {
@@ -83,6 +93,7 @@ impl From<ExportView> for VadExportObservation {
             transport_prepared,
             telemetry,
             error,
+            diagnostic_provenance,
         }
     }
 }
@@ -1087,6 +1098,7 @@ mod tests {
                 submission_attempts: 3,
                 ..VadPcmTelemetrySnapshot::default()
             }),
+            diagnostic_provenance: VadExportDiagnosticProvenance::Fresh,
         });
 
         assert_eq!(observation.endpoint_id, endpoint_id);

@@ -173,6 +173,9 @@ impl Adapter for FakeAdapter {
                 can_open: !self.transport_unavailable.load(Ordering::Acquire),
                 #[cfg(windows)]
                 diagnostics: None,
+                #[cfg(windows)]
+                diagnostic_provenance:
+                    moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
                 error: None,
             })
             .collect();
@@ -460,6 +463,9 @@ fn idle_native_mapping_plans_gate_open_only_after_engine_confirmation() {
                         can_open: native_can_open(true, Some(snapshot)),
                         #[cfg(windows)]
                         diagnostics: None,
+                        #[cfg(windows)]
+                        diagnostic_provenance:
+                            moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
                         error: None,
                     }],
                     errors: vec![],
@@ -518,6 +524,9 @@ fn unhealthy_native_observation_cannot_confirm_or_prepare_and_plans_gate_close()
                 can_open: true,
                 #[cfg(windows)]
                 diagnostics: None,
+                #[cfg(windows)]
+                diagnostic_provenance:
+                    moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
                 error: Some("QUERY timed out; snapshot is last known".into()),
             }],
             errors: vec![],
@@ -566,6 +575,9 @@ fn lifecycle_readiness_does_not_require_transport_admission() {
                 can_open: false,
                 #[cfg(windows)]
                 diagnostics: None,
+                #[cfg(windows)]
+                diagnostic_provenance:
+                    moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
                 error: None,
             }],
             errors: vec![],
@@ -611,6 +623,9 @@ fn confirmed_absence_releases_app_tracking_across_documents() {
                     can_open: false,
                     #[cfg(windows)]
                     diagnostics: None,
+                    #[cfg(windows)]
+                    diagnostic_provenance:
+                        moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
                     error: None,
                 }],
                 errors: vec![],
@@ -637,6 +652,9 @@ mod native_stamp {
                 can_open: true,
                 #[cfg(windows)]
                 diagnostics: None,
+                #[cfg(windows)]
+                diagnostic_provenance:
+                    moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
                 error: None,
             }],
             errors: vec![],

@@ -34,9 +34,9 @@ pub use pcm::{PcmCompletion, PcmOwner, ResidualPcm};
 pub use pcm_bridge::{PcmBoundaryError, PcmMicrophoneBridge, PcmPlaybackBridge};
 pub use pcm_slots::PcmTicket;
 #[cfg(windows)]
-pub use provider::{VadExportObservation, VadPcmTelemetrySnapshot};
-#[cfg(windows)]
 pub use provider::WindowsVadProvider;
+#[cfg(windows)]
+pub use provider::{VadExportDiagnosticProvenance, VadExportObservation, VadPcmTelemetrySnapshot};
 
 pub use protocol::{
     ABI_VERSION, CAP_AUDIO, CAP_CREATE_DEFERRED, CAP_PCM, CAP_POLICY_STAGED, CAP_RAW_PDO,

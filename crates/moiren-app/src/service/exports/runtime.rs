@@ -34,6 +34,8 @@ pub(crate) struct NativeObservation {
     pub error: Option<String>,
     #[cfg(windows)]
     pub diagnostics: Option<ExportDiagnostics>,
+    #[cfg(windows)]
+    pub diagnostic_provenance: moiren_windows_audio::vad::VadExportDiagnosticProvenance,
 }
 pub(crate) struct Batch {
     pub observations: Vec<NativeObservation>,
@@ -203,7 +205,14 @@ impl Runtime {
             let diagnostics = native.diagnostics.map(|mut diagnostics| {
                 // Evidence belongs to this lifecycle result, never to identity
                 // or generation values supplied in a detached diagnostic DTO.
-                diagnostics.native_stamp = native.snapshot;
+                let fresh = native.diagnostic_provenance
+                    == moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh;
+                diagnostics.native_stamp = native.snapshot.filter(|_| fresh);
+                if !fresh {
+                    // QUERY failure retains lifecycle/control state, but the
+                    // cached measurement must not acquire this poll's sequence.
+                    diagnostics.telemetry = None;
+                }
                 diagnostics.error = native.error.clone();
                 diagnostics
             });
@@ -519,6 +528,7 @@ impl From<moiren_windows_audio::vad::VadExportObservation> for NativeObservation
                 error: view.error.clone(),
             }),
             error: view.error,
+            diagnostic_provenance: view.diagnostic_provenance,
         }
     }
 }
