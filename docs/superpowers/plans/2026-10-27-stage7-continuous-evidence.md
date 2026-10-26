@@ -156,3 +156,37 @@ tap/sink loss counters are zero, but one native discontinuity keeps the result
 failed/unqualified. Before the deadline correction, an eight-byte-cap smoke
 also retained zero-byte waveform/metadata and stopped native in 0.0201606 s.
 These runs do not collect microphone input or change defaults/VM files.
+
+### 2026-10-27 independent source and bounded target smoke
+
+`45268bd` removes the measurement-analysis-to-source schedule dependency.
+An explicit bounded source plan now owns marker positions on its own frame
+clock; exact input bytes are retained. Native preroll is silent, and source
+origin/counts commit only after successful ReleaseBuffer. The stream remains
+alive on silence after the schedule is submitted. Independent pinned review
+passes spec/quality; all 85 example tests, strict example/test Clippy, scoped
+formatting and host release build pass. This is source submission evidence,
+not a recorder clock mapping or concurrent measurement collection.
+
+The three-second VM smoke submits all 96,000 planned source frames, with
+480 native preroll frames, origin submission frame 480 and 144,960 total
+native submitted frames. Native error is null and event timeouts are zero;
+the provider has zero reported dropped/silent/stale packets and recovery/epoch
+resets. Seven graph-boundary xruns still fail stability. Engine confirms Closed
+and the dynamic export confirms Removed. Exit 1 correctly retains unqualified
+status; no measurement PCM or calibration was collected.
+
+The 3,570,176-byte host-built binary has SHA-256
+`32e6540f17f06c3f6ce11e826770b4db9fbea84cde24beccca674c8d244d3519`.
+Seven payloads plus manifest (518,194 bytes) are retained at
+`target/vad-target-archive/20261027-source-45268bd-3s/source-45268bd-3s`.
+Host length/hash checks, exact source-plan byte comparison and a second guest
+manifest/file check preceded deletion of the run, temporary binary, plan and
+runner. Guest again holds only the current 3,359,744-byte diagnostic probe,
+zero test processes/dynamic endpoints and 30.11 GiB free. No driver/system
+files were removed.
+
+Next implement the concrete opt-in VAD source, production graph and independent
+MeasurementSession collection in one run, including source health and broadcast
+stop before joins. Controlled load, reference wiring, physical Input graph,
+calibration and long qualification remain separate unfinished gates.

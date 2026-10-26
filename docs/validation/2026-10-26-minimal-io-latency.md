@@ -671,6 +671,35 @@ zero-byte waveform/metadata and stopping native in 0.0201606 s. No microphone,
 defaults or VM changes. Source/graph/load supervision, physical calibration,
 stable candidates and qualification repetitions are still open.
 
+### 2026-10-27 independently scheduled VAD source
+
+Source plan `45268bd` has independent spec/quality review PASS, 85 example
+tests PASS, strict example/test Clippy, scoped format and host release build
+PASS. Source marker positions no longer come from preloaded measurement
+analysis. Exact source JSON is retained; silent native preroll and acknowledged
+post-Start source submissions have separate checked counters. These facts do
+not establish played/captured marker arrival or map source to recorder clocks.
+
+A bounded three-second target smoke confirms 96,000 source frames submitted,
+480 silent native preroll frames, origin at native submission frame 480 and
+144,960 total submitted native frames. Native error is null, event timeouts
+zero and provider dropped/silent/stale/recovery/epoch counters zero. The
+graph boundary still records seven xruns: quality FAIL. Engine closes and the
+export reaches Removed. Exit 1 and unqualified remain correct; no independent
+measurement PCM, calibration or physical latency was collected.
+
+Host archive
+`target/vad-target-archive/20261027-source-45268bd-3s/source-45268bd-3s`
+contains seven payloads and manifest, 518,194 bytes total. Every length/SHA-256
+and exact admitted source bytes were checked on host and rechecked on guest
+before deleting guest evidence, temporary 3,570,176-byte probe, plan and runner.
+Probe SHA-256:
+`32e6540f17f06c3f6ce11e826770b4db9fbea84cde24beccca674c8d244d3519`.
+Only the current 3,359,744-byte diagnostic probe remains on guest, no test
+processes/dynamic endpoints and 30.11 GiB free. No driver/system deletion.
+Concrete source/graph/independent capture collection is the next implementation;
+controlled load and physical qualification are still unfinished.
+
 1. Diagnose and fix the target native `0x8007051A` revision mismatch. Repeat
    event and timer playback/microphone matrices until every case passes with
    zero drops, unexpected silence, stale packets, discontinuities, and epoch
