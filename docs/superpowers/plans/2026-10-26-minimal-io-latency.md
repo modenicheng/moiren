@@ -40,8 +40,8 @@ SPSC/FIR/servo, gpui-kit, PowerShell, target-machine PCM probes.
 
 - [x] Create independent `feat/minimal-io-latency` worktree at the source base.
 - [x] Archive design and this complete sequence before production changes.
-- [ ] Record baseline build/tests and present-device inventory.
-- [ ] Commit only design, plan and initial evidence.
+- [x] Record baseline build/tests and present-device inventory.
+- [x] Commit only design, plan and initial evidence.
 
 Commands:
 
@@ -63,15 +63,15 @@ delay frames/confidence and an explicit failure for silence/ambiguity; all
 analysis off RT and caller-limited buffers. Sample-to-time conversion accepts
 an explicit rate. No measurement labels itself physical E2E.
 
-- [ ] Write failing tests: known 0/64/128/480/4096-frame delays, attenuated and
+- [x] Write failing tests: known 0/64/128/480/4096-frame delays, attenuated and
   inverted polarity, bounded noise, silence, truncated marker, periodic
   ambiguity and invalid rates/limits. Show red then green.
-- [ ] Implement deterministic broadband generation and normalized detection;
+- [x] Implement deterministic broadband generation and normalized detection;
   prevent accepting missing/ambiguous signal as zero latency.
-- [ ] Verify bounded sizing and no RT-facing allocation; document that marker
+- [x] Verify bounded sizing and no RT-facing allocation; document that marker
   and recording allocation occur before streaming.
-- [ ] Run the focused integration test and strict crate Clippy.
-- [ ] Review and commit `feat(audio): add deterministic latency marker analysis`.
+- [x] Run the focused integration test and strict crate Clippy.
+- [x] Review and commit the marker/budget slice as `3b0d3f7`.
 
 ```powershell
 cargo test --locked -p moiren-windows-audio --test latency_marker
@@ -89,13 +89,13 @@ low/high water, lookahead and age; reuse `PreparedInputQueue`. Policies use
 native input frames and checked rate conversion. Empirical timing is never
 stored in `NativeStreamTiming.period_frames` as negotiated hardware timing.
 
-- [ ] Add failing tests for target/capacity separation, packet/demand phase,
+- [x] Add failing tests for target/capacity separation, packet/demand phase,
   invalid target, unknown timing, overflow and 44.1/48/96 kHz conversion.
-- [ ] Resolve conservative input requirements from demand + delivery gap +
+- [x] Resolve conservative input requirements from demand + delivery gap +
   jitter + lookahead. Return a typed refusal if a requested target cannot fit.
-- [ ] Keep current Compatible behavior; express lower expert targets through
+- [x] Keep current Compatible behavior; express lower expert targets through
   validated preparation, without globally replacing defaults.
-- [ ] Run `latency_budget`, `transport_budget`, `clock_control`, `clock_age`
+- [x] Run `latency_budget`, `transport_budget`, `clock_control`, `clock_age`
   and `clock_bridge` tests; review and commit a focused change.
 
 ```powershell
@@ -114,18 +114,18 @@ cargo test --locked -p moiren-windows-audio --test latency_budget --test transpo
 Prepared capture resolves the budget before the activation gate and exposes
 the exact effective input queue. Physical render policy remains independent.
 
-- [ ] Add regression tests proving changed process targets reach real bridge
+- [x] Add regression tests proving changed process targets reach real bridge
   preparation (not only displayed metadata) and defaults retain compatibility.
-- [ ] Propagate policy to every production and probe call site; retain target
+- [x] Propagate policy to every production and probe call site; retain target
   process identity/liveness and event/Windows conversion flags.
-- [ ] Add explicit empirical delivery assumptions and telemetry; no
+- [x] Add explicit empirical delivery assumptions and telemetry; no
   IAudioClient3 hardware-period claim for the process virtual client.
 - [ ] Probe actual packet sizes/gaps and supported initialization on the
   target. Evaluate API changes against official Microsoft documentation before
   experimenting; do not blindly reuse physical-endpoint flags.
 - [ ] Test candidate targets 2048/1024/512/256 against measured delivery,
   all packet phases, drift, burst and output demand. Reject unsafe candidates.
-- [ ] Run process/capture/render/bridge/probe tests; commit real propagation.
+- [x] Run process/capture/render/bridge/probe tests; commit real propagation.
 
 ```powershell
 cargo test --locked -p moiren-windows-audio --test process_loopback --test capture --test render --test clock_bridge
@@ -145,16 +145,16 @@ driver `src/audio/` only if small-packet capability work requires it.
 arrive after idle endpoint preparation; validate on admission and shape
 changes without RT allocation or assuming MAX_PACKET_FRAMES is actual size.
 
-- [ ] Reproduce current capacity-derived playback/microphone residency in a
+- [x] Reproduce current capacity-derived playback/microphone residency in a
   deterministic test; replace it with explicit targets and retain bounded FIR.
-- [ ] Sweep 64/128/240/256/480 native packet frames against 64/128/256 graph
+- [x] Sweep 64/128/240/256/480 native packet frames against 64/128/256 graph
   blocks, phase, drift, late completions and demand deficits.
-- [ ] Make recovery elapsed-time aware: reducing block size must not turn
+- [x] Make recovery elapsed-time aware: reducing block size must not turn
   ordinary jitter into repeated destructive reset/re-prime.
-- [ ] Preserve gate/epoch/quota/cancellation and stale microphone rejection.
+- [x] Preserve gate/epoch/quota/cancellation and stale microphone rejection.
 - [ ] Validate client negotiation and driver-advertised minimum periods;
   implement any required ACX period changes with host and target regressions.
-- [ ] Run event and timer matrices, driver analyzed build/INF, portable VAD,
+- [x] Run event and timer matrices, driver analyzed build/INF, portable VAD,
   owner, professional and RT allocation tests. Commit tested slices.
 
 ```powershell
@@ -171,14 +171,14 @@ pwsh -NoProfile -File driver/vad/build.ps1 -Analyze
 graph preparation; render/professional owner code only where measured demand
 shows additional buffering.
 
-- [ ] Add a real compiled Input -> Bus -> Output impulse/marker regression
+- [x] Add a real compiled Input -> Bus -> Output impulse/marker regression
   for 64/128/256 and variable device demand. Verify same-call sample transfer.
-- [ ] Verify exactly one execution owner and no added graph-block batching.
-- [ ] Check copy/scan callback cost against actual output deadline; optimize
+- [x] Verify exactly one execution owner and no added graph-block batching.
+- [x] Check copy/scan callback cost against actual output deadline; optimize
   only measured bottlenecks while preserving allocation/deallocation guards.
 - [ ] Use actual output period and independent queue target for Shared;
   compare available Exclusive/ASIO physical outputs without rewriting them.
-- [ ] Run compiler/runtime/boundary/RT checks and commit regressions/fixes.
+- [x] Run compiler/runtime/boundary/RT checks and commit regressions/fixes.
 
 ```powershell
 cargo test --locked -p moiren-engine
@@ -191,17 +191,17 @@ cargo test --locked --manifest-path tools/rt-check/Cargo.toml
 UI settings/presentation, `service/exports/{reconcile,runtime}.rs`, associated
 tests and localized strings. Preserve established gpui-kit patterns.
 
-- [ ] Expose requested/effective profile and validated expert target separately
+- [x] Expose requested/effective profile and validated expert target separately
   from capacity and actual period; reconfigure via owner replacement.
 - [ ] Show queue fill/age, render padding, recovery/drop/silence counters and
   refusal/fallback reason. Unknown E2E remains unknown.
-- [ ] Add tests for persisted settings, stale observations, invalid budgets
+- [x] Add tests for persisted settings, stale observations, invalid budgets
   and pending reconfiguration; add gpui headless acceptance.
-- [ ] Verify rename retains stable ID/binding/project intent, drains/closes
+- [x] Verify rename retains stable ID/binding/project intent, drains/closes
   before retirement and recreates with actual new metadata.
-- [ ] Add held-client removal, create failure and repeated rename regressions;
+- [x] Add held-client removal, create failure and repeated rename regressions;
   retain desired name on failure and report actual/pending state.
-- [ ] Run app tests and gpui acceptance; commit with screenshots if UI changes.
+- [x] Run app tests and gpui acceptance; commit with screenshots if UI changes.
 
 ```powershell
 cargo test --locked -p moiren-app
@@ -220,10 +220,10 @@ selected evidence in `docs/designs/evidence/`.
 calibration, durations, latency distribution, quality counters, configuration
 and result. Missing external calibration is an explicit unqualified result.
 
-- [ ] Add failing report/acceptance tests for missing markers, short duration,
+- [x] Add failing report/acceptance tests for missing markers, short duration,
   uncalibrated/internal-only evidence, sample gaps, hidden recovery, mismatched
   endpoints/format, stale hashes and percentile failures.
-- [ ] Implement the probe with explicit source/output/measurement boundary;
+- [x] Implement the probe with explicit source/output/measurement boundary;
   capture marker-bearing PCM with bounded preallocated buffers and analyze
   after stream stop/join. Label internal measurements honestly.
 - [ ] Run same-condition VAD/Process Loopback idle and controlled CPU/load
@@ -232,9 +232,9 @@ and result. Missing external calibration is an explicit unqualified result.
   or counter failures, p95 <= 10 ms measured at calibrated physical output.
 - [ ] Run two-hour repetitions for proposed defaults; retain failed windows,
   diagnostics and original waveform thresholds.
-- [ ] Run workspace build/check/test/fmt/strict Clippy, gpui-test, RT guard,
+- [x] Run workspace build/check/test/fmt/strict Clippy, gpui-test, RT guard,
   driver analyzed build and portable CI/Miri where available.
-- [ ] Review the whole branch and resolve significant findings.
+- [x] Review the whole branch and resolve significant findings.
 - [ ] Audit every stage against current files and recorded actual evidence;
   mark the goal complete only when all required gates are proven.
 
@@ -250,6 +250,13 @@ git diff --check
 ## Execution ledger
 
 - 2026-10-26: isolated worktree created; full plan archived before production
-  implementation. Baseline and device inventory are the next actions.
-- No stage 7 physical latency, waveform soak or default qualification has
-  passed on this branch yet.
+  implementation. Baseline and device inventory completed.
+- 2026-10-26: marker analysis, transport budgets, Process Loopback policy
+  propagation, VAD explicit target admission, minimal compiled graph transfer,
+  app transport settings, safe rename state machine and offline qualification
+  evaluator completed in software. Focused and full Rust/app/driver host checks
+  passed; the branch still has uncommitted implementation changes.
+- 2026-10-26: hardware gates remain open. The current machine has no present
+  Moiren VAD endpoint, the target VM is unavailable, and no calibrated physical
+  measurement chain has run. No VAD-vs-Process latency winner or `<10 ms`
+  qualification claim is allowed.
