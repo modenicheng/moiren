@@ -190,6 +190,27 @@ pub(super) fn revoke_and_drain<T>(
     Ok(value)
 }
 
+pub(super) fn cleanup_all<T: Copy>(
+    items: &[T],
+    mut cleanup: impl FnMut(T) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let mut errors = Vec::new();
+    for &item in items {
+        if let Err(error) = cleanup(item) {
+            errors.push(format!("{error:#}"));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "{} cleanup operation(s) failed: {}",
+            errors.len(),
+            errors.join("; ")
+        )
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub(super) struct FailureCounters {
     pub mode: crate::NativeMode,
@@ -414,6 +435,25 @@ mod tests {
             revoke_and_drain(Ok(42), || Ok(()), || Err(anyhow::anyhow!("drain failed"))).is_err()
         );
         assert_eq!(revoke_and_drain(Ok(42), || Ok(()), || Ok(())).unwrap(), 42);
+    }
+
+    #[test]
+    fn cleanup_runs_every_item_and_reports_all_failures() {
+        let actions = std::cell::RefCell::new(Vec::new());
+        let result = cleanup_all(&[1_u8, 2, 3], |item| {
+            actions.borrow_mut().push(item);
+            match item {
+                1 => Err(anyhow::anyhow!("first cleanup failed")),
+                2 => Ok(()),
+                3 => Err(anyhow::anyhow!("last cleanup failed")),
+                _ => unreachable!(),
+            }
+        });
+        assert_eq!(*actions.borrow(), [1, 2, 3]);
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("2 cleanup operation(s) failed"));
+        assert!(error.contains("first cleanup failed"));
+        assert!(error.contains("last cleanup failed"));
     }
 
     #[test]

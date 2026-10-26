@@ -118,80 +118,83 @@ pub(super) fn exercise(seconds: u32, mode: NativeMode) -> anyhow::Result<()> {
     let mut control = ControlClient::connect(&interfaces[0])?;
     control.capabilities().require_pcm()?;
     let mut endpoints = Vec::with_capacity(4);
-    for intent in [Intent::Playback, Intent::Microphone] {
-        for channels in [Channels::Mono, Channels::Stereo] {
-            let stable_id = StableEndpointId::new(
-                intent as u64 | ((channels as u64) << 32),
-                0x4d6f_6972_656e_4e41,
-            );
-            let endpoint = control.create_and_wait(
-                stable_id,
-                intent,
-                channels,
-                &format!("Moiren native probe {intent:?} {channels:?}"),
-                false,
-                CONTROL_DEADLINE,
-            )?;
-            endpoints.push(endpoint);
+    let result = (|| -> anyhow::Result<Report> {
+        for intent in [Intent::Playback, Intent::Microphone] {
+            for channels in [Channels::Mono, Channels::Stereo] {
+                let stable_id = StableEndpointId::new(
+                    intent as u64 | ((channels as u64) << 32),
+                    0x4d6f_6972_656e_4e41,
+                );
+                let endpoint = control.create_and_wait(
+                    stable_id,
+                    intent,
+                    channels,
+                    &format!("Moiren native probe {intent:?} {channels:?}"),
+                    false,
+                    CONTROL_DEADLINE,
+                )?;
+                endpoints.push(endpoint);
+            }
         }
-    }
-    let mappings = wait_mappings(&enumerator, &endpoints, &root)?;
-    require_never_default(&enumerator, &mappings)?;
-    let mut cases = Vec::with_capacity(8);
-    for (index, (endpoint, mapping)) in endpoints.iter_mut().zip(&mappings).enumerate() {
-        for format in [SampleFormat::Pcm16, SampleFormat::Float32] {
-            eprintln!(
-                "native case mode={mode:?} intent={:?} channels={:?} format={format:?} id={}",
-                endpoint.intent(),
-                endpoint.channels(),
-                endpoint.stable_id()
-            );
-            let report = exercise_case(
-                &mut control,
-                &enumerator,
-                *endpoint,
-                mapping,
-                &root,
-                format,
-                index,
-                seconds,
-                mode,
-            )
-            .with_context(|| {
-                format!(
-                    "native {mode:?} {:?} {:?} {format:?}",
+        let mappings = wait_mappings(&enumerator, &endpoints, &root)?;
+        require_never_default(&enumerator, &mappings)?;
+        let mut cases = Vec::with_capacity(8);
+        for (index, (endpoint, mapping)) in endpoints.iter_mut().zip(&mappings).enumerate() {
+            for format in [SampleFormat::Pcm16, SampleFormat::Float32] {
+                eprintln!(
+                    "native case mode={mode:?} intent={:?} channels={:?} format={format:?} id={}",
                     endpoint.intent(),
-                    endpoint.channels()
+                    endpoint.channels(),
+                    endpoint.stable_id()
+                );
+                let report = exercise_case(
+                    &mut control,
+                    &enumerator,
+                    *endpoint,
+                    mapping,
+                    &root,
+                    format,
+                    index,
+                    seconds,
+                    mode,
                 )
-            })?;
-            cases.push(report);
-            *endpoint = wait_closed(&mut control, *endpoint)?;
+                .with_context(|| {
+                    format!(
+                        "native {mode:?} {:?} {:?} {format:?}",
+                        endpoint.intent(),
+                        endpoint.channels()
+                    )
+                })?;
+                cases.push(report);
+                *endpoint = wait_closed(&mut control, *endpoint)?;
+            }
         }
-    }
-    require_never_default(&enumerator, &mappings)?;
-    let after = defaults(&enumerator)?;
-    for endpoint in endpoints {
-        let latest = control
-            .query(endpoint.key())?
-            .require_progress_after(endpoint)?;
-        ensure!(!latest.gate_open(), "case left a gate open");
-        let removed = control.remove_and_wait(latest.key(), CONTROL_DEADLINE)?;
-        ensure!(
-            removed.removal_complete_after(latest)?,
-            "removal accepted without final Removed"
-        );
-    }
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&Report {
+        require_never_default(&enumerator, &mappings)?;
+        let after = defaults(&enumerator)?;
+        Ok(Report {
             schema_version: 2,
             native_mode: mode,
             root_instance: root,
             defaults_before: before,
             defaults_after: after,
             cases,
-        })?
-    );
+        })
+    })();
+
+    let cleanup = validation::cleanup_all(&endpoints, |endpoint| {
+        cleanup_endpoint(&mut control, endpoint)
+    });
+    let report = match (result, cleanup) {
+        (Ok(report), Ok(())) => report,
+        (Err(error), Ok(())) => return Err(error),
+        (Ok(_), Err(error)) => return Err(error),
+        (Err(error), Err(cleanup_error)) => {
+            return Err(error.context(format!(
+                "VAD endpoint cleanup also failed: {cleanup_error:#}"
+            )));
+        }
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 
@@ -276,6 +279,21 @@ fn wait_closed(
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn cleanup_endpoint(control: &mut ControlClient, endpoint: EndpointSnapshot) -> anyhow::Result<()> {
+    let mut latest = control
+        .query(endpoint.key())?
+        .require_progress_after(endpoint)?;
+    if latest.gate_open() {
+        latest = control.close_gate(latest)?;
+    }
+    let removed = control.remove_and_wait(latest.key(), CONTROL_DEADLINE)?;
+    ensure!(
+        removed.removal_complete_after(latest)?,
+        "removal accepted without final Removed"
+    );
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
