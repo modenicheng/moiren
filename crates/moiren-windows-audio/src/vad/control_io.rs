@@ -27,6 +27,39 @@ use windows::{
     core::{Error, HRESULT},
 };
 
+fn operation_name(code: u32) -> &'static str {
+    match code {
+        crate::vad::IOCTL_CAPABILITIES => "CAPABILITIES",
+        crate::vad::IOCTL_CREATE => "CREATE",
+        crate::vad::IOCTL_QUERY => "QUERY",
+        crate::vad::IOCTL_REMOVE => "REMOVE",
+        crate::vad::IOCTL_SET_GATE => "SET_GATE",
+        crate::vad::IOCTL_READ_PCM => "READ_PCM",
+        crate::vad::IOCTL_WRITE_PCM => "WRITE_PCM",
+        _ => "UNKNOWN",
+    }
+}
+
+fn operation_label(operation: &'static str, phase: &'static str) -> &'static str {
+    match (operation, phase) {
+        ("CAPABILITIES", "DeviceIoControl(VAD)") => "CAPABILITIES DeviceIoControl(VAD)",
+        ("CREATE", "DeviceIoControl(VAD)") => "CREATE DeviceIoControl(VAD)",
+        ("QUERY", "DeviceIoControl(VAD)") => "QUERY DeviceIoControl(VAD)",
+        ("REMOVE", "DeviceIoControl(VAD)") => "REMOVE DeviceIoControl(VAD)",
+        ("SET_GATE", "DeviceIoControl(VAD)") => "SET_GATE DeviceIoControl(VAD)",
+        ("READ_PCM", "DeviceIoControl(VAD)") => "READ_PCM DeviceIoControl(VAD)",
+        ("WRITE_PCM", "DeviceIoControl(VAD)") => "WRITE_PCM DeviceIoControl(VAD)",
+        ("CAPABILITIES", "GetOverlappedResultEx(VAD)") => "CAPABILITIES GetOverlappedResultEx(VAD)",
+        ("CREATE", "GetOverlappedResultEx(VAD)") => "CREATE GetOverlappedResultEx(VAD)",
+        ("QUERY", "GetOverlappedResultEx(VAD)") => "QUERY GetOverlappedResultEx(VAD)",
+        ("REMOVE", "GetOverlappedResultEx(VAD)") => "REMOVE GetOverlappedResultEx(VAD)",
+        ("SET_GATE", "GetOverlappedResultEx(VAD)") => "SET_GATE GetOverlappedResultEx(VAD)",
+        ("READ_PCM", "GetOverlappedResultEx(VAD)") => "READ_PCM GetOverlappedResultEx(VAD)",
+        ("WRITE_PCM", "GetOverlappedResultEx(VAD)") => "WRITE_PCM GetOverlappedResultEx(VAD)",
+        (_, _) => phase,
+    }
+}
+
 struct Request {
     input: [u8; CREATE_SIZE],
     output: [u8; 128],
@@ -245,7 +278,10 @@ impl ControlHandle {
         if let Err(error) = submitted
             && error.code() != ERROR_IO_PENDING.to_hresult()
         {
-            return Err(ClientError::windows("DeviceIoControl(VAD)", error));
+            return Err(ClientError::windows(
+                operation_label(operation_name(code), "DeviceIoControl(VAD)"),
+                error,
+            ));
         }
         // Event creation, allocation, submission, or scheduling may have consumed
         // the budget. Refresh it here, after submission. Expiry uses exactly the
@@ -268,9 +304,10 @@ impl ControlHandle {
         };
         if let Err(error) = completed {
             let handle = raw(&self.owner.handle);
-            return Err(self.finish_failed_exchange(
+            return Err(self.finish_failed_exchange_named(
                 request,
                 error,
+                operation_name(code),
                 |request| {
                     // SAFETY: the request still owns its OVERLAPPED and buffers.
                     unsafe {
@@ -300,8 +337,19 @@ impl ControlHandle {
 
     fn finish_failed_exchange(
         &mut self,
+        request: Box<Request>,
+        error: Error,
+        probe: impl FnMut(&mut Request) -> windows::core::Result<()>,
+        cancel: impl FnOnce(&Request),
+    ) -> ClientError {
+        self.finish_failed_exchange_named(request, error, "", probe, cancel)
+    }
+
+    fn finish_failed_exchange_named(
+        &mut self,
         mut request: Box<Request>,
         error: Error,
+        operation: &'static str,
         mut probe: impl FnMut(&mut Request) -> windows::core::Result<()>,
         cancel: impl FnOnce(&Request),
     ) -> ClientError {
@@ -310,7 +358,10 @@ impl ControlHandle {
         if error.code() == ERROR_REVISION_MISMATCH.to_hresult()
             && probe(&mut request).is_err_and(|terminal| terminal.code() == error.code())
         {
-            return ClientError::windows("GetOverlappedResultEx(VAD)", error);
+            return ClientError::windows(
+                operation_label(operation, "GetOverlappedResultEx(VAD)"),
+                error,
+            );
         }
         self.poisoned = true;
         cancel(&request);
@@ -326,7 +377,10 @@ impl ControlHandle {
         if error.code() == HRESULT::from_win32(WAIT_TIMEOUT.0) {
             ClientError::DeadlineExceeded
         } else {
-            ClientError::windows("GetOverlappedResultEx(VAD)", error)
+            ClientError::windows(
+                operation_label(operation, "GetOverlappedResultEx(VAD)"),
+                error,
+            )
         }
     }
 
