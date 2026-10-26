@@ -5,6 +5,7 @@
 - Date: 2026-10-26.
 - Branch: `feat/minimal-io-latency`.
 - Source base: `ec66e85117fbf668c2def334bdb33028afd454e9`.
+- Current implementation commit: `805e4e1`.
 - Worktree: `D:\coding\moiren\.worktrees\minimal-io-latency`.
 - Reference graph: Input -> Bus -> Output, 48 kHz.
 - Target: measured steady p95 <= 10 ms with stable continuous waveform.
@@ -18,8 +19,10 @@
   exploration target.
 - A passing window must have zero unexpected drops, silent frames, underruns,
   discontinuities, marker gaps, or epoch/recovery resets.
-- Current state: software transport and VAD integration are implemented, but
-  live VAD qualification and calibrated physical measurement are pending.
+- Current state: software transport, VAD source-neutral evidence, and the
+  production VAD integration path are implemented. The dual-machine native VAD
+  smoke has run, but its complete event/timer matrix is not passing; production
+  `live-vad`, rename smoke, and calibrated physical measurement remain pending.
 - At 48 kHz, 10 ms is 480 frames and 80 ms is 3,840 frames. Audible doubling
   while direct application output and Moiren output are both active is not
   evidence by itself that the delay exceeds 80 ms.
@@ -31,10 +34,10 @@
 | 0 | Software baseline passed | Archived plan d863d0f; tests/check/driver results below |
 | 1 | Software foundation passed | 19 marker tests; no physical observation yet |
 | 2 | Software foundation passed | 5 transport, 8 budget and delivery-timing tests |
-| 3 | Software propagation passed; hardware pending | Real preparation/prime and 64-frame demand regressions; packet probe pending |
-| 4 | Software budget/boundary passed; hardware negotiation pending | Explicit VAD target/capacity tests; live packet shape and native period matrix pending |
+| 3 | Software propagation passed; target native evidence partial | Real preparation/prime and 64-frame demand regressions; target native packet probe ran but is not a complete pass |
+| 4 | Software budget/boundary passed; target native matrix failed | Explicit VAD target/capacity tests passed; target event/timer PCM matrix hit `0x8007051A` revision mismatches |
 | 5 | Software graph/RT regressions passed; physical timing pending | Compiled Input -> Bus -> Output delay regression; physical output timing pending |
-| 6 | App settings/rename tests passed; native live validation pending | Persisted transport settings, stale active state, safe rename and held-client tests |
+| 6 | App settings/rename tests passed; production/rename live validation pending | Persisted transport settings, stale active state, safe rename and held-client tests; current target native smoke is recorded below |
 | 7 | Not qualified | Calibrated physical p95, 30-minute and 2-hour PCM/load runs |
 
 No software estimate, VM result or silent counter run qualifies physical E2E.
@@ -49,12 +52,40 @@ Missing hardware/calibration is a missing gate and must not be reported as pass.
 - `pwsh -NoProfile -File driver/vad/test.ps1`: all six host suites passed.
 - `pwsh -NoProfile -File driver/vad/build.ps1 -Analyze`: passed with zero
   warnings/errors, INF valid, WDK 10.0.28000.0.
-- Host: Windows 11 Pro 10.0.26300; FreeDSP, Realtek and CABLE present.
-  No present Moiren VAD on this host. Device defaults were not changed.
-- Dedicated VM: zero running VMs; SSH timed out; `vmrun start ... nogui`
-  requires the encrypted VM password. No credential search or bypass attempted.
-  Target VAD negotiation and driver tests require that VM to be unlocked.
+- Development host: Windows 11 Pro 10.0.26300; FreeDSP, Realtek and CABLE
+  present. No present Moiren VAD on this host. Device defaults were not changed.
+- Target VM: `driver-test` / `DRIVER-TEST`, Windows 11 build `10.0.26200.9711`,
+  reached over SSH as `wdkremoteuser@192.168.111.128` using the dedicated
+  `moiren-test` key. AC/DC sleep timeouts are zero and hibernation is disabled.
+  The target currently reports `ROOT\MEDIA\0000`, `oem30.inf`, driver version
+  `0.36.20.788`. No target driver package file hash was captured in this run.
 - No calibrated physical recording arrangement has been established.
+
+## Current target-machine evidence
+
+The current branch was rebuilt before target execution. The target executable
+was `vad_native-805e4e1.exe`, source commit `805e4e1`, SHA-256
+`2E8EA9C90CC956D5D40E3CA00B9CD36E08B6ADC227704B7D5489716A4C3469AF`.
+Evidence was copied to the development host before the target directory was
+cleaned; the local archive is
+`target/vad-target-archive/20261026-232435/`. The guest now retains only the
+current probe executable to conserve its 64 GB disk.
+
+- Target endpoint creation and MMDevice identity mapping reached all four
+  expected playback/microphone mono/stereo raw children. The timer run opened
+  all eight native cases, including 480-frame playback and 512-frame stereo
+  Float32 microphone buffers; native position advanced.
+- Event mode exited with `0x8007051A` during playback mono Float32 after the
+  playback mono PCM16 case. Timer mode exited with the same revision mismatch
+  during microphone stereo Float32 after seven cases. The current complete
+  native matrix is therefore **not qualified**; this is target failure evidence,
+  not a pass.
+- After both failures, the new probe cleanup left no `vad*`/`moiren*` process
+  and no dynamic `MOIREN\VAD_RAW` child; only the control bus and physical
+  audio device remained. This validates failure cleanup, not PCM stability.
+- The target has not yet run the current branch's production `live-vad`
+  `VirtualPlayback -> Engine -> Bus -> physical Output` path, a held-client
+  rename through the app, or a calibrated physical marker measurement.
 
 ## Software changes and focused evidence
 
@@ -86,9 +117,10 @@ Missing hardware/calibration is a missing gate and must not be reported as pass.
   endpoint creation, native PCM workers, playback/microphone virtual
   boundaries, Engine activation gates, cancellation and stale-epoch recovery
   are implemented and covered by host tests.
-- VAD is not live-qualified on the current development machine. There is no
-  present Moiren VAD endpoint and no calibrated physical measurement chain, so
-  live activation and real VAD-vs-Process latency comparison remain open.
+- The target machine can create and map the VAD endpoints, but the current
+  native event/timer matrix fails on `0x8007051A` revision mismatches. The
+  software production path is present; live activation through the complete
+  Moiren Engine graph and calibrated VAD-vs-Process comparison remain open.
 
 ### VAD rename
 
@@ -121,27 +153,33 @@ Missing hardware/calibration is a missing gate and must not be reported as pass.
 
 ## Remaining execution gates
 
-1. Unlock the target VM or connect an equivalent test machine, run the power
-   preflight, install the analyzed/test-signed package, and confirm the present
-   VAD endpoints without changing unrelated device defaults.
-2. Run the live VAD lifecycle and PCM matrix: endpoint creation, rename with a
-   held client, gate close/open, playback and microphone packet shapes, stale
-   epoch rejection, drop/silence counters and final removal observation.
-3. Add the same packet-size/gap telemetry to Process Loopback and VAD runs;
+1. Diagnose and fix the target native `0x8007051A` revision mismatch. Repeat
+   event and timer playback/microphone matrices until every case passes with
+   zero drops, unexpected silence, stale packets, discontinuities, and epoch
+   resets; retain the failed artifacts.
+2. Run the current branch's production `live-vad` path on the target: create a
+   named playback export, resolve its MMDevice, route it through
+   `VirtualPlayback -> Engine -> Bus -> physical Output`, and verify orderly
+   gate/owner/endpoint retirement.
+3. Run held-client rename smoke through the app. Verify remove/recreate keeps
+   stable ID and graph binding, reports pending/actual names correctly, and
+   reopens admission only after Engine confirmation; repeat remove/create
+   failure cases.
+4. Add the same packet-size/gap telemetry to Process Loopback and VAD runs;
    sweep candidate targets such as 2048/1024/512/256 Process frames and
    480/240/128/64 VAD packet frames only when the native path admits them.
-4. Measure `Input -> Bus -> Output` with a calibrated physical cable or a
+5. Measure `Input -> Bus -> Output` with a calibrated physical cable or a
    calibrated external dual-channel reference. Record p50/p95/p99/max,
    waveform continuity, drops, underruns, discontinuities and epoch resets.
-5. Tune one complete configuration at a time. Reduce target and render queue
+6. Tune one complete configuration at a time. Reduce target and render queue
    until the first quality failure, then choose the smallest stable target with
    margin. Never hide an underrun by silently increasing the target after the
    run.
-6. Run the 30-minute controlled-load experiment for each viable VAD and
+7. Run the 30-minute controlled-load experiment for each viable VAD and
    Process configuration. A candidate passes the experimental gate only when
    calibrated p95 plus uncertainty is at most 10 ms and all quality counters
    are zero.
-7. Repeat the proposed default in two independent two-hour runs, then update
+8. Repeat the proposed default in two independent two-hour runs, then update
    the default profile and evidence only if both runs pass. Until then, keep
    the default Compatible behavior and label expert settings experimental.
 

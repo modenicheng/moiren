@@ -40,8 +40,10 @@ PowerShell target scripts, and the existing offline qualification evaluator.
   serialization, or unbounded collection is allowed on the audio path.
 - Preserve the current epoch fencing, gate admission, microphone freshness,
   stable endpoint identity, and candidate-versus-active revision rules.
-- The current worktree contains uncommitted Stage 0-7 changes. Stage only the
-  files belonging to each task and preserve unrelated changes.
+- Stage each responsibility-sized change separately and push it promptly. The
+  current branch already contains the implementation commits through the
+  native-probe cleanup; this plan records what is implemented, what failed on
+  the target, and what still requires live qualification.
 
 ## Decision Record
 
@@ -65,14 +67,14 @@ PowerShell target scripts, and the existing offline qualification evaluator.
 **Purpose:** Record the user-facing target and prevent software estimates from
 being reported as physical qualification.
 
-- [ ] Add a short `User objective` section to the validation record stating:
+- [x] Add a short `User objective` section to the validation record stating:
   `Input -> Bus -> Output`, stable output, physical p95 `<=10 ms`, exploratory
   p50 `<=8 ms`, and no quality-counter failures.
-- [ ] Record the current state as `software path implemented; live VAD and
+- [x] Record the current state as `software path implemented; live VAD and
   calibrated physical qualification pending`.
-- [ ] Record the current interpretation of the audible doubling and the
+- [x] Record the current interpretation of the audible doubling and the
   48 kHz conversion thresholds: 10 ms = 480 frames and 80 ms = 3,840 frames.
-- [ ] Do not mark Stage 7 complete or change the Compatible default in this
+- [x] Do not mark Stage 7 complete or change the Compatible default in this
   task.
 
 Validation:
@@ -106,17 +108,17 @@ rg -n "User objective|10 ms|3,840|Stage 7|not qualified" `
 - Preserve one versioned report schema. Add optional VAD fields rather than
   creating a second evaluator.
 
-- [ ] Write failing tests proving a VAD report serializes a distinct source
+- [x] Write failing tests proving a VAD report serializes a distinct source
   kind, preserves stable endpoint/MMDevice identity, and remains unqualified
   without calibration.
-- [ ] Write failing tests proving Process Loopback reports retain their current
+- [x] Write failing tests proving Process Loopback reports retain their current
   schema meaning and cannot accidentally inherit VAD identity fields.
-- [ ] Refactor report creation so source kind, native format, packet bound,
+- [x] Refactor report creation so source kind, native format, packet bound,
   effective input queue, render queue, engine block, telemetry, and quality
   counters are populated by the source adapter.
-- [ ] Keep artifact creation collision-safe and bounded. Generate markers and
+- [x] Keep artifact creation collision-safe and bounded. Generate markers and
   allocate recording buffers before native streaming starts.
-- [ ] Run the focused example tests and strict crate Clippy.
+- [x] Run the focused example tests and strict crate Clippy.
 
 Validation:
 
@@ -147,30 +149,30 @@ live-vad --output ENDPOINT --artifact-dir DIR
      as live-process-loopback]
 ```
 
-- [ ] Add parser and dry-run tests for `live-vad`, including invalid stable
+- [x] Add parser and dry-run tests for `live-vad`, including invalid stable
   IDs, invalid names, missing artifact pairs, and missing calibration.
-- [ ] Discover the VAD control interface with `WindowsVadProvider::discover()`.
-- [ ] Create a playback export with an explicit stable ID and probe name. Do
+- [x] Discover the VAD control interface with `WindowsVadProvider::discover()`.
+- [x] Create a playback export with an explicit stable ID and probe name. Do
   not use an imported default-device permission.
-- [ ] Poll until the export is `Present`, policy-prepared, and audio-ready.
+- [x] Poll until the export is `Present`, policy-prepared, and audio-ready.
   Do not treat `CREATE` success alone as endpoint readiness.
-- [ ] Resolve the newly created VAD playback MMDevice by identity, open a
+- [x] Resolve the newly created VAD playback MMDevice by identity, open a
   native WASAPI render client, and feed the preallocated marker-bearing PCM
   into that endpoint. The source application must have no simultaneous direct
   physical output.
-- [ ] Build the production graph as `InputSource::VirtualPlayback -> Bus ->
+- [x] Build the production graph as `InputSource::VirtualPlayback -> Bus ->
   OutputTarget::Physical`. Use the production `WindowsBackend`/Engine host
   lifecycle and active-revision confirmation rather than a probe-only virtual
   shortcut.
-- [ ] Prepare the physical render owner with the exact same output endpoint,
+- [x] Prepare the physical render owner with the exact same output endpoint,
   shared/exclusive mode, sample rate, render target, engine block, and
   controlled-load settings used by the Process Loopback run.
-- [ ] Open the VAD gate only after Engine confirmation and a current native
+- [x] Open the VAD gate only after Engine confirmation and a current native
   endpoint stamp. Run the marker schedule only while all owners report ready.
-- [ ] Stop in the required order: stop marker source, close gate, stop/join
+- [x] Stop in the required order: stop marker source, close gate, stop/join
   Engine and PCM owners, persist artifacts off the audio path, retire the VAD
   export, and wait for final `Removed`.
-- [ ] Emit `mode: live_vad`, stable endpoint ID, MMDevice identity, requested
+- [x] Emit `mode: live_vad`, stable endpoint ID, MMDevice identity, requested
   name, actual observed name, native format, native packet frames, and VAD
   telemetry in the report.
 
@@ -204,13 +206,13 @@ cargo test --locked -p moiren-windows-audio --lib --no-fail-fast
 - [ ] Record observed packet frames, callback/completion gaps, bridge fill and
   age, render padding, effective target/capacity, and all delivery-bound
   violations for Process Loopback.
-- [ ] Keep virtual-client timing labeled empirical or declared; never write it
+- [x] Keep virtual-client timing labeled empirical or declared; never write it
   into `NativeStreamTiming.period_frames` as if it were a hardware period.
-- [ ] Make VAD and Process reports expose comparable fields with explicit
+- [x] Make VAD and Process reports expose comparable fields with explicit
   `null`/`unknown` values where a source cannot provide a measurement.
-- [ ] Add a regression test that changes the Process Loopback target and
+- [x] Add a regression test that changes the Process Loopback target and
   proves the effective prepared bridge changes, not merely the report label.
-- [ ] Add a regression test that a missing packet/gap bound refuses an explicit
+- [x] Add a regression test that a missing packet/gap bound refuses an explicit
   low-latency target instead of silently selecting Compatible behavior.
 
 Validation:
@@ -231,11 +233,11 @@ cargo test --locked -p moiren-app --test monitor_cli --no-default-features
 - Test: `crates/moiren-app/src/service/managed/rename_tests.rs`
 - Test: `crates/moiren-windows-audio/src/vad/provider/lifecycle/tests.rs`
 
-- [ ] Unlock or provide an equivalent Windows target. Run power and sleep
+- [x] Unlock or provide an equivalent Windows target. Run power and sleep
   preflight; record Windows build, driver package hash, and binary hashes.
-- [ ] Build and install the analyzed/test-signed package without changing
+- [x] Build and install the analyzed/test-signed package without changing
   unrelated device defaults.
-- [ ] Confirm the control interface and all four expected raw child/MMDevice
+- [x] Confirm the control interface and all four expected raw child/MMDevice
   identities. Record whether each endpoint is `Present`, policy-prepared, and
   audio-ready.
 - [ ] Run playback event-mode and timer-mode PCM smoke cases. Record actual
@@ -246,10 +248,10 @@ cargo test --locked -p moiren-app --test monitor_cli --no-default-features
   old endpoint becomes/remains removing, final `Removed` is observed, the new
   endpoint has the requested name, the stable ID and graph binding are kept,
   and the gate reopens only after Engine confirmation.
-- [ ] Repeat the held-client case with remove failure and create failure. The
+- [x] Repeat the held-client case with remove failure and create failure. The
   requested name must remain visible as pending; the app must not claim native
   presence or active audio when the recreation failed.
-- [ ] Preserve the historical target observations as historical evidence; do
+- [x] Preserve the historical target observations as historical evidence; do
   not substitute them for this branch's current live qualification.
 
 Validation commands on the development host:
@@ -280,11 +282,11 @@ cargo test --locked -p moiren-windows-audio --lib
   route the source application only to the created VAD playback endpoint; for
   Process Loopback, use an isolated source process or a direct-output-disabled
   source. A simultaneous direct path invalidates latency correlation.
-- [ ] Keep internal and WASAPI loopback runs as diagnostics, but mark them
+- [x] Keep internal and WASAPI loopback runs as diagnostics, but mark them
   `unqualified` for physical latency.
-- [ ] Analyze p50, p95, p99, max, marker confidence, missing markers, and
+- [x] Analyze p50, p95, p99, max, marker confidence, missing markers, and
   uncertainty. Convert frame offsets using the explicit 48 kHz schedule.
-- [ ] Treat a measured delay above 3,840 frames as evidence for `>80 ms`; do
+- [x] Treat a measured delay above 3,840 frames as evidence for `>80 ms`; do
   not use subjective doubling as that claim.
 
 Acceptance for the measurement setup:
@@ -350,7 +352,7 @@ same effective configuration recorded in manifest and report
 - Modify: `crates/moiren-windows-audio/src/latency/qualification.rs`
 - Modify: `docs/validation/2026-10-26-minimal-io-latency.md`
 
-- [ ] Keep Process and VAD policies independently configurable. Do not infer
+- [x] Keep Process and VAD policies independently configurable. Do not infer
   one source's packet timing from the other source.
 - [ ] Show requested policy, effective prepared policy, actual packet/period
   observations, queue fill/age, render padding, recovery/drop/silence counts,
@@ -388,9 +390,9 @@ cargo test --locked -p moiren-app --features gpui-test
 git diff --check
 ```
 
-- [ ] Run the RT guard, driver analyzed build, and target-specific scripts when
+- [x] Run the RT guard, driver analyzed build, and target-specific scripts when
   the target is available.
-- [ ] Report separately: software tests, host driver tests, historical target
+- [x] Report separately: software tests, host driver tests, historical target
   evidence, current target live evidence, physical qualification, and default
   promotion status.
 - [ ] Only after all required gates pass may the validation record state that
