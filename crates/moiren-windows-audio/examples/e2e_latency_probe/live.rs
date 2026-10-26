@@ -1342,6 +1342,10 @@ mod native {
         )
         .context("start VAD native playback")?;
         let playback_info = serde_json::to_value(&playback.info)?;
+        // `start` only confirms that the native client is ready. Let its
+        // bounded worker own the requested measurement interval before asking
+        // it to stop, otherwise live-vad would only exercise startup/teardown.
+        thread::sleep(Duration::from_secs(options.seconds));
         let playback_report = playback.stop().context("stop VAD native playback")?;
         native_report.vad_playback = Some(serde_json::to_value(playback_report)?);
         let engine_after = observer.snapshot();
