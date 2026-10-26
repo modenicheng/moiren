@@ -53,6 +53,9 @@ pub(super) fn panel(id: &'static str) -> Stateful<Div> {
         .flex_col()
         .flex_none()
         .w(px(theme::INSPECTOR_WIDTH))
+        // Fill the sidebar column so short content (the empty state) never
+        // exposes the workspace behind it; overflow scrolls inside instead.
+        .h_full()
         .p(px(theme::SPACE_4))
         .gap(px(theme::SPACE_3))
         .bg(theme::SURFACE)

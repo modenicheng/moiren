@@ -1009,3 +1009,40 @@ fn ctrl_z_keystroke_steps_the_undo_journal(cx: &mut gpui_kit::TestAppContext) {
     });
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn inspector_panel_fills_the_column_even_for_its_empty_state(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        window.render_frame(cx);
+        // Nothing is selected: the graph inspector shows its empty state.
+        view.update(cx, |shell, _| {
+            assert!(shell.selected_node.is_none() && shell.selected_route.is_none());
+        });
+        assert!(window.find("inspector-empty").visible());
+        // The placeholder illustration rides in a soft tile above the label.
+        let art = window.find("inspector-empty-art").bounds();
+        assert!(art.size.width > px(56.) && art.size.height > px(56.));
+        // Regression: the empty state's panel used to be as short as its
+        // label, leaving the rest of the sidebar column transparent so the
+        // inspector merged into the workspace background.
+        let panel = window.find("graph-inspector").bounds();
+        let column = window.find("graph-page").bounds();
+        assert_eq!(
+            f32::from(panel.size.height),
+            f32::from(column.size.height),
+            "the panel must fill the sidebar column"
+        );
+        // The illustration sits roughly centered in the column (the heading
+        // above it shifts the optical center up slightly), not at the top.
+        let art_center = f32::from(art.origin.y + art.size.height / 2.);
+        let panel_center = f32::from(panel.origin.y + panel.size.height / 2.);
+        assert!(
+            (art_center - panel_center).abs() < 24.,
+            "empty state centers vertically ({art_center} vs {panel_center})"
+        );
+    });
+    finish_service(runtime);
+}

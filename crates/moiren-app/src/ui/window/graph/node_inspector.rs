@@ -56,6 +56,32 @@ pub(in crate::ui::window) fn inspector(
             .child(
                 div()
                     .id("inspector-empty")
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(theme::SPACE_4))
+                    .child(
+                        div()
+                            .id("inspector-empty-art")
+                            .flex()
+                            .flex_none()
+                            .w(px(64.))
+                            .h(px(64.))
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(theme::RADIUS_LG))
+                            .bg(theme::SURFACE_3)
+                            .child(
+                                component::Icon::default()
+                                    .path("icons/zoom-scan.svg")
+                                    .size(px(28.))
+                                    .text_color(theme::TEXT_FAINT),
+                            )
+                            .gpui_test_observe(),
+                    )
                     .child(label(t!("Select a node to inspect its properties.")))
                     .gpui_test_observe(),
             )
