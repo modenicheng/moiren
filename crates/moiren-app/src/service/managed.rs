@@ -1,13 +1,16 @@
 //! Desktop adapter for the engine's lifecycle owner. The service only projects
 //! receipts and snapshots; compilation, swaps and native ownership stay in host.
 use super::*;
-use moiren_core::protocol::ParamValue;
+use moiren_core::{graph::NodeId, protocol::ParamValue};
 use moiren_engine::host::{
     self, EditOutcome, EditReceipt, EngineBackend, EngineControl, EngineHost, EngineObserver,
     ExecutionState, HostConfig, ParameterOutcome, ParameterReceipt, ParameterTarget,
-    ParameterTiming, UpdateState,
+    ParameterTiming, StripParameter, UpdateState,
 };
-use std::time::Instant;
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 mod driver;
 mod lifecycle;
 mod meters;
@@ -72,6 +75,7 @@ struct ApplyConfirmation {
     host_revision: u64,
 }
 struct PendingParameter {
+    target: ParameterTarget,
     receipt: ParameterReceipt,
     /// Only this Apply's own target/value request can satisfy its barrier.
     confirmation: Option<ApplyConfirmation>,
@@ -81,6 +85,10 @@ enum Completion {
     Catalog(Result<DeviceCatalog, BackendError>),
     Exports(Result<super::exports::runtime::Batch, String>),
 }
+
+/// Delay before a structure edit automatically applies; consecutive edits
+/// within the window coalesce into one rebuild.
+const AUTO_APPLY_DELAY: Duration = Duration::from_millis(200);
 
 pub struct ManagedDriver {
     exports_runtime: super::exports::runtime::Runtime,
@@ -102,6 +110,12 @@ pub struct ManagedDriver {
     exiting: bool,
     apply: bool,
     apply_audio_settings: Option<AudioSettings>,
+    /// Last submitted effective strip values (dim-folded gain, solo-audible
+    /// mute) per node; diffs against the candidate drive live submissions.
+    strip_live: BTreeMap<NodeId, (f64, bool)>,
+    /// Trailing-edge debounce for the automatic apply of structure edits.
+    /// Armed only while an owner runs: a stopped session never auto-starts.
+    auto_apply_deadline: Option<Instant>,
     meters: Option<meters::MeterBridge>,
     #[cfg(windows)]
     observations: Option<
@@ -142,6 +156,8 @@ impl ManagedDriver {
             edits: Vec::with_capacity(16),
             parameters: Vec::with_capacity(64),
             unsent: Vec::with_capacity(64),
+            strip_live: BTreeMap::new(),
+            auto_apply_deadline: None,
             confirm_parameters: None,
             confirmation_values: VecDeque::new(),
             document: 0,

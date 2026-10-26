@@ -482,3 +482,11 @@ Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset cl
 Peak fall-off · dB/s	-	crates/moiren-app/src/ui/window/mixer.rs:498	Mixer integration
 Peak hold	-	crates/moiren-app/src/ui/window/mixer.rs:509	Mixer integration
 Off	-	crates/moiren-app/src/ui/window/mixer.rs:512	Mixer integration
+Selected profile activates on the next audio start	-	crates/moiren-app/src/ui/presentation.rs	自动应用改造后的延迟档位文案
+Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.	-	crates/moiren-app/src/ui/window/devices/exports.rs	虚拟导出说明（去除 Apply 提法）
+Changing channels, a name, or eligibility safely retires and recreates the endpoint; unbind incompatible Graph IO before changing channels.	-	crates/moiren-app/src/ui/window/devices/exports.rs	端点重建说明（去除 Apply 提法）
+Not running	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs	节点观察状态：未启动
+Start audio to observe this node.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs	节点观察引导语
+Error: %{cause}	-	crates/moiren-app/src/ui/window.rs	错误列表首行
+Channel: %{location}	-	crates/moiren-app/src/ui/window.rs	错误列表定位行
+Hint: %{hint}	-	crates/moiren-app/src/ui/window.rs	错误列表提示行

@@ -77,7 +77,7 @@ impl MixerState {
 }
 
 impl GraphPreparation {
-    pub(super) fn mixer_configs(&self) -> Vec<(NodeId, StripConfig)> {
+    pub(crate) fn mixer_configs(&self) -> Vec<(NodeId, StripConfig)> {
         let solos: BTreeSet<_> = self
             .nodes
             .iter()

@@ -192,14 +192,14 @@ pub(super) fn list(shell: &StudioShell, cx: &Context<StudioShell>) -> Stateful<D
         .gap(px(12.))
         .overflow_y_scroll()
         .child(heading(t!("Virtual exports")))
-        .child(label(t!("Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.")))
+        .child(label(t!("Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.")))
         .child(creation_controls(shell, cx))
         .child(label(t!("Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export.")))
         .child(div().id("export-default-help")
             .aria_label(t!(DEFAULT_ELIGIBILITY_HELP))
             .child(label(t!(DEFAULT_ELIGIBILITY_HELP)))
             .gpui_test_observe())
-        .child(label(t!("Changing channels, a name, or eligibility safely retires and recreates the endpoint. Apply again to resume; unbind incompatible Graph IO before changing channels.")));
+        .child(label(t!("Changing channels, a name, or eligibility safely retires and recreates the endpoint; unbind incompatible Graph IO before changing channels.")));
     if snapshot.exports.is_empty() {
         list = list.child(label(t!(
             "No virtual exports yet. Create one above; it starts unbound."
@@ -288,39 +288,33 @@ fn creation_controls(shell: &StudioShell, cx: &Context<StudioShell>) -> impl Int
                 .border_color(theme::BORDER),
         )
         .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(8.))
-                .child(
-                    button("export-create", t!("Create export"))
-                        .variant(ButtonVariant::Primary)
-                        .disabled(
-                            pending
-                                || shell.state.read(cx).snapshot.graph.exports.len()
-                                    >= crate::service::MAX_EXPORTS,
-                        )
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |shell, cx| {
-                                // Use GPUI's public UUID type; persist its ordered bytes, never a native token.
-                                let id = VirtualEndpointId::from_bytes(
-                                    *gpui_kit::accesskit::Uuid::new_v4().as_bytes(),
-                                );
-                                let name = shell.export_controls.name.read(cx).value();
-                                let graph = &shell.state.read(cx).snapshot.graph;
-                                let result = create_export(
-                                    graph,
-                                    id,
-                                    shell.export_controls.direction,
-                                    &name,
-                                    shell.export_controls.channels,
-                                );
-                                shell.dispatch_exports(result, cx);
-                            });
-                        }),
-                )
-                .child(controls::apply(shell, cx)),
+            div().flex().flex_wrap().items_center().gap(px(8.)).child(
+                button("export-create", t!("Create export"))
+                    .variant(ButtonVariant::Primary)
+                    .disabled(
+                        pending
+                            || shell.state.read(cx).snapshot.graph.exports.len()
+                                >= crate::service::MAX_EXPORTS,
+                    )
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |shell, cx| {
+                            // Use GPUI's public UUID type; persist its ordered bytes, never a native token.
+                            let id = VirtualEndpointId::from_bytes(
+                                *gpui_kit::accesskit::Uuid::new_v4().as_bytes(),
+                            );
+                            let name = shell.export_controls.name.read(cx).value();
+                            let graph = &shell.state.read(cx).snapshot.graph;
+                            let result = create_export(
+                                graph,
+                                id,
+                                shell.export_controls.direction,
+                                &name,
+                                shell.export_controls.channels,
+                            );
+                            shell.dispatch_exports(result, cx);
+                        });
+                    }),
+            ),
         )
         .gpui_test_observe()
 }

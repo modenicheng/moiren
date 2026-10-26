@@ -431,7 +431,6 @@ impl StudioShell {
             && !self.settings_open
             && matches!(self.presentation.page, Page::Graph | Page::Mixer)
             && snapshot.phase == SessionPhase::Running
-            && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision)
     }
 
     /// Refresh every meter observation once: reads the latest windows,
@@ -624,37 +623,135 @@ impl Render for StudioShell {
             self.pan_slider
                 .update(cx, |s, cx| s.set_value(pan, window, cx));
         }
-        let error = {
+        let error_strip = {
             let state = self.state.read(cx);
-            state
+            let faults = state.snapshot.graph.faults.clone();
+            let other = state
                 .dispatch_error
                 .as_ref()
-                .or(state.snapshot.graph.last_error.as_ref())
                 .or(state.snapshot.error.as_ref())
                 .or(state.snapshot.catalog_error.as_ref())
-                .cloned()
-        };
-        let error_strip = error.map(|error| {
-            let log_path = crate::logging::log_path()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| t!("Application file logging is unavailable").into());
-            div()
-                .id("error-strip")
-                .flex_none()
-                .px(px(theme::SPACE_4))
-                .py(px(theme::SPACE_2))
-                .bg(theme::soft(theme::DANGER))
-                .text_color(theme::DANGER)
-                .text_size(px(theme::TEXT_SM))
-                .child(error)
-                .child(
+                .cloned();
+            (!faults.is_empty() || other.is_some()).then(|| {
+                let log_path = crate::logging::log_path()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| t!("Application file logging is unavailable").into());
+                let this = cx.entity();
+                let graph = state.snapshot.graph.clone();
+                let mut list = div()
+                    .id("error-strip")
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .px(px(theme::SPACE_4))
+                    .py(px(theme::SPACE_2))
+                    .bg(theme::soft(theme::DANGER))
+                    .text_size(px(theme::TEXT_SM));
+                for (index, fault) in faults.iter().enumerate() {
+                    let subject = fault.subject;
+                    let location = match subject {
+                        crate::service::GraphSubject::Node(node) => {
+                            graph.node(node).map(|node| node.label.clone())
+                        }
+                        crate::service::GraphSubject::Route(source, destination) => {
+                            let port_label = |port: &moiren_core::graph::PortId| {
+                                graph
+                                    .graph
+                                    .nodes()
+                                    .iter()
+                                    .find(|node| {
+                                        node.inputs()
+                                            .iter()
+                                            .chain(node.outputs())
+                                            .any(|candidate| candidate.id() == *port)
+                                    })
+                                    .map(|node| node.id())
+                                    .and_then(|owner| {
+                                        graph.node(owner).map(|node| node.label.clone())
+                                    })
+                            };
+                            let source = port_label(&source);
+                            let destination = port_label(&destination);
+                            match (source, destination) {
+                                (Some(source), Some(destination)) => {
+                                    Some(format!("{source} → {destination}"))
+                                }
+                                _ => None,
+                            }
+                        }
+                        crate::service::GraphSubject::Graph => None,
+                    };
+                    let mut row = div()
+                        .id(SharedString::from(format!("fault-{index}")))
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .when(subject != crate::service::GraphSubject::Graph, |row| {
+                            row.cursor_pointer().on_click({
+                                let this = this.clone();
+                                move |_, _, cx| {
+                                    this.update(cx, |shell, cx| {
+                                        shell.inspector_open = true;
+                                        match subject {
+                                            crate::service::GraphSubject::Node(node) => {
+                                                shell.selected_route = None;
+                                                shell.selected_node = Some(node);
+                                            }
+                                            crate::service::GraphSubject::Route(
+                                                source,
+                                                destination,
+                                            ) => {
+                                                shell.selected_node = None;
+                                                shell.selected_route = Some((source, destination));
+                                            }
+                                            crate::service::GraphSubject::Graph => {}
+                                        }
+                                        cx.notify();
+                                    });
+                                }
+                            })
+                        });
+                    row = row
+                        .child(
+                            div()
+                                .text_color(theme::DANGER)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(t!("Error: %{cause}", cause = fault.cause.as_str())),
+                        )
+                        .when_some(location, |row, location| {
+                            row.child(
+                                div().text_color(theme::TEXT).child(t!(
+                                    "Channel: %{location}",
+                                    location = location.as_str()
+                                )),
+                            )
+                        })
+                        .when_some(fault.hint.as_deref(), |row, hint: &str| {
+                            row.child(
+                                div()
+                                    .text_color(theme::TEXT)
+                                    .child(t!("Hint: %{hint}", hint = hint)),
+                            )
+                        });
+                    list = list.child(row.gpui_test_observe());
+                }
+                if let Some(error) = other {
+                    list = list.child(
+                        div()
+                            .id("error-strip-message")
+                            .text_color(theme::DANGER)
+                            .child(error),
+                    );
+                }
+                list.child(
                     div()
                         .pt(px(2.))
                         .text_color(theme::TEXT)
                         .child(t!("Diagnostics: %{log_path}", log_path = log_path)),
                 )
                 .gpui_test_observe()
-        });
+            })
+        };
         let view = div()
             .id("studio-shell")
             .relative()
@@ -723,9 +820,7 @@ impl StudioShell {
             self.observation_nodes = None;
         }
         let graph = &snapshot.graph;
-        if snapshot.phase == SessionPhase::Running
-            && graph.active_revision == Some(graph.candidate_revision)
-        {
+        if snapshot.phase == SessionPhase::Running {
             let source = graph
                 .graph
                 .nodes()

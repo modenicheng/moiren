@@ -768,3 +768,37 @@ fn mono_and_swap_candidate_values_are_compiled_and_reject_other_node_kinds() {
         service.snapshot.candidate_revision
     );
 }
+
+#[test]
+fn rejected_edits_record_located_faults_that_clear_on_success() {
+    let mut service = ServiceGraph::default();
+    let node = service.snapshot().nodes[0].id;
+    assert!(
+        service
+            .edit(GraphEdit::SetMixer {
+                node,
+                state: MixerState {
+                    gain: 20.,
+                    ..Default::default()
+                },
+            })
+            .is_err()
+    );
+    let snapshot = service.snapshot();
+    let fault = snapshot
+        .faults
+        .iter()
+        .find(|fault| fault.subject == GraphSubject::Node(node))
+        .expect("located fault");
+    assert!(fault.hint.is_some());
+    // The next successful edit replaces the draft and clears the group.
+    assert!(
+        service
+            .edit(GraphEdit::SetMixer {
+                node,
+                state: MixerState::default(),
+            })
+            .is_ok()
+    );
+    assert!(service.snapshot().faults.is_empty());
+}

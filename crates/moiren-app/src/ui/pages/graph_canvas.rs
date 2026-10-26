@@ -142,7 +142,6 @@ impl CanvasWorld {
                 .filter(|diagnostics| {
                     diagnostics.generation == snapshot.generation
                         && snapshot.phase == crate::service::SessionPhase::Running
-                        && graph.active_revision == Some(graph.candidate_revision)
                 })
                 .map(|diagnostics| {
                     format!(

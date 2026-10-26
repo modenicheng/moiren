@@ -84,14 +84,7 @@ pub(super) async fn capture(
         cx.notify();
     });
     settle(shell, false, cx).await?;
-    save(cx, directory.join("mixer-selected-pending.png"));
-    shell.update(cx, |shell, cx| {
-        shell
-            .state
-            .update(cx, |state, _| state.dispatch(AppRequest::ApplyGraph))
-    });
-    settle(shell, true, cx).await?;
-    save(cx, directory.join("mixer-muted-applied.png"));
+    save(cx, directory.join("mixer-muted-controls.png"));
     shell.update(cx, |shell, cx| {
         shell
             .state

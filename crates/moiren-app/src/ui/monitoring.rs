@@ -346,8 +346,9 @@ impl NodeMeters {
             self.seen.clear();
             self.generation = Some(snapshot.generation);
         }
-        let active = snapshot.phase == SessionPhase::Running
-            && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision);
+        // Meters belong to the running session: candidate edits and the
+        // brief swap window of an automatic rebuild must never blank them.
+        let active = snapshot.phase == SessionPhase::Running;
         for id in visible {
             self.seen.insert(*id, now);
         }
@@ -888,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn node_meter_demand_is_per_node_visible_and_confirmed_revision_scoped() {
+    fn node_meter_demand_is_per_node_visible_and_survives_candidate_edits() {
         let (mut context, handle, mailbox, mut snapshot) =
             fixture(InputSelection::Tone { frequency_hz: 440. });
         let id = snapshot.graph.nodes[1].id;
@@ -901,8 +902,6 @@ mod tests {
             .signal_topics
             .node_levels
             .insert(other, snapshot.signal_topics.monitor_output.clone());
-        std::sync::Arc::make_mut(&mut snapshot.graph).active_revision =
-            Some(snapshot.graph.candidate_revision);
         let mut meters = NodeMeters::new(handle);
         let visible = [id].into_iter().collect();
         let now = Instant::now();
@@ -916,16 +915,10 @@ mod tests {
             snapshot.signal_topics.node_levels[&other].business_subscribers(),
             0
         );
+        // A candidate edit (revision drift while a rebuild is pending) must
+        // not interrupt meter demand or drop the current levels.
         std::sync::Arc::make_mut(&mut snapshot.graph).candidate_revision += 1;
         meters.update_at(&snapshot, &visible, now);
-        assert_eq!(
-            snapshot.signal_topics.node_levels[&id].business_subscribers(),
-            0
-        );
-        std::sync::Arc::make_mut(&mut snapshot.graph).active_revision =
-            Some(snapshot.graph.candidate_revision);
-        meters.update_at(&snapshot, &visible, now);
-        drain(&mailbox, &mut context);
         assert_eq!(
             snapshot.signal_topics.node_levels[&id].business_subscribers(),
             1

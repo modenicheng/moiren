@@ -31,6 +31,24 @@ pub struct GraphNodeState {
     pub output_endpoint_id: Option<String>,
 }
 
+/// Where a fault points, in user-visible terms: a channel strip, a route
+/// between two ports, or the project as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphSubject {
+    Node(NodeId),
+    Route(PortId, PortId),
+    Graph,
+}
+
+/// A rustc-style fault: what is wrong, where, and how to fix it. Causes are
+/// user language and never describe internal runtime state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphFault {
+    pub subject: GraphSubject,
+    pub cause: String,
+    pub hint: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphSnapshot {
     pub exports: Vec<ExportIntent>,
@@ -41,6 +59,9 @@ pub struct GraphSnapshot {
     pub active_revision: Option<u64>,
     pub pending_revision: Option<u64>,
     pub last_error: Option<String>,
+    /// Unresolved faults; the group clears on the next successful edit
+    /// landing or activation.
+    pub faults: Vec<GraphFault>,
 }
 impl GraphSnapshot {
     pub fn node(&self, id: NodeId) -> Option<&GraphNodeState> {
@@ -163,6 +184,7 @@ impl Default for ServiceGraph {
                 active_revision: None,
                 pending_revision: None,
                 last_error: None,
+                faults: Vec::new(),
             },
             pending_generation: None,
         }
@@ -193,10 +215,10 @@ pub fn default_label(kind: NodeKind) -> &'static str {
 /// single canonical source for every driver: the managed driver submits all
 /// values through engine control, while the legacy driver admits only the
 /// single node-addressed values its fixed session chain can address and must
-/// explicitly ignore the edge-targeted `SetSend` values.
+/// explicitly ignore the edge- and strip-targeted values.
 pub(crate) fn edit_parameter_values(edit: &GraphEdit) -> Vec<(ParameterTarget, ParamValue)> {
     use moiren_engine::{
-        host::SendParameter,
+        host::{SendParameter, StripParameter},
         processor::{Gain, Pan},
     };
     let node = |node, parameter, value| vec![(ParameterTarget::Node { node, parameter }, value)];
@@ -210,6 +232,27 @@ pub(crate) fn edit_parameter_values(edit: &GraphEdit) -> Vec<(ParameterTarget, P
         GraphEdit::SetPan { node: id, pan } => node(*id, Pan::POSITION, ParamValue::Float(*pan)),
         GraphEdit::SetMono { node: id, mono } => node(*id, Pan::MONO, ParamValue::Bool(*mono)),
         GraphEdit::SetSwap { node: id, swap } => node(*id, Pan::SWAP, ParamValue::Bool(*swap)),
+        // Direct strip fields. The effective gain and mute (dim fold, solo
+        // audibility) depend on the whole graph and are submitted separately
+        // by the managed driver's strip synchronization.
+        GraphEdit::SetMixer { node: id, state } => {
+            let strip = |parameter, value| {
+                (
+                    ParameterTarget::Strip {
+                        node: *id,
+                        parameter,
+                    },
+                    value,
+                )
+            };
+            vec![
+                strip(StripParameter::Balance, ParamValue::Float(state.balance)),
+                strip(
+                    StripParameter::Mode,
+                    ParamValue::Enum(state.channel_mode as u32),
+                ),
+            ]
+        }
         GraphEdit::SetSend { edge, params } => vec![
             (
                 ParameterTarget::Edge {
@@ -234,6 +277,84 @@ pub(crate) fn edit_parameter_values(edit: &GraphEdit) -> Vec<(ParameterTarget, P
             ),
         ],
         _ => Vec::new(),
+    }
+}
+/// The channel or route an edit names, for fault placement.
+pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubject {
+    let node = |node: &NodeId| GraphSubject::Node(*node);
+    match edit {
+        GraphEdit::SetBuiltin { node: id, .. }
+        | GraphEdit::SetCompressor { node: id, .. }
+        | GraphEdit::ClearBinding(id)
+        | GraphEdit::SetMixer { node: id, .. }
+        | GraphEdit::RemoveNode(id)
+        | GraphEdit::SetLabel { node: id, .. }
+        | GraphEdit::SetGain { node: id, .. }
+        | GraphEdit::SetPan { node: id, .. }
+        | GraphEdit::SetMono { node: id, .. }
+        | GraphEdit::SetSwap { node: id, .. }
+        | GraphEdit::BindSource { node: id, .. }
+        | GraphEdit::BindOutput { node: id, .. }
+        | GraphEdit::AddBusInput(id)
+        | GraphEdit::RemoveBusInput { node: id, .. } => node(id),
+        GraphEdit::Connect {
+            source,
+            destination,
+        } => GraphSubject::Route(*source, *destination),
+        GraphEdit::Disconnect(edge) | GraphEdit::SetSend { edge, .. } => graph
+            .get_edge(*edge)
+            .map(|edge| GraphSubject::Route(edge.src_port(), edge.dst_port()))
+            .unwrap_or(GraphSubject::Graph),
+        GraphEdit::SetExports(_) | GraphEdit::AddNode { .. } => GraphSubject::Graph,
+    }
+}
+
+/// Plain-language fixes for the common validation causes.
+fn edit_hint(error: &str) -> Option<&'static str> {
+    if error.contains("尚未绑定音源") {
+        Some("在通道顶部选择一个输入源，或删除这个通道")
+    } else if error.contains("尚未绑定设备") {
+        Some("在通道顶部选择一个输出设备，或删除这个通道")
+    } else if error.contains("Mixer") {
+        Some("推子范围是 −∞ 到 +24 dB；声道模式按循环键回到有效档位")
+    } else if error.contains("Mono 和 Swap") {
+        Some("这两个开关只在 Balance 通道上可用")
+    } else if error.contains("绑定了同一") {
+        Some("每个设备或应用音源只能接一个通道；先解开另一条绑定")
+    } else {
+        None
+    }
+}
+
+/// Whether an edit changes what a prepared plan must rebuild. Value edits of
+/// parameters with live mappings (gain/pan/mono/swap/compressor, sends,
+/// strips) route through engine control instead; a send tap change always
+/// rebuilds because it rewires prepared routing. `previous` is the graph
+/// before the edit. Drivers whose backend lacks the live strip mapping
+/// (the legacy fixed session chain) treat `SetMixer` as structural.
+pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &LogicalGraph) -> bool {
+    match edit {
+        GraphEdit::AddNode { .. }
+        | GraphEdit::RemoveNode(_)
+        | GraphEdit::Connect { .. }
+        | GraphEdit::Disconnect(_)
+        | GraphEdit::AddBusInput(_)
+        | GraphEdit::RemoveBusInput { .. }
+        | GraphEdit::SetExports(_)
+        | GraphEdit::SetBuiltin { .. }
+        | GraphEdit::BindSource { .. }
+        | GraphEdit::BindOutput { .. }
+        | GraphEdit::ClearBinding(_) => true,
+        GraphEdit::SetSend { edge, params } => previous
+            .get_edge(*edge)
+            .is_ok_and(|edge| edge.params().tap != params.tap),
+        GraphEdit::SetMixer { .. }
+        | GraphEdit::SetCompressor { .. }
+        | GraphEdit::SetGain { .. }
+        | GraphEdit::SetPan { .. }
+        | GraphEdit::SetMono { .. }
+        | GraphEdit::SetSwap { .. }
+        | GraphEdit::SetLabel { .. } => false,
     }
 }
 /// Single source for per-node candidate-state domains. Every layer that
@@ -293,18 +414,52 @@ impl ServiceGraph {
         }
     }
     pub fn record_error(&mut self, error: impl ToString) {
+        let error = error.to_string();
+        self.record_fault(GraphFault {
+            subject: GraphSubject::Graph,
+            cause: error.clone(),
+            hint: None,
+        });
+        self.snapshot.last_error = Some(error);
+    }
+    /// Record a fault whose subject is already known (a rejected edit names
+    /// its own channel or route).
+    pub fn record_error_with_subject(&mut self, subject: GraphSubject, error: &str) {
+        self.record_fault(GraphFault {
+            subject,
+            cause: error.to_string(),
+            hint: edit_hint(error).map(str::to_string),
+        });
         self.snapshot.last_error = Some(error.to_string());
     }
-    pub fn edit(&mut self, edit: GraphEdit) -> Result<(), String> {
+    pub fn record_fault(&mut self, fault: GraphFault) {
+        if !self
+            .snapshot
+            .faults
+            .iter()
+            .any(|existing| existing.subject == fault.subject && existing.cause == fault.cause)
+        {
+            self.snapshot.faults.push(fault);
+        }
+    }
+    /// Applies a validated edit and reports whether the prepared structure
+    /// changed and a rebuild is required (see
+    /// [`edit_affects_prepared_structure`]).
+    pub fn edit(&mut self, edit: GraphEdit) -> Result<bool, String> {
+        let previous = self.snapshot.graph.clone();
+        let subject = edit_subject(&edit, &previous);
         let mut next = self.snapshot.clone();
-        let result = edit_candidate(&mut next, edit);
+        let result = edit_candidate(&mut next, edit.clone());
         if let Err(error) = result {
-            self.record_error(&error);
+            self.record_error_with_subject(subject, &error);
             return Err(error);
         }
-        next.graph.validate().map_err(|e| e.to_string())?;
+        if let Err(error) = next.graph.validate().map_err(|e| e.to_string()) {
+            self.record_error_with_subject(subject, &error);
+            return Err(error);
+        }
         if let Err(error) = validate_exports(&next.exports, &next.graph) {
-            self.record_error(&error);
+            self.record_error_with_subject(subject, &error);
             return Err(error);
         }
         next.candidate_revision = next
@@ -312,8 +467,10 @@ impl ServiceGraph {
             .checked_add(1)
             .ok_or("图版本空间已耗尽")?;
         next.last_error = None;
+        next.faults.clear();
+        let structural = edit_affects_prepared_structure(&edit, &previous);
         self.snapshot = next;
-        Ok(())
+        Ok(structural)
     }
     /// A loaded document creates a new candidate. Disk contents cannot confirm
     /// native activity, and stale in-flight preparations never confirm this edit.
@@ -460,6 +617,7 @@ impl ServiceGraph {
                 || self.snapshot.pending_revision == Some(revision))
         {
             self.snapshot.last_error = None;
+            self.snapshot.faults.clear();
         }
         self.snapshot.active_revision = Some(revision);
         if self.pending_generation == Some(generation)
@@ -477,6 +635,21 @@ impl ServiceGraph {
             self.snapshot.pending_revision = None;
             self.pending_generation = None;
             self.record_error(error);
+        }
+    }
+    /// A rebuild rejected by the engine: keep the old topology running and
+    /// report the located fault.
+    pub fn preparation_rejected(
+        &mut self,
+        generation: SessionGeneration,
+        fault: GraphFault,
+        error: String,
+    ) {
+        if self.pending_generation == Some(generation) {
+            self.snapshot.pending_revision = None;
+            self.pending_generation = None;
+            self.record_fault(fault);
+            self.snapshot.last_error = Some(error);
         }
     }
 }

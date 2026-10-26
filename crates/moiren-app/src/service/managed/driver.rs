@@ -50,6 +50,7 @@ impl ServiceDriver for ManagedDriver {
             AppRequest::RefreshCatalog => self.catalog.request(),
             AppRequest::Start(spec) => {
                 self.automatic_startup = false;
+                self.auto_apply_deadline = None;
                 let mut settings = c.audio_settings.clone();
                 let Ok(block_frames) = u32::try_from(spec.max_block_frames) else {
                     c.graph
@@ -71,6 +72,7 @@ impl ServiceDriver for ManagedDriver {
             }
             AppRequest::ApplyGraph => {
                 self.automatic_startup = false;
+                self.auto_apply_deadline = None;
                 self.apply_audio_settings = Some(c.audio_settings.clone());
                 self.apply = true;
             }
@@ -78,6 +80,7 @@ impl ServiceDriver for ManagedDriver {
                 self.automatic_startup = false;
                 self.apply = false;
                 self.apply_audio_settings = None;
+                self.auto_apply_deadline = None;
                 let _ = c.core.stop();
                 self.retire(c);
             }
@@ -95,9 +98,19 @@ impl ServiceDriver for ManagedDriver {
             }
             AppRequest::EditGraph(edit) => {
                 let values = graph::edit_parameter_values(&edit);
-                if c.graph.edit(edit).is_ok() {
+                let edited_strip = match &edit {
+                    GraphEdit::SetMixer { node, .. } => Some(*node),
+                    _ => None,
+                };
+                if let Ok(structural) = c.graph.edit(edit) {
                     for (target, value) in values {
                         self.submit_parameter(c, target, value);
+                    }
+                    if let Some(node) = edited_strip {
+                        self.sync_effective_strip_parameters(c, node);
+                    }
+                    if structural && self.owner.is_some() {
+                        self.auto_apply_deadline = Some(Instant::now() + super::AUTO_APPLY_DELAY);
                     }
                 }
             }
@@ -130,6 +143,14 @@ impl ServiceDriver for ManagedDriver {
     fn poll(&mut self, c: &mut ServiceContext, pool: &mut JobPool, budget: RoundBudget) {
         self.poll_completions(c, budget);
         self.poll_catalog(pool);
+        if let Some(deadline) = self.auto_apply_deadline
+            && deadline <= Instant::now()
+        {
+            self.auto_apply_deadline = None;
+            self.apply_audio_settings
+                .get_or_insert_with(|| c.audio_settings.clone());
+            self.apply = true;
+        }
         if self.apply {
             self.apply(c);
         }
@@ -150,10 +171,12 @@ impl ServiceDriver for ManagedDriver {
         self.exiting = true;
         self.apply = false;
         self.apply_audio_settings = None;
+        self.auto_apply_deadline = None;
         self.retire(c);
     }
     fn is_drained(&self) -> bool {
-        self.owner.is_none()
+        self.auto_apply_deadline.is_none()
+            && self.owner.is_none()
             && self.cleaning == 0
             && !self.catalog.is_running()
             && self.exports_runtime.is_drained()
@@ -433,7 +456,9 @@ impl ManagedDriver {
             }
             EditOutcome::Rejected(error) => {
                 if edit.apply_id == owner.latest_apply_id {
-                    c.graph.preparation_failed(owner.generation, error);
+                    let fault = project_fault(&error);
+                    c.graph
+                        .preparation_rejected(owner.generation, fault, error.to_string());
                 }
                 false
             }
@@ -480,7 +505,11 @@ impl ManagedDriver {
                     false
                 }
                 ParameterOutcome::Rejected(error) => {
-                    c.graph.record_error(format!("实时参数被拒绝: {error:?}"));
+                    // A target removed by a newer candidate is an expected
+                    // consequence of editing, not a failure to report.
+                    if error != host::ParameterFailure::TargetRemoved {
+                        c.graph.record_error(format!("实时参数被拒绝: {error:?}"));
+                    }
                     parameter_failed |= pending.confirmation.is_some()
                         && pending.confirmation == self.confirm_parameters;
                     false
@@ -532,6 +561,7 @@ impl ManagedDriver {
                         self.confirmation_values.pop_front();
                     }
                     self.parameters.push(PendingParameter {
+                        target,
                         receipt,
                         confirmation: if live { None } else { self.confirm_parameters },
                     });
@@ -562,7 +592,15 @@ impl ManagedDriver {
             return;
         };
         if !self.parameters.iter().any(|pending| {
-            pending.confirmation.is_some() && pending.confirmation == self.confirm_parameters
+            pending.confirmation.is_some()
+                && pending.confirmation == self.confirm_parameters
+                // A value whose target exists only in a pending topology is
+                // parked until that plan activates; its own Activated edit
+                // reconciles it, so it cannot block this Apply's barrier.
+                && snapshot
+                    .active
+                    .as_ref()
+                    .is_none_or(|active| active.target_exists(pending.target))
         }) && self.confirmation_values.is_empty()
             && let Some(ApplyConfirmation {
                 id,
@@ -605,5 +643,55 @@ impl ManagedDriver {
             self.retire(c);
             self.apply = false;
         }
+    }
+}
+
+/// Map an engine project rejection to a located, user-language fault.
+fn project_fault(error: &moiren_engine::host::ProjectError) -> super::GraphFault {
+    use moiren_engine::host::ProjectError as E;
+    let (subject, cause, hint) = match error {
+        E::MissingConfiguration(node) => (
+            super::GraphSubject::Node(*node),
+            "这个通道缺少可用的处理器配置".to_string(),
+            Some("删掉这个通道再重新添加一个同类型的"),
+        ),
+        E::ConfigurationKind(node) => (
+            super::GraphSubject::Node(*node),
+            "通道的配置和它的类型不匹配".to_string(),
+            Some("检查这个通道的参数设置，或删除后重新添加"),
+        ),
+        E::UnknownConfiguration(node) => (
+            super::GraphSubject::Node(*node),
+            "配置指向的通道已经不存在".to_string(),
+            None,
+        ),
+        E::IoChannels(node) => (
+            super::GraphSubject::Node(*node),
+            "通道的声道数和连线不一致".to_string(),
+            Some("调整通道声道数，或重连这条 route"),
+        ),
+        E::Io { node, .. } => (
+            super::GraphSubject::Node(*node),
+            "输入/输出设备配置无效".to_string(),
+            Some("换一个设备，或检查采样率/精度设置"),
+        ),
+        E::InvalidProcessor(node) => (
+            super::GraphSubject::Node(*node),
+            "通道参数超出有效范围".to_string(),
+            None,
+        ),
+        E::InvalidParameter => (
+            super::GraphSubject::Graph,
+            "参数超出有效范围".to_string(),
+            None,
+        ),
+        E::Graph(_) | E::InvalidProcessing | E::Capacity => {
+            (super::GraphSubject::Graph, error.to_string(), None)
+        }
+    };
+    super::GraphFault {
+        subject,
+        cause,
+        hint: hint.map(str::to_string),
     }
 }

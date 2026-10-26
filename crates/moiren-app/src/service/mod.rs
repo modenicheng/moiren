@@ -27,8 +27,9 @@ pub use backend::*;
 pub use driver::BackendDriver;
 pub use exports::*;
 pub use graph::{
-    BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphNodeState,
-    GraphPreparation, GraphSnapshot, MixerState, ServiceGraph, default_label, validate_node_state,
+    BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphFault, GraphNodeState,
+    GraphPreparation, GraphSnapshot, GraphSubject, MixerState, ServiceGraph, default_label,
+    validate_node_state,
 };
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;

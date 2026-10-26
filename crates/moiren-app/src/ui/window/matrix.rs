@@ -161,7 +161,6 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     div()
                         .flex()
                         .gap(px(8.))
-                        .child(apply(shell, cx))
                         .child(inspector_toggle("toggle-details", cx)),
                 ),
         )
