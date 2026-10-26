@@ -76,6 +76,7 @@ pub struct RenderOwnerExit {
 struct NativeOwnerExit {
     report: RenderReport,
     renderer: Option<NativeRenderer>,
+    _padding: Option<crate::render::RenderPaddingOwner>,
 }
 pub struct RenderSession {
     stop: Arc<StdHandle>,
@@ -83,8 +84,12 @@ pub struct RenderSession {
     worker: Option<JoinHandle<NativeOwnerExit>>,
     recovery: Option<Arc<Mutex<Option<NativeRenderer>>>>,
     fallback: Option<RenderReport>,
+    padding: Option<crate::render::RenderPaddingObserver>,
 }
 impl RenderSession {
+    pub fn padding_observer(&self) -> Option<crate::render::RenderPaddingObserver> {
+        self.padding.clone()
+    }
     /// A post-Start acknowledgement, independent of preparation readiness.
     pub fn has_started(&self) -> bool {
         self.started.load(Ordering::Acquire)
@@ -131,6 +136,7 @@ impl RenderSession {
                     Ok(NativeOwnerExit {
                         renderer: Some(renderer),
                         report,
+                        _padding: None,
                     })
                 }
                 _ => Err(error),
@@ -240,6 +246,7 @@ fn start_owner(
             NativeOwnerExit {
                 report: exit.report,
                 renderer: Some(NativeRenderer::Master(Box::new(exit.renderer))),
+                _padding: None,
             }
         })
         .map_err(|error| RenderError::WorkerSpawn {
@@ -251,6 +258,7 @@ fn start_owner(
         worker: Some(worker),
         recovery: None,
         fallback: None,
+        padding: None,
     };
     match rx.recv() {
         Ok(Ok(())) => Ok(PreparedRenderSession { session, gate }),

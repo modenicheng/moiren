@@ -325,6 +325,7 @@ mod tests {
     #[test]
     fn native_health_rejects_missing_stopped_and_replaced_owners() {
         let mut observation = NativeObservationSnapshot {
+            render_padding: Vec::new(),
             owner_generation: 7,
             running: true,
             streams: Vec::new(),
@@ -346,6 +347,7 @@ mod tests {
             .push(
                 Duration::from_millis(1250),
                 Some(NativeObservationSnapshot {
+                    render_padding: Vec::new(),
                     owner_generation: 7,
                     running: true,
                     streams: Vec::new(),

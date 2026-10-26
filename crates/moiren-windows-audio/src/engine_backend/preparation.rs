@@ -174,6 +174,7 @@ impl WindowsBackend {
         let mut streams = Vec::new();
         let mut bridges = Vec::new();
         let mut probes = Vec::new();
+        let mut render_padding = Vec::new();
         let mut endpoints = Vec::new();
         let mut virtual_sessions = VirtualSessions::default();
         let mut virtual_sinks = Vec::new();
@@ -255,6 +256,7 @@ impl WindowsBackend {
                 gate.clone(),
             )
             .map_err(render_error)?;
+            let padding_observer = native.padding_observer();
             let (info, render_queue) = group.admit_output(
                 node,
                 native,
@@ -267,6 +269,7 @@ impl WindowsBackend {
                 info.timing.sample_rate,
             ))?;
             let master = output.device.clock_role == ClockRole::Master;
+            render_padding.push((node, padding_observer));
             streams.push(NativeStreamObservation {
                 node,
                 kind: if master {
@@ -582,6 +585,7 @@ impl WindowsBackend {
                 streams,
                 bridges,
                 probes,
+                render_padding,
                 virtual_sessions,
             })),
         })

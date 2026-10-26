@@ -248,6 +248,7 @@ pub(super) struct StreamContext<'a> {
     pub stop: &'a StdHandle,
     pub gate: &'a ActivationGate,
     pub acknowledged: &'a AtomicBool,
+    pub padding: Option<&'a mut crate::render::RenderPaddingOwner>,
 }
 pub(super) fn owner(
     options: &RenderOptions,
@@ -272,6 +273,7 @@ pub(super) fn owner(
                 stop,
                 gate,
                 acknowledged,
+                padding: None,
             },
             || ready.send(Ok(())).map_err(|_| RenderError::StartupLost),
         )
@@ -289,7 +291,19 @@ pub(super) fn run_stream(
         stop,
         gate,
         acknowledged,
+        padding,
     } = context;
+    // Borrow, never own the Arc on the callback stack. Every return/unwind
+    // invalidates the sample; the capability itself goes back to the joiner.
+    struct InvalidatePadding<'a>(Option<&'a mut crate::render::RenderPaddingOwner>);
+    impl Drop for InvalidatePadding<'_> {
+        fn drop(&mut self) {
+            if let Some(padding) = self.0.as_mut() {
+                padding.invalidate();
+            }
+        }
+    }
+    let mut padding_observation = InvalidatePadding(padding);
     let NativeRender {
         client,
         render,
@@ -347,6 +361,15 @@ pub(super) fn run_stream(
             }
             let wake_qpc_100ns = clock.as_ref().and_then(QpcClock::now);
             let padding = api("GetCurrentPadding", unsafe { client.GetCurrentPadding() })?;
+            writable_frames(capacity, padding)?;
+            if let Some(owner) = padding_observation.0.as_mut() {
+                owner.publish(crate::render::RenderPaddingSample {
+                    padding_frames: padding,
+                    capacity_frames: capacity,
+                    sample_rate: Some(SAMPLE_RATE),
+                    period_frames: report.shared_period.actual_period_frames,
+                });
+            }
             let wake = WakeTrace {
                 wake_qpc_100ns,
                 padding_before_frames: padding,
@@ -753,6 +776,23 @@ pub(super) mod diagnostic_tests {
         failure: Failure,
         padding: u32,
     ) -> Result<RenderStatus, RenderError> {
+        run_with_padding(
+            options,
+            report,
+            renderer,
+            failure,
+            padding,
+            &crate::render::RenderPaddingObserver::new(),
+        )
+    }
+    fn run_with_padding(
+        options: &RenderOptions,
+        report: &mut RenderReport,
+        renderer: &mut impl SampleRenderer,
+        failure: Failure,
+        padding: u32,
+        observer: &crate::render::RenderPaddingObserver,
+    ) -> Result<RenderStatus, RenderError> {
         let stop = crate::StopSignal::new().unwrap();
         let gate = ActivationGate::new(stop.clone()).unwrap();
         if matches!(failure, Failure::Cancel) {
@@ -799,6 +839,7 @@ pub(super) mod diagnostic_tests {
                 stop: &stop.event,
                 gate: &gate,
                 acknowledged: &AtomicBool::new(false),
+                padding: Some(&mut observer.new_owner()),
             },
             || Ok(()),
         );
@@ -810,6 +851,58 @@ pub(super) mod diagnostic_tests {
         acknowledged: Cell<usize>,
         failure: Failure,
         bridge: Option<BridgeSnapshot>,
+    }
+
+    #[test]
+    fn native_padding_is_published_before_render_even_with_trace_disabled() {
+        struct InspectPadding(crate::render::RenderPaddingObserver, usize);
+        impl SampleRenderer for InspectPadding {
+            fn timeline(&self) -> u64 {
+                0
+            }
+            fn counters(&self) -> DemandCounters {
+                DemandCounters::default()
+            }
+            fn render_interleaved(&mut self, _: &mut [f32]) -> Result<DemandReport, RenderError> {
+                self.1 += 1;
+                if self.1 > 1 {
+                    let sample = self
+                        .0
+                        .try_snapshot()
+                        .expect("padding missing in native callback");
+                    assert_eq!(sample.padding_frames, 1);
+                    assert_eq!(sample.capacity_frames, 4);
+                    assert_eq!(sample.sample_rate, Some(SAMPLE_RATE));
+                    assert_eq!(sample.period_frames, Some(2));
+                    return Err(RenderError::InvalidSamples);
+                }
+                assert!(self.0.try_snapshot().is_none());
+                Ok(DemandReport::default())
+            }
+            fn acknowledge_submission(&self) {}
+        }
+        let mut options = options();
+        options.latency_telemetry = TelemetryMode::Disabled;
+        let mut report = new_report(&options);
+        report.shared_period.actual_period_frames = Some(2);
+        let observer = crate::render::RenderPaddingObserver::new();
+        let mut renderer = InspectPadding(observer.clone(), 0);
+        assert_eq!(
+            run_with_padding(
+                &options,
+                &mut report,
+                &mut renderer,
+                Failure::None,
+                1,
+                &observer
+            ),
+            Err(RenderError::InvalidSamples)
+        );
+        assert!(
+            observer.try_snapshot().is_none(),
+            "stopped stream retained stale padding"
+        );
+        assert_eq!(report.stats.empty_padding_wakes, 0);
     }
     impl SampleRenderer for DiagnosticRenderer {
         fn timeline(&self) -> u64 {

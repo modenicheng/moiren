@@ -24,6 +24,7 @@ pub struct NativeRenderInfo {
 }
 pub struct PreparedNativeRender {
     info: NativeRenderInfo,
+    padding: crate::render::RenderPaddingObserver,
     session: RenderSession,
     gate: ActivationGate,
     renderer: preparation::Sender<(RendererHandoff, PreparedRenderQueue)>,
@@ -50,6 +51,9 @@ pub(crate) struct FollowerAttachFailure {
 impl PreparedNativeRender {
     pub fn info(&self) -> NativeRenderInfo {
         self.info
+    }
+    pub fn padding_observer(&self) -> crate::render::RenderPaddingObserver {
+        self.padding.clone()
     }
     pub fn cancel_with_report(self) -> Result<RenderReport, RenderError> {
         let _ = self.session.request_stop();
@@ -190,6 +194,8 @@ fn start_native_owner(
     let worker_gate = gate.clone();
     let recovery = Arc::new(Mutex::new(None));
     let worker_recovery = recovery.clone();
+    let padding = crate::render::RenderPaddingObserver::new();
+    let padding_owner = padding.new_owner();
     let worker = thread::Builder::new()
         .name("moiren-shared-render".into())
         .spawn(move || {
@@ -205,6 +211,7 @@ fn start_native_owner(
                     renderer: None,
                     initial_frame: 0,
                     recovery: worker_recovery,
+                    padding: Some(padding_owner),
                 },
             )
         })
@@ -217,6 +224,7 @@ fn start_native_owner(
         worker: Some(worker),
         recovery: Some(recovery),
         fallback: Some(fallback),
+        padding: Some(padding.clone()),
     };
     let info = match metadata.recv() {
         Ok(result) => result?,
@@ -228,6 +236,7 @@ fn start_native_owner(
     };
     Ok(PreparedNativeRender {
         info,
+        padding,
         session,
         gate,
         renderer: sender,
@@ -241,6 +250,7 @@ struct RenderPreparation {
     renderer: Option<NativeRenderer>,
     initial_frame: u64,
     recovery: RendererHandoff,
+    padding: Option<crate::render::RenderPaddingOwner>,
 }
 impl Drop for RenderPreparation {
     fn drop(&mut self) {
@@ -309,6 +319,7 @@ fn run_owner(
                         stop,
                         gate,
                         acknowledged: started,
+                        padding: preparation.padding.as_mut(),
                     },
                     || {
                         preparation
@@ -342,6 +353,9 @@ fn run_owner_with(
         run(&stop, &gate, &started, &mut preparation, &mut report)
     }))
     .unwrap_or(Err(RenderError::WorkerPanicked));
+    if let Some(padding) = preparation.padding.as_mut() {
+        padding.invalidate();
+    }
     report.finish_diagnostics();
     let pending = preparation.receiver.close_and_take();
     if let Some((handoff, _)) = pending {
@@ -371,6 +385,7 @@ fn run_owner_with(
     NativeOwnerExit {
         report,
         renderer: None,
+        _padding: preparation.padding.take(),
     }
 }
 

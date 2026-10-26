@@ -56,6 +56,7 @@ pub(crate) fn fake_prepared_with_info(
                 return NativeOwnerExit {
                     report: stream::new_report(&options),
                     renderer: None,
+                    _padding: None,
                 };
             }
             run_owner_with(
@@ -121,6 +122,18 @@ fn assert_stopped(stop: &StopSignal) {
         },
         windows::Win32::Foundation::WAIT_OBJECT_0
     );
+}
+
+#[test]
+fn prepared_padding_observer_stays_unknown_and_is_invalidated_after_native_exit() {
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let prepared = fake_prepared(stop.clone(), gate, Outcome::Run).unwrap();
+    let padding = prepared.padding_observer();
+    assert_eq!(padding.try_snapshot(), None);
+    stop.request_stop().unwrap();
+    prepared.cancel_with_report().unwrap();
+    assert_eq!(padding.try_snapshot(), None);
 }
 
 #[test]
@@ -286,6 +299,7 @@ fn cancelled_queued_renderer_returns_to_joiner_without_counting_its_prior_timeli
                 renderer: None,
                 initial_frame: 0,
                 recovery: worker_recovery,
+                padding: None,
             },
             |stop, _, _, preparation, report| {
                 preparation.receive(info(), stop, report)?;
@@ -334,6 +348,7 @@ fn trace_windows_and_event_allocation_survive_native_callback_unwind_to_joiner()
                 renderer: Some(NativeRenderer::Master(Box::new(renderer))),
                 initial_frame: 0,
                 recovery: worker_recovery,
+                padding: None,
             },
             |_, _, _, preparation, report| {
                 diagnostic::run(
@@ -411,6 +426,7 @@ fn trace_metadata_survives_native_cancel_and_start_failure() {
                 renderer: Some(NativeRenderer::Master(Box::new(renderer))),
                 initial_frame: 0,
                 recovery: Arc::new(Mutex::new(None)),
+                padding: None,
             },
             |_, _, _, preparation, report| {
                 let actual = diagnostic::run(

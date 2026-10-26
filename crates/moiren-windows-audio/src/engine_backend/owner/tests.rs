@@ -109,6 +109,7 @@ fn transport(
             observations: NativeObservations::default(),
             streams: Vec::new(),
             bridges: Vec::new(),
+            render_padding: Vec::new(),
             probes: Vec::new(),
             output: Some(reader),
             sink,

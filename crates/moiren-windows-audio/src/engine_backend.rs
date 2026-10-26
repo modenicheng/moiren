@@ -21,8 +21,8 @@ mod profile;
 #[cfg(windows)]
 pub(crate) use observations::ObservationLease;
 pub use observations::{
-    NativeBridgeObservation, NativeObservationSnapshot, NativeObservations, NativeStreamKind,
-    NativeStreamObservation,
+    NativeBridgeObservation, NativeObservationSnapshot, NativeObservations,
+    NativeRenderPaddingObservation, NativeStreamKind, NativeStreamObservation,
 };
 pub use profile::NativeLatencyProfile;
 

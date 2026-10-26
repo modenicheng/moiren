@@ -51,6 +51,16 @@ pub struct NativeObservationSnapshot {
     pub streams: Vec<NativeStreamObservation>,
     pub bridges: Vec<NativeBridgeObservation>,
     pub boundary_probes: Vec<NativeBoundaryProbe>,
+    pub render_padding: Vec<NativeRenderPaddingObservation>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NativeRenderPaddingObservation {
+    #[serde(serialize_with = "serialize_node")]
+    pub node: NodeId,
+    /// Native queue observation only; None before the first wake, on stop,
+    /// or during contention. Never a physical end-to-end latency estimate.
+    pub sample: Option<crate::render::RenderPaddingSnapshot>,
 }
 
 /// Live control-side sample of one virtual boundary's carrier probe.
@@ -107,6 +117,7 @@ pub(super) struct Session {
         NativeStreamKind,
         std::sync::Arc<crate::virtual_owner::BoundaryProbe>,
     )>,
+    renders: Vec<(NodeId, crate::render::RenderPaddingObserver)>,
 }
 impl NativeObservations {
     #[cfg(any(windows, test))]
@@ -140,6 +151,14 @@ impl NativeObservations {
                 })
                 .collect(),
             boundary_probes,
+            render_padding: session
+                .renders
+                .iter()
+                .map(|(node, observer)| NativeRenderPaddingObservation {
+                    node: *node,
+                    sample: observer.try_snapshot(),
+                })
+                .collect(),
         })
     }
     #[cfg(any(windows, test))]
@@ -154,12 +173,28 @@ impl NativeObservations {
             std::sync::Arc<crate::virtual_owner::BoundaryProbe>,
         )>,
     ) {
+        self.publish_with_renders(generation, streams, bridges, probes, Vec::new());
+    }
+    #[cfg(any(windows, test))]
+    pub(crate) fn publish_with_renders(
+        &self,
+        generation: u64,
+        streams: Vec<NativeStreamObservation>,
+        bridges: Vec<(NodeId, BridgeObserver)>,
+        probes: Vec<(
+            NodeId,
+            NativeStreamKind,
+            std::sync::Arc<crate::virtual_owner::BoundaryProbe>,
+        )>,
+        renders: Vec<(NodeId, crate::render::RenderPaddingObserver)>,
+    ) {
         *self.0.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(Arc::new(Session {
             generation,
             running: AtomicBool::new(false),
             streams,
             probes,
             bridges,
+            renders,
         }));
     }
     #[cfg(any(windows, test))]
@@ -308,5 +343,61 @@ mod tests {
         assert!(!snapshot.running);
         drop(new);
         assert!(observations.snapshot().is_none());
+    }
+
+    #[test]
+    fn native_padding_projection_is_live_and_old_owner_cleanup_cannot_clear_it() {
+        use crate::render::{RenderPaddingObserver, RenderPaddingSample};
+        let mut graph = LogicalGraph::new();
+        let node = graph.create_node(NodeKind::Sink, 2).unwrap();
+        let observer = RenderPaddingObserver::new();
+        let mut owner = observer.new_owner();
+        let observations = NativeObservations::default();
+        observations.publish_with_renders(
+            1,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![(node, observer)],
+        );
+        let old_lease = observations.lease(1);
+        let first = observations.snapshot().unwrap();
+        assert_eq!(first.render_padding.len(), 1);
+        assert!(first.render_padding[0].sample.is_none());
+        owner.publish(RenderPaddingSample {
+            padding_frames: 21,
+            capacity_frames: 240,
+            sample_rate: Some(48_000),
+            period_frames: Some(48),
+        });
+        let live = observations.snapshot().unwrap();
+        assert_eq!(live.render_padding[0].node, node);
+        assert_eq!(live.render_padding[0].sample.unwrap().padding_frames, 21);
+        let replacement = RenderPaddingObserver::new();
+        let mut new_owner = replacement.new_owner();
+        new_owner.publish(RenderPaddingSample {
+            padding_frames: 17,
+            capacity_frames: 128,
+            sample_rate: None,
+            period_frames: None,
+        });
+        observations.publish_with_renders(
+            2,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![(node, replacement)],
+        );
+        drop(old_lease);
+        owner.invalidate();
+        let current = observations.snapshot().unwrap();
+        assert_eq!(current.owner_generation, 2);
+        assert_eq!(current.render_padding[0].sample.unwrap().padding_frames, 17);
+        new_owner.invalidate();
+        assert!(
+            observations.snapshot().unwrap().render_padding[0]
+                .sample
+                .is_none()
+        );
     }
 }

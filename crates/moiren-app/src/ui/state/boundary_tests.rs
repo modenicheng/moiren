@@ -27,6 +27,7 @@ fn boundary_snapshot(target_frames: Option<u32>) -> AppSnapshot {
     snapshot.native_observations = Some(NativeSessionObservations {
         generation: SessionGeneration(8),
         observation: NativeObservationSnapshot {
+            render_padding: Vec::new(),
             owner_generation: 3,
             running: true,
             // Both node and kind must match; neither alone identifies a probe.

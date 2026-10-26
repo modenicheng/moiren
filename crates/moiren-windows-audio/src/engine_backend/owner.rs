@@ -37,6 +37,7 @@ pub(super) struct WindowsTransport {
     pub(super) observations: NativeObservations,
     pub(super) streams: Vec<NativeStreamObservation>,
     pub(super) bridges: Vec<(NodeId, crate::clock_bridge::BridgeObserver)>,
+    pub(super) render_padding: Vec<(NodeId, crate::render::RenderPaddingObserver)>,
     pub(super) probes: Vec<(
         NodeId,
         NativeStreamKind,
@@ -178,11 +179,12 @@ impl PreparedTransport<f32> for WindowsTransport {
             let (engine, _) = exit.renderer.into_parts();
             return Err(Box::new(AttachFailure { engine, error }));
         }
-        self.observations.publish(
+        self.observations.publish_with_renders(
             self.generation,
             std::mem::take(&mut self.streams),
             std::mem::take(&mut self.bridges),
             std::mem::take(&mut self.probes),
+            std::mem::take(&mut self.render_padding),
         );
         Ok(Box::new(WindowsOwner {
             render,

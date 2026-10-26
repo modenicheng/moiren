@@ -1158,6 +1158,7 @@ mod tests {
         snapshot.native_observations = Some(NativeSessionObservations {
             generation: SessionGeneration(8),
             observation: NativeObservationSnapshot {
+                render_padding: Vec::new(),
                 owner_generation: 3,
                 running: true,
                 streams: vec![NativeStreamObservation {
