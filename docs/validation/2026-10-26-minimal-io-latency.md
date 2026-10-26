@@ -608,6 +608,38 @@ run, native probe and runner were removed immediately; only the current
 or probe processes and 30.12 GiB free. Build artifacts remain host-side; no
 DriverStore/system/default-device changes were made.
 
+### 2026-10-27 pre-cleanup failure discriminator and repeat limits
+
+Commit `f098fa9` adds native-probe-only admitted/opened and PCM-shape snapshots,
+plus one best-effort QUERY on signal-phase failure before gate revocation can
+change its epoch. Explicit scalar identity/epoch/state/shape fields retain the
+decoded current snapshot even if progress validation fails. Diagnostic QUERY
+failure remains separate from the original PCM error, and cleanup still runs.
+No driver, protocol, timing, retry or admission policy changes. Seven added
+tests show genuine RED/GREEN; all 33 native example tests, strict example/test
+Clippy and host release build pass. Independent pinned spec/quality review passes.
+
+The new 391,168-byte binary SHA-256 is
+`168a9c77645267076b365c4494dd6483a38cb39ed3bea8cbd1ee832a3953effd`.
+One-second event and timer matrices each returned recorded exit 0 and all eight
+case reports, with zero reported native discontinuities/microphone drops.
+Microphone event cases still contain 480 silent frames each. The event repeat
+at five seconds per case also exited 0, but Float32 microphone writes dropped
+once in mono and three times in stereo; those cases contain 1,440 and 3,840
+silent frames. The existing probe signal threshold is not a zero-drop quality
+gate. `0x8007051A` did not reproduce, so the new failure observation has not
+yet discriminated the cause. It is not honest to call the intermittent issue
+fixed, the candidate stable, or physical latency qualified.
+
+Artifacts are retained under host archives
+`target/vad-target-archive/20261027-native-f098fa9-snapshot` (19,091 bytes) and
+`target/vad-target-archive/20261027-native-f098fa9-event5` (8,500 bytes), counting
+payloads and manifests. All nine payload lengths/SHA-256 values and remote
+manifest bytes were checked before deleting the guest runs and temporary probe/
+scripts. Only the 3,359,744-byte current diagnostic probe remains, zero dynamic
+endpoints or probe processes, 30.12 GiB free. A read-only refresh confirms the
+running installed INF/SYS/CAT hashes still match the recorded package.
+
 1. Diagnose and fix the target native `0x8007051A` revision mismatch. Repeat
    event and timer playback/microphone matrices until every case passes with
    zero drops, unexpected silence, stale packets, discontinuities, and epoch

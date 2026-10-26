@@ -100,3 +100,29 @@ Every payload length/SHA-256 was checked on the host and rechecked on the guest
 before deleting the run, temporary native probe and runner. Guest storage now
 holds only `e2e_latency_probe-2c61452.exe` (3,359,744 bytes), no dynamic endpoints
 or probe processes, and 30.12 GiB free. No driver/system files were removed.
+
+### 2026-10-27 failure discriminator and bounded repeats
+
+`f098fa9` adds admitted/opened and PCM-shape snapshots plus one best-effort
+post-failure, pre-cleanup QUERY. Explicit epoch/state/shape fields and the
+separate QUERY/progress errors preserve the original PCM failure. There is no
+retry/reopen or weakened admission check. Seven added tests had genuine
+RED/GREEN; all 33 native example tests, strict example/test Clippy and host
+release build pass. Independent pinned spec/quality review passes.
+
+The same probe then completed one-second event and timer matrices (eight cases
+each, recorded exit 0). A five-second-per-case event repeat also exited 0, but
+Microphone Float32 reported one mono and three stereo dropped writes, with
+1,440 and 3,840 silent frames respectively. `0x8007051A` did not recur, so no
+new failure snapshot was collected and its root cause is still unknown. The
+probe's signal threshold is not the zero-quality-failure gate. No physical or
+stable-candidate claim follows from these exits.
+
+All nine repeat payloads and both manifests were verified on the host and
+rechecked on the guest before deletion: 19,091 bytes in the one-second archive,
+8,500 bytes in the five-second archive, including their manifests. Host roots:
+`target/vad-target-archive/20261027-native-f098fa9-snapshot` and
+`target/vad-target-archive/20261027-native-f098fa9-event5`. Temporary probes and
+runners are removed; only the current 3,359,744-byte diagnostic probe remains,
+with no dynamic endpoints/probe processes and 30.12 GiB free. Installed driver
+INF/SYS/CAT SHA-256 values were refreshed and match the recorded running package.
