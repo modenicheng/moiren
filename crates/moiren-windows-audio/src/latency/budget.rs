@@ -74,6 +74,20 @@ pub struct PreparedInputQueue {
     pub modeled_minimum_frames: Option<u32>,
 }
 
+impl PreparedInputQueue {
+    /// Legacy live-capture residency, without a negotiated delivery guarantee.
+    pub const fn compatible() -> Self {
+        Self {
+            capacity_frames: 8192,
+            prime_frames: 2048,
+            servo_reference_frames: 2048,
+            low_water_frames: 2,
+            high_water_frames: 8191,
+            modeled_minimum_frames: None,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LatencyBudgetPolicy {
@@ -101,6 +115,10 @@ pub enum LatencyBudgetError {
     InvalidTiming,
     #[error("custom queue budgets require actual device periods")]
     MissingActualPeriod,
+    #[error("virtual input targets require an explicit packet delivery bound")]
+    MissingDeliveryBound,
+    #[error("input delivery bounds, consumer rate and demand must be nonzero")]
+    InvalidDeliveryBound,
     #[error("render target must fit capacity and have a positive callback budget")]
     InvalidRenderTarget,
     #[error("render target cannot cover period, wake margin and callback budget")]
@@ -173,14 +191,7 @@ pub fn prepare_latency_budget(
     output_timing.validate()?;
     let (input, render) = match policy {
         LatencyBudgetPolicy::Compatible => (
-            PreparedInputQueue {
-                capacity_frames: 8192,
-                prime_frames: 2048,
-                servo_reference_frames: 2048,
-                low_water_frames: 2,
-                high_water_frames: 8191,
-                modeled_minimum_frames: None,
-            },
+            PreparedInputQueue::compatible(),
             prepare_render_queue(output_timing, RenderQueuePolicy::FullCapacity)?,
         ),
         LatencyBudgetPolicy::Custom {
