@@ -119,7 +119,6 @@ impl PlaybackSession {
     pub fn prepare(
         stable_id: StableEndpointId,
         root_instance: String,
-        duration: Duration,
         marker_plan: Option<MarkerPlan>,
     ) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
@@ -133,7 +132,6 @@ impl PlaybackSession {
                 let result = run_worker(
                     stable_id,
                     &root_instance,
-                    duration,
                     marker_plan,
                     worker_stop,
                     worker_activate,
@@ -554,7 +552,6 @@ fn marker_value(frame: u64, plan: Option<&MarkerPlan>) -> f32 {
 fn run_worker(
     stable_id: StableEndpointId,
     root: &str,
-    duration: Duration,
     marker_plan: Option<MarkerPlan>,
     stop: Arc<AtomicBool>,
     activate: Arc<AtomicBool>,
@@ -596,11 +593,12 @@ fn run_worker(
     }
     stream.start()?;
     let started = Instant::now();
-    let deadline = started + duration;
     let mut frame = u64::from(stream.frames);
     let mut submitted_frames = u64::from(stream.frames);
     let mut event_timeouts = 0;
-    while !stop.load(Ordering::Acquire) && Instant::now() < deadline {
+    // PlaybackSession owns the stop/join fence, including its Drop path. Keep
+    // the native stream alive until control has sampled the running provider.
+    while !stop.load(Ordering::Acquire) {
         match unsafe { WaitForSingleObject(HANDLE(stream.event.as_raw_handle()), 100) } {
             WAIT_OBJECT_0 => {
                 stream.fill_and_submit(&mut frame, marker_plan.as_ref())?;

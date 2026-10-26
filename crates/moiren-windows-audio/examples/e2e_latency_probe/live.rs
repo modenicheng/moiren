@@ -171,6 +171,7 @@ struct NativeReport {
     bridge: Option<Value>,
     vad_playback: Option<Value>,
     vad_provider: Option<Value>,
+    vad_cleanup: Option<Value>,
     engine: Option<Value>,
     backend_diagnostics: Option<Value>,
     error: Option<String>,
@@ -1051,6 +1052,17 @@ fn native_delivery_violations(native: &NativeReport) -> u64 {
 fn native_quality(native: &NativeReport) -> QualificationQuality {
     let mut quality = QualificationQuality {
         delivery_bound_violations: native_delivery_violations(native),
+        // Boundary probes count xrun events, not the number of missing frames.
+        // Keep those events visible even when the driver delivered every packet.
+        discontinuities: native
+            .engine
+            .as_ref()
+            .and_then(|value| value.pointer("/observations/boundary_probes"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|probe| probe.get("xruns").and_then(Value::as_u64))
+            .fold(0_u64, u64::saturating_add),
         ..QualificationQuality::default()
     };
     let Some(telemetry) = native
@@ -1294,13 +1306,9 @@ mod native {
             .as_ref()
             .map(|analysis| vad::MarkerPlan::from_schedule(&analysis.schedule))
             .transpose()?;
-        let playback = vad::PlaybackSession::prepare(
-            stable_from_virtual(endpoint_id),
-            root,
-            Duration::from_secs(options.seconds),
-            marker_plan,
-        )
-        .context("prepare VAD native playback")?;
+        let playback =
+            vad::PlaybackSession::prepare(stable_from_virtual(endpoint_id), root, marker_plan)
+                .context("prepare VAD native playback")?;
         let output = EndpointSelector::PinnedEndpoint {
             endpoint_id: options.output_endpoint.clone(),
             stable_id: None,
@@ -1356,14 +1364,31 @@ mod native {
             .context("open VAD export gate")?;
         playback.activate();
         let playback_info = serde_json::to_value(&playback.info)?;
-        // `activate` releases the prepared native client after gate admission.
-        // Let its bounded worker own the requested measurement interval before
-        // asking it to stop, otherwise live-vad only exercises startup/teardown.
+        // The control side owns the interval and samples while the source still
+        // runs. Native client retirement advances stream generations and must
+        // not overwrite these running observations with cleanup counters.
         thread::sleep(Duration::from_secs(options.seconds));
-        let playback_report = playback.stop().context("stop VAD native playback")?;
-        native_report.vad_playback = Some(serde_json::to_value(playback_report)?);
         let engine_after = observer.snapshot();
         let native_observations = observations.snapshot();
+        let running_observation = provider
+            .export_observations()
+            .into_iter()
+            .find(|view| view.endpoint_id == endpoint_id)
+            .context("VAD export disappeared during measurement")?;
+        native_report.vad_provider = Some(vad_observation_json(&running_observation));
+        native_report.engine = Some(serde_json::json!({
+            "execution": format!("{:?}", engine_after.execution),
+            "active_revision": engine_after.active_revision,
+            "timeline": engine_after.timeline.map(|timeline| serde_json::json!({
+                "epoch": timeline.epoch,
+                "revision": timeline.revision,
+                "frame": timeline.frame,
+            })),
+            "observations": native_observations,
+            "playback_info": playback_info,
+        }));
+        let playback_report = playback.stop().context("stop VAD native playback")?;
+        native_report.vad_playback = Some(serde_json::to_value(playback_report)?);
         let current = provider
             .export_observations()
             .into_iter()
@@ -1380,20 +1405,9 @@ mod native {
 
         provider.set_active_revision(None);
         let final_observation = retire_vad(&provider, endpoint_id)?;
-        native_report.vad_provider = Some(vad_observation_json(&final_observation));
-        native_report.engine = Some(serde_json::json!({
-            "execution": format!("{:?}", engine_after.execution),
-            "active_revision": engine_after.active_revision,
-            "timeline": engine_after.timeline.map(|timeline| serde_json::json!({
-                "epoch": timeline.epoch,
-                "revision": timeline.revision,
-                "frame": timeline.frame,
-            })),
-            "observations": native_observations,
-            "playback_info": playback_info,
-        }));
+        native_report.vad_cleanup = Some(vad_observation_json(&final_observation));
         if let Some(error) = native_report
-            .vad_provider
+            .vad_cleanup
             .as_ref()
             .and_then(|value| value.get("error"))
             .filter(|value| !value.is_null())
@@ -1736,5 +1750,49 @@ mod tests {
             bridge.delivery.unwrap().source,
             DeliveryTimingSource::Declared
         );
+    }
+
+    #[test]
+    fn vad_boundary_xruns_fail_quality_even_without_driver_drops() {
+        let native = NativeReport {
+            vad_provider: Some(serde_json::json!({
+                "telemetry": {
+                    "packet_frames": 480,
+                    "dropped_packets": 0,
+                    "silence_frames": 0,
+                    "epoch_resets": 0
+                }
+            })),
+            engine: Some(serde_json::json!({
+                "observations": {
+                    "boundary_probes": [
+                        {"kind": "virtual_playback", "xruns": 11},
+                        {"kind": "virtual_microphone", "xruns": 2}
+                    ]
+                }
+            })),
+            ..NativeReport::default()
+        };
+        let quality = native_quality(&native);
+        assert_eq!(quality.discontinuities, 13);
+        // The probe reports events, so it cannot invent an underrun frame count.
+        assert_eq!(quality.underrun_frames, 0);
+        assert_eq!(quality.dropped_frames, 0);
+    }
+
+    #[test]
+    fn boundary_xrun_quality_saturates_instead_of_wrapping() {
+        let native = NativeReport {
+            engine: Some(serde_json::json!({
+                "observations": {
+                    "boundary_probes": [
+                        {"xruns": u64::MAX},
+                        {"xruns": 1}
+                    ]
+                }
+            })),
+            ..NativeReport::default()
+        };
+        assert_eq!(native_quality(&native).discontinuities, u64::MAX);
     }
 }
