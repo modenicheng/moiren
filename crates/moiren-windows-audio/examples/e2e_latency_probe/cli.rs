@@ -22,6 +22,8 @@ live-vad --stable-endpoint-id ID --name NAME --output ENDPOINT --artifact-dir DI
     [--input-target-frames N --input-capacity-frames N --input-jitter-frames N]
     [--render-target-frames N --wake-margin-frames N --callback-budget-frames N]
     [--report FILE --manifest FILE --run-id ID --mode disabled|summary|trace]
+    [--diagnostic-soak --seconds 1..7200 --observation-interval-seconds 5..60]
+Diagnostic soak disables capture PCM; bounded periodic JSON observations do not qualify waveform continuity or physical latency.
 PCM: headerless little-endian interleaved stereo f32, channels 0/1, explicit rate in schedule.
 Schedule: schema_version=1, sample_rate, reference_channel, processed_channel, marker_frames,
 marker_amplitude, reference_search_frames, max_delay_frames, max_marker_frames, max_window_frames,

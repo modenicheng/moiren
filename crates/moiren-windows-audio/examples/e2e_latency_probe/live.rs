@@ -32,6 +32,10 @@ use std::{
 #[path = "vad.rs"]
 mod vad;
 
+#[cfg(any(windows, test))]
+#[path = "soak.rs"]
+mod soak;
+
 const LIVE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_MAX_INPUT_BYTES: u64 = 16 * 1024 * 1024;
 const DEFAULT_INPUT_CAPACITY_FRAMES: u32 = 8192;
@@ -75,6 +79,8 @@ struct LiveOptions {
     machine_id: Option<String>,
     windows_build: Option<String>,
     controlled_load_id: Option<String>,
+    diagnostic_soak: bool,
+    observation_interval_seconds: u64,
     dry_run: bool,
 }
 
@@ -112,6 +118,8 @@ impl Default for LiveOptions {
             machine_id: None,
             windows_build: None,
             controlled_load_id: None,
+            diagnostic_soak: false,
+            observation_interval_seconds: 5,
             dry_run: false,
         }
     }
@@ -131,6 +139,8 @@ struct LiveRunManifest {
     output_endpoint_id: String,
     measurement_boundary: EvidenceBoundary,
     requested_seconds: u64,
+    diagnostic_soak: bool,
+    observation_interval_seconds: u64,
     process_bridge: ProcessBridgeOptions,
     render_queue: RenderQueuePolicy,
     artifacts: ArtifactPaths,
@@ -148,6 +158,8 @@ struct LiveRunReport {
     output_endpoint_id: String,
     measurement_boundary: EvidenceBoundary,
     requested_seconds: u64,
+    diagnostic_soak: bool,
+    observation_interval_seconds: u64,
     observed_duration_seconds: f64,
     artifacts: ArtifactReport,
     native: NativeReport,
@@ -174,6 +186,7 @@ struct NativeReport {
     vad_cleanup: Option<Value>,
     engine: Option<Value>,
     backend_diagnostics: Option<Value>,
+    diagnostic_observations: u64,
     error: Option<String>,
 }
 
@@ -187,6 +200,7 @@ struct ArtifactPaths {
     calibration: Option<String>,
     capture_pcm: Option<String>,
     capture_pcm_metadata: Option<String>,
+    diagnostic_observations: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -221,6 +235,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         .clone()
         .unwrap_or_else(|| format!("live-{}-{}", std::process::id(), unix_seconds()));
     let mut gaps = Vec::new();
+    if options.diagnostic_soak {
+        gaps.push("bounded diagnostic soak does not qualify continuous waveform, controlled load, markers or physical latency; PCM recording is disabled".into());
+    }
     if options.dry_run {
         gaps.push("live source/native capture was intentionally skipped (--dry-run)".into());
     }
@@ -296,6 +313,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
     // This probe does not claim qualification itself. The offline evaluator
     // remains the gate after independent artifact/hash verification.
     if options.source_kind == EvidenceSourceKind::ProcessLoopback
+        && !options.diagnostic_soak
         && paths
             .capture_pcm
             .as_deref()
@@ -329,6 +347,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         output_endpoint_id: options.output_endpoint.clone(),
         measurement_boundary: options.measurement_boundary,
         requested_seconds: options.seconds,
+        diagnostic_soak: options.diagnostic_soak,
+        observation_interval_seconds: options.observation_interval_seconds,
         observed_duration_seconds,
         artifacts,
         native,
@@ -348,6 +368,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         output_endpoint_id: options.output_endpoint.clone(),
         measurement_boundary: options.measurement_boundary,
         requested_seconds: options.seconds,
+        diagnostic_soak: options.diagnostic_soak,
+        observation_interval_seconds: options.observation_interval_seconds,
         process_bridge,
         render_queue,
         artifacts: artifact_paths(&paths, &options),
@@ -363,6 +385,11 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
     let mut iter = arguments.into_iter();
     while let Some(flag) = iter.next() {
         let value = match flag.as_str() {
+            "--diagnostic-soak" => {
+                ensure!(!options.diagnostic_soak, "duplicate --diagnostic-soak");
+                options.diagnostic_soak = true;
+                continue;
+            }
             "--dry-run" => {
                 ensure!(!options.dry_run, "duplicate --dry-run");
                 options.dry_run = true;
@@ -381,6 +408,7 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             | "--schedule"
             | "--calibration"
             | "--seconds"
+            | "--observation-interval-seconds"
             | "--max-input-bytes"
             | "--input-capacity-frames"
             | "--input-target-frames"
@@ -424,6 +452,10 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             "--schedule" => options.measurement_schedule = Some(PathBuf::from(value)),
             "--calibration" => options.calibration = Some(PathBuf::from(value)),
             "--seconds" => options.seconds = value.parse().context("invalid duration")?,
+            "--observation-interval-seconds" => {
+                options.observation_interval_seconds =
+                    value.parse().context("invalid observation interval")?;
+            }
             "--max-input-bytes" => {
                 options.max_input_bytes = value.parse().context("invalid input byte cap")?
             }
@@ -520,8 +552,12 @@ fn validate(options: &LiveOptions) -> Result<()> {
         "--artifact-dir is required"
     );
     ensure!(
-        (1..=600).contains(&options.seconds),
-        "--seconds must be 1..600"
+        (1..=if options.diagnostic_soak { 7200 } else { 600 }).contains(&options.seconds),
+        "--seconds must be 1..600, or 1..7200 with --diagnostic-soak"
+    );
+    ensure!(
+        (5..=60).contains(&options.observation_interval_seconds),
+        "--observation-interval-seconds must be 5..60"
     );
     ensure!(
         options.max_input_bytes > 0 && options.max_input_bytes < usize::MAX as u64,
@@ -637,8 +673,16 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
             .calibration
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned()),
-        capture_pcm: Some(capture_pcm.to_string_lossy().into_owned()),
-        capture_pcm_metadata: Some(capture_pcm_metadata.to_string_lossy().into_owned()),
+        capture_pcm: (!options.diagnostic_soak).then(|| capture_pcm.to_string_lossy().into_owned()),
+        capture_pcm_metadata: (!options.diagnostic_soak)
+            .then(|| capture_pcm_metadata.to_string_lossy().into_owned()),
+        diagnostic_observations: options.diagnostic_soak.then(|| {
+            options
+                .artifact_dir
+                .join("observations.jsonl")
+                .to_string_lossy()
+                .into_owned()
+        }),
     })
 }
 
@@ -766,6 +810,7 @@ impl ArtifactPaths {
             calibration: self.calibration.clone(),
             capture_pcm: self.capture_pcm.clone(),
             capture_pcm_metadata: self.capture_pcm_metadata.clone(),
+            diagnostic_observations: self.diagnostic_observations.clone(),
         }
     }
 }
@@ -784,7 +829,9 @@ fn artifact_report(
         } else {
             "missing"
         },
-        capture_pcm_status: if options.source_kind == EvidenceSourceKind::VadPlayback {
+        capture_pcm_status: if options.diagnostic_soak {
+            "disabled_diagnostic_soak"
+        } else if options.source_kind == EvidenceSourceKind::VadPlayback {
             "not_applicable"
         } else if paths
             .capture_pcm
@@ -801,6 +848,26 @@ fn artifact_report(
             "missing"
         },
     }
+}
+
+#[cfg(windows)]
+fn diagnostic_journal(
+    options: &LiveOptions,
+    paths: &ArtifactPaths,
+) -> Result<Option<soak::Journal>> {
+    paths
+        .diagnostic_observations
+        .as_deref()
+        .map(|path| {
+            soak::Journal::create(
+                Path::new(path),
+                options
+                    .seconds
+                    .div_ceil(options.observation_interval_seconds)
+                    + 2,
+            )
+        })
+        .transpose()
 }
 
 #[cfg(windows)]
@@ -1209,17 +1276,26 @@ mod native {
     ) -> Result<()> {
         let identity =
             inspect_process(options.source_pid).context("inspect selected source process")?;
-        let duration = SessionDuration::For(Duration::from_secs(options.seconds));
+        let duration = if options.diagnostic_soak {
+            SessionDuration::UntilStopped
+        } else {
+            SessionDuration::For(Duration::from_secs(options.seconds))
+        };
+        let mut journal = diagnostic_journal(options, paths)?;
         let stop = StopSignal::new().context("create shared stop signal")?;
         let gate = ActivationGate::new(stop.clone()).context("create activation gate")?;
         let capture = prepare_process_capture_with_gate(
             ProcessLoopbackOptions {
-                artifact: Some(moiren_windows_audio::capture::PcmArtifactConfig::new(
-                    usize::try_from(options.seconds)
-                        .ok()
-                        .and_then(|seconds| seconds.checked_mul(48_000))
-                        .ok_or_else(|| anyhow::anyhow!("capture artifact size overflow"))?,
-                )),
+                artifact: if options.diagnostic_soak {
+                    None
+                } else {
+                    Some(moiren_windows_audio::capture::PcmArtifactConfig::new(
+                        usize::try_from(options.seconds)
+                            .ok()
+                            .and_then(|seconds| seconds.checked_mul(48_000))
+                            .ok_or_else(|| anyhow::anyhow!("capture artifact size overflow"))?,
+                    ))
+                },
                 bridge: *bridge,
                 latency_telemetry: options.telemetry,
                 target: identity,
@@ -1276,12 +1352,51 @@ mod native {
         .context("compile Input -> Bus -> Output graph")?;
         let renderer =
             DemandRenderer::new(compiled.engine, reader).context("prepare Engine renderer")?;
+        let timeline = renderer.timeline_observer();
         let prepared_render = render
             .attach(renderer, queue)
             .context("attach Engine renderer")?;
         gate.activate().context("activate capture/render gate")?;
         let capture_session = prepared.session;
         let render_session = prepared_render.into_session();
+        let collection = if let Some(journal) = journal.as_mut() {
+            let started = Instant::now();
+            let duration = Duration::from_secs(options.seconds);
+            let interval = Duration::from_secs(options.observation_interval_seconds);
+            let result = (|| -> Result<()> {
+                loop {
+                    let elapsed = started.elapsed();
+                    journal.record(&serde_json::json!({
+                        "schema_version": 1, "source_kind": options.source_kind,
+                        "elapsed_seconds": elapsed.as_secs_f64(),
+                        "capture_started": capture_session.has_started(),
+                        "render_started": render_session.has_started(),
+                        "capture_finished": capture_session.is_finished(),
+                        "render_finished": render_session.is_finished(),
+                        "bridge": bridge_observer.snapshot(),
+                        "timeline": timeline.try_snapshot().map(|value| serde_json::json!({
+                            "frame": value.frame, "epoch": value.epoch, "revision": value.revision,
+                        })),
+                    }))?;
+                    ensure!(
+                        !capture_session.is_finished() && !render_session.is_finished(),
+                        "native owner stopped before diagnostic deadline"
+                    );
+                    if elapsed >= duration {
+                        break;
+                    }
+                    thread::sleep(interval.min(duration.saturating_sub(elapsed)));
+                }
+                Ok(())
+            })();
+            native_report.diagnostic_observations = journal.samples();
+            // Signal peers even when journal IO or an owner failed. Cleanup
+            // and final fault reports must precede propagating that failure.
+            let stopped = stop.request_stop().context("stop diagnostic native owners");
+            result.and(stopped)
+        } else {
+            Ok(())
+        };
         let capture_result = capture_session.join();
         let render_result = render_session.join();
         match capture_result {
@@ -1308,6 +1423,7 @@ mod native {
         if native_report.capture.is_none() || native_report.render.is_none() {
             bail!("one or more native owners did not return a report");
         }
+        collection?;
         Ok(())
     }
 
@@ -1323,6 +1439,7 @@ mod native {
         native_report: &mut NativeReport,
         gaps: &mut Vec<String>,
     ) -> Result<()> {
+        let mut journal = diagnostic_journal(options, paths)?;
         let stable_text = options
             .stable_endpoint_id
             .as_deref()
@@ -1414,10 +1531,47 @@ mod native {
         let measurement_started = Instant::now();
         let duration = Duration::from_secs(options.seconds);
         let mut startup_samples = Vec::with_capacity(STARTUP_SAMPLE_LIMIT);
+        let observation_interval = Duration::from_secs(options.observation_interval_seconds);
+        let mut next_observation = Duration::ZERO;
+        let mut collection_error = None;
         loop {
             let elapsed = measurement_started.elapsed();
             if elapsed >= duration {
                 break;
+            }
+            if elapsed >= next_observation
+                && let Some(journal) = journal.as_mut()
+            {
+                let runtime = provider
+                    .export_observations()
+                    .into_iter()
+                    .find(|view| view.endpoint_id == endpoint_id);
+                let engine = observer.snapshot();
+                let result = journal
+                    .record(&serde_json::json!({
+                        "schema_version": 1, "source_kind": options.source_kind,
+                        "elapsed_seconds": elapsed.as_secs_f64(),
+                        "provider": runtime.as_ref().map(vad_observation_json),
+                        "engine": engine_snapshot_value(&engine),
+                        "native_observations": observations.snapshot(),
+                    }))
+                    .and_then(|()| {
+                        ensure!(
+                            runtime.as_ref().is_some_and(|view| view.error.is_none()),
+                            "VAD provider failed during diagnostic collection"
+                        );
+                        ensure!(
+                            engine.execution == ExecutionState::Running
+                                && engine.active_revision == Some(revision),
+                            "Engine stopped or revision changed during diagnostic collection"
+                        );
+                        Ok(())
+                    });
+                if let Err(error) = result {
+                    collection_error = Some(error);
+                    break;
+                }
+                next_observation = elapsed.saturating_add(observation_interval);
             }
             if startup_samples.len() < STARTUP_SAMPLE_LIMIT {
                 let runtime = provider
@@ -1433,6 +1587,7 @@ mod native {
             }
             thread::sleep(STARTUP_SAMPLE_INTERVAL.min(duration.saturating_sub(elapsed)));
         }
+        native_report.diagnostic_observations = journal.as_ref().map_or(0, soak::Journal::samples);
         let engine_after = observer.snapshot();
         let native_observations = observations.snapshot();
         let running_observation = provider
@@ -1485,7 +1640,9 @@ mod native {
         {
             gaps.push(format!("VAD provider reported cleanup error: {error}"));
         }
-        let _ = paths;
+        if let Some(error) = collection_error {
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -1730,6 +1887,78 @@ mod tests {
         let path = std::env::temp_dir().join(format!("moiren-live-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         path
+    }
+
+    #[test]
+    fn diagnostic_soak_is_explicit_bounded_and_never_claims_pcm_or_qualification() {
+        let directory = temp_dir("diagnostic-soak");
+        let code = run(vec![
+            "--dry-run".into(),
+            "--diagnostic-soak".into(),
+            "--seconds".into(),
+            "7200".into(),
+            "--source-pid".into(),
+            "1".into(),
+            "--output".into(),
+            "out".into(),
+            "--artifact-dir".into(),
+            directory.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        assert_eq!(code, 1);
+        let report: Value =
+            serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(report["qualified"], false);
+        assert_eq!(manifest["diagnostic_soak"], true);
+        assert_eq!(manifest["observation_interval_seconds"], 5);
+        assert!(report["artifacts"]["paths"]["capture_pcm"].is_null());
+        assert_eq!(
+            report["artifacts"]["capture_pcm_status"],
+            "disabled_diagnostic_soak"
+        );
+        assert!(report["gaps"].as_array().unwrap().iter().any(|gap| {
+            gap.as_str()
+                .unwrap()
+                .contains("does not qualify continuous waveform")
+        }));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn diagnostic_soak_rejects_oversized_duration_and_unbounded_observation_frequency() {
+        let base = vec![
+            "--source-pid".into(),
+            "1".into(),
+            "--output".into(),
+            "out".into(),
+            "--artifact-dir".into(),
+            "unused".into(),
+        ];
+        for extra in [
+            vec!["--seconds", "601"],
+            vec!["--diagnostic-soak", "--seconds", "7201"],
+            vec!["--diagnostic-soak", "--observation-interval-seconds", "0"],
+            vec!["--diagnostic-soak", "--observation-interval-seconds", "4"],
+            vec!["--diagnostic-soak", "--observation-interval-seconds", "61"],
+        ] {
+            let mut args = base.clone();
+            args.extend(extra.into_iter().map(str::to_owned));
+            assert!(parse(args).and_then(|options| validate(&options)).is_err());
+        }
+        for seconds in [1, 600, 1800, 7200] {
+            let mut args = base.clone();
+            args.extend([
+                "--diagnostic-soak".into(),
+                "--seconds".into(),
+                seconds.to_string(),
+            ]);
+            let options = parse(args).unwrap();
+            validate(&options).unwrap();
+            assert!(options.diagnostic_soak);
+            assert_eq!(options.seconds, seconds);
+        }
     }
 
     #[test]
