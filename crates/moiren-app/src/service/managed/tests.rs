@@ -2331,3 +2331,69 @@ fn replacement_document_fences_a_late_previous_project_preparation() {
     r.wait(|r| r.c.core.phase() == SessionPhase::Running && (r.sample() - 0.75).abs() < 1e-6);
     assert_eq!(r.state.starts.load(Ordering::SeqCst), 2);
 }
+
+#[test]
+fn undo_restored_candidates_rebuild_after_the_debounce() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait(|rig| {
+        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
+    });
+    let nodes_before = rig.c.graph.snapshot().nodes.len();
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Bus,
+        channels: 2,
+    }));
+    rig.wait(|rig| {
+        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
+    });
+    let starts = rig.state.starts.load(Ordering::SeqCst);
+    let prepares = rig.state.prepares.load(Ordering::SeqCst);
+    rig.request(AppRequest::UndoGraph);
+    // The restored candidate activates through the same trailing debounce
+    // as structural edits — no new start, no explicit apply request.
+    rig.wait(|rig| {
+        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
+    });
+    assert_eq!(rig.c.graph.snapshot().nodes.len(), nodes_before);
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), starts);
+    assert!(rig.state.prepares.load(Ordering::SeqCst) > prepares);
+    assert!(
+        rig.c.graph.snapshot().can_redo,
+        "the undone step awaits redo"
+    );
+    rig.request(AppRequest::RedoGraph);
+    rig.wait(|rig| {
+        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
+            && rig.c.graph.snapshot().nodes.len() == nodes_before + 1
+    });
+}
+
+#[test]
+fn undo_after_stop_restores_the_candidate_without_restarting_audio() {
+    let mut rig = Rig::new();
+    rig.start();
+    rig.wait(|rig| {
+        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
+    });
+    let nodes_before = rig.c.graph.snapshot().nodes.len();
+    rig.request(AppRequest::EditGraph(GraphEdit::AddNode {
+        kind: NodeKind::Bus,
+        channels: 2,
+    }));
+    rig.wait(|rig| {
+        rig.c.graph.snapshot().active_revision == Some(rig.c.graph.snapshot().candidate_revision)
+    });
+    rig.request(AppRequest::Stop);
+    rig.wait(|r| r.driver.cleaning == 0 && r.c.core.phase() == SessionPhase::Idle);
+    let starts = rig.state.starts.load(Ordering::SeqCst);
+    rig.request(AppRequest::UndoGraph);
+    // Drain any debounce window: the candidate restores, audio stays off.
+    let deadline = Instant::now() + Duration::from_millis(400);
+    while Instant::now() < deadline {
+        rig.tick();
+    }
+    assert_eq!(rig.c.graph.snapshot().nodes.len(), nodes_before);
+    assert_eq!(rig.c.core.phase(), SessionPhase::Idle);
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), starts);
+}

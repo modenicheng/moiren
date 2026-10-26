@@ -531,6 +531,21 @@ impl ServiceDriver for BackendDriver {
                 Ok(()) => self.candidate_identity_matches_session = false,
                 Err(error) => c.graph.record_error(error),
             },
+            // A restored candidate is always a structural change: while the
+            // session runs on this candidate, the undo step rebuilds it like
+            // any structural edit; a stopped session only records the
+            // restored candidate and never restarts audio on its own.
+            AppRequest::UndoGraph | AppRequest::RedoGraph => {
+                let back = matches!(request, AppRequest::UndoGraph);
+                let stepped = if back { c.graph.undo() } else { c.graph.redo() };
+                if stepped
+                    && self.candidate_identity_matches_session
+                    && c.core.phase() == SessionPhase::Running
+                    && c.audio_settings == AudioSettings::default()
+                {
+                    self.apply_candidate(c);
+                }
+            }
             AppRequest::ApplyGraph if c.audio_settings != AudioSettings::default() => {
                 c.graph.record_error(PROFESSIONAL_SETTINGS_UNSUPPORTED);
             }

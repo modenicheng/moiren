@@ -76,6 +76,11 @@ fn run_app(handle: AppHandle) -> anyhow::Result<()> {
         .run(move |cx| {
             gpui_kit::init(cx);
             register_fonts(cx).expect("register embedded Inter font");
+            cx.bind_keys([
+                KeyBinding::new("ctrl-z", app_view::Undo, None),
+                KeyBinding::new("ctrl-y", app_view::Redo, None),
+                KeyBinding::new("ctrl-shift-z", app_view::Redo, None),
+            ]);
 
             let tray = match super::tray::AppTray::new() {
                 Ok(tray) => Some(tray),
@@ -775,7 +780,13 @@ impl Render for StudioShell {
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
             .when(self.settings_open, |v| {
                 v.child(settings::overlay(self, window, cx))
-            });
+            })
+            .on_action(cx.listener(|shell, _: &app_view::Undo, window, cx| {
+                shell.undo_redo_graph(false, window, cx);
+            }))
+            .on_action(cx.listener(|shell, _: &app_view::Redo, window, cx| {
+                shell.undo_redo_graph(true, window, cx);
+            }));
         #[cfg(feature = "gpui-test")]
         self.mixer.trace.borrow_mut().finish(visible_meter_count);
         view
@@ -783,6 +794,45 @@ impl Render for StudioShell {
 }
 
 impl StudioShell {
+    /// Ctrl+Z / Ctrl+Y: step the service graph journal. Typing focus and
+    /// modal settings keep the shortcut for themselves.
+    fn undo_redo_graph(&mut self, redo: bool, window: &Window, cx: &mut Context<Self>) {
+        let can_step = {
+            let state = self.state.read(cx);
+            if redo {
+                state.snapshot.graph.can_redo
+            } else {
+                state.snapshot.graph.can_undo
+            }
+        };
+        if !can_step || self.settings_open {
+            return;
+        }
+        // A focused text field owns ctrl-z; undoing the graph out from under
+        // a keystroke the user is typing would be a surprise.
+        if let Some(focused) = window.focused(cx) {
+            let typing = self.node_search.read(cx).focus_handle(cx) == focused
+                || self.node_name.read(cx).focus_handle(cx) == focused
+                || self
+                    .compressor
+                    .inputs
+                    .values()
+                    .any(|input| input.read(cx).focus_handle(cx) == focused)
+                || self.export_controls.owns_focus(&focused, cx);
+            if typing {
+                return;
+            }
+        }
+        self.state.update(cx, |state, _| {
+            state.dispatch(if redo {
+                AppRequest::RedoGraph
+            } else {
+                AppRequest::UndoGraph
+            });
+        });
+        cx.notify();
+    }
+
     /// Keeps Delete/Escape alive on the graph page: whenever no text field of
     /// the page (and no modal) owns focus, the canvas key handler gets it back.
     /// Without this, clicking any button or panel leaves keystrokes routed to

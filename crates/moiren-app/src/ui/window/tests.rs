@@ -910,3 +910,100 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
     finish_service(runtime);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
+
+#[gpui_kit::test]
+fn undo_redo_requests_round_trip_candidate_content(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::{AppRequest, GraphEdit};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+    });
+    let baseline = view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                kind: moiren_core::graph::NodeKind::Eq,
+                channels: 2,
+            }));
+        });
+        shell.state.read(cx).snapshot.graph.nodes.len()
+    });
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == baseline + 1
+                && shell.state.read(cx).snapshot.graph.can_undo
+        })
+    });
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::UndoGraph);
+        });
+    });
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == baseline
+        })
+    });
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::RedoGraph);
+        });
+    });
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == baseline + 1
+        })
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn ctrl_z_keystroke_steps_the_undo_journal(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::{AppRequest, GraphEdit};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|_, cx| {
+        cx.bind_keys([
+            gpui_kit::KeyBinding::new("ctrl-z", super::app_view::Undo, None),
+            gpui_kit::KeyBinding::new("ctrl-y", super::app_view::Redo, None),
+        ]);
+    });
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                kind: moiren_core::graph::NodeKind::Eq,
+                channels: 2,
+            }));
+        });
+    });
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == 5
+        })
+    });
+    // The canvas key handler owns focus on the graph page; the keystroke
+    // bubbles to the shell's undo action.
+    cx.simulate_keystrokes("ctrl-z");
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == 4
+        })
+    });
+    cx.simulate_keystrokes("ctrl-y");
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == 5
+        })
+    });
+    finish_service(runtime);
+}
