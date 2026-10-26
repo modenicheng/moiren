@@ -87,6 +87,10 @@ pub enum AppRequest {
     SetLatencyProfile(super::AudioLatencyProfile),
     SetAudioSettings(super::AudioSettings),
     EditGraph(super::GraphEdit),
+    /// Restore the candidate content recorded before the last user edit.
+    UndoGraph,
+    /// Re-apply an undone edit; invalidated by any new edit.
+    RedoGraph,
     ReplaceGraph {
         graph: moiren_core::graph::LogicalGraph,
         nodes: Vec<super::GraphNodeState>,
