@@ -218,9 +218,39 @@ impl Health {
 }
 
 #[cfg(any(windows, test))]
+fn validate_health(
+    current: &Health,
+    admitted: &Health,
+    report: &super::NativeReport,
+    first_failure: &mut Option<serde_json::Value>,
+) -> Result<()> {
+    let result = current.validate(admitted);
+    if result.is_err() {
+        latch_failure_observations(first_failure, report, Some(current));
+    }
+    result
+}
+
+#[cfg(any(windows, test))]
+fn latch_failure_observations(
+    first_failure: &mut Option<serde_json::Value>,
+    report: &super::NativeReport,
+    health: Option<&Health>,
+) {
+    // Capture once at discovery: a later successful QUERY can replace cached
+    // error provenance, and the bounded startup trace may already be full.
+    if first_failure.is_none() {
+        *first_failure = Some(serde_json::json!({
+            "provider": report.vad_provider, "engine": report.engine, "health": health,
+        }));
+    }
+}
+
+#[cfg(any(windows, test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Retirement {
     Observe,
+    ObserveFinal,
     StopSource,
     StopMeasurement,
     JoinSource,
@@ -235,6 +265,7 @@ enum Retirement {
 fn retire(mut step: impl FnMut(Retirement) -> Result<()>, failures: &mut Option<String>) {
     for stage in [
         Retirement::Observe,
+        Retirement::ObserveFinal,
         Retirement::StopSource,
         Retirement::StopMeasurement,
         Retirement::JoinSource,
@@ -298,6 +329,7 @@ pub(super) fn collect(
         measurement_outcome: None,
         failures: None,
         cleanup_failures: None,
+        first_failure_observations: None,
         retired: false,
     };
     let mut last_running = None;
@@ -389,13 +421,16 @@ pub(super) fn collect(
                 );
             }
             let current = guard.vad.current_health()?;
-            current.validate(
+            validate_health(
+                &current,
                 &guard
                     .vad
                     .admission
                     .as_ref()
                     .context("collection admission missing")?
                     .current,
+                guard.vad.report,
+                &mut guard.first_failure_observations,
             )?;
             last_running = Some(current);
             match phases.tick(
@@ -423,31 +458,19 @@ pub(super) fn collect(
     if let Err(error) = collection {
         append_failure(&mut guard.failures, &format!("collection: {error:#}"));
     }
-    let failing_observation = guard.failures.as_ref().map(|_| {
-        serde_json::json!({
-            "provider": guard.vad.report.vad_provider, "engine": guard.vad.report.engine,
-            "health": guard.vad.last_health,
-        })
-    });
-    guard.finish();
-    let source_submitted_complete = guard.vad.playback_outcome.as_ref().is_some_and(|outcome| {
-        outcome.source_progress.origin_submission_frame.is_some()
-            && outcome.source_progress.schedule_submitted_complete
-            && outcome.source_progress.acknowledged_source_frames == frames
-    });
-    if let Some(outcome) = &guard.vad.playback_outcome {
-        if let Some(failure) = &outcome.failure {
-            append_failure(&mut guard.failures, failure);
-        }
-        if !(outcome.started && outcome.stopped && source_submitted_complete) {
-            append_failure(
-                &mut guard.failures,
-                "source did not retain full acknowledged schedule and clean stop",
-            );
-        }
-    } else {
-        append_failure(&mut guard.failures, "source outcome unavailable");
+    if guard.failures.is_some() {
+        latch_failure_observations(
+            &mut guard.first_failure_observations,
+            guard.vad.report,
+            guard.vad.last_health.as_ref(),
+        );
     }
+    guard.finish();
+    let source_submitted_complete = reconcile_source_outcome(
+        guard.vad.playback_outcome.as_ref(),
+        frames,
+        &mut guard.failures,
+    );
     if let Some(outcome) = &guard.measurement_outcome {
         if let Some(failure) = &outcome.failure {
             append_failure(&mut guard.failures, failure);
@@ -501,7 +524,7 @@ pub(super) fn collect(
         "source_completion_observed_in_phases": phases.completed.is_some(), "preroll_complete": phases.source_requested.is_some(),
         "postroll_complete": phases_complete, "collection_complete": complete,
         "cleanup_complete": guard.cleanup_failures.is_none(), "cleanup_failure": guard.cleanup_failures,
-        "failure": guard.failures, "first_failure_observations": failing_observation,
+        "failure": guard.failures, "first_failure_observations": guard.first_failure_observations,
         "evidence_scope": "independent recorder clock and selected endpoint; wiring/reference/calibration unproven; source submission is not played/captured marker detection",
         "control_policy": "Start/grace/roll deadlines use monotonic control time; synchronous provider QUERY, native setup, joins and IO may block; no OS watchdog or physical settling claim",
     }));
@@ -520,6 +543,7 @@ struct CollectionGuard<'a> {
     measurement_outcome: Option<crate::measurement::session::MeasurementOutcome>,
     failures: Option<String>,
     cleanup_failures: Option<String>,
+    first_failure_observations: Option<serde_json::Value>,
     retired: bool,
 }
 
@@ -535,15 +559,29 @@ impl CollectionGuard<'_> {
         retire(
             |stage| match stage {
                 Retirement::Observe => {
-                    let checked = if let Some(admitted) = &self.vad.admission {
+                    if let Some(admitted) = &self.vad.admission {
                         let admitted = admitted.current.clone();
-                        self.vad
-                            .current_health()
-                            .and_then(|health| health.validate(&admitted))
+                        let health = self.vad.current_health()?;
+                        validate_health(
+                            &health,
+                            &admitted,
+                            self.vad.report,
+                            &mut self.first_failure_observations,
+                        )
                     } else {
                         Ok(())
-                    };
-                    super::soak_cleanup::combine(checked, self.vad.observe_final())
+                    }
+                }
+                Retirement::ObserveFinal => {
+                    let result = self.vad.observe_final();
+                    if result.is_err() {
+                        latch_failure_observations(
+                            &mut self.first_failure_observations,
+                            self.vad.report,
+                            self.vad.last_health.as_ref(),
+                        );
+                    }
+                    result
                 }
                 Retirement::StopSource => {
                     if let Some(source) = &self.vad.playback {
@@ -583,6 +621,42 @@ impl Drop for CollectionGuard<'_> {
     fn drop(&mut self) {
         self.finish();
     }
+}
+
+#[cfg(windows)]
+fn reconcile_source_outcome(
+    outcome: Option<&super::vad::PlaybackOutcome>,
+    frames: u64,
+    failures: &mut Option<String>,
+) -> bool {
+    let submitted_complete = outcome.is_some_and(|outcome| {
+        outcome.source_progress.origin_submission_frame.is_some()
+            && outcome.source_progress.schedule_submitted_complete
+            && outcome.source_progress.acknowledged_source_frames == frames
+    });
+    if let Some(outcome) = outcome {
+        if let Some(failure) = &outcome.failure {
+            append_failure(failures, failure);
+        }
+        if outcome.event_timeouts != 0 {
+            append_failure(
+                failures,
+                &format!(
+                    "joined source native event timeouts: {}",
+                    outcome.event_timeouts
+                ),
+            );
+        }
+        if !(outcome.started && outcome.stopped && submitted_complete) {
+            append_failure(
+                failures,
+                "source did not retain full acknowledged schedule and clean stop",
+            );
+        }
+    } else {
+        append_failure(failures, "source outcome unavailable");
+    }
+    submitted_complete
 }
 
 #[cfg(any(windows, test))]
@@ -725,6 +799,97 @@ impl Phases {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn collection_joined_source_late_timeout_fails_after_healthy_postroll() {
+        let mut phases = Phases::new(config(), 48_000, 14);
+        let source = PlaybackProgress {
+            started: true,
+            source: super::super::source::SourceProgress {
+                native_preroll_frames: 480,
+                native_submitted_frames: 48_480,
+                origin_submission_frame: Some(480),
+                acknowledged_source_frames: 48_000,
+                schedule_submitted_complete: true,
+            },
+            ..Default::default()
+        };
+        phases.tick(Duration::ZERO, true, false, None).unwrap();
+        assert_eq!(
+            phases
+                .tick(Duration::from_millis(100), true, false, None)
+                .unwrap(),
+            Action::ActivateSource
+        );
+        phases
+            .tick(Duration::from_millis(1100), true, false, Some(&source))
+            .unwrap();
+        assert_eq!(
+            phases
+                .tick(Duration::from_millis(1300), true, false, Some(&source))
+                .unwrap(),
+            Action::Complete
+        );
+        assert_eq!(source.event_timeouts, 0);
+        let mut outcome = super::super::vad::PlaybackOutcome {
+            info: None,
+            submitted_frames: 48_480,
+            playback_source: super::super::source::SourceProvenance::new(None),
+            source_progress: source.source,
+            event_timeouts: 0,
+            elapsed_seconds: 1.3,
+            started: true,
+            stopped: true,
+            worker_joined: true,
+            native_stop_attempted: Some(true),
+            native_stop_succeeded: Some(true),
+            failure: None,
+        };
+        let mut failures = None;
+        assert!(reconcile_source_outcome(
+            Some(&outcome),
+            48_000,
+            &mut failures
+        ));
+        assert!(
+            failures.is_none(),
+            "healthy joined source must remain valid"
+        );
+
+        // The timeout appears after the last healthy poll and before native Stop.
+        outcome.event_timeouts = 1;
+        assert!(reconcile_source_outcome(
+            Some(&outcome),
+            48_000,
+            &mut failures
+        ));
+        assert!(
+            failures
+                .as_deref()
+                .is_some_and(|text| text.contains("timeout")),
+            "late joined source timeout must fail otherwise-complete collection"
+        );
+        assert_eq!(outcome.event_timeouts, 1);
+
+        outcome.failure = Some("primary PCM error; native Stop error".into());
+        let mut failures = Some("earlier collection error".into());
+        reconcile_source_outcome(Some(&outcome), 48_000, &mut failures);
+        let text = failures.unwrap();
+        for retained in [
+            "earlier collection error",
+            "primary PCM error",
+            "native Stop error",
+            "timeout",
+        ] {
+            assert!(text.contains(retained), "lost failure: {retained}: {text}");
+        }
+        assert_eq!(outcome.event_timeouts, 1);
+        assert_eq!(
+            outcome.failure.as_deref(),
+            Some("primary PCM error; native Stop error")
+        );
+    }
 
     #[test]
     fn collection_measurement_metadata_retains_actual_mono_44100_format() {
@@ -1018,9 +1183,10 @@ mod tests {
         worker.join().unwrap();
         assert!(reached_sink.is_ok() && still_joining);
         assert_eq!(
-            &snapshot[..4],
+            &snapshot[..5],
             &[
                 Retirement::Observe,
+                Retirement::ObserveFinal,
                 Retirement::StopSource,
                 Retirement::StopMeasurement,
                 Retirement::JoinSource
@@ -1080,6 +1246,163 @@ mod tests {
     }
 
     #[test]
+    fn collection_raw_failure_retirement_preserves_first_query_and_distinct_final() {
+        let admitted = healthy();
+        let mut first_failure = None;
+        let mut report = super::super::NativeReport {
+            vad_provider: Some(serde_json::json!({
+                "diagnostic_provenance": "FreshQuery", "error": null,
+                "snapshot": {"stream_generation": 4, "gate_open": true, "dropped_packets": 0}
+            })),
+            engine: Some(serde_json::json!({
+                "active_revision": 1, "owner_generation": 7,
+                "observations": {"owner_generation": 7, "bridges": []},
+                "startup_trace": {
+                    "sample_limit": 256,
+                    "samples": vec![serde_json::json!({"provider_error": null}); 256]
+                }
+            })),
+            ..Default::default()
+        };
+        let mut phases = Phases::new(config(), 48_000, 14);
+        let source = PlaybackProgress {
+            started: true,
+            source: super::super::source::SourceProgress {
+                origin_submission_frame: Some(480),
+                acknowledged_source_frames: 48_000,
+                schedule_submitted_complete: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for (ms, expected) in [
+            (0, Action::Wait),
+            (100, Action::ActivateSource),
+            (1100, Action::Wait),
+            (1300, Action::Complete),
+        ] {
+            validate_health(&admitted, &admitted, &report, &mut first_failure).unwrap();
+            assert_eq!(
+                phases
+                    .tick(Duration::from_millis(ms), true, false, Some(&source))
+                    .unwrap(),
+                expected
+            );
+        }
+        assert!(first_failure.is_none());
+        let mut before_next_query = None;
+        let mut cleanup_failures = None;
+        let mut events = Vec::new();
+        retire(
+            |stage| {
+                events.push(stage);
+                match stage {
+                    Retirement::Observe => {
+                        report.vad_provider = Some(serde_json::json!({
+                            "diagnostic_provenance": "CachedAfterQueryFailure",
+                            "error": "first retirement QUERY failure",
+                            "snapshot": {"stream_generation": 4, "gate_open": true, "dropped_packets": 17}
+                        }));
+                        report.engine.as_mut().unwrap()["observations"] = serde_json::json!({
+                            "owner_generation": 7,
+                            "bridges": [{"counters": {"underrun_frames": 23}}]
+                        });
+                        let mut health = healthy();
+                        health.provider_error = Some("first retirement QUERY failure".into());
+                        health.quality_faults = 23;
+                        validate_health(&health, &admitted, &report, &mut first_failure)
+                    }
+                    Retirement::ObserveFinal => {
+                        before_next_query = first_failure.clone();
+                        report.vad_provider = Some(serde_json::json!({
+                            "diagnostic_provenance": "FreshQuery", "error": null,
+                            "snapshot": {"stream_generation": 9, "gate_open": false, "dropped_packets": 31}
+                        }));
+                        report.engine.as_mut().unwrap()["observations"] = serde_json::json!({
+                            "owner_generation": 99, "bridges": []
+                        });
+                        Ok(())
+                    }
+                    _ => Ok(()),
+                }
+            },
+            &mut cleanup_failures,
+        );
+        let first = first_failure.expect("first retirement failure must retain raw evidence");
+        assert_eq!(before_next_query.as_ref(), Some(&first));
+        assert_eq!(
+            first["provider"]["diagnostic_provenance"],
+            "CachedAfterQueryFailure"
+        );
+        assert_eq!(first["provider"]["snapshot"]["dropped_packets"], 17);
+        assert_eq!(
+            first["engine"]["observations"]["bridges"][0]["counters"]["underrun_frames"],
+            23
+        );
+        assert_eq!(
+            first["health"]["provider_error"],
+            "first retirement QUERY failure"
+        );
+        assert_eq!(
+            first["engine"]["startup_trace"]["samples"]
+                .as_array()
+                .unwrap()
+                .len(),
+            256
+        );
+        let final_provider = report.vad_provider.as_ref().unwrap();
+        assert_eq!(final_provider["diagnostic_provenance"], "FreshQuery");
+        assert_eq!(final_provider["snapshot"]["dropped_packets"], 31);
+        assert_eq!(final_provider["snapshot"]["gate_open"], false);
+        assert_eq!(
+            report.engine.as_ref().unwrap()["observations"]["owner_generation"],
+            99
+        );
+        assert!(
+            cleanup_failures
+                .unwrap()
+                .contains("first retirement QUERY failure")
+        );
+        assert_eq!(
+            &events[..5],
+            &[
+                Retirement::Observe,
+                Retirement::ObserveFinal,
+                Retirement::StopSource,
+                Retirement::StopMeasurement,
+                Retirement::JoinSource,
+            ]
+        );
+    }
+
+    #[test]
+    fn collection_raw_failure_validation_latches_active_failure_only_once() {
+        let admitted = healthy();
+        let mut current = healthy();
+        current.provider_error = Some("first active failure".into());
+        let mut report = super::super::NativeReport {
+            vad_provider: Some(
+                serde_json::json!({"error": "first active failure", "telemetry": {"dropped_packets": 17}}),
+            ),
+            engine: Some(
+                serde_json::json!({"owner_generation": 7, "observations": {"raw_counter": 23}}),
+            ),
+            ..Default::default()
+        };
+        let mut first_failure = None;
+        assert!(validate_health(&current, &admitted, &report, &mut first_failure).is_err());
+        report.vad_provider = Some(serde_json::json!({"error": "later failure"}));
+        report.engine = Some(serde_json::json!({"owner_generation": 99}));
+        current.provider_error = Some("later failure".into());
+        assert!(validate_health(&current, &admitted, &report, &mut first_failure).is_err());
+        let first = first_failure.expect("validation itself must latch the first raw failure");
+        assert_eq!(first["provider"]["error"], "first active failure");
+        assert_eq!(first["provider"]["telemetry"]["dropped_packets"], 17);
+        assert_eq!(first["engine"]["observations"]["raw_counter"], 23);
+        assert_eq!(first["health"]["provider_error"], "first active failure");
+    }
+
+    #[test]
     fn collection_health_is_required_without_journal_and_generation_changes_fail_closed() {
         let admitted = healthy();
         admitted.validate(&admitted).unwrap();
@@ -1118,6 +1441,7 @@ mod tests {
             events,
             [
                 Retirement::Observe,
+                Retirement::ObserveFinal,
                 Retirement::StopSource,
                 Retirement::StopMeasurement,
                 Retirement::JoinSource,
