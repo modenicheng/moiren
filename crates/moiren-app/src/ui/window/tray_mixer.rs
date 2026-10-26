@@ -2,16 +2,17 @@
 //! strips (sources, buses, sinks) without opening the main window.
 //!
 //! Faders reuse the main mixer's rows verbatim, so both share the identical
-//! perceptual value space and edit path (see `mixer::model`); every edit
-//! applies itself immediately, as do mute/solo clicks. Escape closes the
-//! window.
+//! perceptual value space and edit path (see `mixer::model`): drag Changes
+//! dispatch coalesced, the release's final value always lands, and the wheel
+//! and double-click gestures edit immediately, as do mute/solo clicks.
+//! Escape closes the window.
 
 use rust_i18n::t;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::controls::{button, db, heading, label};
 use super::desktop::Desktop;
-use super::mixer::{fader_rows, node_kind_color, sync_faders};
+use super::mixer::{SliderSlot, fader_rows, node_kind_color, sync_faders};
 use super::*;
 use crate::service::{AppRequest, GraphEdit, GraphNodeState, GraphSnapshot, MixerState};
 use crate::ui::monitoring::NodeMeters;
@@ -54,7 +55,7 @@ pub(super) struct TrayMixer {
     state: Entity<UiState>,
     desktop: Option<WeakEntity<Desktop>>,
     node_meters: NodeMeters,
-    faders: BTreeMap<NodeId, Entity<base::slider::SliderState>>,
+    faders: BTreeMap<NodeId, SliderSlot>,
     focus: FocusHandle,
 }
 
@@ -258,12 +259,11 @@ fn strip(
                 .py(px(6.))
                 // The shared fader fills its container; the flyout fixes the
                 // track height the main mixer takes from the strip.
-                .child(
-                    div()
-                        .h(px(196.))
-                        .flex_none()
-                        .child(fader(&flyout.faders[&id], cx)),
-                )
+                .child(div().h(px(196.)).flex_none().child(fader(
+                    &flyout.faders[&id].state,
+                    &flyout.faders[&id].behavior,
+                    cx,
+                )))
                 .child(crate::ui::widgets::meters::compact_stereo_meter(
                     levels, clips,
                 ))

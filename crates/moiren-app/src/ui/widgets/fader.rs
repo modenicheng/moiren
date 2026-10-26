@@ -2,6 +2,8 @@
 use crate::ui::theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use rust_i18n::t;
+use std::rc::Rc;
 
 pub struct FaderScale;
 
@@ -122,6 +124,83 @@ pub(super) fn paint_text(
     let _ = line.paint(origin, px(10.), align, width, window, cx);
 }
 
+/// Shared wheel/double-click commit for one computed value: writes the
+/// slider value and dispatches the graph edit.
+pub type Commit = Rc<dyn Fn(f32, &mut Window, &mut App)>;
+
+/// Interaction beyond dragging, supplied by the value-space owner: wheel
+/// stepping and the double-click reset. `commit` writes the slider value and
+/// dispatches the graph edit as one step; `set_value` emits no
+/// [`base::slider::SliderEvent::Change`], so committing never feeds back into
+/// the drag path.
+#[derive(Clone)]
+pub struct SliderBehavior {
+    /// One wheel notch: current value -> new value. Direction +1 = up/right
+    /// (increase), -1 = down/left.
+    pub step: Rc<dyn Fn(f32, i32) -> f32>,
+    /// Value a double click restores (unity / default / center).
+    pub reset: f32,
+    /// Commit an externally computed value: set slider value + dispatch the
+    /// graph edit.
+    pub commit: Commit,
+}
+
+/// Wheel direction as a step count: wheel up (or tilt right) is +1. gpui
+/// carries touchpad pixel deltas and discrete line notches with the same
+/// sign — positive scrolls the content down, i.e. the wheel moved up. The
+/// secondary axis covers shift+wheel and tilt wheels on horizontal sliders.
+fn wheel_direction(delta: &ScrollDelta) -> i32 {
+    let (x, y) = match delta {
+        ScrollDelta::Pixels(delta) => (f32::from(delta.x), f32::from(delta.y)),
+        ScrollDelta::Lines(delta) => (delta.x, delta.y),
+    };
+    let (x, y) = (x.signum(), y.signum());
+    if y != 0. { y as i32 } else { x as i32 }
+}
+
+/// Wraps a slider in the shared gesture surface: the wheel steps by
+/// `behavior.step` and a double click restores `behavior.reset`, both through
+/// `commit`. Wheel events stop propagation here so adjusting a slider never
+/// scrolls the surrounding strip or panel container.
+fn gestures(
+    state: &Entity<base::slider::SliderState>,
+    behavior: &SliderBehavior,
+    slider: impl IntoElement,
+) -> Stateful<Div> {
+    let hint = t!("Scroll to adjust · double-click to reset").to_string();
+    div()
+        .id(("slider-gestures", state.entity_id()))
+        .relative()
+        .tooltip(move |window, cx| component::tooltip::Tooltip::new(hint.clone()).build(window, cx))
+        .on_scroll_wheel({
+            let state = state.clone();
+            let behavior = behavior.clone();
+            move |event: &ScrollWheelEvent, window, cx| {
+                cx.stop_propagation();
+                let direction = wheel_direction(&event.delta);
+                if direction == 0 {
+                    return;
+                }
+                let current = state.read(cx).value().end();
+                let value = (behavior.step)(current, direction);
+                // An immediate, user-paced gesture: bypass drag coalescing
+                // and leave the dragging flag alone.
+                if value != current {
+                    (behavior.commit)(value, window, cx);
+                }
+            }
+        })
+        .on_click({
+            let behavior = behavior.clone();
+            move |event: &ClickEvent, window, cx| {
+                if event.click_count() == 2 {
+                    (behavior.commit)(behavior.reset, window, cx);
+                }
+            }
+        })
+        .child(slider)
+}
+
 /// Linear position of `value` inside the slider's own value range, 0..1.
 /// Pure so the geometry tests run without a rendered slider.
 fn normalized_value(value: f32, min: f32, max: f32) -> f32 {
@@ -143,142 +222,160 @@ fn thumb_top(value: f32, min: f32, max: f32) -> f32 {
 /// detent tick (the flyout has no ruler or unity line of its own). The
 /// widget reads its value from the slider state, so callers never duplicate
 /// the gain mapping.
-pub fn fader(state: &Entity<base::slider::SliderState>, cx: &App) -> impl IntoElement {
+pub fn fader(
+    state: &Entity<base::slider::SliderState>,
+    behavior: &SliderBehavior,
+    cx: &App,
+) -> Stateful<Div> {
     let slider = state.read(cx);
     let thumb = thumb_top(slider.value().end(), slider.min_value(), slider.max_value());
-    base::slider::Slider::new(state)
-        .vertical()
-        .relative()
-        .flex_none()
-        .w(px(32.))
-        .h_full()
-        // Keep the indicator: gpui uses it to record pointer mapping bounds.
-        // Without it the state keeps zero bounds and drags map to NaN.
-        .child(
-            base::slider::SliderIndicator::new(state)
-                .absolute()
-                .left(px(13.))
-                .top_0()
-                .w(px(6.))
-                .h_full(),
-        )
-        .child(
-            base::slider::SliderTrack::new(state)
-                .axis(Axis::Vertical)
-                .absolute()
-                .left(px(13.))
-                .top_0()
-                .w(px(6.))
-                .h_full()
-                .rounded(px(theme::RADIUS_SM))
-                .bg(theme::WINDOW_BG)
-                .border_1()
-                .border_color(theme::BORDER),
-        )
-        .child(
-            // The value space is inverted: everything louder than the thumb
-            // lights up between it and the bottom (quiet) end.
-            div()
-                .absolute()
-                .left(px(13.))
-                .top(relative(thumb))
-                .bottom_0()
-                .w(px(6.))
-                .rounded(px(theme::RADIUS_SM))
-                .bg(theme::SIGNAL_DEVICE.opacity(0.35)),
-        )
-        .child(
-            div()
-                .absolute()
-                .left(px(11.))
-                .top(relative(FaderScale::position(1.)))
-                .w(px(10.))
-                .h(px(1.))
-                .bg(theme::SIGNAL_DEVICE.opacity(0.45)),
-        )
-        .child(
-            base::slider::SliderThumb::new(state)
-                .axis(Axis::Vertical)
-                .absolute()
-                .left(px(5.))
-                .top(relative(thumb))
-                .mt(px(-7.))
-                .w(px(22.))
-                .h(px(14.))
-                .rounded(px(3.))
-                .bg(theme::SURFACE_3)
-                .border_1()
-                .border_color(theme::BORDER_STRONG)
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(2.))
-                        .right(px(2.))
-                        .top(px(6.))
-                        .h(px(2.))
-                        .bg(theme::TEXT),
-                ),
-        )
+    gestures(
+        state,
+        behavior,
+        base::slider::Slider::new(state)
+            .vertical()
+            .relative()
+            .size_full()
+            // Keep the indicator: gpui uses it to record pointer mapping bounds.
+            // Without it the state keeps zero bounds and drags map to NaN.
+            .child(
+                base::slider::SliderIndicator::new(state)
+                    .absolute()
+                    .left(px(13.))
+                    .top_0()
+                    .w(px(6.))
+                    .h_full(),
+            )
+            .child(
+                base::slider::SliderTrack::new(state)
+                    .axis(Axis::Vertical)
+                    .absolute()
+                    .left(px(13.))
+                    .top_0()
+                    .w(px(6.))
+                    .h_full()
+                    .rounded(px(theme::RADIUS_SM))
+                    .bg(theme::WINDOW_BG)
+                    .border_1()
+                    .border_color(theme::BORDER),
+            )
+            .child(
+                // The value space is inverted: everything louder than the thumb
+                // lights up between it and the bottom (quiet) end.
+                div()
+                    .absolute()
+                    .left(px(13.))
+                    .top(relative(thumb))
+                    .bottom_0()
+                    .w(px(6.))
+                    .rounded(px(theme::RADIUS_SM))
+                    .bg(theme::SIGNAL_DEVICE.opacity(0.35)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(11.))
+                    .top(relative(FaderScale::position(1.)))
+                    .w(px(10.))
+                    .h(px(1.))
+                    .bg(theme::SIGNAL_DEVICE.opacity(0.45)),
+            )
+            .child(
+                base::slider::SliderThumb::new(state)
+                    .axis(Axis::Vertical)
+                    .absolute()
+                    .left(px(5.))
+                    .top(relative(thumb))
+                    .mt(px(-7.))
+                    .w(px(22.))
+                    .h(px(14.))
+                    .rounded(px(3.))
+                    .bg(theme::SURFACE_3)
+                    .border_1()
+                    .border_color(theme::BORDER_STRONG)
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(2.))
+                            .right(px(2.))
+                            .top(px(6.))
+                            .h(px(2.))
+                            .bg(theme::TEXT),
+                    ),
+            ),
+    )
+    .flex_none()
+    .w(px(32.))
+    .h_full()
 }
 
 /// Minimal horizontal slider for inspector parameters, the channel strip and
 /// sends: a thin capsule track, a fill from the quiet (left) end and a dot
 /// thumb. No detents, ticks or labels; the surrounding row keeps the value.
-pub fn hslider(state: &Entity<base::slider::SliderState>, cx: &App) -> impl IntoElement {
+pub fn hslider(
+    state: &Entity<base::slider::SliderState>,
+    behavior: &SliderBehavior,
+    cx: &App,
+) -> Stateful<Div> {
     let slider = state.read(cx);
     let fill = normalized_value(slider.value().end(), slider.min_value(), slider.max_value());
-    base::slider::Slider::new(state)
-        .horizontal()
-        .relative()
-        .flex_none()
-        .w_full()
-        .h(px(16.))
-        .child(
-            base::slider::SliderIndicator::new(state)
-                .absolute()
-                .left_0()
-                .top(px(5.))
-                .w_full()
-                .h(px(6.)),
-        )
-        .child(
-            base::slider::SliderTrack::new(state)
-                .axis(Axis::Horizontal)
-                .absolute()
-                .left_0()
-                .top(px(5.))
-                .w_full()
-                .h(px(6.))
-                .rounded_full()
-                .bg(theme::WINDOW_BG)
-                .border_1()
-                .border_color(theme::BORDER),
-        )
-        .child(
-            div()
-                .absolute()
-                .left_0()
-                .top(px(5.))
-                .w(relative(fill))
-                .h(px(6.))
-                .rounded_full()
-                .bg(theme::SIGNAL_DEVICE.opacity(0.3)),
-        )
-        .child(
-            base::slider::SliderThumb::new(state)
-                .axis(Axis::Horizontal)
-                .absolute()
-                .left(relative(fill))
-                .ml(px(-6.))
-                .top(px(2.))
-                .w(px(12.))
-                .h(px(12.))
-                .rounded_full()
-                .bg(theme::TEXT_MUTED)
-                .hover(|style| style.bg(theme::TEXT))
-                .border_1()
-                .border_color(theme::BORDER_STRONG),
-        )
+    gestures(
+        state,
+        behavior,
+        base::slider::Slider::new(state)
+            .horizontal()
+            .relative()
+            .size_full()
+            .child(
+                base::slider::SliderIndicator::new(state)
+                    .absolute()
+                    .left_0()
+                    .top(px(5.))
+                    .w_full()
+                    .h(px(6.)),
+            )
+            .child(
+                base::slider::SliderTrack::new(state)
+                    .axis(Axis::Horizontal)
+                    .absolute()
+                    .left_0()
+                    .top(px(5.))
+                    .w_full()
+                    .h(px(6.))
+                    .rounded_full()
+                    .bg(theme::WINDOW_BG)
+                    .border_1()
+                    .border_color(theme::BORDER),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(5.))
+                    .w(relative(fill))
+                    .h(px(6.))
+                    .rounded_full()
+                    .bg(theme::SIGNAL_DEVICE.opacity(0.3)),
+            )
+            .child(
+                base::slider::SliderThumb::new(state)
+                    .axis(Axis::Horizontal)
+                    .absolute()
+                    .left(relative(fill))
+                    .ml(px(-6.))
+                    .top(px(2.))
+                    .w(px(12.))
+                    .h(px(12.))
+                    .rounded_full()
+                    .bg(theme::TEXT_MUTED)
+                    .hover(|style| style.bg(theme::TEXT))
+                    .border_1()
+                    .border_color(theme::BORDER_STRONG),
+            ),
+    )
+    .flex_none()
+    .w_full()
+    .h(px(16.))
 }
 
 #[cfg(test)]

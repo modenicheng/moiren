@@ -11,7 +11,13 @@ mod routing;
 pub(super) mod strip_controls;
 use crate::ui::widgets::fader::{FaderScale, fader, ruler};
 use component::menu::ContextMenuExt;
-pub(super) use model::{MixerPresentation, fader_rows, sync_faders};
+// Slider-sync machinery is shared with the compressor parameter sliders
+// (window::graph::compressor), so the slot type, edit type and the
+// coalesced sync/commit entry points are visible across the window.
+pub(super) use model::{
+    MixerPresentation, SliderEdit, SliderSlot, commit_closure, fader_rows, sync_faders,
+    sync_slider_range,
+};
 use model::{StripDrag, reorder};
 use routing::{inputs, sends};
 
@@ -267,7 +273,11 @@ fn strip(
                         )
                         .child(meter(shell, entry, kind, channels, cx))
                         .child(ruler())
-                        .child(fader(&shell.mixer.faders[&id], cx))
+                        .child(fader(
+                            &shell.mixer.faders[&id].state,
+                            &shell.mixer.faders[&id].behavior,
+                            cx,
+                        ))
                         .gpui_test_observe(),
                 )
                 .child(title),

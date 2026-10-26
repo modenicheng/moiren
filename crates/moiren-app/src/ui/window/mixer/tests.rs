@@ -149,7 +149,7 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
         let unity = window
             .find(SharedString::from(format!("strip-unity-{id:?}")))
             .bounds();
-        let fader = view.read(cx).mixer.faders[&id].read(cx).bounds();
+        let fader = view.read(cx).mixer.faders[&id].state.read(cx).bounds();
         assert!(
             (f32::from(unity.top() - (fader.top() + fader.size.height * 0.24))).abs() <= 1.,
             "0 dB reference must align with the fader's unity gain position"
@@ -283,7 +283,7 @@ fn routing_actions_preserve_send_gain_select_the_edge_and_keep_apply_explicit(
     });
     cx.update(|window, cx| window.render_frame(cx));
     let (slider, bounds) = view.update(cx, |shell, cx| {
-        let slider = shell.mixer.faders[&dst].clone();
+        let slider = shell.mixer.faders[&dst].state.clone();
         let bounds = slider.read(cx).bounds();
         (slider, bounds)
     });

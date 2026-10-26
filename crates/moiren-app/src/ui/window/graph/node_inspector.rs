@@ -169,7 +169,11 @@ pub(in crate::ui::window) fn inspector(
     view = view
         .child(heading(t!("Channel strip")))
         .child(detail(&t!("Fader"), db(entry.mixer.gain)))
-        .child(hslider(&shell.mixer.faders[&id], cx))
+        .child(hslider(
+            &shell.mixer.faders[&id].state,
+            &shell.mixer.faders[&id].behavior,
+            cx,
+        ))
         .child(compact_horizontal_meter(
             shell.node_meters.channel_levels(id),
             node.channels(),
@@ -405,7 +409,10 @@ pub(in crate::ui::window) fn inspector(
                             .text_color(theme::TEXT)
                             .border_color(theme::BORDER),
                     )
-                    .child(hslider(&shell.compressor.sliders[&(id, parameter)], cx))
+                    .child({
+                        let slot = &shell.compressor.sliders[&(id, parameter)];
+                        hslider(&slot.state, &slot.behavior, cx)
+                    })
                     .gpui_test_observe(),
             );
         }

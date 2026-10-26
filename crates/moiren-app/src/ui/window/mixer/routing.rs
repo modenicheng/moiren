@@ -329,17 +329,11 @@ pub(super) fn sends(
                 div().flex().flex_col().flex_none().child(row).child(
                     div()
                         .id(SharedString::from(format!("send-track-{edge_id:?}")))
-                        .on_click({
-                            let this = cx.entity();
-                            move |event, window, cx| {
-                                if event.click_count() == 2 {
-                                    send_edit(this.clone(), edge_id, |params| params.gain = 1.)(
-                                        event, window, cx,
-                                    );
-                                }
-                            }
-                        })
-                        .child(hslider(&shell.mixer.sends[&edge_id], cx)),
+                        .child(hslider(
+                            &shell.mixer.sends[&edge_id].state,
+                            &shell.mixer.sends[&edge_id].behavior,
+                            cx,
+                        )),
                 ),
             );
         }
