@@ -535,3 +535,27 @@ CPU load	-	crates/moiren-app/src/ui/window/settings.rs	CPU 负载仍不可用
 Physical end-to-end latency	-	crates/moiren-app/src/ui/window/settings.rs	物理端到端延迟保持未知
 Unknown / unqualified	-	crates/moiren-app/src/ui/window/settings.rs	未知且未经物理验证
 Queue fill and packet timing do not measure CPU load or physical end-to-end latency.	-	crates/moiren-app/src/ui/window/settings.rs	明确队列与数据包时序的测量边界
+%{prefix}: native delivery packets	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	原生交付数据包计数
+%{prefix}: maximum native packet	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	实际原生数据包最大帧数
+%{prefix}: maximum callback burst	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	回调突发最大帧数
+%{prefix}: native arrival gaps	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	原生到达间隔观测
+%{count} observations; timing unknown	count	crates/moiren-app/src/ui/presentation/native_live.rs	保留观测计数但明确未知时序
+%{prefix}: delivery bound violations	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	原生交付边界超限计数
+%{prefix}: delivery clock observations	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	交付时钟不可用与回退计数
+Packet %{packet} / gap %{gap} observations	packet,gap	crates/moiren-app/src/ui/presentation/native_live.rs	数据包与间隔超限观测
+Unavailable %{unavailable} / regressed %{regressed} observations	unavailable,regressed	crates/moiren-app/src/ui/presentation/native_live.rs	时钟观测计数
+%{prefix}: oldest pending frame age estimate	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	上游提供的最早待处理帧年龄估计
+%{ticks} x 100 ns (owner-local estimate, not physical E2E)	ticks	crates/moiren-app/src/ui/presentation/native_live.rs	明确100ns单位与非物理端到端测量范围
+%{prefix}: oldest frame correlation	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	最早帧代次位置与偏移
+Generation %{generation}; packet position %{position} frames; offset %{offset} / accepted %{accepted} frames	generation,position,offset,accepted	crates/moiren-app/src/ui/presentation/native_live.rs	完整整数帧关联依据
+%{prefix}: age QPC correlation	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	年龄估计QPC关联
+Packet %{packet} / frame %{frame} / observed %{observed} x 100 ns	packet,frame,observed	crates/moiren-app/src/ui/presentation/native_live.rs	100ns数据包帧与观测时刻
+%{prefix}: age rate basis	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	帧年龄采样率依据
+%{rate} Hz; qualified Capture/QPC correction %{ppm} ppm	rate,ppm	crates/moiren-app/src/ui/presentation/native_live.rs	已验证Capture/QPC速率校正
+%{rate} Hz nominal rate (Capture/QPC correction unqualified)	rate	crates/moiren-app/src/ui/presentation/native_live.rs	未经速率校正验证时使用标称采样率
+%{prefix}: native render padding	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	原生输出队列填充量
+%{padding} / capacity %{capacity} frames (native queue only, not E2E)	padding,capacity	crates/moiren-app/src/ui/presentation/native_live.rs	填充帧与容量并非端到端延迟
+%{prefix}: observed render rate	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	观测到的输出采样率
+%{rate} Hz	rate	crates/moiren-app/src/ui/presentation/native_live.rs	整数采样率单位
+%{prefix}: observed render period	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	观测到的输出周期帧数
+%{prefix}: render sample sequence	prefix	crates/moiren-app/src/ui/presentation/native_live.rs	完整u64输出观测序号

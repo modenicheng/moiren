@@ -679,6 +679,10 @@ mod boundary_tests;
 #[path = "state/export_diagnostics_tests.rs"]
 mod export_diagnostics_tests;
 
+#[cfg(all(test, windows))]
+#[path = "state/native_live_tests.rs"]
+mod native_live_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

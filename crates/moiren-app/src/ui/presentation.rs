@@ -11,6 +11,8 @@ use std::borrow::Cow;
 
 mod export_diagnostics;
 pub use export_diagnostics::export_diagnostic_rows;
+#[cfg(windows)]
+mod native_live;
 
 /// Display-level stale guard mirroring the service's write-side filter. The
 /// owner identity is not published to the UI, so this deliberately checks only
@@ -332,6 +334,7 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                     .to_string(),
                 ));
             }
+            native_live::append_rows(&mut rows, &status.observation);
             return rows;
         }
     }

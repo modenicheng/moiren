@@ -1612,3 +1612,75 @@ _version: 2
 "Queue fill and packet timing do not measure CPU load or physical end-to-end latency.":
   en: Queue fill and packet timing do not measure CPU load or physical end-to-end latency.
   zh-CN: 队列填充量与数据包时序无法测量 CPU 负载或物理端到端延迟。
+"%{prefix}: native delivery packets":
+  en: "%{prefix}: native delivery packets"
+  zh-CN: "%{prefix}：原生交付数据包"
+"%{prefix}: maximum native packet":
+  en: "%{prefix}: maximum native packet"
+  zh-CN: "%{prefix}：原生数据包最大帧数"
+"%{prefix}: maximum callback burst":
+  en: "%{prefix}: maximum callback burst"
+  zh-CN: "%{prefix}：回调突发最大帧数"
+"%{prefix}: native arrival gaps":
+  en: "%{prefix}: native arrival gaps"
+  zh-CN: "%{prefix}：原生到达间隔"
+"%{count} observations; timing unknown":
+  en: "%{count} observations; timing unknown"
+  zh-CN: "%{count} 次观测；时序未知"
+"%{prefix}: delivery bound violations":
+  en: "%{prefix}: delivery bound violations"
+  zh-CN: "%{prefix}：交付边界超限"
+"%{prefix}: delivery clock observations":
+  en: "%{prefix}: delivery clock observations"
+  zh-CN: "%{prefix}：交付时钟观测"
+"Packet %{packet} / gap %{gap} observations":
+  en: "Packet %{packet} / gap %{gap} observations"
+  zh-CN: "数据包 %{packet} / 间隔 %{gap} 次观测"
+"Unavailable %{unavailable} / regressed %{regressed} observations":
+  en: "Unavailable %{unavailable} / regressed %{regressed} observations"
+  zh-CN: "不可用 %{unavailable} / 回退 %{regressed} 次观测"
+"%{prefix}: oldest pending frame age estimate":
+  en: "%{prefix}: oldest pending frame age estimate"
+  zh-CN: "%{prefix}：最早待处理帧的年龄估计"
+"%{ticks} x 100 ns (owner-local estimate, not physical E2E)":
+  en: "%{ticks} x 100 ns (owner-local estimate, not physical E2E)"
+  zh-CN: "%{ticks} x 100 ns（所有者局部估计，非物理端到端延迟）"
+"%{prefix}: oldest frame correlation":
+  en: "%{prefix}: oldest frame correlation"
+  zh-CN: "%{prefix}：最早帧的关联信息"
+"Generation %{generation}; packet position %{position} frames; offset %{offset} / accepted %{accepted} frames":
+  en: "Generation %{generation}; packet position %{position} frames; offset %{offset} / accepted %{accepted} frames"
+  zh-CN: "代次 %{generation}；数据包位置 %{position} 帧；偏移 %{offset} / 已接收 %{accepted} 帧"
+"%{prefix}: age QPC correlation":
+  en: "%{prefix}: age QPC correlation"
+  zh-CN: "%{prefix}：帧年龄的 QPC 关联"
+"Packet %{packet} / frame %{frame} / observed %{observed} x 100 ns":
+  en: "Packet %{packet} / frame %{frame} / observed %{observed} x 100 ns"
+  zh-CN: "数据包 %{packet} / 帧 %{frame} / 观测时刻 %{observed} x 100 ns"
+"%{prefix}: age rate basis":
+  en: "%{prefix}: age rate basis"
+  zh-CN: "%{prefix}：帧年龄的采样率依据"
+"%{rate} Hz; qualified Capture/QPC correction %{ppm} ppm":
+  en: "%{rate} Hz; qualified Capture/QPC correction %{ppm} ppm"
+  zh-CN: "%{rate} Hz；已验证的 Capture/QPC 校正 %{ppm} ppm"
+"%{rate} Hz nominal rate (Capture/QPC correction unqualified)":
+  en: "%{rate} Hz nominal rate (Capture/QPC correction unqualified)"
+  zh-CN: "%{rate} Hz 标称采样率（Capture/QPC 校正未经验证）"
+"%{prefix}: native render padding":
+  en: "%{prefix}: native render padding"
+  zh-CN: "%{prefix}：原生输出填充量"
+"%{padding} / capacity %{capacity} frames (native queue only, not E2E)":
+  en: "%{padding} / capacity %{capacity} frames (native queue only, not E2E)"
+  zh-CN: "%{padding} / 容量 %{capacity} 帧（仅为原生队列，非端到端延迟）"
+"%{prefix}: observed render rate":
+  en: "%{prefix}: observed render rate"
+  zh-CN: "%{prefix}：观测到的输出采样率"
+"%{rate} Hz":
+  en: "%{rate} Hz"
+  zh-CN: "%{rate} Hz"
+"%{prefix}: observed render period":
+  en: "%{prefix}: observed render period"
+  zh-CN: "%{prefix}：观测到的输出周期"
+"%{prefix}: render sample sequence":
+  en: "%{prefix}: render sample sequence"
+  zh-CN: "%{prefix}：输出观测序号"
