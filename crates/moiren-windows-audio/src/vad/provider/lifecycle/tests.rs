@@ -647,6 +647,49 @@ fn first_gate_admission_does_not_count_as_transport_recovery() {
 }
 
 #[test]
+fn first_stream_start_after_gate_admission_does_not_count_as_recovery() {
+    let admission = Arc::new(Admission::new());
+    let session = SessionState::new(admission.clone());
+    session.active.store(true, Ordering::Release);
+    let ticket = admission.set(Some(9));
+    session.admitted_ticket.store(ticket, Ordering::Release);
+    session.admitted_revision.store(9, Ordering::Release);
+    let mut control = Fake {
+        current: snapshot_native(
+            PdoState::Present,
+            4,
+            8,
+            false,
+            11,
+            (StreamState::Paused, true, true),
+        ),
+        ..Default::default()
+    };
+    let previous = control.current;
+    control.current = snapshot_native(
+        PdoState::Present,
+        5,
+        9,
+        true,
+        11,
+        (StreamState::Running, true, true),
+    );
+
+    let (current, changed) = super::super::transport::poll_with_started_transport(
+        &mut control,
+        previous,
+        &session,
+        false,
+    )
+    .unwrap();
+
+    assert!(!changed, "first stream start is not recovery");
+    assert!(current.gate_open());
+    assert_eq!(session.reset_epoch.load(Ordering::Acquire), 0);
+    assert_eq!(session.telemetry.snapshot().recovery_events, 0);
+}
+
+#[test]
 fn admitted_worker_keeps_gate_but_stream_restart_revokes_and_resets() {
     let admission = Arc::new(Admission::new());
     let session = SessionState::new(admission.clone());

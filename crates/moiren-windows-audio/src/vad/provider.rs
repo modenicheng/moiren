@@ -621,11 +621,17 @@ fn run_playback(
     // A newly prepared carrier belongs to epoch zero, even when a reset was
     // requested before this worker started. Never skip that first handshake.
     let mut observed_reset = 0;
+    let mut transport_started = false;
     let result = (|| {
         while !state.cancel.load(std::sync::atomic::Ordering::Acquire) {
             if state.active.load(std::sync::atomic::Ordering::Acquire) {
                 state.status.store(1, std::sync::atomic::Ordering::Release);
-                let (queried, _) = transport::poll(&mut control, current, state)?;
+                let (queried, _) = transport::poll_with_started_transport(
+                    &mut control,
+                    current,
+                    state,
+                    transport_started,
+                )?;
                 current = queried;
                 if !pcm_worker::quiesce_playback(state, &mut observed_reset, || {
                     teardown_playback(
@@ -658,6 +664,7 @@ fn run_playback(
                             writer.take().expect("playback carrier is free"),
                         )?);
                         owner = Some(control.pcm_owner(current).map_err(client_error)?);
+                        transport_started = true;
                         tickets.clear();
                         order = pcm_worker::PacketOrder::default();
                     }
@@ -880,13 +887,19 @@ fn run_microphone(
     let mut tickets = Vec::with_capacity(super::REQUEST_SLOTS);
     let mut pump = None;
     let mut observed_reset = 0;
+    let mut transport_started = false;
     let mut reprime_after_reset = false;
     let mut retired = RetiredPcm::new();
     let result = (|| {
         while !state.cancel.load(std::sync::atomic::Ordering::Acquire) {
             if state.active.load(std::sync::atomic::Ordering::Acquire) {
                 state.status.store(1, std::sync::atomic::Ordering::Release);
-                let (queried, _) = transport::poll(&mut control, current, state)?;
+                let (queried, _) = transport::poll_with_started_transport(
+                    &mut control,
+                    current,
+                    state,
+                    transport_started,
+                )?;
                 current = queried;
                 if state.reset_epoch.load(Ordering::Acquire) != observed_reset {
                     teardown_microphone(
@@ -929,6 +942,7 @@ fn run_microphone(
                             reader.take().expect("microphone carrier is free"),
                         )?);
                         owner = Some(control.pcm_owner(current).map_err(client_error)?);
+                        transport_started = true;
                         tickets.clear();
                         let mut fresh = pcm_worker::MicrophonePump::new(shape.frames());
                         if reprime_after_reset {
