@@ -75,3 +75,28 @@ exists. These limitations do not prevent the following software work.
 - [ ] Stable target candidate and calibrated same-condition physical sweep.
 - [ ] Thirty-minute and independent two-hour qualification repetitions.
 - [ ] Remaining complete UI state matrix and final branch verification.
+  Rendered held-name rename/refusal/fresh-replacement coverage for Playback
+  and Microphone is committed in `4b0deba`, with independent spec/quality
+  review PASS. It uses injected snapshots, not a real service/native lifecycle.
+  Integrated workspace tests pass 1,621/8 ignored across 71 result suites;
+  full feature-enabled app tests pass 489/4 ignored across 20 suites. Physical
+  import/qualified states and native rename acceptance remain outstanding.
+
+### 2026-10-27 short target matrix and retention
+
+The host-built native probe at source pin `f6f2718` produced all eight timer
+case reports with unchanged defaults and zero reported native discontinuities
+or microphone write drops. The event run failed in Microphone Mono Pcm16:
+asynchronous `GetOverlappedResult(VAD PCM)` returned `0x8007051A` after 36,960
+signal frames and two dropped writes. This narrows the current failure to PCM
+completion rather than control gate admission; root cause is not established.
+Timer observations contain silence too, so eight completed cases are not the
+zero-silence physical/stability gate. The wrapper failed to retain process exit
+codes (null); do not substitute report presence for a verified exit status.
+
+Six guest files and their manifest (12,577 bytes total including the manifest)
+are archived at `target/vad-target-archive/20261027-native-f6f2718-matrix`.
+Every payload length/SHA-256 was checked on the host and rechecked on the guest
+before deleting the run, temporary native probe and runner. Guest storage now
+holds only `e2e_latency_probe-2c61452.exe` (3,359,744 bytes), no dynamic endpoints
+or probe processes, and 30.12 GiB free. No driver/system files were removed.

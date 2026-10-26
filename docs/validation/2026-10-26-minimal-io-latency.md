@@ -579,6 +579,35 @@ infer a physical boundary/calibration, automatically authenticate artifacts,
 or qualify physical E2E. Same-condition physical setup/marker capture,
 controlled load, 30-minute and two independent two-hour gates remain open.
 
+### 2026-10-27 rendered lifecycle and current target evidence
+
+Commit `4b0deba` adds two compact rendered UI acceptance tests covering held
+old name during rename, refused recreation, and fresh replacement for Playback
+and Microphone. Independent pinned review passes spec compliance and quality.
+All thirteen rendered acceptance tests pass; the full feature-enabled app suite
+passes 489 tests/4 ignored across 20 result suites. Workspace tests pass
+1,621/8 ignored across 71 result suites. These are software checks, not native
+rename acceptance, calibrated latency results or Stage 7 completion.
+
+A fresh host-built native probe (source `f6f2718`, 380,928 bytes, SHA-256
+`68396c12a6f7ece963b7292ce3e18e29b4e4b09fb8869948d22c968f5bd9d2a2`)
+completed all eight timer case reports with unchanged defaults and zero reported
+native discontinuities/microphone drops. Observed silence remains, so this is
+not zero-silence or physical qualification. Event mode failed in Microphone
+Mono Pcm16 at asynchronous `GetOverlappedResult(VAD PCM)`, `0x8007051A`, after
+36,960 signal frames, 9,600 silent frames and two dropped microphone writes.
+The failure is no longer ambiguously labeled control IO; exact epoch/shape
+cause remains to be diagnosed. The wrapper's process exit fields are null,
+not verified success/failure exit codes; stdout/stderr are preserved as-is.
+
+Archive `target/vad-target-archive/20261027-native-f6f2718-matrix` retains six
+payloads and a manifest (12,577 bytes including that manifest). Host payload
+length/SHA-256 checks and a second guest check preceded deletion. Temporary
+run, native probe and runner were removed immediately; only the current
+3,359,744-byte diagnostic probe remains on the VM, with no dynamic endpoints
+or probe processes and 30.12 GiB free. Build artifacts remain host-side; no
+DriverStore/system/default-device changes were made.
+
 1. Diagnose and fix the target native `0x8007051A` revision mismatch. Repeat
    event and timer playback/microphone matrices until every case passes with
    zero drops, unexpected silence, stale packets, discontinuities, and epoch
