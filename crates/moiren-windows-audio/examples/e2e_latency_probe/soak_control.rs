@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 const CONTROL_POLL: Duration = Duration::from_millis(10);
 
-pub(super) fn run_until(
+pub(crate) fn run_until(
     duration: Duration,
     mut poll: impl FnMut(Duration) -> Result<()>,
     stop: impl FnOnce() -> Result<()>,

@@ -3,6 +3,11 @@
 mod cli;
 #[path = "e2e_latency_probe/live.rs"]
 mod live;
+#[path = "e2e_latency_probe/measurement.rs"]
+mod measurement;
+#[cfg(any(windows, test))]
+#[path = "e2e_latency_probe/measurement_sink.rs"]
+mod measurement_sink;
 #[path = "e2e_latency_probe/pcm.rs"]
 mod pcm;
 

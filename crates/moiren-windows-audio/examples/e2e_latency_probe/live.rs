@@ -41,7 +41,7 @@ mod soak;
 mod soak_cleanup;
 #[cfg(any(windows, test))]
 #[path = "soak_control.rs"]
-mod soak_control;
+pub(crate) mod soak_control;
 
 const LIVE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_MAX_INPUT_BYTES: u64 = 16 * 1024 * 1024;

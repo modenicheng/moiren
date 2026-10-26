@@ -17,6 +17,9 @@ evaluate --reports FILE --expectation FILE --level experimental|default --max-in
 analyze-pcm --pcm FILE --schedule FILE --max-input-bytes N --output FILE
 live-process-loopback --source-pid PID --output ENDPOINT --artifact-dir DIR [--seconds 1..600]
 live-vad --stable-endpoint-id ID --name NAME --output ENDPOINT --artifact-dir DIR [--seconds 1..600]
+record-measurement --input ENDPOINT --artifact-dir NEW_DIR --seconds 1..7200
+    --ring-frames N --max-pcm-bytes N --max-metadata-bytes N --max-packets N [--dry-run]
+Independent native capture retains bounded raw PCM/packet metadata; never claims physical qualification.
     [--measurement-boundary internal|wasapi-loopback|physical-cable|external-dual-channel]
     [--measurement-pcm FILE --schedule FILE] [--calibration FILE]
     [--input-target-frames N --input-capacity-frames N --input-jitter-frames N]
@@ -71,6 +74,12 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         return Ok(0);
     }
     let command = &arguments[0];
+    if command == "record-measurement" {
+        if arguments[1..] == ["--list"] {
+            return crate::measurement::list_inputs();
+        }
+        return crate::measurement::run(arguments[1..].to_vec());
+    }
     if matches!(command.as_str(), "live-process-loopback" | "live-vad") {
         let mut live_arguments = arguments[1..].to_vec();
         if command == "live-vad" {
