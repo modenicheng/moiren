@@ -5,13 +5,19 @@
 //! [`AppHandle`] without ever blocking presentation.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use rust_i18n::t;
 
 use crate::service::{
-    AppHandle, AppRequest, AppSnapshot, AudioBackend, DeviceCatalog, DeviceRow, GraphPreparation,
-    InputSelection, RequestId, RunLimit, SessionPhase, SessionSpec,
+    AppHandle, AppRequest, AppSnapshot, AudioBackend, DeviceCatalog, DeviceRow, GraphEdit,
+    GraphPreparation, InputSelection, RequestId, RunLimit, SessionPhase, SessionSpec,
 };
+
+/// Instant-apply settles continuous adjustments (slider drags) this long
+/// after the last edit; the service receives one Apply instead of one per
+/// pointer move. Structural edits apply without this delay.
+pub(crate) const AUTO_APPLY_DEBOUNCE: Duration = Duration::from_millis(300);
 
 pub(crate) fn input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> &[DeviceRow] {
     match backend {
@@ -157,6 +163,9 @@ pub struct UiState {
     pub tone_frequency: f64,
     pub max_block_frames: usize,
     pub run_limit: RunLimit,
+    /// Debounced instant-apply deadline; fired by [`Self::poll`] once the
+    /// edit stream settles and the session is still running.
+    auto_apply_at: Option<Instant>,
     request_id: Option<RequestId>,
 }
 
@@ -181,6 +190,7 @@ impl UiState {
             tone_frequency: 440.,
             max_block_frames,
             run_limit: RunLimit::UntilStopped,
+            auto_apply_at: None,
             request_id: None,
         };
         let resources = graph_resources(&state.snapshot);
@@ -190,6 +200,12 @@ impl UiState {
 
     /// Poll the service snapshot. Returns true when the projection changed.
     pub fn poll(&mut self) -> bool {
+        let changed = self.poll_snapshot();
+        self.pump_auto_apply();
+        changed
+    }
+
+    fn poll_snapshot(&mut self) -> bool {
         let Some(snapshot) = self.handle.try_snapshot() else {
             return false;
         };
@@ -228,6 +244,63 @@ impl UiState {
 
     pub fn dispatch(&mut self, request: AppRequest) {
         let _ = self.try_dispatch(request);
+    }
+
+    /// Instant-apply edit pipeline: every accepted edit schedules the running
+    /// session to adopt the new candidate. Continuous adjustments (drags)
+    /// coalesce into one Apply after [`AUTO_APPLY_DEBOUNCE`]; structural edits
+    /// apply on the next poll tick. Dispatch failures surface through the
+    /// shared error strip.
+    pub fn edit_graph(&mut self, edit: GraphEdit) {
+        let _ = self.try_edit_graph(edit);
+    }
+
+    pub fn try_edit_graph(
+        &mut self,
+        edit: GraphEdit,
+    ) -> Result<RequestId, crate::service::DispatchError> {
+        let continuous = edit.is_continuous_adjustment();
+        let result = self.try_dispatch(AppRequest::EditGraph(edit));
+        if result.is_ok() {
+            self.schedule_auto_apply(continuous);
+        }
+        result
+    }
+
+    fn schedule_auto_apply(&mut self, continuous: bool) {
+        if self.snapshot.phase != SessionPhase::Running {
+            // Idle edits stay candidate; the next Start applies them.
+            return;
+        }
+        let delay = if continuous {
+            AUTO_APPLY_DEBOUNCE
+        } else {
+            Duration::ZERO
+        };
+        self.auto_apply_at = Some(Instant::now() + delay);
+    }
+
+    /// Drop any pending debounce and apply right away (slider release).
+    pub fn apply_graph_now(&mut self) {
+        self.auto_apply_at = None;
+        if self.snapshot.phase == SessionPhase::Running {
+            self.dispatch(AppRequest::ApplyGraphIfRunning);
+        }
+    }
+
+    fn pump_auto_apply(&mut self) {
+        let Some(at) = self.auto_apply_at else {
+            return;
+        };
+        if at > Instant::now() {
+            return;
+        }
+        self.auto_apply_at = None;
+        // Re-check against the freshest snapshot: a Stop that landed after the
+        // edit cancels the follow-up, and the driver ignores it regardless.
+        if self.snapshot.phase == SessionPhase::Running {
+            self.dispatch(AppRequest::ApplyGraphIfRunning);
+        }
     }
 
     pub fn try_dispatch(
@@ -295,16 +368,16 @@ impl UiState {
             .find(|n| n.kind() == NodeKind::Pan)
             .map(|n| n.id());
         if let Some(node) = gain {
-            self.dispatch(AppRequest::EditGraph(crate::service::GraphEdit::SetGain {
+            self.edit_graph(GraphEdit::SetGain {
                 node,
                 gain: self.effective_gain(),
-            }));
+            });
         }
         if let Some(node) = pan {
-            self.dispatch(AppRequest::EditGraph(crate::service::GraphEdit::SetPan {
+            self.edit_graph(GraphEdit::SetPan {
                 node,
                 pan: self.pan,
-            }));
+            });
         }
     }
 
@@ -539,14 +612,10 @@ impl UiState {
             .find(|n| n.kind() == NodeKind::Sink)
             .map(|n| n.id());
         if let Some((node, source)) = input.zip(source) {
-            self.dispatch(AppRequest::EditGraph(
-                crate::service::GraphEdit::BindSource { node, source },
-            ));
+            self.edit_graph(GraphEdit::BindSource { node, source });
         }
         if let Some((node, endpoint_id)) = output.zip(self.selection.output_id.clone()) {
-            self.dispatch(AppRequest::EditGraph(
-                crate::service::GraphEdit::BindOutput { node, endpoint_id },
-            ));
+            self.edit_graph(GraphEdit::BindOutput { node, endpoint_id });
         }
     }
 }
@@ -1062,7 +1131,7 @@ mod tests {
         assert_eq!(state.snapshot.active_latency_profile, None);
         assert_eq!(
             crate::ui::presentation::latency_apply_text(&state.snapshot),
-            "Selected profile applies on next Apply / Start"
+            "Selected profile applies on next start"
         );
         let snapshot = Arc::make_mut(&mut state.snapshot);
         snapshot.active_latency_profile = Some(AudioLatencyProfile::Compatible);

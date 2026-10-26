@@ -53,6 +53,9 @@ pub(super) fn panel(id: &'static str) -> Stateful<Div> {
         .flex_col()
         .flex_none()
         .w(px(theme::INSPECTOR_WIDTH))
+        // Fill the sidebar column so short content never exposes the canvas
+        // behind it; overflow scrolls inside the panel instead.
+        .h_full()
         .p(px(theme::SPACE_4))
         .gap(px(theme::SPACE_3))
         .bg(theme::SURFACE)
@@ -73,23 +76,6 @@ pub(super) fn db(gain: f64) -> String {
     }
 }
 
-pub(super) fn apply(shell: &StudioShell, cx: &Context<StudioShell>) -> ActionButton {
-    let this = cx.entity();
-    let state = shell.state.read(cx);
-    let graph = &state.snapshot.graph;
-    button("apply-graph", t!("Apply graph"))
-        .variant(ButtonVariant::Primary)
-        .disabled(graph.pending_revision.is_some() || state.pending_request)
-        .on_click(move |_, _, cx| {
-            this.update(cx, |shell, cx| {
-                shell
-                    .state
-                    .update(cx, |state, _| state.dispatch(AppRequest::ApplyGraph));
-                cx.notify();
-            })
-        })
-}
-
 pub(super) fn edit(
     this: Entity<StudioShell>,
     edit: crate::service::GraphEdit,
@@ -97,7 +83,7 @@ pub(super) fn edit(
     move |_, _, cx| {
         this.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| {
-                state.dispatch(AppRequest::EditGraph(edit.clone()))
+                state.edit_graph(edit.clone());
             });
             cx.notify();
         })
@@ -142,20 +128,4 @@ pub(super) fn stereo_controls(
                     },
                 )),
         )
-}
-
-pub(super) fn inspector_toggle(
-    id: impl Into<ElementId>,
-    cx: &Context<StudioShell>,
-) -> ActionButton {
-    let this = cx.entity();
-    button(id, t!("Inspector")).on_click(move |_, _, cx| {
-        this.update(cx, |shell, cx| {
-            shell.inspector_open = !shell.inspector_open;
-            if shell.compact {
-                shell.sidebar_open = false;
-            }
-            cx.notify();
-        })
-    })
 }

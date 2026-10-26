@@ -1,11 +1,10 @@
 //! Tray flyout window: quick fader access to the audio-relevant mixer
 //! strips (sources, buses, sinks) without opening the main window.
 //!
-//! Volume edits apply immediately: slider releases and mute/solo clicks
-//! follow the candidate `SetMixer` edit with `ApplyGraph`, mirroring the
-//! main window's Apply button (a release applies even when the local
-//! snapshot has not polled the drag yet). The window closes on focus loss
-//! and Escape.
+//! Volume edits are instant-apply like everywhere else: the shared
+//! `edit_graph` pipeline follows `SetMixer` with the running-session apply,
+//! and slider releases or mute/solo clicks settle it at once. The window
+//! closes on focus loss and Escape.
 
 use rust_i18n::t;
 use std::collections::BTreeMap;
@@ -14,7 +13,7 @@ use super::controls::{badge, button, db, heading, label};
 use super::desktop::Desktop;
 use super::mixer::{SliderEdit, gain_db, linear_gain, node_kind_color, sync_sliders};
 use super::*;
-use crate::service::{AppRequest, GraphEdit, GraphNodeState, GraphSnapshot, MixerState};
+use crate::service::{GraphEdit, GraphNodeState, GraphSnapshot, MixerState};
 use crate::ui::monitoring::NodeMeters;
 use moiren_core::graph::{NodeId, NodeKind};
 
@@ -114,14 +113,12 @@ impl TrayMixer {
                     id,
                     gain_db(gain),
                     Box::new(move |value: f32, graph: &GraphSnapshot| {
-                        graph.node(id).map(|node| {
-                            AppRequest::EditGraph(GraphEdit::SetMixer {
-                                node: id,
-                                state: MixerState {
-                                    gain: linear_gain(value),
-                                    ..node.mixer
-                                },
-                            })
+                        graph.node(id).map(|node| GraphEdit::SetMixer {
+                            node: id,
+                            state: MixerState {
+                                gain: linear_gain(value),
+                                ..node.mixer
+                            },
                         })
                     }) as SliderEdit,
                 )
@@ -403,15 +400,13 @@ fn mixer_edit(
             if let Some(node) = state.snapshot.graph.node(id) {
                 let mut requested = node.mixer;
                 change(&mut requested);
-                state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
+                state.edit_graph(GraphEdit::SetMixer {
                     node: id,
                     state: requested,
-                }));
-                // The snapshot has not polled the edit yet; apply unless one
-                // is already in flight, exactly like the Apply button.
-                if state.snapshot.graph.pending_revision.is_none() && !state.pending_request {
-                    state.dispatch(AppRequest::ApplyGraph);
-                }
+                });
+                // Discrete tray clicks skip the debounce; instant-apply
+                // settles at once when a session is running.
+                state.apply_graph_now();
             }
         });
         this.update(cx, |_, cx| cx.notify());

@@ -396,6 +396,9 @@ impl StudioShell {
                 Ok(()) => {
                     self.project_path = Some(path);
                     self.project_message = Some(t!("Project opened").into());
+                    // Instant apply: a loaded project adopts a running
+                    // session right away, like every other graph change.
+                    self.state.update(cx, |state, _| state.apply_graph_now());
                 }
                 Err(error) => self.project_message = Some(error.to_string()),
             }

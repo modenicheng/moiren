@@ -6,7 +6,6 @@ Diagnostics: %{log_path}	log_path=log_path（crate::logging::log_path().display(
 Start	-	crates/moiren-app/src/ui/window/chrome.rs:102	传输按钮（未运行时）
 Stop	-	crates/moiren-app/src/ui/window/chrome.rs:102	传输按钮（运行中）
 %{rate} Hz  ·  period %{frames} frames	rate=d.observation.prepared.output.sample_rate|frames=actual_period_frames（未知时显示 "—"）	crates/moiren-app/src/ui/window/chrome.rs:187	format! 原文 "{} Hz  ·  period {} frames"；注意原文双空格
-Apply graph	-	crates/moiren-app/src/ui/window/controls.rs:78|crates/moiren-app/src/ui/window/devices/exports.rs:322	共享按钮
 Mono	-	crates/moiren-app/src/ui/window/controls.rs:114|crates/moiren-app/src/ui/window/devices/exports.rs:248|crates/moiren-app/src/ui/window/devices/exports.rs:349|crates/moiren-app/src/ui/window/devices/exports.rs:402	声道按钮/导出声道选项
 Stereo	-	crates/moiren-app/src/ui/window/devices/exports.rs:249|crates/moiren-app/src/ui/window/devices/exports.rs:351|crates/moiren-app/src/ui/window/devices/exports.rs:402	导出声道选项
 Swap	-	crates/moiren-app/src/ui/window/controls.rs:129	立体声交换按钮
@@ -129,7 +128,7 @@ No active session	-	crates/moiren-app/src/ui/window/devices.rs:269	空态说明
 Source mode	-	crates/moiren-app/src/ui/window/devices.rs:272	detail 标签
 Select available resources	-	crates/moiren-app/src/ui/window/devices.rs:273	未选择资源时的 detail 值
 Not selected	-	crates/moiren-app/src/ui/window/devices.rs:274	未选择输出时的 detail 值
-Selecting another resource leaves the running session unchanged. Stop and start to switch devices.	-	crates/moiren-app/src/ui/window/devices.rs:275	说明文本
+Changing resources rebinds the running session immediately.	-	crates/moiren-app/src/ui/window/devices.rs:275	instant-apply rewording
 Refresh devices	-	crates/moiren-app/src/ui/window/devices.rs:294	按钮
 ASIO discovery failed: %{error}. Refresh devices to retry.	error=snapshot.catalog.asio_error	crates/moiren-app/src/ui/window/devices.rs:319	format! 原文 "ASIO discovery failed: {error}. Refresh devices to retry."
 Unavailable device	-	crates/moiren-app/src/ui/window/devices/overrides.rs:33	目录中找不到设备时的标题回退
@@ -147,7 +146,7 @@ This device is not bound to the active source/output pair.	-	crates/moiren-app/s
 Configure never changes routing. Use next start on a device row updates the candidate graph.	-	crates/moiren-app/src/ui/window/devices/overrides.rs:152	说明文本
 Export is no longer in this project's candidate graph	-	crates/moiren-app/src/ui/window/devices/exports.rs:87	edit_export 错误，显示在错误条
 Virtual exports	-	crates/moiren-app/src/ui/window/devices/exports.rs:193	标题
-Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.	-	crates/moiren-app/src/ui/window/devices/exports.rs:194	说明文本
+Edits here apply to a running session immediately. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.	-	crates/moiren-app/src/ui/window/devices/exports.rs:194	instant-apply rewording
 Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export.	-	crates/moiren-app/src/ui/window/devices/exports.rs:196	说明文本
 Default eligibility is permission on this computer only, not saved in the project. Off prevents both Windows automatic and user manual default selection. On only permits eligibility; it does not set a Windows default.	-	crates/moiren-app/src/ui/window/devices/exports.rs:213	DEFAULT_ELIGIBILITY_HELP 常量，正文与 aria_label 共用
 Changing channels, a name, or eligibility safely retires and recreates the endpoint. Apply again to resume; unbind incompatible Graph IO before changing channels.	-	crates/moiren-app/src/ui/window/devices/exports.rs:201	说明文本
@@ -219,11 +218,11 @@ Output %{index}	index=index+1（端口序号）	crates/moiren-app/src/ui/window/
 Add bus input	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:348	按钮
 Remove last input	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:353	按钮
 Delete node	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:364	按钮
-Waiting for Apply graph	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:390	观测状态回退文本
+Waiting for changes to go live	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:390	instant-apply rewording
 Unavailable for this node	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:392	观测状态回退文本
 Runtime observation	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:399	分区标题
 Status	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:403	detail 标签
-The candidate graph is not the confirmed runtime. Apply graph to observe this node.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:408	说明文本
+The edited graph is not the running audio yet. Observation starts once it goes live.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:408	instant-apply rewording
 This node has no managed level topic in the current service projection.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:412	说明文本
 Peak %{index}	index=channel+1	crates/moiren-app/src/ui/window/graph/node_inspector.rs:423	format! 原文 "Peak {}"
 RMS %{index}	index=channel+1	crates/moiren-app/src/ui/window/graph/node_inspector.rs:426	format! 原文 "RMS {}"
@@ -268,7 +267,7 @@ Processor rack	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:762|cra
 Stages	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:763	detail 标签
 Add gain stage	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:764	按钮
 Clear stages	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:774	按钮
-Managed observation becomes available after Apply graph.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:792	说明文本
+Managed observation becomes available once the graph runs live.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:792	instant-apply rewording
 Threshold	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:838|crates/moiren-app/src/ui/window/graph/node_inspector.rs:887|crates/moiren-app/src/service/graph/compressor.rs:140	噪声门/限制器字段与压缩器参数名
 Attack	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:846|crates/moiren-app/src/service/graph/compressor.rs:142	噪声门字段与压缩器参数名
 Release	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:855|crates/moiren-app/src/ui/window/graph/node_inspector.rs:897|crates/moiren-app/src/service/graph/compressor.rs:143	字段与压缩器参数名
@@ -287,7 +286,6 @@ Dry / wet	-	crates/moiren-app/src/service/graph/compressor.rs:148	CompressorPara
 %{name} / out %{index}	name=节点 label（运行时）|index=i+1	crates/moiren-app/src/ui/window/matrix.rs:66	format! 原文 "{} / out {}"
 Muted	-	crates/moiren-app/src/ui/window/matrix.rs:84	矩阵单元格文本
 %{source} to %{destination}: %{value}	source=name(source.id())|destination=name(destination.id())|value=单元格文本	crates/moiren-app/src/ui/window/matrix.rs:94	无障碍标签，format! 原文 "{} to {}: {value}"
-Routing matrix	-	crates/moiren-app/src/ui/window/matrix.rs:145	页面标题
 Outputs → Inputs	-	crates/moiren-app/src/ui/window/matrix.rs:183	矩阵角标
 %{outputs} output ports · %{inputs} input ports · %{connections} direct connections	outputs=outputs.len()|inputs=inputs.len()|connections=graph.edges().len()	crates/moiren-app/src/ui/window/matrix.rs:225	format! 原文 "{} output ports · {} input ports · {} direct connections"
 Connection	-	crates/moiren-app/src/ui/window/matrix.rs:240	面板标题
@@ -390,8 +388,8 @@ Exiting	-	crates/moiren-app/src/ui/presentation.rs:25	phase_text 动态键
 Exited	-	crates/moiren-app/src/ui/presentation.rs:26	phase_text 动态键
 Explicit stream buffers control professional audio latency	-	crates/moiren-app/src/ui/presentation.rs:32	latency_apply_text（当前仅测试引用，保留键）
 Active profile matches selection	-	crates/moiren-app/src/ui/presentation.rs:35	latency_apply_text（当前仅测试引用，保留键）
-Pending: apply graph or start again to use selected profile	-	crates/moiren-app/src/ui/presentation.rs:36	latency_apply_text（当前仅测试引用，保留键）
-Selected profile applies on next Apply / Start	-	crates/moiren-app/src/ui/presentation.rs:37	latency_apply_text（当前仅测试引用，保留键）
+Pending: the selected profile is used on the next start or live change	-	crates/moiren-app/src/ui/presentation.rs:36	instant-apply rewording
+Selected profile applies on next start	-	crates/moiren-app/src/ui/presentation.rs:37	instant-apply rewording
 Master output	-	crates/moiren-app/src/ui/presentation.rs:75|crates/moiren-app/src/ui/presentation.rs:148	presentation 流类型
 Follower output	-	crates/moiren-app/src/ui/presentation.rs:77|crates/moiren-app/src/ui/presentation.rs:149	presentation 流类型
 %{prefix}: actual stream	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:81	format! 原文 "{prefix}: actual stream"

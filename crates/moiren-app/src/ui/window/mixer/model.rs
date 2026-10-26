@@ -58,12 +58,12 @@ pub(in crate::ui::window) fn linear_gain(value: f32) -> f64 {
 
 /// Builds the real-time edit for a slider's new value from the current
 /// snapshot; None when the target vanished since the slider was created.
-pub(in crate::ui::window) type SliderEdit = Box<dyn Fn(f32, &GraphSnapshot) -> Option<AppRequest>>;
+pub(in crate::ui::window) type SliderEdit = Box<dyn Fn(f32, &GraphSnapshot) -> Option<GraphEdit>>;
 
 /// Slider construction and value sync shared by the fader (node) and send
 /// (edge) columns; only the current-value lookup and edit construction
-/// differ. With `release_applies` a slider release additionally applies the
-/// candidate graph, so quick edits (tray flyout) take effect immediately.
+/// differ. With `release_applies` a slider release also settles the
+/// instant-apply debounce right away, so quick edits take effect immediately.
 pub(in crate::ui::window) fn sync_sliders<K: Ord + Clone, T: 'static>(
     window: &mut Window,
     cx: &mut Context<T>,
@@ -109,22 +109,16 @@ fn sync_slider_range<K: Ord + Clone, T: 'static>(
                         base::slider::SliderEvent::Change(value) => {
                             state.update(cx, |state, _| {
                                 if let Some(edit) = edit(value.end(), &state.snapshot.graph) {
-                                    state.dispatch(edit);
+                                    state.edit_graph(edit);
                                 }
                             });
                             cx.notify();
                         }
                         base::slider::SliderEvent::Release(_) if release_applies => {
-                            // The local snapshot may not have polled the edits
-                            // yet, so this mirrors the Apply button: fire
-                            // whenever no apply is already in flight.
-                            state.update(cx, |state, _| {
-                                if state.snapshot.graph.pending_revision.is_none()
-                                    && !state.pending_request
-                                {
-                                    state.dispatch(AppRequest::ApplyGraph);
-                                }
-                            });
+                            // SetMixer/SetSend are continuous adjustments: the
+                            // release settles the debounce instead of waiting
+                            // out the remaining window.
+                            state.update(cx, |state, _| state.apply_graph_now());
                             cx.notify();
                         }
                         _ => {}
@@ -181,14 +175,12 @@ impl StudioShell {
                     id,
                     1. - FaderScale::position(node.mixer.gain),
                     Box::new(move |value: f32, graph: &GraphSnapshot| {
-                        graph.node(id).map(|node| {
-                            AppRequest::EditGraph(GraphEdit::SetMixer {
-                                node: id,
-                                state: MixerState {
-                                    gain: FaderScale::gain(1. - value),
-                                    ..node.mixer
-                                },
-                            })
+                        graph.node(id).map(|node| GraphEdit::SetMixer {
+                            node: id,
+                            state: MixerState {
+                                gain: FaderScale::gain(1. - value),
+                                ..node.mixer
+                            },
                         })
                     }) as SliderEdit,
                 )
@@ -231,13 +223,13 @@ impl StudioShell {
                         if let Some(gain) = gain {
                             shell.state.update(cx, |state, _| {
                                 if let Ok(edge) = state.snapshot.graph.graph.get_edge(id) {
-                                    state.dispatch(AppRequest::EditGraph(GraphEdit::SetSend {
+                                    state.edit_graph(GraphEdit::SetSend {
                                         edge: id,
                                         params: SendParams {
                                             gain,
                                             ..*edge.params()
                                         },
-                                    }));
+                                    });
                                 }
                             });
                         }
@@ -266,15 +258,17 @@ impl StudioShell {
                     id,
                     gain_db(edge.params().gain),
                     Box::new(move |value: f32, graph: &GraphSnapshot| {
-                        graph.graph.get_edge(id).ok().map(|edge| {
-                            AppRequest::EditGraph(GraphEdit::SetSend {
+                        graph
+                            .graph
+                            .get_edge(id)
+                            .ok()
+                            .map(|edge| GraphEdit::SetSend {
                                 edge: id,
                                 params: SendParams {
                                     gain: linear_gain(value),
                                     ..*edge.params()
                                 },
                             })
-                        })
                     }) as SliderEdit,
                 )
             })

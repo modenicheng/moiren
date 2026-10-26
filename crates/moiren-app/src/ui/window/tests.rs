@@ -329,13 +329,16 @@ fn graph_wire_selection_shows_connection_properties_without_selecting_node(
             px(if shell.sidebar_open {
                 theme::LIBRARY_WIDTH
             } else {
-                0.
+                theme::LIBRARY_RAIL_WIDTH
             } + shell.camera.pan_x
                 + (wire.from.0 + wire.to.0) * 0.5 * shell.camera.zoom),
-            px(48. + shell.camera.pan_y + wire.from.1 * shell.camera.zoom),
+            px(shell.camera.pan_y + wire.from.1 * shell.camera.zoom),
         )
     });
     cx.update(|window, cx| {
+        // A single click selects the wire; the second click of the pair is
+        // what opens the inspector.
+        window.click_at("graph-page", position, cx);
         window.click_at("graph-page", position, cx);
         window.render_frame(cx);
         assert!(window.find("matrix-inspector").visible());
@@ -909,4 +912,178 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
     );
     finish_service(runtime);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[gpui_kit::test]
+fn sidebar_edge_handles_toggle_panels_without_the_old_buttons(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        window.render_frame(cx);
+        // The retired per-page buttons are gone everywhere.
+        assert!(window.try_find("apply-graph").is_none());
+        assert!(window.try_find("toggle-inspector").is_none());
+        assert!(window.try_find("toggle-library").is_none());
+        assert!(window.try_find("toggle-details").is_none());
+        // Both edge handles are always present.
+        assert!(window.find("inspector-toggle").visible());
+        assert!(window.find("library-toggle").visible());
+        window.click("inspector-toggle", cx);
+    });
+    view.update(cx, |shell, _| {
+        assert!(!shell.inspector_open, "handle collapses the inspector");
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("library-toggle", cx);
+    });
+    view.update(cx, |shell, _| {
+        assert!(!shell.sidebar_open, "handle collapses the library");
+        assert!(!shell.inspector_open);
+    });
+    // Collapsed handles sit where the animation dropped them; settle before
+    // clicking them again.
+    crate::ui::window::test_harness::settle_panels(cx);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("inspector-toggle", cx);
+        window.click("library-toggle", cx);
+    });
+    view.update(cx, |shell, _| {
+        assert!(shell.inspector_open);
+        assert!(shell.sidebar_open);
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn single_matrix_click_selects_and_double_click_opens_the_inspector(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+    });
+    view.update(cx, |shell, cx| {
+        shell.inspector_open = false;
+        shell.set_page(pages::Page::Matrix, cx);
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("route-0-1", cx);
+    });
+    view.update(cx, |shell, cx| {
+        assert!(shell.selected_route.is_some(), "single click selects");
+        assert!(!shell.inspector_open, "single click never opens");
+        let _ = cx;
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("route-0-1", cx);
+        window.render_frame(cx);
+        assert!(window.find("matrix-inspector").visible());
+    });
+    view.update(cx, |shell, _| {
+        assert!(shell.inspector_open, "double click opens");
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn undo_redo_requests_round_trip_candidate_content(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::{AppRequest, GraphEdit};
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+    });
+    let baseline = view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.edit_graph(GraphEdit::AddNode {
+                kind: moiren_core::graph::NodeKind::Eq,
+                channels: 2,
+            });
+        });
+        shell.state.read(cx).snapshot.graph.nodes.len()
+    });
+    wait_until(std::time::Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == baseline + 1
+                && shell.state.read(cx).snapshot.graph.can_undo
+        })
+    });
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::UndoGraph);
+        });
+    });
+    wait_until(std::time::Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == baseline
+        })
+    });
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::RedoGraph);
+        });
+    });
+    wait_until(std::time::Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == baseline + 1
+        })
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn ctrl_z_keystroke_steps_the_undo_journal(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::GraphEdit;
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|_, cx| {
+        cx.bind_keys([
+            gpui_kit::KeyBinding::new("ctrl-z", super::app_view::Undo, None),
+            gpui_kit::KeyBinding::new("ctrl-y", super::app_view::Redo, None),
+        ]);
+    });
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.edit_graph(GraphEdit::AddNode {
+                kind: moiren_core::graph::NodeKind::Eq,
+                channels: 2,
+            });
+        });
+    });
+    wait_until(std::time::Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == 5
+        })
+    });
+    // The canvas key handler owns focus on the graph page; the keystroke
+    // bubbles to the shell's undo action.
+    cx.simulate_keystrokes("ctrl-z");
+    wait_until(std::time::Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == 4
+        })
+    });
+    cx.simulate_keystrokes("ctrl-y");
+    wait_until(std::time::Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.state.read(cx).snapshot.graph.nodes.len() == 5
+        })
+    });
+    finish_service(runtime);
 }

@@ -59,13 +59,11 @@ impl StudioShell {
                                         return;
                                     }
                                     shell.state.update(cx, |state, _| {
-                                        state.dispatch(AppRequest::EditGraph(
-                                            GraphEdit::SetCompressor {
-                                                node: id,
-                                                parameter,
-                                                value,
-                                            },
-                                        ))
+                                        state.edit_graph(GraphEdit::SetCompressor {
+                                            node: id,
+                                            parameter,
+                                            value,
+                                        })
                                     });
                                     cx.notify();
                                 }
@@ -99,13 +97,11 @@ impl StudioShell {
                         move |shell, _, event: &base::slider::SliderEvent, cx| {
                             if let base::slider::SliderEvent::Change(position) = event {
                                 shell.state.update(cx, |state, _| {
-                                    state.dispatch(AppRequest::EditGraph(
-                                        GraphEdit::SetCompressor {
-                                            node: id,
-                                            parameter,
-                                            value: slider_value(parameter, position.end()),
-                                        },
-                                    ))
+                                    state.edit_graph(GraphEdit::SetCompressor {
+                                        node: id,
+                                        parameter,
+                                        value: slider_value(parameter, position.end()),
+                                    })
                                 });
                                 cx.notify();
                             }

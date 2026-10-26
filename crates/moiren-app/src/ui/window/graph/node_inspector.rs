@@ -439,7 +439,7 @@ fn node_observation(
         let meter_status = shell.node_meters.status(node.id());
         t!(meter_status.label()).to_string()
     } else if managed {
-        t!("Waiting for Apply graph").to_string()
+        t!("Waiting for changes to go live").to_string()
     } else {
         t!("Unavailable for this node").to_string()
     };
@@ -457,7 +457,7 @@ fn node_observation(
         );
     if !active && managed {
         view = view.child(label(t!(
-            "The candidate graph is not the confirmed runtime. Apply graph to observe this node."
+            "The edited graph is not the running audio yet. Observation starts once it goes live."
         )));
     } else if !managed {
         view = view.child(label(t!(
@@ -862,9 +862,9 @@ fn builtin_controls(
         node.kind(),
         NodeKind::Recorder | NodeKind::Meter | NodeKind::SpectrumAnalyzer
     ) {
-        view = view.child(label(t!(
-            "Managed observation becomes available after Apply graph."
-        )));
+        view = view.child(label(
+            "Managed observation becomes available once the graph runs live.",
+        ));
     }
     view.into_any_element()
 }
@@ -1112,10 +1112,10 @@ fn step_button(
     button(key, text).on_click(move |_, _, cx| {
         this.update(cx, |shell, cx| {
             shell.state.update(cx, |state, _| {
-                state.dispatch(AppRequest::EditGraph(GraphEdit::SetBuiltin {
+                state.edit_graph(GraphEdit::SetBuiltin {
                     node,
                     state: build(next),
-                }))
+                })
             });
             cx.notify();
         })
@@ -1156,10 +1156,10 @@ impl StudioShell {
         let label = self.node_name.read(cx).value().trim().to_string();
         if !label.is_empty() {
             self.state.update(cx, |state, _| {
-                state.dispatch(AppRequest::EditGraph(GraphEdit::SetLabel {
+                state.edit_graph(GraphEdit::SetLabel {
                     node: id,
                     label,
-                }))
+                })
             });
         }
         cx.notify();

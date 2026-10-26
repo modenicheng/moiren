@@ -14,19 +14,14 @@ pub(in crate::ui::window) struct PendingNodeSpawn {
 
 impl Render for NodeTemplate {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .w(px(theme::NODE_WIDTH))
-            .p(px(12.))
-            .rounded(px(theme::RADIUS_MD))
-            .bg(theme::SURFACE_3)
-            .border_1()
-            .border_color(theme::BORDER)
-            .text_color(theme::TEXT)
-            .child(t!(self.title()))
+        crate::ui::pages::graph_canvas_view::node_drag_preview(*self)
     }
 }
 
-pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
+pub(in crate::ui::window) fn library(
+    shell: &StudioShell,
+    cx: &Context<StudioShell>,
+) -> impl IntoElement {
     use controls::*;
     let state = shell.state.read(cx);
     let query = shell.node_search.read(cx).value();
@@ -76,15 +71,7 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                         .disabled(!enabled)
                         .on_click(move |_, _, cx| {
                             this.update(cx, |shell, cx| {
-                                let center = shell
-                                    .canvas_size
-                                    .map(|(width, height)| (width / 2., height / 2.))
-                                    .unwrap_or((320., 220.));
-                                shell.spawn_node(
-                                    template,
-                                    shell.camera.canvas_to_world(center),
-                                    cx,
-                                );
+                                shell.spawn_template_at_center(template, cx);
                             });
                         }),
                     )
@@ -145,9 +132,10 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 this.update(cx, |shell, cx| {
                     shell.selected_node = Some(id);
                     shell.selected_route = None;
-                    shell.inspector_open = true;
-                    if shell.compact {
-                        shell.sidebar_open = false;
+                    // Locating selects; a double click also opens the
+                    // inspector, matching canvas node behavior.
+                    if shell.element_double_clicked(StudioShell::element_key("node", id)) {
+                        shell.open_inspector();
                     }
                     cx.notify();
                 });
@@ -206,7 +194,76 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         .gpui_test_observe()
 }
 
+/// Collapsed library form: one icon per template in a constant rail beside
+/// the detail sleeve. Clicking spawns at the canvas center and dragging pulls
+/// the template onto the canvas, exactly like a full row.
+pub(in crate::ui::window) fn library_rail(
+    shell: &StudioShell,
+    cx: &Context<StudioShell>,
+) -> impl IntoElement {
+    let this = cx.entity();
+    let mut rail = div()
+        .id("library-rail")
+        .flex()
+        .flex_none()
+        .flex_col()
+        .items_center()
+        .gap(px(2.))
+        .w(px(theme::LIBRARY_RAIL_WIDTH))
+        .h_full()
+        .py(px(10.))
+        .bg(theme::SURFACE)
+        .border_r_1()
+        .border_color(theme::HAIRLINE)
+        .overflow_y_scroll();
+    for template in NodeTemplate::ALL {
+        let enabled = shell.pending_node_spawn.is_none();
+        let this = this.clone();
+        rail = rail.child(
+            div()
+                .id(SharedString::from(format!("rail-{template:?}")))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .w(px(32.))
+                .h(px(32.))
+                .rounded(px(theme::RADIUS_SM))
+                .child(
+                    component::Icon::default()
+                        .path(format!("icons/{}.svg", template.icon()))
+                        .size(px(18.))
+                        .text_color(if enabled {
+                            template.tint().opacity(0.7)
+                        } else {
+                            theme::TEXT_FAINT
+                        }),
+                )
+                .when(enabled, |icon| {
+                    icon.cursor_pointer()
+                        .hover(|style| style.bg(theme::SURFACE_4))
+                        .on_click(move |_, _, cx| {
+                            this.update(cx, |shell, cx| {
+                                shell.spawn_template_at_center(template, cx);
+                            });
+                        })
+                        .on_drag(template, |template, _, _, cx| cx.new(|_| *template))
+                })
+                .gpui_test_observe(),
+        );
+    }
+    rail.gpui_test_observe()
+}
+
 impl StudioShell {
+    fn spawn_template_at_center(&mut self, template: NodeTemplate, cx: &mut Context<Self>) {
+        let center = self
+            .canvas_size
+            .map(|(width, height)| (width / 2., height / 2.))
+            .unwrap_or((320., 220.));
+        self.spawn_node(template, self.camera.canvas_to_world(center), cx);
+    }
+
     pub(super) fn spawn_node(
         &mut self,
         template: NodeTemplate,
@@ -229,10 +286,7 @@ impl StudioShell {
             .map(|entry| entry.id)
             .collect();
         if let Ok(request) = self.state.update(cx, |state, _| {
-            state.try_dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
-                kind,
-                channels: 2,
-            }))
+            state.try_edit_graph(GraphEdit::AddNode { kind, channels: 2 })
         }) {
             self.camera.adjusted = true;
             self.pending_node_spawn = Some(PendingNodeSpawn {
@@ -273,10 +327,7 @@ impl StudioShell {
         self.node_positions.insert(id, pending.position);
         self.selected_node = Some(id);
         self.selected_route = None;
-        self.inspector_open = true;
-        if self.compact {
-            self.sidebar_open = false;
-        }
+        self.open_inspector();
         let source = match pending.template {
             NodeTemplate::Tone => Some(InputSelection::Tone { frequency_hz: 440. }),
             _ => None,
@@ -292,16 +343,13 @@ impl StudioShell {
         );
         self.state.update(cx, |state, _| {
             if !follows_binding {
-                state.dispatch(AppRequest::EditGraph(GraphEdit::SetLabel {
+                state.edit_graph(GraphEdit::SetLabel {
                     node: id,
                     label: pending.template.title().into(),
-                }));
+                });
             }
             if let Some(source) = source {
-                state.dispatch(AppRequest::EditGraph(GraphEdit::BindSource {
-                    node: id,
-                    source,
-                }));
+                state.edit_graph(GraphEdit::BindSource { node: id, source });
             }
         });
     }

@@ -108,13 +108,13 @@ fn set_balance(this: &Entity<StudioShell>, id: NodeId, balance: f64, cx: &mut Ap
     this.update(cx, |shell, cx| {
         shell.state.update(cx, |state, _| {
             if let Some(node) = state.snapshot.graph.node(id) {
-                state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
+                state.edit_graph(GraphEdit::SetMixer {
                     node: id,
                     state: MixerState {
                         balance: balance.clamp(-1., 1.),
                         ..node.mixer
                     },
-                }));
+                });
             }
         });
         cx.notify();

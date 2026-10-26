@@ -331,7 +331,8 @@ impl StudioShell {
             self.settings.device = self.current_settings_draft(cx);
         }
         self.selected_device = Some(id);
-        self.inspector_open = true;
+        // Configure is an explicit request for the override editor.
+        self.open_inspector();
         cx.notify();
     }
 }

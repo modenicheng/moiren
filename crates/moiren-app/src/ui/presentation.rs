@@ -40,8 +40,8 @@ pub fn latency_apply_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
         Some(active) if active == snapshot.latency_profile => {
             t!("Active profile matches selection")
         }
-        Some(_) => t!("Pending: apply graph or start again to use selected profile"),
-        None => t!("Selected profile applies on next Apply / Start"),
+        Some(_) => t!("Pending: the selected profile is used on the next start or live change"),
+        None => t!("Selected profile applies on next start"),
     }
 }
 

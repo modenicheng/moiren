@@ -23,9 +23,6 @@ _version: 2
 "%{rate} Hz  ·  period %{frames} frames":
   en: "%{rate} Hz  ·  period %{frames} frames"
   zh-CN: "%{rate} Hz  ·  周期 %{frames} 帧"
-"Apply graph":
-  en: Apply graph
-  zh-CN: 应用图
 "Mono":
   en: Mono
   zh-CN: 单声道
@@ -392,9 +389,9 @@ _version: 2
 "Not selected":
   en: Not selected
   zh-CN: 未选择
-"Selecting another resource leaves the running session unchanged. Stop and start to switch devices.":
-  en: Selecting another resource leaves the running session unchanged. Stop and start to switch devices.
-  zh-CN: 选择其他资源不会影响正在运行的会话。停止并重新启动即可切换设备。
+"Changing resources rebinds the running session immediately.":
+  en: Changing resources rebinds the running session immediately.
+  zh-CN: "切换资源会立即重新绑定运行中的会话。"
 "Refresh devices":
   en: Refresh devices
   zh-CN: 刷新设备
@@ -446,9 +443,9 @@ _version: 2
 "Virtual exports":
   en: Virtual exports
   zh-CN: 虚拟导出
-"Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.":
-  en: Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.
-  zh-CN: 在此编辑项目意图，然后应用图以请求激活。端点存在并不代表音频正在流动。停止后端点仍保留，但闸门关闭。
+"Edits here apply to a running session immediately. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.":
+  en: Edits here apply to a running session immediately. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.
+  zh-CN: "此处的编辑会立即应用到运行中的会话。端点存在并不代表音频正在流动。停止后端点仍然存在，但闸门保持关闭。"
 "Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export.":
   en: "Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export."
   zh-CN: 将选中的通道数匹配的图 IO 绑定：播放使用源节点；麦克风使用输出节点。一个 IO 只能属于一个导出。
@@ -662,9 +659,9 @@ _version: 2
 "Delete node":
   en: Delete node
   zh-CN: 删除节点
-"Waiting for Apply graph":
-  en: Waiting for Apply graph
-  zh-CN: 等待应用图
+"Waiting for changes to go live":
+  en: Waiting for changes to go live
+  zh-CN: "正在等待更改生效"
 "Unavailable for this node":
   en: Unavailable for this node
   zh-CN: 此节点不可用
@@ -674,9 +671,9 @@ _version: 2
 "Status":
   en: Status
   zh-CN: 状态
-"The candidate graph is not the confirmed runtime. Apply graph to observe this node.":
-  en: The candidate graph is not the confirmed runtime. Apply graph to observe this node.
-  zh-CN: 候选图尚未成为确认的运行图。应用图以观测此节点。
+"The edited graph is not the running audio yet. Observation starts once it goes live.":
+  en: The edited graph is not the running audio yet. Observation starts once it goes live.
+  zh-CN: "编辑后的图还不是正在运行的音频；生效后即可开始观测。"
 "This node has no managed level topic in the current service projection.":
   en: This node has no managed level topic in the current service projection.
   zh-CN: 当前服务投影中此节点没有受管电平主题。
@@ -809,9 +806,9 @@ _version: 2
 "Clear stages":
   en: Clear stages
   zh-CN: 清空各级
-"Managed observation becomes available after Apply graph.":
-  en: Managed observation becomes available after Apply graph.
-  zh-CN: 应用图后即可进行受管观测。
+"Managed observation becomes available once the graph runs live.":
+  en: Managed observation becomes available once the graph runs live.
+  zh-CN: "图生效运行后即可使用托管观测。"
 "Threshold":
   en: Threshold
   zh-CN: 阈值
@@ -866,9 +863,6 @@ _version: 2
 "%{source} to %{destination}: %{value}":
   en: "%{source} to %{destination}: %{value}"
   zh-CN: "%{source} 至 %{destination}：%{value}"
-"Routing matrix":
-  en: Routing matrix
-  zh-CN: 路由矩阵
 "Outputs → Inputs":
   en: Outputs → Inputs
   zh-CN: 输出 → 输入
@@ -1175,12 +1169,12 @@ _version: 2
 "Active profile matches selection":
   en: Active profile matches selection
   zh-CN: 活动策略与所选一致
-"Pending: apply graph or start again to use selected profile":
-  en: "Pending: apply graph or start again to use selected profile"
-  zh-CN: 待生效：应用图或重新启动后使用所选策略
-"Selected profile applies on next Apply / Start":
-  en: Selected profile applies on next Apply / Start
-  zh-CN: 所选策略将在下次应用 / 启动时生效
+"Pending: the selected profile is used on the next start or live change":
+  en: "Pending: the selected profile is used on the next start or live change"
+  zh-CN: "待定：所选配置将在下次启动或实时变更时生效"
+"Selected profile applies on next start":
+  en: Selected profile applies on next start
+  zh-CN: "所选延迟配置将在下次启动时生效"
 "Master output":
   en: Master output
   zh-CN: 主输出

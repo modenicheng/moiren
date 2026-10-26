@@ -7,8 +7,8 @@ mod library;
 pub(super) use compressor::CompressorControls;
 mod node_inspector;
 pub(super) use library::PendingNodeSpawn;
-use library::library;
-pub(super) use node_inspector::inspector;
+pub(in crate::ui::window) use library::{library, library_rail};
+pub(in crate::ui::window) use node_inspector::inspector;
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
@@ -65,9 +65,7 @@ impl StudioShell {
         for id in self.selected_nodes.iter().copied().collect::<Vec<_>>() {
             let removed_here = self.state.update(cx, |state, _| {
                 state
-                    .try_dispatch(AppRequest::EditGraph(
-                        crate::service::GraphEdit::RemoveNode(id),
-                    ))
+                    .try_edit_graph(crate::service::GraphEdit::RemoveNode(id))
                     .is_ok()
             });
             removed |= removed_here;
@@ -86,9 +84,7 @@ impl StudioShell {
             if let Some(edge_id) = edge_id
                 && self.state.update(cx, |state, _| {
                     state
-                        .try_dispatch(AppRequest::EditGraph(
-                            crate::service::GraphEdit::Disconnect(edge_id),
-                        ))
+                        .try_edit_graph(crate::service::GraphEdit::Disconnect(edge_id))
                         .is_ok()
                 })
             {
@@ -199,9 +195,10 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                 let pos = window.mouse_position();
                 shell.camera.adjusted = true;
                 shell.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
-                if shell.compact {
-                    shell.inspector_open = true;
-                    shell.sidebar_open = false;
+                // Single click selects; a double click on the same node also
+                // opens the inspector.
+                if shell.element_double_clicked(StudioShell::element_key("node", node_id)) {
+                    shell.open_inspector();
                 }
                 cx.notify();
             });
@@ -460,12 +457,10 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                                 PortDirection::Input => (target.id, drag.port.id),
                             };
                             shell.state.update(cx, |state, _| {
-                                state.dispatch(AppRequest::EditGraph(
-                                    crate::service::GraphEdit::Connect {
-                                        source,
-                                        destination,
-                                    },
-                                ))
+                                state.edit_graph(crate::service::GraphEdit::Connect {
+                                    source,
+                                    destination,
+                                })
                             });
                         }
                         cx.notify();
@@ -520,9 +515,11 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                             .map(|e| (e.src_port(), e.dst_port()));
                         shell.selected_node = None;
                         shell.selected_nodes.clear();
-                        shell.inspector_open = true;
-                        if shell.compact {
-                            shell.sidebar_open = false;
+                        if let Some(route) = shell.selected_route
+                            && shell
+                                .element_double_clicked(StudioShell::element_key("route", route))
+                        {
+                            shell.open_inspector();
                         }
                         cx.notify();
                     })
@@ -535,48 +532,20 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
     div()
         .id("graph-page")
         .flex()
-        .flex_col()
         .flex_1()
         .min_h_0()
+        .min_w_0()
         .overflow_hidden()
         .child(
-            div()
-                .flex()
-                .flex_none()
-                .h(px(48.))
-                .items_center()
-                .justify_between()
-                .px(px(theme::SPACE_3))
-                .child(div().flex().gap(px(8.)).items_center().child(
-                    controls::button("toggle-library", t!("Node library")).on_click({
-                        let this = this.clone();
-                        move |_, _, cx| {
-                            this.update(cx, |s, cx| {
-                                s.sidebar_open = !s.sidebar_open;
-                                if s.compact {
-                                    s.inspector_open = false;
-                                }
-                                cx.notify();
-                            })
-                        }
-                    }),
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .child(controls::apply(shell, cx))
-                        .child(controls::inspector_toggle("toggle-inspector", cx)),
-                ),
-        )
-        .child(
+            // Row-reversed so the canvas leads the DOM: gpui has no z-index,
+            // and the library's protruding handle must paint above the canvas.
             div()
                 .relative()
                 .flex()
+                .flex_row_reverse()
                 .flex_1()
                 .min_h_0()
-                .overflow_hidden()
-                .when(shell.sidebar_open, |v| v.child(library(shell, cx)))
+                .min_w_0()
                 .child(
                     div()
                         .id("graph-canvas-host")
@@ -587,13 +556,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                         .child(canvas_view)
                         .child(editing_toolbar(shell, &this)),
                 )
-                .when(shell.inspector_open, |view| {
-                    if shell.selected_node.is_none() && shell.selected_route.is_some() {
-                        view.child(matrix::inspector(shell, cx))
-                    } else {
-                        view.child(inspector(shell, cx))
-                    }
-                }),
+                .child(sidebar::library_host(shell, cx)),
         )
         .gpui_test_observe()
         .into_any_element()
