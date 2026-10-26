@@ -447,8 +447,13 @@ fn composed_bus_edit_rolls_back_port_on_failed_connection() {
 
 #[test]
 fn deep_chains_use_iterative_traversal_and_remain_reconnectable() {
+    // Each connect rebuilds the topology index and walks the chain, so the
+    // suite cost is superlinear in the chain length; native runs keep the
+    // full depth while Miri checks the same contracts on a shorter chain.
+    const CHAIN: usize = if cfg!(miri) { 64 } else { 512 };
+    const SPLIT: usize = CHAIN / 2 - 1;
     let mut graph = LogicalGraph::new();
-    let nodes = (0..512)
+    let nodes = (0..CHAIN)
         .map(|_| graph.create_node(NodeKind::Gain, 1).unwrap())
         .collect::<Vec<_>>();
     let mut edges = Vec::new();
@@ -470,7 +475,7 @@ fn deep_chains_use_iterative_traversal_and_remain_reconnectable() {
         Err(GraphError::CycleDetected)
     );
     assert_eq!(graph.topological_order().unwrap(), nodes);
-    graph.disconnect(edges[255]).unwrap();
+    graph.disconnect(edges[SPLIT]).unwrap();
     graph.connect(last, first, SendParams::default()).unwrap();
     graph.validate().unwrap();
 }
