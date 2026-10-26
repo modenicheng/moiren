@@ -335,16 +335,6 @@ impl ControlHandle {
         Ok(request.output[..N].try_into().expect("bounded output"))
     }
 
-    fn finish_failed_exchange(
-        &mut self,
-        request: Box<Request>,
-        error: Error,
-        probe: impl FnMut(&mut Request) -> windows::core::Result<()>,
-        cancel: impl FnOnce(&Request),
-    ) -> ClientError {
-        self.finish_failed_exchange_named(request, error, "", probe, cancel)
-    }
-
     fn finish_failed_exchange_named(
         &mut self,
         mut request: Box<Request>,
