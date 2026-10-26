@@ -69,6 +69,8 @@ pub const SPACE_6: f32 = 32.;
 // --- Studio geometry (Figma v0.1.0 Graph measurements) --------------------
 pub const TOOLBAR_HEIGHT: f32 = 44.;
 pub const LIBRARY_WIDTH: f32 = 210.;
+/// Always-visible icon rail on the library's outer edge; also its collapsed form.
+pub const LIBRARY_RAIL_WIDTH: f32 = 44.;
 pub const INSPECTOR_WIDTH: f32 = 280.;
 pub const INSPECTOR_COLLAPSED_AT: f32 = 1280.;
 pub const LIBRARY_COLLAPSED_AT: f32 = 1100.;

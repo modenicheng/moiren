@@ -268,7 +268,7 @@ Processor rack	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:762|cra
 Stages	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:763	detail 标签
 Add gain stage	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:764	按钮
 Clear stages	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:774	按钮
-Managed observation becomes available after Apply graph.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:792	说明文本
+Managed observation becomes available once the graph runs live.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:854	说明文本
 Threshold	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:838|crates/moiren-app/src/ui/window/graph/node_inspector.rs:887|crates/moiren-app/src/service/graph/compressor.rs:140	噪声门/限制器字段与压缩器参数名
 Attack	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:846|crates/moiren-app/src/service/graph/compressor.rs:142	噪声门字段与压缩器参数名
 Release	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:855|crates/moiren-app/src/ui/window/graph/node_inspector.rs:897|crates/moiren-app/src/service/graph/compressor.rs:143	字段与压缩器参数名

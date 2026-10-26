@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use super::super::{Camera, StudioShell, pages};
 use crate::ui::UiState;
 use crate::ui::window::test_harness::{
-    finish_service, initial_projection, shell_with_state, spawn_service, test_shell, wait_for,
-    wait_until,
+    finish_service, initial_projection, settle_panels, shell_with_state, spawn_service, test_shell,
+    wait_for, wait_until,
 };
 use pages::graph_canvas::{CanvasFrame, CanvasWorld};
 
@@ -86,6 +86,7 @@ fn graph_port_drag_connects_real_topology_in_both_directions(cx: &mut gpui_kit::
         };
         cx.notify();
     });
+    settle_panels(cx);
     for reverse in [false, true] {
         let (edge, source, destination) = view.update(cx, |shell, cx| {
             let edge = &shell.state.read(cx).snapshot.graph.graph.edges()[0];
@@ -679,6 +680,9 @@ fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
         };
         cx.notify();
     });
+    // Closing the library opens the rail spring; canvas geometry must be
+    // measured against settled panel widths.
+    settle_panels(cx);
     let frame = canvas_frame(&view, cx);
     let id = frame.world.nodes[0].node_id.expect("projected node id");
     let start = node_position(&frame, 0);
@@ -765,6 +769,7 @@ fn graph_rubber_band_selects_then_delete_removes_the_whole_selection(
         shell.inspector_open = false;
         cx.notify();
     });
+    settle_panels(cx);
     let frame = canvas_frame(&view, cx);
     // Band from empty background over the first two node cards only.
     let start = frame.bounds.origin + point(px(20.), px(10.));
@@ -818,8 +823,11 @@ fn graph_curved_wire_click_after_fit_selects_real_edge_without_changing_topology
         shell.camera.adjusted = false;
         cx.notify();
     });
+    settle_panels(cx);
     let fitted = canvas_frame(&view, cx);
     let position = wire_position(&fitted, 0);
+    // First click selects; the second opens the inspector.
+    cx.simulate_click(position, Modifiers::default());
     cx.simulate_click(position, Modifiers::default());
     view.update(cx, |shell, cx| {
         let state = shell.state.read(cx);
@@ -835,6 +843,11 @@ fn graph_curved_wire_click_after_fit_selects_real_edge_without_changing_topology
         window.render_frame(cx);
         assert!(window.find("matrix-inspector").visible());
         assert!(window.find("disconnect-route").visible());
+    });
+    // The freshly opened panel is still springing open; let it settle before
+    // clicking controls inside it.
+    settle_panels(cx);
+    cx.update(|window, cx| {
         window.click("route-up", cx);
     });
     wait_for_graph(&view, cx, |graph| graph.graph.edges()[0].params().gain > 1.);
@@ -985,5 +998,55 @@ fn graph_scroll_pinch_and_toolbar_zoom_preserve_their_canvas_anchors(
     let zoomed = canvas_frame(&view, cx);
     assert_close(zoomed.camera.world_to_canvas(center_world).0, center.0);
     assert_close(zoomed.camera.world_to_canvas(center_world).1, center.1);
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn collapsed_library_rail_keeps_spawning_and_the_handle_stays_visible(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    let baseline = view.update(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.nodes.len()
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        // Regression: the handle used to paint under the canvas host.
+        assert!(window.find("library-toggle").visible());
+        // The detail panel is open, so the icon rail stays hidden.
+        assert!(
+            !window.find("library-rail").visible(),
+            "rail must not show while the library is expanded"
+        );
+        window.click("library-toggle", cx);
+    });
+    view.update(cx, |shell, _| {
+        assert!(!shell.sidebar_open, "handle collapses the detail sleeve");
+    });
+    settle_panels(cx);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        // Collapsed, the rail replaces the detail panel entirely.
+        assert!(window.find("library-rail").visible());
+        // The rail rides the library edge with the handle beside it.
+        let page = window.find("graph-page").bounds();
+        let handle = window.find("library-toggle").bounds();
+        assert_close(
+            f32::from(handle.origin.x - page.origin.x),
+            crate::ui::theme::LIBRARY_RAIL_WIDTH + 2.,
+        );
+        // Icons keep spawning nodes from the collapsed form.
+        window.click("rail-Gain", cx);
+    });
+    wait_for_graph(&view, cx, |graph| graph.nodes.len() == baseline + 1);
+    view.update(cx, |shell, _| {
+        assert!(
+            shell.selected_node.is_some(),
+            "the spawned node is selected"
+        );
+        assert!(shell.inspector_open, "spawning opens the inspector");
+    });
     finish_service(runtime);
 }

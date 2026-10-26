@@ -1,6 +1,6 @@
 //! Disposable main window views over the application-owned service projection.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -178,6 +178,9 @@ pub struct StudioShell {
     pan_grab: Option<(f32, f32)>,
     /// Left background clicks deselect only on release; a pan keeps selection.
     background_click: Option<(f32, f32)>,
+    /// Last selectable-element press (target hash + time) for double-click
+    /// detection: single clicks select, double clicks also open the inspector.
+    last_element_press: Option<(u64, Instant)>,
     desktop: Option<WeakEntity<desktop::Desktop>>,
     window_state: crate::project::WindowState,
     /// Precision-touchpad subclass state (Windows pointer input). Held for
@@ -339,6 +342,7 @@ impl StudioShell {
             selected_node: None,
             pan_grab: None,
             background_click: None,
+            last_element_press: None,
             desktop,
             window_state: desktop::capture_window_state(window, Page::Graph),
             #[cfg(windows)]
@@ -551,6 +555,7 @@ mod mixer;
 mod native;
 mod project;
 mod settings;
+mod sidebar;
 #[cfg(any(test, feature = "gpui-test"))]
 mod test_harness;
 #[cfg(any(test, feature = "gpui-test"))]
@@ -770,12 +775,21 @@ impl Render for StudioShell {
             .text_size(px(theme::TEXT_MD))
             .child(chrome::toolbar(self, cx))
             .when_some(error_strip, |view, error_strip| view.child(error_strip))
-            .child(match self.presentation.page {
-                Page::Graph => graph::render_graph_page(self, cx),
-                Page::Mixer => mixer::page(self, cx),
-                Page::Matrix => matrix::page(self, cx),
-                Page::Devices => devices::page(self, cx),
-            })
+            .child(
+                div()
+                    .id("workspace-row")
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(match self.presentation.page {
+                        Page::Graph => graph::render_graph_page(self, cx),
+                        Page::Mixer => mixer::page(self, cx),
+                        Page::Matrix => matrix::page(self, cx),
+                        Page::Devices => devices::page(self, cx),
+                    })
+                    .child(sidebar::inspector_host(self, cx)),
+            )
             .child(chrome::statusbar(self.state.read(cx)).gpui_test_observe())
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
             .when(self.settings_open, |v| {
@@ -794,6 +808,36 @@ impl Render for StudioShell {
 }
 
 impl StudioShell {
+    /// Stable identity for a selectable element (canvas node, wire, mixer
+    /// strip, matrix cell) used by double-click detection.
+    pub(super) fn element_key(kind: &str, id: impl std::hash::Hash) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        kind.hash(&mut hasher);
+        id.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Records a press on a selectable element and reports whether it closes
+    /// a double-click pair with the previous press of the same element.
+    pub(super) fn element_double_clicked(&mut self, key: u64) -> bool {
+        let now = Instant::now();
+        let double = self.last_element_press.is_some_and(|(previous, at)| {
+            previous == key && now.duration_since(at) <= Duration::from_millis(400)
+        });
+        self.last_element_press = Some((key, now));
+        double
+    }
+
+    /// Expands the inspector from a double click or an explicit open action;
+    /// compact widths give its space back by closing the library.
+    pub(super) fn open_inspector(&mut self) {
+        self.inspector_open = true;
+        if self.compact {
+            self.sidebar_open = false;
+        }
+    }
+
     /// Ctrl+Z / Ctrl+Y: step the service graph journal. Typing focus and
     /// modal settings keep the shortcut for themselves.
     fn undo_redo_graph(&mut self, redo: bool, window: &Window, cx: &mut Context<Self>) {

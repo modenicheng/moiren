@@ -809,9 +809,9 @@ _version: 2
 "Clear stages":
   en: Clear stages
   zh-CN: 清空各级
-"Managed observation becomes available after Apply graph.":
-  en: Managed observation becomes available after Apply graph.
-  zh-CN: 应用图后即可进行受管观测。
+"Managed observation becomes available once the graph runs live.":
+  en: Managed observation becomes available once the graph runs live.
+  zh-CN: 图生效运行后即可使用托管观测。
 "Threshold":
   en: Threshold
   zh-CN: 阈值

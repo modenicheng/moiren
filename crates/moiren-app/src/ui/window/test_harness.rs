@@ -19,6 +19,8 @@ use crate::service::{AppHandle, AppSnapshot, ServiceRuntime};
 #[cfg(feature = "gpui-test")]
 use crate::ui::state::UiState;
 use crate::ui::state::initial_snapshot;
+#[cfg(all(test, feature = "gpui-test"))]
+use gpui_kit::test::TestWindowExt;
 
 /// Sleep between polls; the deadline, not the interval, is the budget.
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
@@ -42,6 +44,17 @@ pub fn finish_service(runtime: ServiceRuntime) {
 
 /// Polls until `poll` returns true, panicking once `timeout` elapses.
 #[track_caller]
+/// Panel springs animate in real time; tests that toggle panels must let the
+/// widths settle before clicking handles or measuring canvas geometry.
+#[cfg(all(test, feature = "gpui-test"))]
+pub fn settle_panels(cx: &mut gpui_kit::VisualTestContext) {
+    std::thread::sleep(Duration::from_millis(900));
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+    });
+}
+
 pub fn wait_until(timeout: Duration, mut poll: impl FnMut() -> bool) {
     let deadline = Instant::now() + timeout;
     while !poll() {

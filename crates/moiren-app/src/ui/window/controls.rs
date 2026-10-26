@@ -126,19 +126,3 @@ pub(super) fn stereo_controls(
                 )),
         )
 }
-
-pub(super) fn inspector_toggle(
-    id: impl Into<ElementId>,
-    cx: &Context<StudioShell>,
-) -> ActionButton {
-    let this = cx.entity();
-    button(id, t!("Inspector")).on_click(move |_, _, cx| {
-        this.update(cx, |shell, cx| {
-            shell.inspector_open = !shell.inspector_open;
-            if shell.compact {
-                shell.sidebar_open = false;
-            }
-            cx.notify();
-        })
-    })
-}
