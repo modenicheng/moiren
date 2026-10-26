@@ -124,6 +124,7 @@ impl ClockSource {
         now_qpc_100ns: Option<u64>,
     ) -> Result<BoundaryReport, ClockBridgeError> {
         if !output.len().is_multiple_of(2) {
+            self.counters.oldest_frame_age.publish(None);
             return Err(ClockBridgeError::InvalidOutput);
         }
         output.fill(0.0);
@@ -134,6 +135,7 @@ impl ClockSource {
         )
     }
     fn reset(&mut self) {
+        self.counters.oldest_frame_age.publish(None);
         self.current = None;
         self.next = None;
         self.phase = 0.0;
@@ -279,10 +281,17 @@ impl ClockSource {
         mut set: impl FnMut(usize, [f32; 2]),
     ) -> BoundaryReport {
         if frames == 0 {
+            self.counters.oldest_frame_age.publish(None);
             return BoundaryReport::default();
         }
         let now_qpc_100ns =
             now_qpc_100ns.or_else(|| self.age_clock.as_ref().and_then(QpcClock::now));
+        // Sample the actual oldest pending correlation before any recovery,
+        // priming trim or transfer. Never substitute the latest packet stamp
+        // or fill/rate. Every read replaces prior success with known/unknown.
+        self.counters
+            .oldest_frame_age
+            .publish(now_qpc_100ns.and_then(|now| self.oldest_frame_age(now)));
         let mut fill = self.rx.slots()
             + usize::from(self.current.is_some())
             + usize::from(self.next.is_some());
@@ -408,6 +417,7 @@ impl RtAudioSource<f32> for ClockSource {
     fn read(&mut self, _: &ProcessContext, mut output: AudioBlockMut<'_, f32>) -> BoundaryReport {
         output.clear();
         if output.channel_count() != 2 {
+            self.counters.oldest_frame_age.publish(None);
             return BoundaryReport {
                 discontinuity: true,
                 xruns: 1,

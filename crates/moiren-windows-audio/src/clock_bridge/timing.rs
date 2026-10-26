@@ -1,12 +1,13 @@
 //! Packet correlation travels in the same SPSC slot as its accepted audio frame.
 use super::{CapturePacket, rate::RateClock};
 use crate::stats::{DISCONTINUITY, TIMESTAMP_ERROR};
+use serde::Serialize;
 use std::num::NonZeroU64;
 
 /// Correlation for the oldest pending native frame, not the latest received
 /// packet. The QPC stamp belongs to the packet's first frame; the offset stays
 /// in native frames. This is neither an audio-age nor a presentation estimate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct QueuedFrameStamp {
     pub generation: u64,
     pub packet_position_frames: u64,
@@ -24,7 +25,7 @@ pub struct QueuedFrameStamp {
 /// nominal input rate until qualification completes. Rounding is to the nearest
 /// 100 ns. Driver timestamp error and changes in local rate are not bounded by
 /// this estimate; it is not a presentation or physical end-to-end measurement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct QueuedFrameAge {
     pub stamp: QueuedFrameStamp,
     pub observed_qpc_100ns: u64,

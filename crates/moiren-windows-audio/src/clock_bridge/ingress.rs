@@ -40,6 +40,17 @@ impl CaptureIngress {
         self.config.input_channels
     }
 
+    /// Native owner only, after successful packet release or callback drain.
+    /// The mutable ingress is the sole delivery publisher; graph writes never
+    /// manufacture native packet arrival observations.
+    #[cfg(any(windows, test))]
+    pub(crate) fn publish_native_delivery(
+        &mut self,
+        sample: crate::latency::InputDeliverySnapshot,
+    ) {
+        self.counters.native_delivery.publish(sample);
+    }
+
     /// SILENT packets carry no readable payload (contract documented on
     /// `capture_packet::borrow_capture_packet`). Overflow accepts a whole-frame
     /// prefix and drops the new tail; the next packet starts a fresh generation.

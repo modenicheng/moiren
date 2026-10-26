@@ -1,4 +1,11 @@
-//! Approximate scalar snapshots, never a coherent audio/metadata transaction.
+//! Approximate counters plus independently coherent optional delivery/age DTOs.
+//! The complete snapshot is not a cross-owner audio/metadata transaction.
+mod live;
+#[cfg(test)]
+mod tests;
+use super::QueuedFrameAge;
+use crate::latency::InputDeliverySnapshot;
+use live::{AgeSample, DeliverySample};
 use serde::Serialize;
 use std::sync::{
     Arc,
@@ -7,6 +14,13 @@ use std::sync::{
 
 #[derive(Debug, Default, Clone, Copy, Serialize)]
 pub struct BridgeSnapshot {
+    /// Latest completed native packet/callback publication. None before native
+    /// publication (including graph followers), or during a concurrent write.
+    pub native_delivery: Option<InputDeliverySnapshot>,
+    /// Oldest pending qualified frame sampled before a nonempty read's queue
+    /// recovery/priming/transfer. Resets invalidate this sample immediately.
+    /// This diagnostic estimate is not physical end-to-end latency.
+    pub oldest_frame_age: Option<QueuedFrameAge>,
     pub captured_frames: u64,
     pub written_frames: u64,
     pub dropped_frames: u64,
@@ -40,6 +54,8 @@ pub struct BridgeSnapshot {
     pub correction_ppm: f64,
 }
 pub(super) struct Counters {
+    pub native_delivery: DeliverySample,
+    pub oldest_frame_age: AgeSample,
     pub captured_frames: AtomicU64,
     pub written_frames: AtomicU64,
     pub dropped_frames: AtomicU64,
@@ -70,6 +86,8 @@ pub(super) struct Counters {
 impl Counters {
     pub fn new(capacity: usize) -> Self {
         Self {
+            native_delivery: DeliverySample::default(),
+            oldest_frame_age: AgeSample::default(),
             captured_frames: AtomicU64::new(0),
             written_frames: AtomicU64::new(0),
             dropped_frames: AtomicU64::new(0),
@@ -113,6 +131,8 @@ impl Counters {
     pub(super) fn snapshot(&self) -> BridgeSnapshot {
         let c = self;
         BridgeSnapshot {
+            native_delivery: c.native_delivery.snapshot(),
+            oldest_frame_age: c.oldest_frame_age.snapshot(),
             captured_frames: c.captured_frames.load(Relaxed),
             written_frames: c.written_frames.load(Relaxed),
             dropped_frames: c.dropped_frames.load(Relaxed),

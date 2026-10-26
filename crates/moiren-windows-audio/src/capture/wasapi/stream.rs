@@ -1,4 +1,7 @@
 //! Native service/bridge lifecycle shared by physical and virtual capture.
+#[cfg(test)]
+#[path = "stream_live_tests.rs"]
+mod live_tests;
 use super::{
     Startup, Wake, api, handle, packet::transfer_packet, preparation::CapturePreparation,
     wait_target,
@@ -67,11 +70,9 @@ pub(super) fn run_prepared(
     report.buffer_frames = Some(capacity);
     report.stream_latency_100ns = unsafe { input.client.GetStreamLatency() }.ok();
     let mut telemetry = LatencyRecorder::new(input.latency_telemetry);
-    let clock = QpcClock::prepare(if report.delivery_bound.is_some() {
-        TelemetryMode::Summary
-    } else {
-        input.latency_telemetry
-    });
+    // Scalar live observations need QPC even when trace collection is disabled.
+    // Preparing frequency stays off RT; the recorder's selected mode is intact.
+    let clock = QpcClock::prepare(TelemetryMode::Summary);
     let mut delivery = InputDeliveryRecorder::new(report.delivery_bound)?;
     report.sample_rate = Some(input.sample_rate);
     report.channels = Some(input.channels);
@@ -170,8 +171,10 @@ pub(super) fn run_prepared(
                 native_frames = native_frames.saturating_add(u64::from(transfer.native_frames));
                 accepted_frames = accepted_frames.saturating_add(transfer.accepted_frames as u64);
                 report.packets += 1;
+                ingress.publish_native_delivery(delivery.snapshot());
             }
             delivery.callback_burst(native_frames);
+            ingress.publish_native_delivery(delivery.snapshot());
             telemetry.record(CallbackObservation {
                 wake_qpc_100ns,
                 completed_qpc_100ns: clock.as_ref().and_then(QpcClock::now),
