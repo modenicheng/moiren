@@ -10,6 +10,20 @@
 - Target: measured steady p95 <= 10 ms with stable continuous waveform.
 - Plan: `../superpowers/plans/2026-10-26-minimal-io-latency.md`.
 
+## User objective
+
+- Reference graph: `Input -> Bus -> Output`, with no other processing nodes.
+- Desired result: stable physical output with calibrated end-to-end p95 as close
+  to the limit as possible, and no more than 10 ms; p50 <= 8 ms is an
+  exploration target.
+- A passing window must have zero unexpected drops, silent frames, underruns,
+  discontinuities, marker gaps, or epoch/recovery resets.
+- Current state: software transport and VAD integration are implemented, but
+  live VAD qualification and calibrated physical measurement are pending.
+- At 48 kHz, 10 ms is 480 frames and 80 ms is 3,840 frames. Audible doubling
+  while direct application output and Moiren output are both active is not
+  evidence by itself that the delay exceeds 80 ms.
+
 ## Current gate state
 
 | Stage | State | Evidence required |
