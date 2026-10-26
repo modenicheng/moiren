@@ -700,6 +700,33 @@ processes/dynamic endpoints and 30.11 GiB free. No driver/system deletion.
 Concrete source/graph/independent capture collection is the next implementation;
 controlled load and physical qualification are still unfinished.
 
+### 2026-10-27 Windows name evidence gap
+
+The same source smoke records requested/provider name
+`Moiren-source-marker-probe`, but Windows MMDevice FriendlyName remains a
+localized speaker label containing `23- Moiren virtual audio endpoint`.
+This was a CREATE smoke, not a held-client rename run. Driver policy already
+attempts requested-name publication through PDO text, interface/endpoint policy
+and the ACX pin callback; this mismatch alone does not identify a failed path
+or prove Windows caching.
+
+Read-only code tracing confirms a separate application reporting gap:
+`WindowsVadProvider` observations return stored `ExportSpec.name`, the service
+maps that into `actual_name`, and the UI labels it "Actual endpoint name".
+There is no Windows property readback in that chain. Provider-created-name
+equality can therefore clear rename_pending without proving the displayed
+Windows name matches. Existing fake service and injected UI tests cannot close
+this native acceptance gap.
+
+Keep provider creation, lifecycle completion and observed Windows naming
+distinct. The pending real-service held-client rename test must read the exact
+MMDevice property before/after recreation, retain stable ID/binding and fresh
+native generation/Engine admission, and preserve direct old-Removed evidence.
+The existing app integration example does not exercise rename, and the active
+native lifecycle example uses the same name and a separate control owner.
+No new driver rename ABI, cache workaround, default change or passing native
+name result is justified by this investigation.
+
 1. Diagnose and fix the target native `0x8007051A` revision mismatch. Repeat
    event and timer playback/microphone matrices until every case passes with
    zero drops, unexpected silence, stale packets, discontinuities, and epoch
