@@ -457,8 +457,16 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         "Input targets are estimates. Physical end-to-end latency is unqualified."
     )));
     view = view.child(heading(t!("Actual native timing")));
-    for (key, value) in crate::ui::presentation::native_timing_rows(snapshot) {
-        view = view.child(detail(&key, value));
+    for (index, (key, value)) in crate::ui::presentation::native_timing_rows(snapshot)
+        .into_iter()
+        .enumerate()
+    {
+        view = view.child(
+            detail(&key, value.clone())
+                .id(("native-timing-row", index))
+                .aria_label(format!("{key}: {value}"))
+                .gpui_test_observe(),
+        );
     }
     let mut exports = div()
         .id("provider-export-diagnostics")
@@ -516,10 +524,19 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         )
     })
     .child(detail(&t!("CPU load"), t!("Unavailable")))
-    .child(detail(
-        &t!("Physical end-to-end latency"),
-        t!("Unknown / unqualified"),
-    ))
+    .child(
+        detail(
+            &t!("Physical end-to-end latency"),
+            t!("Unknown / unqualified"),
+        )
+        .id("diagnostics-physical-latency")
+        .aria_label(format!(
+            "{}: {}",
+            t!("Physical end-to-end latency"),
+            t!("Unknown / unqualified")
+        ))
+        .gpui_test_observe(),
+    )
     .child(label(t!(
         "Queue fill and packet timing do not measure CPU load or physical end-to-end latency."
     )))

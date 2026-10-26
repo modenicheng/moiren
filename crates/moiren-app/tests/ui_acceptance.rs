@@ -9,6 +9,10 @@ extern crate gpui_kit as gpui;
 
 mod common;
 
+#[cfg(windows)]
+#[path = "ui_acceptance/native_live.rs"]
+mod native_live;
+
 // Import explicitly: glob-importing the Kit would shadow Rust's #[test]
 // with GPUI's test macro and recurse inside the generated body.
 #[allow(unused_imports)]
