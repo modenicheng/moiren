@@ -44,6 +44,11 @@ PowerShell target scripts, and the existing offline qualification evaluator.
   current branch already contains the implementation commits through the
   native-probe cleanup; this plan records what is implemented, what failed on
   the target, and what still requires live qualification.
+- The target VM has a 64 GB system disk. Build on the development host. Copy
+  completed evidence, including failures, back to the host and verify file
+  lengths and SHA-256 hashes before deleting guest copies. Remove superseded
+  binaries and staging files promptly; retain the current probe, active-run
+  files, and packages needed for the next install or rollback.
 
 ## Decision Record
 
@@ -51,7 +56,7 @@ PowerShell target scripts, and the existing offline qualification evaluator.
 | --- | --- | --- |
 | Can the driver rename an existing VAD endpoint in place? | No. The ABI has no `RENAME` IOCTL; the name is supplied only by `CREATE`. | None for the current product path. Add a driver rename protocol only if remove/recreate interruption becomes a demonstrated product blocker. |
 | Can a user rename a VAD in Moiren? | Yes. The app retains the stable ID and graph binding, closes admission, drains owners, removes the old child, waits for `Removed`, and recreates it with the requested name. | One target-machine live rename run with a held WASAPI client. |
-| Is VAD integrated into Moiren? | Yes in software: VAD MMDevice -> native PCM worker -> `VirtualPlayback` -> Engine -> Bus -> physical render. | Current machine has no present Moiren VAD endpoint, so live activation is not currently qualified. |
+| Is VAD integrated into Moiren? | Yes: the target production smoke exercised VAD MMDevice -> native PCM worker -> `VirtualPlayback` -> Engine -> Bus -> physical render. | The 10-second run had seven boundary xruns; full native, rename, and calibrated physical qualification remain open. |
 | Which is faster, VAD or Process Loopback? | No defensible measured winner yet. Process Loopback is the shorter structural baseline; VAD has driver, native PCM, worker, and virtual-boundary work. | Same physical endpoint, graph, marker, render policy, load, and calibration. |
 | Can application bypass buffering be reduced? | Yes, the input capacity/target/jitter/packet/gap and render target are configurable. Reducing capacity alone does not reduce normal residency. | Packet/gap telemetry and physical sweep must prove a candidate is stable. |
 | Does audible doubling prove `>80 ms`? | No. Direct output plus a delayed Moiren path creates comb filtering or slapback at much shorter delays. | A marker correlation above 3,840 frames at 48 kHz, measured at the physical boundary, is required to claim `>80 ms`. |

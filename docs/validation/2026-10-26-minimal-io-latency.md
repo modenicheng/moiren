@@ -95,8 +95,41 @@ current probe executable to conserve its 64 GB disk.
   run is a stability diagnostic, not a qualification pass.
 - The retained report and manifest are archived at
   `target/vad-target-archive/20261027-live-vad-df3f76c/live-vad-df3f76c-final-10s/`.
-  The guest now retains only the current release probe and the historical
-  native probe to conserve its 64 GB disk.
+  After the 2026-10-27 storage cleanup, the guest retains only the current
+  release probe, `e2e_latency_probe-df3f76c.exe`.
+
+### Target VM storage policy and cleanup
+
+The target has a 64 GB system disk. Build on the development host and copy only
+the executable and driver package required for the next target operation. Keep
+the installed working driver; remove superseded test binaries and staging
+copies once they are no longer needed. Do not accumulate build trees, duplicate
+packages, completed run directories, PCM captures, or traces in the guest.
+
+After each run, including failed runs, copy its evidence to the development
+host under `target/vad-target-archive/`. Verify the copied file lengths and
+SHA-256 hashes against the guest before deleting the guest copies. Retain
+failed evidence on the host. Validate every deletion path inside the explicit
+test directory, reject reparse points, and verify all candidates before the
+first deletion. Keep only the current probe, active-run files, and any package
+needed for the next install or rollback in `C:\MoirenVadTest`.
+
+The 2026-10-27 cleanup verified ten report/manifest files from five completed
+runs, totaling 80,876 bytes, before deleting those guest directories. The
+verified copies, remote hash manifest, and cleanup inventory are under
+`target/vad-target-archive/20261027-vm-retention/`. One earlier diagnostic
+directory, `live-vad-044b819-10s`, was deleted before archive verification.
+Its runtime/cleanup/counter summary was recovered from the local session log
+as `recovered-live-vad-044b819-10s-summary.json`; its original report and manifest
+were not recovered. This partial record is not a replacement for original
+qualification artifacts.
+
+Final target inventory: one 3,267,072-byte executable (SHA-256
+`795040D89670389C4CDCA36A0F29D8E94848B412C2A946DF8D347982C34087D1`),
+30.11 GiB free, no active Moiren/VAD probe process, and no present dynamic
+`MOIREN\VAD_RAW` child. Historical non-present PnP entries were not counted as
+active endpoints. This is storage/lifecycle verification, not audio
+qualification.
 
 ### Production `live-vad` startup diagnostics
 
@@ -130,9 +163,9 @@ physical latency:
   10-second target run has `epoch_resets=0` and `recovery_events=0`; this is a
   lifecycle correctness fix, not permission to ignore later stream/gate changes.
 
-The target's driver/control state and any endpoint left by the last failed
-`live-vad` attempt must be inspected after SSH recovers. Until that cleanup and
-rerun complete, production VAD activation remains unqualified.
+SSH recovered and the target cleanup was verified on 2026-10-27, as recorded
+above. The `df3f76c` production rerun remains unqualified because of its seven
+boundary xruns and missing calibrated physical evidence.
 
 ## Software changes and focused evidence
 
