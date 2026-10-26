@@ -190,3 +190,31 @@ Next implement the concrete opt-in VAD source, production graph and independent
 MeasurementSession collection in one run, including source health and broadcast
 stop before joins. Controlled load, reference wiring, physical Input graph,
 calibration and long qualification remain separate unfinished gates.
+
+### 2026-10-27 concrete collection implementation and review repair
+
+`def3a2c` adds the opt-in `--vad-collection` path in the existing live probe.
+It composes a closed-gate independent `MeasurementSession`, the existing VAD
+CREATE/native playback owner, the production `VirtualPlayback -> Bus -> pinned
+physical Output` graph and the existing revision/gate admission checks. It
+waits for actual recorder Running, keeps silent preroll separate from source
+submission, polls source/provider/Engine/recorder health without relying on the
+optional journal, retains negotiated recorder format and partial artifacts, and
+broadcasts source and recorder stops before joins or sink drain. Collection
+output stays `qualified=false`, `status=unqualified`; source submission is not
+marker arrival or physical capture.
+
+The independent review found two finalization defects. `43c572f` fixes both:
+joined source event timeouts are reconciled after the last healthy poll and
+before `collection_complete`; first raw provider/Engine failure evidence is
+latched before a later QUERY can overwrite it, while later final observations
+remain separate. RED/GREEN regressions, focused 14 tests, full example 109
+tests, strict Windows example/test Clippy, scoped format and diff checks pass.
+The fix review is spec/quality PASS.
+
+The parent also re-ran the full workspace at `def3a2c`: build, all-target
+check, format, strict Windows workspace Clippy, 1,621 tests/8 ignored across
+71 suites, and feature GPUI 489 tests/4 ignored across 20 suites all pass.
+The Linux strict Clippy baseline still fails on two unchanged `capture.rs`
+retention fields; no broad CI-green claim is made until that separate issue is
+handled. No native collection run has yet been made for this implementation.

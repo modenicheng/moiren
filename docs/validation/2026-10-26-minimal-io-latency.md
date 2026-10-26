@@ -727,6 +727,25 @@ native lifecycle example uses the same name and a separate control owner.
 No new driver rename ABI, cache workaround, default change or passing native
 name result is justified by this investigation.
 
+### 2026-10-27 real VAD collection path
+
+The reviewed implementation now has an opt-in collection mode that runs the
+independent recorder concurrently with the existing VAD playback and production
+`VirtualPlayback -> Bus -> physical Output` graph. It records exact source and
+collection configs, negotiated recorder format, PCM/packet artifacts, source
+submission progress, provider/Engine/native health, cleanup outcomes and raw
+partial failures. It does not reuse measurement analysis as a source clock and
+does not construct a nominal-format qualification result.
+
+The collection lifecycle was independently reviewed. The review initially
+found two finalization gaps: a source timeout after the last healthy poll could
+be missed, and first raw failure evidence found during retirement could be
+overwritten by a subsequent query. Both are fixed in `43c572f`; the repair
+review passes. Software tests are green, but no native run of this combined
+collector has occurred yet. VM microphone/output evidence remains diagnostic;
+calibrated physical input wiring, marker discovery, controlled load and
+physical p95 uncertainty are still absent.
+
 1. Diagnose and fix the target native `0x8007051A` revision mismatch. Repeat
    event and timer playback/microphone matrices until every case passes with
    zero drops, unexpected silence, stale packets, discontinuities, and epoch
