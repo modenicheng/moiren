@@ -293,16 +293,59 @@ fn drive_session(
     duration: std::time::Duration,
     report: &mut MeasurementReport,
 ) -> Result<()> {
+    let started = std::time::Instant::now();
+    drive_session_with_clock(
+        owner,
+        duration,
+        report,
+        || started.elapsed(),
+        std::thread::sleep,
+    )
+}
+
+#[cfg(any(windows, test))]
+fn drive_session_with_clock(
+    owner: &mut impl CollectionSession,
+    duration: std::time::Duration,
+    report: &mut MeasurementReport,
+    elapsed: impl Fn() -> std::time::Duration,
+    mut sleep: impl FnMut(std::time::Duration),
+) -> Result<()> {
     let collection = (|| {
         owner.activate()?;
-        // RefCell only shares this synchronous control owner between the two
-        // polling callbacks; neither callback performs disk IO or joins.
-        let owner = std::cell::RefCell::new(&mut *owner);
-        crate::live::soak_control::run_until(
-            duration,
-            |_| owner.borrow().check().map(|_| ()),
-            || owner.borrow_mut().request_stop(),
-        )
+        let mut polled = false;
+        loop {
+            // The adapter clock starts before activation, not after its return.
+            // Both this conservative ceiling and the session deadline may stop
+            // collection; neither grants the other a fresh duration interval.
+            if elapsed() >= duration {
+                ensure!(
+                    polled,
+                    "incomplete interval: activation returned after collection deadline"
+                );
+                return Ok(());
+            }
+            match owner.check()? {
+                session::MeasurementProgress::DeadlineReached => {
+                    ensure!(
+                        elapsed() >= duration,
+                        "incomplete interval: session deadline preceded requested collection interval"
+                    );
+                    return Ok(());
+                }
+                session::MeasurementProgress::Starting
+                | session::MeasurementProgress::Running { .. } => {}
+                session::MeasurementProgress::Prepared | session::MeasurementProgress::Stopping => {
+                    anyhow::bail!("incomplete interval: measurement is not collecting");
+                }
+            }
+            polled = true;
+            // Re-read after the poll so controller work cannot add a stale sleep.
+            let remaining = duration.saturating_sub(elapsed());
+            if !remaining.is_zero() {
+                sleep(std::time::Duration::from_millis(10).min(remaining));
+            }
+        }
     })();
     let stopped = owner.request_stop();
     // Cleanup and typed report retention precede any potentially fallible JSON
@@ -525,7 +568,7 @@ mod tests {
         drive_session(&mut owner, std::time::Duration::from_secs(1), &mut report).unwrap();
         assert_eq!(
             &*owner.log.lock().unwrap(),
-            &["activate", "check", "stop", "stop", "finish"]
+            &["activate", "check", "stop", "finish"]
         );
         assert_eq!(report.sink.as_ref().unwrap()["sample_rate"], 96_000);
         assert_eq!(report.sink.as_ref().unwrap()["written_frames"], 2);
@@ -533,5 +576,207 @@ mod tests {
         assert_eq!(report.status, "unqualified");
         let failure = report.failure.unwrap();
         assert!(failure.contains("polling failure") && failure.contains("retained native failure"));
+    }
+
+    struct DeadlineCollection {
+        log: std::cell::RefCell<Vec<&'static str>>,
+        polls: std::cell::Cell<usize>,
+        activation_clock: Option<std::rc::Rc<std::cell::Cell<std::time::Duration>>>,
+        early_deadline: bool,
+    }
+
+    impl CollectionSession for DeadlineCollection {
+        fn activate(&mut self) -> Result<()> {
+            self.log.borrow_mut().push("activate");
+            if let Some(clock) = &self.activation_clock {
+                clock.set(std::time::Duration::from_secs(2));
+            }
+            Ok(())
+        }
+
+        fn check(&self) -> Result<session::MeasurementProgress> {
+            self.log.borrow_mut().push("check");
+            let polls = self.polls.get();
+            self.polls.set(polls + 1);
+            ensure!(polls == 0, "collection polled after session deadline");
+            Ok(if self.early_deadline {
+                session::MeasurementProgress::DeadlineReached
+            } else {
+                session::MeasurementProgress::Running {
+                    elapsed: std::time::Duration::ZERO,
+                }
+            })
+        }
+
+        fn request_stop(&mut self) -> Result<()> {
+            self.log.borrow_mut().push("stop");
+            Ok(())
+        }
+
+        fn finish(&mut self) -> Result<session::MeasurementOutcome> {
+            self.log.borrow_mut().push("finish");
+            Ok(session::MeasurementOutcome {
+                info: session::MeasurementInfo {
+                    input_endpoint_id: "independent".into(),
+                    sample_rate: 96_000,
+                    channels: 1,
+                    ring_frames: 2,
+                    max_frames: 2,
+                },
+                native_capture: None,
+                sink: Some(crate::measurement_sink::SinkReport {
+                    schema_version: 1,
+                    sample_rate: 96_000,
+                    channels: 1,
+                    written_frames: 2,
+                    written_pcm_bytes: 8,
+                    written_metadata_bytes: 180,
+                    complete_packets: 1,
+                    sequence_gaps: 0,
+                    missing_packets: 0,
+                    incomplete_packets: 0,
+                    nonfinite_samples: 0,
+                    counters_saturated: false,
+                    cancelled: false,
+                    failure: None,
+                }),
+                activation_elapsed: Some(std::time::Duration::from_secs(1)),
+                failure: Some("retained partial native failure".into()),
+            })
+        }
+    }
+
+    fn deadline_report() -> MeasurementReport {
+        MeasurementReport {
+            schema_version: 1,
+            mode: "independent_native_measurement",
+            qualified: false,
+            status: "unqualified",
+            input_endpoint_id: "independent".into(),
+            requested_seconds: 1,
+            dry_run: false,
+            pcm_path: "measurement.f32le".into(),
+            packet_path: "measurement.packets.jsonl".into(),
+            ring_frames: 2,
+            max_pcm_bytes: 8,
+            max_metadata_bytes: 1024,
+            max_packets: 1,
+            native_capture: None,
+            sink: None,
+            failure: None,
+            gaps: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn measurement_adapter_early_session_deadline_stops_without_another_poll() {
+        let mut owner = DeadlineCollection {
+            log: std::cell::RefCell::new(Vec::new()),
+            polls: std::cell::Cell::new(0),
+            activation_clock: None,
+            early_deadline: true,
+        };
+        let mut report = deadline_report();
+        drive_session_with_clock(
+            &mut owner,
+            std::time::Duration::from_secs(1),
+            &mut report,
+            || std::time::Duration::ZERO,
+            |_| panic!("must not sleep after session deadline"),
+        )
+        .unwrap();
+        assert_eq!(
+            owner.polls.get(),
+            1,
+            "DeadlineReached must end collection immediately"
+        );
+        let log = owner.log.borrow();
+        let stopped = log.iter().position(|&event| event == "stop").unwrap();
+        let finished = log.iter().position(|&event| event == "finish").unwrap();
+        assert!(stopped < finished);
+        assert_eq!(report.sink.as_ref().unwrap()["written_frames"], 2);
+        let failure = report.failure.as_ref().unwrap();
+        assert!(failure.contains("incomplete interval"), "{failure}");
+        assert!(failure.contains("retained partial native failure"));
+        assert!(!failure.contains("polled after session deadline"));
+        assert!(!report.qualified);
+        assert_eq!(report.status, "unqualified");
+    }
+
+    #[test]
+    fn measurement_adapter_delayed_activation_gets_no_fresh_interval_or_polls() {
+        use std::{cell::Cell, rc::Rc, time::Duration};
+        let clock = Rc::new(Cell::new(Duration::ZERO));
+        let mut owner = DeadlineCollection {
+            log: std::cell::RefCell::new(Vec::new()),
+            polls: Cell::new(0),
+            activation_clock: Some(clock.clone()),
+            early_deadline: false,
+        };
+        let mut report = deadline_report();
+        drive_session_with_clock(
+            &mut owner,
+            Duration::from_secs(1),
+            &mut report,
+            || clock.get(),
+            |_| panic!("must not sleep after activation consumed the interval"),
+        )
+        .unwrap();
+        assert_eq!(
+            owner.polls.get(),
+            0,
+            "delayed activation must not receive a fresh interval"
+        );
+        assert_eq!(&*owner.log.borrow(), &["activate", "stop", "finish"]);
+        assert!(
+            report
+                .failure
+                .as_ref()
+                .unwrap()
+                .contains("incomplete interval")
+        );
+        assert_eq!(report.sink.as_ref().unwrap()["written_frames"], 2);
+        assert!(!report.qualified);
+    }
+
+    #[test]
+    fn measurement_adapter_shorter_cli_bound_stops_before_later_session_deadline() {
+        use std::{cell::Cell, time::Duration};
+        let clock = Cell::new(Duration::ZERO);
+        let sleeps = Cell::new(0);
+        let mut owner = DeadlineCollection {
+            log: std::cell::RefCell::new(Vec::new()),
+            polls: Cell::new(0),
+            activation_clock: None,
+            early_deadline: false,
+        };
+        let mut report = deadline_report();
+        drive_session_with_clock(
+            &mut owner,
+            Duration::from_millis(10),
+            &mut report,
+            || clock.get(),
+            |duration| {
+                assert_eq!(duration, Duration::from_millis(10));
+                sleeps.set(sleeps.get() + 1);
+                clock.set(Duration::from_millis(10));
+            },
+        )
+        .unwrap();
+        assert_eq!(owner.polls.get(), 1);
+        assert_eq!(sleeps.get(), 1);
+        assert_eq!(
+            &*owner.log.borrow(),
+            &["activate", "check", "stop", "finish"]
+        );
+        assert_eq!(report.sink.as_ref().unwrap()["written_frames"], 2);
+        assert!(
+            !report
+                .failure
+                .as_ref()
+                .unwrap()
+                .contains("incomplete interval")
+        );
+        assert!(!report.qualified);
     }
 }
