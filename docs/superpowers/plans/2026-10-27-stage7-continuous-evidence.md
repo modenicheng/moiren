@@ -136,3 +136,23 @@ are retained in `target/vad-target-archive/20261027-native-f098fa9-event15`;
 verified host/guest hashes preceded immediate guest cleanup back to the one
 current diagnostic probe and 30.12 GiB free. No long qualification run follows
 from these diagnostic exits.
+
+### 2026-10-27 composable measurement owner
+
+`6dcb9e8` extracts the independent recorder into an example-local session with
+separate prepare, activation, native-Start acknowledgement, nonjoining stop,
+native-first finish and retained partial reports. Review found an ignored
+DeadlineReached state in the standalone adapter; `ce91b05` fixes it with a
+pre-activation clock and earlier-bound termination. Independent re-review
+passes spec/quality and clears the original finding. All 69 example tests,
+including 13 owner and four adapter regressions plus the unchanged 15 sink
+tests, strict example/test Clippy and format pass. This is a prerequisite,
+not source/graph/load supervision or a hardware watchdog.
+
+An explicit host CABLE two-second smoke at `ce91b05` retains 198 packets/
+95,009 frames, 760,072 PCM bytes and 25,882 metadata bytes. Lengths, SHA-256,
+packet offsets/sequences and PCM length agree. Native starts/stops cleanly;
+tap/sink loss counters are zero, but one native discontinuity keeps the result
+failed/unqualified. Before the deadline correction, an eight-byte-cap smoke
+also retained zero-byte waveform/metadata and stopped native in 0.0201606 s.
+These runs do not collect microphone input or change defaults/VM files.

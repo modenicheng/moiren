@@ -650,6 +650,27 @@ on host and rechecked on guest before immediate deletion of run/probe/script.
 Guest again retains only the current diagnostic probe, no dynamic endpoints/
 probe processes and 30.12 GiB free. No long qualification run is warranted.
 
+### 2026-10-27 composable recorder lifecycle
+
+`6dcb9e8` extracts example-local measurement preparation, activation, native
+Start acknowledgement, nonblocking health/stop and native-before-sink finish.
+Explicit partial reports and capped failure accumulation survive cleanup.
+Review found a discarded session deadline in the adapter; `ce91b05` fixes it
+using the earlier activation/session/adapter bound. Independent re-review
+passes spec/quality and closes the original P2. All 69 example tests pass,
+including 13 owner/four adapter regressions and 15 unchanged sink tests; strict
+example/test Clippy, scoped formatting and host example build pass.
+
+The corrected host CABLE two-second recorder returns native started/stopped,
+198 packets/95,009 frames, 760,072 PCM and 25,882 metadata bytes. All three file
+lengths/SHA-256 values and packet sequence/offset/PCM size consistency are
+verified. Zero tap drops and sink missing/incomplete/nonfinite samples do not
+erase its one native discontinuity: exit 1, failed/unqualified remain correct.
+Earlier owner-state validation also exercised an eight-byte cap, retaining
+zero-byte waveform/metadata and stopping native in 0.0201606 s. No microphone,
+defaults or VM changes. Source/graph/load supervision, physical calibration,
+stable candidates and qualification repetitions are still open.
+
 1. Diagnose and fix the target native `0x8007051A` revision mismatch. Repeat
    event and timer playback/microphone matrices until every case passes with
    zero drops, unexpected silence, stale packets, discontinuities, and epoch
