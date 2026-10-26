@@ -16,6 +16,10 @@ pub enum ActionIcon {
     Minimize,
     Maximize,
     Close,
+    Cursor,
+    HandMove,
+    ZoomOut,
+    ZoomIn,
 }
 
 impl ActionIcon {
@@ -30,13 +34,23 @@ impl ActionIcon {
             Self::Minimize => "minimize",
             Self::Maximize => "maximize",
             Self::Close => "close",
+            Self::Cursor => "cursor-arrow",
+            Self::HandMove => "hand-move",
+            Self::ZoomOut => "minus",
+            Self::ZoomIn => "plus",
         }
     }
     pub(crate) fn element(self) -> impl IntoElement {
         // Kit's Icon resolves inherited text color before painting Svg. A bare
         // Svg with no explicit color silently skips painting in this GPUI version.
         let directory = match self {
-            Self::Mixer | Self::Matrix | Self::Devices => "icons",
+            Self::Mixer
+            | Self::Matrix
+            | Self::Devices
+            | Self::Cursor
+            | Self::HandMove
+            | Self::ZoomOut
+            | Self::ZoomIn => "icons",
             _ => "figma-actions",
         };
         Icon::default()
@@ -99,6 +113,12 @@ impl AssetSource for ActionAssets {
                 Some(include_bytes!("../../../assets/icons/chevron-right.svg"))
             }
             "icons/zoom-scan.svg" => Some(include_bytes!("../../../assets/icons/zoom-scan.svg")),
+            "icons/cursor-arrow.svg" => {
+                Some(include_bytes!("../../../assets/icons/cursor-arrow.svg"))
+            }
+            "icons/hand-move.svg" => Some(include_bytes!("../../../assets/icons/hand-move.svg")),
+            "icons/minus.svg" => Some(include_bytes!("../../../assets/icons/minus.svg")),
+            "icons/plus.svg" => Some(include_bytes!("../../../assets/icons/plus.svg")),
             "figma-actions/plus.svg" => {
                 Some(include_bytes!("../../../assets/figma-actions/plus.svg"))
             }
@@ -167,6 +187,20 @@ mod tests {
             assert!(
                 ActionAssets.load(&path).ok().flatten().is_some(),
                 "unregistered node icon asset: {path}"
+            );
+        }
+    }
+
+    /// The canvas editing toolbar paints icon-only tool and zoom buttons; a
+    /// missing registration errors on every painted frame (see the node test
+    /// above).
+    #[test]
+    fn toolbar_tool_icons_are_registered() {
+        for name in ["cursor-arrow", "hand-move", "minus", "plus"] {
+            let path = format!("icons/{name}.svg");
+            assert!(
+                ActionAssets.load(&path).ok().flatten().is_some(),
+                "unregistered toolbar icon asset: {path}"
             );
         }
     }

@@ -184,9 +184,11 @@ Removed from candidate. The service retains lifecycle tracking until safe retire
 Revoke local default eligibility	-	crates/moiren-app/src/ui/window/devices/exports.rs:535	按钮
 Allow default eligibility on this computer	-	crates/moiren-app/src/ui/window/devices/exports.rs:537	按钮
 Node library	-	crates/moiren-app/src/ui/window/graph.rs:398|crates/moiren-app/src/ui/window/graph/library.rs:162	按钮与侧栏标题
-Select	-	crates/moiren-app/src/ui/window/graph.rs:464	画布工具按钮
-Hand	-	crates/moiren-app/src/ui/window/graph.rs:465	画布工具按钮
-Fit	-	crates/moiren-app/src/ui/window/graph.rs:496	缩放适配按钮
+Select	-	crates/moiren-app/src/ui/window/graph.rs:584	画布工具按钮（图标 + 悬停提示/无障碍名）
+Hand	-	crates/moiren-app/src/ui/window/graph.rs:585	画布工具按钮（图标 + 悬停提示/无障碍名）
+Fit	-	crates/moiren-app/src/ui/window/graph.rs:655	缩放适配按钮
+Zoom in	-	crates/moiren-app/src/ui/window/graph.rs:652	缩放按钮（图标 + 悬停提示/无障碍名）
+Zoom out	-	crates/moiren-app/src/ui/window/graph.rs:636	缩放按钮（图标 + 悬停提示/无障碍名）
 No matching nodes	-	crates/moiren-app/src/ui/window/graph/library.rs:104	搜索空态
 Session nodes · %{count}	count=state.snapshot.graph.nodes.len()	crates/moiren-app/src/ui/window/graph/library.rs:116	format! 原文 "Session nodes · {}"
 Drag a node onto the graph	-	crates/moiren-app/src/ui/window/graph/library.rs:187	提示

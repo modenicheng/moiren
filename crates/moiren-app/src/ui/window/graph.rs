@@ -580,13 +580,16 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
         .bg(theme::SURFACE)
         .border_1()
         .border_color(theme::BORDER);
-    for (id, name, hand) in [
-        ("tool-select", t!("Select"), false),
-        ("tool-hand", t!("Hand"), true),
+    for (id, name, icon, hand) in [
+        ("tool-select", t!("Select"), ActionIcon::Cursor, false),
+        ("tool-hand", t!("Hand"), ActionIcon::HandMove, true),
     ] {
         let this = this.clone();
         view = view.child(
-            button(id, name)
+            button(id, name.clone())
+                .icon(icon)
+                .icon_only()
+                .tooltip(name)
                 .variant(if shell.hand_tool == hand {
                     ButtonVariant::Primary
                 } else {
@@ -600,20 +603,55 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
                 }),
         );
     }
-    for (id, name, factor) in [("zoom-out", "−", 1. / 1.1), ("zoom-in", "+", 1.1)] {
-        let this = this.clone();
-        view = view.child(button(id, name).on_click(move |_, _, cx| {
-            this.update(cx, |s, cx| {
-                s.camera.zoom_around_center(s.canvas_size, factor);
-                cx.notify();
+    view = view.child(
+        div()
+            .flex_none()
+            .w(px(1.))
+            .h(px(16.))
+            .mx(px(2.))
+            .rounded_full()
+            .bg(theme::BORDER),
+    );
+    // Zoom-out · readout · zoom-in reads as a stepper around the percentage;
+    // the readout's width is pinned so the stepper never reflows.
+    let zoom_step = |id: &'static str, icon: ActionIcon, name: SharedString, factor: f32| {
+        button(id, name.clone())
+            .icon(icon)
+            .icon_only()
+            .tooltip(name)
+            .on_click({
+                let this = this.clone();
+                move |_, _, cx: &mut App| {
+                    this.update(cx, |s, cx| {
+                        s.camera.zoom_around_center(s.canvas_size, factor);
+                        cx.notify();
+                    })
+                }
             })
-        }));
-    }
-    view.child(label(format!(
-        "{}%",
-        (shell.camera.zoom * 100.).round() as i32
-    )))
-    .child(button("zoom-fit", t!("Fit")).on_click({
+    };
+    view = view.child(zoom_step(
+        "zoom-out",
+        ActionIcon::ZoomOut,
+        t!("Zoom out").into(),
+        1. / 1.1,
+    ));
+    view = view.child(
+        div()
+            .min_w(px(44.))
+            .flex()
+            .justify_center()
+            .child(label(format!(
+                "{}%",
+                (shell.camera.zoom * 100.).round() as i32
+            ))),
+    );
+    view = view.child(zoom_step(
+        "zoom-in",
+        ActionIcon::ZoomIn,
+        t!("Zoom in").into(),
+        1.1,
+    ));
+    view.child(button("zoom-fit", t!("Fit")).on_click({
         let this = this.clone();
         move |_, _, cx| {
             this.update(cx, |s, cx| {
