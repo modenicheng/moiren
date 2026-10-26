@@ -1123,7 +1123,7 @@ mod native {
     use anyhow::{Context, bail, ensure};
     use moiren_core::graph::{LogicalGraph, NodeKind, SendParams, edit::connect_to_new_bus_input};
     use moiren_engine::{
-        boundary::audio_bridge,
+        boundary::{ClockRole, audio_bridge},
         compiler::{CompileConfig, NodeBindings, compile},
         host::{EngineHost, EngineProject, ExecutionState, HostConfig, NodeConfig},
         node::{
@@ -1561,13 +1561,42 @@ mod native {
             NodeConfig::Output(OutputConfig {
                 target: OutputTarget::Physical(output),
                 channels: 2,
-                device: DeviceOptions::default(),
+                device: DeviceOptions {
+                    clock_role: ClockRole::Master,
+                    ..DeviceOptions::default()
+                },
             }),
         );
         project
             .validate()
             .context("validate VAD Input -> Bus -> Output project")?;
         Ok(project)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn minimal_vad_project_declares_physical_output_master() {
+            let project = minimal_vad_project(
+                VirtualEndpointId::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]),
+                EndpointSelector::PinnedEndpoint {
+                    endpoint_id: "render".into(),
+                    stable_id: None,
+                },
+            )
+            .unwrap();
+            let output = project
+                .nodes
+                .values()
+                .find_map(|node| match node {
+                    NodeConfig::Output(output) => Some(output),
+                    _ => None,
+                })
+                .expect("minimal VAD project output");
+            assert_eq!(output.device.clock_role, ClockRole::Master);
+        }
     }
 
     fn retire_vad(
