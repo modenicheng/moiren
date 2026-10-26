@@ -90,8 +90,15 @@ jobs:
             libwayland-dev libvulkan-dev libxdo-dev
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - uses: Swatinem/rust-cache@6fd3edff6979b79f87531400ad694fb7f2c84b1f
-      - run: cargo +stable check --locked --all-targets -p $PKGS
-      - run: cargo +stable test --locked -p $PKGS
+      # cargo -p takes one package per flag, so expand the list first.
+      - run: |
+          pkgs=()
+          for p in $PKGS; do pkgs+=(-p "$p"); done
+          cargo +stable check --locked --all-targets "${pkgs[@]}"
+      - run: |
+          pkgs=()
+          for p in $PKGS; do pkgs+=(-p "$p"); done
+          cargo +stable test --locked "${pkgs[@]}"
       - name: Test native-owner realtime contracts
         if: needs.changes.outputs.rtcheck == 'true'
         run: cargo +stable test --locked --manifest-path tools/rt-check/Cargo.toml
@@ -142,7 +149,9 @@ jobs:
       - name: Lint changed crates
         run: |
           features=()
+          pkgs=()
           for pkg in $LINT_PKGS; do
+            pkgs+=(-p "$pkg")
             case "$pkg" in
               moiren-windows-audio) features+=(moiren-windows-audio/vad-probe) ;;
               moiren-app) features+=(moiren-app/vad-integration-probe) ;;
@@ -152,7 +161,7 @@ jobs:
           if [ "${#features[@]}" -gt 0 ]; then
             feature_flags+=(--features "$(IFS=,; echo "${features[*]}")")
           fi
-          cargo +stable clippy --locked --all-targets "${feature_flags[@]}" -p $LINT_PKGS -- -D warnings
+          cargo +stable clippy --locked --all-targets "${feature_flags[@]}" "${pkgs[@]}" -- -D warnings
       # Probe tools are feature-gated out of the default build (see
       # docs/superpowers/plans/2026-10-19-repo-steward-remediation.md W8).
       - name: Lint probe tools
