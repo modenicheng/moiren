@@ -40,3 +40,7 @@ Prepare graphs, buffers, and signal bindings off the audio thread. Real-time pro
 ## Commit & Pull Request Guidelines
 
 Follow history: `feat:`, `fix:`, `refactor:`, `test:`, or `chore:`, optionally scoped, e.g. `feat(engine): add compressor processor`. Keep commits focused; stage only relevant paths. PRs should describe behavior, reference applicable issues/design notes, report validation, and include screenshots for UI changes. Require passing CI before merging.
+
+## Selective CI
+
+Pull requests run only the surfaces the diff touches; see `.github/scripts/detect-changes.sh`. Pushes to `main` always run the full suite.
