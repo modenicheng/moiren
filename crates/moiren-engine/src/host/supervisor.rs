@@ -175,6 +175,9 @@ impl<S: ProcessingSample> Supervisor<S> {
         self.preparing.is_none() && self.pending.is_none() && self.cleanup_inflight == 0
     }
     fn run(mut self) {
+        // Scope the platform timer to the supervisor, so retained diagnostic
+        // observers cannot keep a high-resolution request alive after shutdown.
+        let mut poll_timer = crate::meter::MeterPollingTimer::default();
         loop {
             self.reclaimed();
             self.commands();
@@ -240,6 +243,8 @@ impl<S: ProcessingSample> Supervisor<S> {
             if closing && self.active.is_none() && self.idle() {
                 break;
             }
+            poll_timer.set_demand(self.shared.signals.has_demand());
+            let poll_interval = self.shared.signals.poll_interval(self.config.poll_interval);
             let guard = self
                 .shared
                 .wake_lock
@@ -248,7 +253,7 @@ impl<S: ProcessingSample> Supervisor<S> {
             let _guard = self
                 .shared
                 .wake
-                .wait_timeout(guard, self.config.poll_interval)
+                .wait_timeout(guard, poll_interval)
                 .unwrap_or_else(|poison| poison.into_inner());
         }
         self.router.close();

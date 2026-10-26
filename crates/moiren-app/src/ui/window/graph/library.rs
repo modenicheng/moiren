@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::*;
 use crate::service::{GraphEdit, InputSelection, RequestId};
 use pages::node_catalog::NodeTemplate;
@@ -20,7 +22,7 @@ impl Render for NodeTemplate {
             .border_1()
             .border_color(theme::BORDER)
             .text_color(theme::TEXT)
-            .child(self.title())
+            .child(t!(self.title()))
     }
 }
 
@@ -38,7 +40,7 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         count += 1;
         if group != template.group() {
             group = template.group();
-            items = items.child(div().mt(px(14.)).mb(px(4.)).child(label(group)));
+            items = items.child(div().mt(px(14.)).mb(px(4.)).child(label(t!(group))));
         }
         let enabled = template.kind().is_some() && shell.pending_node_spawn.is_none();
         let this = cx.entity();
@@ -68,7 +70,7 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                     .child(
                         button(
                             SharedString::from(format!("add-{}", template.title())),
-                            template.title(),
+                            t!(template.title()),
                         )
                         .variant(ButtonVariant::Ghost)
                         .disabled(!enabled)
@@ -90,7 +92,7 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                         div()
                             .text_size(px(10.))
                             .text_color(theme::TEXT_FAINT)
-                            .child(template.description()),
+                            .child(t!(template.description())),
                     ),
             )
             .when(enabled, |row| {
@@ -101,7 +103,7 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         items = items.child(row);
     }
     if count == 0 {
-        items = items.child(label("No matching nodes"));
+        items = items.child(label(t!("No matching nodes")));
     }
     let mut session = div()
         .id("session-node-list")
@@ -112,9 +114,9 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         .pt(px(12.))
         .border_t_1()
         .border_color(theme::BORDER)
-        .child(heading(format!(
-            "Session nodes · {}",
-            state.snapshot.graph.nodes.len()
+        .child(heading(t!(
+            "Session nodes · %{count}",
+            count = state.snapshot.graph.nodes.len()
         )));
     for entry in &state.snapshot.graph.nodes {
         let id = entry.id;
@@ -123,7 +125,16 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
         session = session.child(
             button(
                 SharedString::from(format!("locate-{id:?}")),
-                entry.label.clone(),
+                crate::ui::state::display_label(
+                    &state.snapshot,
+                    entry,
+                    state
+                        .snapshot
+                        .graph
+                        .graph
+                        .get_node(id)
+                        .map_or(moiren_core::graph::NodeKind::Bus, |node| node.kind()),
+                ),
             )
             .variant(if selected {
                 ButtonVariant::Secondary
@@ -159,7 +170,7 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 .flex()
                 .flex_col()
                 .gap(px(10.))
-                .child(heading("Node library"))
+                .child(heading(t!("Node library")))
                 .child(
                     component::input::Input::new(&shell.node_search)
                         .id("node-search")
@@ -184,12 +195,12 @@ pub(super) fn library(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                 .flex_none()
                 .border_t_1()
                 .border_color(theme::BORDER)
-                .child(label("Drag a node onto the graph"))
+                .child(label(t!("Drag a node onto the graph")))
                 .child(
                     div()
                         .text_size(px(10.))
                         .text_color(theme::TEXT_FAINT)
-                        .child("Or click to add at the canvas center."),
+                        .child(t!("Or click to add at the canvas center.")),
                 ),
         )
         .gpui_test_observe()
@@ -270,11 +281,22 @@ impl StudioShell {
             NodeTemplate::Tone => Some(InputSelection::Tone { frequency_hz: 440. }),
             _ => None,
         };
+        // Input/Output templates keep the default label so their card name
+        // follows the bound device; other kinds pin the template title.
+        let follows_binding = matches!(
+            pending.template,
+            NodeTemplate::Input
+                | NodeTemplate::Application
+                | NodeTemplate::Tone
+                | NodeTemplate::Output
+        );
         self.state.update(cx, |state, _| {
-            state.dispatch(AppRequest::EditGraph(GraphEdit::SetLabel {
-                node: id,
-                label: pending.template.title().into(),
-            }));
+            if !follows_binding {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::SetLabel {
+                    node: id,
+                    label: pending.template.title().into(),
+                }));
+            }
             if let Some(source) = source {
                 state.dispatch(AppRequest::EditGraph(GraphEdit::BindSource {
                     node: id,

@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::*;
 use crate::service::{AudioLatencyProfile, RequestId};
 
@@ -83,7 +85,7 @@ impl Draft {
         self.original = (self.audio.clone(), self.profile, self.density);
         self.pending = None;
         self.error = None;
-        self.message = Some("Saved. Audio settings apply on the next start.".into());
+        self.message = Some(t!("Saved. Audio settings apply on the next start.").into());
     }
 
     pub(super) fn submission(
@@ -94,8 +96,13 @@ impl Draft {
     ) -> Result<Submission, String> {
         Ok(Submission {
             audio: rebase_audio(&self.original.0, &self.audio, current)?,
-            profile: merge_value(self.original.1, self.profile, profile, "Recovery policy")?,
-            density: merge_value(self.original.2, self.density, density, "Density")?,
+            profile: merge_value(
+                self.original.1,
+                self.profile,
+                profile,
+                &t!("Recovery policy"),
+            )?,
+            density: merge_value(self.original.2, self.density, density, &t!("Density"))?,
         })
     }
 }
@@ -113,9 +120,11 @@ fn merge_value<T: PartialEq>(original: T, edited: T, current: T, label: &str) ->
     } else if current == original || current == edited {
         Ok(edited)
     } else {
-        Err(format!(
-            "{label} changed elsewhere. Your draft is retained. Discard changes to reload the saved settings."
-        ))
+        Err(t!(
+            "%{label} changed elsewhere. Your draft is retained. Discard changes to reload the saved settings.",
+            label = label
+        )
+        .to_string())
     }
 }
 
@@ -127,24 +136,29 @@ fn rebase_audio(
     current: &AudioSettings,
 ) -> Result<AudioSettings, String> {
     let mut merged = current.clone();
-    merged.backend = merge_value(original.backend, edited.backend, current.backend, "Backend")?;
+    merged.backend = merge_value(
+        original.backend,
+        edited.backend,
+        current.backend,
+        &t!("Backend"),
+    )?;
     merged.processing = merge_value(
         original.processing,
         edited.processing,
         current.processing,
-        "Processing",
+        &t!("Processing"),
     )?;
     merged.input = merge_value(
         original.input,
         edited.input,
         current.input,
-        "Input defaults",
+        &t!("Input defaults"),
     )?;
     merged.output = merge_value(
         original.output,
         edited.output,
         current.output,
-        "Output defaults",
+        &t!("Output defaults"),
     )?;
     for (original, edited, current, target, label) in [
         (
@@ -171,7 +185,7 @@ fn rebase_audio(
                 original.get(id),
                 edited.get(id),
                 current.get(id),
-                &format!("{label} override for {id}"),
+                &t!("%{label} override for %{id}", label = t!(label), id = id),
             )?;
             if let Some(value) = value {
                 target.insert(id.clone(), *value);
@@ -253,6 +267,23 @@ pub(in super::super) fn device_stream_mut<'a>(
 }
 
 impl StudioShell {
+    /// Language applies immediately (not through the Save flow) because every
+    /// rendered string reads the process-global locale; preferences persist in
+    /// the background like density/profile writes.
+    pub(in super::super) fn set_language(
+        &mut self,
+        language: crate::i18n::UiLanguage,
+        cx: &mut Context<Self>,
+    ) {
+        if self.preferences.language == language {
+            return;
+        }
+        crate::i18n::apply(language);
+        self.preferences.language = language;
+        self.save_preferences(cx);
+        cx.notify();
+    }
+
     pub(in super::super) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.settings.global.dirty() && self.settings.global.pending.is_none() {
             self.settings.global = self.current_settings_draft(cx);

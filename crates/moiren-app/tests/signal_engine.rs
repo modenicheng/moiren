@@ -5,11 +5,12 @@ use moiren_app::{
 };
 use moiren_engine::{
     boundary::{AudioReader, ConstantSource},
-    meter::DEFAULT_WINDOW_FRAMES,
     meter::signal::{AudioWindow, ChannelLevel},
     runtime::Engine,
 };
 use moiren_signal::{BlockInit, Bus, BusConfig, PublisherStatus, PumpBudget, Topic};
+
+const UI_WINDOW_FRAMES: usize = 200;
 
 fn register(bus: &mut Bus, name: &str) -> Topic<LevelTopic> {
     bus.register_latest_block(
@@ -44,6 +45,18 @@ fn render(engine: &mut Engine<f32>, output: &mut AudioReader<f32>, blocks: usize
     }
 }
 
+fn render_frames(engine: &mut Engine<f32>, output: &mut AudioReader<f32>, frames: usize) {
+    engine.render(frames).unwrap();
+    let mut samples = vec![0.0; frames * 2];
+    assert_eq!(
+        output
+            .read_interleaved(&mut samples)
+            .unwrap()
+            .transferred_frames,
+        frames
+    );
+}
+
 fn pump(bus: &mut Bus) {
     bus.pump(PumpBudget {
         topic_checks: 32,
@@ -67,24 +80,27 @@ fn tone_publishes_only_complete_demanded_windows_and_rebind_keeps_sequence() {
         ..ToneConfig::default()
     };
     let mut tone = prepare_tone_with_signals(config, &mut preparation).unwrap();
-    // Three full default windows render before any demand exists; the
-    // observer keeps accumulating, but nothing may publish without a
-    // subscriber.
+    // No measurements may publish without demand, even after multiple windows.
     render(&mut tone.compiled.engine, &mut tone.output, 6);
     assert_eq!(topic.stats().attempts, 0);
     let mut subscriber = bus.subscribe(&topic, Default::default()).unwrap();
-    // One 256-frame block leaves the 480-frame window partial.
-    render(&mut tone.compiled.engine, &mut tone.output, 1);
+    // Demand starts a fresh 200-frame window at this audio position. Split it
+    // across unequal callbacks to verify the exact publication boundary.
+    render_frames(
+        &mut tone.compiled.engine,
+        &mut tone.output,
+        UI_WINDOW_FRAMES - 1,
+    );
     pump(&mut bus);
     assert!(subscriber.read_latest().is_none());
-    render(&mut tone.compiled.engine, &mut tone.output, 1);
+    render_frames(&mut tone.compiled.engine, &mut tone.output, 1);
     assert_eq!(topic.stats().attempts, 1, "complete window must publish");
     pump(&mut bus);
     let first_sequence = {
         let window = subscriber.read_latest().unwrap();
         assert_eq!(
             window.header().frame_end - window.header().frame_start,
-            DEFAULT_WINDOW_FRAMES as u64
+            UI_WINDOW_FRAMES as u64
         );
         assert_eq!(window.header().sample_rate, 48_000.0);
         assert_eq!(
@@ -94,8 +110,20 @@ fn tone_publishes_only_complete_demanded_windows_and_rebind_keeps_sequence() {
                 rms: 0.0
             }
         );
-        assert!((window.elements()[1].peak - 0.01).abs() < 0.00001);
-        assert!((window.elements()[1].rms - 0.01 / 2.0_f32.sqrt()).abs() < 0.0001);
+        // This short window does not contain an integer number of sine cycles;
+        // compare the actual finite interval rather than the infinite-wave RMS.
+        let mut peak = 0.0_f64;
+        let mut squares = 0.0;
+        for frame in window.header().frame_start..window.header().frame_end {
+            let sample = (std::f64::consts::TAU * config.frequency_hz * frame as f64 / 48_000.0)
+                .sin()
+                * config.gain;
+            peak = peak.max(sample.abs());
+            squares += sample * sample;
+        }
+        let rms = (squares / UI_WINDOW_FRAMES as f64).sqrt();
+        assert!((f64::from(window.elements()[1].peak) - peak).abs() < 0.0000001);
+        assert!((f64::from(window.elements()[1].rms) - rms).abs() < 0.0000001);
         window.meta().sequence
     };
     drop(subscriber);
@@ -111,7 +139,11 @@ fn tone_publishes_only_complete_demanded_windows_and_rebind_keeps_sequence() {
     assert!(subscriber.read_latest().is_none());
     // One complete window publishes; the sequence continues from before
     // the rebind instead of resetting.
-    render(&mut tone.compiled.engine, &mut tone.output, 2);
+    render_frames(
+        &mut tone.compiled.engine,
+        &mut tone.output,
+        UI_WINDOW_FRAMES,
+    );
     pump(&mut bus);
     assert_eq!(
         subscriber.read_latest().unwrap().meta().sequence,
@@ -210,13 +242,14 @@ fn retained_subscriber_distinguishes_restarted_tone_and_monitor_timelines() {
             .unwrap();
             (monitor.compiled, monitor.output)
         };
-        // Two 256-frame blocks complete exactly one default window.
+        // Two callbacks complete two UI windows. Latest returns the second;
+        // the remaining 112 frames are still a partial third window.
         render(&mut compiled.engine, &mut output, 2);
         pump(&mut bus);
         {
             let window = subscriber.read_latest().unwrap();
-            assert_eq!(window.header().frame_start, 0);
-            assert_eq!(window.header().frame_end, DEFAULT_WINDOW_FRAMES as u64);
+            assert_eq!(window.header().frame_start, UI_WINDOW_FRAMES as u64);
+            assert_eq!(window.header().frame_end, 2 * UI_WINDOW_FRAMES as u64);
             assert_ne!(window.header().timeline_epoch, 0);
             if let Some(epoch) = previous_epoch {
                 assert_ne!(window.header().timeline_epoch, epoch);

@@ -1,6 +1,11 @@
 //! Application ownership and offline IO orchestration.
 #![deny(unsafe_code)]
 
+// Locale catalogs are embedded at compile time; keys are the English source
+// strings. See `i18n` for the language list and runtime switching.
+rust_i18n::i18n!("locales", fallback = "en");
+
+pub mod i18n;
 pub mod logging;
 pub mod monitor;
 pub mod monitor_cli;

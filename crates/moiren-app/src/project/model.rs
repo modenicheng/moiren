@@ -324,7 +324,7 @@ impl Default for ProjectLayout {
         Self {
             workspace: WorkspaceDocument::Graph,
             mixer_order: Vec::new(),
-            mixer_width: 176.0,
+            mixer_width: 160.0,
             mixer_dock_width: 360.0,
             camera_x: 0.0,
             camera_y: 0.0,
@@ -408,10 +408,12 @@ pub enum Appearance {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppPreferences {
+    pub meters: super::MeterDisplayPreferences,
     pub export_authorizations: Vec<crate::service::ExportAuthorization>,
     pub version: u32,
     pub density: UiDensity,
     pub appearance: Appearance,
+    pub language: crate::i18n::UiLanguage,
     /// Requested for the next audio apply/start, not a measured device result.
     pub latency_profile: AudioLatencyProfile,
     pub audio: AudioSettings,
@@ -422,10 +424,12 @@ pub struct AppPreferences {
 impl Default for AppPreferences {
     fn default() -> Self {
         Self {
+            meters: super::MeterDisplayPreferences::default(),
             export_authorizations: Vec::new(),
             version: PREFERENCES_VERSION,
             density: UiDensity::Comfortable,
             appearance: Appearance::Dark,
+            language: crate::i18n::UiLanguage::default(),
             latency_profile: AudioLatencyProfile::Compatible,
             audio: AudioSettings::default(),
             restore_last_project: false,

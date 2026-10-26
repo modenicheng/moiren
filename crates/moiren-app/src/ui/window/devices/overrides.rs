@@ -1,5 +1,6 @@
 use super::*;
 use crate::ui::window::settings::{Direction, Editor};
+use rust_i18n::t;
 
 pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
     let input = shell.device_tab == DeviceTab::Inputs;
@@ -29,8 +30,8 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
     let name = rows
         .iter()
         .find(|row| row.endpoint_id == id)
-        .map(|row| row.name.as_str())
-        .unwrap_or("Unavailable device");
+        .map(|row| row.name.clone())
+        .unwrap_or_else(|| t!("Unavailable device").to_string());
     let saved = if input {
         snapshot.audio_settings.effective_input(id)
     } else {
@@ -40,22 +41,22 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         .flex()
         .flex_col()
         .gap(px(12.))
-        .child(heading(name.to_owned()))
+        .child(heading(name))
         .child(label(if input {
-            "Input configuration"
+            t!("Input configuration")
         } else {
-            "Output configuration"
+            t!("Output configuration")
         }))
         .child(badge(
             if custom {
-                "Device override"
+                t!("Device override")
             } else {
-                "Using global defaults"
+                t!("Using global defaults")
             },
             theme::PRIMARY,
         ))
         .child(detail(
-            "Saved request",
+            &t!("Saved request"),
             settings::stream_summary(snapshot.audio_settings.backend, saved),
         ));
     let this = cx.entity();
@@ -67,7 +68,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             .flex_wrap()
             .gap(px(6.))
             .child(
-                button("device-use-defaults", "Use defaults")
+                button("device-use-defaults", t!("Use defaults"))
                     .disabled(shell.settings.busy() || !custom)
                     .on_click(move |_, _, cx| {
                         this.update(cx, |shell, cx| {
@@ -83,7 +84,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                     }),
             )
             .child(
-                button("device-override", "Override")
+                button("device-override", t!("Override"))
                     .variant(if custom {
                         ButtonVariant::Primary
                     } else {
@@ -107,13 +108,13 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
             ),
     );
     if draft.audio.backend == moiren_engine::audio_config::AudioBackend::Asio {
-        content = content.child(label("ASIO input and output share one driver session. Their sample rate and buffer requests must agree."));
+        content = content.child(label(t!("ASIO input and output share one driver session. Their sample rate and buffer requests must agree.")));
     }
     if custom {
         content = content.child(settings::stream_editor(shell, Editor::Device, direction, Some(id), cx))
-            .child(label("This complete override stays independent of global defaults. Use defaults removes it when saved."));
+            .child(label(t!("This complete override stays independent of global defaults. Use defaults removes it when saved.")));
     } else {
-        content = content.child(label("This device follows the current global defaults. Choose Override to customize all its stream settings."));
+        content = content.child(label(t!("This device follows the current global defaults. Choose Override to customize all its stream settings.")));
     }
     if let Some(active) = snapshot
         .active_audio_settings
@@ -134,22 +135,22 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 active.effective_output(id)
             };
             content = content
-                .child(heading("Active session"))
+                .child(heading(t!("Active session")))
                 .child(detail(
-                    "Active request",
+                    &t!("Active request"),
                     settings::stream_summary(active.backend, active_stream),
                 ))
-                .child(label("Observed session timing"));
+                .child(label(t!("Observed session timing")));
             for (key, value) in crate::ui::presentation::native_timing_rows(snapshot) {
                 content = content.child(detail(&key, value));
             }
         } else {
-            content = content.child(label(
-                "This device is not bound to the active source/output pair.",
-            ));
+            content = content.child(label(t!(
+                "This device is not bound to the active source/output pair."
+            )));
         }
     }
-    content = content.child(label("Configure never changes routing. Use next start on a device row updates the candidate graph."));
+    content = content.child(label(t!("Configure never changes routing. Use next start on a device row updates the candidate graph.")));
     div()
         .id("device-override-inspector")
         .flex_none()

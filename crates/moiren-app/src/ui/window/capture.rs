@@ -1,5 +1,76 @@
 //! Developer-only capture of the production shell through GPUI's native renderer.
 use super::*;
+use crate::service::test_backend as meter_backend;
+mod mixer_states;
+
+fn meter_service() -> anyhow::Result<ServiceRuntime> {
+    use crate::service::{
+        GraphEdit, InputSelection, ManagedDriver, RunLimit, ServiceGraph, SessionSpec,
+    };
+    use moiren_core::graph::NodeKind;
+    let backend = meter_backend::FakeBackend::default();
+    backend
+        .0
+        .timed_meter_frames
+        .store(96, std::sync::atomic::Ordering::Relaxed);
+    let service = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))?;
+    let handle = service.handle();
+    let mut graph = ServiceGraph::default();
+    for _ in 0..4 {
+        graph
+            .edit(GraphEdit::AddNode {
+                kind: NodeKind::Gain,
+                channels: 2,
+            })
+            .map_err(anyhow::Error::msg)?;
+    }
+    let snapshot = graph.snapshot();
+    let edge = snapshot
+        .graph
+        .edges()
+        .iter()
+        .find(|edge| snapshot.graph.get_node(edge.dst()).unwrap().kind() == NodeKind::Sink)
+        .unwrap();
+    let (mut source, destination) = (edge.src_port(), edge.dst_port());
+    graph
+        .edit(GraphEdit::Disconnect(edge.id()))
+        .map_err(anyhow::Error::msg)?;
+    for node in snapshot.graph.nodes().iter().skip(4) {
+        graph
+            .edit(GraphEdit::Connect {
+                source,
+                destination: node.inputs()[0].id(),
+            })
+            .map_err(anyhow::Error::msg)?;
+        source = node.outputs()[0].id();
+    }
+    graph
+        .edit(GraphEdit::Connect {
+            source,
+            destination,
+        })
+        .map_err(anyhow::Error::msg)?;
+    let snapshot = graph.snapshot();
+    handle
+        .try_request(AppRequest::ReplaceGraph {
+            graph: snapshot.graph,
+            nodes: snapshot.nodes,
+        })
+        .map_err(|error| anyhow::anyhow!("capture graph: {error:?}"))?;
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Tone { frequency_hz: 440. },
+            output_endpoint_id: "capture-output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 0.75,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .map_err(|error| anyhow::anyhow!("capture start: {error:?}"))?;
+    Ok(service)
+}
 
 pub fn run_ui_capture() -> anyhow::Result<()> {
     let directory = std::env::args()
@@ -7,11 +78,24 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| "docs/designs/screenshots/application".into());
     std::fs::create_dir_all(&directory)?;
+    let meter_capture = std::env::var_os("MOIREN_CAPTURE_METERS").is_some();
+    #[cfg(feature = "ui-profiler")]
+    if meter_capture {
+        profiler::set_trace_enabled(true);
+    }
     // Capture presentation without starting hardware or changing its format.
     #[cfg(windows)]
-    let service = ServiceRuntime::spawn_with_driver(crate::service::ManagedDriver::windows())?;
+    let service = if meter_capture {
+        meter_service()?
+    } else {
+        ServiceRuntime::spawn_with_driver(crate::service::ManagedDriver::windows())?
+    };
     #[cfg(not(windows))]
-    let service = ServiceRuntime::spawn()?;
+    let service = if meter_capture {
+        meter_service()?
+    } else {
+        ServiceRuntime::spawn()?
+    };
     let handle = service.handle();
     let initial = crate::ui::state::initial_snapshot(&handle)?;
     let preferences = crate::project::load_preferences().unwrap_or_default();
@@ -27,12 +111,26 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
             // Match production startup so persisted intent and service state
             // agree in captures without writing the user's preferences.
             state.update(cx, |s, _| {
-                s.restore_preferences(&preferences);
+                if !meter_capture { s.restore_preferences(&preferences); }
                 s.dispatch(AppRequest::RefreshCatalog);
             });
+            let displays = cx.displays();
+            for display in &displays { eprintln!("Capture display {:?}: {:?}", display.id(), display.bounds()); }
+            let primary = std::env::var_os("MOIREN_CAPTURE_PRIMARY").is_some();
+            let display = meter_capture.then(|| displays.iter().find(|display| {
+                (display.bounds().origin.x >= px(0.)) == primary
+            }).cloned()).flatten();
+            let bounds = display.as_ref().map(|display| {
+                let bounds = display.bounds();
+                WindowBounds::Windowed(Bounds::new(
+                    bounds.origin + point((bounds.size.width - px(1440.)) / 2., (bounds.size.height - px(900.)) / 2.),
+                    size(px(1440.), px(900.)),
+                ))
+            }).unwrap_or_else(|| WindowBounds::centered(size(px(1440.), px(900.)), cx));
             let (window, shell) = gpui_kit::open_window(
                 WindowOptions {
-                    window_bounds: Some(WindowBounds::centered(size(px(1440.), px(900.)), cx)),
+                    window_bounds: Some(bounds),
+                    display_id: display.map(|display| display.id()),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Moiren · UI capture".into()),
                         appears_transparent: true,
@@ -62,6 +160,40 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                 cx.background_executor()
                     .timer(Duration::from_millis(1200))
                     .await;
+                if meter_capture {
+                    for (name, width, height) in [("comfortable", 1440., 900.), ("compact", 1024., 720.)] {
+                        window.update(cx, |_, window, _| window.resize(size(px(width), px(height)))).unwrap();
+                        cx.background_executor().timer(Duration::from_millis(200)).await;
+                        shell.update(cx, |shell, cx| {
+                            shell.set_page(Page::Mixer, cx);
+                            shell.inspector_open = false;
+                            shell.mixer.width = 160.;
+                            shell.mixer.dock_width = 160.;
+                            cx.notify();
+                        });
+                        #[cfg(feature = "ui-profiler")]
+                        let mut frames = profiler::FrameTimingCollector::new();
+                        cx.background_executor().timer(Duration::from_secs(3)).await;
+                        #[cfg(feature = "ui-profiler")]
+                        mixer::performance::write_platform_frames(
+                            &mut frames, &directory.join(format!("platform-{name}.json")),
+                        ).unwrap();
+                        capture(cx, directory.join(format!("mixer-{name}.png")));
+                    }
+                    shell.update(cx, |shell, cx| {
+                        let snapshot = &shell.state.read(cx).snapshot;
+                        eprintln!("Native capture: phase={:?}, live={}, visible={}, nodes={}", snapshot.phase,
+                            snapshot.graph.nodes.iter().filter(|node| shell.node_meters.channel_levels(node.id).is_some()).count(),
+                            shell.node_meter_points.borrow().len(), snapshot.graph.nodes.len());
+                        shell.mixer.trace.borrow().write(&directory.join("meter-frames.json")).unwrap();
+                    });
+                    if std::env::var_os("MOIREN_CAPTURE_STATES").is_some() {
+                        mixer_states::capture(window, &shell, &directory, &capture, cx)
+                            .await.expect("Mixer state captures");
+                    }
+                    cx.update(|cx| cx.quit());
+                    return;
+                }
                 for (name, width, height) in
                     [("comfortable", 1440., 900.), ("compact", 1024., 720.)]
                 {

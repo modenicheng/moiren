@@ -257,6 +257,7 @@ fn native_owner<S: ProcessingSample>(
 ) {
     // Match the physical and virtual paths' scheduling class: this thread
     // paces exclusive native deadlines. Registration failure is non-fatal.
+    #[cfg(windows)]
     let _mmcss = crate::owner::Mmcss::audio();
     let native = (request.factory)();
     let mut stream = match native {

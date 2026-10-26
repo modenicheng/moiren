@@ -463,6 +463,38 @@ fn compressor_properties_restore_and_prepare_the_saved_values() {
 }
 
 #[test]
+fn strip_balance_persists_and_older_documents_default_to_center() {
+    let mut document = serde_json::to_value(
+        ProjectDocument::from_graph("Balance", &ServiceGraph::default().snapshot()).unwrap(),
+    )
+    .unwrap();
+    for version in [1, 2] {
+        document["version"] = version.into();
+        document["graph"]["nodes"][0]["mixer"]["balance"] = (-0.75).into();
+        let restored = serde_json::from_value::<ProjectDocument>(document.clone())
+            .unwrap()
+            .migrate()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(restored).unwrap()["graph"]["nodes"][0]["mixer"]["balance"],
+            -0.75
+        );
+        document["graph"]["nodes"][0]["mixer"]
+            .as_object_mut()
+            .unwrap()
+            .remove("balance");
+        let legacy = serde_json::from_value::<ProjectDocument>(document.clone())
+            .unwrap()
+            .migrate()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(legacy).unwrap()["graph"]["nodes"][0]["mixer"]["balance"],
+            0.0
+        );
+    }
+}
+
+#[test]
 fn mixer_layout_and_node_settings_round_trip_with_document_local_ids() {
     let mut service = ServiceGraph::default();
     let id = service.snapshot().nodes[0].id;
@@ -506,7 +538,7 @@ fn mixer_layout_and_node_settings_round_trip_with_document_local_ids() {
     }
     let compatible: ProjectDocument = serde_json::from_value(old).unwrap();
     compatible.validate().unwrap();
-    assert_eq!(compatible.layout.mixer_width, 176.);
+    assert_eq!(compatible.layout.mixer_width, 160.);
     assert!(
         compatible
             .graph

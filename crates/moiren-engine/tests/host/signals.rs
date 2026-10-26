@@ -10,6 +10,54 @@ use moiren_engine::{
 };
 use std::{sync::atomic::Ordering, time::Duration};
 
+#[test]
+fn implicit_ui_level_windows_follow_processing_rate_and_explicit_meter_windows_stay_exact() {
+    for (sample_rate, expected) in [(44_100.0, 183), (48_000.0, 200), (96_000.0, 400)] {
+        let (mut project, input, gain, output) = project();
+        project.processing.engine.processing_sr = sample_rate;
+        project.graph.remove_node(gain).unwrap();
+        project.nodes.remove(&gain);
+        let meter = project.graph.create_node(NodeKind::Meter, 1).unwrap();
+        project.nodes.insert(
+            meter,
+            NodeConfig::Meter(MeterSettings { window_frames: 37 }),
+        );
+        let source = project.graph.get_node(input).unwrap().outputs()[0].id();
+        let destination = project.graph.get_node(output).unwrap().inputs()[0].id();
+        let meter_input = project.graph.get_node(meter).unwrap().inputs()[0].id();
+        let meter_output = project.graph.get_node(meter).unwrap().outputs()[0].id();
+        project
+            .graph
+            .connect(source, meter_input, SendParams::default())
+            .unwrap();
+        project
+            .graph
+            .connect(meter_output, destination, SendParams::default())
+            .unwrap();
+        let host = EngineHost::<f64>::open(HostConfig::default(), project, FakeBackend::default())
+            .unwrap();
+        let observer = host.observer();
+        wait(&observer, |snapshot| snapshot.active_revision == Some(1));
+        let mut implicit = observer.subscribe_level(output).unwrap();
+        let mut explicit = observer.subscribe_level(meter).unwrap();
+        for (subscription, frames) in [(&mut implicit, expected), (&mut explicit, 37)] {
+            wait_until(
+                "level window did not arrive",
+                TIMEOUT.max(Duration::from_secs(10)),
+                || {
+                    let window = subscription.subscriber.read_latest()?;
+                    assert_eq!(window.header().sample_rate, sample_rate);
+                    assert_eq!(
+                        window.header().frame_end - window.header().frame_start,
+                        frames
+                    );
+                    Some(())
+                },
+            );
+        }
+    }
+}
+
 fn spectrum_project() -> (EngineProject, moiren_core::graph::NodeId) {
     let (mut project, input, gain, output) = project();
     project.graph.remove_node(gain).unwrap();

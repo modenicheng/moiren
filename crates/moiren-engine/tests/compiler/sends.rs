@@ -44,6 +44,7 @@ fn mixer_channel_modes_and_faders_render_without_heap_activity() {
                     source,
                     StripConfig {
                         gain: 0.5,
+                        balance: if channels == 2 { 0.0 } else { 0.75 },
                         muted,
                         mode,
                     },
@@ -78,6 +79,111 @@ fn mixer_channel_modes_and_faders_render_without_heap_activity() {
                         assert!(
                             (sample - expected).abs() < 1e-9,
                             "{channels} {mode:?}: {sample} != {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn strip_balance_rejects_nonfinite_and_out_of_range_values() {
+    for balance in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.01, 1.01] {
+        assert!(
+            !StripConfig {
+                balance,
+                ..Default::default()
+            }
+            .valid(2)
+        );
+    }
+    for balance in [-1.0, 0.0, 1.0] {
+        assert!(
+            StripConfig {
+                balance,
+                ..Default::default()
+            }
+            .valid(2)
+        );
+    }
+}
+
+#[test]
+fn strip_balance_follows_channel_transform_and_precedes_gain_for_pre_and_post_sends() {
+    for mode in [
+        ChannelMode::Normal,
+        ChannelMode::Mono,
+        ChannelMode::Solo(0),
+        ChannelMode::Solo(1),
+        ChannelMode::Swap,
+    ] {
+        for balance in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+            for muted in [false, true] {
+                let mut graph = LogicalGraph::new();
+                let source = graph.create_node(NodeKind::Source, 2).unwrap();
+                let pre = graph.create_node(NodeKind::Sink, 2).unwrap();
+                let post = graph.create_node(NodeKind::Sink, 2).unwrap();
+                connect(
+                    &mut graph,
+                    source,
+                    pre,
+                    SendParams {
+                        tap: SendTap::PreFader,
+                        ..SendParams::default()
+                    },
+                );
+                connect(&mut graph, source, post, SendParams::default());
+                let (pre_writer, mut pre_reader) = audio_bridge::<f64>(2, 8, 4096).unwrap();
+                let (post_writer, mut post_reader) = audio_bridge::<f64>(2, 8, 4096).unwrap();
+                let mut bindings = NodeBindings::new();
+                bindings.bind_source(source, ChannelSource(2)).unwrap();
+                bindings.bind_strip(
+                    source,
+                    StripConfig {
+                        gain: 0.25,
+                        balance,
+                        muted,
+                        mode,
+                    },
+                );
+                bindings.bind_sink(pre, pre_writer).unwrap();
+                bindings.bind_sink(post, post_writer).unwrap();
+                let mut compiled = compile(&graph, bindings, config()).unwrap();
+                let (result, counts) = allocation::track_allocations(|| compiled.engine.render(4));
+                result.unwrap();
+                assert_eq!(counts, (0, 0));
+                let mut before = [0.; 8];
+                let mut after = [0.; 8];
+                pre_reader.read_interleaved(&mut before).unwrap();
+                post_reader.read_interleaved(&mut after).unwrap();
+                let transformed = match mode {
+                    ChannelMode::Normal => [0.1, 0.2],
+                    ChannelMode::Mono => [0.15, 0.15],
+                    ChannelMode::Solo(0) => [0.1, 0.1],
+                    ChannelMode::Solo(1) => [0.2, 0.2],
+                    ChannelMode::Swap => [0.2, 0.1],
+                    _ => unreachable!(),
+                };
+                for frame in 0..4 {
+                    for channel in 0..2 {
+                        let attenuation = if channel == 0 {
+                            1.0 - balance.max(0.0)
+                        } else {
+                            1.0 + balance.min(0.0)
+                        };
+                        let expected = if muted {
+                            0.0
+                        } else {
+                            transformed[channel] * attenuation
+                        };
+                        assert!(
+                            (before[frame * 2 + channel] - expected).abs() < 1e-12,
+                            "{mode:?} balance {balance}, channel {channel}: PRE differs"
+                        );
+                        assert!(
+                            (after[frame * 2 + channel] - expected * 0.25).abs() < 1e-12,
+                            "{mode:?} balance {balance}, channel {channel}: POST differs"
                         );
                     }
                 }

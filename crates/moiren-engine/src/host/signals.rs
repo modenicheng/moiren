@@ -263,10 +263,15 @@ struct Directory {
 }
 pub(crate) struct SignalHub {
     directory: Mutex<Directory>,
+    pump_topic_checks: usize,
 }
 impl SignalHub {
     pub(crate) fn new(config: moiren_signal::BusConfig) -> Result<Self, String> {
         Ok(Self {
+            // The bus visits directory slots, including empty ones, and needs
+            // separate visits to snapshot Latest and deliver each recipient.
+            // A fixed small budget makes sparse, large-capacity hosts stale.
+            pump_topic_checks: config.max_topics.saturating_mul(4),
             directory: Mutex::new(Directory {
                 bus: Bus::new(config).map_err(|error| error.to_string())?,
                 generation: 0,
@@ -353,7 +358,7 @@ impl SignalHub {
                 .map_err(|e| BackendError::Failed(e.to_string()))?;
             let window_frames = match project.nodes.get(&node.id()) {
                 Some(NodeConfig::Meter(settings)) => settings.window_frames,
-                _ => crate::meter::DEFAULT_WINDOW_FRAMES,
+                _ => crate::meter::ui_window_frames(project.processing.engine.processing_sr),
             };
             let meter = SignalLevelMeter::new(port.channels(), window_frames, publisher)
                 .map_err(|e| BackendError::Failed(e.to_string()))?;
@@ -578,10 +583,27 @@ impl SignalHub {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         directory.bus.pump(moiren_signal::PumpBudget {
-            topic_checks: 1024,
+            topic_checks: self.pump_topic_checks,
             deliveries: 256,
             copy_bytes: 1024 * 1024,
         });
+    }
+    pub(crate) fn poll_interval(&self, idle: std::time::Duration) -> std::time::Duration {
+        if self.has_demand() {
+            // Both the engine and compatibility bridge can queue a meter
+            // window. One millisecond per stage leaves room for analysis
+            // windows and scheduler jitter within a 120 Hz presentation frame.
+            idle.min(std::time::Duration::from_millis(1))
+        } else {
+            idle
+        }
+    }
+    pub(crate) fn has_demand(&self) -> bool {
+        self.directory
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .bus
+            .has_business_demand()
     }
     pub(crate) fn prune(&self, project: Option<&EngineProject>) {
         let mut directory = self
@@ -772,4 +794,65 @@ fn prune_slots<T>(
         *slot.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
         false
     });
+}
+
+#[cfg(test)]
+mod scheduling_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn sparse_large_directory_delivers_a_level_in_one_pump() {
+        let hub = SignalHub::new(moiren_signal::BusConfig {
+            max_topics: 8192,
+            ..Default::default()
+        })
+        .unwrap();
+        let (control, mut host) = hub.create_host(1, 1).unwrap();
+        let (topic, mut subscriber) = {
+            let mut directory = hub.directory.lock().unwrap();
+            let topic = directory
+                .bus
+                .register_latest_value("sparse/level", 0.0_f32)
+                .unwrap();
+            let subscriber = directory.bus.subscribe(&topic, Default::default()).unwrap();
+            (topic, subscriber)
+        };
+        let key = control.new_binding().unwrap();
+        let publisher = control.prepare(&topic, key).unwrap();
+        let update = control.prepare_update(&[publisher.erase()]).unwrap();
+        let operation = update.op_bindings(key).unwrap();
+        drop(host.activate(update).unwrap());
+        host.begin_block();
+        host.scope(&operation)
+            .publish(&publisher.handle(), 0.75)
+            .unwrap();
+        hub.pump();
+        assert_eq!(
+            subscriber.read_latest().map(|value| value.value),
+            Some(0.75)
+        );
+    }
+
+    #[test]
+    fn high_rate_polling_follows_demand_and_respects_a_faster_configured_poll() {
+        let hub = SignalHub::new(Default::default()).unwrap();
+        let idle = Duration::from_millis(20);
+        assert_eq!(hub.poll_interval(idle), idle);
+        let subscriber = {
+            let mut directory = hub.directory.lock().unwrap();
+            let topic = directory
+                .bus
+                .register_latest_value("scheduling-test", 0.0_f32)
+                .unwrap();
+            directory.bus.subscribe(&topic, Default::default()).unwrap()
+        };
+        assert_eq!(hub.poll_interval(idle), Duration::from_millis(1));
+        assert_eq!(
+            hub.poll_interval(Duration::from_millis(1)),
+            Duration::from_millis(1)
+        );
+        drop(subscriber);
+        assert_eq!(hub.poll_interval(idle), idle);
+    }
 }

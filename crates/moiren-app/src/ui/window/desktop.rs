@@ -83,7 +83,7 @@ impl PresentationSnapshot {
         shell.mixer.width = self.mixer_width;
         shell.mixer.dock_width = self.mixer_dock_width;
         shell.pending_node_spawn = self.pending_node_spawn;
-        shell.node_name_selection = None;
+        shell.node_name_editing = None;
         shell.selected_node = self.selected_node;
         shell.selected_route = self.selected_route;
         shell.sidebar_open = self.sidebar_open;
@@ -286,6 +286,8 @@ impl Desktop {
         content: Size<Pixels>,
         cx: &Context<Self>,
     ) -> (WindowBounds, Option<DisplayId>) {
+        #[cfg(not(windows))]
+        let _ = anchor;
         #[cfg(windows)]
         if let Some((monitor, work, scale)) =
             native::monitor_geometry_at(anchor.x + anchor.width / 2., anchor.y + anchor.height / 2.)
@@ -445,7 +447,8 @@ impl Desktop {
         if let Some(shell) = self.shell.clone() {
             let saved = shell.update(cx, |shell, cx| {
                 shell.finish_project_load(cx);
-                if changed || shell.pump_meters(cx) {
+                let meters_changed = !shell.meters_frame_active(cx) && shell.pump_meters(cx);
+                if changed || meters_changed {
                     cx.notify();
                 }
                 shell.window_state.clone()
@@ -455,8 +458,8 @@ impl Desktop {
             }
         }
         if let Some(view) = self.flyout_view.clone() {
-            let pumped = view.update(cx, |flyout, cx| {
-                if changed || flyout.pump_meters(cx) {
+            let pumped = view.update(cx, |_flyout, cx| {
+                if changed {
                     cx.notify();
                 }
             });
@@ -548,6 +551,7 @@ fn restored_placement(
 }
 
 /// A rectangle in physical screen pixels (Win32 virtual-screen space).
+#[cfg(any(windows, all(test, feature = "gpui-test")))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct PhysicalRect {
     pub x: f64,
@@ -557,6 +561,7 @@ pub(super) struct PhysicalRect {
 }
 
 /// Monitor geometry used to anchor the tray flyout.
+#[cfg(any(windows, all(test, feature = "gpui-test")))]
 #[derive(Clone, Copy)]
 struct MonitorGeometry {
     /// Full monitor rectangle, physical pixels.
@@ -572,6 +577,7 @@ struct MonitorGeometry {
 /// nearest the icon, clamped into the work area. Returns the physical rect
 /// and the matched monitor's scale; None when no monitor contains the
 /// anchor (topology changed mid-flight).
+#[cfg(any(windows, all(test, feature = "gpui-test")))]
 fn tray_flyout_bounds(
     anchor: &super::super::tray::TrayAnchor,
     content: Size<Pixels>,

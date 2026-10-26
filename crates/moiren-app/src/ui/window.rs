@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use rust_i18n::t;
 
 use super::app_view;
 use super::monitoring::MeterSubscriptions;
@@ -69,6 +70,7 @@ pub fn run() -> anyhow::Result<()> {
 fn run_app(handle: AppHandle) -> anyhow::Result<()> {
     let initial = super::state::initial_snapshot(&handle)?;
     let preferences = crate::project::load_preferences().unwrap_or_default();
+    crate::i18n::apply(preferences.language);
     gpui_kit::application()
         .with_assets(ActionAssets)
         .run(move |cx| {
@@ -142,12 +144,18 @@ pub struct StudioShell {
     camera: Camera,
     node_positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
     node_drag: Option<(moiren_core::graph::NodeId, f32, f32)>,
+    /// Multi-selection on the graph canvas; `selected_node` is the primary
+    /// (last-clicked) member that drives the inspector.
+    selected_nodes: std::collections::BTreeSet<moiren_core::graph::NodeId>,
+    /// Active rubber-band drag; see [`graph::SelectionDrag`].
+    selection_drag: Option<graph::SelectionDrag>,
     graph_focus: FocusHandle,
     connection_drag: Option<graph::ConnectionDrag>,
     pending_node_spawn: Option<graph::PendingNodeSpawn>,
     node_search: Entity<component::input::InputState>,
     node_name: Entity<component::input::InputState>,
-    node_name_selection: Option<moiren_core::graph::NodeId>,
+    /// Node whose label is being edited inline in the inspector.
+    node_name_editing: Option<moiren_core::graph::NodeId>,
     hand_tool: bool,
     matrix_scroll: ScrollHandle,
     mixer_scroll: ScrollHandle,
@@ -240,14 +248,30 @@ impl StudioShell {
             },
         )
         .detach();
-        let node_search =
-            cx.new(|cx| component::input::InputState::new(window, cx).placeholder("Search nodes"));
+        let node_search = cx.new(|cx| {
+            component::input::InputState::new(window, cx).placeholder(t!("Search nodes"))
+        });
         cx.subscribe(
             &node_search,
             |_, _, _: &component::input::InputEvent, cx| cx.notify(),
         )
         .detach();
         let node_name = cx.new(|cx| component::input::InputState::new(window, cx));
+        cx.subscribe(
+            &node_name,
+            |shell, _, event: &component::input::InputEvent, cx| {
+                match event {
+                    component::input::InputEvent::PressEnter { .. } => {
+                        shell.confirm_node_rename(cx);
+                    }
+                    // Clicking elsewhere commits the edit, like the compressor
+                    // fields; explicit cancel is the ✗ button.
+                    component::input::InputEvent::Blur => shell.confirm_node_rename(cx),
+                    _ => {}
+                }
+            },
+        )
+        .detach();
         let meters = MeterSubscriptions::new(state.read(cx).handle.clone());
         let node_meters = super::monitoring::NodeMeters::new(state.read(cx).handle.clone());
         let preferences = crate::project::load_preferences().unwrap_or_default();
@@ -281,7 +305,7 @@ impl StudioShell {
             gain_slider,
             pan_slider,
             project_path: None,
-            project_name: "Untitled session".into(),
+            project_name: t!("Untitled session").into(),
             project_message: None,
             project_busy: false,
             pending_project: None,
@@ -291,12 +315,14 @@ impl StudioShell {
             camera: Camera::default(),
             node_positions: Default::default(),
             node_drag: None,
+            selected_nodes: Default::default(),
+            selection_drag: None,
             graph_focus: cx.focus_handle(),
             connection_drag: None,
             pending_node_spawn: None,
             node_search,
             node_name,
-            node_name_selection: None,
+            node_name_editing: None,
             hand_tool: false,
             matrix_scroll: ScrollHandle::new(),
             mixer_scroll: ScrollHandle::new(),
@@ -380,7 +406,9 @@ impl StudioShell {
                             changed
                         });
                         shell.finish_project_load(cx);
-                        if changed || shell.pump_meters(cx) {
+                        let meters_changed =
+                            !shell.meters_frame_active(cx) && shell.pump_meters(cx);
+                        if changed || meters_changed {
                             cx.notify();
                         }
                     })
@@ -396,11 +424,14 @@ impl StudioShell {
     /// Whether any meter observation is on screen right now. While true the
     /// render loop requests animation frames so meter motion runs at the
     /// display refresh rate.
-    fn meters_frame_active(&self) -> bool {
+    fn meters_frame_active(&self, cx: &App) -> bool {
+        let snapshot = &self.state.read(cx).snapshot;
         self.presentation.visible
             && !self.presentation.minimized
             && !self.settings_open
             && matches!(self.presentation.page, Page::Graph | Page::Mixer)
+            && snapshot.phase == SessionPhase::Running
+            && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision)
     }
 
     /// Refresh every meter observation once: reads the latest windows,
@@ -411,7 +442,9 @@ impl StudioShell {
     /// ballistics motion alone does not, because animation frames (not
     /// notify) carry it.
     pub(super) fn pump_meters(&mut self, cx: &App) -> bool {
-        let visible = self.meters_frame_active();
+        self.meters.set_preferences(self.preferences.meters);
+        self.node_meters.set_preferences(self.preferences.meters);
+        let visible = self.meters_frame_active(cx);
         let points = self.meter_points.get();
         let meter_changed = self.meters.update_points(
             &self.state.read(cx).snapshot,
@@ -526,10 +559,18 @@ mod tray_mixer;
 
 impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "gpui-test")]
+        self.mixer
+            .trace
+            .borrow_mut()
+            .begin(self.presentation.page == Page::Mixer);
+        #[cfg(feature = "gpui-test")]
+        let visible_meter_count = self.node_meter_points.borrow().len();
         self.finish_settings_save(cx);
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
         self.sync_node_name(window, cx);
+        self.keep_graph_focus(window, cx);
         self.sync_export_controls(window, cx);
         self.sync_mixer_controls(window, cx);
         self.sync_compressor_controls(window, cx);
@@ -545,12 +586,16 @@ impl Render for StudioShell {
         self.compact = compact;
         let visible =
             window.is_visible() && matches!(self.presentation.page, Page::Graph | Page::Mixer);
-        if self.meters_frame_active() {
+        if self.meters_frame_active(cx) {
+            #[cfg(feature = "gpui-test")]
+            let meter_began = std::time::Instant::now();
             // Frame-driven meters: advance observations every display frame
             // (this frame builds from the pumped state) and keep the
             // vsync loop running. Must run before the per-frame reset of
             // `meter_points` below so visibility comes from the last frame.
             self.pump_meters(cx);
+            #[cfg(feature = "gpui-test")]
+            self.mixer.trace.borrow_mut().add(meter_began.elapsed());
             window.request_animation_frame();
         }
         self.refresh_observation_nodes(cx);
@@ -592,7 +637,7 @@ impl Render for StudioShell {
         let error_strip = error.map(|error| {
             let log_path = crate::logging::log_path()
                 .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "Application file logging is unavailable".into());
+                .unwrap_or_else(|| t!("Application file logging is unavailable").into());
             div()
                 .id("error-strip")
                 .flex_none()
@@ -606,11 +651,11 @@ impl Render for StudioShell {
                     div()
                         .pt(px(2.))
                         .text_color(theme::TEXT)
-                        .child(format!("Diagnostics: {log_path}")),
+                        .child(t!("Diagnostics: %{log_path}", log_path = log_path)),
                 )
                 .gpui_test_observe()
         });
-        div()
+        let view = div()
             .id("studio-shell")
             .relative()
             .size_full()
@@ -633,11 +678,40 @@ impl Render for StudioShell {
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
             .when(self.settings_open, |v| {
                 v.child(settings::overlay(self, window, cx))
-            })
+            });
+        #[cfg(feature = "gpui-test")]
+        self.mixer.trace.borrow_mut().finish(visible_meter_count);
+        view
     }
 }
 
 impl StudioShell {
+    /// Keeps Delete/Escape alive on the graph page: whenever no text field of
+    /// the page (and no modal) owns focus, the canvas key handler gets it back.
+    /// Without this, clicking any button or panel leaves keystrokes routed to
+    /// a stale focus target and Delete appears dead.
+    fn keep_graph_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_open
+            || self.presentation.page != Page::Graph
+            || self.graph_focus.contains_focused(window, cx)
+        {
+            return;
+        }
+        let focused = window.focused(cx);
+        let text_input_focused = focused.is_some_and(|focused| {
+            self.node_search.read(cx).focus_handle(cx) == focused
+                || self.node_name.read(cx).focus_handle(cx) == focused
+                || self
+                    .compressor
+                    .inputs
+                    .values()
+                    .any(|input| input.read(cx).focus_handle(cx) == focused)
+        });
+        if !text_input_focused {
+            window.focus(&self.graph_focus, cx);
+        }
+    }
+
     fn refresh_observation_nodes(&mut self, cx: &App) {
         use moiren_core::graph::NodeKind;
         let snapshot = &self.state.read(cx).snapshot;

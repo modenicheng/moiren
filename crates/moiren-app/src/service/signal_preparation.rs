@@ -61,7 +61,7 @@ impl SignalPreparation {
             let publisher = self.control.prepare(topic, self.control.new_binding()?)?;
             let observer = SignalLevelMeter::new(
                 graph.get_port(port)?.channels(),
-                moiren_engine::meter::DEFAULT_WINDOW_FRAMES,
+                moiren_engine::meter::ui_window_frames(config.engine.processing_sr),
                 publisher,
             )?;
             match graph.get_port(port)?.role() {

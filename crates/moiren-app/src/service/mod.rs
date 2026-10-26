@@ -18,6 +18,9 @@ mod settings_tests;
 mod signal_preparation;
 mod signals;
 mod startup;
+#[cfg(any(test, feature = "gpui-test"))]
+#[path = "managed/test_backend.rs"]
+pub(crate) mod test_backend;
 #[cfg(windows)]
 mod windows;
 pub use backend::*;
@@ -25,7 +28,7 @@ pub use driver::BackendDriver;
 pub use exports::*;
 pub use graph::{
     BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphNodeState,
-    GraphPreparation, GraphSnapshot, MixerState, ServiceGraph, validate_node_state,
+    GraphPreparation, GraphSnapshot, MixerState, ServiceGraph, default_label, validate_node_state,
 };
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;

@@ -1,12 +1,13 @@
 //! Visible, session-scoped source/output Peak and RMS observations.
 //!
-//! These are the engine's two observation points. They must not be presented
-//! as independent measurements of intermediate Gain, Pan, or other nodes.
+//! Legacy source/output topics and managed per-node topics share lifecycle
+//! validation and display envelopes.
 
 use std::time::{Duration, Instant};
 
 use moiren_engine::meter::signal::{AudioWindow, ChannelLevel};
 use moiren_signal::{PublisherStatus, Topic, TopicLifecycle};
+use rust_i18n::t;
 
 use crate::service::{
     AppHandle, AppSnapshot, InputSelection, LevelTopic, SessionGeneration, SessionPhase,
@@ -18,34 +19,15 @@ use super::signals::{PresentationDemand, VisibleSignal};
 /// the audio thread or publisher is still advancing.
 const STALE_AFTER: Duration = Duration::from_millis(500);
 
-// Display ballistics. Raw windows arrive at the analysis cadence (~100 Hz
-// with the default 480-frame window); these time constants interpolate the
-// readings onto the display frame rate so the meter motion is continuous
-// between publications instead of stepping at the window rate. Calibrated to
-// standard meter practice: a ~10 ms RMS window tracks the program envelope
-// (bass cycles below 100 Hz are longer than the window), so the display must
-// integrate it, not pass it through.
-/// RMS rise time constant toward louder readings. Smooths window-RMS
-/// envelope ripple (~15 dB at 5 Hz) while keeping a VU-like transient kick.
-const RMS_ATTACK: Duration = Duration::from_millis(150);
-/// RMS fall time constant toward quieter readings. A one-pole fall in the
-/// linear-amplitude domain is a constant dB/s glide: 700 ms ≈ 12.4 dB/s,
-/// matching standard peak-program meters (DIN 20 dB/1.7 s ≈ 11.8 dB/s).
-const RMS_RELEASE: Duration = Duration::from_millis(700);
-/// How long the peak marker holds its maximum before starting to fall. Kept
-/// short so the marker tracks the recent peak a few dB above instantaneous
-/// readings, the way consumer peak bars appear, instead of pinning at the
-/// running maximum of the last second.
-const PEAK_HOLD: Duration = Duration::from_millis(500);
-/// Peak marker fall speed once the hold expires, in dB per second.
-const PEAK_FALL_DB_PER_S: f32 = 30.;
-/// Peak-bar fallback rate. The bar fill rises with the window peak reading
-/// and falls immediately — never holds — at the IEC 60268-10 type I (DIN)
-/// programme-meter rate: 20 dB in 1.7 s ≈ 11.8 dB/s, so the fill keeps
-/// moving with the program while the marker remembers the recent maximum.
-const BAR_FALL_DB_PER_S: f32 = 11.8;
-/// Display floor for falling values (−120 dBFS ≈ digital zero).
-const DISPLAY_FLOOR_DB: f32 = -120.;
+/// Keep brief visibility changes from recreating subscriptions and fencing
+/// fresh publications while the graph canvas is panned or zoomed.
+const SUBSCRIPTION_GRACE: Duration = Duration::from_millis(750);
+
+mod ballistics;
+use crate::project::MeterDisplayPreferences;
+use ballistics::ChannelBallistics;
+#[cfg(test)]
+use ballistics::{PEAK_HOLD, RMS_ATTACK, RMS_RELEASE};
 
 /// Ballistics-processed presentation reading for one channel: the moving
 /// peak-programme bar fill, the held recent-maximum marker, and the smoothed
@@ -55,95 +37,6 @@ pub struct DisplayLevel {
     pub bar: f32,
     pub marker: f32,
     pub rms: f32,
-}
-
-#[derive(Debug, Clone)]
-struct ChannelBallistics {
-    bar: f32,
-    rms: f32,
-    marker: f32,
-    hold_until: Option<Instant>,
-    ticked_at: Option<Instant>,
-}
-
-impl ChannelBallistics {
-    fn new() -> Self {
-        Self {
-            bar: 0.,
-            rms: 0.,
-            marker: 0.,
-            hold_until: None,
-            ticked_at: None,
-        }
-    }
-
-    /// Advance toward `raw`. The first observation snaps to it; afterwards
-    /// the bar rises instantly and falls at a constant dB rate without any
-    /// hold, the marker rises instantly then holds and falls, and RMS
-    /// follows asymmetric attack/release time constants.
-    fn observe(&mut self, raw: ChannelLevel, now: Instant) {
-        let Some(ticked_at) = self.ticked_at else {
-            self.bar = raw.peak;
-            self.rms = raw.rms;
-            self.marker = raw.peak;
-            self.hold_until = Some(now + PEAK_HOLD);
-            self.ticked_at = Some(now);
-            return;
-        };
-        let dt = now.saturating_duration_since(ticked_at);
-        let tau = if raw.rms >= self.rms {
-            RMS_ATTACK
-        } else {
-            RMS_RELEASE
-        };
-        let alpha = 1. - (-dt.as_secs_f32() / tau.as_secs_f32()).exp();
-        self.rms += (raw.rms - self.rms) * alpha;
-        self.bar = if raw.peak >= self.bar {
-            raw.peak
-        } else {
-            fall_db_at(self.bar, dt, BAR_FALL_DB_PER_S)
-        };
-        match self.hold_until {
-            None => {
-                self.marker = raw.peak;
-                self.hold_until = Some(now + PEAK_HOLD);
-            }
-            Some(_) if raw.peak >= self.marker => {
-                self.marker = raw.peak;
-                self.hold_until = Some(now + PEAK_HOLD);
-            }
-            // The anchor is the hold deadline until it expires, then the
-            // instant the fall began, so the fall rate is continuous across
-            // ticks and starts exactly when the hold ends.
-            Some(anchor) if now < anchor => {}
-            Some(anchor) => {
-                self.marker = fall_db_at(
-                    self.marker,
-                    now.saturating_duration_since(anchor),
-                    PEAK_FALL_DB_PER_S,
-                );
-                self.hold_until = Some(now);
-            }
-        }
-        self.ticked_at = Some(now);
-    }
-
-    fn level(&self) -> DisplayLevel {
-        DisplayLevel {
-            bar: self.bar,
-            marker: self.marker,
-            rms: self.rms,
-        }
-    }
-}
-
-fn fall_db_at(value: f32, dt: Duration, db_per_s: f32) -> f32 {
-    let db = if value <= 0. {
-        DISPLAY_FLOOR_DB
-    } else {
-        (20. * value.log10()).max(DISPLAY_FLOOR_DB)
-    };
-    10f32.powf((db - db_per_s * dt.as_secs_f32()).max(DISPLAY_FLOOR_DB) / 20.)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +75,7 @@ pub struct MeterSubscriptions {
     pub output_status: MeterStatus,
     handle: AppHandle,
     session: Option<(SessionGeneration, InputSelection)>,
+    settings: MeterDisplayPreferences,
     input_subscription: Option<MeterSubscription>,
     output_subscription: Option<MeterSubscription>,
 }
@@ -195,9 +89,14 @@ impl MeterSubscriptions {
             output_status: MeterStatus::Stopped,
             handle,
             session: None,
+            settings: MeterDisplayPreferences::default(),
             input_subscription: None,
             output_subscription: None,
         }
+    }
+
+    pub fn set_preferences(&mut self, settings: MeterDisplayPreferences) {
+        self.settings = settings;
     }
 
     /// Poll off the audio thread. The caller combines active page, window,
@@ -300,11 +199,13 @@ impl MeterSubscriptions {
             }
             let mut publication = false;
             if let Some(subscription) = self.input_subscription.as_mut() {
+                subscription.settings = self.settings;
                 publication |= subscription.poll(now);
                 self.input = stereo_levels(subscription.levels.as_deref());
                 self.input_status = subscription.status.clone();
             }
             if let Some(subscription) = self.output_subscription.as_mut() {
+                subscription.settings = self.settings;
                 publication |= subscription.poll(now);
                 self.output = stereo_levels(subscription.levels.as_deref());
                 self.output_status = subscription.status.clone();
@@ -381,6 +282,7 @@ struct MeterSubscription {
     levels: Option<Box<[ChannelLevel]>>,
     channels: usize,
     status: MeterStatus,
+    settings: MeterDisplayPreferences,
     ballistics: Vec<ChannelBallistics>,
     display: Option<Box<[DisplayLevel]>>,
 }
@@ -388,15 +290,20 @@ struct MeterSubscription {
 pub struct NodeMeters {
     handle: AppHandle,
     generation: Option<SessionGeneration>,
+    settings: MeterDisplayPreferences,
     subscriptions: std::collections::BTreeMap<moiren_core::graph::NodeId, MeterSubscription>,
     clips: std::collections::BTreeMap<moiren_core::graph::NodeId, ClipHold>,
+    /// Nodes seen visible recently; subscriptions outlive the visible set by
+    /// [`SUBSCRIPTION_GRACE`] instead of flapping with per-frame visibility.
+    seen: std::collections::BTreeMap<moiren_core::graph::NodeId, Instant>,
 }
 
 #[derive(Default)]
-struct ClipHold([bool; 2]);
+struct ClipHold(Vec<bool>);
 
 impl ClipHold {
     fn observe(&mut self, levels: &[ChannelLevel]) {
+        self.0.resize(levels.len(), false);
         for (clip, level) in self.0.iter_mut().zip(levels) {
             *clip |= level.peak >= 1.;
         }
@@ -408,9 +315,15 @@ impl NodeMeters {
         Self {
             handle,
             generation: None,
+            settings: MeterDisplayPreferences::default(),
             subscriptions: Default::default(),
             clips: Default::default(),
+            seen: Default::default(),
         }
+    }
+
+    pub fn set_preferences(&mut self, settings: MeterDisplayPreferences) {
+        self.settings = settings;
     }
 
     pub fn update(
@@ -418,16 +331,35 @@ impl NodeMeters {
         snapshot: &AppSnapshot,
         visible: &std::collections::BTreeSet<moiren_core::graph::NodeId>,
     ) -> bool {
+        self.update_at(snapshot, visible, Instant::now())
+    }
+
+    pub fn update_at(
+        &mut self,
+        snapshot: &AppSnapshot,
+        visible: &std::collections::BTreeSet<moiren_core::graph::NodeId>,
+        now: Instant,
+    ) -> bool {
         if self.generation != Some(snapshot.generation) {
             self.subscriptions.clear();
             self.clips.clear();
+            self.seen.clear();
             self.generation = Some(snapshot.generation);
         }
         let active = snapshot.phase == SessionPhase::Running
             && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision);
+        for id in visible {
+            self.seen.insert(*id, now);
+        }
+        self.seen.retain(|id, seen| {
+            snapshot.graph.node(*id).is_some()
+                && now.saturating_duration_since(*seen) < SUBSCRIPTION_GRACE
+        });
         let before = self.subscriptions.len();
         self.subscriptions.retain(|id, _| {
-            active && visible.contains(id) && snapshot.signal_topics.node_levels.contains_key(id)
+            active
+                && self.seen.contains_key(id)
+                && snapshot.signal_topics.node_levels.contains_key(id)
         });
         self.clips
             .retain(|id, _| snapshot.graph.node(*id).is_some());
@@ -435,33 +367,33 @@ impl NodeMeters {
         if !active {
             return changed;
         }
-        let now = Instant::now();
-        for id in visible {
-            let Some(topic) = snapshot.signal_topics.node_levels.get(id) else {
+        for (id, _) in self.seen.clone() {
+            let Some(topic) = snapshot.signal_topics.node_levels.get(&id) else {
                 continue;
             };
             let Some(channels) = snapshot
                 .graph
                 .graph
-                .get_node(*id)
+                .get_node(id)
                 .ok()
                 .map(|node| node.channels())
             else {
                 continue;
             };
-            let subscription = self.subscriptions.entry(*id).or_insert_with(|| {
+            let subscription = self.subscriptions.entry(id).or_insert_with(|| {
                 MeterSubscription::new(self.handle.clone(), topic.clone(), channels)
             });
             if subscription.topic != *topic || subscription.channels != channels {
                 *subscription =
                     MeterSubscription::new(self.handle.clone(), topic.clone(), channels);
-                self.clips.remove(id);
+                self.clips.remove(&id);
             }
             let status = subscription.status.clone();
+            subscription.settings = self.settings;
             let publication = subscription.poll(now);
             changed |= publication || subscription.status != status;
             if publication && let Some(levels) = subscription.levels.as_deref() {
-                self.clips.entry(*id).or_default().observe(levels);
+                self.clips.entry(id).or_default().observe(levels);
             }
         }
         changed
@@ -480,6 +412,12 @@ impl NodeMeters {
             .and_then(|subscription| subscription.display.as_deref())
     }
 
+    pub fn raw_levels(&self, id: moiren_core::graph::NodeId) -> Option<&[ChannelLevel]> {
+        self.subscriptions
+            .get(&id)
+            .and_then(|subscription| subscription.levels.as_deref())
+    }
+
     pub fn status(&self, id: moiren_core::graph::NodeId) -> MeterStatus {
         self.subscriptions
             .get(&id)
@@ -488,7 +426,18 @@ impl NodeMeters {
     }
 
     pub fn clips(&self, id: moiren_core::graph::NodeId) -> [bool; 2] {
-        self.clips.get(&id).map(|hold| hold.0).unwrap_or_default()
+        let clips = self.channel_clips(id);
+        [
+            clips.first().copied().unwrap_or(false),
+            clips.get(1).copied().unwrap_or(false),
+        ]
+    }
+
+    pub fn channel_clips(&self, id: moiren_core::graph::NodeId) -> &[bool] {
+        self.clips
+            .get(&id)
+            .map(|hold| hold.0.as_slice())
+            .unwrap_or_default()
     }
 
     pub fn reset_clip(&mut self, id: moiren_core::graph::NodeId) {
@@ -507,6 +456,7 @@ impl MeterSubscription {
             levels: None,
             channels,
             status: MeterStatus::Waiting,
+            settings: MeterDisplayPreferences::default(),
             ballistics: Vec::new(),
             display: None,
         }
@@ -514,7 +464,7 @@ impl MeterSubscription {
 
     fn poll(&mut self, now: Instant) -> bool {
         let published = self.poll_windows(now);
-        self.advance_display(now);
+        self.advance_display(now, published);
         published
     }
 
@@ -530,7 +480,9 @@ impl MeterSubscription {
         };
         if let Err(error) = self.visible.update_demand(demand) {
             self.levels = None;
-            self.status = MeterStatus::Error(format!("Meter subscription: {error:?}"));
+            self.status = MeterStatus::Error(
+                t!("Meter subscription: %{error}", error = format!("{error:?}")).to_string(),
+            );
             return false;
         }
         let status = self.topic.status();
@@ -551,7 +503,9 @@ impl MeterSubscription {
             }
             Err(error) => {
                 self.levels = None;
-                self.status = MeterStatus::Error(format!("Meter subscription: {error}"));
+                self.status = MeterStatus::Error(
+                    t!("Meter subscription: %{error}", error = error.to_string()).to_string(),
+                );
                 return false;
             }
         };
@@ -567,7 +521,11 @@ impl MeterSubscription {
                 self.last_window,
             );
             if valid {
-                self.levels = Some(window.elements().to_vec().into_boxed_slice());
+                if let Some(levels) = self.levels.as_deref_mut() {
+                    levels.copy_from_slice(window.elements());
+                } else {
+                    self.levels = Some(window.elements().to_vec().into_boxed_slice());
+                }
                 self.sequence_fence = meta.sequence;
                 self.last_window = Some((header.timeline_epoch, header.frame_end));
                 self.last_delivery = Some(now);
@@ -591,9 +549,10 @@ impl MeterSubscription {
     /// control-side timer), so decay and peak release continue smoothly
     /// between publications; the display is `None` exactly when the raw
     /// observation is.
-    fn advance_display(&mut self, now: Instant) {
+    fn advance_display(&mut self, now: Instant, published: bool) {
         let Some(levels) = self.levels.as_deref() else {
             self.display = None;
+            self.ballistics.clear();
             return;
         };
         if self.ballistics.len() != levels.len()
@@ -622,7 +581,12 @@ impl MeterSubscription {
             .zip(levels)
             .zip(display.iter_mut())
         {
-            channel.observe(*level, now);
+            channel.settings = self.settings;
+            if published {
+                channel.observe(*level, now);
+            } else {
+                channel.advance(now);
+            }
             *shown = channel.level();
         }
     }
@@ -678,7 +642,21 @@ mod tests {
         ]);
         assert_eq!(hold.0, [true, true]);
         hold = ClipHold::default();
-        assert_eq!(hold.0, [false, false]);
+        assert!(hold.0.is_empty());
+    }
+
+    #[test]
+    fn clip_hold_retains_overloads_beyond_the_stereo_pair() {
+        let mut hold = ClipHold::default();
+        let mut levels = [ChannelLevel { peak: 0., rms: 0. }; 6];
+        levels[5].peak = 1.2;
+        hold.observe(&levels);
+        levels[5].peak = 0.;
+        hold.observe(&levels);
+        assert_eq!(
+            hold.0.as_slice(),
+            &[false, false, false, false, false, true]
+        );
     }
 
     #[test]
@@ -714,6 +692,19 @@ mod tests {
         assert_eq!(*projected, levels);
         assert!(<[ChannelLevel; 2]>::try_from(&levels[..1]).is_err());
         assert!(<[ChannelLevel; 2]>::try_from(&levels[..]).is_ok());
+    }
+
+    #[test]
+    fn falling_peak_never_undershoots_the_current_received_target() {
+        let start = Instant::now();
+        let mut channel = ChannelBallistics::new();
+        channel.observe(ChannelLevel { peak: 1., rms: 0. }, start);
+        channel.observe(
+            ChannelLevel { peak: 0.1, rms: 0. },
+            start + Duration::from_secs(10),
+        );
+        assert!(channel.level().bar >= 0.1);
+        assert!(channel.level().marker >= channel.level().bar);
     }
 
     #[test]
@@ -772,13 +763,13 @@ mod tests {
         channel.observe(ChannelLevel { peak: 0.1, rms: 0. }, start + PEAK_HOLD);
         assert!((channel.level().marker - 0.5).abs() < 0.000001);
 
-        // 100 ms into the fall: −6.02 dB fell by 3 dB (30 dB/s).
+        // 100 ms into the fall: −6.02 dB fell by 2 dB (20 dB/s).
         channel.observe(
             ChannelLevel { peak: 0., rms: 0. },
             start + PEAK_HOLD + Duration::from_millis(100),
         );
         let db = 20. * channel.level().marker.max(f32::MIN_POSITIVE).log10();
-        assert!((db - (-6.0206 - 3.)).abs() < 0.01);
+        assert!((db - (-6.0206 - 2.)).abs() < 0.01);
 
         // A later, louder window raises the marker instantly and re-holds.
         channel.observe(
@@ -801,9 +792,9 @@ mod tests {
         );
         let level = channel.level();
         assert!((level.marker - 0.5).abs() < 0.000001, "marker still holds");
-        // 100 ms at 11.8 dB/s below −6.02 dB.
+        // 100 ms at 20 dB/s below −6.02 dB.
         let db = 20. * level.bar.max(f32::MIN_POSITIVE).log10();
-        assert!((db - (-6.0206 - 1.18)).abs() < 0.01, "bar fell to {db} dB");
+        assert!((db - (-6.0206 - 2.)).abs() < 0.01, "bar fell to {db} dB");
 
         // A louder window raises the bar instantly.
         channel.observe(
@@ -914,7 +905,8 @@ mod tests {
             Some(snapshot.graph.candidate_revision);
         let mut meters = NodeMeters::new(handle);
         let visible = [id].into_iter().collect();
-        meters.update(&snapshot, &visible);
+        let now = Instant::now();
+        meters.update_at(&snapshot, &visible, now);
         drain(&mailbox, &mut context);
         assert_eq!(
             snapshot.signal_topics.node_levels[&id].business_subscribers(),
@@ -925,20 +917,28 @@ mod tests {
             0
         );
         std::sync::Arc::make_mut(&mut snapshot.graph).candidate_revision += 1;
-        meters.update(&snapshot, &visible);
+        meters.update_at(&snapshot, &visible, now);
         assert_eq!(
             snapshot.signal_topics.node_levels[&id].business_subscribers(),
             0
         );
         std::sync::Arc::make_mut(&mut snapshot.graph).active_revision =
             Some(snapshot.graph.candidate_revision);
-        meters.update(&snapshot, &visible);
+        meters.update_at(&snapshot, &visible, now);
         drain(&mailbox, &mut context);
         assert_eq!(
             snapshot.signal_topics.node_levels[&id].business_subscribers(),
             1
         );
-        meters.update(&snapshot, &Default::default());
+        // Leaving visibility keeps the subscription for the grace period so a
+        // one-frame viewport flap cannot reset the RT window, then releases it.
+        meters.update_at(&snapshot, &Default::default(), now);
+        assert_eq!(
+            snapshot.signal_topics.node_levels[&id].business_subscribers(),
+            1,
+            "demand survives a short invisibility gap"
+        );
+        meters.update_at(&snapshot, &Default::default(), now + SUBSCRIPTION_GRACE);
         assert_eq!(
             snapshot.signal_topics.node_levels[&id].business_subscribers(),
             0
@@ -1016,12 +1016,14 @@ mod tests {
         let now = Instant::now();
         meters.update_at(&snapshot, true, now);
         drain(&mailbox, &mut context);
-        render(&mut tone.compiled.engine, &mut tone.output, 1);
+        tone.compiled.engine.render(199).unwrap();
+        tone.output.read_interleaved(&mut [0.; 398]).unwrap();
         context.signals.pump_if_due(now).unwrap();
         meters.update_at(&snapshot, true, now);
         assert_eq!(meters.output, None, "partial windows are unknown");
         assert_eq!(meters.output_status, MeterStatus::Waiting);
-        render(&mut tone.compiled.engine, &mut tone.output, 1);
+        tone.compiled.engine.render(1).unwrap();
+        tone.output.read_interleaved(&mut [0.; 2]).unwrap();
         let received = now + Duration::from_millis(5);
         context.signals.pump_if_due(received).unwrap();
         assert!(meters.update_at(&snapshot, true, received));
@@ -1035,7 +1037,17 @@ mod tests {
             "real silence remains a measured zero"
         );
         assert!((right.peak - 0.01).abs() < 0.00001);
-        assert!((right.rms - 0.01 / 2.0_f32.sqrt()).abs() < 0.0001);
+        let expected_rms = ((0..200)
+            .map(|frame| {
+                (std::f64::consts::TAU * 440. * f64::from(frame) / 48_000.)
+                    .sin()
+                    .powi(2)
+            })
+            .sum::<f64>()
+            / 200.)
+            .sqrt()
+            * 0.01;
+        assert!((f64::from(right.rms) - expected_rms).abs() < 0.000001);
         assert_eq!(meters.output_status, MeterStatus::Live);
         assert_eq!(meters.input, None);
         assert_eq!(

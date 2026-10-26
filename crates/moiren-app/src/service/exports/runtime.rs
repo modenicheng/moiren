@@ -10,10 +10,13 @@ use std::{
 
 pub(crate) type DriverStamp = [u64; 5];
 
+// Native adapters and portable fake adapters consume these work records.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) struct Dispatch {
     pub action: ExportAction,
     pub expected: Option<DriverStamp>,
 }
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) struct Work {
     pub actions: Vec<Dispatch>,
     pub revision: Option<u64>,

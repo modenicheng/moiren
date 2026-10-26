@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::*;
 
 pub(in super::super) fn choices<T: Copy + PartialEq + 'static>(
@@ -91,15 +93,15 @@ pub(in super::super) fn stream_editor(
     if audio.backend == AudioBackend::Wasapi {
         let update = update.clone();
         view = view.child(field(
-            "WASAPI mode",
+            &t!("WASAPI mode"),
             choices(
                 shell,
                 editor,
                 &format!("{prefix}-mode"),
                 stream.mode,
                 [
-                    (DeviceMode::Shared, "Shared".into()),
-                    (DeviceMode::Exclusive, "Exclusive".into()),
+                    (DeviceMode::Shared, t!("Shared").into()),
+                    (DeviceMode::Exclusive, t!("Exclusive").into()),
                 ],
                 move |draft, value| update.stream_mut(draft).mode = value,
                 cx,
@@ -108,13 +110,13 @@ pub(in super::super) fn stream_editor(
     }
     let setter = update.clone();
     view = view.child(field(
-        "Requested sample rate",
+        &t!("Requested sample rate"),
         choices(
             shell,
             editor,
             &format!("{prefix}-rate"),
             stream.sample_rate,
-            std::iter::once((None, "Follow processing".into()))
+            std::iter::once((None, t!("Follow processing").into()))
                 .chain(SAMPLE_RATES.map(|rate| (Some(rate), rate_title(rate)))),
             move |draft, value| setter.stream_mut(draft).sample_rate = value,
             cx,
@@ -123,36 +125,41 @@ pub(in super::super) fn stream_editor(
     if audio.backend == AudioBackend::Wasapi {
         let setter = update.clone();
         view = view.child(field(
-            "Client sample format",
+            &t!("Client sample format"),
             choices(
                 shell,
                 editor,
                 &format!("{prefix}-format"),
                 stream.format,
-                SampleFormat::ALL.map(|value| (value, value.title().into())),
+                SampleFormat::ALL.map(|value| (value, t!(value.title()).into())),
                 move |draft, value| setter.stream_mut(draft).format = value,
                 cx,
             ),
         ));
     } else {
-        view = view.child(detail("Sample encoding", "Determined by ASIO driver"));
+        view = view.child(detail(
+            &t!("Sample encoding"),
+            t!("Determined by ASIO driver"),
+        ));
     }
     view.child(field(
-        "Requested device buffer (frames / ms)",
+        &t!("Requested device buffer (frames / ms)"),
         choices(
             shell,
             editor,
             &format!("{prefix}-buffer"),
             stream.buffer_frames,
-            std::iter::once((None, "Driver default".into())).chain(BUFFER_SIZES.map(|frames| {
-                (
-                    Some(frames),
-                    buffer_title(
-                        frames,
-                        stream.sample_rate.unwrap_or(audio.processing.sample_rate),
-                    ),
-                )
-            })),
+            std::iter::once((None, t!("Driver default").into())).chain(BUFFER_SIZES.map(
+                |frames| {
+                    (
+                        Some(frames),
+                        buffer_title(
+                            frames,
+                            stream.sample_rate.unwrap_or(audio.processing.sample_rate),
+                        ),
+                    )
+                },
+            )),
             move |draft, value| update.stream_mut(draft).buffer_frames = value,
             cx,
         ),
@@ -202,16 +209,16 @@ pub(in super::super) fn footer(
                 .text_size(px(theme::TEXT_SM))
                 .text_color(if draft.error.is_some() { theme::DANGER } else { theme::TEXT_MUTED })
                 .child(draft.error.clone().or_else(|| draft.message.clone()).unwrap_or_else(|| {
-                    if draft.dirty() { "Unsaved changes".into() }
-                    else if running { "Saved requests and active audio are shown separately in Diagnostics.".into() }
-                    else { "Audio is stopped. Save keeps it stopped.".into() }
+                    if draft.dirty() { t!("Unsaved changes").into() }
+                    else if running { t!("Saved requests and active audio are shown separately in Diagnostics.").into() }
+                    else { t!("Audio is stopped. Save keeps it stopped.").into() }
                 }))
                 .gpui_test_observe(),
         )
         .child(
             div().flex().flex_wrap().gap(px(8.)).justify_end()
                 .child(
-                    button(SharedString::from(format!("{prefix}-discard")), "Discard changes")
+                    button(SharedString::from(format!("{prefix}-discard")), t!("Discard changes"))
                         .disabled(busy || !draft.dirty())
                         .on_click(move |_, _, cx| this.update(cx, |shell, cx| {
                             *shell.settings.draft_mut(editor) = shell.current_settings_draft(cx);
@@ -219,7 +226,7 @@ pub(in super::super) fn footer(
                         })),
                 )
                 .child(
-                    button(SharedString::from(format!("{prefix}-save")), "Save")
+                    button(SharedString::from(format!("{prefix}-save")), t!("Save"))
                         .variant(if running { ButtonVariant::Secondary } else { ButtonVariant::Primary })
                         .disabled(busy || !draft.dirty())
                         .on_click({
@@ -228,7 +235,7 @@ pub(in super::super) fn footer(
                         }),
                 )
                 .when(running, |view| view.child(
-                    button(SharedString::from(format!("{prefix}-restart")), "Restart Audio")
+                    button(SharedString::from(format!("{prefix}-restart")), t!("Restart Audio"))
                         .variant(ButtonVariant::Primary)
                         .disabled(busy || !needs_restart)
                         .on_click(move |_, _, cx| restart_this.update(cx, |shell, cx| shell.save_audio_settings(editor, true, cx))),

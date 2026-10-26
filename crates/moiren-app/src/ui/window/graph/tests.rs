@@ -228,6 +228,10 @@ fn graph_backspace_in_node_name_edits_text_without_removing_node(
     let frame = canvas_frame(&view, cx);
     cx.simulate_click(node_position(&frame, 1), Modifiers::default());
     render(cx);
+    // Enter the inline rename mode by clicking the name display; the editor
+    // replaces the heading in place.
+    cx.update(|window, cx| window.click("node-name-display", cx));
+    render(cx);
     cx.update(|window, cx| {
         view.update(cx, |shell, cx| {
             shell
@@ -585,7 +589,16 @@ fn selected_graph_inspector_node_keeps_its_level_topic_demanded(cx: &mut gpui_ki
     view.update(cx, |shell, cx| {
         shell.state.update(cx, |state, _| state.poll());
     });
-    wait_until(Duration::from_secs(2), || topic.business_subscribers() == 0);
+    // The subscription survives a short invisibility gap (viewport flaps must
+    // not reset the RT window), then demand releases; drive pumps while
+    // waiting because the closure sees no display frames.
+    wait_until(Duration::from_secs(2), || {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| state.poll());
+            shell.update_node_meters(true, cx);
+        });
+        topic.business_subscribers() == 0
+    });
 
     finish_service(runtime);
 }
@@ -641,7 +654,7 @@ fn node_library_native_drop_uses_camera_world_position_and_opens_only_node_prope
         assert_eq!(shell.state.read(cx).snapshot.graph.active_revision, None);
     });
     cx.update(|window, _| {
-        assert!(window.find("node-name").visible());
+        assert!(window.find("node-name-display").visible());
         assert!(window.try_find("disconnect-route").is_none());
     });
     finish_service(runtime);
@@ -722,6 +735,60 @@ fn graph_fractional_zoom_drag_hand_pan_and_fit_share_rendered_geometry(
 }
 
 #[gpui_kit::test]
+fn graph_rubber_band_selects_then_delete_removes_the_whole_selection(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, _| window.resize(size(px(1440.), px(900.))));
+    view.update(cx, |shell, cx| {
+        let nodes = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .graph
+            .topological_order()
+            .unwrap();
+        for (index, id) in nodes.iter().enumerate() {
+            shell
+                .node_positions
+                .insert(*id, (80. + index as f32 * 230., 60.));
+        }
+        shell.camera = Camera {
+            pan_x: 0.,
+            pan_y: 0.,
+            zoom: 1.,
+            adjusted: true,
+        };
+        shell.sidebar_open = false;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    let frame = canvas_frame(&view, cx);
+    // Band from empty background over the first two node cards only.
+    let start = frame.bounds.origin + point(px(20.), px(10.));
+    let end = frame.bounds.origin + point(px(500.), px(170.));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    // The band selection is applied from the canvas prepaint each frame.
+    render(cx);
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| state.poll());
+        assert_eq!(shell.selected_nodes.len(), 2, "band covers two nodes");
+        assert!(shell.selected_node.is_none(), "no primary from a band");
+    });
+    render(cx);
+    cx.simulate_keystrokes("delete");
+    wait_for_graph(&view, cx, |graph| graph.nodes.len() == 2);
+    view.update(cx, |shell, _| {
+        assert!(shell.selected_nodes.is_empty());
+        assert!(shell.selected_node.is_none());
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
 fn graph_curved_wire_click_after_fit_selects_real_edge_without_changing_topology(
     cx: &mut gpui_kit::TestAppContext,
 ) {
@@ -792,6 +859,7 @@ fn graph_panning_preserves_node_or_wire_selection_and_inspector_visibility(
                     let edge = &graph.edges()[0];
                     let route = (edge.src_port(), edge.dst_port());
                     shell.selected_node = (!wire_selected).then_some(node);
+                    shell.selected_nodes = shell.selected_node.into_iter().collect();
                     shell.selected_route = wire_selected.then_some(route);
                     shell.inspector_open = inspector_open;
                     shell.sidebar_open = false;
@@ -811,10 +879,12 @@ fn graph_panning_preserves_node_or_wire_selection_and_inspector_visibility(
                     3 => wire_position(&frame, 0),
                     _ => frame.bounds.origin + point(px(180.), frame.bounds.size.height - px(80.)),
                 };
-                let button = if mode == 1 {
-                    MouseButton::Middle
-                } else {
-                    MouseButton::Left
+                let button = match mode {
+                    // Background panning is right-button (Windows style);
+                    // middle always pans; the hand tool pans with the left.
+                    0 => MouseButton::Right,
+                    1 => MouseButton::Middle,
+                    _ => MouseButton::Left,
                 };
                 cx.simulate_mouse_down(start, button, Modifiers::default());
                 view.update(cx, |shell, _| {

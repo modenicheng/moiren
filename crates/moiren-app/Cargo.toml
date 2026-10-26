@@ -12,6 +12,9 @@ moiren-core = { path = "../moiren-core" }
 moiren-engine = { path = "../moiren-engine" }
 moiren-signal = { path = "../moiren-signal" }
 raw-window-handle = "0.6"
+# Compile-time embedded translations; locale switch is process-global and
+# shared with gpui-component's own translation backend.
+rust-i18n = "4.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = { workspace = true }
@@ -24,6 +27,8 @@ embed-resource = "3.0"
 [features]
 # UI headless tests activate gpui-kit test-support without affecting release builds.
 gpui-test = ["gpui-kit/test-support"]
+# Native capture diagnostics; never enabled in ordinary application builds.
+ui-profiler = ["gpui-test", "gpui-kit/profiler"]
 # Explicit target service/VAD integration probe; ordinary builds never run it.
 vad-integration-probe = []
 

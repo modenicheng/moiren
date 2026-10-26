@@ -1,9 +1,7 @@
 use super::*;
-#[path = "test_backend.rs"]
-mod test_backend;
+use crate::service::test_backend::{FakeBackend, State};
 use moiren_core::graph::NodeKind;
 use std::sync::atomic::Ordering;
-use test_backend::{FakeBackend, State};
 
 struct Rig {
     driver: ManagedDriver,
@@ -1863,6 +1861,155 @@ fn initial_resource_recovery_restores_confirmed_revision_and_phase() {
         r.driver.owner.as_ref().unwrap().observer.read().host_id,
         host_id
     );
+}
+
+#[test]
+#[ignore = "wall-clock delivery benchmark; run explicitly on an otherwise idle host"]
+fn meter_bridge_delivers_fresh_windows_within_one_120_hz_frame() {
+    run_meter_delivery_benchmark(96, true);
+}
+
+#[test]
+#[ignore = "wall-clock callback-batching benchmark; run explicitly on an otherwise idle host"]
+fn meter_bridge_reports_large_callback_batching_at_120_hz() {
+    run_meter_delivery_benchmark(960, false);
+}
+
+fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool) {
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    // Match wall-clock callback cadence to the 48 kHz processing clock.
+    state
+        .timed_meter_frames
+        .store(callback_frames, Ordering::Relaxed);
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Tone {
+                frequency_hz: 440.0,
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 0.5,
+            pan: 0.0,
+            // The processing capacity must use a supported block size; the
+            // backend still renders the requested (possibly smaller) callback.
+            max_block_frames: callback_frames.max(256).next_power_of_two(),
+        }))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let topic = loop {
+        if let Some(snapshot) = handle.try_snapshot()
+            && snapshot.phase == SessionPhase::Running
+        {
+            break snapshot.signal_topics.tone_output.clone();
+        }
+        assert!(Instant::now() < deadline, "service did not start");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let mut ticket = handle.subscribe_topic(topic, Default::default()).unwrap();
+    let mut subscriber = loop {
+        if let Some(subscriber) = ticket.try_take().unwrap() {
+            break subscriber;
+        }
+        assert!(Instant::now() < deadline, "subscription did not arrive");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let mut ages = Vec::new();
+    let mut sequences = Vec::new();
+    let mut observed_windows = 0;
+    let mut latest_frame_end = None;
+    let mut missing_updates = 0;
+    let period = Duration::from_secs_f64(1.0 / 120.0);
+    let mut next = Instant::now() + period;
+    // Warm up subscriptions, then consume at a native-frame-equivalent cadence.
+    for frame in 0..150 {
+        std::thread::sleep(next.saturating_duration_since(Instant::now()));
+        next += period;
+        let mut received = false;
+        if let Some(window) = subscriber.read_latest() {
+            received = true;
+            observed_windows += 1;
+            assert_eq!(window.header().frame_end - window.header().frame_start, 200);
+            latest_frame_end = Some(window.header().frame_end);
+            if frame >= 30 {
+                sequences.push(window.meta().sequence);
+            }
+        }
+        if frame >= 30 {
+            missing_updates += usize::from(!received);
+            let read_at = Instant::now();
+            let history = state.render_history.lock().unwrap();
+            if let Some(frame_end) = latest_frame_end
+                && let Some((_, published_at)) = history.iter().find(|(end, _)| *end >= frame_end)
+            {
+                // Include cached-window age when this tick receives nothing.
+                // Selecting only fresh deliveries would hide stale UI frames.
+                ages.push(read_at.saturating_duration_since(*published_at));
+            }
+        }
+    }
+    handle.request_exit();
+    runtime.join().unwrap();
+    eprintln!(
+        "observed windows={observed_windows}, post-warmup ticks without update={missing_updates}, callback count={}, final state={:?}",
+        state.render_history.lock().unwrap().len(),
+        handle.try_snapshot().map(|s| (s.phase, s.error.clone()))
+    );
+    assert_eq!(
+        ages.len(),
+        120,
+        "every post-warmup consumption tick must measure its newest available window"
+    );
+    let mut callback_gaps = state
+        .render_history
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, time)| *time)
+        .collect::<Vec<_>>()
+        .windows(2)
+        .map(|pair| pair[1].duration_since(pair[0]))
+        .collect::<Vec<_>>();
+    ages.sort_unstable();
+    callback_gaps.sort_unstable();
+    let p95 = ages[(ages.len() * 95).div_ceil(100) - 1];
+    let callback_p95 = callback_gaps[(callback_gaps.len() * 95).div_ceil(100) - 1];
+    eprintln!(
+        "meter delivery: samples={}, age p95={p95:?}, callback p95={callback_p95:?}, callback max={:?}, first/last sequence={:?}/{:?}",
+        ages.len(),
+        callback_gaps.last(),
+        sequences.first(),
+        sequences.last()
+    );
+    assert!(
+        sequences.windows(2).all(|pair| pair[1] > pair[0]),
+        "new deliveries replayed an old sequence"
+    );
+    assert!(
+        sequences.len() >= if require_frame_age { 100 } else { 30 },
+        "too few fresh deliveries across 120 ticks: {}, missing updates: {missing_updates}",
+        sequences.len()
+    );
+    if require_frame_age {
+        assert!(
+            p95 <= period,
+            "meter delivery age {p95:?} exceeds a 120 Hz frame ({period:?})"
+        );
+    } else {
+        assert!(
+            missing_updates > 0,
+            "large callbacks must expose batching rather than invented measurements"
+        );
+        assert!(
+            p95 < Duration::from_millis(250),
+            "callback-batched windows became stale"
+        );
+    }
 }
 
 #[test]

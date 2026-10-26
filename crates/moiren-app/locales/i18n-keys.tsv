@@ -1,0 +1,484 @@
+Settings	-	crates/moiren-app/src/ui/window/chrome.rs:129|crates/moiren-app/src/ui/window/settings.rs:136	工具栏齿轮按钮与设置页标题；已有键
+Search nodes	-	crates/moiren-app/src/ui/window.rs:245	节点搜索输入框占位文本
+Untitled session	-	crates/moiren-app/src/ui/window.rs:285	项目名默认值
+Application file logging is unavailable	-	crates/moiren-app/src/ui/window.rs:596	错误条内日志路径缺失时的回退文本
+Diagnostics: %{log_path}	log_path=log_path（crate::logging::log_path().display()）	crates/moiren-app/src/ui/window.rs:610	format! 原文 "Diagnostics: {log_path}"
+Start	-	crates/moiren-app/src/ui/window/chrome.rs:102	传输按钮（未运行时）
+Stop	-	crates/moiren-app/src/ui/window/chrome.rs:102	传输按钮（运行中）
+%{rate} Hz  ·  period %{frames} frames	rate=d.observation.prepared.output.sample_rate|frames=actual_period_frames（未知时显示 "—"）	crates/moiren-app/src/ui/window/chrome.rs:187	format! 原文 "{} Hz  ·  period {} frames"；注意原文双空格
+Apply graph	-	crates/moiren-app/src/ui/window/controls.rs:78|crates/moiren-app/src/ui/window/devices/exports.rs:322	共享按钮
+Mono	-	crates/moiren-app/src/ui/window/controls.rs:114|crates/moiren-app/src/ui/window/devices/exports.rs:248|crates/moiren-app/src/ui/window/devices/exports.rs:349|crates/moiren-app/src/ui/window/devices/exports.rs:402	声道按钮/导出声道选项
+Stereo	-	crates/moiren-app/src/ui/window/devices/exports.rs:249|crates/moiren-app/src/ui/window/devices/exports.rs:351|crates/moiren-app/src/ui/window/devices/exports.rs:402	导出声道选项
+Swap	-	crates/moiren-app/src/ui/window/controls.rs:129	立体声交换按钮
+Inspector	-	crates/moiren-app/src/ui/window/controls.rs:150|crates/moiren-app/src/ui/window/graph/node_inspector.rs:51	检查器开关按钮与面板标题
+Audio	-	crates/moiren-app/src/ui/window/settings.rs:30	设置页标签
+Appearance	-	crates/moiren-app/src/ui/window/settings.rs:31|crates/moiren-app/src/ui/window/settings.rs:338	设置页标签与分区标题
+Language	-	crates/moiren-app/src/ui/window/settings.rs:354	外观页语言切换字段标签
+Diagnostics	-	crates/moiren-app/src/ui/window/settings.rs:32	设置页标签
+Audio defaults for this workstation	-	crates/moiren-app/src/ui/window/settings.rs:137	设置页副标题
+Close	-	crates/moiren-app/src/ui/window/settings.rs:140	设置对话框关闭按钮
+Audio system	-	crates/moiren-app/src/ui/window/settings.rs:188	分区标题
+Backend	-	crates/moiren-app/src/ui/window/settings.rs:190|crates/moiren-app/src/ui/window/settings.rs:374|crates/moiren-app/src/ui/window/settings/model.rs:130	字段名，也是 merge_value 错误的 label 实参
+Processing sample rate	-	crates/moiren-app/src/ui/window/settings.rs:207	字段名
+Processing precision	-	crates/moiren-app/src/ui/window/settings.rs:219	字段名
+Processing block (frames / ms)	-	crates/moiren-app/src/ui/window/settings.rs:232	字段名
+Processing precision is independent of the device sample format. Buffers are requests; actual periods are reported in Diagnostics.	-	crates/moiren-app/src/ui/window/settings.rs:248	说明文本
+Input defaults	-	crates/moiren-app/src/ui/window/settings.rs:255|crates/moiren-app/src/ui/window/settings/model.rs:141	分区标题，也是 merge_value 错误的 label 实参
+Output defaults	-	crates/moiren-app/src/ui/window/settings.rs:269|crates/moiren-app/src/ui/window/settings/model.rs:147	分区标题，也是 merge_value 错误的 label 实参
+Shared uses Windows client-format conversion without changing the system mix format. Exclusive requires device support and sole access. Unsupported requests report an error.	-	crates/moiren-app/src/ui/window/settings.rs:280	WASAPI 模式说明
+ASIO uses one driver session for input and output. Rate and buffer requests must agree across that session; encoding is determined by the driver. Select a driver in Devices.	-	crates/moiren-app/src/ui/window/settings.rs:282	ASIO 模式说明
+%{input_count} input / %{output_count} output overrides. Configure individual devices in Devices; overrides keep their complete settings when defaults change.	input_count=config.input_overrides.len()|output_count=config.output_overrides.len()	crates/moiren-app/src/ui/window/settings.rs:284	format! 原文 "{} input / {} output overrides. ..."
+Explicit audio settings use the requested device buffers. Legacy queue/recovery profiles apply to the default WASAPI shared configuration.	-	crates/moiren-app/src/ui/window/settings.rs:287	说明文本
+Queue / recovery policy	-	crates/moiren-app/src/ui/window/settings.rs:314	字段名
+Theme	-	crates/moiren-app/src/ui/window/settings.rs:340	字段名
+Dark workstation	-	crates/moiren-app/src/ui/window/settings.rs:340	detail 值文本
+Density	-	crates/moiren-app/src/ui/window/settings.rs:342|crates/moiren-app/src/ui/window/settings/model.rs:98	字段名，也是 merge_value 错误的 label 实参
+Comfortable	-	crates/moiren-app/src/ui/window/settings.rs:349	密度选项
+Compact	-	crates/moiren-app/src/ui/window/settings.rs:350	密度选项
+Save to use this density throughout the workstation.	-	crates/moiren-app/src/ui/window/settings.rs:357	说明文本
+Keyboard	-	crates/moiren-app/src/ui/window/settings.rs:359	分区标题
+Next / previous control	-	crates/moiren-app/src/ui/window/settings.rs:360	快捷键说明字段
+Activate focused action	-	crates/moiren-app/src/ui/window/settings.rs:361	快捷键说明字段
+Dismiss settings	-	crates/moiren-app/src/ui/window/settings.rs:362	快捷键说明字段
+Saved request	-	crates/moiren-app/src/ui/window/settings.rs:373|crates/moiren-app/src/ui/window/devices/overrides.rs:58	诊断/设备覆盖 detail 标签
+Processing	-	crates/moiren-app/src/ui/window/settings.rs:375|crates/moiren-app/src/ui/window/settings/model.rs:135|crates/moiren-app/src/ui/presentation.rs:62	detail 标签，也是 merge_value 错误的 label 实参
+Input	-	crates/moiren-app/src/ui/window/settings.rs:377|crates/moiren-app/src/ui/window/settings/model.rs:155	detail 标签，也是 merge_value 错误的 label 实参
+Output	-	crates/moiren-app/src/ui/window/settings.rs:381|crates/moiren-app/src/ui/window/settings/model.rs:162|crates/moiren-app/src/ui/window/devices.rs:264	detail 标签，也是 merge_value 错误的 label 实参
+Legacy recovery policy	-	crates/moiren-app/src/ui/window/settings.rs:385	detail 标签
+Unsaved edits stay in the Audio draft until Save or Restart Audio.	-	crates/moiren-app/src/ui/window/settings.rs:389	说明文本
+Active session	-	crates/moiren-app/src/ui/window/settings.rs:391|crates/moiren-app/src/ui/window/devices.rs:262|crates/moiren-app/src/ui/window/devices/overrides.rs:137	标题与徽章
+State	-	crates/moiren-app/src/ui/window/settings.rs:393	detail 标签
+Active backend	-	crates/moiren-app/src/ui/window/settings.rs:402	detail 标签
+Active processing	-	crates/moiren-app/src/ui/window/settings.rs:403	detail 标签
+Active input request	-	crates/moiren-app/src/ui/window/settings.rs:405	detail 标签
+Active output request	-	crates/moiren-app/src/ui/window/settings.rs:408	detail 标签
+No active audio configuration	-	crates/moiren-app/src/ui/window/settings.rs:413	空态文本
+Actual native timing	-	crates/moiren-app/src/ui/window/settings.rs:415|crates/moiren-app/src/ui/presentation.rs:245	分区标题；presentation 回退行标签
+Catalog	-	crates/moiren-app/src/ui/window/settings.rs:423	detail 标签
+%{inputs} inputs / %{outputs} outputs / %{asio} ASIO drivers / %{apps} applications	inputs=snapshot.catalog.inputs.len()|outputs=snapshot.catalog.outputs.len()|asio=snapshot.catalog.asio_drivers.len()|apps=snapshot.catalog.processes.len()	crates/moiren-app/src/ui/window/settings.rs:424	format! 原文 "{} inputs / {} outputs / {} ASIO drivers / {} applications"
+ASIO discovery failed: %{error}	error=snapshot.catalog.asio_error	crates/moiren-app/src/ui/window/settings.rs:426	format! 原文 "ASIO discovery failed: {error}"
+CPU / physical latency / XRUN	-	crates/moiren-app/src/ui/window/settings.rs:428	detail 标签
+Unavailable	-	crates/moiren-app/src/ui/window/settings.rs:428|crates/moiren-app/src/ui/window/devices.rs:135|crates/moiren-app/src/ui/window/devices/exports.rs:357|crates/moiren-app/src/ui/monitoring.rs:174	detail 值与徽章；MeterStatus::NotAvailable 标签
+Queue fill and callback timing do not measure CPU load, physical end-to-end latency or XRUN counts.	-	crates/moiren-app/src/ui/window/settings.rs:429	说明文本
+Quit Moiren	-	crates/moiren-app/src/ui/window/settings.rs:431	危险按钮
+Driver encoding	-	crates/moiren-app/src/ui/window/settings.rs:444	stream_summary 中 ASIO 编码占位文本
+Follow processing	-	crates/moiren-app/src/ui/window/settings.rs:462|crates/moiren-app/src/ui/window/settings/fields.rs:117	采样率下拉选项
+Driver default	-	crates/moiren-app/src/ui/window/settings.rs:467|crates/moiren-app/src/ui/window/settings/fields.rs:147|crates/moiren-app/src/ui/presentation.rs:105	缓冲下拉选项与 presentation 回退值
+WASAPI mode	-	crates/moiren-app/src/ui/window/settings/fields.rs:94	字段名
+Shared	-	crates/moiren-app/src/ui/window/settings/fields.rs:101|crates/moiren-app/src/ui/window/settings.rs:450	WASAPI 模式选项；stream_summary 中也用
+Exclusive	-	crates/moiren-app/src/ui/window/settings/fields.rs:102|crates/moiren-app/src/ui/window/settings.rs:452	WASAPI 模式选项；stream_summary 中也用
+Requested sample rate	-	crates/moiren-app/src/ui/window/settings/fields.rs:111	字段名
+Client sample format	-	crates/moiren-app/src/ui/window/settings/fields.rs:126	字段名
+Sample encoding	-	crates/moiren-app/src/ui/window/settings/fields.rs:138	detail 标签
+Determined by ASIO driver	-	crates/moiren-app/src/ui/window/settings/fields.rs:138	detail 值
+Requested device buffer (frames / ms)	-	crates/moiren-app/src/ui/window/settings/fields.rs:141	字段名
+Unsaved changes	-	crates/moiren-app/src/ui/window/settings/fields.rs:205	设置页脚状态文本
+Saved requests and active audio are shown separately in Diagnostics.	-	crates/moiren-app/src/ui/window/settings/fields.rs:206	设置页脚状态文本
+Audio is stopped. Save keeps it stopped.	-	crates/moiren-app/src/ui/window/settings/fields.rs:207	设置页脚状态文本
+Discard changes	-	crates/moiren-app/src/ui/window/settings/fields.rs:214	按钮
+Save	-	crates/moiren-app/src/ui/window/settings/fields.rs:222	按钮
+Restart Audio	-	crates/moiren-app/src/ui/window/settings/fields.rs:231	按钮
+Saved. Audio settings apply on the next start.	-	crates/moiren-app/src/ui/window/settings/model.rs:86	Draft::committed 消息
+Recovery policy	-	crates/moiren-app/src/ui/window/settings/model.rs:97	merge_value 错误的 label 实参
+%{label} changed elsewhere. Your draft is retained. Discard changes to reload the saved settings.	label=merge_value 实参（"Backend"/"Processing"/"Input defaults"/"Output defaults"/"Input"/"Output"/"Density"/"Recovery policy"，各 label 自身也是键）	crates/moiren-app/src/ui/window/settings/model.rs:117	format! 原文 "{label} changed elsewhere. ..."
+%{label} override for %{id}	label="Input" 或 "Output"|id=设备 endpoint_id	crates/moiren-app/src/ui/window/settings/model.rs:174	format! 原文 "{label} override for {id}"
+User configuration directory is unavailable. Your draft is retained.	-	crates/moiren-app/src/ui/window/settings/transaction.rs:18	错误消息
+Saving requested settings...	-	crates/moiren-app/src/ui/window/settings/transaction.rs:58	Draft 消息
+Could not save audio settings: %{error}	error={error:?} 调试格式	crates/moiren-app/src/ui/window/settings/transaction.rs:60	format! 原文 "Could not save audio settings: {error:?}"
+Audio settings were rejected.	-	crates/moiren-app/src/ui/window/settings/transaction.rs:88	错误消息
+Latency policy was rejected.	-	crates/moiren-app/src/ui/window/settings/transaction.rs:97	错误消息
+Audio did not restart. Your draft is retained.	-	crates/moiren-app/src/ui/window/settings/transaction.rs:122	错误消息
+Restarting audio; waiting for the active session...	-	crates/moiren-app/src/ui/window/settings/transaction.rs:139	Draft 消息
+Saving latency policy...	-	crates/moiren-app/src/ui/window/settings/transaction.rs:141	Draft 消息
+Could not apply audio settings: %{error}	error={failure:?} 调试格式	crates/moiren-app/src/ui/window/settings/transaction.rs:145	format! 原文 "Could not apply audio settings: {failure:?}"
+Audio restarted with the saved settings.	-	crates/moiren-app/src/ui/window/settings/transaction.rs:169	Draft 消息
+User configuration directory is unavailable	-	crates/moiren-app/src/ui/window/settings/persistence.rs:14	project_message
+Could not save preferences: %{error}	error=save_preferences_at 的错误字符串	crates/moiren-app/src/ui/window/settings/persistence.rs:70|crates/moiren-app/src/ui/window/settings/persistence.rs:76	format! 原文 "Could not save preferences: {error}"，两处共用
+Preferences saved	-	crates/moiren-app/src/ui/window/settings/persistence.rs:75	project_message
+Preferences save queued	-	crates/moiren-app/src/ui/window/settings/persistence.rs:83	project_message
+Inputs	-	crates/moiren-app/src/ui/window/devices.rs:26	设备页标签
+Outputs	-	crates/moiren-app/src/ui/window/devices.rs:27	设备页标签
+Applications	-	crates/moiren-app/src/ui/window/devices.rs:28	设备页标签
+Exports	-	crates/moiren-app/src/ui/window/devices.rs:29	设备页标签
+Clock	-	crates/moiren-app/src/ui/window/devices.rs:30	设备页标签
+Unavailable device (saved override)	-	crates/moiren-app/src/ui/window/devices.rs:79	已保存覆盖但设备不在目录时的行名
+No devices available	-	crates/moiren-app/src/ui/window/devices.rs:85	空态标题
+Refresh to discover installed ASIO drivers.	-	crates/moiren-app/src/ui/window/devices.rs:87	空态说明
+Refresh to discover connected Windows audio endpoints.	-	crates/moiren-app/src/ui/window/devices.rs:89	空态说明
+Override	-	crates/moiren-app/src/ui/window/devices.rs:137|crates/moiren-app/src/ui/window/devices/overrides.rs:86	徽章与按钮
+Default	-	crates/moiren-app/src/ui/window/devices.rs:140	徽章
+Configure	-	crates/moiren-app/src/ui/window/devices.rs:143	设备行按钮
+Active	-	crates/moiren-app/src/ui/window/devices.rs:154	徽章
+Next start	-	crates/moiren-app/src/ui/window/devices.rs:159|crates/moiren-app/src/ui/window/devices.rs:219|crates/moiren-app/src/ui/window/devices.rs:271	按钮与徽章
+Use next start	-	crates/moiren-app/src/ui/window/devices.rs:161|crates/moiren-app/src/ui/window/devices.rs:221	按钮
+Application loopback requires WASAPI. Choose WASAPI in Settings to use application sources.	-	crates/moiren-app/src/ui/window/devices.rs:187	ASIO 下应用页提示
+No capturable applications	-	crates/moiren-app/src/ui/window/devices.rs:190	空态标题
+Start an application that plays audio, then refresh. Protected applications may be unavailable.	-	crates/moiren-app/src/ui/window/devices.rs:190	空态说明
+PID %{pid} · created %{created}	pid=process.pid|created=process.creation_time_100ns	crates/moiren-app/src/ui/window/devices.rs:211	format! 原文 "PID {} · created {}"
+Active audio clocks	-	crates/moiren-app/src/ui/window/devices.rs:239	时钟页标题
+Input sample rate	-	crates/moiren-app/src/ui/window/devices.rs:244	detail 标签
+Output sample rate	-	crates/moiren-app/src/ui/window/devices.rs:245	detail 标签
+Clock correction	-	crates/moiren-app/src/ui/window/devices.rs:246	detail 标签
+Input buffer fill	-	crates/moiren-app/src/ui/window/devices.rs:247	detail 标签
+Processed	-	crates/moiren-app/src/ui/window/devices.rs:248	detail 标签
+Clock correction and buffer inventory come from the active monitor. Buffer fill is not end-to-end latency.	-	crates/moiren-app/src/ui/window/devices.rs:249	说明文本
+No active monitor clock observation. Start a physical input or application session to inspect clock adaptation.	-	crates/moiren-app/src/ui/window/devices.rs:251	空态说明
+Session resources	-	crates/moiren-app/src/ui/window/devices.rs:255	面板标题
+Source	-	crates/moiren-app/src/ui/window/devices.rs:263|crates/moiren-app/src/ui/window/graph/node_inspector.rs:109|crates/moiren-app/src/ui/window/devices.rs:273	detail 标签与节点分区标题
+No active session	-	crates/moiren-app/src/ui/window/devices.rs:269	空态说明
+Source mode	-	crates/moiren-app/src/ui/window/devices.rs:272	detail 标签
+Select available resources	-	crates/moiren-app/src/ui/window/devices.rs:273	未选择资源时的 detail 值
+Not selected	-	crates/moiren-app/src/ui/window/devices.rs:274	未选择输出时的 detail 值
+Selecting another resource leaves the running session unchanged. Stop and start to switch devices.	-	crates/moiren-app/src/ui/window/devices.rs:275	说明文本
+Refresh devices	-	crates/moiren-app/src/ui/window/devices.rs:294	按钮
+ASIO discovery failed: %{error}. Refresh devices to retry.	error=snapshot.catalog.asio_error	crates/moiren-app/src/ui/window/devices.rs:319	format! 原文 "ASIO discovery failed: {error}. Refresh devices to retry."
+Unavailable device	-	crates/moiren-app/src/ui/window/devices/overrides.rs:33	目录中找不到设备时的标题回退
+Input configuration	-	crates/moiren-app/src/ui/window/devices/overrides.rs:45	说明文本
+Output configuration	-	crates/moiren-app/src/ui/window/devices/overrides.rs:47	说明文本
+Device override	-	crates/moiren-app/src/ui/window/devices/overrides.rs:51	徽章
+Using global defaults	-	crates/moiren-app/src/ui/window/devices/overrides.rs:53	徽章
+Use defaults	-	crates/moiren-app/src/ui/window/devices/overrides.rs:70	按钮
+ASIO input and output share one driver session. Their sample rate and buffer requests must agree.	-	crates/moiren-app/src/ui/window/devices/overrides.rs:110	说明文本
+This complete override stays independent of global defaults. Use defaults removes it when saved.	-	crates/moiren-app/src/ui/window/devices/overrides.rs:114	说明文本
+This device follows the current global defaults. Choose Override to customize all its stream settings.	-	crates/moiren-app/src/ui/window/devices/overrides.rs:116	说明文本
+Active request	-	crates/moiren-app/src/ui/window/devices/overrides.rs:139	detail 标签
+Observed session timing	-	crates/moiren-app/src/ui/window/devices/overrides.rs:142	说明文本
+This device is not bound to the active source/output pair.	-	crates/moiren-app/src/ui/window/devices/overrides.rs:148	说明文本
+Configure never changes routing. Use next start on a device row updates the candidate graph.	-	crates/moiren-app/src/ui/window/devices/overrides.rs:152	说明文本
+Export is no longer in this project's candidate graph	-	crates/moiren-app/src/ui/window/devices/exports.rs:87	edit_export 错误，显示在错误条
+Virtual exports	-	crates/moiren-app/src/ui/window/devices/exports.rs:193	标题
+Edit project intent here, then Apply graph to request activation. Endpoint presence is not evidence of audio flowing. Stop keeps endpoints present with gates closed.	-	crates/moiren-app/src/ui/window/devices/exports.rs:194	说明文本
+Bind a selected Graph IO with matching channels: Playback uses a Source; Microphone uses a Sink. An IO can belong to only one export.	-	crates/moiren-app/src/ui/window/devices/exports.rs:196	说明文本
+Default eligibility is permission on this computer only, not saved in the project. Off prevents both Windows automatic and user manual default selection. On only permits eligibility; it does not set a Windows default.	-	crates/moiren-app/src/ui/window/devices/exports.rs:213	DEFAULT_ELIGIBILITY_HELP 常量，正文与 aria_label 共用
+Changing channels, a name, or eligibility safely retires and recreates the endpoint. Apply again to resume; unbind incompatible Graph IO before changing channels.	-	crates/moiren-app/src/ui/window/devices/exports.rs:201	说明文本
+No virtual exports yet. Create one above; it starts unbound.	-	crates/moiren-app/src/ui/window/devices/exports.rs:204	空态说明
+Playback	-	crates/moiren-app/src/ui/window/devices/exports.rs:221	导出方向选项
+Microphone	-	crates/moiren-app/src/ui/window/devices/exports.rs:227	导出方向选项
+Create export	-	crates/moiren-app/src/ui/window/devices/exports.rs:277|crates/moiren-app/src/ui/window/devices/exports.rs:296	分区标题与按钮
+Endpoint name (1-63 UTF-16 units; no control characters)	-	crates/moiren-app/src/ui/window/devices/exports.rs:280	字段说明
+Endpoint	-	crates/moiren-app/src/ui/window/devices/exports.rs:355	detail 标签
+Absent	-	crates/moiren-app/src/ui/window/devices/exports.rs:358	ExportResourceState 值
+Creating	-	crates/moiren-app/src/ui/window/devices/exports.rs:359	ExportResourceState 值
+Present (not a flow signal)	-	crates/moiren-app/src/ui/window/devices/exports.rs:360	ExportResourceState 值
+Removing / awaiting confirmation	-	crates/moiren-app/src/ui/window/devices/exports.rs:361	ExportResourceState 值
+Gate admission	-	crates/moiren-app/src/ui/window/devices/exports.rs:365	detail 标签
+Open (not a flow signal)	-	crates/moiren-app/src/ui/window/devices/exports.rs:367	闸门状态值
+Closed	-	crates/moiren-app/src/ui/window/devices/exports.rs:369	闸门状态值
+Engine-confirmed binding	-	crates/moiren-app/src/ui/window/devices/exports.rs:373	detail 标签
+Active revision %{revision}	revision=status.active_revision	crates/moiren-app/src/ui/window/devices/exports.rs:376	format! 原文 "Active revision {revision}"
+Inactive	-	crates/moiren-app/src/ui/window/devices/exports.rs:377	绑定状态值
+Candidate graph binding	-	crates/moiren-app/src/ui/window/devices/exports.rs:380	detail 标签
+Unbound	-	crates/moiren-app/src/ui/window/devices/exports.rs:385	绑定状态值
+Candidate intent	-	crates/moiren-app/src/ui/window/devices/exports.rs:389	detail 标签
+Enabled	-	crates/moiren-app/src/ui/window/devices/exports.rs:391	意图状态值
+Disabled	-	crates/moiren-app/src/ui/window/devices/exports.rs:393	意图状态值
+Channels	-	crates/moiren-app/src/ui/window/devices/exports.rs:401|crates/moiren-app/src/ui/window/graph/node_inspector.rs:97|crates/moiren-app/src/ui/window/matrix.rs:246	字段名
+Endpoint name	-	crates/moiren-app/src/ui/window/devices/exports.rs:423	字段名
+Rename	-	crates/moiren-app/src/ui/window/devices/exports.rs:432|crates/moiren-app/src/ui/window/graph/node_inspector.rs:82	按钮
+Disable intent	-	crates/moiren-app/src/ui/window/devices/exports.rs:462	按钮
+Enable intent	-	crates/moiren-app/src/ui/window/devices/exports.rs:464	按钮
+Bind selected IO	-	crates/moiren-app/src/ui/window/devices/exports.rs:477	按钮
+Unbind	-	crates/moiren-app/src/ui/window/devices/exports.rs:497	按钮
+Remove intent	-	crates/moiren-app/src/ui/window/devices/exports.rs:508	按钮
+Removed from candidate. The service retains lifecycle tracking until safe retirement is confirmed.	-	crates/moiren-app/src/ui/window/devices/exports.rs:520	说明文本
+Revoke local default eligibility	-	crates/moiren-app/src/ui/window/devices/exports.rs:535	按钮
+Allow default eligibility on this computer	-	crates/moiren-app/src/ui/window/devices/exports.rs:537	按钮
+Node library	-	crates/moiren-app/src/ui/window/graph.rs:398|crates/moiren-app/src/ui/window/graph/library.rs:162	按钮与侧栏标题
+Select	-	crates/moiren-app/src/ui/window/graph.rs:464	画布工具按钮
+Hand	-	crates/moiren-app/src/ui/window/graph.rs:465	画布工具按钮
+Fit	-	crates/moiren-app/src/ui/window/graph.rs:496	缩放适配按钮
+No matching nodes	-	crates/moiren-app/src/ui/window/graph/library.rs:104	搜索空态
+Session nodes · %{count}	count=state.snapshot.graph.nodes.len()	crates/moiren-app/src/ui/window/graph/library.rs:116	format! 原文 "Session nodes · {}"
+Drag a node onto the graph	-	crates/moiren-app/src/ui/window/graph/library.rs:187	提示
+Or click to add at the canvas center.	-	crates/moiren-app/src/ui/window/graph/library.rs:192	提示
+Select a node to inspect its properties.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:57	空态说明
+Name	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:74	字段名
+Channel strip	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:99	分区标题
+Fader	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:100	detail 标签
+Not bound · choose a resource	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:115	未绑定音源占位
+Clear binding	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:118|crates/moiren-app/src/ui/window/graph/node_inspector.rs:217	按钮
+Tone generator · 440 Hz	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:122	按钮（绑定测试音）
+Frequency	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:132|crates/moiren-app/src/ui/window/graph/node_inspector.rs:465	detail 标签与 EQ 字段
+Refresh sources	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:195	按钮
+Output device	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:209	分区标题
+Not bound · choose an output	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:214	未绑定输出占位
+Gain	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:239|crates/moiren-app/src/ui/window/graph/node_inspector.rs:484	分区标题与 EQ 字段
+Requested	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:240	detail 标签
+Unity	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:264	增益归一按钮
+Silence	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:269	静音按钮
+Stereo controls	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:275	分区标题
+Balance	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:276	detail 标签
+Left	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:281	声像按钮
+Center	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:289	声像按钮
+Right	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:292	声像按钮
+Compressor	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:303|crates/moiren-app/src/ui/pages/node_catalog.rs:55	分区标题与节点模板名
+Linked peak detector · Enter or leave a field to apply	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:304	说明文本
+Ports	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:333	分区标题
+Input %{index}	index=index+1（端口序号）	crates/moiren-app/src/ui/window/graph/node_inspector.rs:336	format! 原文 "Input {}"
+Output %{index}	index=index+1（端口序号）	crates/moiren-app/src/ui/window/graph/node_inspector.rs:341	format! 原文 "Output {}"
+Add bus input	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:348	按钮
+Remove last input	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:353	按钮
+Delete node	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:364	按钮
+Waiting for Apply graph	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:390	观测状态回退文本
+Unavailable for this node	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:392	观测状态回退文本
+Runtime observation	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:399	分区标题
+Status	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:403	detail 标签
+The candidate graph is not the confirmed runtime. Apply graph to observe this node.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:408	说明文本
+This node has no managed level topic in the current service projection.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:412	说明文本
+Peak %{index}	index=channel+1	crates/moiren-app/src/ui/window/graph/node_inspector.rs:423	format! 原文 "Peak {}"
+RMS %{index}	index=channel+1	crates/moiren-app/src/ui/window/graph/node_inspector.rs:426	format! 原文 "RMS {}"
+Candidate graph · audio owner unchanged	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:434	说明文本
+Parametric EQ	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:460|crates/moiren-app/src/ui/pages/node_catalog.rs:56	分区标题与节点模板名
+One peaking band · apply to prepare the new kernel	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:461	说明文本
+Q	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:503	EQ 字段
+Gate	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:522|crates/moiren-app/src/ui/pages/node_catalog.rs:57	分区标题与节点模板名
+Linked downward expander	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:523|crates/moiren-app/src/ui/pages/node_catalog.rs:97	说明文本与模板描述
+Limiter	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:537|crates/moiren-app/src/ui/pages/node_catalog.rs:58	分区标题与节点模板名
+Zero-latency peak limiter	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:538|crates/moiren-app/src/ui/pages/node_catalog.rs:98	说明文本与模板描述
+Delay	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:552|crates/moiren-app/src/ui/pages/node_catalog.rs:59	分区标题与节点模板名
+Bounded feedback delay	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:553|crates/moiren-app/src/ui/pages/node_catalog.rs:99	说明文本与模板描述
+Identity routing	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:567	声道映射模式值
+Weighted matrix	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:569	声道映射模式值
+Explicit channel map	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:571	声道映射模式值
+Channel mapper	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:574|crates/moiren-app/src/ui/pages/node_catalog.rs:60	分区标题与节点模板名
+Mode	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:575	detail 标签
+Static routing is prepared before audio starts.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:576	说明文本
+Swap L/R	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:580	按钮
+Identity	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:591	按钮
+Edit weighted matrix	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:606	按钮
+Weight matrix	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:621	分区标题
+Layout	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:623	detail 标签
+%{outputs} outputs x %{inputs} inputs	outputs=output_channels|inputs=input_channels	crates/moiren-app/src/ui/window/graph/node_inspector.rs:624	format! 原文 "{} outputs x {} inputs"
+Adjust one output row at a time. Values are clamped to -1..1.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:627	说明文本
+Out %{index}	index=output+1	crates/moiren-app/src/ui/window/graph/node_inspector.rs:635	format! 原文 "Out {}"
+In %{index}	index=input+1	crates/moiren-app/src/ui/window/graph/node_inspector.rs:647	format! 原文 "In {}"
+Matrix editor is limited to 8 input and output channels; use a project file for larger layouts.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:674	说明文本
+Recorder	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:680|crates/moiren-app/src/ui/pages/node_catalog.rs:61	分区标题与节点模板名
+Buffer	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:682	detail 标签
+Add 1 second	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:686	按钮
+Remove 1 second	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:699	按钮
+Level meter	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:711|crates/moiren-app/src/ui/pages/node_catalog.rs:62	分区标题与节点模板名
+Window	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:713	detail 标签（电平窗口）
+Use 2048 frame window	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:717	按钮
+Spectrum analyzer	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:730|crates/moiren-app/src/ui/pages/node_catalog.rs:63	分区标题与节点模板名
+FFT	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:731	detail 标签
+Hop	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:732	detail 标签
+Use 2048 point FFT	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:733	按钮
+Processor rack	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:762|crates/moiren-app/src/ui/pages/node_catalog.rs:64	分区标题与节点模板名
+Stages	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:763	detail 标签
+Add gain stage	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:764	按钮
+Clear stages	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:774	按钮
+Managed observation becomes available after Apply graph.	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:792	说明文本
+Threshold	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:838|crates/moiren-app/src/ui/window/graph/node_inspector.rs:887|crates/moiren-app/src/service/graph/compressor.rs:140	噪声门/限制器字段与压缩器参数名
+Attack	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:846|crates/moiren-app/src/service/graph/compressor.rs:142	噪声门字段与压缩器参数名
+Release	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:855|crates/moiren-app/src/ui/window/graph/node_inspector.rs:897|crates/moiren-app/src/service/graph/compressor.rs:143	字段与压缩器参数名
+Hold	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:864|crates/moiren-app/src/service/graph/compressor.rs:144	噪声门字段与压缩器参数名
+Range	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:874	噪声门字段
+Input gain	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:906|crates/moiren-app/src/service/graph/compressor.rs:139	限制器字段与压缩器参数名
+Time	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:920	延迟字段
+Feedback	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:929	延迟字段
+Wet mix	-	crates/moiren-app/src/ui/window/graph/node_inspector.rs:938	延迟字段
+Ratio	-	crates/moiren-app/src/service/graph/compressor.rs:141	CompressorParameter::label 动态键
+Knee	-	crates/moiren-app/src/service/graph/compressor.rs:145	CompressorParameter::label 动态键
+Makeup gain	-	crates/moiren-app/src/service/graph/compressor.rs:146	CompressorParameter::label 动态键
+Output gain	-	crates/moiren-app/src/service/graph/compressor.rs:147	CompressorParameter::label 动态键
+Dry / wet	-	crates/moiren-app/src/service/graph/compressor.rs:148	CompressorParameter::label 动态键
+%{name} / in %{index}	name=节点 label（运行时）|index=i+1	crates/moiren-app/src/ui/window/matrix.rs:49	format! 原文 "{} / in {}"
+%{name} / out %{index}	name=节点 label（运行时）|index=i+1	crates/moiren-app/src/ui/window/matrix.rs:66	format! 原文 "{} / out {}"
+Muted	-	crates/moiren-app/src/ui/window/matrix.rs:84	矩阵单元格文本
+%{source} to %{destination}: %{value}	source=name(source.id())|destination=name(destination.id())|value=单元格文本	crates/moiren-app/src/ui/window/matrix.rs:94	无障碍标签，format! 原文 "{} to {}: {value}"
+Routing matrix	-	crates/moiren-app/src/ui/window/matrix.rs:145	页面标题
+Outputs → Inputs	-	crates/moiren-app/src/ui/window/matrix.rs:183	矩阵角标
+%{outputs} output ports · %{inputs} input ports · %{connections} direct connections	outputs=outputs.len()|inputs=inputs.len()|connections=graph.edges().len()	crates/moiren-app/src/ui/window/matrix.rs:225	format! 原文 "{} output ports · {} input ports · {} direct connections"
+Connection	-	crates/moiren-app/src/ui/window/matrix.rs:240	面板标题
+From	-	crates/moiren-app/src/ui/window/matrix.rs:244	detail 标签
+To	-	crates/moiren-app/src/ui/window/matrix.rs:245	detail 标签
+Connected	-	crates/moiren-app/src/ui/window/matrix.rs:256	徽章
+Route gain	-	crates/moiren-app/src/ui/window/matrix.rs:257	detail 标签
+Route balance	-	crates/moiren-app/src/ui/window/matrix.rs:258	detail 标签
+Tap	-	crates/moiren-app/src/ui/window/matrix.rs:260	detail 标签
+Pre-fader	-	crates/moiren-app/src/ui/window/matrix.rs:263	取样点选项
+Post-fader	-	crates/moiren-app/src/ui/window/matrix.rs:263	取样点选项
+Disconnect	-	crates/moiren-app/src/ui/window/matrix.rs:267	按钮
+Unmute route	-	crates/moiren-app/src/ui/window/matrix.rs:275	按钮
+Mute route	-	crates/moiren-app/src/ui/window/matrix.rs:277	按钮
+Not connected	-	crates/moiren-app/src/ui/window/matrix.rs:317	徽章
+Connect	-	crates/moiren-app/src/ui/window/matrix.rs:318	按钮
+Show in Graph	-	crates/moiren-app/src/ui/window/matrix.rs:332	按钮
+This connection no longer exists. Select a cell.	-	crates/moiren-app/src/ui/window/matrix.rs:342	空态说明
+Select an intersection to inspect or change a direct connection.	-	crates/moiren-app/src/ui/window/matrix.rs:346	空态说明
+ · output %{index}	index=index+1	crates/moiren-app/src/ui/window/matrix.rs:371	追加到节点名后的后缀，format! 原文 " · output {}"
+ · input %{index}	index=index+1	crates/moiren-app/src/ui/window/matrix.rs:378	追加到节点名后的后缀，format! 原文 " · input {}"
+Not saved to disk	-	crates/moiren-app/src/ui/window/project.rs:29	项目菜单路径占位
+Open project…	-	crates/moiren-app/src/ui/window/project.rs:32	菜单按钮
+Save project	-	crates/moiren-app/src/ui/window/project.rs:40	菜单按钮
+Save project as…	-	crates/moiren-app/src/ui/window/project.rs:48	菜单按钮
+Opening a project keeps audio stopped.	-	crates/moiren-app/src/ui/window/project.rs:58	菜单说明
+Could not open save dialog: %{error}	error={other:?} 调试格式	crates/moiren-app/src/ui/window/project.rs:262	format! 原文 "Could not open save dialog: {other:?}"
+Project saved	-	crates/moiren-app/src/ui/window/project.rs:289	project_message
+Open Moiren project	-	crates/moiren-app/src/ui/window/project.rs:304	文件对话框提示标题
+Could not open file dialog: %{error}	error={other:?} 调试格式	crates/moiren-app/src/ui/window/project.rs:315	format! 原文 "Could not open file dialog: {other:?}"
+Project load requested	-	crates/moiren-app/src/ui/window/project.rs:365	project_message
+Project was not loaded: %{error}	error=snapshot.graph.last_error	crates/moiren-app/src/ui/window/project.rs:381	format! 原文 "Project was not loaded: {error}"
+Project opened	-	crates/moiren-app/src/ui/window/project.rs:386	project_message
+Mixer	-	crates/moiren-app/src/ui/window/mixer.rs:120|crates/moiren-app/src/ui/window/tray_mixer.rs:182|crates/moiren-app/src/ui/pages/mod.rs:21	页面标题、托盘混音台标题、Page::title 动态键
+Drag headers to reorder · drag dividers to resize	-	crates/moiren-app/src/ui/window/mixer.rs:149	提示
+SENDS	-	crates/moiren-app/src/ui/window/mixer.rs:397	发送区标签
+PRE	-	crates/moiren-app/src/ui/window/mixer.rs:422	发送取样点按钮（推子前）
+POST	-	crates/moiren-app/src/ui/window/mixer.rs:422	发送取样点按钮（推子后）
+No sends · connect in Graph	-	crates/moiren-app/src/ui/window/mixer.rs:464	空态说明
+MONO	-	crates/moiren-app/src/service/graph/mixer.rs:40	MixerState::mode_label 动态键
+SWAP	-	crates/moiren-app/src/service/graph/mixer.rs:41	MixerState::mode_label 动态键
+L ONLY	-	crates/moiren-app/src/service/graph/mixer.rs:42	MixerState::mode_label 动态键
+R ONLY	-	crates/moiren-app/src/service/graph/mixer.rs:43	MixerState::mode_label 动态键
+CH %{channel} ONLY	channel=mode-1	crates/moiren-app/src/service/graph/mixer.rs:44	format! 原文 "CH {} ONLY"
+Move channel	-	crates/moiren-app/src/ui/window/mixer/model.rs:200	拖动幻影文本
+Pending	-	crates/moiren-app/src/ui/window/tray_mixer.rs:184	徽章
+No strips · open Moiren to build a graph	-	crates/moiren-app/src/ui/window/tray_mixer.rs:196	空态说明
+Open	-	crates/moiren-app/src/ui/window/tray_mixer.rs:207	按钮
+Graph	-	crates/moiren-app/src/ui/pages/mod.rs:20	Page::title 动态键
+Matrix	-	crates/moiren-app/src/ui/pages/mod.rs:22	Page::title 动态键
+Devices	-	crates/moiren-app/src/ui/pages/mod.rs:23	Page::title 动态键
+Physical input	-	crates/moiren-app/src/ui/pages/node_catalog.rs:50|crates/moiren-app/src/ui/state.rs:40|crates/moiren-app/src/ui/presentation.rs:150	节点模板名、SourceMode::title、presentation 流类型
+Application audio	-	crates/moiren-app/src/ui/pages/node_catalog.rs:51	节点模板名
+Tone generator	-	crates/moiren-app/src/ui/pages/node_catalog.rs:52	节点模板名
+Mix bus	-	crates/moiren-app/src/ui/pages/node_catalog.rs:65	节点模板名
+Device output	-	crates/moiren-app/src/ui/pages/node_catalog.rs:66	节点模板名
+SOURCES	-	crates/moiren-app/src/ui/pages/node_catalog.rs:72	节点库分组
+PROCESSING	-	crates/moiren-app/src/ui/pages/node_catalog.rs:80	节点库分组
+OBSERVATION	-	crates/moiren-app/src/ui/pages/node_catalog.rs:81	节点库分组
+ROUTING	-	crates/moiren-app/src/ui/pages/node_catalog.rs:82|crates/moiren-app/src/ui/pages/node_catalog.rs:84	节点库分组
+DESTINATIONS	-	crates/moiren-app/src/ui/pages/node_catalog.rs:83	节点库分组
+WASAPI capture endpoint	-	crates/moiren-app/src/ui/pages/node_catalog.rs:90	模板描述
+Process loopback source	-	crates/moiren-app/src/ui/pages/node_catalog.rs:91	模板描述
+Prepared sine-wave source	-	crates/moiren-app/src/ui/pages/node_catalog.rs:92	模板描述
+Adjust linear amplitude	-	crates/moiren-app/src/ui/pages/node_catalog.rs:93	模板描述
+Stereo balance, mono and swap	-	crates/moiren-app/src/ui/pages/node_catalog.rs:94	模板描述
+Linked peak dynamics	-	crates/moiren-app/src/ui/pages/node_catalog.rs:95	模板描述
+One parametric peaking band	-	crates/moiren-app/src/ui/pages/node_catalog.rs:96	模板描述
+Static channel routing matrix	-	crates/moiren-app/src/ui/pages/node_catalog.rs:100	模板描述
+Managed recording tap	-	crates/moiren-app/src/ui/pages/node_catalog.rs:101	模板描述
+Peak and RMS observation	-	crates/moiren-app/src/ui/pages/node_catalog.rs:102	模板描述
+Managed FFT observation	-	crates/moiren-app/src/ui/pages/node_catalog.rs:103	模板描述
+Ordered processor chain	-	crates/moiren-app/src/ui/pages/node_catalog.rs:104	模板描述
+Sum dynamic input ports	-	crates/moiren-app/src/ui/pages/node_catalog.rs:105	模板描述
+WASAPI render endpoint	-	crates/moiren-app/src/ui/pages/node_catalog.rs:106	模板描述
+Choose a source	-	crates/moiren-app/src/ui/pages/graph_canvas.rs:153	画布节点 detail
+Choose an output	-	crates/moiren-app/src/ui/pages/graph_canvas.rs:154	画布节点 detail
+%{ms} ms · %{percent}% wet	ms=settings.delay_ms|percent=settings.mix*100	crates/moiren-app/src/ui/pages/graph_canvas.rs:168	format! 原文 "{:.0} ms · {:.0}% wet"
+%{frames} frames	frames=settings.window_frames	crates/moiren-app/src/ui/window/graph/node_inspector.rs:775	电表观测窗口行数值
+%{frames} frame buffer	frames=settings.capacity_frames	crates/moiren-app/src/ui/pages/graph_canvas.rs:176	format! 原文 "{} frame buffer"
+%{frames} frame window	frames=settings.window_frames	crates/moiren-app/src/ui/pages/graph_canvas.rs:180	format! 原文 "{} frame window"
+FFT %{fft} · hop %{hop}	fft=settings.fft_size|hop=settings.hop_frames	crates/moiren-app/src/ui/pages/graph_canvas.rs:184	format! 原文 "FFT {} · hop {}"
+Empty rack	-	crates/moiren-app/src/ui/pages/graph_canvas.rs:187	画布节点 detail
+%{count} stage	count=settings.slots.len()	crates/moiren-app/src/ui/pages/graph_canvas.rs:190	机架单级（英文单数分支，中文与复数同形）
+%{count} stages	count=settings.slots.len()	crates/moiren-app/src/ui/pages/graph_canvas.rs:190	format! 原文 "{} stage{}"（单复数拼接："{} stage" / "{} stages"，中文无需复数）
+Overview	-	crates/moiren-app/src/ui/pages/graph_canvas_view.rs:147	画布总览标签
+Hidden	-	crates/moiren-app/src/ui/monitoring.rs:172	MeterStatus::label 动态键
+Stopped	-	crates/moiren-app/src/ui/monitoring.rs:173	MeterStatus::label 动态键
+Waiting for a complete window	-	crates/moiren-app/src/ui/monitoring.rs:175	MeterStatus::label 动态键
+Live	-	crates/moiren-app/src/ui/monitoring.rs:176	MeterStatus::label 动态键
+No recent audio window	-	crates/moiren-app/src/ui/monitoring.rs:177	MeterStatus::label 动态键
+No publisher	-	crates/moiren-app/src/ui/monitoring.rs:178	MeterStatus::label 动态键
+Meter subscription: %{error}	error={error:?} 或 {error} 调试格式	crates/moiren-app/src/ui/monitoring.rs:544|crates/moiren-app/src/ui/monitoring.rs:565	format! 原文 "Meter subscription: {error:?}" 与 "Meter subscription: {error}"
+Idle	-	crates/moiren-app/src/ui/presentation.rs:20	phase_text 动态键
+Starting	-	crates/moiren-app/src/ui/presentation.rs:21	phase_text 动态键
+Running	-	crates/moiren-app/src/ui/presentation.rs:22	phase_text 动态键
+Stopping	-	crates/moiren-app/src/ui/presentation.rs:23	phase_text 动态键
+Failed	-	crates/moiren-app/src/ui/presentation.rs:24	phase_text 动态键
+Exiting	-	crates/moiren-app/src/ui/presentation.rs:25	phase_text 动态键
+Exited	-	crates/moiren-app/src/ui/presentation.rs:26	phase_text 动态键
+Explicit stream buffers control professional audio latency	-	crates/moiren-app/src/ui/presentation.rs:32	latency_apply_text（当前仅测试引用，保留键）
+Active profile matches selection	-	crates/moiren-app/src/ui/presentation.rs:35	latency_apply_text（当前仅测试引用，保留键）
+Pending: apply graph or start again to use selected profile	-	crates/moiren-app/src/ui/presentation.rs:36	latency_apply_text（当前仅测试引用，保留键）
+Selected profile applies on next Apply / Start	-	crates/moiren-app/src/ui/presentation.rs:37	latency_apply_text（当前仅测试引用，保留键）
+Master output	-	crates/moiren-app/src/ui/presentation.rs:75|crates/moiren-app/src/ui/presentation.rs:148	presentation 流类型
+Follower output	-	crates/moiren-app/src/ui/presentation.rs:77|crates/moiren-app/src/ui/presentation.rs:149	presentation 流类型
+%{prefix}: actual stream	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:81	format! 原文 "{prefix}: actual stream"
+ASIO driver (driver owns mode)	-	crates/moiren-app/src/ui/presentation.rs:95	backend/mode 行值
+%{prefix}: backend / mode	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:93	format! 原文 "{prefix}: backend / mode"
+%{prefix}: requested buffer	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:100	format! 原文 "{prefix}: requested buffer"
+%{prefix}: bridge counters	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:108	format! 原文 "{prefix}: bridge counters"
+Dropped %{dropped} / silence %{silent} frames	dropped=stream.dropped_frames|silent=stream.silent_frames	crates/moiren-app/src/ui/presentation.rs:110	format! 原文 "Dropped {} / silence {} frames"
+%{prefix}: ASIO callback counters	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:116	format! 原文 "{prefix}: ASIO callback counters"
+%{callbacks} callbacks; capture dropped %{dropped} / render silence %{silent} frames (includes startup)	callbacks=stream.native_callbacks|dropped=stream.native_dropped_frames|silent=stream.native_silent_frames	crates/moiren-app/src/ui/presentation.rs:117	format! 原文 "{} callbacks; capture dropped {} / render silence {} frames (includes startup)"
+%{prefix}: driver-reported latency	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:120	format! 原文 "{prefix}: driver-reported latency"
+Input %{input} / output %{output} frames; excludes application queues	input=latency.input_frames|output=latency.output_frames	crates/moiren-app/src/ui/presentation.rs:125	format! 原文 "Input {} / output {} frames; excludes application queues"
+Unavailable (not measured round-trip latency)	-	crates/moiren-app/src/ui/presentation.rs:130	驱动延迟缺失回退值
+Application input	-	crates/moiren-app/src/ui/presentation.rs:151	NativeStreamKind 类型
+Virtual playback	-	crates/moiren-app/src/ui/presentation.rs:152	NativeStreamKind 类型
+Virtual microphone	-	crates/moiren-app/src/ui/presentation.rs:153	NativeStreamKind 类型
+%{prefix}: actual timing	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:157	format! 原文 "{prefix}: actual timing"
+period unknown	-	crates/moiren-app/src/ui/presentation.rs:169	周期缺失回退值
+%{rate} Hz; %{period}; capacity %{capacity} frames	rate=timing.sample_rate|period=period 文本|capacity=timing.capacity_frames	crates/moiren-app/src/ui/presentation.rs:171	format! 原文 "{} Hz; {period}; capacity {} frames"
+Virtual capture; no hardware period	-	crates/moiren-app/src/ui/presentation.rs:175	时序缺失回退值
+%{prefix}: period request	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:179	format! 原文 "{prefix}: period request"
+%{ms} ms requested	ms=period.desired_period_ms（{ms:.2}）	crates/moiren-app/src/ui/presentation.rs:182	format! 原文 "{ms:.2} ms requested"
+Device default requested	-	crates/moiren-app/src/ui/presentation.rs:183	周期请求缺失回退值
+%{prefix}: initialization	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:186	format! 原文 "{prefix}: initialization"；行值为 {:?} 调试输出，保持英文
+%{prefix}: render queue	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:199	format! 原文 "{prefix}: render queue"
+Target %{target} / capacity %{capacity} frames	target=queue.target_frames|capacity=queue.capacity_frames	crates/moiren-app/src/ui/presentation.rs:201	format! 原文 "Target {} / capacity {} frames"
+%{prefix}: bridge queue	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:208	format! 原文 "{prefix}: bridge queue"
+Prime %{prime} / capacity %{capacity} frames	prime=queue.prime_frames|capacity=queue.capacity_frames	crates/moiren-app/src/ui/presentation.rs:210	format! 原文 "Prime {} / capacity {} frames"
+Stream %{index}	index=position+1	crates/moiren-app/src/ui/presentation.rs:222	format! 原文 "Stream {}"
+Unmapped stream	-	crates/moiren-app/src/ui/presentation.rs:223	桥前缀回退
+%{prefix}: live queue / clock	prefix=format!("Stream {}") 或 "Unmapped stream"	crates/moiren-app/src/ui/presentation.rs:225	format! 原文 "{prefix}: live queue / clock"
+%{prefix}: faults / recovery	prefix=format!("Stream {}") 或 "Unmapped stream"	crates/moiren-app/src/ui/presentation.rs:232	format! 原文 "{prefix}: faults / recovery"
+Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}	underrun=bridge.counters.underrun_frames|dropped=bridge.counters.dropped_frames|resets=bridge.counters.resets|recoveries=bridge.counters.backlog_recoveries	crates/moiren-app/src/ui/presentation.rs:234	format! 原文 "Underrun {} / dropped {} frames; resets {} / backlog recoveries {}"
+Applying changes...	-	crates/moiren-app/src/ui/presentation.rs:260|crates/moiren-app/src/ui/presentation.rs:263	control_feedback
+Changes applied	-	crates/moiren-app/src/ui/presentation.rs:268	control_feedback
+Audio routing changed. Try again.	-	crates/moiren-app/src/ui/presentation.rs:271	control_feedback
+This control is no longer available.	-	crates/moiren-app/src/ui/presentation.rs:273	control_feedback
+Choose a valid parameter value.	-	crates/moiren-app/src/ui/presentation.rs:274	control_feedback
+Audio controls are busy. Try again.	-	crates/moiren-app/src/ui/presentation.rs:275	control_feedback
+Unable to apply this change. Try again.	-	crates/moiren-app/src/ui/presentation.rs:277	control_feedback
+No parameter changes requested	-	crates/moiren-app/src/ui/presentation.rs:282	control_feedback
+Next start · engine stopped	-	crates/moiren-app/src/ui/presentation.rs:284	control_feedback
+Test tone	-	crates/moiren-app/src/ui/state.rs:39	SourceMode::title 动态键
+Application	-	crates/moiren-app/src/ui/state.rs:41	SourceMode::title 动态键
+Choose an available source and output before starting.	-	crates/moiren-app/src/ui/state.rs:423	启动校验错误，显示在错误条
+Graph is not ready: %{error}	error={error}	crates/moiren-app/src/ui/state.rs:440	format! 原文 "Graph is not ready: {error}"
+Unavailable output	-	crates/moiren-app/src/ui/state.rs:599	output_name 回退
+Test tone · %{frequency} Hz	frequency=frequency_hz（{frequency_hz:.0}）	crates/moiren-app/src/ui/state.rs:604	format! 原文 "Test tone · {frequency_hz:.0} Hz"
+Unavailable input	-	crates/moiren-app/src/ui/state.rs:610	source_name 回退
+%{name} (PID %{pid})	name=进程名（运行时）|pid=pid	crates/moiren-app/src/ui/state.rs:620	format! 原文 "{} (PID {pid})"
+Unavailable application (PID %{pid})	pid=pid	crates/moiren-app/src/ui/state.rs:621	format! 原文 "Unavailable application (PID {pid})"
+Show Moiren	-	crates/moiren-app/src/ui/tray.rs:42	托盘菜单
+Stop Session	-	crates/moiren-app/src/ui/tray.rs:43	托盘菜单
+Exit	-	crates/moiren-app/src/ui/tray.rs:44	托盘菜单
+Minimize window	-	crates/moiren-app/src/ui/widgets/navigation.rs:29	标题栏按钮无障碍标签
+Maximize window	-	crates/moiren-app/src/ui/widgets/navigation.rs:30	标题栏按钮无障碍标签
+Close window	-	crates/moiren-app/src/ui/widgets/navigation.rs:31	标题栏按钮无障碍标签
+Compatible	-	crates/moiren-app/src/service/latency.rs:19	AudioLatencyProfile::title 动态键
+Balanced	-	crates/moiren-app/src/service/latency.rs:20	AudioLatencyProfile::title 动态键
+Low	-	crates/moiren-app/src/service/latency.rs:21	AudioLatencyProfile::title 动态键
+Default device period and full render capacity; generous input queue.	-	crates/moiren-app/src/service/latency.rs:28	AudioLatencyProfile::description 动态键
+Request 10 ms periods; queues validated against actual device timing.	-	crates/moiren-app/src/service/latency.rs:31	AudioLatencyProfile::description 动态键
+Request 5 ms periods; smaller queue margins require device support.	-	crates/moiren-app/src/service/latency.rs:33	AudioLatencyProfile::description 动态键
+WASAPI	-	crates/moiren-engine/src/audio_config.rs:28	AudioBackend::title 动态键；保留原文
+ASIO	-	crates/moiren-engine/src/audio_config.rs:29	AudioBackend::title 动态键；保留原文
+32-bit float	-	crates/moiren-engine/src/audio_config.rs:47|crates/moiren-engine/src/audio_config.rs:81	ProcessingPrecision/SampleFormat::title 动态键
+64-bit float	-	crates/moiren-engine/src/audio_config.rs:48|crates/moiren-engine/src/audio_config.rs:82	ProcessingPrecision/SampleFormat::title 动态键
+Device native	-	crates/moiren-engine/src/audio_config.rs:77	SampleFormat::title 动态键
+16-bit PCM	-	crates/moiren-engine/src/audio_config.rs:78	SampleFormat::title 动态键
+24-bit PCM	-	crates/moiren-engine/src/audio_config.rs:79	SampleFormat::title 动态键
+32-bit PCM	-	crates/moiren-engine/src/audio_config.rs:80	SampleFormat::title 动态键
+INPUTS	-	crates/moiren-app/src/ui/window/mixer/routing.rs:32|crates/moiren-app/src/ui/window/mixer/routing.rs:78	Mixer integration
+Unknown	-	crates/moiren-app/src/ui/window/mixer/routing.rs:107	Mixer integration
+%{name} → in %{port}	name|port	crates/moiren-app/src/ui/window/mixer/routing.rs:140	Mixer integration
+%{name} · out %{source_port} → %{target} · in %{port}	name|source_port|target|port	crates/moiren-app/src/ui/window/mixer/routing.rs:143	Mixer integration
+Resource · %{name}	name	crates/moiren-app/src/ui/window/mixer/routing.rs:164	Mixer integration
+No inputs	-	crates/moiren-app/src/ui/window/mixer/routing.rs:170	Mixer integration
+No sends	-	crates/moiren-app/src/ui/window/mixer/routing.rs:346	Mixer integration
+Enable send; turning it off preserves its gain	-	crates/moiren-app/src/ui/window/mixer/routing.rs:246	Mixer integration
+PRE: after channel mode, balance and mute; before gain and Dim. POST: after gain and Dim.	-	crates/moiren-app/src/ui/window/mixer/routing.rs:320	Mixer integration
+Mute this channel	-	crates/moiren-app/src/ui/window/mixer/strip_controls.rs:28	Mixer integration
+Solo this channel and its connected signal path	-	crates/moiren-app/src/ui/window/mixer/strip_controls.rs:40	Mixer integration
+Stereo -> Mono average -> Left to both -> Right to both -> Swap	-	crates/moiren-app/src/ui/window/mixer/strip_controls.rs:66	Mixer integration
+Cycle normal, mono average, individual channels, and reverse channel order	-	crates/moiren-app/src/ui/window/mixer/strip_controls.rs:68	Mixer integration
+Dim attenuates the post-fader signal by 12 dB	-	crates/moiren-app/src/ui/window/mixer/strip_controls.rs:76	Mixer integration
+Drag to reorder channels within the same mixer section	-	crates/moiren-app/src/ui/window/mixer.rs:259	Mixer integration
+Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.	-	crates/moiren-app/src/ui/window/mixer.rs:489	Mixer integration
+Peak fall-off · dB/s	-	crates/moiren-app/src/ui/window/mixer.rs:498	Mixer integration
+Peak hold	-	crates/moiren-app/src/ui/window/mixer.rs:509	Mixer integration
+Off	-	crates/moiren-app/src/ui/window/mixer.rs:512	Mixer integration

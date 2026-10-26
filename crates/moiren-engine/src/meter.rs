@@ -7,12 +7,21 @@ use crate::{
 };
 use rtrb::{Consumer, Producer, RingBuffer};
 
+mod polling;
 pub mod signal;
+pub use polling::MeterPollingTimer;
 
-/// Default level analysis window: 480 frames ≈ 10 ms at 48 kHz, so
-/// observations arrive at ~100 Hz and the display ballistics interpolate
-/// them to the frame rate. The window delays the display, never the audio.
+/// Default explicit Meter-node integration window: 480 frames is 10 ms at
+/// 48 kHz. Implicit UI observers use [`ui_window_frames`] instead. Analysis
+/// windows delay observations, never audio.
 pub const DEFAULT_WINDOW_FRAMES: usize = 480;
+
+/// Implicit UI observers target at least 240 analysis windows per audio second.
+/// Derive this off the audio thread from the validated processing rate; explicit
+/// Meter-node settings keep their chosen integration interval instead.
+pub fn ui_window_frames(processing_sample_rate: f64) -> usize {
+    ((processing_sample_rate / 240.0).floor() as usize).max(1)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -172,6 +181,21 @@ impl<S: ProcessingSample> RtObserver<S> for LevelMeter {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn implicit_ui_windows_floor_the_rate_with_at_least_one_frame() {
+        for (rate, frames) in [
+            (1.0, 1),
+            (239.0, 1),
+            (240.0, 1),
+            (44_100.0, 183),
+            (48_000.0, 200),
+            (96_000.0, 400),
+        ] {
+            assert_eq!(super::ui_window_frames(rate), frames);
+        }
+        assert_eq!(super::MeterSettings::default().window_frames, 480);
+    }
+
     use super::*;
     use crate::{
         buffer::{BufferArena, BufferSlotLayout, PortAccess, ProcessIo},

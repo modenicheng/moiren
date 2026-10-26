@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 use super::*;
 use controls::*;
 use gpui_kit::base::FocusTrapElement;
@@ -27,9 +29,13 @@ pub(super) fn overlay(
     let dismiss = this.clone();
     let mut tabs = div().flex().gap(px(6.));
     for (id, title, section) in [
-        ("settings-audio", "Audio", Section::Audio),
-        ("settings-appearance", "Appearance", Section::Appearance),
-        ("settings-diagnostics", "Diagnostics", Section::Diagnostics),
+        ("settings-audio", t!("Audio"), Section::Audio),
+        ("settings-appearance", t!("Appearance"), Section::Appearance),
+        (
+            "settings-diagnostics",
+            t!("Diagnostics"),
+            Section::Diagnostics,
+        ),
     ] {
         let this = this.clone();
         tabs = tabs.child(
@@ -133,11 +139,11 @@ pub(super) fn overlay(
                                         .flex()
                                         .flex_col()
                                         .gap(px(4.))
-                                        .child(heading("Settings"))
-                                        .child(label("Audio defaults for this workstation")),
+                                        .child(heading(t!("Settings")))
+                                        .child(label(t!("Audio defaults for this workstation"))),
                                 )
                                 .child(
-                                    button("close-settings", "Close")
+                                    button("close-settings", t!("Close"))
                                         .variant(ButtonVariant::Ghost)
                                         .on_click(move |_, window, cx| {
                                             close.update(cx, |shell, cx| {
@@ -185,15 +191,15 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .flex()
         .flex_col()
         .gap(px(12.))
-        .child(heading("Audio system"))
+        .child(heading(t!("Audio system")))
         .child(field(
-            "Backend",
+            &t!("Backend"),
             choices(
                 shell,
                 Editor::Global,
                 "audio-backend",
                 config.backend,
-                AudioBackend::ALL.map(|value| (value, value.title().into())),
+                AudioBackend::ALL.map(|value| (value, t!(value.title()).into())),
                 |draft, value| draft.audio.backend = value,
                 cx,
             ),
@@ -204,7 +210,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                 .flex_wrap()
                 .gap(px(24.))
                 .child(field(
-                    "Processing sample rate",
+                    &t!("Processing sample rate"),
                     choices(
                         shell,
                         Editor::Global,
@@ -216,20 +222,20 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                     ),
                 ))
                 .child(field(
-                    "Processing precision",
+                    &t!("Processing precision"),
                     choices(
                         shell,
                         Editor::Global,
                         "processing-precision",
                         config.processing.precision,
-                        ProcessingPrecision::ALL.map(|value| (value, value.title().into())),
+                        ProcessingPrecision::ALL.map(|value| (value, t!(value.title()).into())),
                         |draft, value| draft.audio.processing.precision = value,
                         cx,
                     ),
                 )),
         )
         .child(field(
-            "Processing block (frames / ms)",
+            &t!("Processing block (frames / ms)"),
             choices(
                 shell,
                 Editor::Global,
@@ -245,14 +251,16 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                 cx,
             ),
         ));
-    system = system.child(label("Processing precision is independent of the device sample format. Buffers are requests; actual periods are reported in Diagnostics."));
+    system = system.child(label(t!(
+        "Processing precision is independent of the device sample format. Buffers are requests; actual periods are reported in Diagnostics."
+    )));
     let input = div()
         .flex_1()
         .min_w_0()
         .flex()
         .flex_col()
         .gap(px(12.))
-        .child(heading("Input defaults"))
+        .child(heading(t!("Input defaults")))
         .child(stream_editor(
             shell,
             Editor::Global,
@@ -266,7 +274,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .flex()
         .flex_col()
         .gap(px(12.))
-        .child(heading("Output defaults"))
+        .child(heading(t!("Output defaults")))
         .child(stream_editor(
             shell,
             Editor::Global,
@@ -277,21 +285,48 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     div().flex().flex_col().gap(px(20.)).child(system)
         .child(div().pt(px(16.)).border_t_1().border_color(theme::BORDER).flex().gap(px(24.)).child(input).child(output))
         .child(label(if config.backend == AudioBackend::Wasapi {
-            "Shared uses Windows client-format conversion without changing the system mix format. Exclusive requires device support and sole access. Unsupported requests report an error."
+            t!("Shared uses Windows client-format conversion without changing the system mix format. Exclusive requires device support and sole access. Unsupported requests report an error.")
         } else {
-            "ASIO uses one driver session for input and output. Rate and buffer requests must agree across that session; encoding is determined by the driver. Select a driver in Devices."
+            t!("ASIO uses one driver session for input and output. Rate and buffer requests must agree across that session; encoding is determined by the driver. Select a driver in Devices.")
         }))
-        .child(label(format!("{} input / {} output overrides. Configure individual devices in Devices; overrides keep their complete settings when defaults change.", config.input_overrides.len(), config.output_overrides.len())))
+        .child(label(t!(
+            "%{input_count} input / %{output_count} output overrides. Configure individual devices in Devices; overrides keep their complete settings when defaults change.",
+            input_count = config.input_overrides.len(),
+            output_count = config.output_overrides.len()
+        )))
         .when(config == &AudioSettings::default(), |view| view.child(latency_policy(shell, cx)))
         .when(config != &AudioSettings::default(), |view| view.child(label(
-            "Explicit audio settings use the requested device buffers. Legacy queue/recovery profiles apply to the default WASAPI shared configuration."
+            t!("Explicit audio settings use the requested device buffers. Legacy queue/recovery profiles apply to the default WASAPI shared configuration.")
         )))
+}
+
+fn language_choices(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
+    let mut row = div().flex().flex_wrap().gap(px(4.));
+    for (index, language) in crate::i18n::UiLanguage::ALL.into_iter().enumerate() {
+        let this = cx.entity();
+        row = row.child(
+            button(
+                SharedString::from(format!("language-{index}")),
+                language.title(),
+            )
+            .variant(if shell.preferences.language == language {
+                ButtonVariant::Primary
+            } else {
+                ButtonVariant::Secondary
+            })
+            .disabled(shell.settings.busy())
+            .on_click(move |_, _, cx| {
+                this.update(cx, |shell, cx| shell.set_language(language, cx));
+            }),
+        );
+    }
+    row
 }
 
 fn latency_policy(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     use crate::service::AudioLatencyProfile;
     field(
-        "Queue / recovery policy",
+        &t!("Queue / recovery policy"),
         choices(
             shell,
             Editor::Global,
@@ -302,12 +337,12 @@ fn latency_policy(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                 AudioLatencyProfile::Balanced,
                 AudioLatencyProfile::Low,
             ]
-            .map(|profile| (profile, profile.title().into())),
+            .map(|profile| (profile, t!(profile.title()).into())),
             |draft, profile| draft.profile = profile,
             cx,
         ),
     )
-    .child(label(shell.settings.global.profile.description()))
+    .child(label(t!(shell.settings.global.profile.description())))
 }
 
 fn appearance(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
@@ -315,30 +350,31 @@ fn appearance(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .flex()
         .flex_col()
         .gap(px(16.))
-        .child(heading("Appearance"))
-        .child(detail("Theme", "Dark workstation"))
+        .child(heading(t!("Appearance")))
+        .child(field(&t!("Language"), language_choices(shell, cx)))
+        .child(detail(&t!("Theme"), t!("Dark workstation")))
         .child(field(
-            "Density",
+            &t!("Density"),
             choices(
                 shell,
                 Editor::Global,
                 "density",
                 shell.settings.global.density,
                 [
-                    (Density::Comfortable, "Comfortable".into()),
-                    (Density::Compact, "Compact".into()),
+                    (Density::Comfortable, t!("Comfortable").into()),
+                    (Density::Compact, t!("Compact").into()),
                 ],
                 |draft, value| draft.density = value,
                 cx,
             ),
         ))
-        .child(label(
-            "Save to use this density throughout the workstation.",
-        ))
-        .child(heading("Keyboard"))
-        .child(detail("Next / previous control", "Tab / Shift + Tab"))
-        .child(detail("Activate focused action", "Enter / Space"))
-        .child(detail("Dismiss settings", "Escape"))
+        .child(label(t!(
+            "Save to use this density throughout the workstation."
+        )))
+        .child(heading(t!("Keyboard")))
+        .child(detail(&t!("Next / previous control"), "Tab / Shift + Tab"))
+        .child(detail(&t!("Activate focused action"), "Enter / Space"))
+        .child(detail(&t!("Dismiss settings"), "Escape"))
 }
 
 fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
@@ -349,27 +385,27 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .flex()
         .flex_col()
         .gap(px(8.))
-        .child(heading("Saved request"))
-        .child(detail("Backend", requested.backend.title()))
-        .child(detail("Processing", processing_summary(requested)))
+        .child(heading(t!("Saved request")))
+        .child(detail(&t!("Backend"), t!(requested.backend.title())))
+        .child(detail(&t!("Processing"), processing_summary(requested)))
         .child(detail(
-            "Input",
+            &t!("Input"),
             stream_summary(requested.backend, requested.input),
         ))
         .child(detail(
-            "Output",
+            &t!("Output"),
             stream_summary(requested.backend, requested.output),
         ))
         .child(detail(
-            "Legacy recovery policy",
-            snapshot.latency_profile.title(),
+            &t!("Legacy recovery policy"),
+            t!(snapshot.latency_profile.title()),
         ))
-        .child(label(
-            "Unsaved edits stay in the Audio draft until Save or Restart Audio.",
-        ))
-        .child(div().mt(px(12.)).child(heading("Active session")))
+        .child(label(t!(
+            "Unsaved edits stay in the Audio draft until Save or Restart Audio."
+        )))
+        .child(div().mt(px(12.)).child(heading(t!("Active session"))))
         .child(detail(
-            "State",
+            &t!("State"),
             crate::ui::presentation::phase_text(snapshot),
         ));
     if let Some(active) = snapshot
@@ -378,20 +414,20 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .filter(|_| snapshot.phase == SessionPhase::Running)
     {
         view = view
-            .child(detail("Active backend", active.backend.title()))
-            .child(detail("Active processing", processing_summary(active)))
+            .child(detail(&t!("Active backend"), t!(active.backend.title())))
+            .child(detail(&t!("Active processing"), processing_summary(active)))
             .child(detail(
-                "Active input request",
+                &t!("Active input request"),
                 stream_summary(active.backend, active.input),
             ))
             .child(detail(
-                "Active output request",
+                &t!("Active output request"),
                 stream_summary(active.backend, active.output),
             ));
     } else {
-        view = view.child(label("No active audio configuration"));
+        view = view.child(label(t!("No active audio configuration")));
     }
-    view = view.child(heading("Actual native timing"));
+    view = view.child(heading(t!("Actual native timing")));
     for (key, value) in crate::ui::presentation::native_timing_rows(snapshot) {
         view = view.child(detail(&key, value));
     }
@@ -399,38 +435,43 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         snapshot,
         state.pending_request,
     )))
-        .child(detail("Catalog", format!("{} inputs / {} outputs / {} ASIO drivers / {} applications",
-            snapshot.catalog.inputs.len(), snapshot.catalog.outputs.len(), snapshot.catalog.asio_drivers.len(), snapshot.catalog.processes.len())))
+        .child(detail(&t!("Catalog"), t!(
+            "%{inputs} inputs / %{outputs} outputs / %{asio} ASIO drivers / %{apps} applications",
+            inputs = snapshot.catalog.inputs.len(),
+            outputs = snapshot.catalog.outputs.len(),
+            asio = snapshot.catalog.asio_drivers.len(),
+            apps = snapshot.catalog.processes.len()
+        )))
         .when_some(snapshot.catalog.asio_error.clone(), |view, error| view.child(
-            div().id("settings-asio-error").text_color(theme::DANGER).child(format!("ASIO discovery failed: {error}")).gpui_test_observe()
+            div().id("settings-asio-error").text_color(theme::DANGER).child(t!("ASIO discovery failed: %{error}", error = error).to_string()).gpui_test_observe()
         ))
-        .child(detail("CPU / physical latency / XRUN", "Unavailable"))
-        .child(label("Queue fill and callback timing do not measure CPU load, physical end-to-end latency or XRUN counts."))
+        .child(detail(&t!("CPU / physical latency / XRUN"), t!("Unavailable")))
+        .child(label(t!("Queue fill and callback timing do not measure CPU load, physical end-to-end latency or XRUN counts.")))
         .when_some(shell.project_message.clone(), |view, text| view.child(label(text)))
-        .child(button("quit-application", "Quit Moiren").variant(ButtonVariant::Danger).on_click(|_, _, cx| cx.quit()))
+        .child(button("quit-application", t!("Quit Moiren")).variant(ButtonVariant::Danger).on_click(|_, _, cx| cx.quit()))
 }
 
 pub(super) fn processing_summary(audio: &AudioSettings) -> String {
     format!(
         "{} / {} / {} frames",
         rate_title(audio.processing.sample_rate),
-        audio.processing.precision.title(),
+        t!(audio.processing.precision.title()),
         audio.processing.block_frames
     )
 }
 
 pub(super) fn stream_summary(backend: AudioBackend, stream: StreamSettings) -> String {
     let encoding = if backend == AudioBackend::Asio {
-        "Driver encoding".into()
+        t!("Driver encoding").into()
     } else {
         format!(
             "{} / {}",
             if stream.mode == DeviceMode::Shared {
-                "Shared"
+                t!("Shared")
             } else {
-                "Exclusive"
+                t!("Exclusive")
             },
-            stream.format.title()
+            t!(stream.format.title())
         )
     };
     format!(
@@ -438,11 +479,11 @@ pub(super) fn stream_summary(backend: AudioBackend, stream: StreamSettings) -> S
         stream
             .sample_rate
             .map(rate_title)
-            .unwrap_or_else(|| "Follow processing".into()),
+            .unwrap_or_else(|| t!("Follow processing").into()),
         encoding,
         stream
             .buffer_frames
             .map(|frames| format!("{frames} frames"))
-            .unwrap_or_else(|| "Driver default".into())
+            .unwrap_or_else(|| t!("Driver default").into())
     )
 }

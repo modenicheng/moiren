@@ -3,7 +3,7 @@ use super::{
     material, native,
     options::Options,
     progress, project,
-    report::{Checkpoint, Evidence, IdleHoldEvidence, PcmEvidence, Report},
+    report::{Checkpoint, Evidence, IdleHoldEvidence, PcmEvidence, ProbeTrail, Report},
     soak, validation,
 };
 use anyhow::{Context, bail, ensure};
@@ -396,21 +396,6 @@ struct LiveSession<'a> {
     deadline: Instant,
     started: Instant,
     last_snapshot: RefCell<Option<(Arc<moiren_app::service::AppSnapshot>, Instant)>>,
-}
-
-/// One control-side sample of the service's virtual boundary carrier
-/// probes, taken from the service snapshot during a soak.
-#[derive(Clone, Debug, serde::Serialize)]
-pub(super) struct ProbeTrail {
-    pub elapsed_ms: u64,
-    pub playback_level_frames: Option<u32>,
-    pub microphone_level_frames: Option<u32>,
-    pub playback_milli_ppm: Option<i32>,
-    pub microphone_milli_ppm: Option<i32>,
-    pub playback_xruns: Option<u64>,
-    pub microphone_xruns: Option<u64>,
-    pub playback_soft_events: Option<u64>,
-    pub microphone_soft_events: Option<u64>,
 }
 
 impl LiveSession<'_> {

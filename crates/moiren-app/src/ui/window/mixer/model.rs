@@ -1,5 +1,7 @@
 use super::*;
 use crate::service::GraphSnapshot;
+use crate::ui::widgets::fader::FaderScale;
+use rust_i18n::t;
 use std::collections::BTreeMap;
 
 pub(in crate::ui::window) struct MixerPresentation {
@@ -9,17 +11,31 @@ pub(in crate::ui::window) struct MixerPresentation {
     pub resize: Option<(bool, f32, f32)>,
     pub faders: BTreeMap<NodeId, Entity<base::slider::SliderState>>,
     pub sends: BTreeMap<EdgeId, Entity<base::slider::SliderState>>,
+    pub send_inputs: BTreeMap<EdgeId, Entity<component::input::InputState>>,
+    pub editing_send: Option<EdgeId>,
+    pub inputs_collapsed: bool,
+    pub sends_collapsed: bool,
+    synced_revision: Option<u64>,
+    #[cfg(feature = "gpui-test")]
+    pub trace: std::cell::RefCell<super::performance::MeterTrace>,
 }
 
 impl Default for MixerPresentation {
     fn default() -> Self {
         Self {
             order: Vec::new(),
-            width: 176.,
+            width: 160.,
             dock_width: 360.,
             resize: None,
             faders: BTreeMap::new(),
             sends: BTreeMap::new(),
+            send_inputs: BTreeMap::new(),
+            editing_send: None,
+            inputs_collapsed: false,
+            sends_collapsed: false,
+            synced_revision: None,
+            #[cfg(feature = "gpui-test")]
+            trace: Default::default(),
         }
     }
 }
@@ -56,13 +72,33 @@ pub(in crate::ui::window) fn sync_sliders<K: Ord + Clone, T: 'static>(
     rows: Vec<(K, f32, SliderEdit)>,
     release_applies: bool,
 ) {
+    sync_slider_range(
+        window,
+        cx,
+        state,
+        sliders,
+        rows,
+        release_applies,
+        [-60., 24., 0.1],
+    );
+}
+
+fn sync_slider_range<K: Ord + Clone, T: 'static>(
+    window: &mut Window,
+    cx: &mut Context<T>,
+    state: &Entity<UiState>,
+    sliders: &mut BTreeMap<K, Entity<base::slider::SliderState>>,
+    rows: Vec<(K, f32, SliderEdit)>,
+    release_applies: bool,
+    range: [f32; 3],
+) {
     for (id, value, edit) in rows {
         let slider = sliders.entry(id).or_insert_with(|| {
             let slider = cx.new(|_| {
                 base::slider::SliderState::new()
-                    .min(-60.)
-                    .max(24.)
-                    .step(0.1)
+                    .min(range[0])
+                    .max(range[1])
+                    .step(range[2])
                     .default_value(value)
             });
             let state = state.clone();
@@ -110,12 +146,27 @@ impl StudioShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let revision = self.state.read(cx).snapshot.graph.candidate_revision;
+        if self.mixer.synced_revision == Some(revision) {
+            return;
+        }
+        self.mixer.synced_revision = Some(revision);
         let graph = self.state.read(cx).snapshot.graph.clone();
         self.mixer.order.retain(|id| graph.node(*id).is_some());
         self.mixer.faders.retain(|id, _| graph.node(*id).is_some());
         self.mixer
             .sends
             .retain(|id, _| graph.graph.get_edge(*id).is_ok());
+        self.mixer
+            .send_inputs
+            .retain(|id, _| graph.graph.get_edge(*id).is_ok());
+        if self
+            .mixer
+            .editing_send
+            .is_some_and(|id| graph.graph.get_edge(id).is_err())
+        {
+            self.mixer.editing_send = None;
+        }
         for node in &graph.nodes {
             if !self.mixer.order.contains(&node.id) {
                 self.mixer.order.push(node.id);
@@ -128,13 +179,13 @@ impl StudioShell {
                 let id = node.id;
                 (
                     id,
-                    gain_db(node.mixer.gain),
+                    1. - FaderScale::position(node.mixer.gain),
                     Box::new(move |value: f32, graph: &GraphSnapshot| {
                         graph.node(id).map(|node| {
                             AppRequest::EditGraph(GraphEdit::SetMixer {
                                 node: id,
                                 state: MixerState {
-                                    gain: linear_gain(value),
+                                    gain: FaderScale::gain(1. - value),
                                     ..node.mixer
                                 },
                             })
@@ -143,14 +194,68 @@ impl StudioShell {
                 )
             })
             .collect();
-        sync_sliders(
+        sync_slider_range(
             window,
             cx,
             &self.state,
             &mut self.mixer.faders,
             faders,
             false,
+            [0., 1., 0.0001],
         );
+        for edge in graph.graph.edges() {
+            let id = edge.id();
+            let input = self.mixer.send_inputs.entry(id).or_insert_with(|| {
+                let input = cx.new(|cx| component::input::InputState::new(window, cx));
+                cx.subscribe(
+                    &input,
+                    move |shell, input, event: &component::input::InputEvent, cx| {
+                        if !matches!(
+                            event,
+                            component::input::InputEvent::PressEnter { .. }
+                                | component::input::InputEvent::Blur
+                        ) || shell.mixer.editing_send != Some(id)
+                        {
+                            return;
+                        }
+                        shell.mixer.editing_send = None;
+                        let text = input.read(cx).value();
+                        let gain = if matches!(text.trim(), "-inf" | "−∞" | "-∞") {
+                            Some(0.)
+                        } else {
+                            text.parse::<f64>()
+                                .ok()
+                                .filter(|db| db.is_finite() && (-120. ..=24.).contains(db))
+                                .map(|db| 10f64.powf(db / 20.))
+                        };
+                        if let Some(gain) = gain {
+                            shell.state.update(cx, |state, _| {
+                                if let Ok(edge) = state.snapshot.graph.graph.get_edge(id) {
+                                    state.dispatch(AppRequest::EditGraph(GraphEdit::SetSend {
+                                        edge: id,
+                                        params: SendParams {
+                                            gain,
+                                            ..*edge.params()
+                                        },
+                                    }));
+                                }
+                            });
+                        }
+                        cx.notify();
+                    },
+                )
+                .detach();
+                input
+            });
+            if self.mixer.editing_send != Some(id) {
+                let text = if edge.params().gain <= 0. {
+                    "-inf".into()
+                } else {
+                    format!("{:.1}", 20. * edge.params().gain.log10())
+                };
+                input.update(cx, |input, cx| input.set_value(text, window, cx));
+            }
+        }
         let sends = graph
             .graph
             .edges()
@@ -197,6 +302,6 @@ impl Render for StripDrag {
             .p(px(12.))
             .bg(theme::SURFACE_3)
             .text_color(theme::TEXT)
-            .child("Move channel")
+            .child(t!("Move channel"))
     }
 }

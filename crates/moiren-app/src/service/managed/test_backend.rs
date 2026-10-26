@@ -45,6 +45,9 @@ pub struct State {
     pub fail_update: AtomicBool,
     pub fail_owner: AtomicBool,
     pub pause_audio: AtomicBool,
+    /// Opt-in wall-clock delivery benchmark; normal lifecycle tests keep 8-frame callbacks.
+    pub timed_meter_frames: AtomicUsize,
+    pub render_history: Mutex<VecDeque<(u64, Instant)>>,
     pub fail_stop: AtomicBool,
     pub events: Mutex<VecDeque<ResourceEvent>>,
     pub drops: Mutex<Vec<String>>,
@@ -183,8 +186,18 @@ impl<S: ProcessingSample> PreparedTransport<S> for Transport {
                         driver_cancel.wait_cancelled(Duration::from_millis(1));
                         continue;
                     }
-                    match catch_unwind(AssertUnwindSafe(|| engine.render(8))) {
+                    let timed_frames = state.timed_meter_frames.load(Ordering::Relaxed);
+                    let began = Instant::now();
+                    match catch_unwind(AssertUnwindSafe(|| engine.render(timed_frames.max(8)))) {
                         Ok(Ok(_)) => {
+                            if timed_frames > 0 {
+                                // Test-backend instrumentation only, outside the render call.
+                                let mut history = state.render_history.lock().unwrap();
+                                if history.len() == 2048 {
+                                    history.pop_front();
+                                }
+                                history.push_back((engine.timeline(), began));
+                            }
                             *driver_timeline.lock().unwrap() = Some(OwnerTimeline {
                                 epoch: engine.epoch(),
                                 revision: engine.revision(),
@@ -201,7 +214,11 @@ impl<S: ProcessingSample> PreparedTransport<S> for Transport {
                             break;
                         }
                     }
-                    driver_cancel.wait_cancelled(Duration::from_millis(1));
+                    if timed_frames > 0 {
+                        thread::sleep(Duration::from_secs_f64(timed_frames as f64 / 48_000.));
+                    } else {
+                        driver_cancel.wait_cancelled(Duration::from_millis(1));
+                    }
                 }
                 if let Some(error) = &error {
                     *driver_status.lock().unwrap() = OwnerStatus::Failed(error.clone());

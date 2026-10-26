@@ -18,7 +18,7 @@ mod validation;
 pub use validation::validate_native_project;
 mod observations;
 mod profile;
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(crate) use observations::ObservationLease;
 pub use observations::{
     NativeBridgeObservation, NativeObservationSnapshot, NativeObservations, NativeStreamKind,

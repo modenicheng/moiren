@@ -1,11 +1,16 @@
 //! Pure text projections from [`AppSnapshot`]. These functions format
 //! snapshot state for display; they hold no UI state and dispatch no intent.
 
-use crate::service::{AppSnapshot, AudioBackend, SessionGeneration, SessionPhase};
+use crate::service::{AppSnapshot, SessionPhase};
+#[cfg(windows)]
+use crate::service::{AudioBackend, SessionGeneration};
+use rust_i18n::t;
+use std::borrow::Cow;
 
 /// Display-level stale guard mirroring the service's write-side filter. The
 /// owner identity is not published to the UI, so this deliberately checks only
 /// phase, generation, and the observation's own running flag.
+#[cfg(windows)]
 fn fresh_observation(
     phase: SessionPhase,
     generation: SessionGeneration,
@@ -15,32 +20,36 @@ fn fresh_observation(
     phase == SessionPhase::Running && generation == status_generation && running
 }
 
-pub fn phase_text(snapshot: &AppSnapshot) -> &'static str {
+pub fn phase_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
     match snapshot.phase {
-        SessionPhase::Idle => "Idle",
-        SessionPhase::Starting => "Starting",
-        SessionPhase::Running => "Running",
-        SessionPhase::Stopping => "Stopping",
-        SessionPhase::Failed => "Failed",
-        SessionPhase::Exiting => "Exiting",
-        SessionPhase::Exited => "Exited",
+        SessionPhase::Idle => t!("Idle"),
+        SessionPhase::Starting => t!("Starting"),
+        SessionPhase::Running => t!("Running"),
+        SessionPhase::Stopping => t!("Stopping"),
+        SessionPhase::Failed => t!("Failed"),
+        SessionPhase::Exiting => t!("Exiting"),
+        SessionPhase::Exited => t!("Exited"),
     }
 }
 
-pub fn latency_apply_text(snapshot: &AppSnapshot) -> &'static str {
+pub fn latency_apply_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
     if snapshot.audio_settings != crate::service::AudioSettings::default() {
-        return "Explicit stream buffers control professional audio latency";
+        return t!("Explicit stream buffers control professional audio latency");
     }
     match snapshot.active_latency_profile {
-        Some(active) if active == snapshot.latency_profile => "Active profile matches selection",
-        Some(_) => "Pending: apply graph or start again to use selected profile",
-        None => "Selected profile applies on next Apply / Start",
+        Some(active) if active == snapshot.latency_profile => {
+            t!("Active profile matches selection")
+        }
+        Some(_) => t!("Pending: apply graph or start again to use selected profile"),
+        None => t!("Selected profile applies on next Apply / Start"),
     }
 }
 
 /// Only the currently running owner can supply timing. In particular, a
 /// stopped or replaced owner must not leave plausible-looking stale values.
 pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
+    #[cfg(not(windows))]
+    let _ = snapshot;
     #[cfg(windows)]
     {
         use moiren_windows_audio::engine_backend::NativeStreamKind;
@@ -59,30 +68,31 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
             let mut rows = Vec::new();
             if let Some(settings) = &snapshot.active_audio_settings {
                 rows.push((
-                    "Processing".into(),
+                    t!("Processing").to_string(),
                     format!(
                         "{} Hz; {}; {} frames",
                         settings.processing.sample_rate,
-                        settings.processing.precision.title(),
+                        t!(settings.processing.precision.title()),
                         settings.processing.block_frames,
                     ),
                 ));
             }
             for (index, stream) in status.observation.streams.iter().enumerate() {
                 let kind = if stream.input {
-                    "Input"
+                    // "Input" is not in the i18n key catalog; kept as source text.
+                    "Input".to_string()
                 } else if stream.master {
-                    "Master output"
+                    t!("Master output").to_string()
                 } else {
-                    "Follower output"
+                    t!("Follower output").to_string()
                 };
                 let prefix = format!("{} {kind}", index + 1);
                 rows.push((
-                    format!("{prefix}: actual stream"),
+                    t!("%{prefix}: actual stream", prefix = prefix).to_string(),
                     format!(
                         "{} Hz; {}; {} channels; {} frames ({:.2} ms)",
                         stream.actual.sample_rate,
-                        stream.actual.format.title(),
+                        t!(stream.actual.format.title()),
                         stream.actual.channels,
                         stream.actual.buffer_frames,
                         f64::from(stream.actual.buffer_frames) * 1000.0
@@ -90,44 +100,54 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                     ),
                 ));
                 rows.push((
-                    format!("{prefix}: backend / mode"),
+                    t!("%{prefix}: backend / mode", prefix = prefix).to_string(),
                     match stream.requested.backend {
-                        AudioBackend::Asio => "ASIO driver (driver owns mode)".into(),
+                        AudioBackend::Asio => t!("ASIO driver (driver owns mode)").to_string(),
                         AudioBackend::Wasapi => format!("WASAPI / {:?}", stream.requested.mode),
                     },
                 ));
                 rows.push((
-                    format!("{prefix}: requested buffer"),
+                    t!("%{prefix}: requested buffer", prefix = prefix).to_string(),
                     stream
                         .requested
                         .period_frames
                         .map(|frames| format!("{frames} frames"))
-                        .unwrap_or_else(|| "Driver default".into()),
+                        .unwrap_or_else(|| t!("Driver default").to_string()),
                 ));
                 rows.push((
-                    format!("{prefix}: bridge counters"),
-                    format!(
-                        "Dropped {} / silence {} frames",
-                        stream.dropped_frames, stream.silent_frames,
-                    ),
+                    t!("%{prefix}: bridge counters", prefix = prefix).to_string(),
+                    t!(
+                        "Dropped %{dropped} / silence %{silent} frames",
+                        dropped = stream.dropped_frames,
+                        silent = stream.silent_frames,
+                    )
+                    .to_string(),
                 ));
                 if stream.requested.backend == AudioBackend::Asio {
                     rows.push((
-                        format!("{prefix}: ASIO callback counters"),
-                        format!("{} callbacks; capture dropped {} / render silence {} frames (includes startup)", stream.native_callbacks, stream.native_dropped_frames, stream.native_silent_frames),
+                        t!("%{prefix}: ASIO callback counters", prefix = prefix).to_string(),
+                        t!(
+                            "%{callbacks} callbacks; capture dropped %{dropped} / render silence %{silent} frames (includes startup)",
+                            callbacks = stream.native_callbacks,
+                            dropped = stream.native_dropped_frames,
+                            silent = stream.native_silent_frames,
+                        )
+                        .to_string(),
                     ));
                     rows.push((
-                        format!("{prefix}: driver-reported latency"),
+                        t!("%{prefix}: driver-reported latency", prefix = prefix).to_string(),
                         stream
                             .driver_latency
                             .map(|latency| {
-                                format!(
-                                    "Input {} / output {} frames; excludes application queues",
-                                    latency.input_frames, latency.output_frames
+                                t!(
+                                    "Input %{input} / output %{output} frames; excludes application queues",
+                                    input = latency.input_frames,
+                                    output = latency.output_frames,
                                 )
+                                .to_string()
                             })
                             .unwrap_or_else(|| {
-                                "Unavailable (not measured round-trip latency)".into()
+                                t!("Unavailable (not measured round-trip latency)").to_string()
                             }),
                     ));
                 }
@@ -145,16 +165,16 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
             let mut rows = Vec::new();
             for (index, stream) in status.observation.streams.iter().enumerate() {
                 let kind = match stream.kind {
-                    NativeStreamKind::MasterOutput => "Master output",
-                    NativeStreamKind::FollowerOutput => "Follower output",
-                    NativeStreamKind::PhysicalInput => "Physical input",
-                    NativeStreamKind::ProcessInput => "Application input",
-                    NativeStreamKind::VirtualPlayback => "Virtual playback",
-                    NativeStreamKind::VirtualMicrophone => "Virtual microphone",
+                    NativeStreamKind::MasterOutput => t!("Master output"),
+                    NativeStreamKind::FollowerOutput => t!("Follower output"),
+                    NativeStreamKind::PhysicalInput => t!("Physical input"),
+                    NativeStreamKind::ProcessInput => t!("Application input"),
+                    NativeStreamKind::VirtualPlayback => t!("Virtual playback"),
+                    NativeStreamKind::VirtualMicrophone => t!("Virtual microphone"),
                 };
                 let prefix = format!("{} {kind}", index + 1);
                 rows.push((
-                    format!("{prefix}: actual timing"),
+                    t!("%{prefix}: actual timing", prefix = prefix).to_string(),
                     stream
                         .timing
                         .map(|timing| {
@@ -166,24 +186,28 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                                         f64::from(frames) * 1000. / f64::from(timing.sample_rate)
                                     )
                                 })
-                                .unwrap_or_else(|| "period unknown".into());
-                            format!(
-                                "{} Hz; {period}; capacity {} frames",
-                                timing.sample_rate, timing.capacity_frames
+                                .unwrap_or_else(|| t!("period unknown").to_string());
+                            t!(
+                                "%{rate} Hz; %{period}; capacity %{capacity} frames",
+                                rate = timing.sample_rate,
+                                period = period,
+                                capacity = timing.capacity_frames,
                             )
+                            .to_string()
                         })
-                        .unwrap_or_else(|| "Virtual capture; no hardware period".into()),
+                        .unwrap_or_else(|| t!("Virtual capture; no hardware period").to_string()),
                 ));
                 if let Some(period) = stream.shared_period {
                     rows.push((
-                        format!("{prefix}: period request"),
+                        t!("%{prefix}: period request", prefix = prefix).to_string(),
                         period
                             .desired_period_ms
-                            .map(|ms| format!("{ms:.2} ms requested"))
-                            .unwrap_or_else(|| "Device default requested".into()),
+                            .map(|ms| t!("%{ms} ms requested", ms = format!("{ms:.2}")).to_string())
+                            .unwrap_or_else(|| t!("Device default requested").to_string()),
                     ));
+                    // The initialization value is {:?} debug output and stays in English.
                     rows.push((
-                        format!("{prefix}: initialization"),
+                        t!("%{prefix}: initialization", prefix = prefix).to_string(),
                         format!(
                             "{:?}; fallback {}",
                             period.initialization_api,
@@ -196,20 +220,24 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                 }
                 if let Some(queue) = stream.render_queue {
                     rows.push((
-                        format!("{prefix}: render queue"),
-                        format!(
-                            "Target {} / capacity {} frames",
-                            queue.target_frames, queue.capacity_frames
-                        ),
+                        t!("%{prefix}: render queue", prefix = prefix).to_string(),
+                        t!(
+                            "Target %{target} / capacity %{capacity} frames",
+                            target = queue.target_frames,
+                            capacity = queue.capacity_frames,
+                        )
+                        .to_string(),
                     ));
                 }
                 if let Some(queue) = stream.input_queue {
                     rows.push((
-                        format!("{prefix}: bridge queue"),
-                        format!(
-                            "Prime {} / capacity {} frames",
-                            queue.prime_frames, queue.capacity_frames
-                        ),
+                        t!("%{prefix}: bridge queue", prefix = prefix).to_string(),
+                        t!(
+                            "Prime %{prime} / capacity %{capacity} frames",
+                            prime = queue.prime_frames,
+                            capacity = queue.capacity_frames,
+                        )
+                        .to_string(),
                     ));
                 }
             }
@@ -219,30 +247,31 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                     .streams
                     .iter()
                     .position(|stream| stream.node == bridge.node)
-                    .map(|index| format!("Stream {}", index + 1))
-                    .unwrap_or_else(|| "Unmapped stream".into());
+                    .map(|index| t!("Stream %{index}", index = index + 1).to_string())
+                    .unwrap_or_else(|| t!("Unmapped stream").to_string());
                 rows.push((
-                    format!("{prefix}: live queue / clock"),
+                    t!("%{prefix}: live queue / clock", prefix = prefix).to_string(),
                     format!(
                         "{} frames; {:+.1} ppm",
                         bridge.counters.fill_frames, bridge.counters.correction_ppm
                     ),
                 ));
                 rows.push((
-                    format!("{prefix}: faults / recovery"),
-                    format!(
-                        "Underrun {} / dropped {} frames; resets {} / backlog recoveries {}",
-                        bridge.counters.underrun_frames,
-                        bridge.counters.dropped_frames,
-                        bridge.counters.resets,
-                        bridge.counters.backlog_recoveries,
-                    ),
+                    t!("%{prefix}: faults / recovery", prefix = prefix).to_string(),
+                    t!(
+                        "Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}",
+                        underrun = bridge.counters.underrun_frames,
+                        dropped = bridge.counters.dropped_frames,
+                        resets = bridge.counters.resets,
+                        recoveries = bridge.counters.backlog_recoveries,
+                    )
+                    .to_string(),
                 ));
             }
             return rows;
         }
     }
-    vec![("Actual native timing".into(), "—".into())]
+    vec![(t!("Actual native timing").to_string(), "—".into())]
 }
 
 pub fn elapsed_text(snapshot: &AppSnapshot) -> String {
@@ -257,30 +286,30 @@ pub fn elapsed_text(snapshot: &AppSnapshot) -> String {
 pub fn control_feedback(snapshot: &AppSnapshot, pending_request: bool) -> String {
     let control = &snapshot.control;
     if pending_request {
-        return "Applying changes...".into();
+        return t!("Applying changes...").into();
     }
     if control.accepted_pending > 0 {
-        return "Applying changes...".into();
+        return t!("Applying changes...").into();
     }
     if let Some(reply) = control.last_result {
         use moiren_core::protocol::ReplyCode;
         return match reply.code {
-            ReplyCode::Applied | ReplyCode::AppliedLate => "Changes applied".into(),
-            ReplyCode::Accepted => "Applying changes...".into(),
+            ReplyCode::Applied | ReplyCode::AppliedLate => t!("Changes applied").into(),
+            ReplyCode::Accepted => t!("Applying changes...").into(),
             ReplyCode::StaleRevision | ReplyCode::StaleEpoch => {
-                "Audio routing changed. Try again.".into()
+                t!("Audio routing changed. Try again.").into()
             }
-            ReplyCode::UnknownParameter => "This control is no longer available.".into(),
-            ReplyCode::InvalidValue => "Choose a valid parameter value.".into(),
-            ReplyCode::QueueFull => "Audio controls are busy. Try again.".into(),
+            ReplyCode::UnknownParameter => t!("This control is no longer available.").into(),
+            ReplyCode::InvalidValue => t!("Choose a valid parameter value.").into(),
+            ReplyCode::QueueFull => t!("Audio controls are busy. Try again.").into(),
             ReplyCode::OutOfOrder | ReplyCode::InvalidTime => {
-                "Unable to apply this change. Try again.".into()
+                t!("Unable to apply this change. Try again.").into()
             }
         };
     }
     if snapshot.phase == SessionPhase::Running {
-        "No parameter changes requested".into()
+        t!("No parameter changes requested").into()
     } else {
-        "Next start · engine stopped".into()
+        t!("Next start · engine stopped").into()
     }
 }

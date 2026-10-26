@@ -49,6 +49,7 @@ pub const IOCTL_WRITE_PCM: u32 = 0x0022_e019;
 /// Control-interface identity in the kernel header's canonical word order
 /// (Data1, Data2, Data3, then Data4 big-endian). Discovery builds the Windows
 /// `GUID` from this single value; `abi_conformance` pins it to the header.
+#[cfg(any(windows, test))]
 pub const CONTROL_INTERFACE_GUID_U128: u128 = 0x4c7ef487_61a1_4a21_8d63_9d45115a7a5b;
 
 /// Persistent identity bytes, independent of runtime tokens and MMDevice IDs.
