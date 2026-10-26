@@ -526,6 +526,27 @@ Guest inventory rechecked over SSH on 2026-10-27: only the current
 guest evidence is still archived with per-file length/SHA-256 verification
 before deletion, preserving system and DriverStore files.
 
+### 2026-10-27 bounded capture precursor
+
+Commit `e16ed25` adds a prepared mono/stereo Float32 SPSC evidence tap capped
+at 8 MiB of frame storage including metadata. The native lease copies before
+ReleaseBuffer, retaining sample bits, packet sequence/offset/count, raw flags,
+device position and QPC; capacity refusal drops a whole packet visibly.
+Position-gap inference requires explicit compatible units. Deferred physical
+attachment uses negotiated format and retains the writer in the report across
+native error/unwind/cancellation through control join. Capture report schema is
+9. Existing defaults/options/legacy artifacts remain unchanged.
+
+Focused capture library 29 tests and evidence integration eight tests pass;
+full Windows-audio crate 694 passed/5 ignored across 29 result suites, strict
+all-target crate Clippy and touched format pass. Independent pinned review
+`3140c04..e16ed25` passes spec and quality. Synthetic owner and fake-COM tests
+establish report retention and leased copying, not hardware panic safety or
+allocation-free OS unwinding. Packet copies and normal close with an abandoned
+reader have zero observed allocations/deallocations; storage is reclaimed on
+control. Direct Process deferred attachment, bounded disk sink, genuine
+measurement/load collection and physical qualification remain subsequent work.
+
 1. Diagnose and fix the target native `0x8007051A` revision mismatch. Repeat
    event and timer playback/microphone matrices until every case passes with
    zero drops, unexpected silence, stale packets, discontinuities, and epoch

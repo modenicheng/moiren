@@ -61,7 +61,9 @@ exists. These limitations do not prevent the following software work.
   PASS). Three 1024x720 headless layout/accessibility tests cover explicit
   labels, missing/stale generations, fresh replacement and vertical scroll.
   Physical-result states and full native/service rename acceptance stay open.
-- [ ] Bounded capture evidence tap and deferred native attachment.
+- [x] Bounded capture evidence tap and deferred native attachment (`e16ed25`,
+  independent spec/quality review PASS; crate 694 passed/5 ignored, strict
+  all-target Clippy and format PASS). This is not a sink or qualification.
 - [ ] Bounded sink and actual physical measurement capture integration.
 - [ ] Supervised load and genuine continuous evidence collection.
 - [ ] Stable target candidate and calibrated same-condition physical sweep.
