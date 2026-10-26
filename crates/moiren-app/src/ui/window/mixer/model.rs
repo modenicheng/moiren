@@ -14,6 +14,22 @@ pub(in crate::ui::window) struct MixerPresentation {
     pub sends: BTreeMap<EdgeId, SliderSlot>,
     pub send_inputs: BTreeMap<EdgeId, Entity<component::input::InputState>>,
     pub editing_send: Option<EdgeId>,
+    /// Click-to-type editors for the fader dB readouts; the strip readout
+    /// and the inspector Fader row share one family.
+    pub value_inputs: BTreeMap<NodeId, Entity<component::input::InputState>>,
+    pub editing_value: Option<NodeId>,
+    /// Balance-label editors, created for stereo nodes only: the label
+    /// renders only there.
+    pub balance_inputs: BTreeMap<NodeId, Entity<component::input::InputState>>,
+    pub editing_balance: Option<NodeId>,
+    /// Gain-node "Requested" editors. Kept apart from [`Self::value_inputs`]
+    /// because a Gain node also has a strip fader, and the two edit
+    /// different values (`mixer.gain` vs the node's own `gain` parameter).
+    pub node_gain_inputs: BTreeMap<NodeId, Entity<component::input::InputState>>,
+    pub editing_node_gain: Option<NodeId>,
+    /// Pan-node position editors, likewise separate from the strip fader.
+    pub node_pan_inputs: BTreeMap<NodeId, Entity<component::input::InputState>>,
+    pub editing_node_pan: Option<NodeId>,
     pub inputs_collapsed: bool,
     pub sends_collapsed: bool,
     synced_revision: Option<u64>,
@@ -91,6 +107,96 @@ fn linear_gain(value: f32) -> f64 {
         0.
     } else {
         10f64.powf(f64::from(value) / 20.)
+    }
+}
+
+/// Loudness domain of the click-to-type dB entries. +24 dB keeps the parsed
+/// amplitude inside [`MixerState::valid`]'s 0..=16 bound (10^(24/20) ≈ 15.8);
+/// the −120 dB floor matches the send readouts' editing domain.
+const ENTRY_MIN_DB: f64 = -120.;
+const ENTRY_MAX_DB: f64 = 24.;
+
+/// Parses a fader/gain dB entry into an amplitude. Digital silence accepts
+/// the `-inf` spellings (any case, ASCII or U+2212 minus, `∞`); otherwise
+/// the text must be a finite number inside the entry domain. Out-of-range or
+/// garbage input is `None` — never clamped — so an invalid entry changes
+/// nothing.
+pub(in crate::ui::window) fn parse_gain_db(text: &str) -> Option<f64> {
+    match text.trim().to_lowercase().as_str() {
+        "-inf" | "−inf" | "-infinity" | "−infinity" | "-∞" | "−∞" => return Some(0.),
+        _ => {}
+    }
+    let db: f64 = text.trim().parse().ok()?;
+    (db.is_finite() && (ENTRY_MIN_DB..=ENTRY_MAX_DB).contains(&db)).then(|| 10f64.powf(db / 20.))
+}
+
+/// Parses a balance label entry (`C`, `L 50`, `R25`, `-25`, `+100`) into the
+/// −1..=1 mixer balance. Numbers outside 0..=100 after the optional
+/// left/right sign are rejected, never clamped (e.g. "150" is `None`).
+pub(in crate::ui::window) fn parse_balance(text: &str) -> Option<f64> {
+    parse_centered(text, true)
+}
+
+/// Parses a pan-node position entry: a bare finite number in −1..=1, or the
+/// same `C`/`L`/`R` percent grammar as [`parse_balance`].
+pub(in crate::ui::window) fn parse_pan(text: &str) -> Option<f64> {
+    // The bare-number path also accepts the Unicode minus, so a typed raw
+    // position like "−0.5" reads as a position and never as the percent
+    // grammar's left-0.5%.
+    let text = text.trim().replace('\u{2212}', "-");
+    if let Ok(value) = text.parse::<f64>()
+        && value.is_finite()
+        && (-1. ..=1.).contains(&value)
+    {
+        return Some(value);
+    }
+    parse_centered(&text, false)
+}
+
+/// The `C` / `L`·`R`·`−`·`+` percent grammar shared by balance and pan:
+/// center tokens, then an optional direction prefix before a 0..=100 number
+/// mapped onto −1..=1. `bare` lets an un-signed number be a plain −100..=100
+/// reading (balance); otherwise the direction prefix is required so a bare
+/// out-of-range position is rejected instead of read as a percent.
+fn parse_centered(text: &str, bare: bool) -> Option<f64> {
+    let text = text.trim();
+    if text.eq_ignore_ascii_case("C") || text == "0" {
+        return Some(0.);
+    }
+    let mut chars = text.char_indices();
+    let (direction, skip) = match chars.next()?.1 {
+        'l' | 'L' | '-' | '\u{2212}' => (-1., chars.next().map_or(text.len(), |(i, _)| i)),
+        'r' | 'R' | '+' => (1., chars.next().map_or(text.len(), |(i, _)| i)),
+        _ if bare => (1., 0),
+        _ => return None,
+    };
+    let percent: f64 = text[skip..].trim().parse().ok()?;
+    (percent.is_finite() && (0. ..=100.).contains(&percent)).then(|| direction * percent / 100.)
+}
+
+/// Editable text for a gain: exact digital silence is `-inf`, anything else
+/// is dB with one decimal. Shared by the send sync and the click-to-type
+/// prefills so both round-trip through [`parse_gain_db`].
+pub(in crate::ui::window) fn gain_db_text(gain: f64) -> String {
+    if gain <= 0. {
+        "-inf".into()
+    } else {
+        format!("{:.1}", 20. * gain.log10())
+    }
+}
+
+/// Balance label text: `C` at center, otherwise `L`/`R` with the percent
+/// offset. Shared by the strip label and its editor prefill so the shown
+/// value always round-trips through [`parse_balance`].
+pub(in crate::ui::window) fn balance_text(balance: f64) -> String {
+    if balance.abs() < 0.005 {
+        "C".into()
+    } else {
+        format!(
+            "{} {:.0}",
+            if balance < 0. { "L" } else { "R" },
+            balance.abs() * 100.
+        )
     }
 }
 
@@ -184,6 +290,193 @@ fn dispatch_edit(ui: &Entity<UiState>, edit: &Rc<SliderEdit>, value: f32, cx: &m
             state.dispatch(request);
         }
     });
+}
+
+/// Which click-to-type editor family a readout belongs to. The strip fader
+/// readout and the inspector Fader row share [`Self::Fader`]; the Gain and
+/// Pan node fields stay separate families because a Gain/Pan node also has a
+/// strip fader, and those edit a different value (`mixer.gain` vs the node's
+/// own `gain`/`pan` parameter).
+#[derive(Clone, Copy)]
+pub(in crate::ui::window) enum EditableValueFamily {
+    Fader,
+    Balance,
+    NodeGain,
+    NodePan,
+}
+
+impl EditableValueFamily {
+    /// Split borrow of the family's editing flag and editor map.
+    fn parts(
+        self,
+        shell: &mut StudioShell,
+    ) -> (
+        &mut Option<NodeId>,
+        &mut BTreeMap<NodeId, Entity<component::input::InputState>>,
+    ) {
+        match self {
+            Self::Fader => (
+                &mut shell.mixer.editing_value,
+                &mut shell.mixer.value_inputs,
+            ),
+            Self::Balance => (
+                &mut shell.mixer.editing_balance,
+                &mut shell.mixer.balance_inputs,
+            ),
+            Self::NodeGain => (
+                &mut shell.mixer.editing_node_gain,
+                &mut shell.mixer.node_gain_inputs,
+            ),
+            Self::NodePan => (
+                &mut shell.mixer.editing_node_pan,
+                &mut shell.mixer.node_pan_inputs,
+            ),
+        }
+    }
+}
+
+/// Click handler that opens one editable numeric readout: enters the family's
+/// edit mode, prefills the editor from the live snapshot and focuses it.
+/// Parsing and dispatch live in the family's input subscription, created once
+/// by [`sync_value_inputs`].
+pub(in crate::ui::window) fn start_value_edit(
+    this: Entity<StudioShell>,
+    family: EditableValueFamily,
+    id: NodeId,
+    prefill: impl Fn(&GraphSnapshot) -> String + 'static,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    move |_, window, cx| {
+        let focused = this.update(cx, |shell, cx| {
+            let text = prefill(&shell.state.read(cx).snapshot.graph);
+            let (editing, inputs) = family.parts(shell);
+            *editing = Some(id);
+            let focused = inputs.get(&id).cloned();
+            if let Some(input) = focused.clone() {
+                input.update(cx, |input, cx| input.set_value(text, window, cx));
+            }
+            cx.notify();
+            focused
+        });
+        if let Some(input) = focused {
+            let handle = input.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        }
+    }
+}
+
+/// Creates (once) and value-syncs the inline editors for one keyed family.
+/// While a family member is being edited its text stands down, so typing is
+/// never overwritten by the snapshot write-back. `commit` runs on Enter and
+/// blur: it guards and clears the family's editing flag, parses the text and
+/// dispatches only a valid value — invalid input just closes the editor.
+fn sync_value_inputs<K: Ord + Clone + 'static>(
+    window: &mut Window,
+    cx: &mut Context<StudioShell>,
+    map: &mut BTreeMap<K, Entity<component::input::InputState>>,
+    editing: Option<&K>,
+    rows: Vec<(K, String)>,
+    commit: impl Fn(&mut StudioShell, &K, &str, &mut App) + Clone + 'static,
+) {
+    for (id, text) in rows {
+        let commit = commit.clone();
+        let captured = id.clone();
+        let input = map.entry(id.clone()).or_insert_with(|| {
+            let input = cx.new(|cx| component::input::InputState::new(window, cx));
+            cx.subscribe(
+                &input,
+                move |shell, input, event: &component::input::InputEvent, cx| {
+                    if matches!(
+                        event,
+                        component::input::InputEvent::PressEnter { .. }
+                            | component::input::InputEvent::Blur
+                    ) {
+                        let text = input.read(cx).value().to_string();
+                        commit(shell, &captured, &text, cx);
+                        cx.notify();
+                    }
+                },
+            )
+            .detach();
+            input
+        });
+        if editing != Some(&id) {
+            input.update(cx, |input, cx| input.set_value(text, window, cx));
+        }
+    }
+}
+
+/// Enter/blur commit shared by the fader readout editors: the edit is built
+/// from the live snapshot like the slider path, so a vanished node skips.
+/// The input subscription that calls these notifies afterwards.
+fn commit_mixer_gain(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut App) {
+    if shell.mixer.editing_value != Some(*id) {
+        return;
+    }
+    shell.mixer.editing_value = None;
+    if let Some(gain) = parse_gain_db(text) {
+        shell.state.update(cx, |state, _| {
+            if let Some(node) = state.snapshot.graph.node(*id) {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
+                    node: *id,
+                    state: MixerState { gain, ..node.mixer },
+                }));
+            }
+        });
+    }
+}
+
+/// Enter/blur commit for the balance label editors.
+fn commit_mixer_balance(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut App) {
+    if shell.mixer.editing_balance != Some(*id) {
+        return;
+    }
+    shell.mixer.editing_balance = None;
+    if let Some(balance) = parse_balance(text) {
+        shell.state.update(cx, |state, _| {
+            if let Some(node) = state.snapshot.graph.node(*id) {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
+                    node: *id,
+                    state: MixerState {
+                        balance,
+                        ..node.mixer
+                    },
+                }));
+            }
+        });
+    }
+}
+
+/// Enter/blur commit for the Gain node's "Requested" dB field.
+fn commit_node_gain(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut App) {
+    if shell.mixer.editing_node_gain != Some(*id) {
+        return;
+    }
+    shell.mixer.editing_node_gain = None;
+    if let Some(gain) = parse_gain_db(text) {
+        shell.state.update(cx, |state, _| {
+            if state.snapshot.graph.node(*id).is_some() {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::SetGain {
+                    node: *id,
+                    gain,
+                }));
+            }
+        });
+    }
+}
+
+/// Enter/blur commit for the Pan node's position field.
+fn commit_node_pan(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut App) {
+    if shell.mixer.editing_node_pan != Some(*id) {
+        return;
+    }
+    shell.mixer.editing_node_pan = None;
+    if let Some(pan) = parse_pan(text) {
+        shell.state.update(cx, |state, _| {
+            if state.snapshot.graph.node(*id).is_some() {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::SetPan { node: *id, pan }));
+            }
+        });
+    }
 }
 
 /// Fader rows for every node, shared verbatim by the main mixer and the tray
@@ -368,6 +661,52 @@ impl StudioShell {
         {
             self.mixer.editing_send = None;
         }
+        // The click-to-type editor families drop their vanished members like
+        // the send inputs; balance only exists for stereo nodes and the Gain
+        // /Pan node fields only for their kind, mirroring the surfaces that
+        // render them.
+        let channels_of = |id: NodeId| graph.graph.get_node(id).ok().map(|node| node.channels());
+        let kind_of = |id: NodeId| graph.graph.get_node(id).ok().map(|node| node.kind());
+        self.mixer
+            .value_inputs
+            .retain(|id, _| graph.node(*id).is_some());
+        self.mixer
+            .balance_inputs
+            .retain(|id, _| graph.node(*id).is_some() && channels_of(*id) == Some(2));
+        self.mixer
+            .node_gain_inputs
+            .retain(|id, _| graph.node(*id).is_some() && kind_of(*id) == Some(NodeKind::Gain));
+        self.mixer
+            .node_pan_inputs
+            .retain(|id, _| graph.node(*id).is_some() && kind_of(*id) == Some(NodeKind::Pan));
+        if self
+            .mixer
+            .editing_value
+            .is_some_and(|id| graph.node(id).is_none())
+        {
+            self.mixer.editing_value = None;
+        }
+        if self
+            .mixer
+            .editing_balance
+            .is_some_and(|id| graph.node(id).is_none() || channels_of(id) != Some(2))
+        {
+            self.mixer.editing_balance = None;
+        }
+        if self
+            .mixer
+            .editing_node_gain
+            .is_some_and(|id| kind_of(id) != Some(NodeKind::Gain))
+        {
+            self.mixer.editing_node_gain = None;
+        }
+        if self
+            .mixer
+            .editing_node_pan
+            .is_some_and(|id| kind_of(id) != Some(NodeKind::Pan))
+        {
+            self.mixer.editing_node_pan = None;
+        }
         for node in &graph.nodes {
             if !self.mixer.order.contains(&node.id) {
                 self.mixer.order.push(node.id);
@@ -425,11 +764,7 @@ impl StudioShell {
                 input
             });
             if self.mixer.editing_send != Some(id) {
-                let text = if edge.params().gain <= 0. {
-                    "-inf".into()
-                } else {
-                    format!("{:.1}", 20. * edge.params().gain.log10())
-                };
+                let text = gain_db_text(edge.params().gain);
                 input.update(cx, |input, cx| input.set_value(text, window, cx));
             }
         }
@@ -457,6 +792,60 @@ impl StudioShell {
             })
             .collect();
         sync_sliders(window, cx, &self.state, &mut self.mixer.sends, sends);
+        // Click-to-type editors, one family per value kind. Their text is
+        // the raw editable form ("−6", "R 25") rather than the styled
+        // readout, and stands down for the member being edited.
+        sync_value_inputs(
+            window,
+            cx,
+            &mut self.mixer.value_inputs,
+            self.mixer.editing_value.as_ref(),
+            graph
+                .nodes
+                .iter()
+                .map(|node| (node.id, gain_db_text(node.mixer.gain)))
+                .collect(),
+            commit_mixer_gain,
+        );
+        sync_value_inputs(
+            window,
+            cx,
+            &mut self.mixer.balance_inputs,
+            self.mixer.editing_balance.as_ref(),
+            graph
+                .nodes
+                .iter()
+                .filter(|node| channels_of(node.id) == Some(2))
+                .map(|node| (node.id, balance_text(node.mixer.balance)))
+                .collect(),
+            commit_mixer_balance,
+        );
+        sync_value_inputs(
+            window,
+            cx,
+            &mut self.mixer.node_gain_inputs,
+            self.mixer.editing_node_gain.as_ref(),
+            graph
+                .nodes
+                .iter()
+                .filter(|node| kind_of(node.id) == Some(NodeKind::Gain))
+                .map(|node| (node.id, gain_db_text(node.gain)))
+                .collect(),
+            commit_node_gain,
+        );
+        sync_value_inputs(
+            window,
+            cx,
+            &mut self.mixer.node_pan_inputs,
+            self.mixer.editing_node_pan.as_ref(),
+            graph
+                .nodes
+                .iter()
+                .filter(|node| kind_of(node.id) == Some(NodeKind::Pan))
+                .map(|node| (node.id, format!("{:+.2}", node.pan)))
+                .collect(),
+            commit_node_pan,
+        );
     }
 }
 
@@ -485,7 +874,10 @@ impl Render for StripDrag {
 
 #[cfg(test)]
 mod tests {
-    use super::{DispatchGate, Duration, FaderScale, Instant, fader_step};
+    use super::{
+        DispatchGate, Duration, FaderScale, Instant, fader_step, parse_balance, parse_gain_db,
+        parse_pan,
+    };
 
     fn millis(base: Instant, offset: u64) -> Instant {
         base + Duration::from_millis(offset)
@@ -572,5 +964,71 @@ mod tests {
         // the amplitude-16 validity bound of MixerState.
         let top = 1. - FaderScale::position(10f64.powf(12. / 20.));
         assert_eq!(fader_step(top, 1), top);
+    }
+
+    #[test]
+    fn parse_gain_db_reads_the_entry_domain_and_silence_tokens() {
+        assert_eq!(parse_gain_db("0"), Some(1.));
+        assert_eq!(parse_gain_db(" -6 "), Some(10f64.powf(-6. / 20.)));
+        assert_eq!(parse_gain_db("+24"), Some(10f64.powf(24. / 20.)));
+        // Domain edges: the loudest boost is accepted, one tenth of a dB
+        // more is rejected; the quiet floor mirrors the send editor.
+        assert_eq!(parse_gain_db("-120"), Some(10f64.powf(-6.)));
+        assert_eq!(parse_gain_db("24.1"), None);
+        assert_eq!(parse_gain_db("-120.1"), None);
+        // Silence accepts every spelling the readouts and users produce.
+        assert_eq!(parse_gain_db("-inf"), Some(0.));
+        assert_eq!(parse_gain_db("-INF"), Some(0.));
+        assert_eq!(parse_gain_db("−Inf"), Some(0.));
+        assert_eq!(parse_gain_db("-∞"), Some(0.));
+        assert_eq!(parse_gain_db("−∞"), Some(0.));
+        assert_eq!(parse_gain_db("−infinity"), Some(0.));
+        // Plain "+inf" is loudness without a bound: rejected, not silence.
+        assert_eq!(parse_gain_db("+inf"), None);
+        assert_eq!(parse_gain_db("inf"), None);
+        assert_eq!(parse_gain_db("nan"), None);
+        assert_eq!(parse_gain_db("abc"), None);
+        assert_eq!(parse_gain_db(""), None);
+        assert_eq!(parse_gain_db("99"), None);
+    }
+
+    #[test]
+    fn parse_balance_reads_center_and_percent_offsets() {
+        assert_eq!(parse_balance("C"), Some(0.));
+        assert_eq!(parse_balance("c"), Some(0.));
+        assert_eq!(parse_balance("0"), Some(0.));
+        assert_eq!(parse_balance("L 50"), Some(-0.5));
+        assert_eq!(parse_balance("R25"), Some(0.25));
+        assert_eq!(parse_balance("l100"), Some(-1.));
+        assert_eq!(parse_balance("-25"), Some(-0.25));
+        assert_eq!(parse_balance("+100"), Some(1.));
+        assert_eq!(parse_balance("100"), Some(1.));
+        assert_eq!(parse_balance("-100"), Some(-1.));
+        // Out of range is rejected, never clamped into range.
+        assert_eq!(parse_balance("150"), None);
+        assert_eq!(parse_balance("L101"), None);
+        assert_eq!(parse_balance("-100.5"), None);
+        assert_eq!(parse_balance("NaN"), None);
+        assert_eq!(parse_balance("abc"), None);
+        assert_eq!(parse_balance(""), None);
+    }
+
+    #[test]
+    fn parse_pan_reads_positions_and_the_percent_form() {
+        assert_eq!(parse_pan("0"), Some(0.));
+        assert_eq!(parse_pan("-1"), Some(-1.));
+        assert_eq!(parse_pan("1"), Some(1.));
+        assert_eq!(parse_pan(" 0.25 "), Some(0.25));
+        assert_eq!(parse_pan("−0.5"), Some(-0.5));
+        assert_eq!(parse_pan("R25"), Some(0.25));
+        assert_eq!(parse_pan("L 50"), Some(-0.5));
+        assert_eq!(parse_pan("C"), Some(0.));
+        // A bare number is a position, not a percent: out of −1..=1 it is
+        // rejected even though "100" would be valid percent form.
+        assert_eq!(parse_pan("1.01"), None);
+        assert_eq!(parse_pan("150"), None);
+        assert_eq!(parse_pan("inf"), None);
+        assert_eq!(parse_pan("abc"), None);
+        assert_eq!(parse_pan(""), None);
     }
 }

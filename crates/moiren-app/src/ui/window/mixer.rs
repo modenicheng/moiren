@@ -15,8 +15,8 @@ use component::menu::ContextMenuExt;
 // (window::graph::compressor), so the slot type, edit type and the
 // coalesced sync/commit entry points are visible across the window.
 pub(super) use model::{
-    MixerPresentation, SliderEdit, SliderSlot, commit_closure, fader_rows, sync_faders,
-    sync_slider_range,
+    EditableValueFamily, MixerPresentation, SliderEdit, SliderSlot, balance_text, commit_closure,
+    fader_rows, gain_db_text, start_value_edit, sync_faders, sync_slider_range,
 };
 use model::{StripDrag, reorder};
 use routing::{inputs, sends};
@@ -239,17 +239,32 @@ fn strip(
                 .child(sends(shell, id, cx))
                 .child(strip_controls::balance(shell, entry, channels, cx))
                 .child(node_controls(entry, channels, cx))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("strip-readout-{id:?}")))
-                        .flex_none()
-                        .h(px(24.))
-                        .text_center()
-                        .font_family(theme::FONT_MONO)
-                        .text_size(px(12.))
-                        .child(db(entry.mixer.gain))
-                        .gpui_test_observe(),
-                )
+                .child({
+                    let editing = shell.mixer.editing_value == Some(id);
+                    editable_value(
+                        SharedString::from(format!("strip-readout-{id:?}")),
+                        db(entry.mixer.gain),
+                        editing,
+                        &shell.mixer.value_inputs[&id],
+                        start_value_edit(
+                            cx.entity(),
+                            EditableValueFamily::Fader,
+                            id,
+                            move |graph| {
+                                graph
+                                    .node(id)
+                                    .map(|node| gain_db_text(node.mixer.gain))
+                                    .unwrap_or_default()
+                            },
+                        ),
+                    )
+                    .flex_none()
+                    .h(px(24.))
+                    .text_center()
+                    .font_family(theme::FONT_MONO)
+                    .text_size(px(12.))
+                    .gpui_test_observe()
+                })
                 .child(
                     div()
                         .id(SharedString::from(format!("strip-levels-{id:?}")))
