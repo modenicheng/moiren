@@ -27,11 +27,11 @@ pub(super) fn poll_with_started_transport<C: EndpointControl>(
         );
     }
     let admitted_before = state.admitted();
-    let initial_stream_start = !transport_started
-        && state.admitted()
-        && previous.stream_state() != StreamState::Running
-        && (queried.stream_state() == StreamState::Running
-            || queried.stream_generation() != previous.stream_generation());
+    // Before the first PCM owner exists, the native client is still completing
+    // its initial stream transition. There is no retired owner to fence yet,
+    // so any stamp change in this one startup window is not recovery. Once an
+    // owner has been created, every subsequent change remains a real reset.
+    let initial_stream_start = !transport_started;
     if queried.stream_generation() != previous.stream_generation() && !initial_stream_start {
         state.revoke();
     }
