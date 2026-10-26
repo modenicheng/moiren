@@ -5,8 +5,9 @@
 - Date: 2026-10-26.
 - Branch: `feat/minimal-io-latency`.
 - Source base: `ec66e85117fbf668c2def334bdb33028afd454e9`.
-- Current reviewed probe-quality implementation: `a57abde`; latest target
-  probe: `d1df8fa`. Newer service/UI slices are tracked separately below.
+- Current reviewed probe-quality implementation: `a57abde`, with reviewed
+  bounded diagnostic collection repair `2c61452`; latest target probe and
+  diagnostic run: `2c61452`. Service/UI slices are tracked separately below.
 - Worktree: `D:\coding\moiren\.worktrees\minimal-io-latency`.
 - Reference graph: Input -> Bus -> Output, 48 kHz.
 - Target: measured steady p95 <= 10 ms with stable continuous waveform.
@@ -127,7 +128,7 @@ as `recovered-live-vad-044b819-10s-summary.json`; its original report and manife
 were not recovered. This partial record is not a replacement for original
 qualification artifacts.
 
-Final target inventory: one 3,267,072-byte executable (SHA-256
+After that cleanup, target inventory was one 3,267,072-byte executable (SHA-256
 `795040D89670389C4CDCA36A0F29D8E94848B412C2A946DF8D347982C34087D1`),
 30.11 GiB free, no active Moiren/VAD probe process, and no present dynamic
 `MOIREN\VAD_RAW` child. Historical non-present PnP entries were not counted as
@@ -245,8 +246,9 @@ Focused RED/GREEN regressions cover the real native snapshot and UI text
 projection. Final affected library tests passed: 450 Windows-audio tests and
 291 app tests, with four existing opt-in checks ignored. Strict library/test
 Clippy and touched-file formatting passed. This closes one presentation
-omission. Subsequent provider and native observation work is recorded below;
-the full Task 7 hardware and presentation acceptance gate is still open.
+omission. Subsequent provider and native observation work is recorded below.
+Observation publication and text projection are implemented and independently
+reviewed; full rendered UI acceptance and hardware qualification remain open.
 
 #### Provider observation and QUERY provenance
 
@@ -284,13 +286,28 @@ Samples are unknown before the first wake and after owner stop/error/unwind.
 Publication does not allocate or wait; control retains the storage through
 join, and replacement-owner cleanup cannot clear a newer generation. Zero
 padding is a valid raw observation, not proof of a hardware xrun or missing
-audio. The scalar primitive passed independent review. Bridge and native
-integration review and their final UI projection are still in progress.
+audio. The scalar primitive, bridge and native integration passed their
+independent reviews. Commit `7e235a9` adds the final live-native UI text
+projection, also independently reviewed. Eight focused row regressions and
+315 app-library tests passed with two existing ignored; strict app Clippy
+passed. These slice results are not the full rendered UI acceptance matrix.
 
 After native integration, the affected Windows-audio library passed 465 tests
 with two existing ignored, the routing probe passed 14 tests, and strict
 all-target crate Clippy passed. No new device or physical measurement was run
 for these software observation changes.
+
+#### Render diagnostics owner-layout repair
+
+Expanded live bridge DTOs exposed an existing stack-layout guard in the
+combined workspace test: the inline eight-entry diagnostic history made
+monitor cleanup handoffs too large. Commit `3a95588` moves that fixed history
+to preparation-time storage and retains it until control-side reclamation,
+including after native callback unwind. The existing monitor bounds are
+unchanged; no RT allocation/deallocation or event retention guard is relaxed.
+Four diagnostics tests, 35 native-render tests and seven monitor tests passed,
+along with strict library/tests Clippy. Independent repair review passed.
+Full combined-tree verification remains separate from these focused results.
 
 ### Process quality reporting correction
 
@@ -328,12 +345,60 @@ counters while keeping the same source and Engine owners running. This is
 not bounded continuous waveform capture or physical qualification. Its first
 independent review identified cancellation dependence on synchronous journal
 I/O, incomplete best-effort VAD cleanup after collection failures, and reserved
-artifact-path collisions. Those findings are being fixed; do not use the
-initial implementation as evidence of a qualified two-hour run.
+artifact-path collisions. Repair `2c61452` passed independent re-review with
+all three findings resolved. One non-RT journal worker and one pending-record
+slot keep disk I/O out of the finite native cancellation loop; all VAD cleanup
+stages are attempted and their errors retained. Reserved output aliases are
+rejected before audio starts, and Process samples retain real render padding
+or explicit unknown. Thirty-four example regressions and strict example/tests
+Clippy passed. The JSONL maximum is 47,252,898 bytes, not whole-run PCM.
 
-The VM storage policy was rechecked on 2026-10-27: `C:\MoirenVadTest` still
-contained only the current 3,269,120-byte probe, no running probe was found,
-and 30.10 GiB was free. No additional obsolete test files needed deletion.
+The owned writer is joined only after native shutdown. A stalled OS write can
+still delay final process exit, but not the native cancellation request; no
+worker is detached or forcibly terminated. This is not crash-atomic journaling
+or a qualified two-hour run. Continuous physical marker windows and controlled
+load remain missing.
+
+Before the new diagnostic run on 2026-10-27, `C:\MoirenVadTest` contained only
+the 3,269,120-byte `d1df8fa` probe, no running probe was found, and 30.10 GiB
+was free. It was replaced and cleaned as recorded below.
+
+### Reviewed diagnostic-soak target smoke
+
+The host built release probe `2c61452`, length 3,359,744 bytes, SHA-256
+`2F25C5BAADE7C0D2350A41C9FB00F7CA26D5ACB1C84258D3EC8BB436BAF2A1D0`.
+The guest verified its length/hash before deleting the superseded `d1df8fa`
+binary. No build tree, driver install, device default or buffer policy was
+changed on the guest.
+
+The 10-second `live-vad --diagnostic-soak` run observed 10.0041523 seconds and
+wrote two periodic records at approximately 0 and 5.0102 seconds. Both contain
+real render-padding observations: 576 frames, capacity 1,056, period 480,
+sample rate 48 kHz. The final running snapshot contains the same raw padding;
+these values are not physical E2E measurements.
+
+The harness returned its expected unqualified exit code 1, with no native
+collection/cleanup error. Render produced 491,136 frames and 5,172 nonzero
+samples; render failure, graph-bridge shortfall and empty-padding wakes were
+zero. Provider completed 990 packets, maximum completion gap 53.0038 ms;
+drop/stale/silence counters were zero, but runtime recovery and epoch reset
+were both **2**, and the virtual playback boundary had **4 xruns**. This run
+therefore fails stable-quality qualification. These nonzero counters must not
+be replaced by the older runs' zero-provider-counter result. No calibrated
+physical evidence, waveform continuity or sustained-load window was collected.
+
+The requested export name was retained, but the native MMDevice observed a
+generic Windows virtual-endpoint name rather than that requested name. This
+smoke does not establish native friendly-name propagation or live rename.
+The host confirmed Closed and the driver reported Removed after retirement.
+
+All three report/manifest/JSONL files (589,290 bytes total) were copied to
+`target/vad-target-archive/20261027-live-vad-2c61452-soak/`; each length and
+SHA-256 matched the guest manifest before deletion. Remote evidence was
+rechecked against that manifest, then the run directory and helpers were
+deleted. The cleanup receipt confirms only the current 3,359,744-byte probe
+remains, no active test process or present dynamic VAD child, and 30.10 GiB
+free. Failed quality evidence remains archived on the host.
 
 Before collecting the required continuous windows, the live harness needs
 bounded capture/window evidence, supervised controlled-load coverage, an
@@ -346,6 +411,35 @@ long-run windows, but its `VirtualPlayback -> Gain -> VirtualMicrophone` graph
 does not substitute for the physical `Input -> Bus -> Output` reference.
 
 ## Software changes and focused evidence
+
+### Final combined Windows host verification
+
+The combined production-source tree at `2c61452` passed workspace build,
+all-target check, and workspace tests: 1,602 passed, zero failed, eight ignored
+across 70 test binaries/doc-test suites. Native hardware opt-in tests stayed
+ignored. The full test run includes the previously failing, unchanged monitor
+cleanup-size guard and the lengthy clock fault/startup simulations.
+
+Whole-workspace rustfmt found one capture-regression assertion wrap; the
+format-only `41e8d33` repair passed seven focused capture tests and the complete
+format check. Strict workspace all-target Clippy also passed.
+
+Full `cargo test --locked -p moiren-app --features gpui-test` initially failed
+the running-settings restart-confirmation fixture. Exact reproduction with a
+backtrace showed it waited after confirmation because its fake driver never
+published `active_transport_latency`, now required by the real transaction.
+The independently reviewed test-only repair `9b91efb` publishes transport
+state at initial activation and explicit confirmation, matching the
+production owner; no timeout, production
+confirmation rule or assertion was relaxed. The exact test then passed and
+the complete gpui-feature run passed 484 tests, zero failed, four ignored
+across 20 suites (including eight UI acceptance tests). Feature-enabled strict
+app all-target Clippy and the final format/diff checks passed.
+
+Logs are retained in `.superpowers/sdd/task7-final-*.log`, with the initial
+failure, exact RED/GREEN and fixture-review evidence kept separately. These
+are local Windows software results, not Linux CI, Miri, a full rendered UI
+state matrix, continuous device waveform, or physical qualification.
 
 - Marker generation uses caller buffers; bounded offline correlation rejects
   silence, clipping, truncation, ambiguous matches and invalid limits.
@@ -416,17 +510,21 @@ does not substitute for the physical `Input -> Bus -> Output` reference.
    event and timer playback/microphone matrices until every case passes with
    zero drops, unexpected silence, stale packets, discontinuities, and epoch
    resets; retain the failed artifacts.
-2. Run the current branch's production `live-vad` path on the target: create a
-   named playback export, resolve its MMDevice, route it through
-   `VirtualPlayback -> Engine -> Bus -> physical Output`, and verify orderly
-   gate/owner/endpoint retirement.
+2. Repeat the latest corrected production `live-vad` path for a clean target
+   stability window. Prior `df3f76c`/`d1df8fa` smokes reached
+   `VirtualPlayback -> Engine -> Bus -> physical Output`, but boundary xruns
+   failed the quality gate. Verify orderly gate/owner/endpoint retirement and
+   preserve failed evidence.
 3. Run held-client rename smoke through the app. Verify remove/recreate keeps
    stable ID and graph binding, reports pending/actual names correctly, and
    reopens admission only after Engine confirmation; repeat remove/create
    failure cases.
-4. Add the same packet-size/gap telemetry to Process Loopback and VAD runs;
-   sweep candidate targets such as 2048/1024/512/256 Process frames and
-   480/240/128/64 VAD packet frames only when the native path admits them.
+4. Use the implemented native delivery/provider observations and corrected
+   Process quality producer for comparable continuous recordings and
+   same-condition target sweeps. Sweep candidates such as 2048/1024/512/256
+   Process frames and 480/240/128/64 VAD packet frames only when admitted.
+   Positionless input age remains unknown; do not derive it from fill/rate
+   or invent a hardware period.
 5. Measure `Input -> Bus -> Output` with a calibrated physical cable or a
    calibrated external dual-channel reference. Record p50/p95/p99/max,
    waveform continuity, drops, underruns, discontinuities and epoch resets.

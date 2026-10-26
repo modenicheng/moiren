@@ -359,10 +359,13 @@ same effective configuration recorded in manifest and report
 
 - [x] Keep Process and VAD policies independently configurable. Do not infer
   one source's packet timing from the other source.
-- [ ] Show requested policy, effective prepared policy, actual packet/period
+- [x] Implement software presentation of requested policy, effective prepared policy, actual packet/period
   observations, queue fill/age, render padding, recovery/drop/silence counts,
   and the refusal/fallback reason. Show physical end-to-end latency as
-  `unknown` until calibrated evidence exists.
+  `unknown` until calibrated evidence exists. Boundary, provider, bridge,
+  native integration and UI slices through `7e235a9` passed independent
+  review; complete rendered UI acceptance and native qualification remain
+  separate gates.
 - [x] Preserve and present existing virtual-boundary prepared capacity/target,
   live occupancy/correction, and cumulative xrun/soft-event counters without
   turning them into a physical-latency estimate (`e19b834`; seven RED/GREEN
@@ -371,16 +374,23 @@ same effective configuration recorded in manifest and report
   telemetry and endpoint-specific errors through the app service (`9b97c08`,
   `ee73c8e`; failed-QUERY measurement provenance fixed in `fe88ad3`;
   independent service-fix and UI reviews passed).
-- [ ] Publish live oldest-frame age and native render padding with explicit
-  unknown values when unavailable; complete the remaining UI acceptance cases.
-  Native publication is implemented in `e431f38`, `392fab3`, and `ce136a2`;
-  native integration review and final UI projection/acceptance remain open.
+- [x] Publish live qualified pre-transfer oldest-frame age and native render
+  padding with explicit unknown values and observation provenance.
+  Publication (`e431f38`, `392fab3`, `ce136a2`) and final UI text projection
+  (`7e235a9`) passed independent review. Eight focused live-native row tests
+  passed; these do not close the complete rendered UI acceptance matrix.
 - [ ] Run two independent two-hour repetitions of the proposed default under
   the same controlled-load profile. Keep failed artifacts and diagnostics.
 - [ ] Promote a low-latency default only if both repetitions pass. Otherwise
   keep Compatible as the default and label the expert profile experimental.
 - [ ] Add or update UI acceptance tests for unknown/unqualified, qualified,
   refused, pending rename, and native recreation failure states.
+
+Software observations are not physical latency estimates. Age retains its
+explicit QPC timestamp and pre-transfer sampling point; packet and gap
+availability are distinct, and observed zero render padding is not proof of
+an xrun. Full UI acceptance, continuous calibrated waveform/load evidence,
+and default promotion remain open.
 
 Default promotion gate:
 
@@ -395,7 +405,15 @@ identical source/output/graph/config provenance
 
 - [ ] Audit every plan checkbox against a recorded result. A missing target
   machine or calibration remains `pending`, not `pass`.
-- [ ] Run:
+- [x] Run the software verification commands below. Build/check and workspace
+  tests passed at `2c61452` (1,602 passed, eight opt-in tests ignored).
+  Formatting exposed one assertion wrap, repaired separately in `41e8d33`.
+  The full gpui suite exposed a stale test driver's missing active transport
+  confirmation; independently reviewed test-only repair `9b91efb` passed the
+  exact reproduction and complete suite (484 passed, four opt-in tests
+  ignored). Final formatting,
+  strict workspace Clippy and gpui-feature Clippy passed. These Windows host
+  results do not replace CI/Miri, ignored hardware tests or physical gates.
 
 ```powershell
 cargo build --locked --workspace
