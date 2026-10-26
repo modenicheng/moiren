@@ -114,6 +114,17 @@ impl ServiceDriver for ManagedDriver {
                     }
                 }
             }
+            // A restored candidate is a structural change riding the same
+            // trailing debounce as structural edits, so bursts of undo steps
+            // coalesce into one atomic plan swap. A stopped session only
+            // records the restored candidate and never restarts audio.
+            AppRequest::UndoGraph | AppRequest::RedoGraph => {
+                let back = matches!(request, AppRequest::UndoGraph);
+                let stepped = if back { c.graph.undo() } else { c.graph.redo() };
+                if stepped && self.owner.is_some() {
+                    self.auto_apply_deadline = Some(Instant::now() + super::AUTO_APPLY_DELAY);
+                }
+            }
             AppRequest::SetGainPan { gain, pan } => {
                 if model::valid_gain_pan(gain, pan)
                     && let Some((gain_node, pan_node)) = c.graph.preparation().gain_pan_nodes()

@@ -24,6 +24,21 @@ struct NameDraft {
 }
 
 impl ExportControls {
+    /// Whether one of the export editor's text inputs owns focus, so global
+    /// shortcuts (undo/redo) leave typing alone.
+    pub(in crate::ui::window) fn owns_focus(
+        &self,
+        focus: &gpui_kit::FocusHandle,
+        cx: &gpui_kit::App,
+    ) -> bool {
+        if self.name.read(cx).focus_handle(cx) == *focus {
+            return true;
+        }
+        self.names
+            .values()
+            .any(|draft| draft.input.read(cx).focus_handle(cx) == *focus)
+    }
+
     pub(in crate::ui::window) fn new(window: &mut Window, cx: &mut Context<StudioShell>) -> Self {
         let name = name_input("Moiren Playback", window, cx);
         Self {
