@@ -746,6 +746,17 @@ collector has occurred yet. VM microphone/output evidence remains diagnostic;
 calibrated physical input wiring, marker discovery, controlled load and
 physical p95 uncertainty are still absent.
 
+The first combined VM smoke entered the collector and failed during independent
+microphone recorder preparation: WASAPI shared-period negotiation returned
+`0x80070057` (`choose_shared_period`). The failed report correctly retained
+`collection_complete=false`, `cleanup_complete=false`, `qualified=false` and
+the primary recorder/cleanup errors; it does not establish a VAD, graph or
+driver-quality failure. Ten payloads totaling 17,993 bytes were archived and
+length/hash-checked on the host, then rechecked on the guest before cleanup.
+The guest again retains only the 3,359,744-byte current probe, with no test
+processes/dynamic endpoints and 30.11 GiB free. This VM has no independent
+calibrated reference endpoint, so no physical latency conclusion follows.
+
 1. Diagnose and fix the target native `0x8007051A` revision mismatch. Repeat
    event and timer playback/microphone matrices until every case passes with
    zero drops, unexpected silence, stale packets, discontinuities, and epoch

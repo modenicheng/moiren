@@ -218,3 +218,25 @@ check, format, strict Windows workspace Clippy, 1,621 tests/8 ignored across
 The Linux strict Clippy baseline still fails on two unchanged `capture.rs`
 retention fields; no broad CI-green claim is made until that separate issue is
 handled. No native collection run has yet been made for this implementation.
+
+### 2026-10-27 first combined collector smoke
+
+The host release probe from `671da8d` was staged with a 48,000-frame source
+plan and a 15-second collection config selecting the VM microphone. The opt-in
+collector entered its real path but failed while preparing the independent
+recorder: `choose_shared_period` returned `0x80070057`. The resulting report
+kept `qualified=false`, `status=unqualified`, `collection_complete=false` and
+`cleanup_complete=false`, with the primary recorder error plus the provider
+cleanup observations. No source/graph/recorder outcome is inferred from this
+failed preparation, and it is not a VAD latency or driver-quality result.
+
+Ten failed-run payloads (17,993 bytes) are retained under
+`target/vad-target-archive/20261027-collection-671da8d-15s/collection-671da8d-15s`.
+Host lengths/SHA-256 and exact source/config bytes were checked; guest files
+were rechecked against the host payload manifest before removing the run,
+temporary release probe, plans, runner and manifest. Guest is back to one
+3,359,744-byte current probe, no processes/dynamic endpoints and 30.11 GiB
+free. The first runner's manifest had null SHA fields due to a PowerShell
+serialization mistake; it is not used as evidence. Host-generated
+`task7-collection-671da8d-payload-manifest.json` is the authoritative archive
+checklist for this failed smoke. No driver/system files were removed.
