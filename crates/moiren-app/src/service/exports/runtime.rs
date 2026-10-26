@@ -32,6 +32,8 @@ pub(crate) struct NativeObservation {
     pub allow_default: bool,
     pub can_open: bool,
     pub error: Option<String>,
+    #[cfg(windows)]
+    pub diagnostics: Option<ExportDiagnostics>,
 }
 pub(crate) struct Batch {
     pub observations: Vec<NativeObservation>,
@@ -148,8 +150,10 @@ impl Runtime {
         result: Result<Batch, String>,
     ) -> Vec<String> {
         self.in_flight = false;
-        // Every completion replaces probe evidence, including missing endpoints
-        // and failed polls. Control dispatch retains its existing stamp policy.
+        // Every completion replaces diagnostic/probe evidence, including missing
+        // endpoints and failed polls. Dispatch keeps its own stamp policy.
+        #[cfg(windows)]
+        service.diagnostics.clear();
         #[cfg(feature = "vad-integration-probe")]
         service.native_stamps.clear();
         if std::mem::take(&mut self.shutdown_in_flight) {
@@ -195,6 +199,14 @@ impl Runtime {
             if native.error.is_none() {
                 self.healthy.insert(native.intent.endpoint_id);
             }
+            #[cfg(windows)]
+            let diagnostics = native.diagnostics.map(|mut diagnostics| {
+                // Evidence belongs to this lifecycle result, never to identity
+                // or generation values supplied in a detached diagnostic DTO.
+                diagnostics.native_stamp = native.snapshot;
+                diagnostics.error = native.error.clone();
+                diagnostics
+            });
             if let Some(error) = native.error {
                 errors.push(error);
             }
@@ -212,6 +224,13 @@ impl Runtime {
             }) {
                 errors.push(error);
             } else {
+                #[cfg(windows)]
+                if let Some(mut diagnostics) =
+                    diagnostics.filter(|_| native.resource != ExportResourceState::Unavailable)
+                {
+                    diagnostics.generation = self.sequence;
+                    service.diagnostics.insert(id, diagnostics);
+                }
                 #[cfg(feature = "vad-integration-probe")]
                 if let Some(stamp) = native_stamp {
                     service.native_stamps.insert(id, stamp);
@@ -453,47 +472,53 @@ impl Adapter for WindowsAdapter {
             .0
             .export_observations()
             .into_iter()
-            .map(|view| {
-                let resource = match view.snapshot.map(|s| s.state()) {
-                    Some(PdoState::Removed) => ExportResourceState::Absent,
-                    Some(PdoState::Removing) => ExportResourceState::Removing,
-                    _ if view.removing => ExportResourceState::Removing,
-                    Some(PdoState::Present) => ExportResourceState::Present,
-                    _ => ExportResourceState::Creating,
-                };
-                NativeObservation {
-                    intent: ExportIntent {
-                        endpoint_id: view.endpoint_id,
-                        name: view.spec_name,
-                        direction: if view.intent == Intent::Playback {
-                            ExportDirection::Playback
-                        } else {
-                            ExportDirection::Microphone
-                        },
-                        channels: view.channels as usize,
-                        enabled: true,
-                        binding: None,
-                    },
-                    snapshot: view.snapshot.map(|s| {
-                        [
-                            s.pdo_token().get(),
-                            s.session_epoch(),
-                            s.endpoint_generation(),
-                            s.stream_generation(),
-                            s.gate_epoch(),
-                        ]
-                    }),
-                    resource,
-                    gate_open: view.snapshot.is_some_and(|s| s.gate_open()),
-                    allow_default: view.allow_default,
-                    can_open: native_can_open(view.transport_prepared, view.snapshot),
-                    error: view.error,
-                }
-            })
+            .map(NativeObservation::from)
             .collect();
         Batch {
             observations,
             errors,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl From<moiren_windows_audio::vad::VadExportObservation> for NativeObservation {
+    fn from(view: moiren_windows_audio::vad::VadExportObservation) -> Self {
+        use moiren_windows_audio::vad::{Intent, PdoState};
+        let resource = match view.snapshot.map(|s| s.state()) {
+            Some(PdoState::Removed) => ExportResourceState::Absent,
+            Some(PdoState::Removing) => ExportResourceState::Removing,
+            _ if view.removing => ExportResourceState::Removing,
+            Some(PdoState::Present) => ExportResourceState::Present,
+            _ => ExportResourceState::Creating,
+        };
+        Self {
+            intent: ExportIntent {
+                endpoint_id: view.endpoint_id,
+                name: view.spec_name,
+                direction: if view.intent == Intent::Playback {
+                    ExportDirection::Playback
+                } else {
+                    ExportDirection::Microphone
+                },
+                channels: view.channels as usize,
+                enabled: true,
+                binding: None,
+            },
+            snapshot: view.snapshot.map(snapshot_stamp),
+            resource,
+            gate_open: view.snapshot.is_some_and(|s| s.gate_open()),
+            allow_default: view.allow_default,
+            can_open: native_can_open(view.transport_prepared, view.snapshot),
+            diagnostics: Some(ExportDiagnostics {
+                // Runtime binds this evidence only after observe accepts it.
+                generation: 0,
+                native_stamp: view.snapshot.map(snapshot_stamp),
+                transport_prepared: view.transport_prepared,
+                telemetry: view.telemetry,
+                error: view.error.clone(),
+            }),
+            error: view.error,
         }
     }
 }

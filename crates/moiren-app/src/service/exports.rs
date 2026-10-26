@@ -5,6 +5,10 @@ use moiren_core::graph::{LogicalGraph, NodeId, NodeKind};
 use moiren_engine::node::VirtualEndpointId;
 use serde::{Deserialize, Serialize};
 
+#[cfg(windows)]
+mod diagnostics;
+#[cfg(windows)]
+pub use diagnostics::ExportDiagnostics;
 mod reconcile;
 pub(crate) mod runtime;
 pub use reconcile::*;
@@ -106,6 +110,8 @@ pub struct ExportService {
     pub(super) available: bool,
     pub(super) authorizations: BTreeMap<VirtualEndpointId, bool>,
     pub(super) observations: BTreeMap<VirtualEndpointId, ExportObservation>,
+    #[cfg(windows)]
+    pub(super) diagnostics: BTreeMap<VirtualEndpointId, ExportDiagnostics>,
     /// Probe-only observations, never consulted for native action authority.
     #[cfg(feature = "vad-integration-probe")]
     pub(super) native_stamps: BTreeMap<VirtualEndpointId, [u64; 5]>,
@@ -129,6 +135,8 @@ impl ExportService {
     /// Enabling a project export never calls this method or grants default use.
     pub fn set_available(&mut self, available: bool) {
         if !available {
+            #[cfg(windows)]
+            self.diagnostics.clear();
             #[cfg(feature = "vad-integration-probe")]
             self.native_stamps.clear();
             for observation in self.observations.values_mut() {
@@ -166,7 +174,9 @@ impl ExportService {
                 "export activity or gate observation contradicts its resource state".into(),
             );
         }
-        // A newer unstamped observation must not inherit a previous raw stamp.
+        // An accepted replacement must not inherit earlier diagnostic evidence.
+        #[cfg(windows)]
+        self.diagnostics.remove(&observation.intent.endpoint_id);
         #[cfg(feature = "vad-integration-probe")]
         self.native_stamps.remove(&observation.intent.endpoint_id);
         self.observations

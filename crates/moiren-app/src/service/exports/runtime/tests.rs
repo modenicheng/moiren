@@ -1,5 +1,9 @@
 //! A fake at the native-IO boundary; the service, Engine host and job queues
 //! remain real in managed/tests.rs.
+#[cfg(windows)]
+#[path = "diagnostics_tests.rs"]
+mod diagnostics_tests;
+
 use super::*;
 use std::sync::{
     Mutex,
@@ -167,6 +171,8 @@ impl Adapter for FakeAdapter {
                 gate_open: record.gate,
                 allow_default: record.allow_default,
                 can_open: !self.transport_unavailable.load(Ordering::Acquire),
+                #[cfg(windows)]
+                diagnostics: None,
                 error: None,
             })
             .collect();
@@ -452,6 +458,8 @@ fn idle_native_mapping_plans_gate_open_only_after_engine_confirmation() {
                         gate_open: false,
                         allow_default: false,
                         can_open: native_can_open(true, Some(snapshot)),
+                        #[cfg(windows)]
+                        diagnostics: None,
                         error: None,
                     }],
                     errors: vec![],
@@ -508,6 +516,8 @@ fn unhealthy_native_observation_cannot_confirm_or_prepare_and_plans_gate_close()
                 gate_open: true,
                 allow_default: false,
                 can_open: true,
+                #[cfg(windows)]
+                diagnostics: None,
                 error: Some("QUERY timed out; snapshot is last known".into()),
             }],
             errors: vec![],
@@ -554,6 +564,8 @@ fn lifecycle_readiness_does_not_require_transport_admission() {
                 gate_open: false,
                 allow_default: false,
                 can_open: false,
+                #[cfg(windows)]
+                diagnostics: None,
                 error: None,
             }],
             errors: vec![],
@@ -597,6 +609,8 @@ fn confirmed_absence_releases_app_tracking_across_documents() {
                     gate_open: false,
                     allow_default: false,
                     can_open: false,
+                    #[cfg(windows)]
+                    diagnostics: None,
                     error: None,
                 }],
                 errors: vec![],
@@ -621,6 +635,8 @@ mod native_stamp {
                 gate_open: false,
                 allow_default: false,
                 can_open: true,
+                #[cfg(windows)]
+                diagnostics: None,
                 error: None,
             }],
             errors: vec![],

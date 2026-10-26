@@ -57,6 +57,9 @@ pub struct ExportStatus {
     pub allow_default: bool,
     pub gate_open: bool,
     pub active_revision: Option<u64>,
+    /// Detached provider evidence; it does not participate in readiness.
+    #[cfg(windows)]
+    pub diagnostics: Option<ExportDiagnostics>,
     /// Last validated native [pdo, session, endpoint, stream, gate] observation.
     /// Read-only probe evidence; it grants no readiness or gate authority.
     #[cfg(feature = "vad-integration-probe")]
@@ -191,6 +194,22 @@ impl ExportService {
                     active_revision: observed
                         .filter(|value| self.available && confirms_active(value, graph))
                         .and_then(|value| value.active_revision),
+                    #[cfg(windows)]
+                    diagnostics: self
+                        .diagnostics
+                        .get(&intent.endpoint_id)
+                        .filter(|diagnostics| {
+                            self.available
+                                && observed.is_some_and(|value| {
+                                    value.generation == diagnostics.generation
+                                        && !matches!(
+                                            value.resource,
+                                            ExportResourceState::Absent
+                                                | ExportResourceState::Unavailable
+                                        )
+                                })
+                        })
+                        .cloned(),
                     #[cfg(feature = "vad-integration-probe")]
                     native_stamp: self.native_stamps.get(&intent.endpoint_id).copied(),
                     intent,
