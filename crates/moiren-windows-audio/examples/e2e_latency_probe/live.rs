@@ -1329,6 +1329,13 @@ mod native {
         let revision = active
             .active_revision
             .context("VAD EngineHost has no active revision")?;
+        let playback = vad::PlaybackSession::start(
+            stable_from_virtual(endpoint_id),
+            root,
+            Duration::from_secs(options.seconds),
+            marker_plan,
+        )
+        .context("start VAD native playback")?;
         let current = provider
             .export_observations()
             .into_iter()
@@ -1347,13 +1354,6 @@ mod native {
         provider
             .set_export_gate(endpoint_id, snapshot_stamp(current), true, revision, ticket)
             .context("open VAD export gate")?;
-        let playback = vad::PlaybackSession::start(
-            stable_from_virtual(endpoint_id),
-            root,
-            Duration::from_secs(options.seconds),
-            marker_plan,
-        )
-        .context("start VAD native playback")?;
         let playback_info = serde_json::to_value(&playback.info)?;
         // `start` only confirms that the native client is ready. Let its
         // bounded worker own the requested measurement interval before asking
