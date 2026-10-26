@@ -62,10 +62,26 @@ jobs:
   miri_suites:
     strategy:
       fail-fast: false
+      # Miri runs a package's tests sequentially in one process, so each suite
+      # gets its own parallel job; wall clock tracks the slowest suite instead
+      # of their sum. `filters` are extra cargo test arguments.
       matrix:
-        package: [moiren-core, moiren-engine, moiren-signal, moiren-windows-audio]
-        model: [stacked, tree]
+        include:
+          - { package: moiren-core, model: stacked, filters: "" }
+          - { package: moiren-core, model: tree, filters: "" }
+          - { package: moiren-signal, model: stacked, filters: "" }
+          - { package: moiren-signal, model: tree, filters: "" }
+          # Keep native FFI and long-running clock simulations outside this suite.
+          - { package: moiren-windows-audio, model: stacked, filters: "--lib vad::" }
+          - { package: moiren-windows-audio, model: tree, filters: "--lib vad::" }
+          - { package: moiren-engine, suite: lib-and-runtime, model: stacked, filters: "--lib --test audio_config --test buffer --test io --test runtime" }
+          - { package: moiren-engine, suite: lib-and-runtime, model: tree, filters: "--lib --test audio_config --test buffer --test io --test runtime" }
+          - { package: moiren-engine, suite: compiler, model: stacked, filters: "--test compiler" }
+          - { package: moiren-engine, suite: compiler, model: tree, filters: "--test compiler" }
+          - { package: moiren-engine, suite: host, model: stacked, filters: "--test host" }
+          - { package: moiren-engine, suite: host, model: tree, filters: "--test host" }
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -73,15 +89,7 @@ jobs:
       - run: rustup toolchain install nightly --profile minimal --component miri
       - run: cargo +nightly miri setup
       # Miri covers the portable RT contracts; native GPUI/GTK is tested above.
-      - if: matrix.package != 'moiren-windows-audio'
-        run: cargo +nightly miri test --locked --no-fail-fast -p ${{ matrix.package }}
-        env:
-          MIRIFLAGS: ${{ matrix.model == 'tree' && '-Zmiri-tree-borrows' || '' }}
-      # Keep native FFI and long-running clock simulations outside this suite.
-      - if: matrix.package == 'moiren-windows-audio'
-        run: >-
-          cargo +nightly miri test --locked --no-fail-fast
-          -p moiren-windows-audio --lib vad::
+      - run: cargo +nightly miri test --locked --no-fail-fast -p ${{ matrix.package }} ${{ matrix.filters }}
         env:
           MIRIFLAGS: ${{ matrix.model == 'tree' && '-Zmiri-tree-borrows' || '' }}
   miri:
