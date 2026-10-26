@@ -720,12 +720,10 @@ impl Render for StudioShell {
                         )
                         .when_some(location, |row, location| {
                             row.child(
-                                div()
-                                    .text_color(theme::TEXT)
-                                    .child(t!(
-                                        "Channel: %{location}",
-                                        location = location.as_str()
-                                    )),
+                                div().text_color(theme::TEXT).child(t!(
+                                    "Channel: %{location}",
+                                    location = location.as_str()
+                                )),
                             )
                         })
                         .when_some(fault.hint.as_deref(), |row, hint: &str| {
