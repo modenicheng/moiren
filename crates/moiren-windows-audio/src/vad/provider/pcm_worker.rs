@@ -149,6 +149,7 @@ pub(super) fn quiesce_playback(
     if epoch == *observed {
         return true;
     }
+    state.telemetry.epoch_reset(epoch);
     retire();
     state
         .producer_quiesced_epoch
@@ -174,6 +175,7 @@ pub(super) fn quiesce_microphone(
     if epoch == *observed {
         return true;
     }
+    state.telemetry.epoch_reset(epoch);
     if state.producer_quiesced_epoch.load(Ordering::Acquire) != epoch {
         return false;
     }
@@ -226,9 +228,15 @@ pub(super) fn playback<C: PcmIo>(
                 }
                 #[cfg(test)]
                 tests::before_playback_publish();
-                if order.accept(stamp) && !bridge.decode_packet(pcm)? {
+                state.telemetry.completion(bridge.packet_frames());
+                let accepted = order.accept(stamp);
+                if !accepted {
+                    state.telemetry.stale_packet();
+                }
+                if accepted && !bridge.decode_packet(pcm)? {
                     // Only the consumer can discard this SPSC carrier. Ask its
                     // prepared boundary to drop the stale queue before replay.
+                    state.telemetry.carrier_drop();
                     state.reset_epoch.fetch_add(1, Ordering::AcqRel);
                     return Ok(PumpState::Reset);
                 }
@@ -246,9 +254,16 @@ pub(super) fn playback<C: PcmIo>(
         if state.reset_epoch.load(Ordering::Acquire) != epoch {
             return Ok(PumpState::Reset);
         }
+        state
+            .telemetry
+            .submission_attempt(bridge.packet_frames(), 0);
         match owner.read() {
-            Ok(ticket) => tickets.push(ticket),
+            Ok(ticket) => {
+                state.telemetry.submission_accepted();
+                tickets.push(ticket);
+            }
             Err(ClientError::KernelPcmQuotaFull) => {
+                state.telemetry.quota_drop();
                 log::debug!(
                     target: "moiren::audio::vad",
                     "event=pcm_kernel_quota_deferred endpoint=playback stage=read"
@@ -283,6 +298,7 @@ pub(super) fn microphone<C: PcmIo>(
         let completion = match owner.complete(ticket) {
             Ok(completion) => completion,
             Err(ClientError::KernelPcmQuotaFull) => {
+                state.telemetry.quota_drop();
                 log::debug!(
                     target: "moiren::audio::vad",
                     "event=pcm_kernel_quota_deferred endpoint=microphone stage=complete"
@@ -294,9 +310,12 @@ pub(super) fn microphone<C: PcmIo>(
         };
         let (stamp, dropped) = match completion {
             Some(PcmCompletion::Capture { stamp, bytes }) if bytes == bridge.packet_bytes() => {
+                state.telemetry.completion(bridge.packet_frames());
                 (stamp, false)
             }
             Some(PcmCompletion::CaptureDropped { stamp }) => {
+                state.telemetry.completion(bridge.packet_frames());
+                state.telemetry.driver_drop();
                 log::debug!(
                     target: "moiren::audio::vad",
                     "event=microphone_request_expired epoch={epoch} stamp={stamp:?}",
@@ -358,13 +377,19 @@ pub(super) fn microphone<C: PcmIo>(
         pump.reprime_deadline = None;
         // Do not consume the carrier or encode until the phase is due. The
         // unchanged PcmOwner samples its real QPC only when submitting this PCM.
-        let packet = bridge.encode_packet()?;
+        let packet_frames = bridge.packet_frames();
+        let (packet, silence_frames) = bridge.encode_packet_with_metrics()?;
+        state
+            .telemetry
+            .submission_attempt(packet_frames, silence_frames);
         if !pump.observe(state, epoch, now()) {
+            state.telemetry.carrier_drop();
             return Ok(PumpState::Reset);
         }
         let submitted_at = now();
         match owner.write(packet) {
             Ok(ticket) => {
+                state.telemetry.submission_accepted();
                 tickets.push(ticket);
                 pump.last_phase = pump
                     .next_submit
@@ -376,6 +401,7 @@ pub(super) fn microphone<C: PcmIo>(
             // semantics), never a session fault. The phase stays due, so the
             // next pass encodes the next packet immediately.
             Err(ClientError::KernelPcmQuotaFull) => {
+                state.telemetry.quota_drop();
                 log::debug!(
                     target: "moiren::audio::vad",
                     "event=pcm_kernel_quota_dropped endpoint=microphone stage=write"

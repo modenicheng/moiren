@@ -37,8 +37,11 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 mod lifecycle;
 mod pcm_worker;
+mod telemetry;
 mod transport;
 use lifecycle::{Admission, ExportSpec, ExportView, Lifecycle};
+use telemetry::PcmTelemetry;
+pub use telemetry::VadPcmTelemetrySnapshot;
 
 #[derive(Clone, Copy)]
 struct TransportEndpoint {
@@ -350,6 +353,7 @@ struct SessionState {
     admitted_ticket: AtomicU64,
     admitted_revision: AtomicU64,
     admission: Arc<Admission>,
+    telemetry: Arc<PcmTelemetry>,
 }
 
 impl SessionState {
@@ -366,6 +370,7 @@ impl SessionState {
             admitted_ticket: AtomicU64::new(0),
             admitted_revision: AtomicU64::new(0),
             admission,
+            telemetry: Arc::new(PcmTelemetry::default()),
         }
     }
     fn prepared(&self) -> bool {
@@ -382,6 +387,10 @@ impl SessionState {
     }
     fn revoke(&self) {
         self.admitted_revision.store(0, Ordering::Release);
+    }
+
+    fn telemetry_snapshot(&self) -> VadPcmTelemetrySnapshot {
+        self.telemetry.snapshot()
     }
 }
 

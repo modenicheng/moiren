@@ -57,6 +57,7 @@ pub(super) fn poll<C: EndpointControl>(
     let changed = observed.stream_generation() != previous.stream_generation()
         || observed.gate_epoch() != previous.gate_epoch();
     if changed {
+        state.telemetry.recovery();
         state.reset_epoch.fetch_add(1, Ordering::AcqRel);
     }
     let current = result?;

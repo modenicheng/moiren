@@ -939,6 +939,25 @@ fn microphone_submits_one_packet_and_replenishes_only_after_completion() {
 }
 
 #[test]
+fn microphone_pump_records_native_submission_completion_and_silence_metrics() {
+    let mut f = MicrophoneFixture::new(480);
+    f.cycle().unwrap();
+
+    let initial = f.state.telemetry.snapshot();
+    assert_eq!(initial.packet_frames, 480);
+    assert_eq!(initial.submission_attempts, 1);
+    assert_eq!(initial.submitted_packets, 1);
+    assert_eq!(initial.completed_packets, 0);
+    assert_eq!(initial.silence_packets, 1);
+    assert_eq!(initial.silence_frames, 480);
+
+    f.collect(false);
+    let completed = f.state.telemetry.snapshot();
+    assert_eq!(completed.completed_packets, 1);
+    assert_eq!(completed.completion_gaps, 0);
+}
+
+#[test]
 fn playback_defers_kernel_quota_reads_without_failing_the_session() {
     let mut io = FakeIo {
         defer_reads: 1,
