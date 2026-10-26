@@ -50,6 +50,9 @@ pub struct ExportReconcilePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportStatus {
     pub intent: ExportIntent,
+    /// Native observed metadata, distinct from a requested rename.
+    pub actual_name: Option<String>,
+    pub rename_pending: bool,
     pub resource: ExportResourceState,
     pub allow_default: bool,
     pub gate_open: bool,
@@ -166,7 +169,18 @@ impl ExportService {
             .into_values()
             .map(|intent| {
                 let observed = self.observations.get(&intent.endpoint_id);
+                let actual_name = observed
+                    .filter(|value| {
+                        self.available
+                            && matches!(
+                                value.resource,
+                                ExportResourceState::Present | ExportResourceState::Removing
+                            )
+                    })
+                    .map(|value| value.intent.name.clone());
                 ExportStatus {
+                    rename_pending: intent.enabled && actual_name.as_deref() != Some(&intent.name),
+                    actual_name,
                     resource: if self.available {
                         observed.map_or(ExportResourceState::Absent, |value| value.resource)
                     } else {

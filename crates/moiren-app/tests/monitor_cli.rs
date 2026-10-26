@@ -103,7 +103,7 @@ fn balanced_profile_exposes_joint_latency_budget() {
 }
 
 #[test]
-fn custom_profile_requires_explicit_budget_and_rejects_process_mode() {
+fn custom_profile_requires_explicit_budget_and_process_mode_accepts_budgeted_profiles() {
     assert!(
         parse(&[
             "--input",
@@ -123,10 +123,13 @@ fn custom_profile_requires_explicit_budget_and_rejects_process_mode() {
         "--profile",
         "balanced",
     ]);
-    assert!(matches!(
-        command,
-        Err(moiren_app::monitor_cli::MonitorCliError::ProcessProfileUnsupported)
-    ));
+    let MonitorCommand::Process { config, .. } = command.unwrap() else {
+        panic!("process expected");
+    };
+    assert_eq!(
+        config.latency.profile,
+        moiren_app::monitor::MonitorLatencyProfile::Balanced
+    );
 }
 
 #[test]

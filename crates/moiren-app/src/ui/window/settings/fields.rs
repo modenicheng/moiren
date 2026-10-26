@@ -175,6 +175,7 @@ pub(in super::super) fn footer(
     let state = shell.state.read(cx);
     let running = state.snapshot.phase == SessionPhase::Running;
     let needs_restart = state.snapshot.active_audio_settings.as_ref() != Some(&draft.audio)
+        || state.snapshot.active_transport_latency != Some(draft.transport)
         || state.snapshot.active_latency_profile
             != super::model::expected_active_profile(&draft.audio, draft.profile);
     let busy = shell.settings.busy()

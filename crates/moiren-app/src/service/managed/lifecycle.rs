@@ -15,6 +15,7 @@ impl ManagedDriver {
         c.signals.clear_node_levels();
         c.active_latency_profile = None;
         c.active_audio_settings = None;
+        c.active_transport_latency = None;
         #[cfg(windows)]
         {
             if let Some(observations) = &self.observations {
@@ -72,11 +73,12 @@ impl ManagedDriver {
             self.apply = false;
             return;
         }
-        let settings = self
-            .apply_audio_settings
+        let requested = self
+            .apply_settings
             .as_ref()
             .expect("Apply captures the requested audio configuration")
             .clone();
+        let settings = requested.audio;
         let block = settings.processing.block_frames as usize;
         let project = match preparation.configured_engine_project(block, &settings) {
             Ok(project) => project,
@@ -105,8 +107,9 @@ impl ManagedDriver {
         });
         if self.owner.as_ref().is_some_and(|o| {
             o.document != self.document
-                || (settings == AudioSettings::default() && o.profile != c.latency_profile)
+                || (settings == AudioSettings::default() && o.profile != requested.profile)
                 || o.audio_settings != settings
+                || o.transport_latency != requested.transport
                 || o.exports != preparation.exports
                 || stranded_virtual_transport
         }) {
@@ -200,7 +203,7 @@ impl ManagedDriver {
                 return;
             };
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.open_host(c.latency_profile, &settings, project)
+                self.open_host(requested.profile, &settings, &requested.transport, project)
             }))
             .unwrap_or_else(|_| {
                 Err(host::BackendError::Failed(
@@ -230,8 +233,9 @@ impl ManagedDriver {
                         observer,
                         generation,
                         document: self.document,
-                        profile: c.latency_profile,
+                        profile: requested.profile,
                         audio_settings: settings,
+                        transport_latency: requested.transport,
                         exports: preparation.exports.clone(),
                         active_revision: (1, preparation.revision),
                         active_apply_id: 0,
@@ -264,6 +268,7 @@ impl ManagedDriver {
         &self,
         profile: AudioLatencyProfile,
         settings: &AudioSettings,
+        transport: &TransportLatencySettings,
         project: host::EngineProject,
     ) -> Result<AudioHost, host::BackendError> {
         log::info!(
@@ -285,7 +290,7 @@ impl ManagedDriver {
         );
         match settings.processing.precision {
             ProcessingPrecision::F32 => {
-                let backend = (self.factory)(profile, settings)?;
+                let backend = (self.factory)(profile, settings, transport)?;
                 EngineHost::open(self.host_config.clone(), project, backend).map(AudioHost::F32)
             }
             ProcessingPrecision::F64 => {
@@ -294,7 +299,7 @@ impl ManagedDriver {
                         "this driver has no f64 processing backend".into(),
                     )
                 })?;
-                let backend = factory(profile, settings)?;
+                let backend = factory(profile, settings, transport)?;
                 EngineHost::open(self.host_config.clone(), project, backend).map(AudioHost::F64)
             }
         }

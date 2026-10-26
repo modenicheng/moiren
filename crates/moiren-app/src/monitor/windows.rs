@@ -13,7 +13,8 @@ use moiren_windows_audio::{
     },
     clock_bridge::{BridgeObserver, BridgeSnapshot},
     process_loopback::{
-        ProcessIdentity, ProcessLoopbackOptions, prepare_process_capture_with_gate,
+        ProcessBridgeOptions, ProcessIdentity, ProcessLoopbackOptions,
+        prepare_process_capture_with_gate,
     },
     render::{
         DemandRenderer, PreparedNativeRender, RenderFadeControl, RenderOptions, RenderReport,
@@ -80,6 +81,51 @@ fn native_latency_options(
         }
     };
     Ok((shared_period, budget))
+}
+
+fn process_bridge_options(
+    latency: MonitorLatencyConfig,
+    max_demand_frames: usize,
+) -> Result<ProcessBridgeOptions, MonitorError> {
+    use moiren_windows_audio::latency::transport::{
+        DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy,
+    };
+
+    let input = match latency.profile {
+        MonitorLatencyProfile::Compatible => TransportInputPolicy::Compatible,
+        MonitorLatencyProfile::Balanced | MonitorLatencyProfile::Custom => {
+            TransportInputPolicy::Target {
+                capacity_frames: 8192,
+                target_frames: latency
+                    .input_target_frames
+                    .ok_or(super::MonitorLatencyError::MissingInputTarget)?,
+                jitter_frames: latency
+                    .input_jitter_frames
+                    .ok_or(super::MonitorLatencyError::IncompleteProfile)?,
+            }
+        }
+    };
+    let delivery =
+        (latency.profile != MonitorLatencyProfile::Compatible).then_some(InputDeliveryTiming {
+            sample_rate: 48_000,
+            // Process Loopback is virtual; these are declared admission bounds
+            // until the live packet recorder supplies empirical observations.
+            max_packet_frames: 480,
+            max_gap_frames: 480,
+            source: DeliveryTimingSource::Declared,
+        });
+    ProcessBridgeOptions {
+        input,
+        delivery,
+        engine_sample_rate: 48_000,
+        max_demand_frames: u32::try_from(max_demand_frames)
+            .map_err(|_| MonitorError::InvalidConfig)?,
+    }
+    .for_consumer(
+        48_000,
+        u32::try_from(max_demand_frames).map_err(|_| MonitorError::InvalidConfig)?,
+    )
+    .map_err(MonitorError::from)
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -307,6 +353,7 @@ fn prepare_monitor_inner(
     options.config.validate()?;
     let (shared_period, latency_budget) = native_latency_options(options.config.latency)?;
     let capture_options = CaptureOptions {
+        artifact: None,
         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
         shared_period,
         endpoint_id: options.input_endpoint_id,
@@ -393,14 +440,14 @@ fn prepare_process_monitor_inner(
     routing: Option<&crate::service::GraphPreparation>,
 ) -> Result<PreparedMonitorSession, MonitorError> {
     options.config.validate()?;
-    if options.config.latency.profile != MonitorLatencyProfile::Compatible {
-        return Err(super::MonitorLatencyError::ProcessProfileUnsupported.into());
-    }
-    let shared_period = moiren_windows_audio::shared_stream::SharedPeriodPolicy {
-        desired_period_ms: options.config.latency.shared_period_ms,
-    };
+    let (shared_period, latency_budget) = native_latency_options(options.config.latency)?;
     let render_options = RenderOptions {
-        queue: moiren_windows_audio::latency::RenderQueuePolicy::default(),
+        queue: match latency_budget {
+            moiren_windows_audio::latency::LatencyBudgetPolicy::Compatible => {
+                moiren_windows_audio::latency::RenderQueuePolicy::FullCapacity
+            }
+            moiren_windows_audio::latency::LatencyBudgetPolicy::Custom { render, .. } => render,
+        },
         latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
         shared_period,
         endpoint_id: options.output_endpoint_id,
@@ -410,6 +457,11 @@ fn prepare_process_monitor_inner(
     let gate = ActivationGate::new(stop.clone())?;
     let capture = prepare_process_capture_with_gate(
         ProcessLoopbackOptions {
+            artifact: None,
+            bridge: process_bridge_options(
+                options.config.latency,
+                options.config.max_block_frames,
+            )?,
             latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
             target: options.target,
             duration: options.duration,
@@ -536,5 +588,30 @@ mod tests {
             report_status(CaptureStatus::TargetExited, RenderStatus::Failed),
             MonitorStatus::Failed
         );
+    }
+
+    #[test]
+    fn process_balanced_profile_builds_an_explicit_input_budget() {
+        let bridge = process_bridge_options(MonitorLatencyConfig::balanced(), 256).unwrap();
+        assert_eq!(bridge.max_demand_frames, 256);
+        assert_eq!(
+            bridge.input,
+            moiren_windows_audio::latency::transport::TransportInputPolicy::Target {
+                capacity_frames: 8192,
+                target_frames: 1024,
+                jitter_frames: 96,
+            }
+        );
+        assert!(bridge.delivery.is_some());
+    }
+
+    #[test]
+    fn process_compatible_profile_keeps_legacy_unqualified_delivery() {
+        let bridge = process_bridge_options(MonitorLatencyConfig::default(), 256).unwrap();
+        assert_eq!(
+            bridge.input,
+            moiren_windows_audio::latency::transport::TransportInputPolicy::Compatible
+        );
+        assert!(bridge.delivery.is_none());
     }
 }

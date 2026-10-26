@@ -254,6 +254,10 @@ impl UiState {
             self.dispatch_error = Some(error.to_string());
             return;
         }
+        if let Err(error) = preferences.transport_latency.validate() {
+            self.dispatch_error = Some(error);
+            return;
+        }
         if self
             .try_dispatch(AppRequest::SetAudioSettings(preferences.audio.clone()))
             .is_err()
@@ -261,6 +265,14 @@ impl UiState {
             return;
         }
         self.max_block_frames = preferences.audio.processing.block_frames as usize;
+        if self
+            .try_dispatch(AppRequest::SetTransportLatency(
+                preferences.transport_latency,
+            ))
+            .is_err()
+        {
+            return;
+        }
         let _ = self.try_dispatch(AppRequest::SetLatencyProfile(preferences.latency_profile));
     }
 
@@ -1018,6 +1030,46 @@ mod tests {
             crate::ui::presentation::latency_apply_text(&state.snapshot),
             "Explicit stream buffers control professional audio latency"
         );
+        finish_service(runtime);
+    }
+
+    #[test]
+    fn restored_transport_intent_remains_pending_without_starting_and_invalid_restore_is_atomic() {
+        use crate::service::{ExpertInputBuffer, TransportLatencySettings};
+        let runtime = spawn_service();
+        let handle = runtime.handle();
+        let mut state = UiState::new(handle.clone(), initial_projection(&handle));
+        let mut preferences = crate::project::AppPreferences {
+            transport_latency: TransportLatencySettings {
+                process: Some(ExpertInputBuffer::default()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        state.restore_preferences(&preferences);
+        wait_until(std::time::Duration::from_secs(2), || {
+            state.poll();
+            !state.pending_request
+        });
+        assert_eq!(
+            state.snapshot.transport_latency,
+            preferences.transport_latency
+        );
+        assert_eq!(state.snapshot.active_transport_latency, None);
+        assert_eq!(state.snapshot.phase, SessionPhase::Idle);
+        let consumed = state.snapshot.consumed_request_id;
+        preferences
+            .transport_latency
+            .process
+            .as_mut()
+            .unwrap()
+            .capacity_frames = 0;
+        preferences.audio.processing.block_frames = 512;
+        state.restore_preferences(&preferences);
+        assert!(state.dispatch_error.is_some());
+        assert_eq!(state.max_block_frames, 256);
+        assert_eq!(state.snapshot.consumed_request_id, consumed);
+        assert!(!state.pending_request);
         finish_service(runtime);
     }
 

@@ -86,6 +86,7 @@ pub enum AppRequest {
     SetExportAuthorizations(Vec<super::ExportAuthorization>),
     SetLatencyProfile(super::AudioLatencyProfile),
     SetAudioSettings(super::AudioSettings),
+    SetTransportLatency(super::TransportLatencySettings),
     EditGraph(super::GraphEdit),
     /// Restore the candidate content recorded before the last user edit.
     UndoGraph,
@@ -158,6 +159,10 @@ pub struct AppSnapshot {
     pub active_latency_profile: Option<super::AudioLatencyProfile>,
     pub audio_settings: super::AudioSettings,
     pub active_audio_settings: Option<super::AudioSettings>,
+    pub transport_latency: super::TransportLatencySettings,
+    /// Requested bounds owned by the Running generation. Effective native
+    /// queues are reported separately in its diagnostics.
+    pub active_transport_latency: Option<super::TransportLatencySettings>,
     pub graph: Arc<super::GraphSnapshot>,
     pub monitor_latency: Option<MonitorLatencyStatus>,
     pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,

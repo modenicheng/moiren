@@ -15,6 +15,7 @@ mod model;
 mod model_tests;
 mod persistence;
 mod transaction;
+mod transport;
 use fields::choices;
 pub(super) use fields::{field, footer, rate_title, stream_editor};
 pub(super) use model::{Direction, Draft, Editor, Section, SettingsEditor, device_stream_mut};
@@ -30,6 +31,11 @@ pub(super) fn overlay(
     let mut tabs = div().flex().gap(px(6.));
     for (id, title, section) in [
         ("settings-audio", t!("Audio"), Section::Audio),
+        (
+            "settings-transport",
+            t!("Input buffers"),
+            Section::Transport,
+        ),
         ("settings-appearance", t!("Appearance"), Section::Appearance),
         (
             "settings-diagnostics",
@@ -55,6 +61,7 @@ pub(super) fn overlay(
     }
     let content = match shell.settings.section {
         Section::Audio => audio(shell, cx),
+        Section::Transport => transport::editor(shell, cx),
         Section::Appearance => appearance(shell, cx),
         Section::Diagnostics => diagnostics(shell, cx),
     };
@@ -403,6 +410,14 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .child(label(t!(
             "Unsaved edits stay in the Audio draft until Save or Restart Audio."
         )))
+        .child(detail(
+            &t!("Requested process input"),
+            transport::summary(snapshot.transport_latency.process),
+        ))
+        .child(detail(
+            &t!("Requested VAD input"),
+            transport::summary(snapshot.transport_latency.vad),
+        ))
         .child(div().mt(px(12.)).child(heading(t!("Active session"))))
         .child(detail(
             &t!("State"),
@@ -427,6 +442,20 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     } else {
         view = view.child(label(t!("No active audio configuration")));
     }
+    if let Some(active) = snapshot.active_transport_latency {
+        view = view
+            .child(detail(
+                &t!("Active process request"),
+                transport::summary(active.process),
+            ))
+            .child(detail(
+                &t!("Active VAD request"),
+                transport::summary(active.vad),
+            ));
+    }
+    view = view.child(label(t!(
+        "Input targets are estimates. Physical end-to-end latency is unqualified."
+    )));
     view = view.child(heading(t!("Actual native timing")));
     for (key, value) in crate::ui::presentation::native_timing_rows(snapshot) {
         view = view.child(detail(&key, value));

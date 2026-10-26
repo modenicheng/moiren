@@ -352,6 +352,16 @@ fn export_row(
         .bg(theme::SURFACE)
         .rounded(px(theme::RADIUS_MD))
         .child(heading(status.intent.name.clone()))
+        .child(detail(
+            &t!("Actual endpoint name"),
+            status
+                .actual_name
+                .clone()
+                .unwrap_or_else(|| t!("Unknown / not present").into()),
+        ))
+        .when(status.rename_pending, |row| {
+            row.child(label(t!("Name pending; waiting for native recreation")))
+        })
         .child(label(format!(
             "{:?} / {} / {id}",
             status.intent.direction,

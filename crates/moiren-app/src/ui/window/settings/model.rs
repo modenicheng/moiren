@@ -1,7 +1,7 @@
 use rust_i18n::t;
 
 use super::*;
-use crate::service::{AudioLatencyProfile, RequestId};
+use crate::service::{AudioLatencyProfile, RequestId, TransportLatencySettings};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in super::super) enum Editor {
@@ -19,6 +19,7 @@ pub(in super::super) enum Direction {
 pub(in super::super) enum Section {
     #[default]
     Audio,
+    Transport,
     Appearance,
     Diagnostics,
 }
@@ -28,7 +29,13 @@ pub(in super::super) struct Draft {
     pub audio: AudioSettings,
     pub profile: AudioLatencyProfile,
     pub density: Density,
-    original: (AudioSettings, AudioLatencyProfile, Density),
+    pub transport: TransportLatencySettings,
+    original: (
+        AudioSettings,
+        AudioLatencyProfile,
+        Density,
+        TransportLatencySettings,
+    ),
     pub error: Option<String>,
     pub message: Option<String>,
     pub pending: Option<Pending>,
@@ -47,22 +54,30 @@ pub(in super::super) struct Submission {
     pub audio: AudioSettings,
     pub profile: AudioLatencyProfile,
     pub density: Density,
+    pub transport: TransportLatencySettings,
 }
 
 #[derive(Clone, Copy)]
 pub(in super::super) enum Stage {
     Audio,
+    Transport,
     Profile,
     Restart,
 }
 
 impl Draft {
-    pub fn new(audio: AudioSettings, profile: AudioLatencyProfile, density: Density) -> Self {
+    pub fn new(
+        audio: AudioSettings,
+        profile: AudioLatencyProfile,
+        density: Density,
+        transport: TransportLatencySettings,
+    ) -> Self {
         Self {
-            original: (audio.clone(), profile, density),
+            original: (audio.clone(), profile, density, transport),
             audio,
             profile,
             density,
+            transport,
             error: None,
             message: None,
             pending: None,
@@ -74,6 +89,7 @@ impl Draft {
             || self.audio != self.original.0
             || self.profile != self.original.1
             || self.density != self.original.2
+            || self.transport != self.original.3
     }
 
     pub fn changed(&mut self) {
@@ -82,7 +98,12 @@ impl Draft {
     }
 
     pub fn committed(&mut self) {
-        self.original = (self.audio.clone(), self.profile, self.density);
+        self.original = (
+            self.audio.clone(),
+            self.profile,
+            self.density,
+            self.transport,
+        );
         self.pending = None;
         self.error = None;
         self.message = Some(t!("Saved. Audio settings apply on the next start.").into());
@@ -93,6 +114,7 @@ impl Draft {
         current: &AudioSettings,
         profile: AudioLatencyProfile,
         density: Density,
+        transport: TransportLatencySettings,
     ) -> Result<Submission, String> {
         Ok(Submission {
             audio: rebase_audio(&self.original.0, &self.audio, current)?,
@@ -103,6 +125,20 @@ impl Draft {
                 &t!("Recovery policy"),
             )?,
             density: merge_value(self.original.2, self.density, density, &t!("Density"))?,
+            transport: TransportLatencySettings {
+                process: merge_value(
+                    self.original.3.process,
+                    self.transport.process,
+                    transport.process,
+                    &t!("Process input buffer"),
+                )?,
+                vad: merge_value(
+                    self.original.3.vad,
+                    self.transport.vad,
+                    transport.vad,
+                    &t!("VAD input buffer"),
+                )?,
+            },
         })
     }
 }
@@ -217,6 +253,7 @@ impl SettingsEditor {
             preferences.audio.clone(),
             preferences.latency_profile,
             density,
+            preferences.transport_latency,
         );
         Self {
             global: draft.clone(),
@@ -323,6 +360,7 @@ impl StudioShell {
             snapshot.audio_settings.clone(),
             snapshot.latency_profile,
             self.density,
+            snapshot.transport_latency,
         )
     }
 

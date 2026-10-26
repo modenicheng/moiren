@@ -20,6 +20,57 @@ use moiren_app::ui::{Page, PageCell};
 use std::time::Duration;
 
 #[gpui_kit::test]
+fn expert_input_buffers_are_explicit_drafts_with_unqualified_latency(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let runtime = common::service();
+    let snapshot = common::wait_snapshot(&runtime.handle());
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| UiState::new(runtime.handle(), snapshot));
+    let page = cx.new(|_| PageCell::default());
+    let window = cx.update(|cx| {
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::new(
+                    gpui_kit::point(px(0.), px(0.)),
+                    size(px(1440.), px(900.)),
+                ))),
+                ..Default::default()
+            },
+            |window, cx| cx.new(|cx| moiren_app::ui::shell_for_tests(state, page, window, cx)),
+        )
+        .unwrap()
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+        window.click("settings-transport", cx);
+        assert!(window.find("transport-latency-unqualified").visible());
+        assert!(window.try_find("process-expert-fields").is_none());
+        assert!(window.try_find("vad-expert-fields").is_none());
+        window.click("process-policy-1", cx);
+        assert!(window.try_find("process-expert-fields").is_some());
+        window.click("process-policy-0", cx);
+        assert!(window.try_find("process-expert-fields").is_none());
+        window.click("vad-policy-1", cx);
+        assert!(window.try_find("vad-expert-fields").is_some());
+        window.click("close-settings", cx);
+        window.click("open-settings", cx);
+        assert!(
+            window.try_find("vad-expert-fields").is_some(),
+            "closing the modal retains the unsaved expert draft"
+        );
+    })
+    .unwrap();
+    assert_eq!(
+        common::wait_snapshot(&runtime.handle()).transport_latency,
+        Default::default(),
+        "draft choices must not bypass Save"
+    );
+    common::finish(runtime);
+}
+
+#[gpui_kit::test]
 fn shell_renders_statusbar_and_session_panel(cx: &mut gpui_kit::TestAppContext) {
     let runtime = common::service();
     let handle = runtime.handle();

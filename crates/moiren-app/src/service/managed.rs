@@ -18,7 +18,11 @@ mod parameters;
 #[cfg(test)]
 mod tests;
 
-type Factory<S> = dyn Fn(AudioLatencyProfile, &AudioSettings) -> Result<Box<dyn EngineBackend<S>>, host::BackendError>
+type Factory<S> = dyn Fn(
+        AudioLatencyProfile,
+        &AudioSettings,
+        &TransportLatencySettings,
+    ) -> Result<Box<dyn EngineBackend<S>>, host::BackendError>
     + Send
     + Sync;
 /// Only the lifecycle owner is sample-typed; control and observations are shared
@@ -49,6 +53,7 @@ struct Owner {
     document: u64,
     profile: AudioLatencyProfile,
     audio_settings: AudioSettings,
+    transport_latency: TransportLatencySettings,
     exports: Vec<ExportIntent>,
     active_revision: (u64, u64),
     /// The Apply whose matching ACKs established `active_revision`.
@@ -86,6 +91,22 @@ enum Completion {
     Exports(Result<super::exports::runtime::Batch, String>),
 }
 
+#[derive(Clone)]
+struct ApplySettings {
+    audio: AudioSettings,
+    transport: TransportLatencySettings,
+    profile: AudioLatencyProfile,
+}
+impl ApplySettings {
+    fn capture(c: &ServiceContext) -> Self {
+        Self {
+            audio: c.audio_settings.clone(),
+            transport: c.transport_latency,
+            profile: c.latency_profile,
+        }
+    }
+}
+
 /// Delay before a structure edit automatically applies; consecutive edits
 /// within the window coalesce into one rebuild.
 const AUTO_APPLY_DELAY: Duration = Duration::from_millis(200);
@@ -109,7 +130,7 @@ pub struct ManagedDriver {
     automatic_startup: bool,
     exiting: bool,
     apply: bool,
-    apply_audio_settings: Option<AudioSettings>,
+    apply_settings: Option<ApplySettings>,
     /// Last submitted effective strip values (dim-folded gain, solo-audible
     /// mute) per node; diffs against the candidate drive live submissions.
     strip_live: BTreeMap<NodeId, (f64, bool)>,
@@ -137,7 +158,7 @@ impl ManagedDriver {
     ) -> Self {
         Self {
             exports_runtime: Default::default(),
-            factory: Arc::new(move |profile, _| factory(profile)),
+            factory: Arc::new(move |profile, _, _| factory(profile)),
             f64_factory: None,
             catalog_backend: None,
             host_config: HostConfig {
@@ -166,7 +187,7 @@ impl ManagedDriver {
             automatic_startup: false,
             exiting: false,
             apply: false,
-            apply_audio_settings: None,
+            apply_settings: None,
             meters: None,
             #[cfg(windows)]
             observations: None,
@@ -185,7 +206,7 @@ impl ManagedDriver {
         + Sync
         + 'static,
     ) -> Self {
-        self.f64_factory = Some(Arc::new(move |profile, _| factory(profile)));
+        self.f64_factory = Some(Arc::new(move |profile, _, _| factory(profile)));
         self
     }
     pub fn with_catalog(mut self, backend: Arc<dyn BackendAdapter>) -> Self {
@@ -209,10 +230,15 @@ impl ManagedDriver {
         let provider_for_f64 = virtual_provider.clone();
         let mut driver = Self::new(|_| unreachable!("Windows factory replaced before use"))
             .with_catalog(Arc::new(WindowsBackend::default()));
-        driver.factory = Arc::new(move |profile, settings| {
+        driver.factory = Arc::new(move |profile, settings, transport| {
+            transport
+                .validate()
+                .map_err(host::BackendError::Unsupported)?;
             if settings != &AudioSettings::default() {
                 let backend =
-                    moiren_windows_audio::professional::ProfessionalBackend::<f32>::new()?;
+                    moiren_windows_audio::professional::ProfessionalBackend::<f32>::new()?
+                        .with_process_bridge(transport.process_options())?
+                        .with_virtual_buffer(transport.virtual_options())?;
                 let backend = if let Some(provider) = provider_for_factory.as_ref() {
                     backend.with_virtual_provider(provider.clone())
                 } else {
@@ -224,9 +250,10 @@ impl ManagedDriver {
                     .unwrap_or_else(|p| p.into_inner()) = Some(backend.observations());
                 return Ok(Box::new(backend));
             }
-            let backend = moiren_windows_audio::engine_backend::WindowsBackend::new(
-                profile.windows_backend_config(),
-            )?;
+            let mut config = profile.windows_backend_config();
+            config.process_bridge = transport.process_options();
+            config.virtual_buffer = transport.virtual_options();
+            let backend = moiren_windows_audio::engine_backend::WindowsBackend::new(config)?;
             let backend = if let Some(provider) = provider_for_factory.as_ref() {
                 backend.with_virtual_provider(provider.clone())
             } else {
@@ -238,8 +265,13 @@ impl ManagedDriver {
                 .unwrap_or_else(|p| p.into_inner()) = None;
             Ok(Box::new(backend))
         });
-        driver.f64_factory = Some(Arc::new(move |_, _| {
-            let backend = moiren_windows_audio::professional::ProfessionalBackend::<f64>::new()?;
+        driver.f64_factory = Some(Arc::new(move |_, _, transport| {
+            transport
+                .validate()
+                .map_err(host::BackendError::Unsupported)?;
+            let backend = moiren_windows_audio::professional::ProfessionalBackend::<f64>::new()?
+                .with_process_bridge(transport.process_options())?
+                .with_virtual_buffer(transport.virtual_options())?;
             let backend = if let Some(provider) = provider_for_f64.as_ref() {
                 backend.with_virtual_provider(provider.clone())
             } else {

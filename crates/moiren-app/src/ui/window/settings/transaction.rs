@@ -27,6 +27,7 @@ impl StudioShell {
             &snapshot.audio_settings,
             snapshot.latency_profile,
             self.density,
+            snapshot.transport_latency,
         ) {
             Ok(submitted) => submitted,
             Err(error) => {
@@ -40,12 +41,18 @@ impl StudioShell {
             cx.notify();
             return;
         }
+        if let Err(error) = submitted.transport.validate() {
+            draft.error = Some(error);
+            cx.notify();
+            return;
+        }
         // Recheck the phase at activation: a stale running button must never
         // turn Save into an unexpected start after audio has stopped.
         let snapshot = &self.state.read(cx).snapshot;
         let restart = restart
             && snapshot.phase == SessionPhase::Running
             && (snapshot.active_audio_settings.as_ref() != Some(&submitted.audio)
+                || snapshot.active_transport_latency != Some(submitted.transport)
                 || snapshot.active_latency_profile
                     != expected_active_profile(&submitted.audio, submitted.profile));
         match self.state.update(cx, |state, _| {
@@ -91,15 +98,28 @@ impl StudioShell {
                 .or_else(|| snapshot.graph.last_error.clone());
             let settings_match = snapshot.audio_settings == pending.submitted.audio;
             let profile_match = snapshot.latency_profile == pending.submitted.profile;
+            let transport_match = snapshot.transport_latency == pending.submitted.transport;
             let mut next = None;
             let mut complete = false;
             let mut error = None;
             match pending.stage {
-                Stage::Audio | Stage::Profile if !settings_match => {
+                Stage::Audio | Stage::Transport | Stage::Profile if !settings_match => {
                     error =
                         Some(failure.unwrap_or_else(|| t!("Audio settings were rejected.").into()));
                 }
-                Stage::Audio if !profile_match => {
+                Stage::Audio if !transport_match => {
+                    next = Some((
+                        AppRequest::SetTransportLatency(pending.submitted.transport),
+                        Stage::Transport,
+                    ));
+                }
+                Stage::Transport | Stage::Profile if !transport_match => {
+                    error = Some(
+                        failure
+                            .unwrap_or_else(|| t!("Input buffer settings were rejected.").into()),
+                    );
+                }
+                Stage::Audio | Stage::Transport if !profile_match => {
                     next = Some((
                         AppRequest::SetLatencyProfile(pending.submitted.profile),
                         Stage::Profile,
@@ -109,7 +129,7 @@ impl StudioShell {
                     error =
                         Some(failure.unwrap_or_else(|| t!("Latency policy was rejected.").into()));
                 }
-                Stage::Audio | Stage::Profile => {
+                Stage::Audio | Stage::Transport | Stage::Profile => {
                     if pending.restart && snapshot.phase == SessionPhase::Running {
                         next = Some((AppRequest::ApplyGraph, Stage::Restart));
                     } else {
@@ -117,8 +137,13 @@ impl StudioShell {
                     }
                 }
                 Stage::Restart => {
-                    if snapshot.phase == SessionPhase::Running
+                    if !settings_match || !transport_match || !profile_match {
+                        error = Some(
+                            t!("Settings changed while restarting. Your draft is retained.").into(),
+                        );
+                    } else if snapshot.phase == SessionPhase::Running
                         && snapshot.active_audio_settings.as_ref() == Some(&pending.submitted.audio)
+                        && snapshot.active_transport_latency == Some(pending.submitted.transport)
                         && snapshot.active_latency_profile
                             == expected_active_profile(
                                 &pending.submitted.audio,
@@ -175,8 +200,10 @@ impl StudioShell {
                 draft.audio = pending.submitted.audio;
                 draft.profile = pending.submitted.profile;
                 draft.density = pending.submitted.density;
+                draft.transport = pending.submitted.transport;
                 self.preferences.audio = draft.audio.clone();
                 self.preferences.latency_profile = draft.profile;
+                self.preferences.transport_latency = draft.transport;
                 self.preferences.density = if draft.density == Density::Compact {
                     crate::project::UiDensity::Compact
                 } else {

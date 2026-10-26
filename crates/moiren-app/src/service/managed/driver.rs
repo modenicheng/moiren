@@ -21,7 +21,7 @@ impl ServiceDriver for ManagedDriver {
                         })
                     }) {
                         self.apply = false;
-                        self.apply_audio_settings = None;
+                        self.apply_settings = None;
                         let _ = c.core.stop();
                         self.retire(c);
                     }
@@ -39,13 +39,16 @@ impl ServiceDriver for ManagedDriver {
                     self.edits.clear();
                     c.graph.clear_pending();
                     self.apply = false;
-                    self.apply_audio_settings = None;
+                    self.apply_settings = None;
                 }
                 Err(error) => c.graph.record_error(error),
             },
             AppRequest::SetLatencyProfile(profile) => c.latency_profile = profile,
             AppRequest::SetAudioSettings(settings) => {
                 c.set_audio_settings(settings);
+            }
+            AppRequest::SetTransportLatency(settings) => {
+                c.set_transport_latency(settings);
             }
             AppRequest::RefreshCatalog => self.catalog.request(),
             AppRequest::Start(spec) => {
@@ -66,20 +69,20 @@ impl ServiceDriver for ManagedDriver {
                     c.graph.record_error(error);
                 } else if c.core.managed_desired(spec).is_ok() {
                     c.audio_settings = settings;
-                    self.apply_audio_settings = Some(c.audio_settings.clone());
+                    self.apply_settings = Some(ApplySettings::capture(c));
                     self.apply = true;
                 }
             }
             AppRequest::ApplyGraph => {
                 self.automatic_startup = false;
                 self.auto_apply_deadline = None;
-                self.apply_audio_settings = Some(c.audio_settings.clone());
+                self.apply_settings = Some(ApplySettings::capture(c));
                 self.apply = true;
             }
             AppRequest::Stop => {
                 self.automatic_startup = false;
                 self.apply = false;
-                self.apply_audio_settings = None;
+                self.apply_settings = None;
                 self.auto_apply_deadline = None;
                 let _ = c.core.stop();
                 self.retire(c);
@@ -158,8 +161,8 @@ impl ServiceDriver for ManagedDriver {
             && deadline <= Instant::now()
         {
             self.auto_apply_deadline = None;
-            self.apply_audio_settings
-                .get_or_insert_with(|| c.audio_settings.clone());
+            self.apply_settings
+                .get_or_insert_with(|| ApplySettings::capture(c));
             self.apply = true;
         }
         if self.apply {
@@ -181,7 +184,7 @@ impl ServiceDriver for ManagedDriver {
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
         self.exiting = true;
         self.apply = false;
-        self.apply_audio_settings = None;
+        self.apply_settings = None;
         self.auto_apply_deadline = None;
         self.retire(c);
     }
@@ -234,7 +237,7 @@ impl ManagedDriver {
                                     c.audio_settings.backend,
                                 ) {
                                     let _ = c.graph.configure_session(&spec);
-                                    self.apply_audio_settings = Some(c.audio_settings.clone());
+                                    self.apply_settings = Some(ApplySettings::capture(c));
                                     self.apply = true;
                                 }
                                 // Known divergence: managed automatic startup
@@ -413,6 +416,7 @@ impl ManagedDriver {
             c.active_latency_profile =
                 (owner.audio_settings == AudioSettings::default()).then_some(owner.profile);
             c.active_audio_settings = Some(owner.audio_settings.clone());
+            c.active_transport_latency = Some(owner.transport_latency);
             if owner.started.is_none() {
                 log::info!(
                     target: "moiren::audio::service",
@@ -437,6 +441,7 @@ impl ManagedDriver {
         } else {
             c.active_latency_profile = None;
             c.active_audio_settings = None;
+            c.active_transport_latency = None;
             c.graph.stopped();
         }
         if let UpdateState::Blocked { reason, .. } = &snapshot.state.update {

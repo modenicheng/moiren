@@ -404,6 +404,20 @@ impl ServiceDriver for BackendDriver {
                     c.graph.record_error(PROFESSIONAL_SETTINGS_UNSUPPORTED);
                 }
             }
+            AppRequest::SetTransportLatency(settings) => {
+                if c.set_transport_latency(settings)
+                    && settings != TransportLatencySettings::default()
+                {
+                    c.graph
+                        .record_error("expert input buffers require the managed desktop owner");
+                }
+            }
+            AppRequest::Start(_) | AppRequest::ApplyGraph
+                if c.transport_latency != TransportLatencySettings::default() =>
+            {
+                c.graph
+                    .record_error("expert input buffers require the managed desktop owner");
+            }
             AppRequest::Start(spec) => {
                 if let Err(error) = c.exports.preflight_audio(&c.graph.snapshot().exports) {
                     c.graph.record_error(error);

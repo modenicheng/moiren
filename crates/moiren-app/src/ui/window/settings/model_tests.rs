@@ -6,6 +6,7 @@ fn draft(audio: AudioSettings) -> Draft {
         audio,
         crate::service::AudioLatencyProfile::Compatible,
         Density::Comfortable,
+        Default::default(),
     )
 }
 
@@ -32,7 +33,7 @@ fn stale_device_draft_preserves_new_defaults_and_other_device_overrides() {
         },
     );
     let merged = device
-        .submission(&current, device.profile, device.density)
+        .submission(&current, device.profile, device.density, Default::default())
         .unwrap()
         .audio;
     assert_eq!(merged.processing, current.processing);
@@ -64,7 +65,7 @@ fn stale_global_draft_preserves_new_and_removed_device_overrides() {
         },
     );
     let merged = global
-        .submission(&current, global.profile, global.density)
+        .submission(&current, global.profile, global.density, Default::default())
         .unwrap()
         .audio;
     assert_eq!(merged.input.sample_rate, Some(96_000));
@@ -90,7 +91,7 @@ fn reset_removes_only_the_edited_override_and_uses_latest_defaults() {
         .input_overrides
         .insert("b".into(), StreamSettings::default());
     let merged = device
-        .submission(&current, device.profile, device.density)
+        .submission(&current, device.profile, device.density, Default::default())
         .unwrap()
         .audio;
     assert!(!merged.input_overrides.contains_key("a"));
@@ -112,7 +113,7 @@ fn conflicting_full_device_override_is_rejected_without_losing_draft() {
         },
     );
     let error = device
-        .submission(&current, device.profile, device.density)
+        .submission(&current, device.profile, device.density, Default::default())
         .err()
         .unwrap();
     assert!(error.starts_with("Input override for a changed elsewhere"));
@@ -129,12 +130,12 @@ fn failed_submission_rebase_does_not_turn_unedited_defaults_into_owned_edits() {
     let mut current = original;
     current.output.sample_rate = Some(88_200);
     let first = device
-        .submission(&current, device.profile, device.density)
+        .submission(&current, device.profile, device.density, Default::default())
         .unwrap();
     assert_eq!(first.audio.output.sample_rate, Some(88_200));
     current.output.sample_rate = Some(96_000);
     let retry = device
-        .submission(&current, device.profile, device.density)
+        .submission(&current, device.profile, device.density, Default::default())
         .unwrap();
     assert_eq!(retry.audio.output.sample_rate, Some(96_000));
     assert_eq!(retry.audio.output_overrides["a"].buffer_frames, Some(64));
@@ -176,4 +177,62 @@ fn stream_summaries_show_wasapi_mode_and_asio_driver_owned_encoding() {
     assert!(asio.contains("Driver encoding"));
     assert!(!asio.contains("PCM"));
     assert!(!asio.contains("Exclusive"));
+}
+
+#[test]
+fn transport_draft_rebases_independent_inputs_and_rejects_same_input_conflicts() {
+    use crate::service::{ExpertInputBuffer, TransportLatencySettings};
+    let mut edited = draft(AudioSettings::default());
+    edited.transport.process = Some(ExpertInputBuffer::default());
+    let current = TransportLatencySettings {
+        vad: Some(ExpertInputBuffer {
+            target_frames: 1024,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let merged = edited
+        .submission(&edited.audio, edited.profile, edited.density, current)
+        .unwrap();
+    assert_eq!(merged.transport.process, edited.transport.process);
+    assert_eq!(merged.transport.vad, current.vad);
+    let conflict = TransportLatencySettings {
+        process: Some(ExpertInputBuffer {
+            target_frames: 4096,
+            ..Default::default()
+        }),
+        ..current
+    };
+    assert!(
+        edited
+            .submission(&edited.audio, edited.profile, edited.density, conflict)
+            .is_err()
+    );
+    assert_eq!(edited.transport.process.unwrap().target_frames, 2048);
+    assert!(edited.dirty());
+}
+
+#[test]
+fn device_draft_does_not_overwrite_new_transport_intent_and_commit_tracks_it() {
+    use crate::service::{ExpertInputBuffer, TransportLatencySettings};
+    let mut device = draft(AudioSettings::default());
+    device_stream_mut(&mut device.audio, Direction::Input, "microphone").buffer_frames = Some(128);
+    let transport = TransportLatencySettings {
+        process: Some(ExpertInputBuffer::default()),
+        ..Default::default()
+    };
+    let merged = device
+        .submission(
+            &AudioSettings::default(),
+            device.profile,
+            device.density,
+            transport,
+        )
+        .unwrap();
+    assert_eq!(merged.transport, transport);
+    device.transport = merged.transport;
+    device.committed();
+    assert!(!device.dirty());
+    device.transport.process = None;
+    assert!(device.dirty());
 }

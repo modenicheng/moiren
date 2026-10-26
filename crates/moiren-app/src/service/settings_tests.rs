@@ -133,3 +133,25 @@ fn active_audio_settings_require_running_current_owner() {
     context.core.stop().unwrap();
     assert_eq!(snapshot(&context).active_audio_settings, None);
 }
+
+#[test]
+fn active_transport_settings_are_fenced_by_running_owner_generation() {
+    let mut context = ServiceContext {
+        active_transport_latency: Some(TransportLatencySettings::default()),
+        ..Default::default()
+    };
+    assert_eq!(snapshot(&context).active_transport_latency, None);
+    context.core.managed_desired(session()).unwrap();
+    let old = context.core.generation();
+    context.core.managed_execution(old, true, None);
+    assert_eq!(
+        snapshot(&context).active_transport_latency,
+        Some(Default::default())
+    );
+    context.core.stop().unwrap();
+    assert_eq!(snapshot(&context).active_transport_latency, None);
+    context.core.managed_desired(session()).unwrap();
+    assert_ne!(context.core.generation(), old);
+    context.core.managed_execution(old, true, None);
+    assert_eq!(snapshot(&context).active_transport_latency, None);
+}

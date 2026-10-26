@@ -21,6 +21,7 @@ mod startup;
 #[cfg(any(test, feature = "gpui-test"))]
 #[path = "managed/test_backend.rs"]
 pub(crate) mod test_backend;
+mod transport_latency;
 #[cfg(windows)]
 mod windows;
 pub use backend::*;
@@ -36,6 +37,7 @@ pub use managed::ManagedDriver;
 pub use moiren_engine::audio_config::*;
 pub use signal_preparation::{SignalPreparation, SignalPreparationError};
 pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
+pub use transport_latency::{DeliveryProvenance, ExpertInputBuffer, TransportLatencySettings};
 #[cfg(windows)]
 pub use windows::WindowsBackend;
 
@@ -118,6 +120,8 @@ pub struct ServiceContext {
     pub active_latency_profile: Option<AudioLatencyProfile>,
     pub audio_settings: AudioSettings,
     pub active_audio_settings: Option<AudioSettings>,
+    pub transport_latency: TransportLatencySettings,
+    pub active_transport_latency: Option<TransportLatencySettings>,
     pub graph: ServiceGraph,
     pub monitor_latency: Option<MonitorLatencyStatus>,
     pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
@@ -142,6 +146,8 @@ impl Default for ServiceContext {
             active_latency_profile: None,
             audio_settings: AudioSettings::default(),
             active_audio_settings: None,
+            transport_latency: TransportLatencySettings::default(),
+            active_transport_latency: None,
             graph: ServiceGraph::default(),
             monitor_latency: None,
             monitor_diagnostics: None,
@@ -215,6 +221,15 @@ impl ServiceContext {
             return false;
         }
         self.audio_settings = settings;
+        true
+    }
+
+    pub(crate) fn set_transport_latency(&mut self, settings: TransportLatencySettings) -> bool {
+        if let Err(error) = settings.validate() {
+            self.graph.record_error(error);
+            return false;
+        }
+        self.transport_latency = settings;
         true
     }
 
@@ -315,6 +330,9 @@ impl ServiceDriver for CoreDriver {
             AppRequest::SetAudioSettings(settings) => {
                 c.set_audio_settings(settings);
             }
+            AppRequest::SetTransportLatency(settings) => {
+                c.set_transport_latency(settings);
+            }
             AppRequest::EditGraph(edit) => {
                 let _ = c.graph.edit(edit);
             }
@@ -357,6 +375,10 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         active_audio_settings: c
             .active_audio_settings
             .clone()
+            .filter(|_| c.fresh(c.core.generation())),
+        transport_latency: c.transport_latency,
+        active_transport_latency: c
+            .active_transport_latency
             .filter(|_| c.fresh(c.core.generation())),
         graph: Arc::new(graph),
         monitor_latency: c.monitor_latency.clone(),

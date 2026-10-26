@@ -417,6 +417,7 @@ pub struct AppPreferences {
     /// Requested for the next audio apply/start, not a measured device result.
     pub latency_profile: AudioLatencyProfile,
     pub audio: AudioSettings,
+    pub transport_latency: crate::service::TransportLatencySettings,
     pub restore_last_project: bool,
     pub last_project_path: Option<std::path::PathBuf>,
 }
@@ -432,6 +433,7 @@ impl Default for AppPreferences {
             language: crate::i18n::UiLanguage::default(),
             latency_profile: AudioLatencyProfile::Compatible,
             audio: AudioSettings::default(),
+            transport_latency: crate::service::TransportLatencySettings::default(),
             restore_last_project: false,
             last_project_path: None,
         }
@@ -465,6 +467,9 @@ impl AppPreferences {
         self.audio
             .validate()
             .map_err(|error| PersistenceError::invalid("audio", error.to_string()))?;
+        self.transport_latency
+            .validate()
+            .map_err(|error| PersistenceError::invalid("transport_latency", error))?;
         if let Some(path) = &self.last_project_path
             && (path.as_os_str().is_empty() || path.to_string_lossy().contains('\0'))
         {

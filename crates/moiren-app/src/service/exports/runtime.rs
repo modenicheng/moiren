@@ -376,9 +376,13 @@ impl Adapter for WindowsAdapter {
             for view in self.0.export_observations() {
                 if let Some(snapshot) = view.snapshot
                     && snapshot.gate_open()
-                    && let Err(error) =
-                        self.0
-                            .set_export_gate(view.spec.id, snapshot_stamp(snapshot), false, 0, 0)
+                    && let Err(error) = self.0.set_export_gate(
+                        view.endpoint_id,
+                        snapshot_stamp(snapshot),
+                        false,
+                        0,
+                        0,
+                    )
                 {
                     errors.push(error.to_string());
                 }
@@ -389,7 +393,9 @@ impl Adapter for WindowsAdapter {
                 if let Some(snapshot) = view.snapshot
                     && matches!(snapshot.state(), PdoState::Creating | PdoState::Present)
                     && !snapshot.gate_open()
-                    && let Err(error) = self.0.retire_export(view.spec.id, snapshot_stamp(snapshot))
+                    && let Err(error) = self
+                        .0
+                        .retire_export(view.endpoint_id, snapshot_stamp(snapshot))
                 {
                     errors.push(error.to_string());
                 }
@@ -457,14 +463,14 @@ impl Adapter for WindowsAdapter {
                 };
                 NativeObservation {
                     intent: ExportIntent {
-                        endpoint_id: view.spec.id,
-                        name: view.spec.name,
-                        direction: if view.spec.intent == Intent::Playback {
+                        endpoint_id: view.endpoint_id,
+                        name: view.spec_name,
+                        direction: if view.intent == Intent::Playback {
                             ExportDirection::Playback
                         } else {
                             ExportDirection::Microphone
                         },
-                        channels: view.spec.channels as usize,
+                        channels: view.channels as usize,
                         enabled: true,
                         binding: None,
                     },
@@ -479,7 +485,7 @@ impl Adapter for WindowsAdapter {
                     }),
                     resource,
                     gate_open: view.snapshot.is_some_and(|s| s.gate_open()),
-                    allow_default: view.spec.allow_default,
+                    allow_default: view.allow_default,
                     can_open: native_can_open(view.transport_prepared, view.snapshot),
                     error: view.error,
                 }

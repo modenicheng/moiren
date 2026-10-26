@@ -12,7 +12,7 @@ pub(crate) struct FakeAdapter {
     pub fail_remove: AtomicBool,
     pub uncertain_create: AtomicBool,
     pub transport_unavailable: AtomicBool,
-    defer_create: AtomicBool,
+    pub defer_create: AtomicBool,
     pub hold_open: AtomicBool,
     pub open_entered: AtomicBool,
     pub calls: Mutex<Vec<(String, Option<u64>, String)>>,

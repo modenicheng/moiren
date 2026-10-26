@@ -188,9 +188,6 @@ pub fn parse_monitor_args(
     if input.is_some() && process.is_some() {
         return Err(MonitorCliError::ConflictingInput);
     }
-    if process.is_some() && profile != MonitorLatencyProfile::Compatible {
-        return Err(MonitorCliError::ProcessProfileUnsupported);
-    }
     if let Some(pid) = process {
         return Ok(MonitorCommand::Process {
             pid,
