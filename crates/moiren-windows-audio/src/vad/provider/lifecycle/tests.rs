@@ -622,6 +622,31 @@ fn worker_activation_never_opens_and_revoked_gate_close_resets_carrier() {
 }
 
 #[test]
+fn first_gate_admission_does_not_count_as_transport_recovery() {
+    let admission = Arc::new(Admission::new());
+    let session = SessionState::new(admission.clone());
+    session.active.store(true, Ordering::Release);
+    let ticket = admission.set(Some(9));
+    session.admitted_ticket.store(ticket, Ordering::Release);
+    session.admitted_revision.store(9, Ordering::Release);
+    let mut control = Fake {
+        current: snapshot(PdoState::Present, 3, 5, false),
+        ..Default::default()
+    };
+    let previous = control.current;
+    control.current = snapshot(PdoState::Present, 3, 6, true);
+
+    let (current, changed) =
+        super::super::transport::poll(&mut control, previous, &session).unwrap();
+
+    assert!(!changed, "initial admission is not recovery");
+    assert!(current.gate_open());
+    assert!(session.admitted());
+    assert_eq!(session.reset_epoch.load(Ordering::Acquire), 0);
+    assert_eq!(session.telemetry.snapshot().recovery_events, 0);
+}
+
+#[test]
 fn admitted_worker_keeps_gate_but_stream_restart_revokes_and_resets() {
     let admission = Arc::new(Admission::new());
     let session = SessionState::new(admission.clone());

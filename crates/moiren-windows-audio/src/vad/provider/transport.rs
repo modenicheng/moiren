@@ -54,8 +54,13 @@ pub(super) fn poll<C: EndpointControl>(
     // observes a difference. This only requests a reset: the PCM owner must be
     // retired and the producer/consumer handshake must finish before reuse.
     let observed = result.as_ref().copied().unwrap_or(queried);
-    let changed = observed.stream_generation() != previous.stream_generation()
-        || observed.gate_epoch() != previous.gate_epoch();
+    let stream_changed = observed.stream_generation() != previous.stream_generation();
+    // Opening a freshly admitted gate advances GateEpoch, but there is no old
+    // PCM owner to fence yet. Count later gate changes as recovery; otherwise
+    // every normal Engine activation starts with a false epoch reset.
+    let opening_gate = !previous.gate_open() && observed.gate_open();
+    let changed =
+        stream_changed || (observed.gate_epoch() != previous.gate_epoch() && !opening_gate);
     if changed {
         state.telemetry.recovery();
         state.reset_epoch.fetch_add(1, Ordering::AcqRel);
