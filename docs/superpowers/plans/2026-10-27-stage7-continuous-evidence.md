@@ -65,6 +65,12 @@ exists. These limitations do not prevent the following software work.
   independent spec/quality review PASS; crate 694 passed/5 ignored, strict
   all-target Clippy and format PASS). This is not a sink or qualification.
 - [ ] Bounded sink and actual physical measurement capture integration.
+  Standalone native recorder plus bounded disk sink implemented in `ab48a9a`,
+  independent spec/quality review PASS; example 52 tests and strict test Clippy
+  pass. Host CABLE two-second diagnostic has zero tap loss but one native
+  discontinuity (retained failure). Source/graph/load supervision, calibrated
+  physical setup and true same-condition capture remain open, so this combined
+  integration gate is intentionally unchecked.
 - [ ] Supervised load and genuine continuous evidence collection.
 - [ ] Stable target candidate and calibrated same-condition physical sweep.
 - [ ] Thirty-minute and independent two-hour qualification repetitions.

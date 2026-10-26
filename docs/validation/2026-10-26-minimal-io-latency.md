@@ -547,6 +547,38 @@ reader have zero observed allocations/deallocations; storage is reclaimed on
 control. Direct Process deferred attachment, bounded disk sink, genuine
 measurement/load collection and physical qualification remain subsequent work.
 
+### 2026-10-27 bounded native measurement collection
+
+Commit `ab48a9a` adds `e2e_latency_probe record-measurement` and `--list` for
+an independent negotiated WASAPI capture. It uses the deferred tap plus an
+owned non-RT sink, fixed 64 KiB PCM/16 KiB metadata buffers and one bounded
+packet JSON record, not duration-sized memory. Duration (1..7200 seconds),
+ring capacity, PCM bytes (at most 3 GiB), metadata bytes (at most 256 MiB) and
+packet count (at most 1,000,000) are explicit. New directories/files prevent
+overwriting runs; loss, partial IO and failed artifacts remain visible.
+Native stop/join precedes sink join even on error/unwind. Sink join may still
+wait for blocked OS IO after native shutdown; flush does not guarantee fsync
+or survival across process/power loss.
+
+Independent pinned review `2805dff..ab48a9a` passes spec and quality; 52 example
+tests (including 15 sink tests), strict example/test Clippy and format pass.
+Host-only CABLE two-second smoke negotiated 48 kHz/stereo from a 96 kHz mix
+and correctly disabled incompatible position-gap inference. It retains 199
+packets/95,489 frames, 763,912 PCM bytes and 26,014 metadata bytes, with zero
+tap drops/overflow/abandonment or sink missing/incomplete/nonfinite samples.
+One native discontinuity remains a failure; exit 1 and `qualified=false` are
+intentional. Packet offsets, file lengths and SHA-256 were verified on host.
+Invalid endpoint startup retained its `GetDevice` `0x80070057` report.
+A separate eight-byte-cap failure stopped native capture after 0.0258694
+seconds, retained the failure report and zero-byte PCM/metadata files, and
+never exceeded its cap. No microphone was captured, no VM files were staged,
+and no defaults or driver installation changed.
+
+This standalone collector does not launch/supervise a source, graph or load,
+infer a physical boundary/calibration, automatically authenticate artifacts,
+or qualify physical E2E. Same-condition physical setup/marker capture,
+controlled load, 30-minute and two independent two-hour gates remain open.
+
 1. Diagnose and fix the target native `0x8007051A` revision mismatch. Repeat
    event and timer playback/microphone matrices until every case passes with
    zero drops, unexpected silence, stale packets, discontinuities, and epoch
