@@ -1,9 +1,11 @@
 //! Process-tree capture selection. Identity is resolved before owner startup and
 //! checked again by the owner; a recycled PID never silently changes the source.
 use crate::SessionDuration;
-use crate::capture::CaptureError;
+use crate::capture::{CaptureError, PcmArtifactConfig};
 use serde::Serialize;
 
+mod bridge;
+pub use bridge::ProcessBridgeOptions;
 #[cfg(windows)]
 pub(crate) mod activation;
 #[cfg(windows)]
@@ -33,6 +35,8 @@ impl ProcessIdentity {
 }
 #[derive(Debug, Clone)]
 pub struct ProcessLoopbackOptions {
+    pub artifact: Option<PcmArtifactConfig>,
+    pub bridge: ProcessBridgeOptions,
     pub latency_telemetry: crate::latency::TelemetryMode,
     pub target: ProcessIdentity,
     pub duration: SessionDuration,
@@ -45,6 +49,8 @@ impl ProcessLoopbackOptions {
         if self.target.pid == std::process::id() {
             return Err(CaptureError::FeedbackTarget);
         }
-        crate::capture::validate_duration(self.duration)
+        crate::capture::validate_duration(self.duration)?;
+        self.bridge.prepare()?;
+        Ok(())
     }
 }

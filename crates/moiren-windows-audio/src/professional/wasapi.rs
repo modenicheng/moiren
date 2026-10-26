@@ -820,6 +820,13 @@ impl NativeStream for WasapiStream {
             })?;
             let lease = PacketLease::new(capture, frames, LeaseFallback::CapturePacket);
             let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
+            self.stats.capture_discontinuities +=
+                u64::from(flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0);
+            self.stats.capture_timestamp_errors +=
+                u64::from(flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0);
+            if silent {
+                self.stats.capture_silent_frames += u64::from(frames);
+            }
             // SAFETY: data is borrowed from the live GetBuffer lease until
             // the ReleaseBuffer call below.
             let bytes = unsafe {

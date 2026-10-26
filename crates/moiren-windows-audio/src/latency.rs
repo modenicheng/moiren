@@ -1,7 +1,9 @@
 //! Bounded owner-local diagnostics. Queue and callback observations are not
 //! an end-to-end latency measurement. Quantiles are histogram upper bounds.
 mod budget;
+mod delivery;
 mod marker;
+pub mod qualification;
 mod telemetry;
 
 pub use marker::{
@@ -9,6 +11,7 @@ pub use marker::{
     frames_to_seconds,
 };
 pub mod transport;
+pub use delivery::{InputDeliveryRecorder, InputDeliverySnapshot};
 
 pub use budget::{
     LatencyBudgetError, LatencyBudgetPolicy, NativeStreamTiming, PreparedInputQueue,

@@ -164,7 +164,6 @@ impl<S: ProcessingSample> RtAudioSource<S> for Tone {
 #[cfg(windows)]
 pub(super) struct ProcessSource<S: ProcessingSample> {
     pub source: crate::clock_bridge::ClockSource,
-    pub src: StereoResampler,
     pub scratch: Box<[f32]>,
     pub marker: PhantomData<S>,
 }
@@ -177,42 +176,27 @@ impl<S: ProcessingSample> RtAudioSource<S> for ProcessSource<S> {
         let mut discontinuity = false;
         let mut xruns = 0;
         let mut transferred_frames = 0;
-        for i in 0..output.frames() {
-            let frame = if let Some(frame) = self.src.next_frame() {
-                Some(frame)
-            } else {
-                // This source already follows the master at 48 kHz. Only rate
-                // adaptation remains; applying another drift servo would fight it.
-                let count = (self.scratch.len() / 2).min(self.src.free_frames());
-                let accepted = match self.source.read_interleaved(&mut self.scratch[..count * 2]) {
-                    Ok(r) => {
-                        discontinuity |= r.discontinuity;
-                        xruns += r.xruns;
-                        r.transferred_frames.min(count)
-                    }
-                    Err(_) => {
-                        discontinuity = true;
-                        xruns += 1;
-                        0
-                    }
-                };
-                for frame in self.scratch[..accepted * 2].as_chunks::<2>().0 {
-                    self.src.push_frame([frame[0] as f64, frame[1] as f64]);
+        for start in (0..output.frames()).step_by(self.scratch.len() / 2) {
+            // ClockSource already adapts to Engine rate and follows its master.
+            // Read only this invocation's demand: a second FIR and fixed-size
+            // prefetch hide queued content from the one drift controller.
+            let count = (output.frames() - start).min(self.scratch.len() / 2);
+            match self.source.read_interleaved(&mut self.scratch[..count * 2]) {
+                Ok(r) => {
+                    discontinuity |= r.discontinuity;
+                    xruns += r.xruns;
+                    transferred_frames += r.transferred_frames.min(count);
                 }
-                self.src.next_frame()
-            };
-            let frame = match frame {
-                Some(frame) => {
-                    transferred_frames += 1;
-                    frame
-                }
-                None => {
+                Err(_) => {
                     discontinuity = true;
-                    [0.0; 2]
+                    xruns += 1;
+                    self.scratch[..count * 2].fill(0.0);
                 }
-            };
-            output.channel_mut(0)[i] = S::from_f64(frame[0]);
-            output.channel_mut(1)[i] = S::from_f64(frame[1]);
+            }
+            for i in 0..count {
+                output.channel_mut(0)[start + i] = S::from_f64(f64::from(self.scratch[i * 2]));
+                output.channel_mut(1)[start + i] = S::from_f64(f64::from(self.scratch[i * 2 + 1]));
+            }
         }
         if transferred_frames < output.frames() {
             xruns = xruns.max(1);
@@ -221,6 +205,84 @@ impl<S: ProcessingSample> RtAudioSource<S> for ProcessSource<S> {
             transferred_frames,
             discontinuity,
             xruns,
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod process_tests {
+    use super::*;
+    use crate::clock_bridge::{CapturePacket, ClockBridgeConfig, capture_bridge};
+
+    #[test]
+    fn process_read_does_not_prefetch_an_extra_graph_block_or_filter_twice() {
+        let (mut ingress, source, observer) = capture_bridge(ClockBridgeConfig {
+            target_fill_frames: 320,
+            trim_on_prime: false,
+            max_correction_ppm: 0.0,
+            detect_position_gaps: false,
+            ..Default::default()
+        })
+        .unwrap();
+        let pcm: Vec<u8> = (0..1024)
+            .flat_map(|frame| {
+                let value = frame as f32 / 4096.0;
+                [value, -value].into_iter().flat_map(f32::to_le_bytes)
+            })
+            .collect();
+        ingress
+            .push_packet(
+                &pcm,
+                CapturePacket {
+                    frames: 1024,
+                    flags: 0,
+                    device_position_frames: 0,
+                    qpc_100ns: 1,
+                },
+            )
+            .unwrap();
+        let source = ProcessSource::<f64> {
+            source,
+            scratch: vec![0.0; 512].into_boxed_slice(),
+            marker: PhantomData,
+        };
+        let mut graph = moiren_core::graph::LogicalGraph::new();
+        let input = graph
+            .create_node(moiren_core::graph::NodeKind::Source, 2)
+            .unwrap();
+        let output = graph
+            .create_node(moiren_core::graph::NodeKind::Sink, 2)
+            .unwrap();
+        graph
+            .connect(
+                graph.get_node(input).unwrap().outputs()[0].id(),
+                graph.get_node(output).unwrap().inputs()[0].id(),
+                Default::default(),
+            )
+            .unwrap();
+        let (writer, mut reader) =
+            moiren_engine::boundary::audio_bridge::<f64>(2, 256, 4096).unwrap();
+        let mut bindings = moiren_engine::compiler::NodeBindings::new();
+        bindings.bind_source(input, source).unwrap();
+        bindings.bind_sink(output, writer).unwrap();
+        let mut processing = moiren_engine::host::EngineProject::default().processing;
+        processing.engine.max_block_frames = 64;
+        let mut compiled =
+            moiren_engine::compiler::compile(&graph, bindings, processing.compile_config(1, 1))
+                .unwrap();
+        compiled.engine.render(64).unwrap();
+        let mut samples = [0.0f64; 128];
+        assert_eq!(
+            reader
+                .read_interleaved(&mut samples)
+                .unwrap()
+                .transferred_frames,
+            64
+        );
+        assert_eq!(observer.snapshot().output_frames, 64);
+        for frame in 0..64 {
+            assert_eq!(samples[frame * 2], frame as f64 / 4096.0);
+            assert_eq!(samples[frame * 2 + 1], -(frame as f64 / 4096.0));
         }
     }
 }

@@ -43,6 +43,50 @@ use lifecycle::{Admission, ExportSpec, ExportView, Lifecycle};
 use telemetry::PcmTelemetry;
 pub use telemetry::VadPcmTelemetrySnapshot;
 
+/// Control-plane state for one VAD export.
+///
+/// This is a detached snapshot: callers may retain it without holding the
+/// provider lock, and a missing snapshot means that CREATE is still uncertain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VadExportObservation {
+    pub endpoint_id: VirtualEndpointId,
+    pub spec_name: String,
+    pub intent: Intent,
+    pub channels: Channels,
+    pub allow_default: bool,
+    pub snapshot: Option<super::EndpointSnapshot>,
+    pub removing: bool,
+    pub transport_prepared: bool,
+    pub telemetry: Option<VadPcmTelemetrySnapshot>,
+    pub error: Option<String>,
+}
+
+impl From<ExportView> for VadExportObservation {
+    fn from(view: ExportView) -> Self {
+        let ExportView {
+            spec,
+            snapshot,
+            removing,
+            transport_prepared,
+            telemetry,
+            error,
+            ..
+        } = view;
+        Self {
+            endpoint_id: spec.id,
+            spec_name: spec.name,
+            intent: spec.intent,
+            channels: spec.channels,
+            allow_default: spec.allow_default,
+            snapshot,
+            removing,
+            transport_prepared,
+            telemetry,
+            error,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct TransportEndpoint {
     snapshot: super::EndpointSnapshot,
@@ -112,8 +156,14 @@ impl WindowsVadProvider {
 
     /// Poll actual driver state, retaining uncertain/removing records. Call
     /// only from the lifecycle worker, never the service pump or Engine render.
-    pub fn export_observations(&self) -> Vec<ExportView> {
-        self.state.lock().unwrap_or_else(|p| p.into_inner()).poll()
+    pub fn export_observations(&self) -> Vec<VadExportObservation> {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .poll()
+            .into_iter()
+            .map(Into::into)
+            .collect()
     }
 
     pub fn set_export_gate(
@@ -168,9 +218,15 @@ impl WindowsVadProvider {
                     continue;
                 }
                 if snapshot.gate_open() {
-                    self.set_export_gate(view.spec.id, lifecycle::stamp(snapshot), false, 0, 0)?;
+                    self.set_export_gate(
+                        view.endpoint_id,
+                        lifecycle::stamp(snapshot),
+                        false,
+                        0,
+                        0,
+                    )?;
                 } else if snapshot.state() != PdoState::Removing {
-                    self.retire_export(view.spec.id, lifecycle::stamp(snapshot))?;
+                    self.retire_export(view.endpoint_id, lifecycle::stamp(snapshot))?;
                 }
             }
             if std::time::Instant::now() >= deadline {
@@ -263,6 +319,7 @@ impl VirtualBoundaryProvider for WindowsVadProvider {
                 channels,
                 writer,
                 byte_budget: request.audio_byte_budget,
+                buffer: request.buffer,
             },
             state,
         )?;
@@ -295,6 +352,7 @@ impl VirtualBoundaryProvider for WindowsVadProvider {
                 channels,
                 reader,
                 byte_budget: request.audio_byte_budget,
+                buffer: request.buffer,
             },
             state,
         )?;
@@ -321,6 +379,13 @@ fn carrier_capacity(request: VirtualBoundaryRequest) -> Result<usize, BackendErr
     }
     let native_frames = (request.max_block_frames as u64 * 48_000)
         .div_ceil(u64::from(request.engine_sample_rate)) as usize;
+    if let Some(queue) = request
+        .buffer
+        .prepare(request.engine_sample_rate, request.max_demand_frames)
+        .map_err(|error| BackendError::Unsupported(error.to_string()))?
+    {
+        return Ok(queue.capacity_frames as usize);
+    }
     Ok((native_frames + 32).max(super::MAX_PACKET_FRAMES as usize))
 }
 
@@ -331,6 +396,7 @@ enum WorkerConfig {
         channels: Channels,
         writer: AudioWriter<f32>,
         byte_budget: usize,
+        buffer: crate::virtual_owner::VirtualBufferOptions,
     },
     Microphone {
         control: ControlClient,
@@ -338,6 +404,7 @@ enum WorkerConfig {
         channels: Channels,
         reader: AudioReader<f32>,
         byte_budget: usize,
+        buffer: crate::virtual_owner::VirtualBufferOptions,
     },
 }
 
@@ -496,12 +563,14 @@ fn run_worker(config: WorkerConfig, state: Arc<SessionState>) {
             channels,
             writer,
             byte_budget,
+            buffer,
         } => run_playback(
             control,
             endpoint,
             channels,
             Some(writer),
             byte_budget,
+            buffer,
             &state,
         ),
         WorkerConfig::Microphone {
@@ -510,12 +579,14 @@ fn run_worker(config: WorkerConfig, state: Arc<SessionState>) {
             channels,
             reader,
             byte_budget,
+            buffer,
         } => run_microphone(
             control,
             endpoint,
             channels,
             Some(reader),
             byte_budget,
+            buffer,
             &state,
         ),
     }))
@@ -538,6 +609,7 @@ fn run_playback(
     channels: Channels,
     mut writer: Option<AudioWriter<f32>>,
     byte_budget: usize,
+    buffer: crate::virtual_owner::VirtualBufferOptions,
     state: &SessionState,
 ) -> Result<(), BackendError> {
     let mut current = endpoint.snapshot;
@@ -575,6 +647,9 @@ fn run_playback(
                         let shape = current
                             .pcm_shape(control.capabilities())
                             .map_err(|e| client_error(e.into()))?;
+                        buffer
+                            .admit_native_packet(shape.frames())
+                            .map_err(|error| BackendError::Unsupported(error.to_string()))?;
                         bridge = Some(PcmPlaybackBridge::new(
                             channels,
                             shape.format(),
@@ -796,6 +871,7 @@ fn run_microphone(
     channels: Channels,
     mut reader: Option<AudioReader<f32>>,
     byte_budget: usize,
+    buffer: crate::virtual_owner::VirtualBufferOptions,
     state: &SessionState,
 ) -> Result<(), BackendError> {
     let mut current = endpoint.snapshot;
@@ -842,6 +918,9 @@ fn run_microphone(
                         let shape = current
                             .pcm_shape(control.capabilities())
                             .map_err(|e| client_error(e.into()))?;
+                        buffer
+                            .admit_native_packet(shape.frames())
+                            .map_err(|error| BackendError::Unsupported(error.to_string()))?;
                         bridge = Some(PcmMicrophoneBridge::new(
                             channels,
                             shape.format(),
@@ -973,6 +1052,36 @@ fn close_worker_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_observation_is_a_detached_public_control_snapshot() {
+        let endpoint_id = VirtualEndpointId::from_bytes([0x42; 16]);
+        let observation = VadExportObservation::from(ExportView {
+            spec: ExportSpec {
+                id: endpoint_id,
+                intent: Intent::Playback,
+                channels: Channels::Stereo,
+                name: "Probe playback".into(),
+                allow_default: false,
+            },
+            snapshot: None,
+            removing: true,
+            error: Some("CREATE timeout".into()),
+            transport_prepared: false,
+            telemetry: Some(VadPcmTelemetrySnapshot {
+                schema_version: 1,
+                submission_attempts: 3,
+                ..VadPcmTelemetrySnapshot::default()
+            }),
+        });
+
+        assert_eq!(observation.endpoint_id, endpoint_id);
+        assert_eq!(observation.spec_name, "Probe playback");
+        assert!(observation.snapshot.is_none());
+        assert!(!observation.transport_prepared);
+        assert_eq!(observation.telemetry.unwrap().submission_attempts, 3);
+        assert_eq!(observation.error.as_deref(), Some("CREATE timeout"));
+    }
 
     #[test]
     fn park_full_eviction_selects_the_oldest_generation_not_the_lowest_slot() {

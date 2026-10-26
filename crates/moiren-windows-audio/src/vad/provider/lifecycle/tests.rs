@@ -657,6 +657,8 @@ fn native_carriers_cover_resampled_blocks_and_reject_invalid_preparation() {
         channels: 2,
         engine_sample_rate: 44_100,
         max_block_frames: 4096,
+        max_demand_frames: 4096,
+        buffer: Default::default(),
         audio_byte_budget: 1 << 20,
         owner_generation: 1,
     };

@@ -14,6 +14,9 @@ pub struct VirtualBoundaryRequest {
     /// Engine rate for SRC at the user/kernel bridge; driver PCM stays at 48 kHz.
     pub engine_sample_rate: u32,
     pub max_block_frames: usize,
+    /// Complete consumption burst across all graph segments of one owner wake.
+    pub max_demand_frames: u32,
+    pub buffer: super::VirtualBufferOptions,
     pub audio_byte_budget: usize,
     pub owner_generation: u64,
 }
@@ -82,8 +85,17 @@ pub fn bind_playback_source(
     cancel: &CancellationToken,
     sessions: &mut VirtualSessions,
 ) -> Result<(VirtualPlaybackSource, Arc<BoundaryProbe>), BackendError> {
+    let queue = request
+        .buffer
+        .prepare(request.engine_sample_rate, request.max_demand_frames)
+        .map_err(|error| BackendError::Unsupported(error.to_string()))?;
     let prepared = provider.prepare_playback(request, cancel)?;
     sessions.push_with_reset_epoch(prepared.session, prepared.reset_epoch.clone());
+    if queue.is_some_and(|q| prepared.carrier.capacity_frames() != q.capacity_frames as usize) {
+        return Err(BackendError::Unsupported(
+            "virtual playback provider did not prepare the requested carrier capacity".into(),
+        ));
+    }
     let source = VirtualPlaybackSource::new(
         prepared.carrier,
         request.channels,
@@ -96,10 +108,14 @@ pub fn bind_playback_source(
         prepared.producer_quiesced_epoch,
         prepared.consumer_quiesced_epoch,
     )
-    .with_probe(prepared.probe.clone())
+    .with_probe(prepared.probe.clone());
     // Native packet publication and Engine block wakes keep independent
     // phases even at one nominal rate; the boundary carries the drift cost.
-    .with_clock_drift()?;
+    let source = if let Some(queue) = queue {
+        source.with_clock_drift_target(queue.servo_reference_frames as usize)?
+    } else {
+        source.with_clock_drift()?
+    };
     Ok((source, prepared.probe))
 }
 
@@ -111,8 +127,17 @@ pub fn bind_microphone_sink(
     cancel: &CancellationToken,
     sessions: &mut VirtualSessions,
 ) -> Result<(VirtualMicrophoneSink, Arc<BoundaryProbe>), BackendError> {
+    let queue = request
+        .buffer
+        .prepare(request.engine_sample_rate, request.max_demand_frames)
+        .map_err(|error| BackendError::Unsupported(error.to_string()))?;
     let prepared = provider.prepare_microphone(request, cancel)?;
     sessions.push_with_reset_epoch(prepared.session, prepared.reset_epoch.clone());
+    if queue.is_some_and(|q| prepared.carrier.capacity_frames() != q.capacity_frames as usize) {
+        return Err(BackendError::Unsupported(
+            "virtual microphone provider did not prepare the requested carrier capacity".into(),
+        ));
+    }
     let sink = VirtualMicrophoneSink::new(
         prepared.carrier,
         request.channels,
@@ -125,8 +150,12 @@ pub fn bind_microphone_sink(
         prepared.producer_quiesced_epoch,
         prepared.consumer_quiesced_epoch,
     )
-    .with_probe(prepared.probe.clone())
-    .with_clock_drift()?;
+    .with_probe(prepared.probe.clone());
+    let sink = if let Some(queue) = queue {
+        sink.with_clock_drift_target(queue.servo_reference_frames as usize)?
+    } else {
+        sink.with_clock_drift()?
+    };
     Ok((sink, prepared.probe))
 }
 

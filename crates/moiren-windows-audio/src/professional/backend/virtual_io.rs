@@ -28,10 +28,13 @@ impl AuxiliaryOwner for VirtualAuxiliary {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn prepare<S: ProcessingSample>(
     request: &PrepareRequest<'_>,
     provider: Option<&dyn VirtualBoundaryProvider>,
     rate: u32,
+    max_demand_frames: u32,
+    buffer: crate::virtual_owner::VirtualBufferOptions,
     bindings: &mut NodeBindings<S>,
     cancel: &CancellationToken,
 ) -> Result<(VirtualSessions, Vec<NodeId>), BackendError> {
@@ -61,6 +64,8 @@ pub(super) fn prepare<S: ProcessingSample>(
             channels,
             engine_sample_rate: rate,
             max_block_frames: config.engine.max_block_frames,
+            max_demand_frames,
+            buffer,
             audio_byte_budget: config.audio_byte_budget,
             owner_generation: request.owner_generation,
         };

@@ -98,6 +98,10 @@ fn client_position_clock(
 }
 pub(super) enum CapturePreparation {
     Immediate(mpsc::SyncSender<Result<Startup, CaptureError>>),
+    Configured {
+        sender: mpsc::SyncSender<Result<Startup, CaptureError>>,
+        config: ClockBridgeConfig,
+    },
     Deferred {
         ready: mpsc::SyncSender<Result<NativeCaptureInfo, CaptureError>>,
         bridge: preparation::Receiver<(CaptureIngress, PreparedInputQueue)>,
@@ -114,8 +118,10 @@ impl CapturePreparation {
         age_clock: Option<QpcClock>,
     ) -> Result<CaptureIngress, CaptureError> {
         match self {
-            Self::Immediate(sender) => {
-                let (ingress, source, observer) = capture_bridge_with_clock(
+            Self::Immediate(sender) | Self::Configured { sender, .. } => {
+                let config = if let Self::Configured { config, .. } = self {
+                    *config
+                } else {
                     ClockBridgeConfig {
                         input_sample_rate: timing.sample_rate,
                         input_channels: channels,
@@ -123,9 +129,10 @@ impl CapturePreparation {
                             == crate::capture::CaptureSource::Physical
                             && client_position_clock(timing, report.shared_period),
                         ..ClockBridgeConfig::default()
-                    },
-                    age_clock,
-                )?;
+                    }
+                };
+                let (ingress, source, observer) = capture_bridge_with_clock(config, age_clock)?;
+                report.input_queue = config.prepared_input;
                 sender
                     .send(Ok(Startup {
                         source,
@@ -171,7 +178,7 @@ impl CapturePreparation {
             Err(error) => {
                 report.failure = Some(error.to_string());
                 match self {
-                    Self::Immediate(sender) => {
+                    Self::Immediate(sender) | Self::Configured { sender, .. } => {
                         let _ = sender.try_send(Err(error));
                     }
                     Self::Deferred {
@@ -183,6 +190,7 @@ impl CapturePreparation {
                 }
             }
         }
+        report.finish_artifact();
         report
     }
 }

@@ -11,14 +11,16 @@ pub enum ProjectClock {
 }
 
 mod boundary;
+mod budget;
 mod clock;
 mod provider;
 
 pub use boundary::{
     BoundaryProbe, BoundaryProbeSample, VirtualMicrophoneSink, VirtualPlaybackSource,
 };
+pub use budget::VirtualBufferOptions;
 #[allow(unused_imports)]
-pub use clock::{ClockError, ClockSchedule, ClockTick};
+pub use clock::{ClockError, ClockSchedule, ClockTick, DEBT_CAP_PERIODS};
 #[allow(unused_imports)]
 pub use provider::{
     PreparedVirtualMicrophone, PreparedVirtualPlayback, VirtualBoundaryProvider,

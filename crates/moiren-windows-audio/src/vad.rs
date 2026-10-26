@@ -34,7 +34,7 @@ pub use pcm::{PcmCompletion, PcmOwner, ResidualPcm};
 pub use pcm_bridge::{PcmBoundaryError, PcmMicrophoneBridge, PcmPlaybackBridge};
 pub use pcm_slots::PcmTicket;
 #[cfg(windows)]
-pub use provider::VadPcmTelemetrySnapshot;
+pub use provider::{VadExportObservation, VadPcmTelemetrySnapshot};
 #[cfg(windows)]
 pub use provider::WindowsVadProvider;
 

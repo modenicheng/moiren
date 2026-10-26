@@ -108,6 +108,8 @@ impl WindowsBackend {
                 || matches!(config, NodeConfig::Output(output) if matches!(output.target, OutputTarget::VirtualMicrophone { .. }))
         });
         if has_virtual
+            && self.config.virtual_buffer.input
+                == crate::latency::transport::TransportInputPolicy::Compatible
             && (self.config.latency_profile != super::NativeLatencyProfile::Compatible
                 || self.config.latency_budget != crate::latency::LatencyBudgetPolicy::Compatible
                 || self.config.render_queue != crate::latency::RenderQueuePolicy::FullCapacity)
@@ -191,6 +193,13 @@ impl WindowsBackend {
                             engine_sample_rate: request.project.processing.engine.processing_sr
                                 as u32,
                             max_block_frames: request.project.processing.engine.max_block_frames,
+                            max_demand_frames: u32::try_from(
+                                request.project.processing.engine.max_block_frames,
+                            )
+                            .map_err(|_| {
+                                BackendError::Unsupported("virtual demand overflow".into())
+                            })?,
+                            buffer: self.config.virtual_buffer,
                             audio_byte_budget: request.project.processing.audio_byte_budget,
                             owner_generation: request.owner_generation,
                         },
@@ -267,24 +276,39 @@ impl WindowsBackend {
                 master_index = group.prepared.len() - 1;
             }
         }
-        let output_timing = match project_clock {
+        let (output_timing, process_demand) = match project_clock {
             ProjectClock::Physical(_) => {
                 let (sink, native, queue) = group.prepared.swap_remove(master_index);
                 let timing = native.info().timing;
                 // Retain the master while later preparation can still fail.
                 group.prepared.push((sink, native, queue));
-                timing
+                let demand = prepare_render_queue(timing, queue)
+                    .map_err(|error| BackendError::Unsupported(error.to_string()))?
+                    .target_frames;
+                let engine_demand = u32::try_from(
+                    (u64::from(demand) * request.project.processing.engine.processing_sr as u64)
+                        .div_ceil(u64::from(timing.sample_rate)),
+                )
+                .map_err(|_| BackendError::Unsupported("process demand overflow".into()))?;
+                (timing, engine_demand)
             }
             ProjectClock::VirtualRealtime => {
                 let block = u32::try_from(request.project.processing.engine.max_block_frames)
                     .map_err(|_| {
                         BackendError::Unsupported("virtual clock block exceeds u32 frames".into())
                     })?;
-                crate::latency::NativeStreamTiming {
-                    sample_rate: request.project.processing.engine.processing_sr as u32,
-                    period_frames: Some(block),
-                    capacity_frames: block,
-                }
+                (
+                    crate::latency::NativeStreamTiming {
+                        sample_rate: request.project.processing.engine.processing_sr as u32,
+                        period_frames: Some(block),
+                        capacity_frames: block,
+                    },
+                    block
+                        .checked_mul(crate::virtual_owner::DEBT_CAP_PERIODS as u32)
+                        .ok_or_else(|| {
+                            BackendError::Unsupported("virtual burst demand overflow".into())
+                        })?,
+                )
             }
         };
         let mut capture_endpoints = Vec::new();
@@ -317,6 +341,8 @@ impl WindowsBackend {
                             channels: input.channels,
                             engine_sample_rate: engine_rate as u32,
                             max_block_frames: request.project.processing.engine.max_block_frames,
+                            max_demand_frames: process_demand,
+                            buffer: self.config.virtual_buffer,
                             audio_byte_budget: request.project.processing.audio_byte_budget,
                             owner_generation: request.owner_generation,
                         },
@@ -355,6 +381,7 @@ impl WindowsBackend {
                     capture_endpoints.push(endpoint_id.clone());
                     let native_capture = prepare_capture_native_with_gate(
                         CaptureOptions {
+                            artifact: None,
                             endpoint_id,
                             duration: SessionDuration::UntilStopped,
                             shared_period: self.period(input.device)?,
@@ -401,8 +428,17 @@ impl WindowsBackend {
                             "selected process identity changed".into(),
                         ));
                     }
-                    let mut capture = prepare_process_capture_with_gate(
+                    let capture = prepare_process_capture_with_gate(
                         ProcessLoopbackOptions {
+                            artifact: None,
+                            bridge: self
+                                .config
+                                .process_bridge
+                                .for_consumer(
+                                    request.project.processing.engine.processing_sr as u32,
+                                    process_demand,
+                                )
+                                .map_err(capture_error)?,
                             target,
                             duration: SessionDuration::UntilStopped,
                             latency_telemetry: self.config.telemetry,
@@ -411,26 +447,13 @@ impl WindowsBackend {
                         gate.clone(),
                     )
                     .map_err(capture_error)?;
-                    capture.source = capture
-                        .source
-                        .with_output_sample_rate(
-                            request.project.processing.engine.processing_sr as u32,
-                        )
-                        .map_err(|error| BackendError::Unsupported(error.to_string()))?;
                     streams.push(NativeStreamObservation {
                         node,
                         kind: NativeStreamKind::ProcessInput,
                         timing: None,
                         shared_period: None,
                         render_queue: None,
-                        input_queue: Some(crate::latency::PreparedInputQueue {
-                            capacity_frames: 8192,
-                            prime_frames: 2048,
-                            servo_reference_frames: 2048,
-                            low_water_frames: 2,
-                            high_water_frames: 8191,
-                            modeled_minimum_frames: None,
-                        }),
+                        input_queue: capture.source.prepared_input(),
                     });
                     bridges.push((node, capture.observer));
                     group.captures.push(capture.session);

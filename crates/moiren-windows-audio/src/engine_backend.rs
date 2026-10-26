@@ -37,6 +37,8 @@ pub struct WindowsBackendConfig {
     pub render_queue: crate::latency::RenderQueuePolicy,
     pub latency_budget: crate::latency::LatencyBudgetPolicy,
     pub telemetry: crate::latency::TelemetryMode,
+    pub process_bridge: crate::process_loopback::ProcessBridgeOptions,
+    pub virtual_buffer: crate::virtual_owner::VirtualBufferOptions,
 }
 
 impl Default for WindowsBackendConfig {
@@ -48,6 +50,8 @@ impl Default for WindowsBackendConfig {
             render_queue: crate::latency::RenderQueuePolicy::default(),
             latency_budget: crate::latency::LatencyBudgetPolicy::Compatible,
             telemetry: crate::latency::TelemetryMode::Summary,
+            process_bridge: Default::default(),
+            virtual_buffer: Default::default(),
         }
     }
 }
@@ -63,6 +67,12 @@ impl WindowsBackendConfig {
             ));
         }
         self.render_queue
+            .validate()
+            .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+        self.process_bridge
+            .prepare()
+            .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+        self.virtual_buffer
             .validate()
             .map_err(|error| BackendError::Unsupported(error.to_string()))?;
         if self.latency_profile != NativeLatencyProfile::Compatible

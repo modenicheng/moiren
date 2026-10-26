@@ -72,6 +72,7 @@ fn owner(
             latency_telemetry: options.latency_telemetry,
             sample_rate: client_format.0,
             channels: client_format.1,
+            artifact: options.artifact,
         },
         preparation,
         report,

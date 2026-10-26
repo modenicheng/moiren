@@ -11,6 +11,7 @@ fn capture_and_process_preparation_reject_foreign_gate_stop_before_spawning() {
     });
     let physical = prepare_capture_with_gate(
         CaptureOptions {
+            artifact: None,
             latency_telemetry: crate::latency::TelemetryMode::Summary,
             shared_period: crate::shared_stream::SharedPeriodPolicy::default(),
             endpoint_id: "unopened".into(),
@@ -22,6 +23,7 @@ fn capture_and_process_preparation_reject_foreign_gate_stop_before_spawning() {
     assert!(matches!(physical, Err(error) if error == expected));
     let native = prepare_capture_native_with_gate(
         CaptureOptions {
+            artifact: None,
             latency_telemetry: crate::latency::TelemetryMode::Summary,
             shared_period: crate::shared_stream::SharedPeriodPolicy::default(),
             endpoint_id: "unopened".into(),
@@ -33,6 +35,8 @@ fn capture_and_process_preparation_reject_foreign_gate_stop_before_spawning() {
     assert!(matches!(native, Err(error) if error == expected));
     let process = crate::process_loopback::prepare_process_capture_with_gate(
         crate::process_loopback::ProcessLoopbackOptions {
+            artifact: None,
+            bridge: Default::default(),
             latency_telemetry: crate::latency::TelemetryMode::Summary,
             target: crate::process_loopback::ProcessIdentity {
                 pid: u32::MAX,
@@ -176,7 +180,7 @@ fn capture_lease_releases_complete_packet_on_success_silence_and_validation_fail
         }
         .into();
         let (mut input, _source, observer) = capture_bridge(ClockBridgeConfig::default()).unwrap();
-        assert_eq!(transfer_packet(&client, 2, &mut input).is_err(), fails);
+        assert_eq!(transfer_packet(&client, 2, &mut input, None).is_err(), fails);
         assert_eq!(
             *releases.borrow(),
             if frames == 0 { vec![] } else { vec![frames] }
@@ -241,10 +245,12 @@ fn prepared_capture_publishes_bridge_before_gate_and_cancel_never_runs() {
         let report = prepared.session.join().unwrap();
         assert_eq!(report.stream_started, !cancel);
         assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
-        assert_eq!(report.schema_version, 7);
+        assert_eq!(report.schema_version, 8);
         assert_eq!(report.requested_seconds, None);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 7);
+        assert_eq!(json["schema_version"], 8);
+        assert_eq!(json["delivery"]["packets"], 0);
+        assert!(json["delivery_bound"].is_null());
         assert_eq!(json["shared_period"]["requested_period_frames"], 240);
         assert_eq!(json["shared_period"]["actual_period_frames"], 336);
         assert!(json["requested_seconds"].is_null());
@@ -262,7 +268,7 @@ fn capture_preparation_failure_joins_owner_before_returning() {
         );
         let report = stream::finish(Err(CaptureError::UnsupportedFormat), &stop, &sender, report);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 7);
+        assert_eq!(json["schema_version"], 8);
         assert_eq!(json["requested_seconds"], 10.0);
         owner_exited.store(true, std::sync::atomic::Ordering::Release);
         report

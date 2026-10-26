@@ -6,6 +6,7 @@ fn capture_requires_pinned_id_and_bounded_duration_before_spawning() {
     for id in ["", "  ", "bad\0id"] {
         assert_eq!(
             CaptureOptions {
+                artifact: None,
                 latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
                 shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
                 endpoint_id: id.into(),
@@ -18,6 +19,7 @@ fn capture_requires_pinned_id_and_bounded_duration_before_spawning() {
     for seconds in [0, 601] {
         assert_eq!(
             CaptureOptions {
+                artifact: None,
                 latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
                 shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
                 endpoint_id: "id".into(),
@@ -29,6 +31,7 @@ fn capture_requires_pinned_id_and_bounded_duration_before_spawning() {
     }
     assert!(
         CaptureOptions {
+            artifact: None,
             latency_telemetry: moiren_windows_audio::latency::TelemetryMode::Summary,
             shared_period: moiren_windows_audio::shared_stream::SharedPeriodPolicy::default(),
             endpoint_id: "opaque".into(),

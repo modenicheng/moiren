@@ -210,6 +210,7 @@ mod native {
         let gate = ActivationGate::new(stop.clone())?;
         let capture = prepare_capture_native_with_gate(
             CaptureOptions {
+                artifact: None,
                 endpoint_id: input,
                 duration,
                 latency_telemetry: mode,

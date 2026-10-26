@@ -132,6 +132,7 @@ fn invalid_policy_is_rejected_by_both_owners_before_spawning() {
             desired_period_ms: Some(milliseconds),
         };
         let capture = CaptureOptions {
+            artifact: None,
             endpoint_id: "fake".into(),
             duration: SessionDuration::UntilStopped,
             latency_telemetry: TelemetryMode::Disabled,

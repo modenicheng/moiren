@@ -6,7 +6,9 @@ use super::{
 use crate::{
     Activation, ActivationGate, SessionDuration,
     capture::{CaptureError, CaptureReport, CaptureStatus},
-    latency::{CallbackObservation, LatencyRecorder, TelemetryMode, clock::QpcClock},
+    latency::{
+        CallbackObservation, InputDeliveryRecorder, LatencyRecorder, TelemetryMode, clock::QpcClock,
+    },
     owner::{Mmcss, Streaming},
 };
 use std::{
@@ -34,15 +36,20 @@ pub(crate) struct StreamInput<'a> {
     pub started: &'a AtomicBool,
     pub sample_rate: u32,
     pub channels: usize,
+    pub artifact: Option<crate::capture::PcmArtifactConfig>,
 }
 pub(crate) fn run(
     input: StreamInput<'_>,
     sender: &SyncSender<Result<Startup, CaptureError>>,
     report: &mut CaptureReport,
+    bridge: crate::clock_bridge::ClockBridgeConfig,
 ) -> Result<CaptureStatus, CaptureError> {
     run_prepared(
         input,
-        &CapturePreparation::Immediate(sender.clone()),
+        &CapturePreparation::Configured {
+            sender: sender.clone(),
+            config: bridge,
+        },
         report,
     )
 }
@@ -60,7 +67,12 @@ pub(super) fn run_prepared(
     report.buffer_frames = Some(capacity);
     report.stream_latency_100ns = unsafe { input.client.GetStreamLatency() }.ok();
     let mut telemetry = LatencyRecorder::new(input.latency_telemetry);
-    let clock = QpcClock::prepare(input.latency_telemetry);
+    let clock = QpcClock::prepare(if report.delivery_bound.is_some() {
+        TelemetryMode::Summary
+    } else {
+        input.latency_telemetry
+    });
+    let mut delivery = InputDeliveryRecorder::new(report.delivery_bound)?;
     report.sample_rate = Some(input.sample_rate);
     report.channels = Some(input.channels);
     let capture: IAudioCaptureClient =
@@ -71,6 +83,10 @@ pub(super) fn run_prepared(
         Wake::TargetExited => return Err(CaptureError::TargetExited),
         Wake::Audio | Wake::Timeout => {}
     }
+    // Allocate bounded evidence before publishing the startup bridge. A
+    // rejected artifact configuration must never look like a live capture to
+    // the control side.
+    report.prepare_artifact(input.artifact, input.sample_rate, input.channels)?;
     let mut ingress = preparation.prepare(
         crate::latency::NativeStreamTiming {
             sample_rate: input.sample_rate,
@@ -138,14 +154,24 @@ pub(super) fn run_prepared(
                 {
                     break;
                 }
-                let transfer = transfer_packet(&capture, capacity, &mut ingress)?;
+                let transfer = transfer_packet(
+                    &capture,
+                    capacity,
+                    &mut ingress,
+                    report.artifact_recorder.as_mut(),
+                )?;
                 if transfer.native_frames == 0 {
                     break;
                 }
+                delivery.packet(
+                    transfer.native_frames,
+                    clock.as_ref().and_then(QpcClock::now),
+                );
                 native_frames = native_frames.saturating_add(u64::from(transfer.native_frames));
                 accepted_frames = accepted_frames.saturating_add(transfer.accepted_frames as u64);
                 report.packets += 1;
             }
+            delivery.callback_burst(native_frames);
             telemetry.record(CallbackObservation {
                 wake_qpc_100ns,
                 completed_qpc_100ns: clock.as_ref().and_then(QpcClock::now),
@@ -157,6 +183,7 @@ pub(super) fn run_prepared(
         Ok(CaptureStatus::Completed)
     })();
     report.elapsed_seconds = started.elapsed().as_secs_f64();
+    report.delivery = delivery.snapshot();
     // Wake peer before retiring producer or releasing COM, including target exit.
     let peer_stop = api("SetEvent(capture peer stop)", unsafe {
         SetEvent(handle(input.stop))
@@ -189,6 +216,7 @@ pub(crate) fn finish(
             let _ = sender.try_send(Err(error));
         }
     }
+    report.finish_artifact();
     report
 }
 

@@ -6,7 +6,6 @@ use super::{
     observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
     owner::{AuxiliaryOwner, StreamFactory, Transport, WorkerRequest, spawn},
     recovery::RecoveryMonitor,
-    resample::StereoResampler,
     wasapi::{WasapiOptions, WasapiStream, resolve_endpoint},
 };
 use crate::virtual_owner::{
@@ -43,6 +42,8 @@ pub struct ProfessionalBackend<S: ProcessingSample> {
     recovery: RecoveryMonitor,
     virtual_provider: Option<Arc<dyn VirtualBoundaryProvider>>,
     virtual_clock: Arc<dyn VirtualClockFactory>,
+    process_bridge: crate::process_loopback::ProcessBridgeOptions,
+    virtual_buffer: crate::virtual_owner::VirtualBufferOptions,
     marker: PhantomData<S>,
 }
 impl<S: ProcessingSample> ProfessionalBackend<S> {
@@ -52,6 +53,8 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             recovery: RecoveryMonitor::default(),
             virtual_provider: None,
             virtual_clock: Arc::new(QpcClockFactory),
+            process_bridge: Default::default(),
+            virtual_buffer: Default::default(),
             marker: PhantomData,
         })
     }
@@ -67,6 +70,22 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
     pub fn with_virtual_clock_factory(mut self, clock: Arc<dyn VirtualClockFactory>) -> Self {
         self.virtual_clock = clock;
         self
+    }
+    pub fn with_process_bridge(
+        mut self,
+        bridge: crate::process_loopback::ProcessBridgeOptions,
+    ) -> Result<Self, BackendError> {
+        bridge.prepare().map_err(unsupported)?;
+        self.process_bridge = bridge;
+        Ok(self)
+    }
+    pub fn with_virtual_buffer(
+        mut self,
+        buffer: crate::virtual_owner::VirtualBufferOptions,
+    ) -> Result<Self, BackendError> {
+        buffer.validate().map_err(unsupported)?;
+        self.virtual_buffer = buffer;
+        Ok(self)
     }
 }
 
@@ -264,25 +283,28 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             request.owner_generation,
             self.observations.clone(),
         ));
-        let (mut virtual_sessions, virtual_sinks) = virtual_io::prepare(
-            &request,
-            self.virtual_provider.as_deref(),
-            rate,
-            &mut bindings,
-            cancel,
-        )?;
-        if matches!(clock, ProjectClock::Physical(_)) {
-            transport.sinks.extend(&virtual_sinks);
-            if !virtual_sessions.is_empty() {
-                transport
-                    .auxiliaries
-                    .push(Box::new(virtual_io::VirtualAuxiliary(std::mem::take(
-                        &mut virtual_sessions,
-                    ))));
-            }
-        }
+        let virtual_demand = u32::try_from(request.project.processing.engine.max_block_frames)
+            .ok()
+            .and_then(|block| block.checked_mul(crate::virtual_owner::DEBT_CAP_PERIODS as u32))
+            .ok_or_else(|| unsupported("virtual burst demand overflow"))?;
+        // Compatible resources keep their existing preparation/cleanup order.
+        // Explicit targets wait for the physical master's negotiated demand.
+        let virtual_prepared = if self.virtual_buffer == Default::default() {
+            Some(virtual_io::prepare(
+                &request,
+                self.virtual_provider.as_deref(),
+                rate,
+                virtual_demand,
+                self.virtual_buffer,
+                &mut bindings,
+                cancel,
+            )?)
+        } else {
+            None
+        };
         let mut groups: Vec<Group> = Vec::new();
         let mut processes = Vec::new();
+        let mut process_nodes = Vec::new();
         for (&node, config) in &request.project.nodes {
             if cancel.is_cancelled() {
                 return Err(BackendError::Cancelled);
@@ -317,16 +339,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                             return Err(unsupported("duplicate process capture ownership"));
                         }
                         processes.push(identity);
-                        prepare_process(
-                            node,
-                            input.device,
-                            identity,
-                            rate,
-                            capacity,
-                            &mut bindings,
-                            &mut transport,
-                            cancel,
-                        )?;
+                        process_nodes.push((node, input.device, identity));
                         continue;
                     }
                     InputSource::Physical(selector) => (selector, true, input.device),
@@ -403,6 +416,9 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         let recovery = self
             .recovery
             .register(request.owner_generation, asio_configurations, rate);
+        let block_demand = u32::try_from(request.project.processing.engine.max_block_frames)
+            .map_err(|_| unsupported("process demand overflow"))?;
+        let mut process_demand = virtual_demand;
         for group in groups {
             if cancel.is_cancelled() {
                 return Err(BackendError::Cancelled);
@@ -447,6 +463,18 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             );
             let (worker, info) = spawn(worker_request, cancel)?;
             transport.workers.push(worker);
+            if group.master() {
+                // Pump's bound includes SRC lookahead and graph rounding on
+                // its last render. Budget the whole wake, never one segment.
+                process_demand = u32::try_from(
+                    (u64::from(info.buffer_frames) * u64::from(rate))
+                        .div_ceil(u64::from(info.sample_rate))
+                        .checked_add(64)
+                        .and_then(|frames| frames.checked_add(u64::from(block_demand) * 2))
+                        .ok_or_else(|| unsupported("process demand overflow"))?,
+                )
+                .map_err(|_| unsupported("process demand overflow"))?;
+            }
             log::info!(
                 target: "moiren::audio::professional",
                 "native device group opened: backend={} endpoint={:?} actual_rate={} actual_format={:?} actual_channels={} actual_buffer_frames={}",
@@ -515,6 +543,41 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                     .streams
                     .push((observation(output, false, group.master(), info), counters));
             }
+        }
+        let (mut virtual_sessions, virtual_sinks) = match virtual_prepared {
+            Some(prepared) => prepared,
+            None => virtual_io::prepare(
+                &request,
+                self.virtual_provider.as_deref(),
+                rate,
+                process_demand,
+                self.virtual_buffer,
+                &mut bindings,
+                cancel,
+            )?,
+        };
+        if matches!(clock, ProjectClock::Physical(_)) {
+            transport.sinks.extend(&virtual_sinks);
+            if !virtual_sessions.is_empty() {
+                transport
+                    .auxiliaries
+                    .push(Box::new(virtual_io::VirtualAuxiliary(std::mem::take(
+                        &mut virtual_sessions,
+                    ))));
+            }
+        }
+        for (node, device, identity) in process_nodes {
+            prepare_process(
+                node,
+                device,
+                identity,
+                self.process_bridge
+                    .for_consumer(rate, process_demand)
+                    .map_err(unsupported)?,
+                &mut bindings,
+                &mut transport,
+                cancel,
+            )?;
         }
         if cancel.is_cancelled() {
             return Err(BackendError::Cancelled);
@@ -620,8 +683,7 @@ fn prepare_process<S: ProcessingSample>(
     node: NodeId,
     device: DeviceOptions,
     identity: (u32, u64),
-    engine_rate: u32,
-    capacity: usize,
+    bridge: crate::process_loopback::ProcessBridgeOptions,
     bindings: &mut NodeBindings<S>,
     transport: &mut Transport<S>,
     cancel: &CancellationToken,
@@ -640,6 +702,8 @@ fn prepare_process<S: ProcessingSample>(
     })?;
     let prepared = crate::process_loopback::prepare_process_capture_with_gate(
         crate::process_loopback::ProcessLoopbackOptions {
+            artifact: None,
+            bridge,
             target,
             duration: crate::SessionDuration::UntilStopped,
             latency_telemetry: crate::latency::TelemetryMode::Summary,
@@ -657,7 +721,6 @@ fn prepare_process<S: ProcessingSample>(
     }));
     let source = ProcessSource::<S> {
         source: prepared.source,
-        src: StereoResampler::new(48000, engine_rate, capacity).map_err(unsupported)?,
         scratch: vec![0.0; 512].into_boxed_slice(),
         marker: PhantomData,
     };

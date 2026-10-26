@@ -2,6 +2,7 @@
 use super::api;
 use crate::{
     capture::CaptureError,
+    capture::PcmRecorder,
     capture_packet::borrow_capture_packet,
     clock_bridge::{CaptureIngress, CapturePacket},
     owner::{LeaseFallback, PacketLease},
@@ -19,6 +20,7 @@ pub(super) fn transfer_packet(
     client: &IAudioCaptureClient,
     capacity: u32,
     ingress: &mut CaptureIngress,
+    mut artifact: Option<&mut PcmRecorder>,
 ) -> Result<CaptureTransfer, CaptureError> {
     let (mut data, mut frames, mut flags, mut position, mut qpc) =
         (std::ptr::null_mut(), 0, 0, 0, 0);
@@ -45,6 +47,9 @@ pub(super) fn transfer_packet(
     let bytes =
         unsafe { borrow_capture_packet(data, frames, capacity, flags & SILENT != 0, frame_bytes) }
             .map_err(|_| CaptureError::InvalidPacket)?;
+    if let Some(artifact) = artifact.as_mut() {
+        artifact.record_packet(bytes, frames, flags, position)?;
+    }
     let accepted_frames = ingress.push_packet(
         bytes,
         CapturePacket {

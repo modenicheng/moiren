@@ -54,6 +54,7 @@ pub fn prepare_process_capture_with_gate(
         let mut report = CaptureReport::new(CaptureSource::ProcessLoopback, options.duration);
         report.latency = crate::latency::LatencyRecorder::new(options.latency_telemetry).snapshot();
         report.process = Some(options.target.clone());
+        report.delivery_bound = options.bridge.delivery;
         let result = owner(&options, &stop, &sender, &mut report, &gate, &started);
         stream::finish(result, &stop, &sender, report)
     })
@@ -132,9 +133,11 @@ fn owner(
             latency_telemetry: options.latency_telemetry,
             sample_rate: crate::NATIVE_SAMPLE_RATE,
             channels: 2,
+            artifact: options.artifact,
         },
         sender,
         report,
+        options.bridge.clock_config()?,
     )
 }
 pub(crate) fn capture_format() -> WAVEFORMATEX {
@@ -178,6 +181,8 @@ mod tests {
         let stop = StopSignal::new().unwrap();
         stop.request_stop().unwrap();
         let options = ProcessLoopbackOptions {
+            artifact: None,
+            bridge: Default::default(),
             latency_telemetry: crate::latency::TelemetryMode::Summary,
             target: super::super::ProcessIdentity {
                 pid: u32::MAX,
