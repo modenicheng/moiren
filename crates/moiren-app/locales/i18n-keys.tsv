@@ -480,6 +480,8 @@ Stereo -> Mono average -> Left to both -> Right to both -> Swap	-	crates/moiren-
 Cycle normal, mono average, individual channels, and reverse channel order	-	crates/moiren-app/src/ui/window/mixer/strip_controls.rs:68	Mixer integration
 Dim attenuates the post-fader signal by 12 dB	-	crates/moiren-app/src/ui/window/mixer/strip_controls.rs:76	Mixer integration
 Drag to reorder channels within the same mixer section	-	crates/moiren-app/src/ui/window/mixer.rs:259	Mixer integration
+Scroll to adjust · double-click to reset	-	crates/moiren-app/src/ui/widgets/fader.rs:170	Mixer integration
+Click to type a value	-	crates/moiren-app/src/ui/window/controls.rs:99	Mixer integration
 Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.	-	crates/moiren-app/src/ui/window/mixer.rs:489	Mixer integration
 Peak fall-off · dB/s	-	crates/moiren-app/src/ui/window/mixer.rs:498	Mixer integration
 Peak hold	-	crates/moiren-app/src/ui/window/mixer.rs:509	Mixer integration

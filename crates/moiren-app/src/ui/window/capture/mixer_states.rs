@@ -132,7 +132,6 @@ pub(super) async fn capture(
     let snapshot = graph.snapshot();
     shell.update(cx, |shell, cx| {
         shell.selected_node = None;
-        shell.mixer.dock_width = 320.;
         shell.state.update(cx, |state, _| {
             state.dispatch(AppRequest::ReplaceGraph {
                 graph: snapshot.graph,

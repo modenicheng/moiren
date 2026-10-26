@@ -1,4 +1,4 @@
-use super::{Duration, NodeKind, Page, StudioShell, reorder};
+use super::{Duration, NodeId, NodeKind, Page, StudioShell, reorder};
 use crate::ui::widgets::fader::FaderScale;
 use crate::ui::window::test_harness::{finish_service, test_shell, wait_until};
 use gpui_kit::test::TestWindowExt;
@@ -58,15 +58,10 @@ fn mixer_controls_target_selected_nodes_and_restore_layout(cx: &mut TestAppConte
         assert_eq!(graph.node(source).unwrap().mixer.channel_mode, 0);
         assert_eq!(graph.active_revision, None);
         reorder(&mut shell.mixer.order, gain, source);
-        shell.mixer.width = 208.;
-        shell.mixer.dock_width = 420.;
         let document = shell.project_document(cx).unwrap();
         shell.mixer.order.clear();
-        shell.mixer.width = 140.;
         shell.apply_project_presentation(&document, cx).unwrap();
         assert_eq!(shell.mixer.order[0], gain);
-        assert_eq!(shell.mixer.width, 208.);
-        assert_eq!(shell.mixer.dock_width, 420.);
     });
     cx.update(|window, cx| {
         window.render_frame(cx);
@@ -88,7 +83,7 @@ fn mixer_controls_target_selected_nodes_and_restore_layout(cx: &mut TestAppConte
 }
 
 #[gpui_kit::test]
-fn mixer_header_drag_reorders_and_divider_resizes(cx: &mut TestAppContext) {
+fn mixer_header_drag_reorders_channels(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1600.), px(1000.)));
     view.update(cx, |shell, cx| {
@@ -121,31 +116,16 @@ fn mixer_header_drag_reorders_and_divider_resizes(cx: &mut TestAppContext) {
     cx.update(|window, cx| window.render_frame(cx));
     cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     view.update(cx, |shell, _| assert_eq!(shell.mixer.order[0], order[1]));
-    cx.update(|window, cx| window.render_frame(cx));
-    let handle_position = cx.update(|window, _| window.find("mixer-dock-resize").bounds().center());
-    cx.simulate_mouse_down(handle_position, MouseButton::Left, Modifiers::default());
-    cx.simulate_mouse_move(
-        handle_position - point(px(40.), px(0.)),
-        Some(MouseButton::Left),
-        Modifiers::default(),
-    );
-    cx.simulate_mouse_up(
-        handle_position - point(px(40.), px(0.)),
-        MouseButton::Left,
-        Modifiers::default(),
-    );
-    view.update(cx, |shell, _| assert_eq!(shell.mixer.dock_width, 400.));
     finish_service(runtime);
 }
 
 #[gpui_kit::test]
-fn compact_mixer_keeps_send_controls_and_minimum_width_meters_unclipped(cx: &mut TestAppContext) {
+fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1024.), px(720.)));
     view.update(cx, |shell, cx| {
         shell.presentation.page = Page::Mixer;
         shell.inspector_open = false;
-        shell.mixer.width = 136.;
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
@@ -169,7 +149,7 @@ fn compact_mixer_keeps_send_controls_and_minimum_width_meters_unclipped(cx: &mut
         let unity = window
             .find(SharedString::from(format!("strip-unity-{id:?}")))
             .bounds();
-        let fader = view.read(cx).mixer.faders[&id].read(cx).bounds();
+        let fader = view.read(cx).mixer.faders[&id].state.read(cx).bounds();
         assert!(
             (f32::from(unity.top() - (fader.top() + fader.size.height * 0.24))).abs() <= 1.,
             "0 dB reference must align with the fader's unity gain position"
@@ -220,7 +200,7 @@ fn compact_mixer_keeps_send_controls_and_minimum_width_meters_unclipped(cx: &mut
                 .bounds();
             assert!(
                 tap.right() <= strip.right() - px(6.),
-                "tap escaped minimum strip width"
+                "tap escaped the fixed strip width"
             );
         }
     });
@@ -303,7 +283,7 @@ fn routing_actions_preserve_send_gain_select_the_edge_and_keep_apply_explicit(
     });
     cx.update(|window, cx| window.render_frame(cx));
     let (slider, bounds) = view.update(cx, |shell, cx| {
-        let slider = shell.mixer.faders[&dst].clone();
+        let slider = shell.mixer.faders[&dst].state.clone();
         let bounds = slider.read(cx).bounds();
         (slider, bounds)
     });
@@ -495,6 +475,254 @@ fn send_numeric_edit_and_deleted_edge_cleanup_preserve_shared_layout(cx: &mut Te
         assert!(shell.mixer.editing_send.is_none());
         assert!(!shell.mixer.send_inputs.contains_key(&edge));
         assert!(!shell.mixer.sends.contains_key(&edge));
+    });
+    finish_service(runtime);
+}
+
+/// Clicks one editable readout and asserts its editor opened.
+fn open_editor(
+    view: &Entity<StudioShell>,
+    cx: &mut VisualTestContext,
+    element: SharedString,
+    editing: impl Fn(&StudioShell) -> Option<NodeId>,
+) -> NodeId {
+    cx.update(|window, cx| window.click(element, cx));
+    view.update(cx, |shell, _| editing(shell).expect("editor must open"))
+}
+
+/// Types into an open editor and presses Enter; Enter runs the family's
+/// subscription synchronously, then the shell re-renders past the dispatch.
+fn type_and_commit(
+    view: &Entity<StudioShell>,
+    cx: &mut VisualTestContext,
+    input: &Entity<gpui_kit::component::input::InputState>,
+    text: &str,
+) {
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.set_value(text, window, cx);
+            cx.emit(gpui_kit::component::input::InputEvent::PressEnter {
+                secondary: false,
+                shift: false,
+            });
+        });
+    });
+    poll(view, cx);
+}
+
+fn readout_of(id: NodeId) -> SharedString {
+    SharedString::from(format!("strip-readout-{id:?}"))
+}
+
+#[gpui_kit::test]
+fn fader_readout_click_to_type_commits_valid_and_rejects_invalid(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1600.), px(1000.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let input = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.update(cx, |shell, _| shell.mixer.value_inputs[&id].clone())
+    };
+    let gain = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> (f64, Option<NodeId>) {
+        view.update(cx, |shell, cx| {
+            let graph = &shell.state.read(cx).snapshot.graph;
+            (
+                graph.node(id).expect("strip node").mixer.gain,
+                shell.mixer.editing_value,
+            )
+        })
+    };
+    let editor = input(&view, cx);
+
+    let editing = open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    assert_eq!(editing, id);
+    type_and_commit(&view, cx, &editor, "-6");
+    let (value, editing) = gain(&view, cx);
+    assert!(
+        (value - 10f64.powf(-6. / 20.)).abs() < 1e-9,
+        "typed -6 dB must land, got {value}"
+    );
+    assert_eq!(editing, None, "a valid entry closes the editor");
+
+    let (before, _) = gain(&view, cx);
+    for rejected in ["abc", "99"] {
+        open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+        type_and_commit(&view, cx, &editor, rejected);
+        let (value, editing) = gain(&view, cx);
+        assert_eq!(value, before, "\"{rejected}\" must change nothing");
+        assert_eq!(editing, None, "an invalid entry still closes the editor");
+    }
+
+    open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    type_and_commit(&view, cx, &editor, "-inf");
+    let (value, _) = gain(&view, cx);
+    assert_eq!(value, 0., "\"-inf\" is exact digital silence");
+    open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    type_and_commit(&view, cx, &editor, "−∞");
+    let (value, editing) = gain(&view, cx);
+    assert_eq!(value, 0., "the Unicode ∞ spelling is silence too");
+    assert_eq!(editing, None);
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn balance_label_click_to_type_commits_valid_and_rejects_invalid(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let label = SharedString::from(format!("balance-label-{id:?}"));
+    let editing_flag = |shell: &StudioShell| shell.mixer.editing_balance;
+    let editor = view.update(cx, |shell, _| shell.mixer.balance_inputs[&id].clone());
+    let balance =
+        |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> (f64, Option<NodeId>) {
+            view.update(cx, |shell, cx| {
+                (
+                    shell
+                        .state
+                        .read(cx)
+                        .snapshot
+                        .graph
+                        .node(id)
+                        .expect("strip node")
+                        .mixer
+                        .balance,
+                    shell.mixer.editing_balance,
+                )
+            })
+        };
+
+    // Clicking the label opens the editor; it must not also map the click
+    // position onto the balance (those handlers live on the track now).
+    let editing = open_editor(&view, cx, label.clone(), editing_flag);
+    assert_eq!(editing, id);
+    let (value, _) = balance(&view, cx);
+    assert_eq!(value, 0., "opening the editor must not move the balance");
+
+    type_and_commit(&view, cx, &editor, "R25");
+    let (value, editing) = balance(&view, cx);
+    assert!((value - 0.25).abs() < 1e-9, "\"R25\" landed {value}");
+    assert_eq!(editing, None);
+
+    open_editor(&view, cx, label.clone(), editing_flag);
+    type_and_commit(&view, cx, &editor, "C");
+    let (value, _) = balance(&view, cx);
+    assert_eq!(value, 0., "\"C\" recenters");
+
+    open_editor(&view, cx, label, editing_flag);
+    type_and_commit(&view, cx, &editor, "150");
+    let (value, editing) = balance(&view, cx);
+    assert_eq!(value, 0., "\"150\" is out of range and changes nothing");
+    assert_eq!(editing, None);
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn node_gain_and_pan_readouts_commit_their_own_parameters(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let gain_id = view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph;
+        graph
+            .nodes
+            .iter()
+            .find(|node| {
+                graph
+                    .graph
+                    .get_node(node.id)
+                    .is_ok_and(|logical| logical.kind() == NodeKind::Gain)
+            })
+            .unwrap()
+            .id
+    });
+
+    // The Gain node's strip fader edits mixer.gain; its "Requested" field is
+    // a separate family editing the node's own DSP gain.
+    let input = view.update(cx, |shell, _| {
+        shell.mixer.node_gain_inputs[&gain_id].clone()
+    });
+    view.update(cx, |shell, _| shell.mixer.editing_node_gain = Some(gain_id));
+    type_and_commit(&view, cx, &input, "+6");
+    view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph;
+        assert!(
+            (graph.node(gain_id).unwrap().gain - 10f64.powf(6. / 20.)).abs() < 1e-9,
+            "\"+6\" set the node gain, got {}",
+            graph.node(gain_id).unwrap().gain
+        );
+        assert_eq!(graph.node(gain_id).unwrap().mixer.gain, 1.);
+        assert!(shell.mixer.editing_node_gain.is_none());
+    });
+
+    view.update(cx, |shell, _| shell.mixer.editing_node_gain = Some(gain_id));
+    type_and_commit(&view, cx, &input, "99");
+    view.update(cx, |shell, cx| {
+        let gain = shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(gain_id)
+            .unwrap()
+            .gain;
+        assert!(
+            (gain - 10f64.powf(6. / 20.)).abs() < 1e-9,
+            "\"99\" is out of range and changes nothing"
+        );
+    });
+
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(crate::service::AppRequest::EditGraph(
+                crate::service::GraphEdit::AddNode {
+                    kind: NodeKind::Pan,
+                    channels: 2,
+                },
+            ));
+        });
+    });
+    poll(&view, cx);
+    let (pan_id, input) = view.update(cx, |shell, _| {
+        let id = shell
+            .mixer
+            .node_pan_inputs
+            .keys()
+            .copied()
+            .last()
+            .expect("the pan node has a position editor");
+        (id, shell.mixer.node_pan_inputs[&id].clone())
+    });
+    assert!(
+        !view.update(cx, |shell, _| shell.mixer.editing_value.is_some()),
+        "the pan node's strip fader family stays independent"
+    );
+    view.update(cx, |shell, _| shell.mixer.editing_node_pan = Some(pan_id));
+    type_and_commit(&view, cx, &input, "R25");
+    view.update(cx, |shell, cx| {
+        let graph = &shell.state.read(cx).snapshot.graph;
+        assert!(
+            (graph.node(pan_id).unwrap().pan - 0.25).abs() < 1e-9,
+            "\"R25\" set the pan position, got {}",
+            graph.node(pan_id).unwrap().pan
+        );
+        assert_eq!(graph.node(pan_id).unwrap().mixer.balance, 0.);
+        assert!(shell.mixer.editing_node_pan.is_none());
     });
     finish_service(runtime);
 }

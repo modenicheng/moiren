@@ -11,7 +11,13 @@ mod routing;
 pub(super) mod strip_controls;
 use crate::ui::widgets::fader::{FaderScale, fader, ruler};
 use component::menu::ContextMenuExt;
-pub(super) use model::{MixerPresentation, SliderEdit, gain_db, linear_gain, sync_sliders};
+// Slider-sync machinery is shared with the compressor parameter sliders
+// (window::graph::compressor), so the slot type, edit type and the
+// coalesced sync/commit entry points are visible across the window.
+pub(super) use model::{
+    EditableValueFamily, MixerPresentation, SliderEdit, SliderSlot, balance_text, commit_closure,
+    fader_rows, gain_db_text, start_value_edit, sync_faders, sync_slider_range,
+};
 use model::{StripDrag, reorder};
 use routing::{inputs, sends};
 
@@ -65,7 +71,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .id("mixer-dock")
         .flex()
         .flex_none()
-        .w(px(shell.mixer.dock_width))
+        .w(px(MixerPresentation::DOCK_WIDTH))
         .max_w(relative(0.55))
         .min_h_0()
         .border_l_1()
@@ -95,28 +101,6 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .flex_1()
         .min_h_0()
         .overflow_hidden()
-        .on_mouse_move({
-            let this = cx.entity();
-            move |event, _, cx| {
-                this.update(cx, |shell, cx| {
-                    if event.pressed_button == Some(MouseButton::Left)
-                        && let Some((docked, origin, width)) = shell.mixer.resize
-                    {
-                        let delta = f32::from(event.position.x) - origin;
-                        if docked {
-                            shell.mixer.dock_width = (width - delta).clamp(160., 640.);
-                        } else {
-                            shell.mixer.width = (width + delta).clamp(136., 280.);
-                        }
-                        cx.notify();
-                    }
-                });
-            }
-        })
-        .on_mouse_up(MouseButton::Left, {
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |shell, _| shell.mixer.resize = None)
-        })
         .child(
             div()
                 .flex()
@@ -124,38 +108,10 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .min_h_0()
                 .min_w_0()
                 .child(channels.gpui_test_observe())
-                .child(resize_handle(shell, true, "mixer-dock-resize", cx))
                 .child(dock_container.child(dock).gpui_test_observe()),
         )
         .gpui_test_observe()
         .into_any_element()
-}
-
-fn resize_handle(
-    shell: &StudioShell,
-    docked: bool,
-    id: impl Into<ElementId>,
-    cx: &Context<StudioShell>,
-) -> impl IntoElement {
-    let width = if docked {
-        shell.mixer.dock_width
-    } else {
-        shell.mixer.width
-    };
-    let this = cx.entity();
-    div()
-        .id(id)
-        .w(px(6.))
-        .h_full()
-        .flex_none()
-        .bg(theme::SURFACE)
-        .on_mouse_down(MouseButton::Left, move |event, _, cx| {
-            cx.stop_propagation();
-            this.update(cx, |shell, _| {
-                shell.mixer.resize = Some((docked, f32::from(event.position.x), width))
-            });
-        })
-        .gpui_test_observe()
 }
 
 pub(super) fn node_kind_color(kind: NodeKind) -> Hsla {
@@ -240,7 +196,7 @@ fn strip(
         .id(SharedString::from(format!("strip-{id:?}")))
         .flex()
         .flex_none()
-        .w(px(shell.mixer.width))
+        .w(px(MixerPresentation::STRIP_WIDTH))
         .h_full()
         .min_h_0()
         .bg(if selected {
@@ -283,17 +239,32 @@ fn strip(
                 .child(sends(shell, id, cx))
                 .child(strip_controls::balance(shell, entry, channels, cx))
                 .child(node_controls(entry, channels, cx))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("strip-readout-{id:?}")))
-                        .flex_none()
-                        .h(px(24.))
-                        .text_center()
-                        .font_family(theme::FONT_MONO)
-                        .text_size(px(12.))
-                        .child(db(entry.mixer.gain))
-                        .gpui_test_observe(),
-                )
+                .child({
+                    let editing = shell.mixer.editing_value == Some(id);
+                    editable_value(
+                        SharedString::from(format!("strip-readout-{id:?}")),
+                        db(entry.mixer.gain),
+                        editing,
+                        &shell.mixer.value_inputs[&id],
+                        start_value_edit(
+                            cx.entity(),
+                            EditableValueFamily::Fader,
+                            id,
+                            move |graph| {
+                                graph
+                                    .node(id)
+                                    .map(|node| gain_db_text(node.mixer.gain))
+                                    .unwrap_or_default()
+                            },
+                        ),
+                    )
+                    .flex_none()
+                    .h(px(24.))
+                    .text_center()
+                    .font_family(theme::FONT_MONO)
+                    .text_size(px(12.))
+                    .gpui_test_observe()
+                })
                 .child(
                     div()
                         .id(SharedString::from(format!("strip-levels-{id:?}")))
@@ -317,18 +288,15 @@ fn strip(
                         )
                         .child(meter(shell, entry, kind, channels, cx))
                         .child(ruler())
-                        .child(fader(&shell.mixer.faders[&id], entry.mixer.gain))
+                        .child(fader(
+                            &shell.mixer.faders[&id].state,
+                            &shell.mixer.faders[&id].behavior,
+                            cx,
+                        ))
                         .gpui_test_observe(),
                 )
                 .child(title),
         )
-        .child(resize_handle(
-            shell,
-            false,
-            SharedString::from(format!("strip-resize-{id:?}")),
-            cx,
-        ))
-        // Paint after the resize handle so its surface cannot shorten the bar.
         .child(
             div()
                 .id(SharedString::from(format!("strip-color-{id:?}")))

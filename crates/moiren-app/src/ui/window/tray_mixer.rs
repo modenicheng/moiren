@@ -1,21 +1,22 @@
 //! Tray flyout window: quick fader access to the audio-relevant mixer
 //! strips (sources, buses, sinks) without opening the main window.
 //!
-//! Volume edits apply immediately: slider releases and mute/solo clicks
-//! follow the candidate `SetMixer` edit with `ApplyGraph`, mirroring the
-//! main window's Apply button (a release applies even when the local
-//! snapshot has not polled the drag yet). The window closes on focus loss
-//! and Escape.
+//! Faders reuse the main mixer's rows verbatim, so both share the identical
+//! perceptual value space and edit path (see `mixer::model`): drag Changes
+//! dispatch coalesced, the release's final value always lands, and the wheel
+//! and double-click gestures edit immediately, as do mute/solo clicks.
+//! Escape closes the window.
 
 use rust_i18n::t;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::controls::{button, db, heading, label};
 use super::desktop::Desktop;
-use super::mixer::{SliderEdit, gain_db, linear_gain, node_kind_color, sync_sliders};
+use super::mixer::{SliderSlot, fader_rows, node_kind_color, sync_faders};
 use super::*;
 use crate::service::{AppRequest, GraphEdit, GraphNodeState, GraphSnapshot, MixerState};
 use crate::ui::monitoring::NodeMeters;
+use crate::ui::widgets::fader::fader;
 use moiren_core::graph::{NodeId, NodeKind};
 
 const STRIP_WIDTH: f32 = 104.;
@@ -54,7 +55,7 @@ pub(super) struct TrayMixer {
     state: Entity<UiState>,
     desktop: Option<WeakEntity<Desktop>>,
     node_meters: NodeMeters,
-    faders: BTreeMap<NodeId, Entity<base::slider::SliderState>>,
+    faders: BTreeMap<NodeId, SliderSlot>,
     focus: FocusHandle,
 }
 
@@ -106,28 +107,12 @@ impl TrayMixer {
     fn sync_faders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let graph = self.state.read(cx).snapshot.graph.clone();
         self.faders.retain(|id, _| graph.node(*id).is_some());
-        let rows: Vec<(NodeId, f32, SliderEdit)> = strip_ids(&graph)
-            .into_iter()
-            .map(|id| {
-                let gain = graph.node(id).map(|node| node.mixer.gain).unwrap_or(1.);
-                (
-                    id,
-                    gain_db(gain),
-                    Box::new(move |value: f32, graph: &GraphSnapshot| {
-                        graph.node(id).map(|node| {
-                            AppRequest::EditGraph(GraphEdit::SetMixer {
-                                node: id,
-                                state: MixerState {
-                                    gain: linear_gain(value),
-                                    ..node.mixer
-                                },
-                            })
-                        })
-                    }) as SliderEdit,
-                )
-            })
-            .collect();
-        sync_sliders(window, cx, &self.state, &mut self.faders, rows);
+        // The shared rows cover every node; the flyout keeps only the
+        // audio-bearing strips (sources, buses, sinks).
+        let strips: BTreeSet<NodeId> = strip_ids(&graph).into_iter().collect();
+        let mut rows = fader_rows(&graph);
+        rows.retain(|(id, _, _)| strips.contains(id));
+        sync_faders(window, cx, &self.state, &mut self.faders, rows);
     }
 }
 
@@ -272,7 +257,13 @@ fn strip(
                 .justify_center()
                 .gap(px(8.))
                 .py(px(6.))
-                .child(fader(&flyout.faders[&id], entry.mixer.gain))
+                // The shared fader fills its container; the flyout fixes the
+                // track height the main mixer takes from the strip.
+                .child(div().h(px(196.)).flex_none().child(fader(
+                    &flyout.faders[&id].state,
+                    &flyout.faders[&id].behavior,
+                    cx,
+                )))
                 .child(crate::ui::widgets::meters::compact_stereo_meter(
                     levels, clips,
                 ))
@@ -338,49 +329,6 @@ fn strip(
                 .gpui_test_observe(),
         )
         .gpui_test_observe()
-}
-
-fn fader(state: &Entity<base::slider::SliderState>, gain: f64) -> impl IntoElement {
-    let normalized = (gain_db(gain) + 60.) / 84.;
-    base::slider::Slider::new(state)
-        .vertical()
-        .relative()
-        .flex_none()
-        .w(px(26.))
-        .h(px(196.))
-        .child(
-            // Records the geometry the pointer-to-value mapping needs;
-            // without an indicator the state keeps zero bounds and drags
-            // map to NaN.
-            base::slider::SliderIndicator::new(state)
-                .absolute()
-                .left(px(12.))
-                .top(px(7.))
-                .w(px(3.))
-                .h(px(182.)),
-        )
-        .child(
-            base::slider::SliderTrack::new(state)
-                .axis(Axis::Vertical)
-                .absolute()
-                .left(px(12.))
-                .top(px(7.))
-                .w(px(3.))
-                .h(px(182.))
-                .bg(theme::BORDER_STRONG),
-        )
-        .child(
-            base::slider::SliderThumb::new(state)
-                .axis(Axis::Vertical)
-                .absolute()
-                .left(px(1.))
-                .top(px((1. - normalized) * 182.))
-                .w(px(24.))
-                .h(px(14.))
-                .rounded(px(3.))
-                .bg(theme::TEXT_MUTED)
-                .child(div().mt(px(6.)).w_full().h(px(2.)).bg(theme::SURFACE)),
-        )
 }
 
 /// Strip edit; it applies itself through the live parameter path.

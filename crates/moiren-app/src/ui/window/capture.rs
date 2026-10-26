@@ -167,8 +167,6 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         shell.update(cx, |shell, cx| {
                             shell.set_page(Page::Mixer, cx);
                             shell.inspector_open = false;
-                            shell.mixer.width = 160.;
-                            shell.mixer.dock_width = 160.;
                             cx.notify();
                         });
                         #[cfg(feature = "ui-profiler")]
@@ -324,17 +322,16 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                     capture(cx, directory.join(format!("{name}.png")));
                 }
                 let _ = window.update(cx, |_, window, _| window.resize(size(px(1440.), px(900.))));
-                for (name, page, strip_width) in [
-                    ("node-inspector", Page::Graph, 176.),
-                    ("mixer-min-width", Page::Mixer, 136.),
-                    ("connection-inspector", Page::Graph, 176.),
+                for (name, page) in [
+                    ("node-inspector", Page::Graph),
+                    ("mixer-inspector", Page::Mixer),
+                    ("connection-inspector", Page::Graph),
                 ] {
                     shell.update(cx, |shell, cx| {
                         shell.set_page(page, cx);
                         shell.camera = Camera::default();
                         shell.sidebar_open = page == Page::Graph;
                         shell.inspector_open = true;
-                        shell.mixer.width = strip_width;
                         let gain = shell
                             .state
                             .read(cx)

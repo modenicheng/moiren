@@ -1445,6 +1445,12 @@ _version: 2
 "Drag to reorder channels within the same mixer section":
   en: Drag to reorder channels within the same mixer section
   zh-CN: 拖动以调整同一混音区域内的通道顺序
+"Scroll to adjust · double-click to reset":
+  en: Scroll to adjust · double-click to reset
+  zh-CN: 滚动调整 · 双击复位
+"Click to type a value":
+  en: Click to type a value
+  zh-CN: 点击输入数值
 "Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.":
   en: Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.
   zh-CN: 显示采样峰值与 RMS（dBFS），与推子增益共用刻度。单击复位削波指示，右键调整响应。

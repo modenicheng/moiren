@@ -46,6 +46,63 @@ pub(super) fn detail(key: &str, value: impl Into<SharedString>) -> Div {
         )
 }
 
+/// A [`detail`] row whose value side is a click-to-type editable readout.
+pub(super) fn detail_editable(
+    key: &str,
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    editing: bool,
+    input: &Entity<component::input::InputState>,
+    on_start: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    div()
+        .flex()
+        .justify_between()
+        .gap(px(theme::SPACE_3))
+        .py(px(6.))
+        .child(label(key.to_string()))
+        .child(
+            editable_value(id, text, editing, input, on_start)
+                .min_w_0()
+                .max_w(px(190.))
+                .text_size(px(12.))
+                .text_color(theme::TEXT),
+        )
+}
+
+/// Click-to-type numeric readout shared by the mixer strip, the balance
+/// label and the inspector rows: a plain text value until clicked, then the
+/// inline editor styled like the node-name field. The helper owns no
+/// parsing — the call site's `on_start` enters edit mode and the value
+/// family's input subscription commits on Enter/blur. The site keeps its
+/// readout styling and `gpui_test_observe` by chaining on the returned
+/// `Stateful<Div>`.
+pub(super) fn editable_value(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    editing: bool,
+    input: &Entity<component::input::InputState>,
+    on_start: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    if editing {
+        return div().id(id).child(
+            component::input::Input::new(input)
+                .bg(theme::SURFACE_3)
+                .text_color(theme::TEXT)
+                .border_color(theme::BORDER),
+        );
+    }
+    div()
+        .id(id)
+        .cursor_pointer()
+        .child(text.into())
+        .tooltip(|window, cx| {
+            component::tooltip::Tooltip::new(t!("Click to type a value").into_owned())
+                .build(window, cx)
+        })
+        .on_click(on_start)
+}
+
 pub(super) fn panel(id: &'static str) -> Stateful<Div> {
     div()
         .id(id)

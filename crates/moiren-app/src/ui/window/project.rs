@@ -200,8 +200,6 @@ impl StudioShell {
         document.layout.camera_x = self.camera.pan_x;
         document.layout.camera_y = self.camera.pan_y;
         document.layout.zoom = self.camera.zoom;
-        document.layout.mixer_width = self.mixer.width;
-        document.layout.mixer_dock_width = self.mixer.dock_width;
         document.layout.mixer_order = self
             .mixer
             .order
@@ -433,8 +431,6 @@ impl StudioShell {
         self.node_name_editing = None;
         self.compressor = graph::CompressorControls::default();
         self.mixer.order.clear();
-        self.mixer.width = document.layout.mixer_width;
-        self.mixer.dock_width = document.layout.mixer_dock_width;
         if let Some(graph) = &document.graph {
             let restored = graph.to_graph()?;
             self.mixer.order = document

@@ -123,9 +123,11 @@ fn set_balance(this: &Entity<StudioShell>, id: NodeId, balance: f64, cx: &mut Ap
 
 /// Balance is a center-biased monitor control rather than a value slider. It
 /// keeps a fixed center reference and moves one flat position marker across a
-/// short track, while its label reports the requested left/right offset.
+/// short track, while its label reports the requested left/right offset. The
+/// click/drag handlers live on the track itself: the label under it is a
+/// click-to-type editor whose clicks must not also set a balance position.
 pub(in crate::ui::window) fn balance(
-    _shell: &StudioShell,
+    shell: &StudioShell,
     entry: &GraphNodeState,
     channels: usize,
     cx: &Context<StudioShell>,
@@ -135,19 +137,12 @@ pub(in crate::ui::window) fn balance(
         return div()
             .id(SharedString::from(format!("balance-{id:?}")))
             .flex_none()
-            .h(px(40.));
+            .h(px(40.))
+            .into_any_element();
     }
     let value = entry.mixer.balance.clamp(-1., 1.);
     let position = ((value as f32) + 1.) * 0.5;
-    let value_label = if value.abs() < 0.005 {
-        "C".to_string()
-    } else {
-        format!(
-            "{} {:.0}",
-            if value < 0. { "L" } else { "R" },
-            value.abs() * 100.
-        )
-    };
+    let editing = shell.mixer.editing_balance == Some(id);
     let track_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
     let this = cx.entity();
     let drag_this = this.clone();
@@ -163,24 +158,6 @@ pub(in crate::ui::window) fn balance(
         .h(px(40.))
         .px(px(8.))
         .gap(px(2.))
-        .cursor_pointer()
-        .on_click(move |event, _, cx| {
-            if event.click_count() == 2 {
-                set_balance(&this, id, 0., cx);
-            } else if let Some(position) = event.mouse_position() {
-                set_balance(&this, id, balance_value(position, click_bounds.get()), cx);
-            }
-        })
-        .on_drag(BalanceDrag(id), |drag, _, _, cx| cx.new(|_| drag.clone()))
-        .on_drag_move(move |event: &DragMoveEvent<BalanceDrag>, _, cx| {
-            // Drag-move listeners also see movement outside their own bounds.
-            // Only the originating strip owns the drag's coordinate mapping.
-            if event.drag(cx).0 != id {
-                return;
-            }
-            let value = balance_value(event.event.position, drag_bounds.get());
-            set_balance(&drag_this, id, value, cx);
-        })
         .child(
             div()
                 .id(track_id)
@@ -190,6 +167,24 @@ pub(in crate::ui::window) fn balance(
                 .bg(theme::WINDOW_BG)
                 .border_1()
                 .border_color(theme::BORDER)
+                .cursor_pointer()
+                .on_click(move |event, _, cx| {
+                    if event.click_count() == 2 {
+                        set_balance(&this, id, 0., cx);
+                    } else if let Some(position) = event.mouse_position() {
+                        set_balance(&this, id, balance_value(position, click_bounds.get()), cx);
+                    }
+                })
+                .on_drag(BalanceDrag(id), |drag, _, _, cx| cx.new(|_| drag.clone()))
+                .on_drag_move(move |event: &DragMoveEvent<BalanceDrag>, _, cx| {
+                    // Drag-move listeners also see movement outside their own bounds.
+                    // Only the originating strip owns the drag's coordinate mapping.
+                    if event.drag(cx).0 != id {
+                        return;
+                    }
+                    let value = balance_value(event.event.position, drag_bounds.get());
+                    set_balance(&drag_this, id, value, cx);
+                })
                 .child(
                     canvas(
                         move |bounds, _, _| track_bounds.set(bounds),
@@ -221,16 +216,34 @@ pub(in crate::ui::window) fn balance(
                 .gpui_test_observe(),
         )
         .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .h(px(17.))
-                .text_size(px(10.))
-                .font_family(theme::FONT_MONO)
-                .text_color(theme::TEXT_MUTED)
-                .child(value_label),
+            editable_value(
+                SharedString::from(format!("balance-label-{id:?}")),
+                balance_text(value),
+                editing,
+                &shell.mixer.balance_inputs[&id],
+                start_value_edit(
+                    cx.entity(),
+                    EditableValueFamily::Balance,
+                    id,
+                    move |graph| {
+                        graph
+                            .node(id)
+                            .map(|node| balance_text(node.mixer.balance))
+                            .unwrap_or_default()
+                    },
+                ),
+            )
+            .flex()
+            .items_center()
+            .justify_center()
+            .flex_none()
+            .h(px(17.))
+            .text_size(px(10.))
+            .font_family(theme::FONT_MONO)
+            .text_color(theme::TEXT_MUTED)
+            .gpui_test_observe(),
         )
+        .into_any_element()
 }
 
 #[cfg(test)]
