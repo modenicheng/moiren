@@ -1500,3 +1500,115 @@ _version: 2
 "Hint: %{hint}":
   en: "Hint: %{hint}"
   zh-CN: "提示：%{hint}"
+
+"Provider export diagnostics":
+  en: Provider export diagnostics
+  zh-CN: 提供方导出诊断
+"Stable endpoint ID":
+  en: Stable endpoint ID
+  zh-CN: 稳定端点 ID
+"Export direction":
+  en: Export direction
+  zh-CN: 导出方向
+"Requested endpoint name":
+  en: Requested endpoint name
+  zh-CN: 请求的端点名称
+"Diagnostic scope":
+  en: Diagnostic scope
+  zh-CN: 诊断范围
+"Latest native export observation (not live audio)":
+  en: Latest native export observation (not live audio)
+  zh-CN: 最近一次原生导出观测（非实时音频）
+"Observation generation":
+  en: Observation generation
+  zh-CN: 观测代次
+"Native transport preparation":
+  en: Native transport preparation
+  zh-CN: 原生传输准备状态
+"Prepared (native observation only)":
+  en: Prepared (native observation only)
+  zh-CN: 已准备（仅为原生观测）
+"Not prepared":
+  en: Not prepared
+  zh-CN: 未准备
+"Endpoint error":
+  en: Endpoint error
+  zh-CN: 端点错误
+"None reported":
+  en: None reported
+  zh-CN: 未报告
+"Provider packet telemetry":
+  en: Provider packet telemetry
+  zh-CN: 提供方数据包遥测
+"Native export diagnostics":
+  en: Native export diagnostics
+  zh-CN: 原生导出诊断
+"Provider telemetry schema":
+  en: Provider telemetry schema
+  zh-CN: 提供方遥测版本
+"Observed packet":
+  en: Observed packet
+  zh-CN: 观测到的数据包
+"Maximum observed packet":
+  en: Maximum observed packet
+  zh-CN: 观测到的最大数据包
+"Completion gaps":
+  en: Completion gaps
+  zh-CN: 完成间隔
+"0 observations; timing unknown":
+  en: 0 observations; timing unknown
+  zh-CN: 0 次观测；时序未知
+"%{count} observations; max %{ticks} x 100 ns":
+  en: "%{count} observations; max %{ticks} x 100 ns"
+  zh-CN: "%{count} 次观测；最大间隔 %{ticks} x 100 ns"
+"Cumulative submissions":
+  en: Cumulative submissions
+  zh-CN: 累计提交
+"%{attempts} attempts / %{submitted} submitted packets":
+  en: "%{attempts} attempts / %{submitted} submitted packets"
+  zh-CN: "尝试 %{attempts} 次 / 已提交 %{submitted} 个数据包"
+"Cumulative completions":
+  en: Cumulative completions
+  zh-CN: 累计完成
+"%{count} packets":
+  en: "%{count} packets"
+  zh-CN: "%{count} 个数据包"
+"Cumulative packet drops":
+  en: Cumulative packet drops
+  zh-CN: 累计丢包
+"Driver %{driver} / quota %{quota} / carrier %{carrier} / total %{total} packets":
+  en: "Driver %{driver} / quota %{quota} / carrier %{carrier} / total %{total} packets"
+  zh-CN: "驱动 %{driver} / 配额 %{quota} / 载体 %{carrier} / 合计 %{total} 个数据包"
+"Cumulative stale packets":
+  en: Cumulative stale packets
+  zh-CN: 累计过期数据包
+"Cumulative silence":
+  en: Cumulative silence
+  zh-CN: 累计静音
+"%{packets} packets / %{frames} frames":
+  en: "%{packets} packets / %{frames} frames"
+  zh-CN: "%{packets} 个数据包 / %{frames} 帧"
+"Cumulative epoch resets":
+  en: Cumulative epoch resets
+  zh-CN: 累计纪元重置
+"Cumulative recoveries":
+  en: Cumulative recoveries
+  zh-CN: 累计恢复
+"Cumulative completion clock regressions":
+  en: Cumulative completion clock regressions
+  zh-CN: 累计完成时钟回退
+"No native export observations":
+  en: No native export observations
+  zh-CN: 暂无原生导出观测
+"CPU load":
+  en: CPU load
+  zh-CN: CPU 负载
+"Physical end-to-end latency":
+  en: Physical end-to-end latency
+  zh-CN: 物理端到端延迟
+"Unknown / unqualified":
+  en: Unknown / unqualified
+  zh-CN: 未知 / 未经验证
+"Queue fill and packet timing do not measure CPU load or physical end-to-end latency.":
+  en: Queue fill and packet timing do not measure CPU load or physical end-to-end latency.
+  zh-CN: 队列填充量与数据包时序无法测量 CPU 负载或物理端到端延迟。

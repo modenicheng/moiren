@@ -460,24 +460,77 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     for (key, value) in crate::ui::presentation::native_timing_rows(snapshot) {
         view = view.child(detail(&key, value));
     }
+    let mut exports = div()
+        .id("provider-export-diagnostics")
+        .flex()
+        .flex_col()
+        .flex_none()
+        .gap(px(8.))
+        .child(heading(t!("Provider export diagnostics")));
+    if snapshot.exports.is_empty() {
+        exports = exports.child(label(t!("No native export observations")));
+    }
+    for status in &snapshot.exports {
+        let id = SharedString::from(format!("provider-export-{}", status.intent.endpoint_id));
+        let mut endpoint = div()
+            .id(id.clone())
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(px(4.));
+        for (index, (key, value)) in crate::ui::presentation::export_diagnostic_rows(status)
+            .into_iter()
+            .enumerate()
+        {
+            endpoint = endpoint.child(
+                detail(&key, value.clone())
+                    .id((id.clone(), index))
+                    .aria_label(format!("{key}: {value}"))
+                    .gpui_test_observe(),
+            );
+        }
+        exports = exports.child(endpoint.gpui_test_observe());
+    }
+    view = view.child(exports.gpui_test_observe());
     view.child(label(crate::ui::presentation::control_feedback(
         snapshot,
         state.pending_request,
     )))
-        .child(detail(&t!("Catalog"), t!(
+    .child(detail(
+        &t!("Catalog"),
+        t!(
             "%{inputs} inputs / %{outputs} outputs / %{asio} ASIO drivers / %{apps} applications",
             inputs = snapshot.catalog.inputs.len(),
             outputs = snapshot.catalog.outputs.len(),
             asio = snapshot.catalog.asio_drivers.len(),
             apps = snapshot.catalog.processes.len()
-        )))
-        .when_some(snapshot.catalog.asio_error.clone(), |view, error| view.child(
-            div().id("settings-asio-error").text_color(theme::DANGER).child(t!("ASIO discovery failed: %{error}", error = error).to_string()).gpui_test_observe()
-        ))
-        .child(detail(&t!("CPU / physical latency / XRUN"), t!("Unavailable")))
-        .child(label(t!("Queue fill and callback timing do not measure CPU load, physical end-to-end latency or XRUN counts.")))
-        .when_some(shell.project_message.clone(), |view, text| view.child(label(text)))
-        .child(button("quit-application", t!("Quit Moiren")).variant(ButtonVariant::Danger).on_click(|_, _, cx| cx.quit()))
+        ),
+    ))
+    .when_some(snapshot.catalog.asio_error.clone(), |view, error| {
+        view.child(
+            div()
+                .id("settings-asio-error")
+                .text_color(theme::DANGER)
+                .child(t!("ASIO discovery failed: %{error}", error = error).to_string())
+                .gpui_test_observe(),
+        )
+    })
+    .child(detail(&t!("CPU load"), t!("Unavailable")))
+    .child(detail(
+        &t!("Physical end-to-end latency"),
+        t!("Unknown / unqualified"),
+    ))
+    .child(label(t!(
+        "Queue fill and packet timing do not measure CPU load or physical end-to-end latency."
+    )))
+    .when_some(shell.project_message.clone(), |view, text| {
+        view.child(label(text))
+    })
+    .child(
+        button("quit-application", t!("Quit Moiren"))
+            .variant(ButtonVariant::Danger)
+            .on_click(|_, _, cx| cx.quit()),
+    )
 }
 
 pub(super) fn processing_summary(audio: &AudioSettings) -> String {

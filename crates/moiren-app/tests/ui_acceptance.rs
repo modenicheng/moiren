@@ -19,6 +19,118 @@ use moiren_app::ui::UiState;
 use moiren_app::ui::{Page, PageCell};
 use std::time::Duration;
 
+#[cfg(windows)]
+#[gpui_kit::test]
+fn provider_diagnostics_render_last_observations_and_missing_evidence(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use moiren_app::service::{
+        ExportDiagnostics, ExportDirection, ExportIntent, ExportResourceState, ExportStatus,
+        SessionPhase,
+    };
+    use moiren_engine::node::VirtualEndpointId;
+    use moiren_windows_audio::vad::VadPcmTelemetrySnapshot;
+
+    let runtime = common::service();
+    let mut snapshot = (*common::wait_snapshot(&runtime.handle())).clone();
+    snapshot.phase = SessionPhase::Idle;
+    let endpoint = VirtualEndpointId::from_bytes([7; 16]);
+    let mut status = ExportStatus {
+        intent: ExportIntent {
+            endpoint_id: endpoint,
+            direction: ExportDirection::Playback,
+            name: "Requested playback".into(),
+            channels: 2,
+            enabled: true,
+            binding: None,
+        },
+        actual_name: Some("Observed playback".into()),
+        rename_pending: true,
+        resource: ExportResourceState::Present,
+        allow_default: false,
+        gate_open: false,
+        active_revision: None,
+        diagnostics: Some(ExportDiagnostics {
+            generation: 42,
+            native_stamp: Some([1, 2, 3, 0, 5]),
+            transport_prepared: false,
+            telemetry: Some(VadPcmTelemetrySnapshot {
+                packet_frames: 128,
+                submitted_packets: (1 << 53) + 1,
+                ..Default::default()
+            }),
+            error: Some("endpoint-specific PCM preparation refusal".into()),
+        }),
+        #[cfg(feature = "vad-integration-probe")]
+        native_stamp: None,
+    };
+    snapshot.exports.push(status.clone());
+    status.intent.endpoint_id = VirtualEndpointId::from_bytes([8; 16]);
+    status.resource = ExportResourceState::Removing;
+    status.diagnostics = None;
+    snapshot.exports.push(status);
+    let expected: Vec<_> = snapshot
+        .exports
+        .iter()
+        .map(|status| {
+            (
+                gpui_kit::SharedString::from(format!(
+                    "provider-export-{}",
+                    status.intent.endpoint_id
+                )),
+                moiren_app::ui::presentation::export_diagnostic_rows(status),
+            )
+        })
+        .collect();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| UiState::new(runtime.handle(), std::sync::Arc::new(snapshot)));
+    let page = cx.new(|_| PageCell::default());
+    let window = cx.update(|cx| {
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::new(
+                    gpui_kit::point(px(0.), px(0.)),
+                    size(px(1440.), px(900.)),
+                ))),
+                ..Default::default()
+            },
+            |window, cx| cx.new(|cx| moiren_app::ui::shell_for_tests(state, page, window, cx)),
+        )
+        .unwrap()
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+        window.click("settings-diagnostics", cx);
+        assert!(window.try_find("provider-export-diagnostics").is_some());
+        for (id, rows) in &expected {
+            assert!(window.try_find(id.clone()).is_some());
+            assert!(!rows.is_empty(), "a real endpoint must render details");
+            for (index, (key, value)) in rows.iter().enumerate() {
+                let row_id = (id.clone(), index);
+                for _ in 0..80 {
+                    if window.find(row_id.clone()).visible() {
+                        break;
+                    }
+                    window.scroll(
+                        "settings-scroll",
+                        gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-180.))),
+                        cx,
+                    );
+                }
+                let rendered = window.find(row_id);
+                assert!(
+                    rendered.visible(),
+                    "{id}: {key} must be reachable by scrolling"
+                );
+                assert_eq!(rendered.label(), Some(format!("{key}: {value}").as_str()));
+            }
+        }
+    })
+    .unwrap();
+    common::finish(runtime);
+}
+
 #[gpui_kit::test]
 fn expert_input_buffers_are_explicit_drafts_with_unqualified_latency(
     cx: &mut gpui_kit::TestAppContext,

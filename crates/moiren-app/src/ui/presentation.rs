@@ -9,6 +9,9 @@ use moiren_windows_audio::engine_backend::NativeStreamKind;
 use rust_i18n::t;
 use std::borrow::Cow;
 
+mod export_diagnostics;
+pub use export_diagnostics::export_diagnostic_rows;
+
 /// Display-level stale guard mirroring the service's write-side filter. The
 /// owner identity is not published to the UI, so this deliberately checks only
 /// phase, generation, and the observation's own running flag.
