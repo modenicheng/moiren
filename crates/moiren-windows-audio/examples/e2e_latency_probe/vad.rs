@@ -106,19 +106,26 @@ pub struct PlaybackInfo {
 
 pub struct PlaybackSession {
     stop: Arc<AtomicBool>,
+    activate: Arc<AtomicBool>,
     worker: Option<JoinHandle<Result<PlaybackReport>>>,
     pub info: PlaybackInfo,
 }
 
 impl PlaybackSession {
-    pub fn start(
+    /// Prepare the native stream without starting its clock. The VAD provider
+    /// must prepare its worker against this stable stream generation before
+    /// the gate is opened; otherwise the worker treats native stream creation
+    /// as a recovery and closes the newly admitted gate.
+    pub fn prepare(
         stable_id: StableEndpointId,
         root_instance: String,
         duration: Duration,
         marker_plan: Option<MarkerPlan>,
     ) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
+        let activate = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
+        let worker_activate = activate.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("moiren-vad-native-playback".into())
@@ -129,6 +136,7 @@ impl PlaybackSession {
                     duration,
                     marker_plan,
                     worker_stop,
+                    worker_activate,
                     &ready_tx,
                 );
                 if let Err(error) = &result {
@@ -151,9 +159,14 @@ impl PlaybackSession {
         };
         Ok(Self {
             stop,
+            activate,
             worker: Some(worker),
             info,
         })
+    }
+
+    pub fn activate(&self) {
+        self.activate.store(true, Ordering::Release);
     }
 
     pub fn stop(mut self) -> Result<PlaybackReport> {
@@ -544,6 +557,7 @@ fn run_worker(
     duration: Duration,
     marker_plan: Option<MarkerPlan>,
     stop: Arc<AtomicBool>,
+    activate: Arc<AtomicBool>,
     ready_tx: &mpsc::SyncSender<std::result::Result<PlaybackInfo, String>>,
 ) -> Result<PlaybackReport> {
     let _apartment = Apartment::new()?;
@@ -553,7 +567,6 @@ fn run_worker(
         wait_playback(&enumerator, stable_id, root)?;
     let mut stream = Stream::prepare(&device)?;
     stream.fill_and_submit(&mut 0, marker_plan.as_ref())?;
-    stream.start()?;
     let info = PlaybackInfo {
         stable_endpoint_id: stable_id.to_string(),
         mmdevice_id: mmdevice_id.clone(),
@@ -565,6 +578,23 @@ fn run_worker(
     ready_tx
         .send(Ok(info.clone()))
         .map_err(|_| anyhow::anyhow!("VAD playback startup receiver closed"))?;
+    while !activate.load(Ordering::Acquire) {
+        if stop.load(Ordering::Acquire) {
+            return Ok(PlaybackReport {
+                stable_endpoint_id: stable_id.to_string(),
+                mmdevice_id,
+                observed_name,
+                adapter_instance,
+                native_buffer_frames: stream.frames,
+                packet_format: format!("{:?}", stream.format),
+                submitted_frames: 0,
+                event_timeouts: 0,
+                elapsed_seconds: 0.0,
+            });
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    stream.start()?;
     let started = Instant::now();
     let deadline = started + duration;
     let mut frame = u64::from(stream.frames);

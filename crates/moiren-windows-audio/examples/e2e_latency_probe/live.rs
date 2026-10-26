@@ -1294,6 +1294,13 @@ mod native {
             .as_ref()
             .map(|analysis| vad::MarkerPlan::from_schedule(&analysis.schedule))
             .transpose()?;
+        let playback = vad::PlaybackSession::prepare(
+            stable_from_virtual(endpoint_id),
+            root,
+            Duration::from_secs(options.seconds),
+            marker_plan,
+        )
+        .context("prepare VAD native playback")?;
         let output = EndpointSelector::PinnedEndpoint {
             endpoint_id: options.output_endpoint.clone(),
             stable_id: None,
@@ -1329,13 +1336,6 @@ mod native {
         let revision = active
             .active_revision
             .context("VAD EngineHost has no active revision")?;
-        let playback = vad::PlaybackSession::start(
-            stable_from_virtual(endpoint_id),
-            root,
-            Duration::from_secs(options.seconds),
-            marker_plan,
-        )
-        .context("start VAD native playback")?;
         let current = provider
             .export_observations()
             .into_iter()
@@ -1354,10 +1354,11 @@ mod native {
         provider
             .set_export_gate(endpoint_id, snapshot_stamp(current), true, revision, ticket)
             .context("open VAD export gate")?;
+        playback.activate();
         let playback_info = serde_json::to_value(&playback.info)?;
-        // `start` only confirms that the native client is ready. Let its
-        // bounded worker own the requested measurement interval before asking
-        // it to stop, otherwise live-vad would only exercise startup/teardown.
+        // `activate` releases the prepared native client after gate admission.
+        // Let its bounded worker own the requested measurement interval before
+        // asking it to stop, otherwise live-vad only exercises startup/teardown.
         thread::sleep(Duration::from_secs(options.seconds));
         let playback_report = playback.stop().context("stop VAD native playback")?;
         native_report.vad_playback = Some(serde_json::to_value(playback_report)?);
