@@ -1029,7 +1029,7 @@ fn native_delivery_violations(native: &NativeReport) -> u64 {
             ]
             .into_iter()
             .filter_map(|key| delivery.get(key).and_then(Value::as_u64))
-            .sum()
+            .fold(0_u64, u64::saturating_add)
         });
     let vad_violations = native
         .vad_provider
@@ -1044,14 +1044,47 @@ fn native_delivery_violations(native: &NativeReport) -> u64 {
             ]
             .into_iter()
             .filter_map(|key| telemetry.get(key).and_then(Value::as_u64))
-            .sum()
+            .fold(0_u64, u64::saturating_add)
         });
     process_violations.saturating_add(vad_violations)
 }
 
 fn native_quality(native: &NativeReport) -> QualificationQuality {
+    let bridge_counter = |name| {
+        native
+            .bridge
+            .as_ref()
+            .and_then(|bridge| bridge.get(name))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    // Native and backend diagnostics can retain the same render report. Use
+    // one authoritative copy, including the VAD backend-only report path.
+    let render = native.render.as_ref().or_else(|| {
+        native
+            .backend_diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.get("render"))
+    });
+    let render_shortfall = render
+        .and_then(|report| report.pointer("/stats/bridge_shortfall_frames"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let mut quality = QualificationQuality {
         delivery_bound_violations: native_delivery_violations(native),
+        dropped_frames: [
+            "dropped_frames",
+            "backlog_discarded_frames",
+            "age_discarded_frames",
+        ]
+        .into_iter()
+        .map(bridge_counter)
+        .fold(0_u64, u64::saturating_add),
+        underrun_frames: bridge_counter("underrun_frames").saturating_add(render_shortfall),
+        epoch_resets: bridge_counter("resets"),
+        // Input SILENT flags describe source content, and prime trimming is
+        // intentional startup alignment. Missing output is counted by the
+        // bridge's underrun frames; empty padding alone is only diagnostic.
         // Boundary probes count xrun events, not the number of missing frames.
         // Keep those events visible even when the driver delivered every packet.
         discontinuities: native
@@ -1062,7 +1095,7 @@ fn native_quality(native: &NativeReport) -> QualificationQuality {
             .into_iter()
             .flatten()
             .filter_map(|probe| probe.get("xruns").and_then(Value::as_u64))
-            .fold(0_u64, u64::saturating_add),
+            .fold(bridge_counter("discontinuities"), u64::saturating_add),
         ..QualificationQuality::default()
     };
     let Some(telemetry) = native
@@ -1076,19 +1109,23 @@ fn native_quality(native: &NativeReport) -> QualificationQuality {
         .get("packet_frames")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    quality.dropped_frames = telemetry
-        .get("dropped_packets")
-        .and_then(Value::as_u64)
-        .unwrap_or(0)
-        .saturating_mul(packet_frames);
+    quality.dropped_frames = quality.dropped_frames.saturating_add(
+        telemetry
+            .get("dropped_packets")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .saturating_mul(packet_frames),
+    );
     quality.silent_frames = telemetry
         .get("silence_frames")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    quality.epoch_resets = telemetry
-        .get("epoch_resets")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    quality.epoch_resets = quality.epoch_resets.saturating_add(
+        telemetry
+            .get("epoch_resets")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    );
     quality
 }
 
@@ -1205,7 +1242,7 @@ mod native {
         )
         .context("prepare WASAPI render")?;
         let render_info = render.info();
-        let bridge_snapshot = capture.observer.snapshot();
+        let bridge_observer = capture.observer.clone();
         let prepared = capture;
         let mut graph = LogicalGraph::new();
         let source = graph.create_node(NodeKind::Source, 2)?;
@@ -1260,7 +1297,9 @@ mod native {
             Ok(report) => native_report.render = Some(serde_json::to_value(report)?),
             Err(error) => gaps.push(format!("join WASAPI render: {error}")),
         }
-        native_report.bridge = Some(serde_json::to_value(bridge_snapshot)?);
+        // Keep the observer alive across both joins so this is the final
+        // runtime state, rather than the all-zero pre-activation snapshot.
+        native_report.bridge = Some(serde_json::to_value(bridge_observer.snapshot())?);
         // Keep the metadata read above in the report path even if the source
         // process exits during the finite run.
         if render_info.timing.capacity_frames == 0 {
@@ -1826,5 +1865,114 @@ mod tests {
             ..NativeReport::default()
         };
         assert_eq!(native_quality(&native).discontinuities, u64::MAX);
+    }
+
+    #[test]
+    fn process_quality_preserves_bridge_loss_shortfall_and_resets() {
+        let bridge = moiren_windows_audio::clock_bridge::BridgeSnapshot {
+            dropped_frames: 7,
+            silent_frames: 11,
+            underrun_frames: 13,
+            discontinuities: 17,
+            resets: 19,
+            backlog_discarded_frames: 23,
+            age_discarded_frames: 29,
+            ..Default::default()
+        };
+        let native = NativeReport {
+            bridge: Some(serde_json::to_value(bridge).unwrap()),
+            render: Some(serde_json::json!({
+                "stats": {"bridge_shortfall_frames": 31}
+            })),
+            ..NativeReport::default()
+        };
+        let quality = native_quality(&native);
+        assert_eq!(quality.dropped_frames, 59);
+        assert_eq!(quality.underrun_frames, 44);
+        assert_eq!(quality.discontinuities, 17);
+        assert_eq!(quality.epoch_resets, 19);
+        // SILENT input flags describe the application's content, whereas the
+        // missing output frames are already counted as bridge underruns.
+        assert_eq!(quality.silent_frames, 0);
+    }
+
+    #[test]
+    fn native_shortfall_uses_one_render_report_and_keeps_other_faults() {
+        let native = NativeReport {
+            bridge: Some(serde_json::json!({
+                "dropped_frames": 7,
+                "resets": 2
+            })),
+            render: Some(serde_json::json!({
+                "stats": {"bridge_shortfall_frames": 31}
+            })),
+            backend_diagnostics: Some(serde_json::json!({
+                "render": {"stats": {"bridge_shortfall_frames": 31}}
+            })),
+            vad_provider: Some(serde_json::json!({
+                "telemetry": {
+                    "packet_frames": 64,
+                    "dropped_packets": 2,
+                    "silence_frames": 5,
+                    "epoch_resets": 3
+                }
+            })),
+            ..NativeReport::default()
+        };
+        let quality = native_quality(&native);
+        assert_eq!(quality.underrun_frames, 31, "do not count a report twice");
+        assert_eq!(quality.dropped_frames, 135);
+        assert_eq!(quality.silent_frames, 5);
+        assert_eq!(quality.epoch_resets, 5);
+        let backend_only = NativeReport {
+            render: None,
+            ..native
+        };
+        assert_eq!(native_quality(&backend_only).underrun_frames, 31);
+    }
+
+    #[test]
+    fn native_quality_sums_saturate_for_delivery_and_frame_faults() {
+        let native = NativeReport {
+            capture: Some(serde_json::json!({
+                "delivery": {
+                    "packet_bound_violations": u64::MAX,
+                    "gap_bound_violations": 1
+                }
+            })),
+            bridge: Some(serde_json::json!({
+                "dropped_frames": u64::MAX,
+                "backlog_discarded_frames": 1,
+                "age_discarded_frames": 1,
+                "underrun_frames": u64::MAX
+            })),
+            render: Some(serde_json::json!({
+                "stats": {"bridge_shortfall_frames": 1}
+            })),
+            vad_provider: Some(serde_json::json!({
+                "telemetry": {"recovery_events": u64::MAX, "stale_packets": 1}
+            })),
+            ..NativeReport::default()
+        };
+        let quality = native_quality(&native);
+        assert_eq!(quality.delivery_bound_violations, u64::MAX);
+        assert_eq!(quality.dropped_frames, u64::MAX);
+        assert_eq!(quality.underrun_frames, u64::MAX);
+    }
+
+    #[test]
+    fn source_silence_priming_and_empty_padding_are_not_invented_audio_faults() {
+        let native = NativeReport {
+            bridge: Some(serde_json::json!({
+                "silent_frames": 480,
+                "priming_frames": 1024,
+                "prime_discarded_frames": 128
+            })),
+            render: Some(serde_json::json!({
+                "stats": {"empty_padding_wakes": 7}
+            })),
+            ..NativeReport::default()
+        };
+        assert_eq!(native_quality(&native), QualificationQuality::default());
     }
 }
