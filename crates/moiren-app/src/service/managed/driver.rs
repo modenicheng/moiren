@@ -74,6 +74,26 @@ impl ServiceDriver for ManagedDriver {
                 self.apply_audio_settings = Some(c.audio_settings.clone());
                 self.apply = true;
             }
+            AppRequest::ApplyGraphIfRunning => {
+                // Only a live owner consumes instant applies; a debounced edit
+                // landing right after a Stop must never restart audio.
+                if self.owner.is_some() && !self.exiting {
+                    self.automatic_startup = false;
+                    self.apply_audio_settings = Some(c.audio_settings.clone());
+                    self.apply = true;
+                }
+            }
+            AppRequest::UndoGraph | AppRequest::RedoGraph => {
+                let back = matches!(request, AppRequest::UndoGraph);
+                let stepped = if back { c.graph.undo() } else { c.graph.redo() };
+                if stepped && self.owner.is_some() && !self.exiting {
+                    // Parameter intents belong to the replaced topology; the
+                    // fresh apply re-submits the restored project's values.
+                    self.clear_parameters(c);
+                    self.apply_audio_settings = Some(c.audio_settings.clone());
+                    self.apply = true;
+                }
+            }
             AppRequest::Stop => {
                 self.automatic_startup = false;
                 self.apply = false;

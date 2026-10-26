@@ -317,6 +317,13 @@ impl ServiceDriver for CoreDriver {
             AppRequest::EditGraph(edit) => {
                 let _ = c.graph.edit(edit);
             }
+            AppRequest::UndoGraph => {
+                c.graph.undo();
+            }
+            AppRequest::RedoGraph => {
+                c.graph.redo();
+            }
+            AppRequest::ApplyGraphIfRunning => {}
             AppRequest::ReplaceGraph { graph, nodes } => {
                 if let Err(error) = c.graph.replace(graph, nodes) {
                     c.graph.record_error(error);

@@ -518,6 +518,27 @@ impl ServiceDriver for BackendDriver {
                 },
                 Err(error) => c.graph.record_error(error),
             },
+            AppRequest::ApplyGraphIfRunning => {
+                if c.core.phase() == SessionPhase::Running {
+                    match c
+                        .exports
+                        .preflight_audio(&c.graph.snapshot().exports)
+                        .and_then(|()| c.graph.session_spec(c.core.desired()))
+                    {
+                        Ok(spec) => match c.core.start(spec) {
+                            Ok(_) => self.session_started(c),
+                            Err(error) => c.graph.record_error(format!("{error:?}")),
+                        },
+                        Err(error) => c.graph.record_error(error),
+                    }
+                }
+            }
+            AppRequest::UndoGraph => {
+                c.graph.undo();
+            }
+            AppRequest::RedoGraph => {
+                c.graph.redo();
+            }
             AppRequest::SetGainPan { gain, pan } if model::valid_gain_pan(gain, pan) => {
                 if !self.candidate_identity_matches_session {
                     c.graph

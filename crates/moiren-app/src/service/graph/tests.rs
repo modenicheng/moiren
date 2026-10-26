@@ -768,3 +768,161 @@ fn mono_and_swap_candidate_values_are_compiled_and_reject_other_node_kinds() {
         service.snapshot.candidate_revision
     );
 }
+
+#[test]
+fn undo_journal_restores_content_with_monotonic_revisions() {
+    let mut service = ServiceGraph::default();
+    let gain = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Gain)
+        .unwrap()
+        .id();
+    service
+        .edit(GraphEdit::SetGain {
+            node: gain,
+            gain: 0.5,
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::AddNode {
+            kind: NodeKind::Eq,
+            channels: 2,
+        })
+        .unwrap();
+    let before_add = service.snapshot();
+    assert!(before_add.can_undo);
+    assert!(!before_add.can_redo);
+
+    assert!(service.undo());
+    let undone = service.snapshot();
+    assert_eq!(undone.nodes, {
+        let mut expected = before_add.nodes.clone();
+        expected.pop();
+        expected
+    });
+    assert!(undone.candidate_revision > before_add.candidate_revision);
+    assert!(undone.can_undo);
+    assert!(undone.can_redo);
+
+    assert!(service.undo());
+    assert_eq!(
+        service.snapshot().node(gain).unwrap().gain,
+        ServiceGraph::default().snapshot().node(gain).unwrap().gain,
+    );
+    assert!(!service.snapshot().can_undo);
+    assert!(service.redo());
+    assert_eq!(
+        service.snapshot().node(gain).unwrap().gain,
+        0.5,
+        "redo replays the first undone edit"
+    );
+    assert!(service.snapshot().can_redo, "the AddNode step still awaits");
+    assert!(service.redo());
+    assert_eq!(service.snapshot().nodes.len(), before_add.nodes.len());
+    assert!(!service.snapshot().can_redo);
+    // A fresh edit invalidates the redo history.
+    service
+        .edit(GraphEdit::SetGain {
+            node: gain,
+            gain: 0.75,
+        })
+        .unwrap();
+    assert!(!service.snapshot().can_redo);
+    assert!(service.undo());
+    assert_eq!(service.snapshot().node(gain).unwrap().gain, 0.5);
+}
+
+#[test]
+fn undo_journal_coalesces_rapid_same_target_edits() {
+    let mut service = ServiceGraph::default();
+    let gain = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Gain)
+        .unwrap()
+        .id();
+    // A drag emits a burst of same-target edits within the window.
+    for gain_value in [0.9, 0.8, 0.7, 0.6] {
+        service
+            .edit(GraphEdit::SetGain {
+                node: gain,
+                gain: gain_value,
+            })
+            .unwrap();
+    }
+    assert!(service.undo());
+    assert_eq!(
+        service.snapshot().node(gain).unwrap().gain,
+        ServiceGraph::default().snapshot().node(gain).unwrap().gain,
+        "the whole burst collapses into one undo step"
+    );
+    assert!(!service.snapshot().can_undo, "only one entry was recorded");
+
+    // Distinct targets never coalesce with each other.
+    let pan = service
+        .snapshot()
+        .graph
+        .nodes()
+        .iter()
+        .find(|node| node.kind() == NodeKind::Pan)
+        .unwrap()
+        .id();
+    service
+        .edit(GraphEdit::SetGain {
+            node: gain,
+            gain: 0.5,
+        })
+        .unwrap();
+    service
+        .edit(GraphEdit::SetPan {
+            node: pan,
+            pan: -0.5,
+        })
+        .unwrap();
+    assert!(service.undo());
+    assert_eq!(service.snapshot().node(pan).unwrap().pan, 0.);
+    assert!(service.snapshot().can_undo);
+}
+
+#[test]
+fn structural_edits_never_coalesce_in_the_undo_journal() {
+    let mut service = ServiceGraph::default();
+    for _ in 0..3 {
+        service
+            .edit(GraphEdit::AddNode {
+                kind: NodeKind::Bus,
+                channels: 2,
+            })
+            .unwrap();
+    }
+    let added = service.snapshot().nodes.len();
+    assert!(service.undo());
+    assert_eq!(service.snapshot().nodes.len(), added - 1);
+    assert!(service.undo());
+    assert_eq!(service.snapshot().nodes.len(), added - 2);
+}
+
+#[test]
+fn replace_records_one_undo_step_and_cannot_rewind_revisions() {
+    let mut service = ServiceGraph::default();
+    let revision_before = service.snapshot().candidate_revision;
+    let replacement = ServiceGraph::default();
+    let replacement_snapshot = replacement.snapshot();
+    service
+        .replace_with_exports(
+            replacement_snapshot.graph,
+            replacement_snapshot.nodes,
+            Vec::new(),
+        )
+        .unwrap();
+    assert!(service.snapshot().candidate_revision > revision_before);
+    assert!(service.undo());
+    let undone = service.snapshot();
+    assert_eq!(undone.nodes.len(), 4, "default session restored");
+    assert!(undone.candidate_revision > revision_before);
+}

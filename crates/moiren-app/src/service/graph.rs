@@ -41,6 +41,9 @@ pub struct GraphSnapshot {
     pub active_revision: Option<u64>,
     pub pending_revision: Option<u64>,
     pub last_error: Option<String>,
+    /// Whether the undo/redo journal can step back / forward right now.
+    pub can_undo: bool,
+    pub can_redo: bool,
 }
 impl GraphSnapshot {
     pub fn node(&self, id: NodeId) -> Option<&GraphNodeState> {
@@ -114,6 +117,79 @@ pub enum GraphEdit {
     },
 }
 
+impl GraphEdit {
+    /// Value-like edits a user emits in rapid bursts while dragging a control.
+    /// The UI debounces the instant-apply follow-up for these; structural
+    /// edits apply the moment they land.
+    pub fn is_continuous_adjustment(&self) -> bool {
+        matches!(
+            self,
+            Self::SetCompressor { .. }
+                | Self::SetGain { .. }
+                | Self::SetPan { .. }
+                | Self::SetMono { .. }
+                | Self::SetSwap { .. }
+                | Self::SetSend { .. }
+                | Self::SetMixer { .. }
+                | Self::SetBuiltin { .. }
+        )
+    }
+
+    /// Undo coalescing identity: rapid edits of the same control collapse
+    /// into one undo step. `None` marks structural edits, which never
+    /// coalesce with anything.
+    fn undo_key(&self) -> Option<String> {
+        match self {
+            Self::SetCompressor {
+                node, parameter, ..
+            } => Some(format!("compressor:{node:?}:{}", parameter.label())),
+            Self::SetGain { node, .. } => Some(format!("gain:{node:?}")),
+            Self::SetPan { node, .. } => Some(format!("pan:{node:?}")),
+            Self::SetMono { node, .. } => Some(format!("mono:{node:?}")),
+            Self::SetSwap { node, .. } => Some(format!("swap:{node:?}")),
+            Self::SetSend { edge, .. } => Some(format!("send:{edge:?}")),
+            Self::SetMixer { node, .. } => Some(format!("mixer:{node:?}")),
+            Self::SetBuiltin { node, .. } => Some(format!("builtin:{node:?}")),
+            Self::SetLabel { node, .. } => Some(format!("label:{node:?}")),
+            _ => None,
+        }
+    }
+}
+
+/// How long successive same-key edits stay merged into one undo step.
+const UNDO_COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
+/// Upper bound on remembered undo states; oldest entries drop off first.
+const UNDO_DEPTH: usize = 100;
+
+/// Snapshot journal for undo/redo. Entries hold only the editable candidate
+/// content; revision and runtime confirmation fields stay with the live
+/// snapshot so an undo can never fabricate or hide an owner confirmation.
+#[derive(Default)]
+struct UndoJournal {
+    undo: Vec<GraphSnapshot>,
+    redo: Vec<GraphSnapshot>,
+    last: Option<(String, std::time::Instant)>,
+}
+
+impl UndoJournal {
+    fn record(&mut self, before: GraphSnapshot, key: Option<String>) {
+        let now = std::time::Instant::now();
+        let coalesced = key.as_ref().is_some_and(|key| {
+            self.last.as_ref().is_some_and(|(last, at)| {
+                *last == *key && now.duration_since(*at) < UNDO_COALESCE_WINDOW
+            })
+        });
+        if !coalesced {
+            self.undo.push(before);
+            if self.undo.len() > UNDO_DEPTH {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+        }
+        self.last = key.map(|key| (key, now));
+    }
+}
+
 /// Owned worker preparation input; no UI entity or native handle crosses here.
 #[derive(Debug, Clone)]
 pub struct GraphPreparation {
@@ -124,6 +200,7 @@ pub struct GraphPreparation {
 }
 pub struct ServiceGraph {
     snapshot: GraphSnapshot,
+    journal: UndoJournal,
     pending_generation: Option<SessionGeneration>,
 }
 impl Default for ServiceGraph {
@@ -163,7 +240,10 @@ impl Default for ServiceGraph {
                 active_revision: None,
                 pending_revision: None,
                 last_error: None,
+                can_undo: false,
+                can_redo: false,
             },
+            journal: UndoJournal::default(),
             pending_generation: None,
         }
     }
@@ -296,6 +376,8 @@ impl ServiceGraph {
         self.snapshot.last_error = Some(error.to_string());
     }
     pub fn edit(&mut self, edit: GraphEdit) -> Result<(), String> {
+        let before = self.snapshot.clone();
+        let key = edit.undo_key();
         let mut next = self.snapshot.clone();
         let result = edit_candidate(&mut next, edit);
         if let Err(error) = result {
@@ -312,8 +394,51 @@ impl ServiceGraph {
             .checked_add(1)
             .ok_or("图版本空间已耗尽")?;
         next.last_error = None;
+        self.journal.record(before, key);
+        next.can_undo = !self.journal.undo.is_empty();
+        next.can_redo = !self.journal.redo.is_empty();
         self.snapshot = next;
         Ok(())
+    }
+    /// Restore the editable content recorded before the last edit. Revision
+    /// and runtime confirmation fields stay live; the restored content gets a
+    /// fresh candidate revision so consumers never see a revision go back.
+    pub fn undo(&mut self) -> bool {
+        self.step_journal(true)
+    }
+    pub fn redo(&mut self) -> bool {
+        self.step_journal(false)
+    }
+    fn step_journal(&mut self, back: bool) -> bool {
+        let entry = if back {
+            self.journal.undo.pop()
+        } else {
+            self.journal.redo.pop()
+        };
+        let Some(entry) = entry else {
+            return false;
+        };
+        if back {
+            self.journal.redo.push(self.snapshot.clone());
+        } else {
+            self.journal.undo.push(self.snapshot.clone());
+        }
+        self.journal.last = None;
+        let revision = self
+            .snapshot
+            .candidate_revision
+            .checked_add(1)
+            .expect("revision headroom retained by undo depth");
+        let can_undo = !self.journal.undo.is_empty();
+        let can_redo = !self.journal.redo.is_empty();
+        self.snapshot.exports = entry.exports;
+        self.snapshot.graph = entry.graph;
+        self.snapshot.nodes = entry.nodes;
+        self.snapshot.last_error = None;
+        self.snapshot.candidate_revision = revision;
+        self.snapshot.can_undo = can_undo;
+        self.snapshot.can_redo = can_redo;
+        true
     }
     /// A loaded document creates a new candidate. Disk contents cannot confirm
     /// native activity, and stale in-flight preparations never confirm this edit.
@@ -343,11 +468,14 @@ impl ServiceGraph {
             .candidate_revision
             .checked_add(1)
             .ok_or("图版本空间已耗尽")?;
+        self.journal.record(self.snapshot.clone(), None);
         self.snapshot.graph = graph;
         self.snapshot.exports = exports;
         self.snapshot.nodes = nodes;
         self.snapshot.candidate_revision = revision;
         self.snapshot.last_error = None;
+        self.snapshot.can_undo = !self.journal.undo.is_empty();
+        self.snapshot.can_redo = !self.journal.redo.is_empty();
         Ok(())
     }
     pub fn configure_session(&mut self, spec: &SessionSpec) -> Result<(), String> {

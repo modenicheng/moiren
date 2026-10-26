@@ -87,11 +87,19 @@ pub enum AppRequest {
     SetLatencyProfile(super::AudioLatencyProfile),
     SetAudioSettings(super::AudioSettings),
     EditGraph(super::GraphEdit),
+    /// Restore the candidate content recorded before the last user edit.
+    UndoGraph,
+    /// Re-apply an undone edit; invalidated by any new edit.
+    RedoGraph,
     ReplaceGraph {
         graph: moiren_core::graph::LogicalGraph,
         nodes: Vec<super::GraphNodeState>,
     },
     ApplyGraph,
+    /// Instant-apply pipeline variant: only a running (or owned) session
+    /// consumes it; an idle or stopping service ignores it so a debounced
+    /// edit can never restart audio after a Stop.
+    ApplyGraphIfRunning,
     Start(SessionSpec),
     Stop,
     RefreshCatalog,
