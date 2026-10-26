@@ -506,6 +506,26 @@ state matrix, continuous device waveform, or physical qualification.
 
 ## Remaining execution gates
 
+### 2026-10-27 compact native UI and target retention update
+
+Commit `b6fbbd2` adds three 1024x720 real GPUI rendered acceptance tests for
+native packet/gap/qualified pre-transfer age/padding provenance, absent/stopped
+or stale generations, fresh replacement and vertical scroll reachability.
+The focused three tests, all eleven `ui_acceptance` tests, touched-file format
+check and feature-enabled all-target app strict Clippy pass. Independent pinned
+review `78c85a3..b6fbbd2` passes spec compliance and code quality. Tests inject
+snapshots at the UI boundary: they do not prove native collection, pixels,
+horizontal clipping, OS screen readers or physical qualification. Verified
+physical-result import/qualified states and full service rename matrix remain
+outstanding. No accepted physical result was manufactured.
+
+Guest inventory rechecked over SSH on 2026-10-27: only the current
+`e2e_latency_probe-2c61452.exe` (3,359,744 bytes) remains in
+`C:\MoirenVadTest`; no test processes or present dynamic raw VAD children;
+30.12 GiB free. There is nothing obsolete to delete. Build on host; future
+guest evidence is still archived with per-file length/SHA-256 verification
+before deletion, preserving system and DriverStore files.
+
 1. Diagnose and fix the target native `0x8007051A` revision mismatch. Repeat
    event and timer playback/microphone matrices until every case passes with
    zero drops, unexpected silence, stale packets, discontinuities, and epoch
