@@ -5,7 +5,8 @@
 - Date: 2026-10-26.
 - Branch: `feat/minimal-io-latency`.
 - Source base: `ec66e85117fbf668c2def334bdb33028afd454e9`.
-- Current implementation commit: `e19b834`; latest target probe: `d1df8fa`.
+- Current reviewed probe-quality implementation: `a57abde`; latest target
+  probe: `d1df8fa`. Newer service/UI slices are tracked separately below.
 - Worktree: `D:\coding\moiren\.worktrees\minimal-io-latency`.
 - Reference graph: Input -> Bus -> Output, 48 kHz.
 - Target: measured steady p95 <= 10 ms with stable continuous waveform.
@@ -247,6 +248,45 @@ Clippy and touched-file formatting passed. This closes one presentation
 omission; provider packet/drop/silence telemetry, live queue age/padding,
 endpoint refusal reasons, and the full Task 7 acceptance cases remain open.
 
+### Process quality reporting correction
+
+Commit `a57abde` fixes a reporting error in the Process harness: it previously
+sampled the capture bridge before activation and serialized that startup
+snapshot after the run. The observer now survives both native-owner joins and
+is sampled only after both have completed.
+
+The common quality producer now retains Process overflow loss, running
+backlog/age discards, underrun frames, bridge discontinuities/resets, and
+graph-to-render bridge shortfalls. It selects one canonical render report
+when standalone/backend reports overlap, preserves independent VAD faults,
+and saturates cumulative sums. Source SILENT flags, initial prime trim, and
+empty-padding wakes remain separate diagnostics; none alone proves missing
+transport audio.
+
+Four new regressions demonstrated the omitted counters and integer overflow
+before the fix. All 22 example tests and strict example Clippy passed.
+Independent task review passed with no findings. The corrected Process
+producer has not yet been rerun on the native target; these are software
+regression and call-order results, not a new runtime or physical measurement.
+
+### Continuous collection limits
+
+The current live CLI and finite native session duration accept at most 600
+seconds. Process capture also allocates its PCM evidence for the entire
+requested duration before streaming. Extending that allocation unchanged to
+two hours would require approximately 2.76 GB for stereo Float32 PCM alone,
+which is unsuitable for the target VM.
+
+Before collecting the required continuous windows, the live harness needs
+bounded capture/window evidence, supervised controlled-load coverage, an
+observed steady window, orderly stop/join, and artifact provenance. The
+existing evaluator already requires 30 continuous minutes for an experimental
+candidate or two independent two-hour runs for default promotion; changing
+those thresholds, joining short runs, or setting report booleans does not
+complete collection. The separate application integration soak has bounded
+long-run windows, but its `VirtualPlayback -> Gain -> VirtualMicrophone` graph
+does not substitute for the physical `Input -> Bus -> Output` reference.
+
 ## Software changes and focused evidence
 
 - Marker generation uses caller buffers; bounded offline correlation rejects
@@ -279,8 +319,9 @@ endpoint refusal reasons, and the full Task 7 acceptance cases remain open.
   are implemented and covered by host tests.
 - The target machine can create and map the VAD endpoints, but the current
   native event/timer matrix fails on `0x8007051A` revision mismatches. The
-  software production path is present; live activation through the complete
-  Moiren Engine graph and calibrated VAD-vs-Process comparison remain open.
+  production `live-vad` path has also activated the complete Moiren Engine
+  graph, as recorded above. A clean native matrix, live rename smoke and
+  calibrated VAD-vs-Process comparison remain open.
 
 ### VAD rename
 
