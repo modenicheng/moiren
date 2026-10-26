@@ -73,6 +73,10 @@ pub struct RenderDiagnosticsSnapshot {
     pub overwritten_events: u64,
     /// Most recent bounded anomaly windows, ordered by callback arrival.
     pub events: Vec<RenderEvent>,
+    /// Public finish transfers prepared storage to the snapshot, so finishing
+    /// inside a callback cannot free the boxed history on that thread.
+    #[serde(skip)]
+    retained_history: Option<Box<RenderCallbackHistory>>,
 }
 
 #[derive(Debug)]
@@ -80,10 +84,14 @@ pub struct RenderDiagnostics {
     enabled: bool,
     wake_budget_100ns: u64,
     previous_wake: Option<u64>,
-    history: RenderCallbackHistory,
+    // Live bridge DTOs make a callback history large. Allocate it once before
+    // streaming rather than embedding it in every owner/cleanup report copy.
+    history: Box<RenderCallbackHistory>,
     events: Vec<RenderEvent>,
     next_event: usize,
     overwritten_events: u64,
+    #[cfg(windows)]
+    finalized: bool,
 }
 impl RenderDiagnostics {
     /// Must run before streaming: reserve every event slot once.
@@ -93,13 +101,15 @@ impl RenderDiagnostics {
             enabled,
             wake_budget_100ns,
             previous_wake: None,
-            history: RenderCallbackHistory {
+            history: Box::new(RenderCallbackHistory {
                 records: [RenderCallback::default(); HISTORY_CAPACITY],
                 len: 0,
-            },
+            }),
             events: Vec::with_capacity(if enabled { RENDER_EVENT_CAPACITY } else { 0 }),
             next_event: 0,
             overwritten_events: 0,
+            #[cfg(windows)]
+            finalized: false,
         }
     }
     #[cfg(windows)]
@@ -135,7 +145,7 @@ impl RenderDiagnostics {
         {
             let event = RenderEvent {
                 callback,
-                previous_callbacks: self.history,
+                previous_callbacks: *self.history,
                 wake_over_budget,
                 empty_padding,
                 bridge_recovered,
@@ -158,12 +168,29 @@ impl RenderDiagnostics {
     }
     /// Move storage to the report after streaming; its control-side owner drops it.
     pub fn finish(mut self) -> RenderDiagnosticsSnapshot {
+        let mut snapshot = self.take_snapshot();
+        snapshot.retained_history = Some(self.history);
+        snapshot
+    }
+    /// Retain both prepared allocations in the report until the control joiner
+    /// drops it, including after a native callback unwinds.
+    #[cfg(windows)]
+    pub(super) fn drain_snapshot(&mut self) -> Option<RenderDiagnosticsSnapshot> {
+        if self.finalized {
+            return None;
+        }
+        self.finalized = true;
+        Some(self.take_snapshot())
+    }
+    fn take_snapshot(&mut self) -> RenderDiagnosticsSnapshot {
         self.events.rotate_left(self.next_event);
+        self.next_event = 0;
         RenderDiagnosticsSnapshot {
             enabled: self.enabled,
             wake_budget_100ns: self.wake_budget_100ns,
             overwritten_events: self.overwritten_events,
-            events: self.events,
+            events: std::mem::take(&mut self.events),
+            retained_history: None,
         }
     }
 }

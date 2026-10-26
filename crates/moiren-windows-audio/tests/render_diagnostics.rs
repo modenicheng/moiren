@@ -6,6 +6,14 @@ use moiren_windows_audio::{
 
 mod common;
 
+#[test]
+fn diagnostic_recorder_does_not_embed_large_bridge_history_in_owner_handoffs() {
+    assert!(
+        size_of::<RenderDiagnostics>() < 256,
+        "bounded callback history must be prepared on the heap, not copied into every native report"
+    );
+}
+
 fn callback(at: u64) -> RenderCallback {
     RenderCallback {
         wake_qpc_100ns: Some(at),

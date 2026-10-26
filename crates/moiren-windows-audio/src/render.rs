@@ -409,8 +409,12 @@ impl RenderReport {
     }
 
     fn finish_diagnostics(&mut self) {
-        if let Some(recorder) = self.diagnostics_recorder.take() {
-            self.diagnostics = recorder.finish();
+        if let Some(snapshot) = self
+            .diagnostics_recorder
+            .as_mut()
+            .and_then(RenderDiagnostics::drain_snapshot)
+        {
+            self.diagnostics = snapshot;
         }
     }
 }

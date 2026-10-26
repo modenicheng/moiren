@@ -496,9 +496,10 @@ pub(super) fn new_report(options: &RenderOptions) -> RenderReport {
         schema_version: 8,
         queue: None,
         latency: LatencyRecorder::new(options.latency_telemetry).snapshot(),
-        diagnostics: super::super::RenderDiagnosticsSnapshot {
-            enabled: options.latency_telemetry == crate::latency::TelemetryMode::Trace,
-            ..Default::default()
+        diagnostics: {
+            let mut snapshot = super::super::RenderDiagnosticsSnapshot::default();
+            snapshot.enabled = options.latency_telemetry == crate::latency::TelemetryMode::Trace;
+            snapshot
         },
         diagnostics_recorder: Some(super::super::RenderDiagnostics::new(
             options.latency_telemetry,
