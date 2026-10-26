@@ -4,8 +4,8 @@
 //! driver PCM worker; this module owns only the external WASAPI client that
 //! writes into the VAD playback MMDevice.
 
+use super::source::{PreparedSource, SourceCursor, SourceProgress, SourceProvenance};
 use anyhow::{Context, Result, ensure};
-use moiren_windows_audio::latency::MarkerGenerator;
 use moiren_windows_audio::vad::{
     Channels, DeviceInterface, Intent, MAX_PACKET_FRAMES, SampleFormat, StableEndpointId,
     discover_present_interfaces, encode_interleaved,
@@ -38,10 +38,10 @@ use windows::{
             ERROR_INSUFFICIENT_BUFFER, HANDLE, S_OK, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
         Media::Audio::{
-            AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED, AUDCLNT_SHAREMODE_EXCLUSIVE,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, DEVICE_STATE_ACTIVE, IAudioClient,
-            IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
-            WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eRender,
+            AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED,
+            AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, DEVICE_STATE_ACTIVE,
+            IAudioClient, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+            WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eRender,
         },
         System::{
             Com::{
@@ -57,30 +57,6 @@ use windows::{
 
 const CONTROL_START_TIMEOUT: Duration = Duration::from_secs(15);
 
-#[derive(Clone, Debug)]
-pub struct MarkerPlan {
-    starts: Vec<u64>,
-    marker: Vec<f32>,
-}
-
-impl MarkerPlan {
-    pub fn from_schedule(schedule: &crate::pcm::PcmSchedule) -> Result<Self> {
-        let mut generator = MarkerGenerator::new(schedule.marker_frames, schedule.marker_amplitude)
-            .map_err(|error| anyhow::anyhow!("create VAD marker: {error}"))?;
-        let mut marker = vec![0.0; schedule.marker_frames];
-        generator.fill(&mut marker);
-        ensure!(!schedule.windows.is_empty(), "VAD marker schedule is empty");
-        Ok(Self {
-            starts: schedule
-                .windows
-                .iter()
-                .map(|window| window.start_frame)
-                .collect(),
-            marker,
-        })
-    }
-}
-
 #[derive(Debug, Serialize)]
 pub struct PlaybackReport {
     pub stable_endpoint_id: String,
@@ -90,6 +66,8 @@ pub struct PlaybackReport {
     pub native_buffer_frames: u32,
     pub packet_format: String,
     pub submitted_frames: u64,
+    pub playback_source: SourceProvenance,
+    pub source_progress: SourceProgress,
     pub event_timeouts: u64,
     pub elapsed_seconds: f64,
 }
@@ -119,7 +97,7 @@ impl PlaybackSession {
     pub fn prepare(
         stable_id: StableEndpointId,
         root_instance: String,
-        marker_plan: Option<MarkerPlan>,
+        source_plan: Option<PreparedSource>,
     ) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let activate = Arc::new(AtomicBool::new(false));
@@ -132,7 +110,7 @@ impl PlaybackSession {
                 let result = run_worker(
                     stable_id,
                     &root_instance,
-                    marker_plan,
+                    source_plan,
                     worker_stop,
                     worker_activate,
                     &ready_tx,
@@ -503,29 +481,28 @@ impl Stream {
         Ok(())
     }
 
-    fn fill_and_submit(&mut self, frame: &mut u64, plan: Option<&MarkerPlan>) -> Result<()> {
-        for (index, pair) in self.samples.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-            let current = frame.saturating_add(index as u64);
-            let value = marker_value(current, plan);
-            pair[0] = value;
-            pair[1] = value;
-        }
-        encode_interleaved(
-            &self.samples,
-            &mut self.encoded,
-            self.format,
-            Channels::Stereo,
-        )
-        .map_err(|error| anyhow::anyhow!("encode native VAD PCM: {error:?}"))?;
-        let pointer = unsafe { self.render.GetBuffer(self.frames)? };
-        ensure!(!pointer.is_null(), "VAD render buffer is null");
-        // SAFETY: WASAPI granted exactly self.frames of the checked format.
-        unsafe {
-            std::ptr::copy_nonoverlapping(self.encoded.as_ptr(), pointer, self.encoded.len());
-            self.render.ReleaseBuffer(self.frames, 0)?;
-        }
-        *frame = frame.saturating_add(u64::from(self.frames));
-        Ok(())
+    fn fill_and_submit(&mut self, source: &mut SourceCursor, preroll: bool) -> Result<()> {
+        let silent_preroll = preroll && source.has_schedule();
+        source.submit(&mut self.samples, preroll, |samples| {
+            encode_interleaved(samples, &mut self.encoded, self.format, Channels::Stereo)
+                .map_err(|error| anyhow::anyhow!("encode native VAD PCM: {error:?}"))?;
+            let pointer = unsafe { self.render.GetBuffer(self.frames)? };
+            ensure!(!pointer.is_null(), "VAD render buffer is null");
+            // SAFETY: WASAPI granted exactly self.frames of the checked format.
+            // Only successful ReleaseBuffer commits the portable source cursor.
+            unsafe {
+                std::ptr::copy_nonoverlapping(self.encoded.as_ptr(), pointer, self.encoded.len());
+                self.render.ReleaseBuffer(
+                    self.frames,
+                    if silent_preroll {
+                        AUDCLNT_BUFFERFLAGS_SILENT.0 as u32
+                    } else {
+                        0
+                    },
+                )?;
+            }
+            Ok(())
+        })
     }
 }
 
@@ -538,21 +515,10 @@ impl Drop for Stream {
     }
 }
 
-fn marker_value(frame: u64, plan: Option<&MarkerPlan>) -> f32 {
-    let Some(plan) = plan else {
-        return if frame % 48_000 < 256 { 0.1 } else { 0.0 };
-    };
-    let Some(&start) = plan.starts.iter().rev().find(|&&start| start <= frame) else {
-        return 0.0;
-    };
-    let offset = frame.saturating_sub(start) as usize;
-    plan.marker.get(offset).copied().unwrap_or(0.0)
-}
-
 fn run_worker(
     stable_id: StableEndpointId,
     root: &str,
-    marker_plan: Option<MarkerPlan>,
+    source_plan: Option<PreparedSource>,
     stop: Arc<AtomicBool>,
     activate: Arc<AtomicBool>,
     ready_tx: &mpsc::SyncSender<std::result::Result<PlaybackInfo, String>>,
@@ -563,7 +529,8 @@ fn run_worker(
     let (device, mmdevice_id, observed_name, adapter_instance) =
         wait_playback(&enumerator, stable_id, root)?;
     let mut stream = Stream::prepare(&device)?;
-    stream.fill_and_submit(&mut 0, marker_plan.as_ref())?;
+    let mut source = SourceCursor::new(source_plan);
+    stream.fill_and_submit(&mut source, true)?;
     let info = PlaybackInfo {
         stable_endpoint_id: stable_id.to_string(),
         mmdevice_id: mmdevice_id.clone(),
@@ -584,7 +551,9 @@ fn run_worker(
                 adapter_instance,
                 native_buffer_frames: stream.frames,
                 packet_format: format!("{:?}", stream.format),
-                submitted_frames: 0,
+                submitted_frames: source.progress.native_submitted_frames,
+                playback_source: source.provenance(),
+                source_progress: source.progress.clone(),
                 event_timeouts: 0,
                 elapsed_seconds: 0.0,
             });
@@ -593,16 +562,13 @@ fn run_worker(
     }
     stream.start()?;
     let started = Instant::now();
-    let mut frame = u64::from(stream.frames);
-    let mut submitted_frames = u64::from(stream.frames);
     let mut event_timeouts = 0;
     // PlaybackSession owns the stop/join fence, including its Drop path. Keep
     // the native stream alive until control has sampled the running provider.
     while !stop.load(Ordering::Acquire) {
         match unsafe { WaitForSingleObject(HANDLE(stream.event.as_raw_handle()), 100) } {
             WAIT_OBJECT_0 => {
-                stream.fill_and_submit(&mut frame, marker_plan.as_ref())?;
-                submitted_frames = submitted_frames.saturating_add(u64::from(stream.frames));
+                stream.fill_and_submit(&mut source, false)?;
             }
             WAIT_TIMEOUT => event_timeouts += 1,
             WAIT_FAILED => return Err(windows::core::Error::from_thread().into()),
@@ -616,7 +582,9 @@ fn run_worker(
         adapter_instance,
         native_buffer_frames: stream.frames,
         packet_format: format!("{:?}", stream.format),
-        submitted_frames,
+        submitted_frames: source.progress.native_submitted_frames,
+        playback_source: source.provenance(),
+        source_progress: source.progress.clone(),
         event_timeouts,
         elapsed_seconds: started.elapsed().as_secs_f64(),
     })

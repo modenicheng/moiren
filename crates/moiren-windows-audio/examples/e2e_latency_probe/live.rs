@@ -28,6 +28,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[path = "source.rs"]
+mod source;
+
 #[cfg(windows)]
 #[path = "vad.rs"]
 mod vad;
@@ -66,6 +69,7 @@ struct LiveOptions {
     measurement_boundary: EvidenceBoundary,
     measurement_pcm: Option<PathBuf>,
     measurement_schedule: Option<PathBuf>,
+    source_schedule: Option<PathBuf>,
     calibration: Option<PathBuf>,
     seconds: u64,
     max_input_bytes: u64,
@@ -105,6 +109,7 @@ impl Default for LiveOptions {
             measurement_boundary: EvidenceBoundary::Internal,
             measurement_pcm: None,
             measurement_schedule: None,
+            source_schedule: None,
             calibration: None,
             seconds: 5,
             max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
@@ -143,6 +148,7 @@ struct LiveRunManifest {
     stable_endpoint_id: Option<String>,
     source_name: Option<String>,
     source_identity: Option<Value>,
+    playback_source: Option<source::SourceProvenance>,
     output_endpoint_id: String,
     measurement_boundary: EvidenceBoundary,
     requested_seconds: u64,
@@ -181,6 +187,7 @@ struct SourceReport {
     stable_endpoint_id: Option<String>,
     requested_name: Option<String>,
     identity: Option<Value>,
+    playback_source: Option<source::SourceProvenance>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -205,6 +212,7 @@ struct ArtifactPaths {
     manifest: String,
     measurement_pcm: Option<String>,
     measurement_schedule: Option<String>,
+    source_schedule: Option<String>,
     calibration: Option<String>,
     capture_pcm: Option<String>,
     capture_pcm_metadata: Option<String>,
@@ -237,7 +245,23 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
     }
     let options = parse(arguments)?;
     validate(&options)?;
+    // Decode and precompute before creating artifacts or opening native owners.
+    let source_input = options
+        .source_schedule
+        .as_deref()
+        .map(|path| source::read_plan(path, options.max_input_bytes, options.seconds))
+        .transpose()?;
+    let source_plan = source_input.as_ref().map(|(_, plan)| plan);
     let paths = prepare_paths(&options)?;
+    if let Some((bytes, _)) = &source_input {
+        persist_source_plan(
+            paths
+                .source_schedule
+                .as_deref()
+                .context("source artifact path missing")?,
+            bytes,
+        )?;
+    }
     let run_id = options
         .run_id
         .clone()
@@ -275,7 +299,13 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
     }
     #[cfg(windows)]
     if !options.dry_run && options.source_kind == EvidenceSourceKind::VadPlayback {
-        let result = native::run_vad(&options, &paths, &measurement, &mut native, &mut gaps);
+        let result = native::run_vad(
+            &options,
+            &paths,
+            source_plan.cloned(),
+            &mut native,
+            &mut gaps,
+        );
         if let Err(error) = result {
             gaps.push(format!("live VAD run failed: {error:#}"));
             native.error = Some(format!("{error:#}"));
@@ -351,6 +381,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             stable_endpoint_id: options.stable_endpoint_id.clone(),
             requested_name: options.source_name.clone(),
             identity: source_identity.clone(),
+            playback_source: (options.source_kind == EvidenceSourceKind::VadPlayback)
+                .then(|| source::SourceProvenance::new(source_plan)),
         },
         output_endpoint_id: options.output_endpoint.clone(),
         measurement_boundary: options.measurement_boundary,
@@ -373,6 +405,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         stable_endpoint_id: options.stable_endpoint_id.clone(),
         source_name: options.source_name.clone(),
         source_identity,
+        playback_source: (options.source_kind == EvidenceSourceKind::VadPlayback)
+            .then(|| source::SourceProvenance::new(source_plan)),
         output_endpoint_id: options.output_endpoint.clone(),
         measurement_boundary: options.measurement_boundary,
         requested_seconds: options.seconds,
@@ -390,6 +424,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
 
 fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
     let mut options = LiveOptions::default();
+    let mut source_kind_seen = false;
     let mut iter = arguments.into_iter();
     while let Some(flag) = iter.next() {
         let value = match flag.as_str() {
@@ -414,6 +449,7 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             | "--measurement-boundary"
             | "--measurement-pcm"
             | "--schedule"
+            | "--source-schedule"
             | "--calibration"
             | "--seconds"
             | "--observation-interval-seconds"
@@ -441,6 +477,8 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
         };
         match flag.as_str() {
             "--source-kind" => {
+                ensure!(!source_kind_seen, "duplicate --source-kind");
+                source_kind_seen = true;
                 options.source_kind = match value.as_str() {
                     "process-loopback" => EvidenceSourceKind::ProcessLoopback,
                     "vad-playback" => EvidenceSourceKind::VadPlayback,
@@ -458,6 +496,17 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             "--measurement-boundary" => options.measurement_boundary = parse_boundary(&value)?,
             "--measurement-pcm" => options.measurement_pcm = Some(PathBuf::from(value)),
             "--schedule" => options.measurement_schedule = Some(PathBuf::from(value)),
+            "--source-schedule" => {
+                ensure!(
+                    options.source_schedule.is_none(),
+                    "duplicate --source-schedule"
+                );
+                ensure!(
+                    !value.is_empty() && value.trim() == value && !value.contains('\0'),
+                    "invalid --source-schedule path"
+                );
+                options.source_schedule = Some(PathBuf::from(value));
+            }
             "--calibration" => options.calibration = Some(PathBuf::from(value)),
             "--seconds" => options.seconds = value.parse().context("invalid duration")?,
             "--observation-interval-seconds" => {
@@ -520,6 +569,10 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
 }
 
 fn validate(options: &LiveOptions) -> Result<()> {
+    ensure!(
+        options.source_schedule.is_none() || options.source_kind == EvidenceSourceKind::VadPlayback,
+        "--source-schedule is only valid for live-vad"
+    );
     match options.source_kind {
         EvidenceSourceKind::ProcessLoopback | EvidenceSourceKind::Vad => {
             ensure!(options.source_pid != 0, "--source-pid must be nonzero");
@@ -652,6 +705,27 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
     let capture_pcm_metadata = options.artifact_dir.join("capture.metadata.json");
     let report_key = output_path_key(&report)?;
     let manifest_key = output_path_key(&manifest)?;
+    let source_path = options.artifact_dir.join("source-schedule.json");
+    let source_key = output_path_key(&source_path)?;
+    ensure!(
+        report_key != source_key && manifest_key != source_key,
+        "report and manifest must not alias reserved source-schedule.json"
+    );
+    for input in [
+        &options.source_schedule,
+        &options.measurement_pcm,
+        &options.measurement_schedule,
+        &options.calibration,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let key = output_path_key(input)?;
+        ensure!(
+            key != source_key && key != report_key && key != manifest_key,
+            "input must not alias reserved source plan, report or manifest output"
+        );
+    }
     ensure!(
         report_key != manifest_key,
         "--report and --manifest must differ"
@@ -689,6 +763,10 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
             .measurement_schedule
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned()),
+        source_schedule: options
+            .source_schedule
+            .as_ref()
+            .map(|_| source_path.to_string_lossy().into_owned()),
         calibration: options
             .calibration
             .as_ref()
@@ -847,6 +925,7 @@ impl ArtifactPaths {
             manifest: self.manifest.clone(),
             measurement_pcm: self.measurement_pcm.clone(),
             measurement_schedule: self.measurement_schedule.clone(),
+            source_schedule: self.source_schedule.clone(),
             calibration: self.calibration.clone(),
             capture_pcm: self.capture_pcm.clone(),
             capture_pcm_metadata: self.capture_pcm_metadata.clone(),
@@ -1267,6 +1346,17 @@ fn write_json(path: &str, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+fn persist_source_plan(path: &str, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("create new source plan {path}"))?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    Ok(())
+}
+
 fn unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1494,7 +1584,7 @@ mod native {
     pub fn run_vad(
         options: &LiveOptions,
         paths: &ArtifactPaths,
-        measurement: &MeasurementEvidence,
+        source_plan: Option<source::PreparedSource>,
         native_report: &mut NativeReport,
         _gaps: &mut Vec<String>,
     ) -> Result<()> {
@@ -1531,13 +1621,8 @@ mod native {
                 .create_export(endpoint_id, Intent::Playback, Channels::Stereo, name, false)
                 .context("CREATE VAD playback export")?;
             wait_vad_ready(&provider, endpoint_id)?;
-            let marker_plan = measurement
-                .analysis
-                .as_ref()
-                .map(|analysis| vad::MarkerPlan::from_schedule(&analysis.schedule))
-                .transpose()?;
             cleanup.playback = Some(
-                vad::PlaybackSession::prepare(stable_from_virtual(endpoint_id), root, marker_plan)
+                vad::PlaybackSession::prepare(stable_from_virtual(endpoint_id), root, source_plan)
                     .context("prepare VAD native playback")?,
             );
             let output = EndpointSelector::PinnedEndpoint {
@@ -2014,6 +2099,327 @@ mod tests {
         let path = std::env::temp_dir().join(format!("moiren-live-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         path
+    }
+
+    fn source_test_args(directory: &Path) -> Vec<String> {
+        vec![
+            "--dry-run".into(),
+            "--source-kind".into(),
+            "vad-playback".into(),
+            "--stable-endpoint-id".into(),
+            "07070707070707070707070707070707".into(),
+            "--name".into(),
+            "Source test".into(),
+            "--output".into(),
+            "out".into(),
+            "--artifact-dir".into(),
+            directory.to_string_lossy().into_owned(),
+        ]
+    }
+
+    fn source_plan_bytes() -> Vec<u8> {
+        br#"{
+  "schema_version": 1, "schedule_id": "independent-test",
+  "waveform_version": "moiren-marker-xorshift32-v1",
+  "sample_rate": 48000, "channels": 2, "marker_frames": 32,
+  "marker_amplitude": 0.1, "total_source_frames": 48000, "starts": [0, 40000]
+}
+"#
+        .to_vec()
+    }
+
+    #[test]
+    fn source_dry_run_retains_exact_plan_without_any_measurement_pcm() {
+        let directory = temp_dir("source-explicit-dry-run");
+        let input = directory.with_extension("input.json");
+        let bytes = source_plan_bytes();
+        fs::write(&input, &bytes).unwrap();
+        let mut args = source_test_args(&directory);
+        args.extend([
+            "--source-schedule".into(),
+            input.to_string_lossy().into_owned(),
+        ]);
+        let code = run(args).unwrap();
+        assert_eq!(code, 1);
+        assert_eq!(
+            fs::read(directory.join("source-schedule.json")).unwrap(),
+            bytes
+        );
+        for (file, path) in [
+            ("report.json", vec!["source", "playback_source"]),
+            ("manifest.json", vec!["playback_source"]),
+        ] {
+            let value: Value =
+                serde_json::from_slice(&fs::read(directory.join(file)).unwrap()).unwrap();
+            let provenance = path.iter().fold(&value, |value, key| &value[*key]);
+            assert_eq!(provenance["mode"], "explicit_source_schedule");
+            assert_eq!(provenance["schedule"]["schedule_id"], "independent-test");
+            assert_eq!(
+                provenance["schedule"]["starts"],
+                serde_json::json!([0, 40000])
+            );
+            assert!(
+                provenance["recorder_clock"]
+                    .as_str()
+                    .unwrap()
+                    .contains("no automatic")
+            );
+            assert_eq!(value["status"], "unqualified");
+            assert!(value["native"]["vad_playback"].is_null());
+        }
+        assert!(!directory.join("measurement.f32le").exists());
+        let report: Value =
+            serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["qualified"], false);
+        assert!(
+            report["artifacts"]["paths"]["source_schedule"]
+                .as_str()
+                .unwrap()
+                .ends_with("source-schedule.json")
+        );
+        assert_eq!(report["artifacts"]["measurement_pcm_status"], "missing");
+        assert!(
+            run(source_test_args(&directory)).is_err(),
+            "existing run directory must not be overwritten"
+        );
+        fs::remove_file(input).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn source_parser_is_vad_only_rejects_duplicates_and_invalid_paths() {
+        let directory = temp_dir("source-parser");
+        let mut valid = source_test_args(&directory);
+        valid.extend(["--source-schedule".into(), "source.json".into()]);
+        assert!(
+            parse(valid.clone())
+                .and_then(|options| validate(&options))
+                .is_ok()
+        );
+        let mut duplicate = valid.clone();
+        duplicate.extend(["--source-schedule".into(), "other.json".into()]);
+        assert!(parse(duplicate).is_err());
+        let mut override_mode = valid.clone();
+        override_mode.extend(["--source-kind".into(), "vad-playback".into()]);
+        assert!(
+            parse(override_mode).is_err(),
+            "source kind must not override CLI command mode"
+        );
+        for path in ["", " ", " source.json", "source.json ", "bad\0path"] {
+            let mut args = source_test_args(&directory);
+            args.extend(["--source-schedule".into(), path.into()]);
+            assert!(parse(args).and_then(|options| validate(&options)).is_err());
+        }
+        for kind in ["process-loopback", "vad"] {
+            assert!(
+                parse(vec![
+                    "--source-kind".into(),
+                    kind.into(),
+                    "--source-pid".into(),
+                    "1".into(),
+                    "--output".into(),
+                    "out".into(),
+                    "--artifact-dir".into(),
+                    directory.to_string_lossy().into_owned(),
+                    "--source-schedule".into(),
+                    "source.json".into()
+                ])
+                .and_then(|options| validate(&options))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn source_input_aliases_and_invalid_duration_fail_before_artifact_creation() {
+        for input_flag in [
+            "--source-schedule",
+            "--measurement-pcm",
+            "--schedule",
+            "--calibration",
+        ] {
+            let directory = temp_dir(&format!("source-input-alias-{input_flag}"));
+            let mut options = LiveOptions {
+                artifact_dir: directory.clone(),
+                ..Default::default()
+            };
+            let reserved = directory.join("source-schedule.json");
+            match input_flag {
+                "--source-schedule" => {
+                    let mut args = source_test_args(&directory);
+                    args.extend([input_flag.into(), reserved.to_string_lossy().into_owned()]);
+                    options = parse(args).unwrap();
+                }
+                "--measurement-pcm" => options.measurement_pcm = Some(reserved),
+                "--schedule" => options.measurement_schedule = Some(reserved),
+                _ => options.calibration = Some(reserved),
+            }
+            let result = prepare_paths(&options);
+            let created = directory.exists();
+            if created {
+                fs::remove_dir_all(&directory).unwrap();
+            }
+            assert!(result.is_err());
+            assert!(!created);
+        }
+        let directory = temp_dir("source-too-long");
+        let input = directory.with_extension("input.json");
+        let mut plan: Value = serde_json::from_slice(&source_plan_bytes()).unwrap();
+        plan["total_source_frames"] = serde_json::json!(48001);
+        fs::write(&input, serde_json::to_vec(&plan).unwrap()).unwrap();
+        let mut args = source_test_args(&directory);
+        args.extend([
+            "--seconds".into(),
+            "1".into(),
+            "--source-schedule".into(),
+            input.to_string_lossy().into_owned(),
+        ]);
+        assert!(run(args).is_err());
+        assert!(!directory.exists());
+        fs::remove_file(input).unwrap();
+    }
+
+    #[test]
+    fn source_artifact_create_new_preserves_existing_bytes() {
+        let directory = temp_dir("source-no-overwrite");
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("source-schedule.json");
+        let text = path.to_str().unwrap();
+        persist_source_plan(text, b"original immutable plan").unwrap();
+        assert!(persist_source_plan(text, b"replacement").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"original immutable plan");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn source_command_modes_cannot_be_overridden_to_bypass_process_rejection() {
+        let directory = temp_dir("source-command-mode");
+        let mut args = vec!["live-process-loopback".into()];
+        args.extend(source_test_args(&directory));
+        args.extend(["--source-schedule".into(), "source.json".into()]);
+        let error = crate::cli::run(args).unwrap_err();
+        assert!(error.to_string().contains("duplicate --source-kind"));
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn source_old_measurement_analysis_never_selects_or_changes_playback_plan() {
+        for explicit in [false, true] {
+            let directory = temp_dir(&format!("source-old-analysis-{explicit}"));
+            let pcm = directory.with_extension("f32le");
+            let analysis = directory.with_extension("analysis.json");
+            let source = directory.with_extension("source.json");
+            fs::write(&pcm, vec![0_u8; 256 * 8]).unwrap();
+            let analysis_plan = serde_json::json!({
+                "schema_version": 1, "sample_rate": 48000,
+                "reference_channel": 0, "processed_channel": 1,
+                "marker_frames": 32, "marker_amplitude": 0.2,
+                "reference_search_frames": 1, "max_delay_frames": 1,
+                "max_marker_frames": 32, "max_window_frames": 34,
+                "max_markers": 1, "max_pcm_frames": 256,
+                "max_correlation_samples_per_marker": 128,
+                "max_total_correlation_samples": 128,
+                "max_total_window_frames": 34,
+                "min_correlation": 0.85, "min_peak_margin": 0.15, "min_rms": 0.0001,
+                "windows": [{"start_frame": 137}]
+            });
+            fs::write(&analysis, serde_json::to_vec(&analysis_plan).unwrap()).unwrap();
+            fs::write(&source, source_plan_bytes()).unwrap();
+            let mut args = source_test_args(&directory);
+            args.extend([
+                "--measurement-pcm".into(),
+                pcm.to_string_lossy().into_owned(),
+                "--schedule".into(),
+                analysis.to_string_lossy().into_owned(),
+            ]);
+            if explicit {
+                args.extend([
+                    "--source-schedule".into(),
+                    source.to_string_lossy().into_owned(),
+                ]);
+            }
+            assert_eq!(run(args).unwrap(), 1);
+            let report: Value =
+                serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+            assert_eq!(
+                report["artifacts"]["measurement_pcm_status"],
+                "externally_supplied_and_analyzed"
+            );
+            let provenance = &report["source"]["playback_source"];
+            if explicit {
+                assert_eq!(provenance["mode"], "explicit_source_schedule");
+                assert_eq!(
+                    provenance["schedule"]["starts"],
+                    serde_json::json!([0, 40000])
+                );
+                assert_eq!(
+                    provenance["schedule"]["marker_amplitude"].as_f64().unwrap() as f32,
+                    0.1
+                );
+            } else {
+                assert_eq!(
+                    provenance["mode"],
+                    "diagnostic_pulses_no_source_marker_provenance"
+                );
+                assert!(provenance["schedule"].is_null());
+                assert!(!directory.join("source-schedule.json").exists());
+            }
+            fs::remove_file(pcm).unwrap();
+            fs::remove_file(analysis).unwrap();
+            fs::remove_file(source).unwrap();
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn source_reserved_path_rejects_output_aliases_before_creation() {
+        for manifest in [false, true] {
+            let directory = temp_dir(&format!("source-reserved-{manifest}"));
+            let reserved = directory.join("child/../source-schedule.json");
+            let mut options = LiveOptions {
+                artifact_dir: directory.clone(),
+                ..Default::default()
+            };
+            if manifest {
+                options.manifest_path = Some(reserved);
+            } else {
+                options.report_path = Some(reserved);
+            }
+            let result = prepare_paths(&options);
+            let created = directory.exists();
+            if created {
+                fs::remove_dir_all(&directory).unwrap();
+            }
+            assert!(result.is_err(), "source artifact path must be reserved");
+            assert!(!created, "reject aliases before creating outputs");
+        }
+    }
+
+    #[test]
+    fn source_without_plan_dry_run_labels_pulses_without_marker_provenance() {
+        let directory = temp_dir("source-diagnostic-provenance");
+        let result = run(vec![
+            "--dry-run".into(),
+            "--source-kind".into(),
+            "vad-playback".into(),
+            "--stable-endpoint-id".into(),
+            "07070707070707070707070707070707".into(),
+            "--name".into(),
+            "Source test".into(),
+            "--output".into(),
+            "out".into(),
+            "--artifact-dir".into(),
+            directory.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        assert_eq!(result, 1);
+        let report: Value =
+            serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+        assert_eq!(
+            report["source"]["playback_source"]["mode"],
+            "diagnostic_pulses_no_source_marker_provenance"
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
