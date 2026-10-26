@@ -245,8 +245,52 @@ Focused RED/GREEN regressions cover the real native snapshot and UI text
 projection. Final affected library tests passed: 450 Windows-audio tests and
 291 app tests, with four existing opt-in checks ignored. Strict library/test
 Clippy and touched-file formatting passed. This closes one presentation
-omission; provider packet/drop/silence telemetry, live queue age/padding,
-endpoint refusal reasons, and the full Task 7 acceptance cases remain open.
+omission. Subsequent provider and native observation work is recorded below;
+the full Task 7 hardware and presentation acceptance gate is still open.
+
+#### Provider observation and QUERY provenance
+
+Commits `9b97c08` and `ee73c8e` preserve provider telemetry through the service
+and show it in Settings -> Diagnostics. Rows distinguish stable identity,
+requested/actual names, pending native recreation, native preparation, exact
+endpoint errors, packet/completion timing, and cumulative drop, stale, silence,
+recovery and reset counters. Full `u64` values remain integers; missing or
+unsampled timing is unknown. These rows describe the latest native export
+observation, not Engine-confirmed live audio or measured physical latency.
+
+Independent review found that a failed native QUERY could return retained
+measurements inside a successful batch. Fix `fe88ad3` adds explicit provider
+provenance and clears cached measurement fields before assigning the accepted
+service observation generation. Endpoint errors, fresh preparation-refusal
+evidence, healthy endpoints and existing gate/Engine authority stay separate.
+The fix and UI slices passed their independent reviews. Focused provider tests
+passed 66/66 and exports tests 32/32; the UI's committed-baseline checks passed
+306 app-library tests with two existing ignored and eight acceptance tests.
+Combined-tree verification remains separate from these pinned slice results.
+
+#### Live native observations
+
+Commit `e431f38` publishes bounded coherent native delivery and qualified
+oldest-pending-frame age through the capture bridge. Native QPC observation is
+prepared even with trace disabled. Unknown, invalid/future timestamp, empty,
+reset and underrun paths cannot retain a stale successful age. This is an
+explicit timestamped pre-transfer sample, not a continuously advancing age or
+an estimate from queue fill. Delivery and age are independently coherent,
+not a transaction with each other or with every scalar counter.
+
+Commit `392fab3` adds the fixed-size render padding observer; `ce136a2` wires
+it to real WASAPI padding queries and backend output-node observations.
+Samples are unknown before the first wake and after owner stop/error/unwind.
+Publication does not allocate or wait; control retains the storage through
+join, and replacement-owner cleanup cannot clear a newer generation. Zero
+padding is a valid raw observation, not proof of a hardware xrun or missing
+audio. The scalar primitive passed independent review. Bridge and native
+integration review and their final UI projection are still in progress.
+
+After native integration, the affected Windows-audio library passed 465 tests
+with two existing ignored, the routing probe passed 14 tests, and strict
+all-target crate Clippy passed. No new device or physical measurement was run
+for these software observation changes.
 
 ### Process quality reporting correction
 
@@ -271,11 +315,25 @@ regression and call-order results, not a new runtime or physical measurement.
 
 ### Continuous collection limits
 
-The current live CLI and finite native session duration accept at most 600
-seconds. Process capture also allocates its PCM evidence for the entire
+Ordinary live CLI and finite native session duration accept at most 600
+seconds. Ordinary Process capture allocates its PCM evidence for the entire
 requested duration before streaming. Extending that allocation unchanged to
 two hours would require approximately 2.76 GB for stereo Float32 PCM alone,
 which is unsuitable for the target VM.
+
+Commit `4be32c4` adds an explicit diagnostic-only soak mode up to 7,200 seconds
+without whole-run Process PCM storage. It uses bounded periodic JSONL samples
+(5-60 second intervals, at most 1,442 records of 32 KiB each), preserving raw
+counters while keeping the same source and Engine owners running. This is
+not bounded continuous waveform capture or physical qualification. Its first
+independent review identified cancellation dependence on synchronous journal
+I/O, incomplete best-effort VAD cleanup after collection failures, and reserved
+artifact-path collisions. Those findings are being fixed; do not use the
+initial implementation as evidence of a qualified two-hour run.
+
+The VM storage policy was rechecked on 2026-10-27: `C:\MoirenVadTest` still
+contained only the current 3,269,120-byte probe, no running probe was found,
+and 30.10 GiB was free. No additional obsolete test files needed deletion.
 
 Before collecting the required continuous windows, the live harness needs
 bounded capture/window evidence, supervised controlled-load coverage, an

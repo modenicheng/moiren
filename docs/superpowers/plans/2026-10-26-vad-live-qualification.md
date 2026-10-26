@@ -367,10 +367,14 @@ same effective configuration recorded in manifest and report
   live occupancy/correction, and cumulative xrun/soft-event counters without
   turning them into a physical-latency estimate (`e19b834`; seven RED/GREEN
   regressions, affected library tests and strict Clippy passed).
-- [ ] Preserve and present provider packet timing, drop/silence/recovery
-  telemetry and endpoint-specific errors through the app service.
+- [x] Preserve and present provider packet timing, drop/silence/recovery
+  telemetry and endpoint-specific errors through the app service (`9b97c08`,
+  `ee73c8e`; failed-QUERY measurement provenance fixed in `fe88ad3`;
+  independent service-fix and UI reviews passed).
 - [ ] Publish live oldest-frame age and native render padding with explicit
   unknown values when unavailable; complete the remaining UI acceptance cases.
+  Native publication is implemented in `e431f38`, `392fab3`, and `ce136a2`;
+  native integration review and final UI projection/acceptance remain open.
 - [ ] Run two independent two-hour repetitions of the proposed default under
   the same controlled-load profile. Keep failed artifacts and diagnostics.
 - [ ] Promote a low-latency default only if both repetitions pass. Otherwise
