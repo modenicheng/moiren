@@ -6,7 +6,10 @@ fn random_dags<S: ProcessingSample>(optimized: bool) {
         rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
         (rng >> 32) as usize
     };
-    for _ in 0..24 {
+    // Each random graph pays a full compile-and-render under the interpreter;
+    // the deterministic seed keeps native and Miri runs on the same DAGs.
+    const GRAPHS: usize = if cfg!(miri) { 6 } else { 24 };
+    for _ in 0..GRAPHS {
         let mut graph = LogicalGraph::new();
         let source = graph.create_node(NodeKind::Source, 2).unwrap();
         let mut nodes = vec![source];

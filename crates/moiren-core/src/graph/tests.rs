@@ -47,14 +47,19 @@ fn id_exhaustion_is_atomic_for_nodes_ports_and_edges() {
 
 #[test]
 fn bus_input_count_fits_engine_port_indices() {
+    // The u16 boundary fill itself is covered by the native suite; Miri still
+    // checks dynamic add/remove/reuse, just without 65k live port records.
+    const FILLED: usize = if cfg!(miri) { 256 } else { MAX_INPUT_PORTS };
     let mut graph = LogicalGraph::new();
     let bus = graph.create_node(NodeKind::Bus, 1).unwrap();
-    for _ in 0..MAX_INPUT_PORTS {
+    for _ in 0..FILLED {
         graph.add_input_port(bus, 1).unwrap();
     }
-    let before = graph.clone();
-    assert_eq!(graph.add_input_port(bus, 1), Err(GraphError::TooManyPorts));
-    assert_eq!(graph, before);
+    if FILLED == MAX_INPUT_PORTS {
+        let before = graph.clone();
+        assert_eq!(graph.add_input_port(bus, 1), Err(GraphError::TooManyPorts));
+        assert_eq!(graph, before);
+    }
     let first = graph.get_node(bus).unwrap().inputs()[0].id();
     graph.remove_input_port(bus, first).unwrap();
     graph.add_input_port(bus, 1).unwrap();
