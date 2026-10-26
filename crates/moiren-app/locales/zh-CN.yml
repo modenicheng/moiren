@@ -1277,6 +1277,30 @@ _version: 2
 "%{prefix}: faults / recovery":
   en: "%{prefix}: faults / recovery"
   zh-CN: "%{prefix}：故障 / 恢复"
+"%{prefix}: prepared boundary capacity":
+  en: "%{prefix}: prepared boundary capacity"
+  zh-CN: "%{prefix}：已准备的边界容量"
+"%{prefix}: total pre-transfer content target":
+  en: "%{prefix}: total pre-transfer content target"
+  zh-CN: "%{prefix}：传输前总内容目标"
+"%{prefix}: post-transfer occupancy / correction":
+  en: "%{prefix}: post-transfer occupancy / correction"
+  zh-CN: "%{prefix}：传输后占用量 / 校正"
+"%{prefix}: cumulative boundary events":
+  en: "%{prefix}: cumulative boundary events"
+  zh-CN: "%{prefix}：累计边界事件"
+"%{frames} native frames at 48 kHz (storage headroom)":
+  en: "%{frames} native frames at 48 kHz (storage headroom)"
+  zh-CN: "%{frames} 个 48 kHz 原生帧（存储余量）"
+"%{frames} native frames at 48 kHz":
+  en: "%{frames} native frames at 48 kHz"
+  zh-CN: "%{frames} 个 48 kHz 原生帧"
+"%{frames} native frames at 48 kHz; applied %{ppm} ppm":
+  en: "%{frames} native frames at 48 kHz; applied %{ppm} ppm"
+  zh-CN: "%{frames} 个 48 kHz 原生帧；已应用 %{ppm} ppm"
+"Xrun %{xruns} / soft %{soft} events (not driver drops or silent frames)":
+  en: "Xrun %{xruns} / soft %{soft} events (not driver drops or silent frames)"
+  zh-CN: "Xrun %{xruns} / 软事件 %{soft} 次（非驱动丢帧数或静音帧数）"
 "Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}":
   en: "Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}"
   zh-CN: "欠载 %{underrun} / 丢弃 %{dropped} 帧；复位 %{resets} / 积压恢复 %{recoveries}"

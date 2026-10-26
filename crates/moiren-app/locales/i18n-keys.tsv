@@ -490,3 +490,11 @@ Start audio to observe this node.	-	crates/moiren-app/src/ui/window/graph/node_i
 Error: %{cause}	-	crates/moiren-app/src/ui/window.rs	错误列表首行
 Channel: %{location}	-	crates/moiren-app/src/ui/window.rs	错误列表定位行
 Hint: %{hint}	-	crates/moiren-app/src/ui/window.rs	错误列表提示行
+%{prefix}: prepared boundary capacity	prefix=stream index or unmapped label and kind	crates/moiren-app/src/ui/presentation.rs	已准备的边界存储容量
+%{prefix}: total pre-transfer content target	prefix=stream index or unmapped label and kind	crates/moiren-app/src/ui/presentation.rs	传输前总内容目标；无漂移适配时未知
+%{prefix}: post-transfer occupancy / correction	prefix=stream index or unmapped label and kind	crates/moiren-app/src/ui/presentation.rs	传输后占用量与已应用的时钟校正
+%{prefix}: cumulative boundary events	prefix=stream index or unmapped label and kind	crates/moiren-app/src/ui/presentation.rs	累计边界事件；不是驱动丢帧数或静音帧数
+%{frames} native frames at 48 kHz (storage headroom)	frames=probe.capacity_frames	crates/moiren-app/src/ui/presentation.rs	原生帧容量是存储余量，不是延迟
+%{frames} native frames at 48 kHz	frames=probe.target_frames	crates/moiren-app/src/ui/presentation.rs	准备已接受的目标原生帧数
+%{frames} native frames at 48 kHz; applied %{ppm} ppm	frames=probe.level_frames|ppm=probe.applied_milli_ppm / 1000	crates/moiren-app/src/ui/presentation.rs	传输后占用量与 ppm 校正
+Xrun %{xruns} / soft %{soft} events (not driver drops or silent frames)	xruns=probe.xruns|soft=probe.soft_events	crates/moiren-app/src/ui/presentation.rs	边界事件计数的单位与范围

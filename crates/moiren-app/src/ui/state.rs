@@ -671,6 +671,10 @@ pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
 #[path = "state/transport_tests.rs"]
 mod transport_tests;
 
+#[cfg(all(test, windows))]
+#[path = "state/boundary_tests.rs"]
+mod boundary_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;

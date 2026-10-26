@@ -4,6 +4,8 @@
 use crate::service::{AppSnapshot, SessionPhase};
 #[cfg(windows)]
 use crate::service::{AudioBackend, SessionGeneration};
+#[cfg(windows)]
+use moiren_windows_audio::engine_backend::NativeStreamKind;
 use rust_i18n::t;
 use std::borrow::Cow;
 
@@ -18,6 +20,18 @@ fn fresh_observation(
     running: bool,
 ) -> bool {
     phase == SessionPhase::Running && generation == status_generation && running
+}
+
+#[cfg(windows)]
+fn native_stream_kind_text(kind: NativeStreamKind) -> Cow<'static, str> {
+    match kind {
+        NativeStreamKind::MasterOutput => t!("Master output"),
+        NativeStreamKind::FollowerOutput => t!("Follower output"),
+        NativeStreamKind::PhysicalInput => t!("Physical input"),
+        NativeStreamKind::ProcessInput => t!("Application input"),
+        NativeStreamKind::VirtualPlayback => t!("Virtual playback"),
+        NativeStreamKind::VirtualMicrophone => t!("Virtual microphone"),
+    }
 }
 
 pub fn phase_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
@@ -52,7 +66,6 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
     let _ = snapshot;
     #[cfg(windows)]
     {
-        use moiren_windows_audio::engine_backend::NativeStreamKind;
         if let Some(status) = snapshot
             .professional_observations
             .as_ref()
@@ -164,14 +177,7 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
         }) {
             let mut rows = Vec::new();
             for (index, stream) in status.observation.streams.iter().enumerate() {
-                let kind = match stream.kind {
-                    NativeStreamKind::MasterOutput => t!("Master output"),
-                    NativeStreamKind::FollowerOutput => t!("Follower output"),
-                    NativeStreamKind::PhysicalInput => t!("Physical input"),
-                    NativeStreamKind::ProcessInput => t!("Application input"),
-                    NativeStreamKind::VirtualPlayback => t!("Virtual playback"),
-                    NativeStreamKind::VirtualMicrophone => t!("Virtual microphone"),
-                };
+                let kind = native_stream_kind_text(stream.kind);
                 let prefix = format!("{} {kind}", index + 1);
                 rows.push((
                     t!("%{prefix}: actual timing", prefix = prefix).to_string(),
@@ -264,6 +270,61 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                         dropped = bridge.counters.dropped_frames,
                         resets = bridge.counters.resets,
                         recoveries = bridge.counters.backlog_recoveries,
+                    )
+                    .to_string(),
+                ));
+            }
+            for probe in &status.observation.boundary_probes {
+                let stream = status
+                    .observation
+                    .streams
+                    .iter()
+                    .position(|stream| stream.node == probe.node && stream.kind == probe.kind)
+                    .map(|index| (index + 1).to_string())
+                    .unwrap_or_else(|| t!("Unmapped stream").to_string());
+                let prefix = format!("{stream} {}", native_stream_kind_text(probe.kind));
+                rows.push((
+                    t!("%{prefix}: prepared boundary capacity", prefix = prefix).to_string(),
+                    t!(
+                        "%{frames} native frames at 48 kHz (storage headroom)",
+                        frames = probe.capacity_frames,
+                    )
+                    .to_string(),
+                ));
+                // Preparation's total target and RT's residual occupancy use
+                // different observation points; neither is physical latency.
+                rows.push((
+                    t!(
+                        "%{prefix}: total pre-transfer content target",
+                        prefix = prefix
+                    )
+                    .to_string(),
+                    probe
+                        .target_frames
+                        .map(|frames| {
+                            t!("%{frames} native frames at 48 kHz", frames = frames).to_string()
+                        })
+                        .unwrap_or_else(|| t!("Unknown").to_string()),
+                ));
+                rows.push((
+                    t!(
+                        "%{prefix}: post-transfer occupancy / correction",
+                        prefix = prefix
+                    )
+                    .to_string(),
+                    t!(
+                        "%{frames} native frames at 48 kHz; applied %{ppm} ppm",
+                        frames = probe.level_frames,
+                        ppm = format!("{:+.3}", f64::from(probe.applied_milli_ppm) / 1000.0),
+                    )
+                    .to_string(),
+                ));
+                rows.push((
+                    t!("%{prefix}: cumulative boundary events", prefix = prefix).to_string(),
+                    t!(
+                        "Xrun %{xruns} / soft %{soft} events (not driver drops or silent frames)",
+                        xruns = probe.xruns,
+                        soft = probe.soft_events,
                     )
                     .to_string(),
                 ));
