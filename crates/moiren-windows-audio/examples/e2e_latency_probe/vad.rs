@@ -355,6 +355,30 @@ fn resolve_playback(
     Ok(selected.expect("one owned VAD playback device"))
 }
 
+fn wait_playback(
+    enumerator: &IMMDeviceEnumerator,
+    stable_id: StableEndpointId,
+    root: &str,
+) -> Result<(IMMDevice, String, String, String)> {
+    let deadline = Instant::now() + CONTROL_START_TIMEOUT;
+    let mut last_error = match resolve_playback(enumerator, stable_id, root) {
+        Ok(device) => return Ok(device),
+        Err(error) => error,
+    };
+    loop {
+        ensure!(
+            Instant::now() < deadline,
+            "VAD playback MMDevice was not published: {:#}",
+            last_error
+        );
+        thread::sleep(Duration::from_millis(100));
+        match resolve_playback(enumerator, stable_id, root) {
+            Ok(device) => return Ok(device),
+            Err(error) => last_error = error,
+        }
+    }
+}
+
 fn descriptor(format: SampleFormat) -> WAVEFORMATEXTENSIBLE {
     let bits = (format.bytes_per_sample() * 8) as u16;
     WAVEFORMATEXTENSIBLE {
@@ -526,7 +550,7 @@ fn run_worker(
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
     let (device, mmdevice_id, observed_name, adapter_instance) =
-        resolve_playback(&enumerator, stable_id, root)?;
+        wait_playback(&enumerator, stable_id, root)?;
     let mut stream = Stream::prepare(&device)?;
     stream.fill_and_submit(&mut 0, marker_plan.as_ref())?;
     stream.start()?;
