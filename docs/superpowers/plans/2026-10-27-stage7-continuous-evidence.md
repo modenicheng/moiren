@@ -126,3 +126,13 @@ rechecked on the guest before deletion: 19,091 bytes in the one-second archive,
 runners are removed; only the current 3,359,744-byte diagnostic probe remains,
 with no dynamic endpoints/probe processes and 30.12 GiB free. Installed driver
 INF/SYS/CAT SHA-256 values were refreshed and match the recorded running package.
+
+A final bounded event diagnostic at 15 seconds per case also produced eight
+case reports and exit 0, but PCM16 microphone dropped three mono writes and
+one stereo write (3,360/1,440 silent frames). No native discontinuity or revision
+mismatch was reported. This is another quality failure, not proof the
+intermittent mismatch is fixed. Its three payloads plus manifest (8,508 bytes)
+are retained in `target/vad-target-archive/20261027-native-f098fa9-event15`;
+verified host/guest hashes preceded immediate guest cleanup back to the one
+current diagnostic probe and 30.12 GiB free. No long qualification run follows
+from these diagnostic exits.

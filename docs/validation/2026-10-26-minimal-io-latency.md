@@ -640,6 +640,16 @@ scripts. Only the 3,359,744-byte current diagnostic probe remains, zero dynamic
 endpoints or probe processes, 30.12 GiB free. A read-only refresh confirms the
 running installed INF/SYS/CAT hashes still match the recorded package.
 
+A final bounded event repeat used 15 seconds per case and exited 0 with all
+eight reports. PCM16 Microphone dropped three mono and one stereo write, with
+3,360 and 1,440 silent frames; native discontinuities remain zero. No revision
+mismatch/new failure snapshot occurred. The diagnostic exit criterion is still
+not the stability gate. Its three payloads and manifest (8,508 bytes) are
+archived in `target/vad-target-archive/20261027-native-f098fa9-event15`, verified
+on host and rechecked on guest before immediate deletion of run/probe/script.
+Guest again retains only the current diagnostic probe, no dynamic endpoints/
+probe processes and 30.12 GiB free. No long qualification run is warranted.
+
 1. Diagnose and fix the target native `0x8007051A` revision mismatch. Repeat
    event and timer playback/microphone matrices until every case passes with
    zero drops, unexpected silence, stale packets, discontinuities, and epoch
