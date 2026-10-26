@@ -98,6 +98,7 @@ impl AssetSource for ActionAssets {
             "icons/chevron-right.svg" => {
                 Some(include_bytes!("../../../assets/icons/chevron-right.svg"))
             }
+            "icons/zoom-scan.svg" => Some(include_bytes!("../../../assets/icons/zoom-scan.svg")),
             "figma-actions/plus.svg" => {
                 Some(include_bytes!("../../../assets/figma-actions/plus.svg"))
             }
