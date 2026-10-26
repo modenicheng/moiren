@@ -6,8 +6,13 @@ use serde::Serialize;
 use thiserror::Error;
 
 mod artifact;
+mod evidence;
 pub use artifact::{
     PcmArtifact, PcmArtifactConfig, PcmArtifactError, PcmArtifactMetadata, PcmRecorder,
+};
+pub use evidence::{
+    PcmEvidenceConfig, PcmEvidenceError, PcmEvidenceFrame, PcmEvidencePacket, PcmEvidenceReader,
+    PcmEvidenceSummary, PcmEvidenceWriter, pcm_evidence_stream,
 };
 
 #[cfg(windows)]
@@ -46,6 +51,8 @@ pub enum CaptureError {
     WorkerPanicked,
     #[error("PCM artifact preparation failed: {0}")]
     PcmArtifact(#[from] PcmArtifactError),
+    #[error("PCM evidence preparation or copy failed: {0}")]
+    PcmEvidence(#[from] PcmEvidenceError),
     #[error(transparent)]
     SharedPeriod(#[from] crate::shared_stream::SharedPeriodError),
     #[error(transparent)]
@@ -113,6 +120,9 @@ pub struct CaptureReport {
     pub artifact_metadata: Option<PcmArtifactMetadata>,
     #[serde(skip)]
     pub(crate) artifact_recorder: Option<PcmRecorder>,
+    pub evidence_metadata: Option<PcmEvidenceSummary>,
+    #[serde(skip)]
+    pub(crate) evidence_recorder: Option<PcmEvidenceWriter>,
     pub delivery_bound: Option<crate::latency::transport::InputDeliveryTiming>,
     pub delivery: crate::latency::InputDeliverySnapshot,
     pub input_queue: Option<crate::latency::PreparedInputQueue>,
@@ -145,10 +155,12 @@ pub struct CaptureReport {
 impl CaptureReport {
     pub(crate) fn new(source: CaptureSource, duration: SessionDuration) -> Self {
         Self {
-            schema_version: 8,
+            schema_version: 9,
             artifact: None,
             artifact_metadata: None,
             artifact_recorder: None,
+            evidence_metadata: None,
+            evidence_recorder: None,
             delivery_bound: None,
             delivery: Default::default(),
             input_queue: None,
@@ -199,6 +211,10 @@ impl CaptureReport {
     pub(crate) fn finish_artifact(&mut self) {
         if let Some(recorder) = self.artifact_recorder.take() {
             self.attach_artifact(recorder.finish());
+        }
+        if let Some(evidence) = self.evidence_recorder.as_mut() {
+            evidence.close();
+            self.evidence_metadata = Some(evidence.snapshot());
         }
     }
 }

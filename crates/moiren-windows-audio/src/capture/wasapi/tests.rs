@@ -181,7 +181,7 @@ fn capture_lease_releases_complete_packet_on_success_silence_and_validation_fail
         .into();
         let (mut input, _source, observer) = capture_bridge(ClockBridgeConfig::default()).unwrap();
         assert_eq!(
-            transfer_packet(&client, 2, &mut input, None).is_err(),
+            transfer_packet(&client, 2, &mut input, None, None).is_err(),
             fails
         );
         assert_eq!(
@@ -192,6 +192,76 @@ fn capture_lease_releases_complete_packet_on_success_silence_and_validation_fail
             observer.snapshot().captured_frames,
             if fails { 0 } else { frames as u64 }
         );
+    }
+}
+
+#[test]
+fn capture_lease_copies_raw_evidence_before_release_without_allocating() {
+    use crate::capture::{PcmEvidenceConfig, pcm_evidence_stream};
+    for (frames, flags, null_buffer, fails) in [
+        (2, 0, false, false),
+        (2, SILENT, true, false),
+        (2, 0, true, true),
+        (3, 0, false, true),
+        (0, 0, true, false),
+    ] {
+        let samples = [0.25, -0.25, f32::from_bits(0x7fc0_1234), f32::NEG_INFINITY];
+        let data = Rc::new(UnsafeCell::new(samples));
+        // The fake ReleaseBuffer log has its capacity before the guarded lease.
+        let releases = Rc::new(RefCell::new(Vec::with_capacity(1)));
+        let client: IAudioCaptureClient = FakeCapture {
+            data: data.clone(),
+            releases: releases.clone(),
+            frames,
+            flags,
+            null_buffer,
+        }
+        .into();
+        let (mut ingress, _source, _) = capture_bridge(ClockBridgeConfig::default()).unwrap();
+        let (mut writer, mut reader) = pcm_evidence_stream(
+            PcmEvidenceConfig {
+                capacity_frames: 2,
+                detect_position_gaps: true,
+            },
+            48_000,
+            2,
+        )
+        .unwrap();
+        let (result, counts) = crate::render::wasapi::count_test_allocations(|| {
+            transfer_packet(&client, 2, &mut ingress, None, Some(&mut writer))
+        });
+        assert_eq!(counts, (0, 0));
+        assert_eq!(result.is_err(), fails);
+        let expected_release = [frames];
+        assert_eq!(
+            releases.borrow().as_slice(),
+            if frames == 0 {
+                &[][..]
+            } else {
+                &expected_release[..]
+            }
+        );
+        // The lease has ended; replacing native memory must not change evidence.
+        unsafe { *data.get() = [99.0; 4] };
+        if fails || frames == 0 {
+            assert!(reader.pop().is_none());
+            assert_eq!(writer.snapshot().packets, 0);
+        } else {
+            for offset in 0..2 {
+                let frame = reader.pop().unwrap();
+                assert_eq!(frame.packet_frame_offset, offset as u32);
+                assert_eq!(frame.qpc_100ns, 1);
+                for channel in 0..2 {
+                    let expected = if flags & SILENT != 0 {
+                        0.0
+                    } else {
+                        samples[offset * 2 + channel]
+                    };
+                    assert_eq!(frame.samples[channel].to_bits(), expected.to_bits());
+                }
+            }
+            assert!(reader.pop().is_none());
+        }
     }
 }
 
@@ -248,10 +318,10 @@ fn prepared_capture_publishes_bridge_before_gate_and_cancel_never_runs() {
         let report = prepared.session.join().unwrap();
         assert_eq!(report.stream_started, !cancel);
         assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
-        assert_eq!(report.schema_version, 8);
+        assert_eq!(report.schema_version, 9);
         assert_eq!(report.requested_seconds, None);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 8);
+        assert_eq!(json["schema_version"], 9);
         assert_eq!(json["delivery"]["packets"], 0);
         assert!(json["delivery_bound"].is_null());
         assert_eq!(json["shared_period"]["requested_period_frames"], 240);
@@ -271,7 +341,7 @@ fn capture_preparation_failure_joins_owner_before_returning() {
         );
         let report = stream::finish(Err(CaptureError::UnsupportedFormat), &stop, &sender, report);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 8);
+        assert_eq!(json["schema_version"], 9);
         assert_eq!(json["requested_seconds"], 10.0);
         owner_exited.store(true, std::sync::atomic::Ordering::Release);
         report

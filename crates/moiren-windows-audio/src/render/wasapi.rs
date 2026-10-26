@@ -29,6 +29,8 @@ pub use preparation::{
 };
 #[cfg(test)]
 pub(crate) use preparation::{TestOutcome, prepare_test_native, prepare_test_native_with_info};
+#[cfg(test)]
+pub(crate) use stream::diagnostic_tests::count_test_allocations;
 
 pub use endpoint::{RenderEndpoint, list_render_endpoints};
 

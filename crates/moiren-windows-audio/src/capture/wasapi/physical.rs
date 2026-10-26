@@ -11,6 +11,7 @@ use crate::{
 };
 use std::{
     os::windows::io::OwnedHandle as StdHandle,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, atomic::AtomicBool, mpsc::SyncSender},
 };
 
@@ -103,6 +104,23 @@ pub(super) fn run_owner_prepared(
     let mut report = CaptureReport::new(CaptureSource::Physical, options.duration);
     report.latency = crate::latency::LatencyRecorder::new(options.latency_telemetry).snapshot();
     report.endpoint_id = Some(options.endpoint_id.clone());
-    let result = owner(&options, &stop, &preparation, &mut report, &gate, &started);
-    preparation.finish(result, &stop, report)
+    run_owner_with(&stop, &preparation, report, |report| {
+        owner(&options, &stop, &preparation, report, &gate, &started)
+    })
 }
+
+fn run_owner_with(
+    stop: &StdHandle,
+    preparation: &CapturePreparation,
+    mut report: CaptureReport,
+    run: impl FnOnce(&mut CaptureReport) -> Result<CaptureStatus, CaptureError>,
+) -> CaptureReport {
+    // Prepared evidence stays in the report outside the unwind scope. Native
+    // COM can unwind here, but the control joiner reclaims the bounded ring.
+    let result = catch_unwind(AssertUnwindSafe(|| run(&mut report)))
+        .unwrap_or(Err(CaptureError::WorkerPanicked));
+    preparation.finish(result, stop, report)
+}
+
+#[cfg(test)]
+mod tests;

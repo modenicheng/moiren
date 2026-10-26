@@ -2,7 +2,10 @@
 use super::{CaptureSession, PreparedCapture, Startup, api, handle, physical};
 use crate::{
     ActivationGate, StopSignal,
-    capture::{CaptureError, CaptureOptions, CaptureReport, CaptureStatus},
+    capture::{
+        CaptureError, CaptureOptions, CaptureReport, CaptureStatus, PcmEvidenceConfig,
+        PcmEvidenceReader, PcmEvidenceWriter, pcm_evidence_stream,
+    },
     clock_bridge::{CaptureIngress, ClockBridgeConfig, capture_bridge_with_clock},
     latency::clock::QpcClock,
     latency::{NativeStreamTiming, PreparedInputQueue},
@@ -10,7 +13,7 @@ use crate::{
 };
 use std::{
     os::windows::io::OwnedHandle,
-    sync::{Arc, atomic::AtomicBool, mpsc},
+    sync::{Arc, Mutex, atomic::AtomicBool, mpsc},
     thread,
 };
 use windows::Win32::System::Threading::SetEvent;
@@ -25,9 +28,11 @@ pub struct NativeCaptureInfo {
 pub struct PreparedNativeCapture {
     info: NativeCaptureInfo,
     session: CaptureSession,
-    bridge: preparation::Sender<(CaptureIngress, PreparedInputQueue)>,
+    bridge: preparation::Sender<CaptureAttachment>,
     attached: mpsc::Receiver<Result<(), CaptureError>>,
 }
+type EvidenceHandoff = Arc<Mutex<Option<PcmEvidenceWriter>>>;
+type CaptureAttachment = (CaptureIngress, PreparedInputQueue, Option<EvidenceHandoff>);
 pub(crate) struct CaptureAttachFailure {
     pub error: CaptureError,
     pub report: Option<CaptureReport>,
@@ -40,6 +45,25 @@ impl PreparedNativeCapture {
         self.attach_returning(input, crate::NATIVE_SAMPLE_RATE)
             .map_err(|failure| failure.error)
     }
+    /// Prepare bounded evidence storage on control and copy native packets
+    /// before lease release. This is an observation tap, not a graph input.
+    pub fn attach_with_evidence(
+        self,
+        input: PreparedInputQueue,
+        mut config: PcmEvidenceConfig,
+    ) -> Result<(PreparedCapture, PcmEvidenceReader), CaptureError> {
+        config.detect_position_gaps &=
+            client_position_clock(self.info.timing, self.info.shared_period);
+        let (writer, reader) =
+            pcm_evidence_stream(config, self.info.timing.sample_rate, self.info.channels)?;
+        // Both sides retain the prepared writer until attachment is resolved.
+        // A failed/closed handoff cannot free its last allocation on the owner.
+        let handoff = Arc::new(Mutex::new(Some(writer)));
+        let capture = self
+            .attach_with_handoff(input, crate::NATIVE_SAMPLE_RATE, Some(handoff.clone()))
+            .map_err(|failure| failure.error)?;
+        Ok((capture, reader))
+    }
     pub(crate) fn cancel_with_report(self) -> Result<CaptureReport, CaptureError> {
         let _ = self.session.request_stop();
         self.session.join()
@@ -50,6 +74,14 @@ impl PreparedNativeCapture {
         self,
         input: PreparedInputQueue,
         engine_rate: u32,
+    ) -> Result<PreparedCapture, Box<CaptureAttachFailure>> {
+        self.attach_with_handoff(input, engine_rate, None)
+    }
+    fn attach_with_handoff(
+        self,
+        input: PreparedInputQueue,
+        engine_rate: u32,
+        evidence: Option<EvidenceHandoff>,
     ) -> Result<PreparedCapture, Box<CaptureAttachFailure>> {
         let attachment = (|| {
             let mut config = ClockBridgeConfig::with_engine_input(
@@ -62,7 +94,10 @@ impl PreparedNativeCapture {
                 client_position_clock(self.info.timing, self.info.shared_period);
             let (ingress, source, observer) =
                 capture_bridge_with_clock(config, self.info.age_clock)?;
-            api("Send capture bridge", self.bridge.send((ingress, input)))?;
+            api(
+                "Send capture bridge",
+                self.bridge.send((ingress, input, evidence)),
+            )?;
             self.attached
                 .recv()
                 .map_err(|_| CaptureError::StartupLost)??;
@@ -104,7 +139,7 @@ pub(super) enum CapturePreparation {
     },
     Deferred {
         ready: mpsc::SyncSender<Result<NativeCaptureInfo, CaptureError>>,
-        bridge: preparation::Receiver<(CaptureIngress, PreparedInputQueue)>,
+        bridge: preparation::Receiver<CaptureAttachment>,
         attached: mpsc::SyncSender<Result<(), CaptureError>>,
     },
 }
@@ -156,8 +191,15 @@ impl CapturePreparation {
                         age_clock,
                     }))
                     .map_err(|_| CaptureError::StartupLost)?;
-                let (ingress, input) = api("Wait for capture bridge", bridge.receive(stop))?
-                    .ok_or(CaptureError::Cancelled)?;
+                let (ingress, input, evidence) =
+                    api("Wait for capture bridge", bridge.receive(stop))?
+                        .ok_or(CaptureError::Cancelled)?;
+                if let Some(evidence) = evidence {
+                    report.evidence_recorder = evidence
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .take();
+                }
                 report.input_queue = Some(input);
                 attached
                     .send(Ok(()))
@@ -173,6 +215,14 @@ impl CapturePreparation {
         mut report: CaptureReport,
     ) -> CaptureReport {
         let _ = unsafe { SetEvent(handle(stop)) };
+        if let Self::Deferred { bridge, .. } = self
+            && let Some((_, _, Some(evidence))) = bridge.close_and_take()
+        {
+            report.evidence_recorder = evidence
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take();
+        }
         match result {
             Ok(status) => report.status = status,
             Err(error) => {

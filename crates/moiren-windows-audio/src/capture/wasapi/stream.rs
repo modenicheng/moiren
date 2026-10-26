@@ -160,6 +160,7 @@ pub(super) fn run_prepared(
                     capacity,
                     &mut ingress,
                     report.artifact_recorder.as_mut(),
+                    report.evidence_recorder.as_mut(),
                 )?;
                 if transfer.native_frames == 0 {
                     break;

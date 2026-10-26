@@ -21,6 +21,7 @@ pub(super) fn transfer_packet(
     capacity: u32,
     ingress: &mut CaptureIngress,
     mut artifact: Option<&mut PcmRecorder>,
+    evidence: Option<&mut crate::capture::PcmEvidenceWriter>,
 ) -> Result<CaptureTransfer, CaptureError> {
     let (mut data, mut frames, mut flags, mut position, mut qpc) =
         (std::ptr::null_mut(), 0, 0, 0, 0);
@@ -49,6 +50,17 @@ pub(super) fn transfer_packet(
             .map_err(|_| CaptureError::InvalidPacket)?;
     if let Some(artifact) = artifact.as_mut() {
         artifact.record_packet(bytes, frames, flags, position)?;
+    }
+    if let Some(evidence) = evidence {
+        evidence.record_packet(
+            bytes,
+            crate::capture::PcmEvidencePacket {
+                frames,
+                flags,
+                device_position_frames: position,
+                qpc_100ns: qpc,
+            },
+        )?;
     }
     let accepted_frames = ingress.push_packet(
         bytes,

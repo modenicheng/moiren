@@ -561,6 +561,8 @@ pub(super) mod diagnostic_tests {
     struct EventAllocator;
     thread_local! {
         static TRACK_EVENTS: Cell<bool> = const { Cell::new(false) };
+        static TRACK_ALL: Cell<bool> = const { Cell::new(false) };
+        static ALL_COUNTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
     }
     static EVENT_POINTER: AtomicUsize = AtomicUsize::new(0);
     static WORKER_FREES: AtomicUsize = AtomicUsize::new(0);
@@ -570,6 +572,12 @@ pub(super) mod diagnostic_tests {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             // SAFETY: Forward the caller's allocation contract unchanged.
             let pointer = unsafe { System.alloc(layout) };
+            if TRACK_ALL.try_with(Cell::get).unwrap_or(false) {
+                let _ = ALL_COUNTS.try_with(|counts| {
+                    let (allocated, freed) = counts.get();
+                    counts.set((allocated + 1, freed));
+                });
+            }
             if layout.size() == size_of::<RenderEvent>() * RENDER_EVENT_CAPACITY
                 && TRACK_EVENTS.try_with(Cell::get).unwrap_or(false)
             {
@@ -583,6 +591,12 @@ pub(super) mod diagnostic_tests {
             pointer
         }
         unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            if TRACK_ALL.try_with(Cell::get).unwrap_or(false) {
+                let _ = ALL_COUNTS.try_with(|counts| {
+                    let (allocated, freed) = counts.get();
+                    counts.set((allocated, freed + 1));
+                });
+            }
             if pointer as usize == EVENT_POINTER.load(Ordering::SeqCst) {
                 if TRACK_EVENTS.try_with(Cell::get).unwrap_or(false) {
                     WORKER_FREES.fetch_add(1, Ordering::SeqCst);
@@ -596,6 +610,16 @@ pub(super) mod diagnostic_tests {
     }
     #[global_allocator]
     static ALLOCATOR: EventAllocator = EventAllocator;
+
+    // Reuse the unit-test binary's single allocator for capture lease and
+    // owner-close checks; integration binaries retain their own common guard.
+    pub(crate) fn count_test_allocations<T>(operation: impl FnOnce() -> T) -> (T, (usize, usize)) {
+        ALL_COUNTS.with(|counts| counts.set((0, 0)));
+        TRACK_ALL.with(|track| track.set(true));
+        let result = operation();
+        TRACK_ALL.with(|track| track.set(false));
+        (result, ALL_COUNTS.with(Cell::get))
+    }
 
     pub(crate) fn track_events() {
         EVENT_POINTER.store(0, Ordering::SeqCst);

@@ -126,6 +126,15 @@ fn native_delivery_is_visible_before_join_and_age_clock_works_with_trace_disable
         let worker_gate = gate.clone();
         let (reached, observed) = mpsc::sync_channel(1);
         let (resume, continue_worker) = mpsc::sync_channel(1);
+        let (tap, mut evidence) = crate::capture::pcm_evidence_stream(
+            crate::capture::PcmEvidenceConfig {
+                capacity_frames: 32,
+                detect_position_gaps: source_kind == CaptureSource::Physical,
+            },
+            48_000,
+            2,
+        )
+        .unwrap();
         let prepared = super::super::start_owner(stop, move |stop, sender, started| {
             let audio = crate::owner::OwnedHandle::event().unwrap();
             let capture: IAudioCaptureClient = Packets {
@@ -147,6 +156,7 @@ fn native_delivery_is_visible_before_join_and_age_clock_works_with_trace_disable
             }
             .into();
             let mut report = CaptureReport::new(source_kind, SessionDuration::UntilStopped);
+            report.evidence_recorder = Some(tap);
             let result = run(
                 StreamInput {
                     client: &client,
@@ -184,8 +194,23 @@ fn native_delivery_is_visible_before_join_and_age_clock_works_with_trace_disable
         source.read_interleaved(&mut [0.0; 2]).unwrap();
         let age = serde_json::to_value(prepared.observer.snapshot()).unwrap();
         let running = !prepared.session.is_finished();
+        let evidence_first = evidence.pop();
         resume.send(()).unwrap();
         let report = prepared.session.join().unwrap();
+        let first = evidence_first.expect("native leased PCM must be visible before join");
+        assert_eq!(first.samples, [0.0; 2]);
+        assert_eq!(first.packet_sequence, 1);
+        assert_eq!(first.packet_frames, 8);
+        assert_eq!(first.device_position_frames, 0);
+        assert_eq!(first.flags, SILENT);
+        assert!(first.qpc_100ns > 0);
+        let mut retained_frames = 1;
+        while evidence.pop().is_some() {
+            retained_frames += 1;
+        }
+        assert_eq!(retained_frames, 16);
+        assert!(evidence.is_finished());
+        assert_eq!(report.evidence_metadata.unwrap().stored_frames, 16);
         assert!(before["native_delivery"].is_null());
         assert!(running);
         assert_eq!(live["native_delivery"]["packets"], 2);
