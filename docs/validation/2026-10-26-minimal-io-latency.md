@@ -5,7 +5,7 @@
 - Date: 2026-10-26.
 - Branch: `feat/minimal-io-latency`.
 - Source base: `ec66e85117fbf668c2def334bdb33028afd454e9`.
-- Current implementation commit: `df3f76c`.
+- Current implementation commit: `e19b834`; latest target probe: `d1df8fa`.
 - Worktree: `D:\coding\moiren\.worktrees\minimal-io-latency`.
 - Reference graph: Input -> Bus -> Output, 48 kHz.
 - Target: measured steady p95 <= 10 ms with stable continuous waveform.
@@ -61,7 +61,9 @@ Missing hardware/calibration is a missing gate and must not be reported as pass.
   reached over SSH as `wdkremoteuser@192.168.111.128` using the dedicated
   `moiren-test` key. AC/DC sleep timeouts are zero and hibernation is disabled.
   The target currently reports `ROOT\MEDIA\0000`, `oem30.inf`, driver version
-  `0.36.20.788`. No target driver package file hash was captured in this run.
+  `0.36.20.788`. The initial matrix did not capture package hashes. The
+  2026-10-27 follow-up matched `oem30.inf` to the service's exact DriverStore
+  package and recorded all three installed file hashes below.
 - No calibrated physical recording arrangement has been established.
 
 ## Current target-machine evidence
@@ -166,6 +168,84 @@ physical latency:
 SSH recovered and the target cleanup was verified on 2026-10-27, as recorded
 above. The `df3f76c` production rerun remains unqualified because of its seven
 boundary xruns and missing calibrated physical evidence.
+
+### Startup xrun investigation on 2026-10-27
+
+Probe commit `d1df8fa` adds up to 256 startup samples, collected at 10 ms
+control-side intervals. Storage is bounded independently of run duration.
+The existing native render trace also retains only its first 256 callbacks.
+Neither trace resets, subtracts, or replaces the full-run quality counters.
+The target executable SHA-256 was
+`841E741DD9646447D012065C9068EA6D334F85F658A037784820D7FBBB5AE0F8`.
+
+Two ten-second production runs used Compatible input and full-capacity render
+settings on the same target output:
+
+| Run | Provider completions | Boundary xruns | Provider drops / stale / silence / resets / recovery |
+| --- | --- | --- | --- |
+| `live-vad-d1df8fa-startup-10s` | 998 | 11 | All zero |
+| `live-vad-d1df8fa-trace-10s` | 998 | 7 | All zero |
+
+Both are failed quality diagnostics, not qualification passes. The code path
+that waits for initial carrier prime returns before updating this probe's xrun
+counter. The nonzero probe xruns therefore represent actual carrier shortage;
+they are not the earlier initial-admission recovery-counting bug.
+
+In the trace-mode run, the first observed xrun appeared by 0.405 seconds and
+the seventh by 1.125 seconds. The count remained seven in the final runtime
+snapshot. Each traced native render wake demanded 480 frames, but the first
+20 wake intervals elapsed in only 0.1750872 seconds. Across 240 intervals,
+the device demanded 115,200 frames in 2.2306278 seconds; a nominal 48 kHz clock
+would advance 107,070.1344 frames in that interval. This comparison excludes
+the first callback's demand, so it does not count the starting buffer as
+clock drift. The excess was about 8,130 frames, far outside a 2,000 ppm drift
+correction budget.
+
+The pinned output is the guest's `High Definition Audio Device`, hardware
+identity `HDAUDIO\FUNC_01&VEN_15AD&DEV_1975`. The evidence points to a transient
+rate mismatch between this VMware output and the VAD packet clock during
+startup. It does not prove behavior on a physical DAC. Keep these quality
+failures visible; do not enlarge buffers silently or reinterpret internal
+timestamps as calibrated physical latency.
+
+Reports, manifests, binary hashes, startup samples, and cleanup receipts were
+copied to the host and verified before guest deletion:
+
+- `target/vad-target-archive/20261027-live-vad-d1df8fa/`
+- `target/vad-target-archive/20261027-live-vad-d1df8fa-trace/`
+
+The second archive also contains `render-pacing-analysis.json`,
+`hardware-and-driver-inventory.json`, and `installed-package-hashes.json`.
+The installed `oem30.inf` hash matched
+`moirenvad.inf_amd64_83f7fb4733f00562`, which is also the running service's
+image directory:
+
+| Installed file | SHA-256 |
+| --- | --- |
+| `moirenvad.inf` | `B3F2C04552C76DF5689D5131FAA17A2D33078A29001EB90B2A1A5344E88CA58D` |
+| `MoirenVad.sys` | `0E8AB77CD06D81E14EF2227E817CD3146327B9436FF36B7819B2449E4F1CA04B` |
+| `MoirenVad.cat` | `917F32ADC36CB9B7D398B8581020B2A15A6804623F90759F39E8381B7E685EAE` |
+
+After both runs, the guest retained only `e2e_latency_probe-d1df8fa.exe`
+(3,269,120 bytes), had 30.10 GiB free, and had no active test process or present
+dynamic VAD child. No driver package, device default, or buffer policy was
+changed by this investigation.
+
+### Product observation presentation
+
+Commit `e19b834` retains native virtual-boundary prepared capacity and optional
+content target in the service's existing native snapshot. Diagnostics now shows
+those values alongside post-transfer occupancy, signed correction ppm, and
+cumulative boundary xrun/soft-event counts, with explicit frame units and
+scope. Stream association uses both node and kind; stopped/stale snapshots
+are hidden, and an absent target remains unknown.
+
+Focused RED/GREEN regressions cover the real native snapshot and UI text
+projection. Final affected library tests passed: 450 Windows-audio tests and
+291 app tests, with four existing opt-in checks ignored. Strict library/test
+Clippy and touched-file formatting passed. This closes one presentation
+omission; provider packet/drop/silence telemetry, live queue age/padding,
+endpoint refusal reasons, and the full Task 7 acceptance cases remain open.
 
 ## Software changes and focused evidence
 

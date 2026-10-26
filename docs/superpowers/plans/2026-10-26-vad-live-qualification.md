@@ -363,6 +363,14 @@ same effective configuration recorded in manifest and report
   observations, queue fill/age, render padding, recovery/drop/silence counts,
   and the refusal/fallback reason. Show physical end-to-end latency as
   `unknown` until calibrated evidence exists.
+- [x] Preserve and present existing virtual-boundary prepared capacity/target,
+  live occupancy/correction, and cumulative xrun/soft-event counters without
+  turning them into a physical-latency estimate (`e19b834`; seven RED/GREEN
+  regressions, affected library tests and strict Clippy passed).
+- [ ] Preserve and present provider packet timing, drop/silence/recovery
+  telemetry and endpoint-specific errors through the app service.
+- [ ] Publish live oldest-frame age and native render padding with explicit
+  unknown values when unavailable; complete the remaining UI acceptance cases.
 - [ ] Run two independent two-hour repetitions of the proposed default under
   the same controlled-load profile. Keep failed artifacts and diagnostics.
 - [ ] Promote a low-latency default only if both repetitions pass. Otherwise
