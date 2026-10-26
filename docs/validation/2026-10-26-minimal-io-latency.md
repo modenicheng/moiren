@@ -5,7 +5,7 @@
 - Date: 2026-10-26.
 - Branch: `feat/minimal-io-latency`.
 - Source base: `ec66e85117fbf668c2def334bdb33028afd454e9`.
-- Current implementation commit: `805e4e1`.
+- Current implementation commit: `fb71888`.
 - Worktree: `D:\coding\moiren\.worktrees\minimal-io-latency`.
 - Reference graph: Input -> Bus -> Output, 48 kHz.
 - Target: measured steady p95 <= 10 ms with stable continuous waveform.
@@ -86,6 +86,29 @@ current probe executable to conserve its 64 GB disk.
 - The target has not yet run the current branch's production `live-vad`
   `VirtualPlayback -> Engine -> Bus -> physical Output` path, a held-client
   rename through the app, or a calibrated physical marker measurement.
+
+### Production `live-vad` startup diagnostics
+
+The current release probe was pushed and exercised on the same target in three
+small steps. These runs are startup diagnostics only and do not qualify PCM or
+physical latency:
+
+- `2b4a3b5` first retained the final `HostSnapshot` and backend native report.
+  The target showed `Blocked` with `native outputs require exactly one explicit
+  physical master clock`. The VAD project builder had left its physical output
+  as the default follower.
+- `6182064` set the VAD physical output to `ClockRole::Master` and added a
+  regression test. The target then passed that preparation boundary and Engine
+  reached its startup condition; the next failure was native source startup:
+  `expected one VAD playback MMDevice ... found 0`.
+- `fb71888` makes native playback wait and retry MMDevice publication for the
+  same bounded 15-second startup window used by the native VAD probes, while
+  preserving the last enumeration error. It was pushed but could not be
+  rerun because SSH to `192.168.111.128` began resetting during key exchange.
+
+The target's driver/control state and any endpoint left by the last failed
+`live-vad` attempt must be inspected after SSH recovers. Until that cleanup and
+rerun complete, production VAD activation remains unqualified.
 
 ## Software changes and focused evidence
 
