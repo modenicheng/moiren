@@ -82,6 +82,35 @@ exists. These limitations do not prevent the following software work.
   full feature-enabled app tests pass 489/4 ignored across 20 suites. Physical
   import/qualified states and native rename acceptance remain outstanding.
 
+### Latest target diagnosis, 2026-10-27
+
+`3289ded` corrects erased playback preroll by priming after gate admission.
+Its one-second timer/event playback regressions have zero observed silence;
+the five-second timer repeat still fails with a changed gate epoch.
+`78ce2a1` / `1d30d78` add fixed, correlated user/kernel completion evidence
+without changing freshness, buffering or RT logging. Independent review,
+production-extracted diagnostic regressions, all seven driver host suites,
+analyzed WDK/INF checks, full Windows-audio tests and the remaining workspace
+tests pass. `10a33ae` adds an explicitly labeled microphone-only diagnostic
+subset so early Playback failures do not prevent the independent investigation.
+
+The matching signed kernel package is installed as `oem32.inf`; short target
+tests remain failed/unqualified. The one-second microphone subset completes
+but has three dropped writes and 3,840 silent frames total. Correlated kernel
+records show actual ages 11.2613 / 10.6646 / 10.0750 ms against the unchanged
+10 ms period, including two native first packets. A five-second microphone
+subset later changes epoch and exits 1. First-write phase, missing queue
+intervals and native callback rebase need further diagnosis; do not infer all
+silence or historical failures from these three drops.
+
+All failed/successful short-run payloads, ETL, manifests and signed-package
+evidence are verified and retained on the host; trace files were capped at
+1 MiB per session. The VM is cleaned to one current 400,896-byte probe with
+30.103 GiB free, no live dynamic children or test processes. See the validation
+report's bounded freshness section for source pins, exact records and hashes.
+No stable candidate, physical calibration, rename acceptance, 30-minute or
+two-hour gate is checked off by these diagnostic results.
+
 ### 2026-10-27 short target matrix and retention
 
 The host-built native probe at source pin `f6f2718` produced all eight timer

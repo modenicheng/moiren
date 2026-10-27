@@ -5,8 +5,9 @@
 - Date: 2026-10-26.
 - Branch: `feat/minimal-io-latency`.
 - Source base: `ec66e85117fbf668c2def334bdb33028afd454e9`.
-- Latest native target source: `3289ded`, including driver pre-Run admission
-  `25951de`. The matching test-signed package is installed as `oem31.inf`;
+- Latest native target source: `10a33ae`, including driver diagnostics
+  `1d30d78` and pre-Run admission `25951de`. The matching test-signed
+  package is installed as `oem32.inf`;
   bounded event/timer retests still fail the zero-quality gate. Earlier
   implementation, review and service/UI checkpoints are tracked below.
 - Worktree: `D:\coding\moiren\.worktrees\minimal-io-latency`.
@@ -1196,3 +1197,132 @@ reparse points were rejected. At `2026-10-27T10:50:05+08:00` the guest again
 holds only the current 392,704-byte probe, has no active test processes or
 present dynamic children, and has 30.106 GiB free. Temporary runner and obsolete
 probe are deleted. The driver installation and system/rollback packages remain.
+
+### 2026-10-27 bounded freshness diagnostics and correlated microphone evidence
+
+`78ce2a1` retains the first collected capture completion and the first
+CaptureDropped completion in each case, on both successful and failed paths.
+Each fixed record names the actual completion variant, one-based collection
+ordinal, original WRITE sequence/QPC and collection QPC. Ordinal overflow and
+unavailable collection timing remain explicit; collection order is not a native
+packet index and the original WRITE QPC is not driver consumption time.
+
+`1d30d78` retains a fixed, at-most-256-byte diagnostic per endpoint, reset on
+reservation/new stream generation. It latches the first Run identity, first
+admitted capture transfer and first freshness rejection. The original
+one-actual-period predicate, branch order, status, copies, silence policy and
+epoch fencing remain unchanged. The return of the already existing QPC call
+is retained as check time; it does not replace callback QPC in the predicate.
+Only passive QUERY/gate-close paths emit WPP records after releasing locks.
+No audio callback formats logs or allocates memory, and no ABI change was made.
+
+Independent review found two diagnostic-only defects before deployment:
+exhausting all four stale requests could omit the first packet, and using
+current snapshot frames could relabel a historical observation after a shape
+change. Both now have demonstrated RED/GREEN regressions compiling the actual
+`VadPcmTransferLocked` body against host DDI stubs. A NoCurrentRequest outcome
+covers budget exhaustion; actual frames are retained with each observation.
+Re-review passes. All seven driver suites and the final analyzed WDK build
+pass with zero warnings/errors and valid INF. The first intermediate build
+failed because the new header imported user-mode stdint into the kernel;
+using the existing ABI header's fixed-width types corrected it before the
+successful final build.
+
+All 36 completion-diagnostic example tests pass, including three new RED/GREEN
+regressions; strict example/test Clippy and formatting pass. The full
+Windows-audio crate test run passes. The remaining workspace test run
+(`--workspace --exclude moiren-windows-audio`) passes 927 tests / 3 ignored
+across 42 result suites, with no warnings/errors. These are host software tests.
+
+The package was test-signed with the existing trusted certificate. Guest
+SignTool verification of both SYS and INF as signed CAT members passes;
+`pnputil` installed `oem32.inf` version `11.8.4.985`, then the exact
+`ROOT\MEDIA\0000` root was restarted without active test clients. The service is
+Running from
+`C:\Windows\System32\DriverStore\FileRepository\moirenvad.inf_amd64_d385926bf68350e6\MoirenVad.sys`.
+Installed lengths/hashes match the host signed package:
+
+| File | Length | SHA-256 |
+| --- | ---: | --- |
+| `MoirenVad.sys` | 107,928 | `B2033C162ACA9587EB3F1D4034CAE288392485325FF80C80EFAD9A38D249DECB` |
+| `MoirenVad.inf` | 1,803 | `28D9E0BEF0452E19D62941D062E777C95D522A5D443FC7DCB024388C42395579` |
+| `moirenvad.cat` | 2,474 | `3A063731F5B9801E7E366A61E381C4FA7C729A00F4A6D7966A0726F2371AE893` |
+
+Probe source `1d30d78` is 400,384 bytes, SHA-256
+`B0B230970275B5B5B715AA71FE94ABA601B679F58CBB823237F8EB6EA57E7E4F`.
+Its five-second full event matrix fails in Playback mono Float32 with epoch
+4 -> 5 after 4,320 matching frames; its one-second repeat fails in Playback
+mono PCM16 with epoch 5 -> 6 after 10,560 matching frames. Both exit 1 without
+timeout, report zero observed silent frames/discontinuities in the failing
+phase, and never reach microphone exercise. Their bounded ETL files are not
+microphone evidence.
+
+`10a33ae` therefore adds explicit `--intent=playback|microphone` diagnostic
+selection. Default still executes all eight cases. A selected report names
+`intent_filter` and contains only that direction's four cases; all four owned
+endpoints are still mapped, default-checked and cleaned up. The parser test
+first failed on the unsupported flag, then all 37 example tests, strict
+example/test Clippy, formatting and host release build passed. Independent
+spec/quality review passes. This subset cannot qualify the full native matrix.
+The new probe is 400,896 bytes, SHA-256
+`12C812E13E40A032432AA40E80411926B4C60A9CDA4AE29CDCBCD7B856DBBFA5`;
+the running kernel package remains pinned to `1d30d78`.
+
+With that probe, the five-second microphone subset fails in stereo PCM16
+after 162,720 matching / 480 silent frames, zero collected dropped writes and
+zero native discontinuities. Pre-cleanup QUERY reports epoch 1 -> 2 while the
+same stream remains Running/gate open. The earlier mono cases have kernel
+TooOld records at ages 11.6481 ms and 10.1933 ms; the matrix error does not
+retain earlier successful CaseReports in stdout, so their user completion
+identities are unavailable. No complete-subset claim follows from this run.
+
+The one-second microphone repeat completes all four selected cases and exits 0
+without timeout, with six unchanged default-device IDs:
+
+| Channels / format | Signal frames | Silent frames | Dropped writes | Native discontinuities |
+| --- | ---: | ---: | ---: | ---: |
+| mono / PCM16 | 46,080 | 1,920 | 1 | 0 |
+| mono / Float32 | 46,080 | 1,440 | 1 | 0 |
+| stereo / PCM16 | 47,520 | 0 | 0 | 0 |
+| stereo / Float32 | 47,040 | 480 | 1 | 0 |
+
+The successful JSON now correlates the actual first dropped completion with
+the kernel rejection by sequence and original QPC. Each has period=100,000
+ticks (10 ms) and frames=480; all three hit TooOld, not NewerThanCallback:
+
+| Case | Collection ordinal / WRITE sequence | Native packet | Header QPC | Callback QPC | Check QPC | Age |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| mono PCM16 | 70 / 70 | 71 | 435459859959 | 435459972572 | 435459972641 | 11.2613 ms |
+| mono Float32 | 1 / 98 | 0 | 435465902784 | 435466009430 | 435466009517 | 10.6646 ms |
+| stereo Float32 | 1 / 296 | 0 | 435492358878 | 435492459628 | 435492459703 | 10.0750 ms |
+
+This proves startup freshness rejection in two cases and a later rejection in
+another case in this run. It does not identify every empty packet or explain
+all observed silent frames, nor prove that every historical drop has the same
+cause. First-submit phase, queue admission/empty intervals and callback stall
+timing still need causal investigation. No freshness tolerance, buffering,
+quality threshold or epoch recovery was changed to obtain an exit of 0.
+
+Each trace session uses a 1 MiB circular disk cap. The OS selected eight
+64 KiB trace buffers despite the requested smaller minimum, still a fixed
+512 KiB allocation. Both microphone traces decode with zero EventsLost,
+format errors or unknown events; every wrapper reports trace stop code 0.
+The complete microphone subset is a quality failure, not physical evidence
+or a stable native candidate.
+
+Host archives retain package/manifest/TMF/install/cleanup evidence under
+`target/vad-target-archive/20261027-driver-1d30d78` and all four new runs:
+
+- `20261027-native-1d30d78-event5`: 73,030 payload+manifest bytes.
+- `20261027-native-1d30d78-event1`: 72,920 bytes.
+- `20261027-native-10a33ae-mic-event5`: 138,922 bytes.
+- `20261027-native-10a33ae-mic-event1`: 208,210 bytes.
+
+All payload lengths/hashes were verified on the host and rechecked on the
+guest before deleting each run. Installation staging, superseded probes,
+copied manifests, signature/trace tools and temporary scripts were removed
+only from validated, non-reparse paths below `C:\MoirenVadTest`. At
+`2026-10-27T11:27:22+08:00`, that directory contains only
+`vad_native-10a33ae.exe` (400,896 bytes), with no active test processes or
+present dynamic children and 30.103 GiB free. Installed SYS was rechecked
+against the recorded signed hash. System and rollback packages remain.
