@@ -192,3 +192,12 @@ Stage 7.
   Nothing was deleted because there were no obsolete owned artifacts. No VM
   write, build, driver install, or audio run occurred. Builds/caches stay
   host-side.
+- A separate pinned-key driver identity inventory at 03:35:39 +08:00 confirms
+  the active guest package matches signed source `2121277` (SYS SHA-256
+  `F517517781C8A41D47AAC259665CB39EF22BE127261EA66C54B2FC0D2BD0A376`).
+  The prior `c636105` app rename probe already used this same driver but failed
+  exact Windows-name/strict-held gates and did not start native clients because
+  optional topology `GetDevice(error attribution)` returned raw
+  `0xE0000225`. No app rename-reader code changed afterward, so repeating the
+  unchanged probe is not useful. Fix/read-test that host identity lookup before
+  the next bounded VM rename check; keep strict acceptance gates unchanged.

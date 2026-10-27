@@ -3091,3 +3091,46 @@ This inventory and the software matrix do not close the native diagnosis or
 any physical latency/stability gate. The next native action remains the
 reviewed, explicitly authorized, bounded pre-activation shared-render
 comparison described above; do not rerun the full Process collection.
+
+### 2026-10-28 current VM driver and rename preflight
+
+A second pinned-key, read-only VM inspection at
+`2026-10-28T03:35:39+08:00` confirms the guest is running the driver package
+from source commit `21212775f11e1ae87229d5c6aadaeb3db9444abd`: `oem35.inf`,
+version `13.30.29.665`, service `MoirenVad` Running, SYS SHA-256
+`F517517781C8A41D47AAC259665CB39EF22BE127261EA66C54B2FC0D2BD0A376`, INF
+SHA-256 `932FB610FE359ECA2B6F0DAEFBF685EE3F535B9D6BEA4D3626F4797350290B33`,
+CAT SHA-256 `E78274039CBD06B8B49AEBC4F27E8FEFCA7FDB4DB1306152911F451186C8EC8D`.
+These match the retained signed package manifest for `2121277`; no driver
+install, replacement or guest write was performed. Receipt:
+`target/vad-target-archive/20261028-stage7-final-inventory/installed-driver.json`.
+
+The most recent real two-direction rename diagnostic is the archived
+`c636105` run, which used this same installed driver package. It proves the
+requested name reaches CREATE and is visible on the resolved connected part;
+it does **not** pass end-user rename. The Windows endpoint FriendlyName stayed
+based on the seed/old name, exact-name acceptance failed, and the strict-held
+observation gate failed. The diagnostic also records
+`GetDevice(error attribution)` HRESULT `0xE0000225` while resolving the
+topology identity needed for the optional endpoint-name observation; the run
+started zero probe native clients, captured no verified PCM and is
+unqualified. Keep the numeric HRESULT undecoded. The guest artifacts were
+copied/hash-verified and removed under the bounded test-root procedure; the
+current test root is empty. Since `c636105`, no app rename or endpoint-name
+reader code has changed. Repeating that binary on the same driver would not
+test a new change. Next: fix the host-side MMDevice/topology identity lookup
+with focused failure-first tests, preserve strict-held and exact-name gates,
+then build on the host, review/commit/push, and rerun the bounded two-direction
+probe on this VM. Do not reinstall the already matching driver unless a new
+driver source change is required.
+
+The VAD production path and Process Loopback must remain separate in the
+diagnosis. VAD has previously reached the Engine/Bus and physical-render path
+with nonzero output, but retained boundary xruns and is unqualified. The
+accepted Process collector's only native HOST attempt stopped before
+activation at shared-render initialization with raw HRESULT `0x8889000A`; it
+produced no recorder PCM or latency. A reviewed, explicitly authorized,
+bounded routing-vs-Process shared-render comparison is the next Process
+diagnostic, not another full collection. Neither path currently has a
+same-condition latency result, so there is no evidence that VAD or Process is
+faster.

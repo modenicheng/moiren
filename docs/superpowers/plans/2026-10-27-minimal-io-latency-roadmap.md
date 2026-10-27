@@ -58,6 +58,16 @@ reference.
   or seed name for Playback and Microphone. User-visible rename is therefore
   not complete. Trace the registered KS bridge pin/interface and the exact
   EndpointBuilder input before changing driver properties.
+- The 2026-10-28 `c636105` dual-machine rename diagnostic used the same
+  `2121277` signed driver package currently installed on `DRIVER-TEST`. CREATE
+  and the connected part observed the requested name, but Windows endpoint
+  FriendlyName and strict-held acceptance still failed. Optional topology
+  identity resolution also returned raw HRESULT `0xE0000225`; no probe native
+  client or PCM capture started. The reader failure is not a rename pass or a
+  decoded driver error. No rename/reader code changed after that run, so do not
+  repeat it unchanged. First repair endpoint identity lookup with regression
+  tests, then host-build/review/push and repeat the bounded VM check. The
+  current test root is empty; keep the installed matching package in place.
 - The production VAD path reaches
   `VAD MMDevice -> native PCM -> VirtualPlayback -> Engine -> Bus -> physical
   render`, but is not stable/qualified. Short tests have retained boundary
@@ -285,17 +295,21 @@ independent accepted two-hour repetitions.
 
 ## Immediate Next Slice
 
-1. Trace the Windows endpoint FriendlyName source consumed by EndpointBuilder;
+1. Fix the rename probe's optional MMDevice/topology identity lookup, beginning
+   with a failure-first regression for `GetDevice(error attribution)` and raw
+   HRESULT `0xE0000225`; do not weaken the strict-held or exact FriendlyName
+   gates.
+2. Trace the Windows endpoint FriendlyName source consumed by EndpointBuilder;
    do not add speculative property setters.
-2. Correlate the first VAD native drop with WPP clock-rebase and gate/epoch
+3. Correlate the first VAD native drop with WPP clock-rebase and gate/epoch
    evidence, while independently tracking playback, microphone and render
    failures.
-3. Reproduce and characterize the VM output/capture clock anomalies without
+4. Reproduce and characterize the VM output/capture clock anomalies without
    treating them as physical latency.
-4. Re-run bounded short quality gates only after the relevant cause is
+5. Re-run bounded short quality gates only after the relevant cause is
    understood and corrected; archive/verify/delete guest files after every
    run.
-5. Start matched path and target sweeps only after both input paths pass the
+6. Start matched path and target sweeps only after both input paths pass the
    short stability gate and a calibrated physical measurement chain exists.
 
 ## Status Ledger
