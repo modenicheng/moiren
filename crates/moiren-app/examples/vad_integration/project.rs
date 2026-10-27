@@ -134,7 +134,11 @@ mod tests {
         assert_eq!(gain_document.gain, 0.5);
         let restored = document.restore_graph().unwrap();
         let engine = restored
-            .configured_engine_project(256, &AudioSettings::default())
+            .configured_engine_project(
+                256,
+                &AudioSettings::default(),
+                moiren_app::service::AudioLatencyProfile::default(),
+            )
             .unwrap();
         let mut source = None;
         let mut gain = None;

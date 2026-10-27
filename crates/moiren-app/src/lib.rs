@@ -9,7 +9,7 @@ pub mod i18n;
 pub mod logging;
 pub mod project;
 pub mod service;
-#[cfg(any(test, feature = "gpui-test"))]
+#[cfg(test)]
 mod timeline;
 pub mod ui;
 

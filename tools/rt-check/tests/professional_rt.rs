@@ -12,7 +12,6 @@ use moiren_engine::{
     runtime::EngineConfig,
     sample::ProcessingSample,
 };
-#[cfg(windows)]
 use moiren_windows_audio::clock_bridge;
 use moiren_windows_audio::latency;
 #[cfg(windows)]

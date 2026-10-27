@@ -424,7 +424,7 @@ impl LiveSession<'_> {
             (playback, microphone)
         };
         #[cfg(windows)]
-        let mut trail = ProbeTrail {
+        let trail = ProbeTrail {
             elapsed_ms: now_ms,
             playback_dropped_frames: playback.map(|stream| stream.dropped_frames),
             microphone_silent_frames: microphone.map(|stream| stream.silent_frames),
@@ -432,7 +432,7 @@ impl LiveSession<'_> {
             microphone_native_callbacks: microphone.map(|stream| stream.native_callbacks),
         };
         #[cfg(not(windows))]
-        let mut trail = ProbeTrail {
+        let trail = ProbeTrail {
             elapsed_ms: now_ms,
             playback_dropped_frames: None,
             microphone_silent_frames: None,
