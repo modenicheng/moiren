@@ -656,8 +656,10 @@ fn run_playback(
                     thread::sleep(POLL_INTERVAL);
                     continue;
                 }
-                if current.stream_state() == StreamState::Running
-                    && current.gate_open()
+                if matches!(
+                    current.stream_state(),
+                    StreamState::Paused | StreamState::Running
+                ) && current.gate_open()
                     && state.admitted()
                 {
                     if owner.is_none() {

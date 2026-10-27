@@ -403,6 +403,31 @@ fn exercise_case_inner(
         // running interval to sample as a before/after diagnostic.
         let before: Option<Observation> = None;
 
+        // Queue playback reads while the native stream is still Paused. Timer
+        // clients may consume the first packet immediately after Start; a
+        // post-Start owner would leave that packet with no PCM request and
+        // turn the startup window into measured silence.
+        let mut pcm = match control.pcm_owner(opened) {
+            Ok(pcm) => pcm,
+            Err(error) => {
+                return validation::revoke_and_drain(
+                    Err(error.into()),
+                    || revoke(control, opened),
+                    || Ok(()),
+                );
+            }
+        };
+        let shape = pcm.shape();
+        counters.admitted_pcm_shape = Some(shape.snapshot().into());
+        counters.driver_packet_frames = shape.frames();
+        counters.stream_generation = opened.stream_generation();
+        let mut pending = VecDeque::with_capacity(4);
+        if endpoint.intent() == Intent::Playback {
+            while pending.len() < 4 {
+                pending.push_back(pcm.submit_read()?);
+            }
+        }
+
         native.start()?;
         let mut snapshot = opened;
         let deadline = Instant::now() + CONTROL_DEADLINE;
@@ -429,18 +454,7 @@ fn exercise_case_inner(
             std::thread::sleep(Duration::from_millis(1));
         }
         let running = snapshot;
-        let mut pcm = match control.pcm_owner(running) {
-            Ok(pcm) => pcm,
-            Err(error) => {
-                return validation::revoke_and_drain(
-                    Err(error.into()),
-                    || revoke(control, running),
-                    || Ok(()),
-                );
-            }
-        };
         let shape = pcm.shape();
-        counters.admitted_pcm_shape = Some(shape.snapshot().into());
         counters.driver_packet_frames = shape.frames();
         counters.stream_generation = opened.stream_generation();
         let mut seen = Observation::default();
@@ -456,7 +470,6 @@ fn exercise_case_inner(
             )
             .map_err(|error| anyhow::anyhow!("driver pattern encoding: {error:?}"))?;
             let mut decoded = vec![0.0; shape.frames() as usize * 2];
-            let mut pending = VecDeque::with_capacity(4);
             native.position.begin_phase();
             let until = Instant::now() + Duration::from_secs(u64::from(seconds));
             while Instant::now() < until {
