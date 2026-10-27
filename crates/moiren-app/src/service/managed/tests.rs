@@ -2427,14 +2427,7 @@ impl FakeCatalog {
     }
 }
 
-impl crate::service::BackendAdapter for FakeCatalog {
-    fn prepare(
-        &self,
-        _: crate::service::SessionSpec,
-        _: crate::service::Cancellation,
-    ) -> Result<Box<dyn crate::service::PreparedSession>, crate::service::BackendError> {
-        panic!("catalog adapter must never prepare");
-    }
+impl crate::service::CatalogBackend for FakeCatalog {
     fn catalog(&self) -> Result<crate::service::DeviceCatalog, crate::service::BackendError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.failure.load(Ordering::SeqCst) {

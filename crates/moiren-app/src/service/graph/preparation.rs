@@ -324,6 +324,7 @@ impl GraphPreparation {
         ))
     }
     #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn bind_processors(
         &self,
         bindings: &mut NodeBindings<f32>,
@@ -390,11 +391,5 @@ impl GraphPreparation {
             }
         }
         Ok(())
-    }
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub(crate) fn output_meter_port(&self, sink: NodeId) -> Result<PortId, GraphError> {
-        // Sink input includes the final edge's send gain/mute and the compiler's
-        // dedicated silence slot for an unplugged output.
-        Ok(self.graph.get_node(sink)?.inputs()[0].id())
     }
 }

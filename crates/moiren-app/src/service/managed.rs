@@ -94,7 +94,7 @@ pub struct ManagedDriver {
     exports_runtime: super::exports::runtime::Runtime,
     factory: Arc<Factory<f32>>,
     f64_factory: Option<Arc<Factory<f64>>>,
-    catalog_backend: Option<Arc<dyn BackendAdapter>>,
+    catalog_backend: Option<Arc<dyn CatalogBackend>>,
     host_config: HostConfig,
     owner: Option<Owner>,
     completions: Option<CompletionQueue<Completion>>,
@@ -182,7 +182,7 @@ impl ManagedDriver {
         self.f64_factory = Some(Arc::new(move |profile, _| factory(profile)));
         self
     }
-    pub fn with_catalog(mut self, backend: Arc<dyn BackendAdapter>) -> Self {
+    pub fn with_catalog(mut self, backend: Arc<dyn CatalogBackend>) -> Self {
         self.catalog_backend = Some(backend);
         self.catalog.request();
         self
@@ -200,7 +200,7 @@ impl ManagedDriver {
         let provider_for_factory = virtual_provider.clone();
         let provider_for_f64 = virtual_provider.clone();
         let mut driver = Self::new(|_| unreachable!("Windows factory replaced before use"))
-            .with_catalog(Arc::new(WindowsBackend::default()));
+            .with_catalog(Arc::new(WindowsBackend));
         driver.factory = Arc::new(move |_, _| {
             let backend = moiren_windows_audio::professional::ProfessionalBackend::<f32>::new()?;
             let backend = if let Some(provider) = provider_for_factory.as_ref() {

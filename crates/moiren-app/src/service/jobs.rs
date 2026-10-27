@@ -1,4 +1,4 @@
-use super::{BackendAdapter, BackendError, DeviceCatalog, DispatchError};
+use super::{BackendError, CatalogBackend, DeviceCatalog, DispatchError};
 use std::{
     io,
     sync::{
@@ -250,7 +250,7 @@ impl CatalogRefresher {
     pub fn poll<T: Send + 'static>(
         &mut self,
         exiting: bool,
-        backend: Option<&Arc<dyn BackendAdapter>>,
+        backend: Option<&Arc<dyn CatalogBackend>>,
         queue: &CompletionQueue<T>,
         pool: &mut JobPool,
         wrap: impl Fn(Result<DeviceCatalog, BackendError>) -> T + Send + 'static,

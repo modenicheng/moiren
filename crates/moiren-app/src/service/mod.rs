@@ -3,7 +3,6 @@
 
 mod backend;
 mod core;
-mod driver;
 mod exports;
 mod graph;
 mod jobs;
@@ -11,11 +10,8 @@ mod latency;
 mod mailbox;
 mod managed;
 mod model;
-mod parameters;
-mod recovery;
 #[cfg(test)]
 mod settings_tests;
-mod signal_preparation;
 mod signals;
 mod startup;
 #[cfg(any(test, feature = "gpui-test"))]
@@ -24,7 +20,6 @@ pub(crate) mod test_backend;
 #[cfg(windows)]
 mod windows;
 pub use backend::*;
-pub use driver::BackendDriver;
 pub use exports::*;
 pub use graph::{
     BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphFault, GraphNodeState,
@@ -34,7 +29,6 @@ pub use graph::{
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;
 pub use moiren_engine::audio_config::*;
-pub use signal_preparation::{SignalPreparation, SignalPreparationError};
 pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
 #[cfg(windows)]
 pub use windows::WindowsBackend;
@@ -117,8 +111,6 @@ pub struct ServiceContext {
     pub audio_settings: AudioSettings,
     pub active_audio_settings: Option<AudioSettings>,
     pub graph: ServiceGraph,
-    pub monitor_latency: Option<MonitorLatencyStatus>,
-    pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
     pub core: ServiceCore,
     pub catalog: Arc<DeviceCatalog>,
     pub catalog_error: Option<String>,
@@ -139,8 +131,6 @@ impl Default for ServiceContext {
             audio_settings: AudioSettings::default(),
             active_audio_settings: None,
             graph: ServiceGraph::default(),
-            monitor_latency: None,
-            monitor_diagnostics: None,
             core: ServiceCore::default(),
             catalog: Arc::new(DeviceCatalog::default()),
             catalog_error: None,
@@ -350,10 +340,6 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
             .clone()
             .filter(|_| c.fresh(c.core.generation())),
         graph: Arc::new(graph),
-        monitor_latency: c.monitor_latency.clone(),
-        monitor_diagnostics: c
-            .monitor_diagnostics
-            .filter(|diagnostics| c.fresh(diagnostics.generation)),
         consumed_request_id: RequestId::default(),
         generation: c.core.generation(),
         phase: c.core.phase(),

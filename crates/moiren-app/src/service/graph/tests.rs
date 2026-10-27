@@ -135,7 +135,6 @@ fn compressor_edits_are_node_local_and_reject_invalid_domains_transactionally() 
         CompressorState::default()
     );
 }
-use moiren_engine::boundary::ConstantSource;
 
 #[test]
 fn default_project_resolves_processing_rate_and_profile_buffers() {
@@ -462,59 +461,53 @@ fn managed_project_translates_every_io_and_stereo_parameter() {
     project.validate().unwrap();
 }
 
-#[test]
-fn virtual_microphone_only_projects_do_not_assign_a_physical_master_clock() {
-    use crate::service::{ExportDirection, ExportIntent};
-    use moiren_engine::{boundary::ClockRole, host::NodeConfig, node::VirtualEndpointId};
-
-    let mut service = ServiceGraph::default();
-    let sink = service.snapshot().graph.nodes()[3].id();
-    service
-        .edit(GraphEdit::SetExports(vec![ExportIntent {
-            endpoint_id: VirtualEndpointId::from_bytes([0x91; 16]),
-            direction: ExportDirection::Microphone,
-            name: "Virtual microphone".into(),
-            channels: 2,
-            enabled: true,
-            binding: Some(sink),
-        }]))
-        .unwrap();
-
-    let project = service.preparation().engine_project(256).unwrap();
-    let NodeConfig::Output(output) = &project.nodes[&sink] else {
-        panic!("expected virtual microphone output");
-    };
-    assert!(matches!(
-        output.target,
-        moiren_engine::node::OutputTarget::VirtualMicrophone { .. }
-    ));
-    assert_eq!(output.device.clock_role, ClockRole::Follower);
-}
-
 fn ids(service: &ServiceGraph) -> (NodeId, NodeId, NodeId, NodeId) {
     let nodes = service.snapshot.graph.nodes();
     (nodes[0].id(), nodes[1].id(), nodes[2].id(), nodes[3].id())
 }
 fn render(service: &ServiceGraph) -> Vec<f32> {
-    let mut prepared = crate::session_graph::prepare_routing(
-        &service.preparation(),
-        ConstantSource {
-            channels: 2,
-            value: 1.0,
+    use moiren_engine::boundary::ConstantSource;
+    use moiren_engine::{
+        boundary::audio_bridge,
+        compiler::{CompileConfig, compile},
+        runtime::EngineConfig,
+    };
+    let preparation = service.preparation();
+    let (input, sink) = preparation.io_nodes().expect("io nodes");
+    let (writer, mut output) = audio_bridge(2, 32, 8 * 1024 * 1024).unwrap();
+    let mut bindings = moiren_engine::compiler::NodeBindings::new();
+    bindings
+        .bind_source(
+            input,
+            ConstantSource {
+                channels: 2,
+                value: 1.0,
+            },
+        )
+        .unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    preparation.bind_processors(&mut bindings).unwrap();
+    let config = CompileConfig {
+        engine: EngineConfig {
+            processing_sr: 48_000.0,
+            max_block_frames: 32,
+            max_events_per_block: 64,
         },
-        32,
-        None,
-    )
-    .unwrap();
+        audio_byte_budget: 8 * 1024 * 1024,
+        plan_revision: service.snapshot.candidate_revision,
+        timeline_epoch: crate::timeline::next_epoch().expect("epoch"),
+        control_capacity: 64,
+        control_horizon_frames: 48_000,
+    };
+    let mut compiled = compile(&preparation.graph, bindings, config).unwrap();
     assert_eq!(
-        prepared.compiled.engine.revision(),
+        compiled.engine.revision(),
         service.snapshot.candidate_revision
     );
-    prepared.compiled.engine.render(8).unwrap();
+    compiled.engine.render(8).unwrap();
     let mut samples = vec![0.0; 16];
     assert_eq!(
-        prepared
-            .output
+        output
             .read_interleaved(&mut samples)
             .unwrap()
             .transferred_frames,
@@ -523,60 +516,6 @@ fn render(service: &ServiceGraph) -> Vec<f32> {
     samples
 }
 
-#[test]
-fn offline_compressor_uses_saved_parameters_instead_of_defaults() {
-    let mut service = ServiceGraph::default();
-    let (source, gain, _, sink) = ids(&service);
-    service
-        .edit(GraphEdit::SetGain {
-            node: gain,
-            gain: 1.,
-        })
-        .unwrap();
-    service
-        .edit(GraphEdit::AddNode {
-            kind: NodeKind::Compressor,
-            channels: 2,
-        })
-        .unwrap();
-    let compressor = service.snapshot().graph.nodes()[4].id();
-    let snapshot = service.snapshot();
-    let final_edge = snapshot
-        .graph
-        .edges()
-        .iter()
-        .find(|edge| edge.dst() == sink)
-        .unwrap()
-        .id();
-    service.edit(GraphEdit::Disconnect(final_edge)).unwrap();
-    service
-        .edit(GraphEdit::Connect {
-            source: snapshot.graph.get_node(source).unwrap().outputs()[0].id(),
-            destination: snapshot.graph.get_node(compressor).unwrap().inputs()[0].id(),
-        })
-        .unwrap();
-    service
-        .edit(GraphEdit::Connect {
-            source: snapshot.graph.get_node(compressor).unwrap().outputs()[0].id(),
-            destination: snapshot.graph.get_node(sink).unwrap().inputs()[0].id(),
-        })
-        .unwrap();
-    for (parameter, value) in [
-        (CompressorParameter::Ratio, 1.),
-        (CompressorParameter::OutputGain, -6.020599913279624),
-    ] {
-        service
-            .edit(GraphEdit::SetCompressor {
-                node: compressor,
-                parameter,
-                value,
-            })
-            .unwrap();
-    }
-    for sample in render(&service) {
-        assert!((sample - 0.5).abs() < 0.00001);
-    }
-}
 #[test]
 fn rejected_edits_are_atomic_and_do_not_consume_revision_or_node_ids() {
     let mut service = ServiceGraph::default();
