@@ -1145,7 +1145,7 @@ fn loaded_document_id_collisions_cannot_control_an_unrelated_active_node() {
             .last_error
             .as_ref()
             .unwrap()
-            .contains("候选项目")
+            .contains("Apply the loaded project candidate")
     );
     exit(rt);
 }

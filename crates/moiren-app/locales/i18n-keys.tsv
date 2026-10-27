@@ -494,3 +494,54 @@ Start audio to observe this node.	-	节点观察引导语
 Error: %{cause}	-	错误列表首行
 Channel: %{location}	-	错误列表定位行
 Hint: %{hint}	-	错误列表提示行
+rename	-	节点名称行尾的“可重命名”提示（原为硬编码文本）
+Mono and Swap only apply to Balance nodes	-	服务层消息；中文即迁移前原文
+Compressor parameters are outside their valid range	-	服务层消息；中文即迁移前原文
+Mixer gain or channel mode is invalid	-	服务层消息；中文即迁移前原文
+Node names cannot be empty and are limited to 256 bytes	-	服务层消息；中文即迁移前原文
+The Gain node's gain must be a finite value in 0..16	-	服务层消息；中文即迁移前原文
+The Balance node's position must be a finite value in -1..1	-	服务层消息；中文即迁移前原文
+Only Source nodes can bind an input source	-	服务层消息；中文即迁移前原文
+The input source configuration is invalid	-	服务层消息；中文即迁移前原文
+Only Sink nodes can bind a valid output device	-	服务层消息；中文即迁移前原文
+The graph revision space is exhausted	-	服务层消息；中文即迁移前原文
+Choose an input resource	-	服务层消息；中文即迁移前原文
+Choose an output device	-	服务层消息；中文即迁移前原文
+Choose an input source at the top of the channel, or delete the channel	-	服务层消息；中文即迁移前原文
+Choose an output device at the top of the channel, or delete the channel	-	服务层消息；中文即迁移前原文
+Faders cover −∞ to +24 dB; cycle the channel-mode button back to a valid setting	-	服务层消息；中文即迁移前原文
+These two switches only apply to Balance channels	-	服务层消息；中文即迁移前原文
+Each device or application source can feed one channel; unbind the other one first	-	服务层消息；中文即迁移前原文
+The node does not exist	-	服务层消息；中文即迁移前原文
+Compressor parameters only apply to Compressor nodes	-	服务层消息；中文即迁移前原文
+The graph is limited to 4096 nodes with at most 256 channels each	-	服务层消息；中文即迁移前原文
+Only Gain nodes have an adjustable gain	-	服务层消息；中文即迁移前原文
+Only Balance nodes have an adjustable position	-	服务层消息；中文即迁移前原文
+The Source node is not bound to an input source	-	服务层消息；中文即迁移前原文
+Multiple Source nodes are bound to the same physical device	-	服务层消息；中文即迁移前原文
+The application source is missing a stable process identity	-	服务层消息；中文即迁移前原文
+Multiple Source nodes are bound to the same application source	-	服务层消息；中文即迁移前原文
+The Sink node is not bound to an output device	-	服务层消息；中文即迁移前原文
+Multiple Sink nodes are bound to the same device	-	服务层消息；中文即迁移前原文
+The graph needs a Source node	-	服务层消息；中文即迁移前原文
+The graph needs a Sink node	-	服务层消息；中文即迁移前原文
+Node state count does not match the graph, or the graph exceeds 4096 nodes	-	服务层消息；中文即迁移前原文
+Project node states do not match the topology identity	-	服务层消息；中文即迁移前原文
+The current audio backend needs exactly one Source and one Sink node; multi-device graphs are not supported yet	-	服务层消息；中文即迁移前原文
+The current device bridge only supports stereo nodes	-	服务层消息；中文即迁移前原文
+No native audio backend is configured	-	服务层消息；中文即迁移前原文
+The live parameter queue is busy; the candidate value is kept — retry or apply the graph later	-	服务层消息；中文即迁移前原文
+The live parameter queue is busy; the candidate value is kept	-	服务层消息；中文即迁移前原文
+Apply the loaded project candidate before editing its live parameters	-	服务层消息；中文即迁移前原文
+The apply request identity space is exhausted	-	服务层消息；中文即迁移前原文
+This channel is missing a usable processor configuration	-	服务层消息；中文即迁移前原文
+Delete this channel and re-add one of the same type	-	服务层消息；中文即迁移前原文
+The channel's configuration does not match its kind	-	服务层消息；中文即迁移前原文
+Check the channel's parameter settings, or delete and re-add it	-	服务层消息；中文即迁移前原文
+The configuration points at a channel that no longer exists	-	服务层消息；中文即迁移前原文
+The channel's channel count disagrees with its wiring	-	服务层消息；中文即迁移前原文
+Adjust the channel count, or reconnect the route	-	服务层消息；中文即迁移前原文
+The input/output device configuration is invalid	-	服务层消息；中文即迁移前原文
+Choose another device, or check the sample rate/precision settings	-	服务层消息；中文即迁移前原文
+Channel parameters are outside their valid range	-	服务层消息；中文即迁移前原文
+Parameters are outside their valid range	-	服务层消息；中文即迁移前原文

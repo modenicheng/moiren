@@ -138,7 +138,8 @@ impl ManagedDriver {
                 return;
             }
             let Some(apply_id) = owner.latest_apply_id.checked_add(1) else {
-                c.graph.record_error("应用请求身份空间已耗尽");
+                c.graph
+                    .record_error("The apply request identity space is exhausted");
                 self.apply = false;
                 return;
             };

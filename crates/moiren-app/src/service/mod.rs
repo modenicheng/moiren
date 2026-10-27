@@ -336,7 +336,8 @@ impl ServiceDriver for CoreDriver {
                 }
             }
             AppRequest::ApplyGraph => {
-                c.graph.record_error("未配置原生音频驱动");
+                c.graph
+                    .record_error("No native audio backend is configured");
             }
         }
     }

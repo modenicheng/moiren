@@ -668,6 +668,9 @@ _version: 2
 "Delete node":
   en: Delete node
   zh-CN: 删除节点
+"rename":
+  en: rename
+  zh-CN: 重命名
 "Waiting for Apply graph":
   en: Waiting for Apply graph
   zh-CN: 等待应用图
@@ -1488,3 +1491,156 @@ _version: 2
 "Hint: %{hint}":
   en: "Hint: %{hint}"
   zh-CN: "提示：%{hint}"
+
+# Service-layer user messages: faults, causes, and hints. The snapshot
+# carries the English keys; the UI translates them when rendering.
+"Mono and Swap only apply to Balance nodes":
+  en: "Mono and Swap only apply to Balance nodes"
+  zh-CN: "Mono 和 Swap 只能用于 Balance 节点"
+"Compressor parameters are outside their valid range":
+  en: "Compressor parameters are outside their valid range"
+  zh-CN: "Compressor 参数超出有效范围"
+"Mixer gain or channel mode is invalid":
+  en: "Mixer gain or channel mode is invalid"
+  zh-CN: "Mixer 增益或声道模式无效"
+"Node names cannot be empty and are limited to 256 bytes":
+  en: "Node names cannot be empty and are limited to 256 bytes"
+  zh-CN: "节点名称不能为空且最多 256 字节"
+"The Gain node's gain must be a finite value in 0..16":
+  en: "The Gain node's gain must be a finite value in 0..16"
+  zh-CN: "Gain 节点增益必须为 0..16 的有限值"
+"The Balance node's position must be a finite value in -1..1":
+  en: "The Balance node's position must be a finite value in -1..1"
+  zh-CN: "Balance 节点位置必须为 -1..1 的有限值"
+"Only Source nodes can bind an input source":
+  en: "Only Source nodes can bind an input source"
+  zh-CN: "只有输入节点可以绑定音源"
+"The input source configuration is invalid":
+  en: "The input source configuration is invalid"
+  zh-CN: "输入音源配置无效"
+"Only Sink nodes can bind a valid output device":
+  en: "Only Sink nodes can bind a valid output device"
+  zh-CN: "只有输出节点可以绑定有效设备"
+"The graph revision space is exhausted":
+  en: "The graph revision space is exhausted"
+  zh-CN: "图版本空间已耗尽"
+"Choose an input resource":
+  en: "Choose an input resource"
+  zh-CN: "请选择输入资源"
+"Choose an output device":
+  en: "Choose an output device"
+  zh-CN: "请选择输出设备"
+"Choose an input source at the top of the channel, or delete the channel":
+  en: "Choose an input source at the top of the channel, or delete the channel"
+  zh-CN: "在通道顶部选择一个输入源，或删除这个通道"
+"Choose an output device at the top of the channel, or delete the channel":
+  en: "Choose an output device at the top of the channel, or delete the channel"
+  zh-CN: "在通道顶部选择一个输出设备，或删除这个通道"
+"Faders cover −∞ to +24 dB; cycle the channel-mode button back to a valid setting":
+  en: "Faders cover −∞ to +24 dB; cycle the channel-mode button back to a valid setting"
+  zh-CN: "推子范围是 −∞ 到 +24 dB；声道模式按循环键回到有效档位"
+"These two switches only apply to Balance channels":
+  en: "These two switches only apply to Balance channels"
+  zh-CN: "这两个开关只在 Balance 通道上可用"
+"Each device or application source can feed one channel; unbind the other one first":
+  en: "Each device or application source can feed one channel; unbind the other one first"
+  zh-CN: "每个设备或应用音源只能接一个通道；先解开另一条绑定"
+"The node does not exist":
+  en: "The node does not exist"
+  zh-CN: "节点不存在"
+"Compressor parameters only apply to Compressor nodes":
+  en: "Compressor parameters only apply to Compressor nodes"
+  zh-CN: "Compressor 参数只能用于 Compressor 节点"
+"The graph is limited to 4096 nodes with at most 256 channels each":
+  en: "The graph is limited to 4096 nodes with at most 256 channels each"
+  zh-CN: "图最多包含 4096 个节点，每节点最多 256 声道"
+"Only Gain nodes have an adjustable gain":
+  en: "Only Gain nodes have an adjustable gain"
+  zh-CN: "只能调整 Gain 节点的增益"
+"Only Balance nodes have an adjustable position":
+  en: "Only Balance nodes have an adjustable position"
+  zh-CN: "只能调整 Balance 节点的位置"
+"The Source node is not bound to an input source":
+  en: "The Source node is not bound to an input source"
+  zh-CN: "输入节点尚未绑定音源"
+"Multiple Source nodes are bound to the same physical device":
+  en: "Multiple Source nodes are bound to the same physical device"
+  zh-CN: "多个输入节点绑定了同一物理设备"
+"The application source is missing a stable process identity":
+  en: "The application source is missing a stable process identity"
+  zh-CN: "应用音源缺少稳定进程身份"
+"Multiple Source nodes are bound to the same application source":
+  en: "Multiple Source nodes are bound to the same application source"
+  zh-CN: "多个输入节点绑定了同一应用音源"
+"The Sink node is not bound to an output device":
+  en: "The Sink node is not bound to an output device"
+  zh-CN: "输出节点尚未绑定设备"
+"Multiple Sink nodes are bound to the same device":
+  en: "Multiple Sink nodes are bound to the same device"
+  zh-CN: "多个输出节点绑定了同一设备"
+"The graph needs a Source node":
+  en: "The graph needs a Source node"
+  zh-CN: "图需要输入节点"
+"The graph needs a Sink node":
+  en: "The graph needs a Sink node"
+  zh-CN: "图需要输出节点"
+"Node state count does not match the graph, or the graph exceeds 4096 nodes":
+  en: "Node state count does not match the graph, or the graph exceeds 4096 nodes"
+  zh-CN: "节点状态数量不匹配或图超过 4096 个节点"
+"Project node states do not match the topology identity":
+  en: "Project node states do not match the topology identity"
+  zh-CN: "项目节点状态与拓扑身份不一致"
+"The current audio backend needs exactly one Source and one Sink node; multi-device graphs are not supported yet":
+  en: "The current audio backend needs exactly one Source and one Sink node; multi-device graphs are not supported yet"
+  zh-CN: "当前音频驱动需要 1 个输入节点和 1 个输出节点；多设备图尚未实现"
+"The current device bridge only supports stereo nodes":
+  en: "The current device bridge only supports stereo nodes"
+  zh-CN: "当前设备桥仅支持双声道节点"
+"No native audio backend is configured":
+  en: "No native audio backend is configured"
+  zh-CN: "未配置原生音频驱动"
+"The live parameter queue is busy; the candidate value is kept — retry or apply the graph later":
+  en: "The live parameter queue is busy; the candidate value is kept — retry or apply the graph later"
+  zh-CN: "实时参数队列繁忙；候选值已保留，可稍后重试或应用图"
+"The live parameter queue is busy; the candidate value is kept":
+  en: "The live parameter queue is busy; the candidate value is kept"
+  zh-CN: "实时参数队列繁忙；候选值已保留"
+"Apply the loaded project candidate before editing its live parameters":
+  en: "Apply the loaded project candidate before editing its live parameters"
+  zh-CN: "请先应用载入的候选项目，再调整该项目的实时参数"
+"The apply request identity space is exhausted":
+  en: "The apply request identity space is exhausted"
+  zh-CN: "应用请求身份空间已耗尽"
+"This channel is missing a usable processor configuration":
+  en: "This channel is missing a usable processor configuration"
+  zh-CN: "这个通道缺少可用的处理器配置"
+"Delete this channel and re-add one of the same type":
+  en: "Delete this channel and re-add one of the same type"
+  zh-CN: "删掉这个通道再重新添加一个同类型的"
+"The channel's configuration does not match its kind":
+  en: "The channel's configuration does not match its kind"
+  zh-CN: "通道的配置和它的类型不匹配"
+"Check the channel's parameter settings, or delete and re-add it":
+  en: "Check the channel's parameter settings, or delete and re-add it"
+  zh-CN: "检查这个通道的参数设置，或删除后重新添加"
+"The configuration points at a channel that no longer exists":
+  en: "The configuration points at a channel that no longer exists"
+  zh-CN: "配置指向的通道已经不存在"
+"The channel's channel count disagrees with its wiring":
+  en: "The channel's channel count disagrees with its wiring"
+  zh-CN: "通道的声道数和连线不一致"
+"Adjust the channel count, or reconnect the route":
+  en: "Adjust the channel count, or reconnect the route"
+  zh-CN: "调整通道声道数，或重连这条 route"
+"The input/output device configuration is invalid":
+  en: "The input/output device configuration is invalid"
+  zh-CN: "输入/输出设备配置无效"
+"Choose another device, or check the sample rate/precision settings":
+  en: "Choose another device, or check the sample rate/precision settings"
+  zh-CN: "换一个设备，或检查采样率/精度设置"
+"Channel parameters are outside their valid range":
+  en: "Channel parameters are outside their valid range"
+  zh-CN: "通道参数超出有效范围"
+"Parameters are outside their valid range":
+  en: "Parameters are outside their valid range"
+  zh-CN: "参数超出有效范围"

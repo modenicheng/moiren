@@ -137,7 +137,7 @@ pub(in crate::ui::window) fn inspector(
                     .id("node-name-edit-hint")
                     .text_size(px(theme::TEXT_XS))
                     .text_color(theme::TEXT_FAINT)
-                    .child("rename"),
+                    .child(t!("rename")),
             )
             .on_click({
                 let this = cx.entity();

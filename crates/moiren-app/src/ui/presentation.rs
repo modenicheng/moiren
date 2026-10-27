@@ -79,8 +79,7 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
             }
             for (index, stream) in status.observation.streams.iter().enumerate() {
                 let kind = if stream.input {
-                    // "Input" is not in the i18n key catalog; kept as source text.
-                    "Input".to_string()
+                    t!("Input").to_string()
                 } else if stream.master {
                     t!("Master output").to_string()
                 } else {
