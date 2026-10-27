@@ -1945,3 +1945,37 @@ tool, only the current 431,104-byte native probe remains in the guest test
 root, with 30.099 GiB free and no present dynamic child/test process. No
 guest build tree or historical run archive is retained. Exact full coverage,
 small-period negotiation, long-run stability and physical latency stay open.
+
+The subsequent requested four-case 60-second event subset does not complete:
+it exits 1 after 185.9 seconds during stereo Float32 with the original
+`0x8007051A` revision mismatch. There is no complete stdout report. Failed
+case counters retain 181,440 signal frames, 1,440 silent frames, one WRITE
+drop and zero native discontinuities. A prior stereo PCM16 case also has
+retained first-empty/TooOld events. The improved 15-second windows therefore
+do not demonstrate stability at longer durations.
+
+For endpoint 16, stream generation 2, the actual rebase callback is QPC
+524377028991. The next deadline is 524377003575 (2.5416 ms exceeded), while
+the packet being serviced was due at 524376903575 (12.5416 ms late).
+Atomic open/Running gate changes 4 to 5. In this window the independent
+first-NoCurrent record is from that same callback: DPC entry 524377027924,
+State acquired 524377028990, nominal serviced deadline 524376903575. Thus
+the callback enters 12.4349 ms late and entry-to-State is 106.6 microseconds;
+the late callback is not explained solely by time acquiring State. This
+does not distinguish late timer arm from dispatch/host scheduling delay,
+nor justify relaxing epoch or freshness protection.
+
+Earlier in that case request 18372 (user ticket 373) has header QPC
+524376107809, target/entry elapsed times 3,725,477,200/3,730,529,700 ns,
+5.0525 ms submission lateness, and actual TooOld callback QPC 524376214086
+(10.6277 ms header age). The distinct empty callback occurs between its
+user header and reservation-side pre-forward boundary. An accepted async
+submission is not evidence of completed queue insertion before the callback.
+
+All six original files are checked and removed from the guest; the
+23-event ETL decodes with zero loss/errors/unknown formats. Host archive
+`target/vad-target-archive/20261027-native-e4aef04-mic-event60` retains the
+entire failure. At `2026-10-27T13:54:15+08:00`, only the current 431,104-byte
+probe remains, with 30.099 GiB free; runner, trace tool and run files are
+removed after verification. The qualification remains failed/open, not a
+reason to enlarge queues, weaken freshness or ignore the changed gate.
