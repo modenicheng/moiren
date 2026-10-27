@@ -2925,3 +2925,34 @@ failed Linux metadata/link attempt is distinct from later compile-only success.
 Logs: `target/task7-virtual-observation-fix/`,
 `target/task7-probe-harness-hygiene/`, and parent logs under
 `target/20261028-owned-process/`.
+
+### 2026-10-28 host virtual-chain prerequisites, not collection acceptance
+
+Two short host-only preflights use clean `6464581` binaries, without changing
+devices, endpoint mix/defaults or guest files. They do not exercise B or provide
+a matched source/graph/measurement run.
+
+- Muted routing to explicit CABLE Input exits 0 after a requested one-second
+  active run. The report retains healthy=true, muted=true and clean_shutdown=true.
+  Native mix is 96 kHz stereo, client is 48 kHz stereo with Windows conversion,
+  native buffer 1,122 frames and actual client period 480 frames. These are
+  negotiated/internal facts, not physical latency. Archive:
+  `target/20261028-owned-process/virtual-route-preflight-6464581/`.
+- Standalone independent capture from explicit CABLE Output exits 1, unqualified.
+  It opens the 96 kHz stereo mix as a converted 48 kHz stereo client and retains
+  98 packets / 47,009 frames / 376,072 PCM bytes. Sequence/storage offsets are
+  contiguous, sink failure is null, native Start/Stop succeeds, and no timeout,
+  forced termination or cleanup error occurs. However packet 1 has raw flags=1
+  (DATA_DISCONTINUITY), and final reconciliation correctly rejects the evidence.
+  Packets 2..98 have flags=0; this does not grant packet 1 startup amnesty or
+  establish later independently measured continuity. Position-gap checking is
+  disabled because mix/client frame domains differ; zeros in those counters are
+  not a continuity pass. Archive:
+  `target/20261028-owned-process/virtual-recorder-preflight-6464581/`.
+
+The recorder has no correlated source/graph phase markers: the first flag's
+relationship to startup or a real glitch is unknown. Its Running indication
+means native Start/progress, not clean waveform readiness. Keep the raw failure
+and strict reconciliation; no gate is relaxed to obtain a passing candidate.
+The standalone command returns 1 for unqualified runs generally; the retained
+discontinuity counter and failure text, not exit 1 alone, identify this failure.
