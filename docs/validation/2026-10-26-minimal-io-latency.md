@@ -3105,24 +3105,12 @@ These match the retained signed package manifest for `2121277`; no driver
 install, replacement or guest write was performed. Receipt:
 `target/vad-target-archive/20261028-stage7-final-inventory/installed-driver.json`.
 
-The most recent real two-direction rename diagnostic is the archived
-`c636105` run, which used this same installed driver package. It proves the
-requested name reaches CREATE and is visible on the resolved connected part;
-it does **not** pass end-user rename. The Windows endpoint FriendlyName stayed
-based on the seed/old name, exact-name acceptance failed, and the strict-held
-observation gate failed. The diagnostic also records
-`GetDevice(error attribution)` HRESULT `0xE0000225` while resolving the
-topology identity needed for the optional endpoint-name observation; the run
-started zero probe native clients, captured no verified PCM and is
-unqualified. Keep the numeric HRESULT undecoded. The guest artifacts were
-copied/hash-verified and removed under the bounded test-root procedure; the
-current test root is empty. Since `c636105`, no app rename or endpoint-name
-reader code has changed. Repeating that binary on the same driver would not
-test a new change. Next: fix the host-side MMDevice/topology identity lookup
-with focused failure-first tests, preserve strict-held and exact-name gates,
-then build on the host, review/commit/push, and rerun the bounded two-direction
-probe on this VM. Do not reinstall the already matching driver unless a new
-driver source change is required.
+The earlier `connected-c636105-20261028-005318` run did **not** use the active
+`2121277` service image: its recorded SYS hash was
+`3762BBDDD7FF3715F8231ECA31233EFCE7B2A01775CA23A2ABA40DA0C5E0D6D6`.
+Do not use that run as evidence about the current driver. The follow-up
+`connected-c636105-20261028-034003` run below is the verified current-driver
+result.
 
 The VAD production path and Process Loopback must remain separate in the
 diagnosis. VAD has previously reached the Engine/Bus and physical-render path
@@ -3134,3 +3122,42 @@ bounded routing-vs-Process shared-render comparison is the next Process
 diagnostic, not another full collection. Neither path currently has a
 same-condition latency result, so there is no evidence that VAD or Process is
 faster.
+
+### 2026-10-28 bounded rename rerun on the verified current driver
+
+The single bounded VM run `connected-c636105-20261028-034003` used host-built
+probe source `c6361057dd62ea02be8079a97ce552933f0019e9`, executable SHA-256
+`A87DC06170C427BDF6CC3821F7B85DE2E17EA170CFC5EA84EF7771C66EF11E00`, and
+the already installed `2121277` signed package: `oem35.inf`, version
+`13.30.29.665`, service image SHA-256
+`F517517781C8A41D47AAC259665CB39EF22BE127261EA66C54B2FC0D2BD0A376`.
+No build or driver installation occurred in the VM. The run lasted 3.59 s and
+exited 1 (`child_failed`), without timeout or forced termination. Its report
+is retained at
+`target/vad-target-archive/connected-c636105-20261028-034003/guest/evidence/report.json`.
+
+Both Playback and Microphone created the requested replacement name, observed
+it on the connected part, confirmed the Engine revision/open gate, and
+confirmed direct old-object Removed evidence. Both still failed the strict
+held observation because no fresh current QUERY stamp was observed while held.
+The actual Windows FriendlyName remained the seed/old-derived name in both
+directions, so exact-name acceptance failed. Optional MMDevice topology
+identity lookup still reports raw `GetDevice(error attribution)` HRESULT
+`0xE0000225`; retain it undecoded. The probe started zero native clients,
+captured no verified PCM and produced no latency or acoustic evidence. The
+result is diagnostic and unqualified, not a rename pass.
+
+The 14 manifest payloads (7,969,994 bytes) and guest manifest were copied to
+the host archive and checked for exact file set, byte length and SHA-256 on
+both host and guest. Guest manifest SHA-256 is
+`CBBFDD4D1BD47A519783EAE37D0ABB8EF1078974271242A9D934121695EF8813`. Only
+after both-side verification, no-reparse checks and confirming no active probe
+did cleanup remove the exact direct child
+`C:\MoirenVadTest\connected-c636105-20261028-034003`. The final test root is
+empty, no matching probe process remains, `ROOT\MEDIA\0000` is `OK`, and C:
+has 32,218,755,072 bytes free (about 30.02 GiB). Windows, DriverStore,
+`C:\DriverTest`, and installed/rollback driver packages were not touched.
+The same application binary was run again only to distinguish its result on
+the verified current driver; as neither the application rename reader nor its
+acceptance logic changed, the topology/FriendlyName diagnosis still needs a
+host-side fix and focused failure-first tests before another VM run.

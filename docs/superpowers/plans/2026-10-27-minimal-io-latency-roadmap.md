@@ -58,16 +58,23 @@ reference.
   or seed name for Playback and Microphone. User-visible rename is therefore
   not complete. Trace the registered KS bridge pin/interface and the exact
   EndpointBuilder input before changing driver properties.
-- The 2026-10-28 `c636105` dual-machine rename diagnostic used the same
-  `2121277` signed driver package currently installed on `DRIVER-TEST`. CREATE
-  and the connected part observed the requested name, but Windows endpoint
-  FriendlyName and strict-held acceptance still failed. Optional topology
-  identity resolution also returned raw HRESULT `0xE0000225`; no probe native
-  client or PCM capture started. The reader failure is not a rename pass or a
-  decoded driver error. No rename/reader code changed after that run, so do not
-  repeat it unchanged. First repair endpoint identity lookup with regression
-  tests, then host-build/review/push and repeat the bounded VM check. The
-  current test root is empty; keep the installed matching package in place.
+- The earlier `connected-c636105-20261028-005318` app rename diagnostic
+  recorded service SYS hash `3762BBDDD7FF3715F8231ECA31233EFCE7B2A01775CA23A2ABA40DA0C5E0D6D6`,
+  not the active `2121277` package. A follow-up bounded run,
+  `connected-c636105-20261028-034003`, verified the active service SYS hash
+  `F517517781C8A41D47AAC259665CB39EF22BE127261EA66C54B2FC0D2BD0A376` before
+  execution. It also failed strict-held and exact Windows FriendlyName gates
+  in Playback and Microphone; connected-part names and Engine confirmation
+  succeeded. Topology identity resolution retained raw HRESULT `0xE0000225`.
+  No native probe client or PCM capture started, so the run is unqualified and
+  has no latency evidence. Its 14 payloads and guest manifest were verified
+  host/guest by exact file set, byte length and SHA-256 (manifest SHA-256
+  `CBBFDD4D1BD47A519783EAE37D0ABB8EF1078974271242A9D934121695EF8813`) before
+  deleting only that run directory. Final `C:\MoirenVadTest` is empty, bus is
+  OK, no probe remains, and 32,218,755,072 bytes are free. Do not reinstall
+  the matching package. Fix the host-side MMDevice/topology identity lookup
+  with failure-first tests before another rename run; preserve both strict
+  acceptance gates.
 - The production VAD path reaches
   `VAD MMDevice -> native PCM -> VirtualPlayback -> Engine -> Bus -> physical
   render`, but is not stable/qualified. Short tests have retained boundary
@@ -318,11 +325,12 @@ independent accepted two-hour repetitions.
   identity and historical Removed evidence (`0abb8e6`, pushed).
 - [x] Opaque `IConnector::GetDeviceIdConnectedTo` IDs are resolved through
   `IMMDeviceEnumerator::GetDevice` for optional read-only adapter evidence.
-- [x] VM reconnected by its pinned SSH host key and test key: `DRIVER-TEST`
-  is online, `C:\MoirenVadTest` has zero files, no Moiren/VAD/probe process is
-  running, and C: has 32,289,374,208 bytes free (about 30.07 GiB). No old VM
-  test files needed removal; leave Windows, DriverStore, and driver rollback
-  files untouched.
+- [x] Bounded current-driver rename run was archived and hash-verified before
+  deleting its one explicitly named guest directory. Final pinned-key
+  inventory: `DRIVER-TEST` online, `C:\MoirenVadTest` empty, no matching
+  probe process, `ROOT\MEDIA\0000` OK, and C: has 32,218,755,072 bytes free
+  (about 30.02 GiB). Windows, DriverStore, `C:\DriverTest`, and installed or
+  rollback driver packages were left untouched.
 - [x] Stage 7 UI status slice: export cards and diagnostics distinguish
   requested, provider-created and exact Windows endpoint names; a Windows
   mismatch remains visible even while provider recreation is pending. Live
@@ -359,12 +367,13 @@ independent accepted two-hour repetitions.
 - [x] 2026-10-28 connected-part diagnostic (`c636105`, pushed): one-hop
   actual connector/IPart names change to the requested value in both flows,
   with exact adapter/global identity matches, while Windows endpoint names
-  remain unchanged. Independent review, 108 example tests, strict Clippy,
-  fmt and release build pass. The single target run exits 1 and preserves
-  strict-held and exact-name failures; it is not rename acceptance. All 14
-  payloads and the manifest were checked on host and guest before removing
-  7,973,443 file bytes. Final guest root is empty, bus OK, no test process or
-  dynamic child, 32,224,735,232 bytes free. No driver/default changes.
+  remain unchanged. The earlier `005318` run used SYS hash `3762...D6D6`, not
+  the active driver. The `034003` rerun verified SYS hash `F517...A376` for
+  package `2121277`; it exits 1 with strict-held and exact-name failures, so
+  rename remains unaccepted. All 14 payloads (7,969,994 bytes) and manifest
+  were checked on host and guest before removing only that guest run. Final
+  test root empty, bus OK, no test process, 32,218,755,072 bytes free. No
+  driver/default changes.
 - [ ] Exact Windows endpoint FriendlyName rename acceptance for Playback and
   Microphone.
 - [ ] Zero-quality-fault VAD playback/microphone short gates and characterized
