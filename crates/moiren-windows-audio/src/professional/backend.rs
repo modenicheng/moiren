@@ -264,13 +264,14 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             request.owner_generation,
             self.observations.clone(),
         ));
-        let (mut virtual_sessions, virtual_sinks) = virtual_io::prepare(
+        let (mut virtual_sessions, virtual_sinks, virtual_observations) = virtual_io::prepare(
             &request,
             self.virtual_provider.as_deref(),
             rate,
             &mut bindings,
             cancel,
         )?;
+        transport.streams.extend(virtual_observations);
         if matches!(clock, ProjectClock::Physical(_)) {
             transport.sinks.extend(&virtual_sinks);
             if !virtual_sessions.is_empty() {
@@ -522,9 +523,10 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         if clock == ProjectClock::VirtualRealtime {
             // Captures keep their existing native owner threads and retirement
             // protocol. Only the QPC owner receives and advances the Engine.
-            if !transport.workers.is_empty() || !transport.auxiliaries.is_empty() {
-                virtual_sessions.push(transport.into_follower(cancel.clone())?);
-            }
+            // The retired transport keeps publishing and fencing the stream
+            // observations even when it owns no worker or auxiliary, so
+            // virtual-only projects stay visible in the diagnostics snapshot.
+            virtual_sessions.push(transport.into_follower(cancel.clone())?);
             let stop = crate::StopSignal::new().map_err(unsupported)?;
             let gate = crate::ActivationGate::new(stop.clone()).map_err(unsupported)?;
             let clock = self.virtual_clock.prepare(stop.clone())?;

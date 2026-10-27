@@ -34,22 +34,25 @@ pub(super) fn prepare<S: ProcessingSample>(
     rate: u32,
     bindings: &mut NodeBindings<S>,
     cancel: &CancellationToken,
-) -> Result<(VirtualSessions, Vec<NodeId>), BackendError> {
+) -> Result<(VirtualSessions, Vec<NodeId>, Vec<VirtualObservation>), BackendError> {
     let mut sessions = VirtualSessions::default();
     let mut sinks = Vec::new();
+    let mut observations = Vec::new();
     let config = request.project.processing;
     for (&node, config_node) in &request.project.nodes {
         if cancel.is_cancelled() {
             return Err(BackendError::Cancelled);
         }
-        let (endpoint_id, channels, playback) = match config_node {
+        let (endpoint_id, channels, playback, device) = match config_node {
             NodeConfig::Input(input) => match input.source {
-                InputSource::VirtualPlayback { endpoint_id } => (endpoint_id, input.channels, true),
+                InputSource::VirtualPlayback { endpoint_id } => {
+                    (endpoint_id, input.channels, true, input.device)
+                }
                 _ => continue,
             },
             NodeConfig::Output(output) => match output.target {
                 OutputTarget::VirtualMicrophone { endpoint_id } => {
-                    (endpoint_id, output.channels, false)
+                    (endpoint_id, output.channels, false, output.device)
                 }
                 _ => continue,
             },
@@ -72,9 +75,43 @@ pub(super) fn prepare<S: ProcessingSample>(
             bindings.bind_sink(node, sink).map_err(unsupported)?;
             sinks.push(node);
         }
+        observations.push(virtual_observation(node, playback, device, channels));
     }
     if cancel.is_cancelled() {
         return Err(BackendError::Cancelled);
     }
-    Ok((sessions, sinks))
+    Ok((sessions, sinks, observations))
+}
+
+pub(super) type VirtualObservation = (ProfessionalStreamObservation, Arc<Counters>);
+
+fn virtual_observation(
+    node: NodeId,
+    input: bool,
+    requested: DeviceOptions,
+    channels: usize,
+) -> VirtualObservation {
+    (
+        ProfessionalStreamObservation {
+            node,
+            input,
+            master: false,
+            requested,
+            // Virtual boundaries bridge kernel PCM at the native rate with no
+            // hardware device buffer; SRC to the engine rate stays internal.
+            actual: NativeStreamInfo {
+                sample_rate: crate::NATIVE_SAMPLE_RATE,
+                format: SampleFormat::Float32,
+                buffer_frames: 0,
+                channels,
+            },
+            dropped_frames: 0,
+            silent_frames: 0,
+            native_callbacks: 0,
+            native_dropped_frames: 0,
+            native_silent_frames: 0,
+            driver_latency: None,
+        },
+        Arc::default(),
+    )
 }

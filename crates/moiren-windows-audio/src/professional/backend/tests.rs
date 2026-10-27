@@ -733,6 +733,48 @@ fn physical_asio_duplex_with_virtual_microphone_opens_one_native_session() {
 }
 
 #[test]
+fn virtual_endpoints_publish_stream_observations() {
+    let project = virtual_project(2, 48_000);
+    let source = *project.nodes.keys().next().unwrap();
+    let sink = *project.nodes.keys().last().unwrap();
+    let probe = Arc::new(Probe::default());
+    let native = native_devices(Default::default());
+    let backend = backend::<f32>(&probe);
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(request(&project, &host), &cancel, &native)
+        .unwrap();
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    wait_until(|| owner.status() == OwnerStatus::Running);
+    let snapshot = backend.observations().snapshot().unwrap();
+    assert_eq!(snapshot.owner_generation, 7);
+    assert!(snapshot.running);
+    let by_node = |node: NodeId| {
+        snapshot
+            .streams
+            .iter()
+            .find(|stream| stream.node == node)
+            .unwrap_or_else(|| panic!("missing observation for {node:?}"))
+    };
+    let playback = by_node(source);
+    assert!(playback.input);
+    assert!(!playback.master);
+    assert_eq!(playback.actual.sample_rate, crate::NATIVE_SAMPLE_RATE);
+    assert_eq!(playback.actual.channels, 2);
+    assert_eq!(playback.actual.buffer_frames, 0);
+    let microphone = by_node(sink);
+    assert!(!microphone.input);
+    assert!(!microphone.master);
+    assert_eq!(microphone.actual.channels, 2);
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+    assert!(backend.observations().snapshot().is_none());
+}
+
+#[test]
 fn mono_virtual_boundaries_can_follow_a_stereo_physical_master() {
     let mut project = virtual_project(1, 88_200);
     add_physical_output(&mut project, 2);
