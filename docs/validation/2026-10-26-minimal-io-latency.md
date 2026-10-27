@@ -1620,9 +1620,11 @@ The unchanged `ee0cf79` native probe runs three serial microphone subsets:
 
 All wrappers/probes exit zero with unchanged defaults and zero native
 discontinuities. That is not the zero-silence/drop acceptance gate: event
-subsets remain unqualified. In event 5s, the first TooOld rejection has age
-10.8821 ms; event 15s stereo PCM16/Float32 first rejection ages are 10.3580 ms
-and 10.2939 ms. All three ETLs decode with zero lost events, format errors and
+subsets remain unqualified. In event 5s, the first TooOld rejection has
+WRITE-header-to-callback age 10.8752 ms; event 15s stereo PCM16/Float32 first
+rejection ages are 10.3499 ms and 10.2844 ms. These use callback QPC, as does
+the actual freshness predicate, not the later check-QPC diagnostic. All three
+ETLs decode with zero lost events, format errors and
 unknowns, but contain **no Clock rebase fragments**. No actual first-rebase
 cause is established in these windows; ordinary lateness/empty PCM queues
 must not be misreported as a proven clock reset. Timer samples and 5/15-second
@@ -1636,6 +1638,17 @@ and rechecked on the guest before deletion. Archives are named
 At `2026-10-27T12:52:11+08:00`, the guest test root contains only the current
 401,920-byte native probe, has 30.103 GiB free, and has no probe processes or
 present dynamic children. Stage 7 remains open.
+
+The two event-15s first rejections match the user completion sequence/stamp
+exactly. Relative to the nominal RUN-plus-packet boundary, callbacks occur
+1.0780 ms and 0.5445 ms late; the corresponding WRITE ages at those nominal
+boundaries would be 9.2719 ms and 9.7399 ms. This explains why a sub-packet
+delay can cross the unchanged 10 ms freshness limit without causing a clock
+rebase. Callback QPC is sampled after obtaining stream State, so the records
+do not distinguish DPC dispatch delay from lock acquisition. Later empty
+queues are also not retained by the existing first-transfer/first-rejection
+record. Additional fixed first-unserved and safe submission-boundary evidence
+is needed before choosing any timing repair.
 
 ### 2026-10-27 actual MMDevice naming metadata
 
