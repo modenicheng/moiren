@@ -640,22 +640,26 @@ impl LiveSession<'_> {
                 .expect("initialized hold evidence");
             hold.observed_wall_ms = elapsed.as_millis();
             let mut header = None;
-            if let Some(window) = subscriber.read_latest()
-                && window.header().frame_end > window.header().frame_start
-            {
-                ensure!(
-                    window.elements().len() == 2
-                        && window
-                            .elements()
-                            .iter()
-                            .all(|level| level.peak.is_finite() && level.rms.is_finite()),
-                    "invalid stereo Gain signal window"
-                );
-                hold.timeline.observe(*window.header())?;
-                header = Some(*window.header());
+            // Level topics are FIFO stream blocks: drain the queued windows
+            // and validate each; the freshest header feeds the hold timeline.
+            while let Some(window) = subscriber.next() {
+                if window.header().frame_end > window.header().frame_start {
+                    ensure!(
+                        window.elements().len() == 2
+                            && window
+                                .elements()
+                                .iter()
+                                .all(|level| level.peak.is_finite() && level.rms.is_finite()),
+                        "invalid stereo Gain signal window"
+                    );
+                    header = Some(*window.header());
+                }
+            }
+            if let Some(timeline_header) = header {
+                hold.timeline.observe(timeline_header)?;
                 if elapsed >= Duration::from_secs(3) {
                     hold.after_old_three_second_threshold
-                        .observe(*window.header())?;
+                        .observe(timeline_header)?;
                 }
             }
             if let Some(soak) = &mut report.soak_idle {
