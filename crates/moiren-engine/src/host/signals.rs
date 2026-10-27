@@ -278,6 +278,7 @@ struct Directory {
 pub(crate) struct SignalHub {
     directory: Mutex<Directory>,
     pump_topic_checks: usize,
+    max_copy_bytes: usize,
 }
 impl SignalHub {
     pub(crate) fn new(config: moiren_signal::BusConfig) -> Result<Self, String> {
@@ -286,6 +287,7 @@ impl SignalHub {
             // separate visits to snapshot Latest and deliver each recipient.
             // A fixed small budget makes sparse, large-capacity hosts stale.
             pump_topic_checks: config.max_topics.saturating_mul(4),
+            max_copy_bytes: config.max_payload_bytes.max(1024 * 1024),
             directory: Mutex::new(Directory {
                 bus: Bus::new(config).map_err(|error| error.to_string())?,
                 generation: 0,
@@ -580,11 +582,28 @@ impl SignalHub {
             .directory
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        directory.bus.pump(moiren_signal::PumpBudget {
-            topic_checks: self.pump_topic_checks,
-            deliveries: 256,
-            copy_bytes: 1024 * 1024,
-        });
+        // A registered block must fit atomically, including its metadata.
+        // Reserve one whole maximum block before visiting the next slot: Bus
+        // advances its cursor on each check, even when a copy cannot fit.
+        let mut remaining = self.max_copy_bytes.saturating_mul(2);
+        let mut deliveries = 256;
+        let mut idle = 0;
+        for _ in 0..self.pump_topic_checks {
+            if remaining < self.max_copy_bytes || deliveries == 0 {
+                break;
+            }
+            let report = directory.bus.pump(moiren_signal::PumpBudget {
+                topic_checks: 1,
+                deliveries,
+                copy_bytes: remaining,
+            });
+            remaining -= report.copy_bytes;
+            deliveries -= report.deliveries;
+            idle = if report.deliveries == 0 { idle + 1 } else { 0 };
+            if idle >= self.pump_topic_checks / 4 {
+                break;
+            }
+        }
     }
     pub(crate) fn poll_interval(&self, idle: std::time::Duration) -> std::time::Duration {
         if self.has_demand() {
@@ -812,6 +831,69 @@ fn prune_slots<T>(
 mod scheduling_tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn spectrum_pump_delivers_8192_fft_at_64_and_256_channels() {
+        for channels in [64, 256] {
+            let capacity = channels * (8192 / 2 + 1);
+            let hub = SignalHub::new(moiren_signal::BusConfig {
+                max_topics: 8192,
+                max_payload_bytes: capacity * size_of::<f32>() + 128,
+                byte_budget: 128 * 1024 * 1024,
+                ..Default::default()
+            })
+            .unwrap();
+            let (control, mut host) = hub.create_host(1, 1).unwrap();
+            let (topic, mut subscriber) = {
+                let mut directory = hub.directory.lock().unwrap();
+                let topic = directory
+                    .bus
+                    .register_latest_block(
+                        "large/spectrum",
+                        BlockInit {
+                            header: SpectrumWindow {
+                                timeline_epoch: 1,
+                                frame_start: 0,
+                                frame_end: 8192,
+                                sample_rate: 48_000.,
+                                fft_size: 8192,
+                                channels,
+                            },
+                            element: 0_f32,
+                            capacity,
+                        },
+                    )
+                    .unwrap();
+                let subscriber = directory.bus.subscribe(&topic, Default::default()).unwrap();
+                (topic, subscriber)
+            };
+            let key = control.new_binding().unwrap();
+            let publisher = control.prepare(&topic, key).unwrap();
+            let update = control.prepare_update(&[publisher.erase()]).unwrap();
+            let operation = update.op_bindings(key).unwrap();
+            drop(host.activate(update).unwrap());
+            host.begin_block();
+            let mut scope = host.scope(&operation);
+            let mut write = scope.try_write(&publisher.handle(), capacity).unwrap();
+            write.elements_mut().fill(0.5);
+            write.commit(capacity).unwrap();
+            let mut received = false;
+            for _ in 0..8 {
+                hub.pump();
+                if let Some(window) = subscriber.read_latest() {
+                    assert_eq!(window.elements().len(), capacity);
+                    assert_eq!(window.elements().first(), Some(&0.5));
+                    assert_eq!(window.elements().last(), Some(&0.5));
+                    received = true;
+                    break;
+                }
+            }
+            assert!(
+                received,
+                "atomic spectrum payload starved at {channels} channels"
+            );
+        }
+    }
 
     #[test]
     fn sparse_large_directory_delivers_a_level_in_one_pump() {
