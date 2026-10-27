@@ -50,8 +50,12 @@ pub struct ExportReconcilePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportStatus {
     pub intent: ExportIntent,
-    /// Native observed metadata, distinct from a requested rename.
+    /// Name retained from the provider CREATE specification, not Windows readback.
     pub actual_name: Option<String>,
+    /// Exact Windows MMDevice FriendlyName evidence for the current native identity.
+    pub windows_name: Option<WindowsEndpointNameObservation>,
+    /// True until the provider has observed recreation with the requested CREATE name.
+    /// This is not evidence that Windows exposes the same FriendlyName.
     pub rename_pending: bool,
     pub resource: ExportResourceState,
     pub allow_default: bool,
@@ -67,6 +71,15 @@ pub struct ExportStatus {
     /// Last confirmed native removal, not a current lifecycle observation.
     #[cfg(feature = "vad-integration-probe")]
     pub native_retirement: Option<ExportRetirementEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsEndpointNameObservation {
+    pub native_identity: [u64; 3],
+    pub observed_qpc_100ns: Option<u64>,
+    pub mmdevice_id: Option<String>,
+    pub name: Option<String>,
+    pub error: Option<String>,
 }
 
 pub(super) fn same_resource(a: &ExportIntent, b: &ExportIntent) -> bool {
@@ -175,7 +188,7 @@ impl ExportService {
             .into_values()
             .map(|intent| {
                 let observed = self.observations.get(&intent.endpoint_id);
-                let actual_name = observed
+                let provider_name = observed
                     .filter(|value| {
                         self.available
                             && matches!(
@@ -184,9 +197,31 @@ impl ExportService {
                             )
                     })
                     .map(|value| value.intent.name.clone());
+                #[cfg(windows)]
+                let windows_name = self
+                    .diagnostics
+                    .get(&intent.endpoint_id)
+                    .filter(|diagnostics| {
+                        self.available
+                            && observed.is_some_and(|value| {
+                                value.resource == ExportResourceState::Present
+                                    && value.generation == diagnostics.generation
+                                    && diagnostics.native_stamp.is_some()
+                                    && diagnostics.windows_name.as_ref().is_some_and(|name| {
+                                        diagnostics.native_stamp.unwrap()[..3]
+                                            == name.native_identity
+                                    })
+                            })
+                    })
+                    .and_then(|diagnostics| diagnostics.windows_name.clone());
+                #[cfg(not(windows))]
+                let windows_name: Option<WindowsEndpointNameObservation> = None;
+                let rename_pending =
+                    intent.enabled && provider_name.as_deref() != Some(&intent.name);
                 ExportStatus {
-                    rename_pending: intent.enabled && actual_name.as_deref() != Some(&intent.name),
-                    actual_name,
+                    rename_pending,
+                    actual_name: provider_name,
+                    windows_name,
                     resource: if self.available {
                         observed.map_or(ExportResourceState::Absent, |value| value.resource)
                     } else {

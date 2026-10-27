@@ -39,6 +39,8 @@ pub(crate) struct NativeObservation {
     pub diagnostics: Option<ExportDiagnostics>,
     #[cfg(windows)]
     pub diagnostic_provenance: moiren_windows_audio::vad::VadExportDiagnosticProvenance,
+    #[cfg(windows)]
+    pub windows_name: Option<WindowsEndpointNameObservation>,
 }
 pub(crate) struct Batch {
     pub observations: Vec<NativeObservation>,
@@ -265,6 +267,14 @@ impl Runtime {
                     diagnostics.telemetry = None;
                 }
                 diagnostics.error = native.error.clone();
+                diagnostics.windows_name = native
+                    .windows_name
+                    .filter(|_| fresh && native.resource == ExportResourceState::Present)
+                    .filter(|name| {
+                        native.snapshot.is_some_and(|stamp| {
+                            name.native_identity == [stamp[0], stamp[1], stamp[2]]
+                        })
+                    });
                 diagnostics
             });
             if let Some(error) = native.error {
@@ -528,11 +538,24 @@ impl Adapter for WindowsAdapter {
                 errors.push(error);
             }
         }
-        let observations = self
-            .0
-            .export_observations()
+        let provider_views = self.0.export_observations();
+        let windows_names = self.0.export_name_observations(&provider_views);
+        let observations = provider_views
             .into_iter()
-            .map(NativeObservation::from)
+            .map(|view| {
+                let mut native = NativeObservation::from(view);
+                native.windows_name = windows_names
+                    .iter()
+                    .find(|name| name.endpoint_id == native.intent.endpoint_id)
+                    .map(|observation| WindowsEndpointNameObservation {
+                        native_identity: observation.native_identity,
+                        observed_qpc_100ns: observation.observed_qpc_100ns,
+                        mmdevice_id: observation.mmdevice_id.clone(),
+                        name: observation.name.clone(),
+                        error: observation.error.clone(),
+                    });
+                native
+            })
             .collect();
         Batch {
             observations,
@@ -588,9 +611,11 @@ impl From<moiren_windows_audio::vad::VadExportObservation> for NativeObservation
                 transport_prepared: view.transport_prepared,
                 telemetry: view.telemetry,
                 error: view.error.clone(),
+                windows_name: None,
             }),
             error: view.error,
             diagnostic_provenance: view.diagnostic_provenance,
+            windows_name: None,
         }
     }
 }

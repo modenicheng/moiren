@@ -62,6 +62,66 @@ fn complete_native(
     )
 }
 
+#[cfg(windows)]
+fn windows_name(identity: [u64; 3], name: Option<&str>) -> WindowsEndpointNameObservation {
+    WindowsEndpointNameObservation {
+        native_identity: identity,
+        observed_qpc_100ns: Some(1234),
+        mmdevice_id: Some("{exact-mmdevice}".into()),
+        name: name.map(str::to_owned),
+        error: name.is_none().then(|| "FriendlyName read failed".into()),
+    }
+}
+
+#[cfg(windows)]
+fn with_windows_name(
+    native: &mut NativeObservation,
+    name: Option<&str>,
+) -> WindowsEndpointNameObservation {
+    let stamp = native.snapshot.unwrap();
+    let observation = windows_name([stamp[0], stamp[1], stamp[2]], name);
+    native.windows_name = Some(observation.clone());
+    observation
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_name_evidence_is_exact_identity_scoped_and_not_provider_name_fallback() {
+    let (graph, intent) = runtime_graph();
+    let mut runtime = Runtime::default();
+    let mut service = ExportService::default();
+    service.set_available(true);
+
+    let mut native = NativeObservation::from(provider_view(&intent));
+    let first_name = with_windows_name(&mut native, Some("Old Windows name"));
+    complete_native(&mut runtime, &mut service, native);
+    let status = service.statuses(&graph).remove(0);
+    assert_eq!(status.actual_name.as_deref(), Some(intent.name.as_str()));
+    assert_eq!(status.windows_name, Some(first_name));
+    assert!(!status.rename_pending);
+
+    let mut query_failed = NativeObservation::from(provider_view(&intent));
+    query_failed.diagnostic_provenance = VadExportDiagnosticProvenance::CachedAfterQueryFailure;
+    query_failed.error = Some("QUERY timeout".into());
+    query_failed.windows_name = Some(windows_name([1, 1, 1], Some("Old Windows name")));
+    complete_native(&mut runtime, &mut service, query_failed);
+    assert_eq!(service.statuses(&graph)[0].windows_name, None);
+
+    let mut replacement = NativeObservation::from(provider_view(&intent));
+    replacement.snapshot = Some([2, 7, 2, 0, 5]);
+    replacement.windows_name = Some(windows_name([1, 7, 1], Some("Old Windows name")));
+    complete_native(&mut runtime, &mut service, replacement);
+    assert_eq!(service.statuses(&graph)[0].windows_name, None);
+
+    let mut fresh_replacement = NativeObservation::from(provider_view(&intent));
+    fresh_replacement.snapshot = Some([2, 7, 2, 0, 5]);
+    let current_name = with_windows_name(&mut fresh_replacement, Some("Requested playback"));
+    complete_native(&mut runtime, &mut service, fresh_replacement);
+    let status = service.statuses(&graph).remove(0);
+    assert_eq!(status.windows_name, Some(current_name));
+    assert!(!status.rename_pending);
+}
+
 #[test]
 fn provider_mapping_preserves_telemetry_transport_state_and_endpoint_error() {
     let (_, intent) = runtime_graph();

@@ -70,11 +70,13 @@ fn held_export(direction: ExportDirection, name: &str, old_name: &str, id: u8) -
             transport_prepared: false,
             telemetry: None,
             error: None,
+            windows_name: None,
         }),
         #[cfg(feature = "vad-integration-probe")]
         native_stamp: None,
         #[cfg(feature = "vad-integration-probe")]
         native_retirement: None,
+        windows_name: None,
     }
 }
 
@@ -109,7 +111,7 @@ fn assert_export_rows(
     window: &mut Window,
     cx: &mut App,
     id: &SharedString,
-    names: &[&str; 4],
+    names: &[&str; 6],
     lifecycle: &[&str],
 ) {
     window.scroll(
@@ -146,8 +148,8 @@ fn accept_rename_snapshots(
     cx: &mut TestAppContext,
     status: ExportStatus,
     id: &'static str,
-    held_names: [&str; 4],
-    recreated_names: [&str; 4],
+    held_names: [&str; 6],
+    recreated_names: [&str; 6],
 ) {
     // The core-driver service supplies the shell handle only. These replacements
     // deliberately do not dispatch rename requests or exercise a native adapter.
@@ -184,6 +186,7 @@ fn accept_rename_snapshots(
 
         let status = &mut snapshot.exports[0];
         status.actual_name = None;
+        status.windows_name = None;
         status.resource = ExportResourceState::Absent;
         let diagnostics = status.diagnostics.as_mut().unwrap();
         diagnostics.generation = 42;
@@ -197,12 +200,15 @@ fn accept_rename_snapshots(
             held_names[0],
             held_names[1],
             held_names[2],
-            "Actual endpoint name: Unknown / not present",
+            "Provider-created name: Unknown / not present",
+            "Windows endpoint name: Unknown / not observed",
+            "Windows name match: Pending native recreation",
         ];
         assert_export_rows(window, cx, &id, &refused_names, &REFUSED_ROWS);
 
         let status = &mut snapshot.exports[0];
         status.actual_name = Some(status.intent.name.clone());
+        status.windows_name = None;
         status.rename_pending = false;
         status.resource = ExportResourceState::Present;
         let diagnostics = status.diagnostics.as_mut().unwrap();
@@ -237,13 +243,17 @@ fn playback_rendered_rename_refusal_and_fresh_replacement(cx: &mut TestAppContex
             "Stable endpoint ID: 07070707070707070707070707070707",
             "Export direction: Playback",
             "Requested endpoint name: Renamed playback",
-            "Actual endpoint name: Held playback",
+            "Provider-created name: Held playback",
+            "Windows endpoint name: Unknown / not observed",
+            "Windows name match: Pending native recreation",
         ],
         [
             "Stable endpoint ID: 07070707070707070707070707070707",
             "Export direction: Playback",
             "Requested endpoint name: Renamed playback",
-            "Actual endpoint name: Renamed playback",
+            "Provider-created name: Renamed playback",
+            "Windows endpoint name: Unknown / not observed",
+            "Windows name match: Unknown / not observed",
         ],
     );
 }
@@ -264,13 +274,17 @@ fn microphone_rendered_rename_refusal_and_fresh_replacement(cx: &mut TestAppCont
             "Stable endpoint ID: 08080808080808080808080808080808",
             "Export direction: Microphone",
             "Requested endpoint name: \u{9ea6}\u{514b}\u{98ce} Renamed",
-            "Actual endpoint name: Held microphone",
+            "Provider-created name: Held microphone",
+            "Windows endpoint name: Unknown / not observed",
+            "Windows name match: Pending native recreation",
         ],
         [
             "Stable endpoint ID: 08080808080808080808080808080808",
             "Export direction: Microphone",
             "Requested endpoint name: \u{9ea6}\u{514b}\u{98ce} Renamed",
-            "Actual endpoint name: \u{9ea6}\u{514b}\u{98ce} Renamed",
+            "Provider-created name: \u{9ea6}\u{514b}\u{98ce} Renamed",
+            "Windows endpoint name: Unknown / not observed",
+            "Windows name match: Unknown / not observed",
         ],
     );
 }

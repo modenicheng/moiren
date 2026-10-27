@@ -1,4 +1,5 @@
 //! Detached Windows provider evidence, read only on the application control side.
+use super::WindowsEndpointNameObservation;
 use moiren_windows_audio::vad::VadPcmTelemetrySnapshot;
 
 /// Diagnostic evidence for one accepted lifecycle observation. These values
@@ -12,4 +13,5 @@ pub struct ExportDiagnostics {
     pub transport_prepared: bool,
     pub telemetry: Option<VadPcmTelemetrySnapshot>,
     pub error: Option<String>,
+    pub windows_name: Option<WindowsEndpointNameObservation>,
 }

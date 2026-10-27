@@ -502,6 +502,17 @@ Provider export diagnostics	-	crates/moiren-app/src/ui/window/settings.rs	提供
 Stable endpoint ID	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	稳定端点身份
 Export direction	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	导出方向
 Requested endpoint name	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	请求端点名称
+Provider-created name	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	区分提供方创建名与 Windows 实际属性
+Windows endpoint name	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	显示 Windows MMDevice FriendlyName 读回
+Windows name match	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	区分请求名匹配状态
+Windows name readback error	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	保留 Windows 名称属性读取错误
+Windows name MMDevice ID	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	名称读回端点身份
+Windows name observation QPC (100 ns)	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	名称观测时间戳
+Unknown / not observed	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	未读回名称时明确显示未知
+Matches requested name	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	请求名称与 Windows 实际属性相等
+Does not match requested name	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	请求名称与 Windows 实际属性不等
+Read failed	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	区分名称读取失败
+Pending native recreation	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	原生端点重建前不误报名称已匹配
 Diagnostic scope	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	诊断范围
 Latest native export observation (not live audio)	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	最近一次原生导出观测，不代表实时音频
 Observation generation	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	观测代次

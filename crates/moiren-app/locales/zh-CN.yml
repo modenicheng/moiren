@@ -1513,6 +1513,39 @@ _version: 2
 "Requested endpoint name":
   en: Requested endpoint name
   zh-CN: 请求的端点名称
+"Provider-created name":
+  en: Provider-created name
+  zh-CN: 提供方创建名称
+"Windows endpoint name":
+  en: Windows endpoint name
+  zh-CN: Windows 端点名称
+"Windows name match":
+  en: Windows name match
+  zh-CN: Windows 名称匹配状态
+"Windows name readback error":
+  en: Windows name readback error
+  zh-CN: Windows 名称读取错误
+"Windows name MMDevice ID":
+  en: Windows name MMDevice ID
+  zh-CN: Windows 名称对应的 MMDevice ID
+"Windows name observation QPC (100 ns)":
+  en: Windows name observation QPC (100 ns)
+  zh-CN: Windows 名称观测 QPC（100 ns）
+"Unknown / not observed":
+  en: Unknown / not observed
+  zh-CN: 未知 / 尚未观测
+"Matches requested name":
+  en: Matches requested name
+  zh-CN: 与请求名称一致
+"Does not match requested name":
+  en: Does not match requested name
+  zh-CN: 与请求名称不一致
+"Read failed":
+  en: Read failed
+  zh-CN: 读取失败
+"Pending native recreation":
+  en: Pending native recreation
+  zh-CN: 等待原生端点重建
 "Diagnostic scope":
   en: Diagnostic scope
   zh-CN: 诊断范围

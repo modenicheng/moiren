@@ -7,6 +7,23 @@ use rust_i18n::t;
 /// Pure control-side formatting; no diagnostic value authorizes a gate or
 /// supplies an active revision. Do not apply the live-session timing filter.
 pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
+    let windows_name = status.windows_name.as_ref();
+
+    let windows_name_text = windows_name
+        .and_then(|observation| observation.name.clone())
+        .unwrap_or_else(|| t!("Unknown / not observed").into());
+    let windows_name_match = if status.rename_pending {
+        t!("Pending native recreation").into()
+    } else if let Some(observation) = windows_name {
+        match observation.name.as_deref() {
+            Some(name) if name == status.intent.name => t!("Matches requested name").into(),
+            Some(_) => t!("Does not match requested name").into(),
+            None if observation.error.is_some() => t!("Read failed").into(),
+            None => t!("Unknown / not observed").into(),
+        }
+    } else {
+        t!("Unknown / not observed").into()
+    };
     let mut rows = vec![
         (
             t!("Stable endpoint ID").into(),
@@ -24,13 +41,29 @@ pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
             status.intent.name.clone(),
         ),
         (
-            t!("Actual endpoint name").into(),
+            t!("Provider-created name").into(),
             status
                 .actual_name
                 .clone()
                 .unwrap_or_else(|| t!("Unknown / not present").into()),
         ),
+        (t!("Windows endpoint name").into(), windows_name_text),
+        (t!("Windows name match").into(), windows_name_match),
     ];
+    if let Some(observation) = windows_name {
+        if let Some(error) = &observation.error {
+            rows.push((t!("Windows name readback error").into(), error.clone()));
+        }
+        if let Some(mmdevice_id) = &observation.mmdevice_id {
+            rows.push((t!("Windows name MMDevice ID").into(), mmdevice_id.clone()));
+        }
+        if let Some(qpc) = observation.observed_qpc_100ns {
+            rows.push((
+                t!("Windows name observation QPC (100 ns)").into(),
+                qpc.to_string(),
+            ));
+        }
+    }
     if status.rename_pending {
         rows.push((
             t!("Rename").into(),

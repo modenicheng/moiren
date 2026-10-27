@@ -353,11 +353,34 @@ fn export_row(
         .rounded(px(theme::RADIUS_MD))
         .child(heading(status.intent.name.clone()))
         .child(detail(
-            &t!("Actual endpoint name"),
+            &t!("Provider-created name"),
             status
                 .actual_name
                 .clone()
                 .unwrap_or_else(|| t!("Unknown / not present").into()),
+        ))
+        .child(detail(
+            &t!("Windows endpoint name"),
+            status
+                .windows_name
+                .as_ref()
+                .and_then(|observation| observation.name.clone())
+                .unwrap_or_else(|| t!("Unknown / not observed").into()),
+        ))
+        .child(detail(
+            &t!("Windows name match"),
+            if status.rename_pending {
+                t!("Pending native recreation")
+            } else if let Some(observation) = &status.windows_name {
+                match observation.name.as_deref() {
+                    Some(name) if name == status.intent.name => t!("Matches requested name"),
+                    Some(_) => t!("Does not match requested name"),
+                    None if observation.error.is_some() => t!("Read failed"),
+                    None => t!("Unknown / not observed"),
+                }
+            } else {
+                t!("Unknown / not observed")
+            },
         ))
         .when(status.rename_pending, |row| {
             row.child(label(t!("Name pending; waiting for native recreation")))

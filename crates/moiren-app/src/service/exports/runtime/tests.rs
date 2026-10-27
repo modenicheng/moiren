@@ -178,6 +178,7 @@ impl Adapter for FakeAdapter {
                 #[cfg(windows)]
                 diagnostic_provenance:
                     moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                windows_name: None,
                 error: None,
             })
             .collect();
@@ -470,6 +471,7 @@ fn idle_native_mapping_plans_gate_open_only_after_engine_confirmation() {
                         #[cfg(windows)]
                         diagnostic_provenance:
                             moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                        windows_name: None,
                         error: None,
                     }],
                     errors: vec![],
@@ -533,6 +535,7 @@ fn unhealthy_native_observation_cannot_confirm_or_prepare_and_plans_gate_close()
                 #[cfg(windows)]
                 diagnostic_provenance:
                     moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                windows_name: None,
                 error: Some("QUERY timed out; snapshot is last known".into()),
             }],
             errors: vec![],
@@ -586,6 +589,7 @@ fn lifecycle_readiness_does_not_require_transport_admission() {
                 #[cfg(windows)]
                 diagnostic_provenance:
                     moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                windows_name: None,
                 error: None,
             }],
             errors: vec![],
@@ -636,6 +640,7 @@ fn confirmed_absence_releases_app_tracking_across_documents() {
                     #[cfg(windows)]
                     diagnostic_provenance:
                         moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                    windows_name: None,
                     error: None,
                 }],
                 errors: vec![],
@@ -667,6 +672,7 @@ mod native_stamp {
                 #[cfg(windows)]
                 diagnostic_provenance:
                     moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                windows_name: None,
                 error: None,
             }],
             errors: vec![],

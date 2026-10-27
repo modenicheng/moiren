@@ -49,11 +49,13 @@ fn export() -> ExportStatus {
                 recovery_events: 43,
             }),
             error: Some("PCM preparation refused: packet quota 0x80070057".into()),
+            windows_name: None,
         }),
         #[cfg(feature = "vad-integration-probe")]
         native_stamp: None,
         #[cfg(feature = "vad-integration-probe")]
         native_retirement: None,
+        windows_name: None,
     }
 }
 
@@ -63,6 +65,73 @@ fn value<'a>(rows: &'a [(String, String)], key: &str) -> &'a str {
         .unwrap_or_else(|| panic!("missing {key:?} in {rows:?}"))
         .1
         .as_str()
+}
+
+#[test]
+fn provider_created_name_is_not_presented_as_windows_name_evidence() {
+    let mut status = export();
+    status.actual_name = Some(status.intent.name.clone());
+    status.rename_pending = false;
+    let rows = export_diagnostic_rows(&status);
+    assert_eq!(
+        value(&rows, "Provider-created name"),
+        value(&rows, "Requested endpoint name")
+    );
+    assert_eq!(
+        value(&rows, "Windows endpoint name"),
+        "Unknown / not observed"
+    );
+    assert_eq!(value(&rows, "Windows name match"), "Unknown / not observed");
+    assert!(!rows.iter().any(|(key, _)| key == "Rename"));
+}
+
+#[test]
+fn windows_name_mismatch_and_read_error_are_visible() {
+    let mut status = export();
+    status.actual_name = Some(status.intent.name.clone());
+    status.rename_pending = true;
+    status.windows_name = Some(crate::service::WindowsEndpointNameObservation {
+        native_identity: [1, 2, 3],
+        observed_qpc_100ns: Some(1234),
+        mmdevice_id: Some("{observed-device}".into()),
+        name: Some("Stale Windows name".into()),
+        error: None,
+    });
+    let rows = export_diagnostic_rows(&status);
+    assert_eq!(value(&rows, "Provider-created name"), "Requested playback");
+    assert_eq!(value(&rows, "Windows endpoint name"), "Stale Windows name");
+    status.rename_pending = false;
+    let rows = export_diagnostic_rows(&status);
+    assert_eq!(
+        value(&rows, "Windows name match"),
+        "Does not match requested name"
+    );
+    assert_eq!(
+        value(&rows, "Windows name MMDevice ID"),
+        "{observed-device}"
+    );
+    assert_eq!(
+        value(&rows, "Windows name observation QPC (100 ns)"),
+        "1234"
+    );
+
+    status.windows_name = Some(crate::service::WindowsEndpointNameObservation {
+        native_identity: [1, 2, 3],
+        observed_qpc_100ns: Some(5678),
+        mmdevice_id: Some("{failed-device}".into()),
+        name: None,
+        error: Some("GetValue FriendlyName: 0x80070005".into()),
+    });
+    let rows = export_diagnostic_rows(&status);
+    assert_eq!(
+        value(&rows, "Windows endpoint name"),
+        "Unknown / not observed"
+    );
+    assert_eq!(value(&rows, "Windows name match"), "Read failed");
+    assert_eq!(
+        value(&rows, "Windows name readback error"),
+        "GetValue FriendlyName: 0x80070005"
+    );
 }
 
 #[test]
@@ -107,7 +176,15 @@ fn provider_diagnostics_identify_requested_actual_and_pending_names_with_exact_e
         value(&rows, "Requested endpoint name"),
         "Requested playback"
     );
-    assert_eq!(value(&rows, "Actual endpoint name"), "Observed playback");
+    assert_eq!(value(&rows, "Provider-created name"), "Observed playback");
+    assert_eq!(
+        value(&rows, "Windows endpoint name"),
+        "Unknown / not observed"
+    );
+    assert_eq!(
+        value(&rows, "Windows name match"),
+        "Pending native recreation"
+    );
     assert_eq!(
         value(&rows, "Rename"),
         "Name pending; waiting for native recreation"
@@ -176,8 +253,8 @@ fn provider_diagnostics_missing_evidence_never_fabricates_zero_or_preparation() 
         assert_eq!(value(&rows, key), "Unavailable", "{key}");
     }
     assert_eq!(
-        value(&rows, "Actual endpoint name"),
-        "Unknown / not present"
+        value(&rows, "Windows endpoint name"),
+        "Unknown / not observed"
     );
     assert!(!rows.iter().any(|(key, _)| key.starts_with("Cumulative")));
     assert!(
@@ -264,7 +341,15 @@ fn provider_diagnostics_pending_rename_recreation_failure_retains_stable_identit
         value(&rows, "Requested endpoint name"),
         "Requested playback"
     );
-    assert_eq!(value(&rows, "Actual endpoint name"), "Observed playback");
+    assert_eq!(value(&rows, "Provider-created name"), "Observed playback");
+    assert_eq!(
+        value(&rows, "Windows endpoint name"),
+        "Unknown / not observed"
+    );
+    assert_eq!(
+        value(&rows, "Windows name match"),
+        "Pending native recreation"
+    );
     assert_eq!(
         value(&rows, "Rename"),
         "Name pending; waiting for native recreation"
@@ -295,6 +380,13 @@ fn provider_diagnostics_translate_scope_units_counters_and_unknown_states() {
         ),
         ("Not prepared", "未准备"),
         ("Provider packet telemetry", "提供方数据包遥测"),
+        ("Provider-created name", "提供方创建名称"),
+        ("Windows endpoint name", "Windows 端点名称"),
+        ("Windows name match", "Windows 名称匹配状态"),
+        ("Unknown / not observed", "未知 / 尚未观测"),
+        ("Pending native recreation", "等待原生端点重建"),
+        ("Matches requested name", "与请求名称一致"),
+        ("Does not match requested name", "与请求名称不一致"),
         ("Endpoint error", "端点错误"),
         ("Unknown / unqualified", "未知 / 未经验证"),
         ("CPU load", "CPU 负载"),
