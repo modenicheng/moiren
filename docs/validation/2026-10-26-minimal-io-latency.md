@@ -1820,3 +1820,59 @@ installation/trace/runner/run files have been removed; Windows, DriverStore
 and rollback packages are preserved. Builds and historical artifacts stay
 on the host. Stage 7, zero-quality native stability, exact Windows naming
 and calibrated physical latency remain unqualified.
+
+### 2026-10-27 typed interface publication experiment
+
+`2121277` retains ordinary FriendlyName/EP0 staging and adds typed
+`DEVPKEY_DeviceInterface_FriendlyName` publication on each actual registered
+symbolic link, before ACX exposure. The passive system worker sets one
+persistent plain UTF-16 string and reads it back into a fixed-size buffer;
+status, exact type/length/content/terminator mismatches fail policy closed.
+Link ownership/rollback is retained. No MMDevice property write, category or
+stable-ID change, retry loop, RT allocation or user-name trace is added.
+
+The new production-extracted test first fails against the old staging path.
+All ten host C++ suites, three negative mutations, independent review, parent
+host rerun, analyzed WDK build, InfVerif and warning-free TMF decoding pass.
+The typed-name WPP record has exactly six fields. These checks prove bounded
+publication/readback, not EndpointBuilder consumption or a final name fix.
+
+The signed package is installed on the VM as `oem35.inf`; installed SYS is
+121,240 bytes with SHA-256
+`F517517781C8A41D47AAC259665CB39EF22BE127261EA66C54B2FC0D2BD0A376`.
+The host package/PDB/TMF/install archive is
+`target/vad-target-archive/20261027-driver-2121277`.
+
+The unchanged `d786851` integration probe uses unused diagnostic seed
+`202610271333`, retaining each stable ID within its rename. The run exits 1,
+reports 3,771 ms work, and has no watchdog/storage-cap/cleanup failure.
+Direct old Removed, fresh replacement, exclusive native initialization,
+Engine confirmation and client/service/control release pass in both
+directions. Historical strict-held failures remain sticky, as before.
+
+All twelve typed publication/readback records (three categories for each
+direction, initial and recreated PDO) report success, type 18, exact returned
+bytes and match=1. Initial names occupy 92/96 bytes and requested rename
+names 56/60 bytes. Nevertheless actual MMDevice values remain unchanged:
+
+| Direction | Actual DeviceDesc before and after | Actual interface description before and after |
+| --- | --- | --- |
+| Playback | `扬声器` | `28- Moiren virtual audio endpoint` |
+| Microphone | `Moiren integration microphone seed 202610271333` | `27- Moiren virtual audio endpoint` |
+
+Final FriendlyName remains the corresponding composed old name, not
+`Moiren rename Playback 1652` or `Moiren rename Microphone 1652`.
+Exact-name acceptance fails unchanged. This experiment rules out a failed
+typed set/readback on the staged owned links in this run; it does not prove
+which interface EndpointBuilder consumed. Stop adding name setters and
+resolve the actual MMDevice-to-KS-filter/interface mapping before selecting
+another naming change.
+
+The 168-event ETL has zero lost events, format errors or unknown formats.
+Ten original run files total 408,986 bytes; host length/SHA-256 verification
+and guest recheck precede deletion. The archive is
+`target/vad-target-archive/20261027-rename-2121277-r1`. Installation staging,
+runner, run files and trace tool are removed immediately after their checks.
+At `2026-10-27T13:34:37+08:00` the guest holds only the current 7,624,192-byte
+integration probe with 30.093 GiB free. System, DriverStore and rollback
+packages are preserved. Exact Windows rename and Stage 7 remain open.
