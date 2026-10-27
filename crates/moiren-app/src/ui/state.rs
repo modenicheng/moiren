@@ -438,7 +438,11 @@ impl UiState {
             (AppRequest::Start(spec), block_frames)
         };
         preparation
-            .configured_engine_project(block_frames, &self.snapshot.audio_settings)
+            .configured_engine_project(
+                block_frames,
+                &self.snapshot.audio_settings,
+                self.snapshot.latency_profile,
+            )
             .map_err(|error| t!("Graph is not ready: %{error}", error = error).to_string())?;
         Ok(request)
     }
@@ -1016,7 +1020,7 @@ mod tests {
         assert_eq!(state.snapshot.phase, SessionPhase::Idle);
         assert_eq!(
             crate::ui::presentation::latency_apply_text(&state.snapshot),
-            "Explicit stream buffers control professional audio latency"
+            "Selected profile activates on the next audio start"
         );
         finish_service(runtime);
     }

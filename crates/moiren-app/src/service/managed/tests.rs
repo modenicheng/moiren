@@ -868,7 +868,10 @@ fn audio_settings_are_draft_until_apply_and_restart_reaps_previous_owner() {
     rig.tick();
     assert_eq!(rig.c.active_audio_settings, None);
     rig.wait(|r| r.c.active_audio_settings.as_ref() == Some(&settings));
-    assert_eq!(rig.c.active_latency_profile, None);
+    assert_eq!(
+        rig.c.active_latency_profile,
+        Some(crate::service::AudioLatencyProfile::Compatible)
+    );
     assert_ne!(rig.c.core.generation(), first_generation);
     assert_eq!(rig.state.starts.load(Ordering::SeqCst), 2);
     assert_eq!(rig.state.stops.load(Ordering::SeqCst), 1);

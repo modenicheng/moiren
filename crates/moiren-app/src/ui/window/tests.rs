@@ -720,22 +720,14 @@ impl crate::service::ServiceDriver for SettingsConfirmationDriver {
             context.graph.preparing(generation, revision);
             context.graph.running(generation, revision);
             context.active_audio_settings = Some(context.audio_settings.clone());
-            context.active_latency_profile = if context.audio_settings == Default::default() {
-                Some(context.latency_profile)
-            } else {
-                None
-            };
+            context.active_latency_profile = Some(context.latency_profile);
         }
         if self.awaiting && self.confirm.load(std::sync::atomic::Ordering::Acquire) {
             self.awaiting = false;
             let revision = context.graph.snapshot().candidate_revision;
             context.graph.running(context.core.generation(), revision);
             context.active_audio_settings = Some(context.audio_settings.clone());
-            context.active_latency_profile = if context.audio_settings == Default::default() {
-                Some(context.latency_profile)
-            } else {
-                None
-            };
+            context.active_latency_profile = Some(context.latency_profile);
         }
     }
 

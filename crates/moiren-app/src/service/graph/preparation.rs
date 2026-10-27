@@ -8,13 +8,18 @@ impl GraphPreparation {
         &self,
         max_block_frames: usize,
     ) -> Result<moiren_engine::host::EngineProject, String> {
-        self.configured_engine_project(max_block_frames, &crate::service::AudioSettings::default())
+        self.configured_engine_project(
+            max_block_frames,
+            &crate::service::AudioSettings::default(),
+            crate::service::AudioLatencyProfile::default(),
+        )
     }
 
     pub fn configured_engine_project(
         &self,
         max_block_frames: usize,
         settings: &crate::service::AudioSettings,
+        profile: crate::service::AudioLatencyProfile,
     ) -> Result<moiren_engine::host::EngineProject, String> {
         use moiren_core::protocol::ParamValue;
         use moiren_engine::{
@@ -27,10 +32,9 @@ impl GraphPreparation {
             processor::{Gain, Pan},
         };
         settings.validate().map_err(|error| error.to_string())?;
-        // The legacy default backend negotiates native Shared mix rates and
-        // adapts capture to 48 kHz itself. Keep its unspecified hardware intent;
-        // every professional configuration resolves explicit processing intent.
-        let legacy_defaults = settings == &crate::service::AudioSettings::default();
+        let profile_buffer = profile
+            .requested_buffer_frames()
+            .map(|frames| frames as usize);
         self.primary_io_nodes()?;
         let mut project = EngineProject {
             graph: self.graph.clone(),
@@ -103,12 +107,15 @@ impl GraphPreparation {
                             if !inputs.insert(format!("physical:{endpoint_id}")) {
                                 return Err("多个输入节点绑定了同一物理设备".into());
                             }
-                            if !legacy_defaults {
-                                device = settings.effective_input(endpoint_id).device_options(
-                                    settings.backend,
-                                    settings.processing.sample_rate,
-                                    ClockRole::Follower,
-                                );
+                            device = settings.effective_input(endpoint_id).device_options(
+                                settings.backend,
+                                settings.processing.sample_rate,
+                                ClockRole::Follower,
+                            );
+                            if device.period_frames.is_none()
+                                && let Some(frames) = profile_buffer
+                            {
+                                device.period_frames = Some(frames);
                             }
                             InputSource::Physical(pinned(endpoint_id))
                         }
@@ -156,21 +163,20 @@ impl GraphPreparation {
                     } else {
                         ClockRole::Follower
                     };
+                    let mut device = settings.effective_output(endpoint).device_options(
+                        settings.backend,
+                        settings.processing.sample_rate,
+                        clock_role,
+                    );
+                    if device.period_frames.is_none()
+                        && let Some(frames) = profile_buffer
+                    {
+                        device.period_frames = Some(frames);
+                    }
                     NodeConfig::Output(OutputConfig {
                         target: OutputTarget::Physical(pinned(endpoint)),
                         channels: node.channels(),
-                        device: if legacy_defaults {
-                            DeviceOptions {
-                                clock_role,
-                                ..DeviceOptions::default()
-                            }
-                        } else {
-                            settings.effective_output(endpoint).device_options(
-                                settings.backend,
-                                settings.processing.sample_rate,
-                                clock_role,
-                            )
-                        },
+                        device,
                     })
                 }
                 NodeKind::Gain => NodeConfig::Gain { initial: 1.0 },

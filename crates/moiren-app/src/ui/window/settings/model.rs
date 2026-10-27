@@ -107,11 +107,8 @@ impl Draft {
     }
 }
 
-pub(super) fn expected_active_profile(
-    audio: &AudioSettings,
-    profile: AudioLatencyProfile,
-) -> Option<AudioLatencyProfile> {
-    (audio == &AudioSettings::default()).then_some(profile)
+pub(super) fn expected_active_profile(profile: AudioLatencyProfile) -> Option<AudioLatencyProfile> {
+    Some(profile)
 }
 
 fn merge_value<T: PartialEq>(original: T, edited: T, current: T, label: &str) -> Result<T, String> {

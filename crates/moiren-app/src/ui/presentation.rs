@@ -33,15 +33,11 @@ pub fn phase_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
 }
 
 pub fn latency_apply_text(snapshot: &AppSnapshot) -> Cow<'static, str> {
-    if snapshot.audio_settings != crate::service::AudioSettings::default() {
-        return t!("Explicit stream buffers control professional audio latency");
-    }
     match snapshot.active_latency_profile {
         Some(active) if active == snapshot.latency_profile => {
             t!("Active profile matches selection")
         }
-        Some(_) => t!("Selected profile activates on the next audio start"),
-        None => t!("Selected profile activates on the next audio start"),
+        _ => t!("Selected profile activates on the next audio start"),
     }
 }
 
