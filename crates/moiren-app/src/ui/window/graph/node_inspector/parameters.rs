@@ -16,6 +16,14 @@ pub(super) fn parameters(
         )
         .into_any_element();
     }
+    if node.kind() == NodeKind::SpectrumAnalyzer {
+        return Disclosure::new(
+            Section::Advanced,
+            id,
+            super::super::node_controls::spectrum_inspector(shell, entry, cx),
+        )
+        .into_any_element();
+    }
     let mut view = body();
     if node.kind() == NodeKind::Recorder {
         view = view.child(super::super::node_controls::recording_format_controls(

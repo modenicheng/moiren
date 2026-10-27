@@ -2106,3 +2106,71 @@ _version: 2
 "Unavailable for this stage":
   en: "Unavailable for this stage"
   zh-CN: "此阶段不可用"
+
+"Peak bin":
+  en: "Peak bin"
+  zh-CN: "峰值频点"
+
+"Resolution / window":
+  en: "Resolution / window"
+  zh-CN: "分辨率 / 窗长"
+
+"Running FFT / hop":
+  en: "Running FFT / hop"
+  zh-CN: "运行中 FFT / 步长"
+
+"Hann window / peak amplitude per bin":
+  en: "Hann window / peak amplitude per bin"
+  zh-CN: "Hann 窗 / 各频点峰值幅度"
+
+"Log frequency / dBFS per bin; DC excluded from curve. Peak-preserving display, no averaging.":
+  en: "Log frequency / dBFS per bin; DC excluded from curve. Peak-preserving display, no averaging."
+  zh-CN: "对数频率 / 各频点 dBFS；曲线不含直流。显示保留峰值，不做平均。"
+
+"Next channel":
+  en: "Next channel"
+  zh-CN: "下一通道"
+
+"Previous channel":
+  en: "Previous channel"
+  zh-CN: "上一通道"
+
+"Waiting for a complete spectrum window":
+  en: "Waiting for a complete spectrum window"
+  zh-CN: "等待完整频谱窗口"
+
+"No recent spectrum window":
+  en: "No recent spectrum window"
+  zh-CN: "未收到近期频谱"
+
+"Waiting":
+  en: "Waiting"
+  zh-CN: "等待中"
+
+"Stale":
+  en: "Stale"
+  zh-CN: "已过期"
+
+"Error":
+  en: "Error"
+  zh-CN: "错误"
+
+"frames":
+  en: "frames"
+  zh-CN: "帧"
+
+"FFT points":
+  en: "FFT points"
+  zh-CN: "FFT 点数"
+
+"Hop frames":
+  en: "Hop frames"
+  zh-CN: "步长帧数"
+
+"Power of two from 16 to 8192":
+  en: "Power of two from 16 to 8192"
+  zh-CN: "16 至 8192 之间的 2 的幂"
+
+"Floor":
+  en: "Floor"
+  zh-CN: "下限"

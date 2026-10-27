@@ -12,7 +12,6 @@ use moiren_engine::{
     meter::MeterSettings,
     processor::{ChannelMapperSettings, DelaySettings, EqSettings, GateSettings, LimiterSettings},
     recorder::RecorderSettings,
-    spectrum::SpectrumSettings,
 };
 
 mod binding;

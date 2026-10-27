@@ -32,6 +32,199 @@ fn show_card(view: &Entity<StudioShell>, cx: &mut VisualTestContext, id: NodeId)
     settle_panels(cx);
 }
 
+#[gpui_kit::test]
+fn spectrum_card_and_inspector_offer_a_real_plot_and_the_same_fft_choices(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (view, cx, runtime) = test_shell(cx);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                kind: NodeKind::SpectrumAnalyzer,
+                channels: 2,
+            }));
+        });
+    });
+    poll_graph(&view, cx, |graph| {
+        graph.node_of_kind(NodeKind::SpectrumAnalyzer).is_some()
+    });
+    let id = view.read_with(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node_of_kind(NodeKind::SpectrumAnalyzer)
+            .unwrap()
+            .0
+            .id()
+    });
+    show_card(&view, cx, id);
+    let unchanged = view.read_with(cx, |shell, cx| shell.state.read(cx).snapshot.graph.clone());
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(format!("spectrum-plot-card-{id:?}")).visible());
+        for fft in [512, 1024, 2048, 4096, 8192] {
+            assert!(
+                window
+                    .find(format!("card-spectrum-fft-{id:?}-{fft}"))
+                    .visible()
+            );
+        }
+        window.click(format!("spectrum-channel-next-card-{id:?}"), cx);
+        window.click(format!("spectrum-range-card-{id:?}-120"), cx);
+        window.click(format!("card-details-{id:?}"), cx);
+    });
+    settle_panels(cx);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .find(format!("spectrum-plot-inspector-{id:?}"))
+                .visible()
+        );
+        for fft in [512, 1024, 2048, 4096, 8192] {
+            assert!(
+                window
+                    .find(format!("inspector-spectrum-fft-{id:?}-{fft}"))
+                    .visible()
+            );
+        }
+        assert!(window.find(format!("spectrum-exact-{id:?}-Fft")).visible());
+        assert!(window.find(format!("spectrum-exact-{id:?}-Hop")).visible());
+    });
+    view.read_with(cx, |shell, cx| {
+        assert_eq!(shell.node_controls.spectrum[&id].channel, 1);
+        assert_eq!(shell.state.read(cx).snapshot.graph, unchanged);
+    });
+    cx.update(|window, cx| {
+        // Queue independent settings before publication, then return to the
+        // rendered-selected FFT. A selected button cannot swallow this intent.
+        window.click(format!("inspector-spectrum-fft-{id:?}-4096"), cx);
+        window.click(format!("inspector-spectrum-hop-{id:?}-256"), cx);
+        window.click(format!("inspector-spectrum-fft-{id:?}-1024"), cx);
+    });
+    poll_graph(&view, cx, |graph| {
+        graph
+            .node(id)
+            .unwrap()
+            .builtin
+            .spectrum()
+            .is_some_and(|settings| settings.fft_size == 1024 && settings.hop_frames == 256)
+    });
+    use super::utility::spectrum::editor::Field;
+    for (field, value) in [(Field::Fft, "256"), (Field::Hop, "17")] {
+        cx.update(|window, cx| {
+            view.update(cx, |shell, cx| {
+                let input = shell.node_controls.spectrum_editors.inputs[&(id, field)].clone();
+                let focus = input.read(cx).focus_handle(cx);
+                assert!(shell.typing_focus(&focus, cx));
+                window.focus(&focus, cx);
+                input.update(cx, |input, cx| {
+                    input.set_value(value, window, cx);
+                    cx.emit(InputEvent::PressEnter {
+                        secondary: false,
+                        shift: false,
+                    });
+                });
+            });
+        });
+        flush_card_requests(&view, cx);
+    }
+    poll_graph(&view, cx, |graph| {
+        graph
+            .node(id)
+            .unwrap()
+            .builtin
+            .spectrum()
+            .is_some_and(|s| s.fft_size == 256 && s.hop_frames == 17)
+    });
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| {
+            let input = shell.node_controls.spectrum_editors.inputs[&(id, Field::Fft)].clone();
+            input.update(cx, |input, cx| {
+                input.set_value("333", window, cx);
+                cx.emit(InputEvent::PressEnter {
+                    secondary: false,
+                    shift: false,
+                });
+            });
+        });
+    });
+    flush_card_requests(&view, cx);
+    view.read_with(cx, |shell, cx| {
+        assert_eq!(
+            shell.node_controls.spectrum_editors.inputs[&(id, Field::Fft)]
+                .read(cx)
+                .value()
+                .as_str(),
+            "333"
+        );
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(id)
+                .unwrap()
+                .builtin
+                .spectrum()
+                .unwrap()
+                .fft_size,
+            256
+        );
+    });
+    cx.update(|window, cx| {
+        view.update(cx, |shell, cx| {
+            let input = shell.node_controls.spectrum_editors.inputs[&(id, Field::Fft)].clone();
+            input.update(cx, |input, cx| {
+                input.set_value("256", window, cx);
+                cx.emit(InputEvent::PressEnter {
+                    secondary: false,
+                    shift: false,
+                });
+            });
+        });
+    });
+    view.read_with(cx, |shell, _| {
+        assert!(
+            !shell
+                .node_controls
+                .spectrum_editors
+                .errors
+                .contains_key(&(id, Field::Fft))
+        );
+    });
+    for (field, value) in [(Field::Fft, "2048"), (Field::Hop, "1536")] {
+        cx.update(|window, cx| {
+            view.update(cx, |shell, cx| {
+                let input = shell.node_controls.spectrum_editors.inputs[&(id, field)].clone();
+                input.update(cx, |input, cx| {
+                    input.set_value(value, window, cx);
+                    cx.emit(InputEvent::PressEnter {
+                        secondary: false,
+                        shift: false,
+                    });
+                });
+            });
+        });
+    }
+    poll_graph(&view, cx, |graph| {
+        graph
+            .node(id)
+            .unwrap()
+            .builtin
+            .spectrum()
+            .is_some_and(|s| s.fft_size == 2048 && s.hop_frames == 1536)
+    });
+    view.read_with(cx, |shell, _| {
+        assert_eq!(shell.node_positions[&id], (20., 20.));
+        assert_eq!(shell.camera.zoom, 1.);
+    });
+    finish_service(runtime);
+}
+
 fn poll_graph(
     view: &Entity<StudioShell>,
     cx: &mut VisualTestContext,

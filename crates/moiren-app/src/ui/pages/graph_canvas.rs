@@ -287,7 +287,9 @@ impl CanvasWorld {
                 NodeKind::Meter => {
                     184. + crate::ui::widgets::meters::node_meter_width(logical.channels()) + 20.
                 }
-                _ => 320.,
+                NodeKind::SpectrumAnalyzer => {
+                    336. + crate::ui::widgets::meters::node_meter_width(logical.channels()) + 16.
+                }
             };
             column_widths
                 .entry(level)

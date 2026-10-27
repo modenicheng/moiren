@@ -7,7 +7,7 @@ mod bus;
 mod mapper;
 mod meter;
 mod rack;
-mod spectrum;
+pub(super) mod spectrum;
 
 pub(super) fn content(
     shell: &StudioShell,
@@ -20,7 +20,9 @@ pub(super) fn content(
         NodeKind::ChannelMapper => mapper::content(shell, node, builtin.channel_mapper()?, cx)?,
         NodeKind::Rack => rack::content(shell, node, builtin.rack()?, cx)?,
         NodeKind::Meter => meter::content(shell, node, *builtin.meter()?, cx)?,
-        NodeKind::SpectrumAnalyzer => spectrum::content(node.id, *builtin.spectrum()?, cx),
+        NodeKind::SpectrumAnalyzer => {
+            spectrum::content(shell, node.id, *builtin.spectrum()?, "card", cx)
+        }
         NodeKind::Bus => bus::content(shell, node.id, cx)?,
         _ => return None,
     })

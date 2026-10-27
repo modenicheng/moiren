@@ -24,6 +24,7 @@ use io::io_body;
 use parameter::Parameter;
 pub(super) use rack_editor::inspector as rack_inspector;
 pub(super) use recording::format_controls as recording_format_controls;
+pub(super) use utility::spectrum::inspector as spectrum_inspector;
 
 #[derive(Default)]
 pub(in crate::ui::window) struct NodeControls {
@@ -35,6 +36,8 @@ pub(in crate::ui::window) struct NodeControls {
     pub(super) resource_popup: Option<NodeId>,
     application_picker: BTreeMap<NodeId, bool>,
     rack: rack_editor::RackEditorState,
+    spectrum: BTreeMap<NodeId, utility::spectrum::SpectrumView>,
+    spectrum_editors: utility::spectrum::editor::Editors,
 }
 
 impl NodeControls {
@@ -43,6 +46,7 @@ impl NodeControls {
             .values()
             .any(|input| input.read(cx).focus_handle(cx) == *focused)
             || self.rack.owns_focus(focused, cx)
+            || self.spectrum_editors.owns_focus(focused, cx)
     }
 }
 
@@ -56,6 +60,9 @@ impl StudioShell {
         self.node_controls
             .heights
             .retain(|id, _| graph.node(*id).is_some());
+        self.node_controls
+            .spectrum
+            .retain(|id, _| graph.kind_of(*id) == Some(NodeKind::SpectrumAnalyzer));
         self.node_controls
             .sliders
             .retain(|(id, _), _| graph.node(*id).is_some());
@@ -179,6 +186,7 @@ impl StudioShell {
             },
         );
         rack_editor::sync(self, window, cx);
+        utility::spectrum::editor::sync(self, window, cx);
     }
 }
 
@@ -377,6 +385,7 @@ fn full_body(
             | NodeKind::Pan
             | NodeKind::Bus
             | NodeKind::Recorder
+            | NodeKind::SpectrumAnalyzer
     ) || (card.kind == NodeKind::Rack
         && node
             .builtin

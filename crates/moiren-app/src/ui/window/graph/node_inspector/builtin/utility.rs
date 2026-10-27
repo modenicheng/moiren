@@ -67,32 +67,6 @@ pub(super) fn controls(
                     )),
                 );
         }
-        crate::service::BuiltinState::SpectrumAnalyzer(settings) => {
-            view = view
-                .child(heading(t!("Spectrum analyzer")))
-                .child(detail(
-                    &t!("FFT"),
-                    t!("%{points} points", points = settings.fft_size),
-                ))
-                .child(detail(
-                    &t!("Hop"),
-                    t!("%{frames} frames", frames = settings.hop_frames),
-                ))
-                .child(
-                    button("spectrum-size", t!("Use 2048 point FFT")).on_click(edit(
-                        cx.entity(),
-                        GraphEdit::SetBuiltin {
-                            node: id,
-                            state: crate::service::BuiltinState::SpectrumAnalyzer(
-                                SpectrumSettings {
-                                    fft_size: 2048,
-                                    hop_frames: 1024,
-                                },
-                            ),
-                        },
-                    )),
-                );
-        }
         _ => {}
     }
     view.into_any_element()
