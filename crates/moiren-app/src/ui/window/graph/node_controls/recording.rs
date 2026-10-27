@@ -1,6 +1,71 @@
 //! File transport is owned by the service, so closing a panel cannot stop it.
 use super::*;
-use crate::service::{RecordingPhase, RecordingSnapshot};
+use crate::service::{RecordingFormat, RecordingPhase, RecordingSnapshot};
+
+/// Both surfaces edit service-owned intent. Distinct IDs avoid sharing native
+/// control identity when the card and Inspector are visible together.
+pub(in crate::ui::window::graph) fn format_controls(
+    shell: &StudioShell,
+    node: NodeId,
+    prefix: &str,
+    cx: &Context<StudioShell>,
+) -> AnyElement {
+    let recording = shell
+        .state
+        .read(cx)
+        .snapshot
+        .recordings
+        .iter()
+        .find(|r| r.node == node);
+    let current = recording.map_or(RecordingFormat::default(), |r| r.format);
+    let busy = recording.is_some_and(|r| r.phase.is_busy());
+    let mut choices = div().flex().flex_wrap().gap(px(4.));
+    for (format, key, label) in [
+        (RecordingFormat::WavFloat32, "float32", "32-bit float"),
+        (RecordingFormat::WavPcm24, "pcm24", "24-bit PCM"),
+        (RecordingFormat::WavPcm16, "pcm16", "16-bit PCM"),
+    ] {
+        let selected = format == current;
+        let this = cx.entity();
+        choices = choices.child(
+            controls::button(format!("{prefix}-{node:?}-{key}"), t!(label))
+                .density(Density::Compact)
+                .variant(if selected {
+                    ButtonVariant::Primary
+                } else {
+                    ButtonVariant::Secondary
+                })
+                .disabled(busy)
+                .tooltip(t!(if busy {
+                    "Stop and finalize before changing file format"
+                } else {
+                    "Choose the encoding for the next WAV file"
+                }))
+                .on_click(move |_, _, cx| {
+                    // Rendered selection can lag queued intent. Always send
+                    // the latest click; the service handles unchanged values.
+                    this.update(cx, |shell, cx| {
+                        shell.state.update(cx, |state, _| {
+                            state.dispatch(AppRequest::SetRecordingFormat { node, format });
+                        });
+                        cx.notify();
+                    });
+                }),
+        );
+    }
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .child(detail_line("Format", "WAV"))
+        .child(choices)
+        .child(note(if current == RecordingFormat::WavFloat32 {
+            "Float preserves digital headroom"
+        } else {
+            "PCM clips at 0 dBFS; no dither"
+        }))
+        .into_any_element()
+}
 
 pub(super) fn content(shell: &StudioShell, node: NodeId, cx: &Context<StudioShell>) -> AnyElement {
     let snapshot = &shell.state.read(cx).snapshot;
@@ -45,8 +110,8 @@ pub(super) fn content(shell: &StudioShell, node: NodeId, cx: &Context<StudioShel
                 .text_ellipsis()
                 .child(filename.unwrap_or_else(|| t!("No file selected").to_string())),
         )
-        .child(detail_line("Format", "WAV · 32-bit float"))
-        .child(note("Format fixed · graph sample rate and channels"));
+        .child(format_controls(shell, node, "record-format", cx))
+        .child(note("Rate and channels follow the audio graph"));
     if let Some(path) = path {
         let target = path.clone();
         view = view.child(

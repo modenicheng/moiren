@@ -1124,3 +1124,161 @@ fn asio_input_and_output_card_selectors_exclude_wasapi_rows(cx: &mut gpui_kit::T
     }
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn recorder_card_selects_file_encoding_without_changing_graph_or_destination(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::RecordingFormat;
+    let (view, cx, runtime) = test_shell(cx);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                kind: NodeKind::Recorder,
+                channels: 2,
+            }));
+        });
+    });
+    poll_graph(&view, cx, |graph| {
+        graph.node_of_kind(NodeKind::Recorder).is_some()
+    });
+    let (id, graph) = view.update(cx, |shell, cx| {
+        let graph = shell.state.read(cx).snapshot.graph.clone();
+        (
+            graph.node_of_kind(NodeKind::Recorder).unwrap().0.id(),
+            graph,
+        )
+    });
+    let path = std::env::temp_dir().join("moiren-format-ui-test.wav");
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::SetRecordingDestination {
+                node: id,
+                path: path.clone(),
+            });
+        });
+    });
+    flush_card_requests(&view, cx);
+    show_card(&view, cx, id);
+    for (key, format) in [
+        ("pcm24", RecordingFormat::WavPcm24),
+        ("pcm16", RecordingFormat::WavPcm16),
+        ("float32", RecordingFormat::WavFloat32),
+    ] {
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.find(format!("record-format-{id:?}-{key}")).visible());
+            window.click(format!("record-format-{id:?}-{key}"), cx);
+        });
+        flush_card_requests(&view, cx);
+        view.read_with(cx, |shell, cx| {
+            let snapshot = &shell.state.read(cx).snapshot;
+            let recording = snapshot
+                .recordings
+                .iter()
+                .find(|recording| recording.node == id)
+                .unwrap();
+            assert_eq!(recording.format, format);
+            assert_eq!(recording.path.as_ref(), Some(&path));
+            assert_eq!(snapshot.graph, graph);
+            assert!(!shell.inspector_open);
+        });
+    }
+    // The rendered selection is not the latest queued intent. Returning to
+    // float before service publication must not discard the second click.
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click(format!("record-format-{id:?}-pcm24"), cx);
+        window.click(format!("record-format-{id:?}-float32"), cx);
+    });
+    flush_card_requests(&view, cx);
+    view.read_with(cx, |shell, cx| {
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .recordings
+                .iter()
+                .find(|r| r.node == id)
+                .unwrap()
+                .format,
+            RecordingFormat::WavFloat32,
+            "the last native click must win before the next service snapshot"
+        );
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn recorder_card_format_controls_do_not_dispatch_while_busy(cx: &mut gpui_kit::TestAppContext) {
+    use crate::service::{RecordingFormat, RecordingPhase};
+    let (view, cx, runtime) = test_shell(cx);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                kind: NodeKind::Recorder,
+                channels: 2,
+            }));
+        });
+    });
+    poll_graph(&view, cx, |graph| {
+        graph.node_of_kind(NodeKind::Recorder).is_some()
+    });
+    let id = view.read_with(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node_of_kind(NodeKind::Recorder)
+            .unwrap()
+            .0
+            .id()
+    });
+    show_card(&view, cx, id);
+    for phase in [
+        RecordingPhase::Starting,
+        RecordingPhase::Recording,
+        RecordingPhase::Stopping,
+    ] {
+        // Only render the service phase here; the managed-service tests prove
+        // the same guard at the actual file-ownership boundary.
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                let snapshot = std::sync::Arc::make_mut(&mut state.snapshot);
+                let recording = snapshot
+                    .recordings
+                    .iter_mut()
+                    .find(|recording| recording.node == id)
+                    .unwrap();
+                recording.phase = phase;
+                recording.format = RecordingFormat::WavFloat32;
+            });
+            cx.notify();
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click(format!("record-format-{id:?}-pcm24"), cx);
+        });
+        view.read_with(cx, |shell, cx| {
+            assert!(
+                !shell.state.read(cx).pending_request,
+                "busy format button dispatched in {phase:?}"
+            );
+            assert_eq!(
+                shell
+                    .state
+                    .read(cx)
+                    .snapshot
+                    .recordings
+                    .iter()
+                    .find(|recording| recording.node == id)
+                    .unwrap()
+                    .format,
+                RecordingFormat::WavFloat32
+            );
+        });
+    }
+    finish_service(runtime);
+}

@@ -21,6 +21,7 @@ mod utility;
 use fields::{parameter_control, parameter_row};
 use io::io_body;
 use parameter::Parameter;
+pub(super) use recording::format_controls as recording_format_controls;
 
 #[derive(Default)]
 pub(in crate::ui::window) struct NodeControls {

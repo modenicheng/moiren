@@ -9,6 +9,14 @@ pub(super) fn parameters(
 ) -> AnyElement {
     let id = node.id();
     let mut view = body();
+    if node.kind() == NodeKind::Recorder {
+        view = view.child(super::super::node_controls::recording_format_controls(
+            shell,
+            id,
+            "inspector-record-format",
+            cx,
+        ));
+    }
     if node.kind() == NodeKind::Gain {
         view = view
             .child(heading(t!("Gain")))

@@ -678,3 +678,8 @@ Proposed format	-	node_controls/recording.rs；录音预检的拟用格式字段
 Checking disk space	-	node_controls/recording.rs；录音预检的磁盘空间检查状态
 Graph monitor · post-fader	-	node_controls；录音卡片电平来自音频图推子后监测，并非精确的录音输入
 Canceled before opening file	-	node_controls/recording.rs；文件创建前取消不能显示为保存成功
+Stop and finalize before changing file format	-	node_controls/recording.rs；忙碌时禁止切换格式
+Choose the encoding for the next WAV file	-	node_controls/recording.rs；选择下一次录音格式
+Float preserves digital headroom	-	node_controls/recording.rs；浮点余量提示
+PCM clips at 0 dBFS; no dither	-	node_controls/recording.rs；PCM 转换约束
+Rate and channels follow the audio graph	-	node_controls/recording.rs；采样率与声道来源

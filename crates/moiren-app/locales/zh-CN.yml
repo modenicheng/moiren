@@ -2043,3 +2043,18 @@ _version: 2
 "Canceled before opening file":
   en: "Canceled before opening file"
   zh-CN: "已取消，尚未创建录音文件"
+"Stop and finalize before changing file format":
+  en: "Stop and finalize before changing file format"
+  zh-CN: "停止录音并完成文件写入后，才能修改格式"
+"Choose the encoding for the next WAV file":
+  en: "Choose the encoding for the next WAV file"
+  zh-CN: "选择下一次 WAV 录音的编码格式"
+"Float preserves digital headroom":
+  en: "Float preserves digital headroom"
+  zh-CN: "浮点格式保留数字信号余量"
+"PCM clips at 0 dBFS; no dither":
+  en: "PCM clips at 0 dBFS; no dither"
+  zh-CN: "PCM 在 0 dBFS 处削波；不加抖动"
+"Rate and channels follow the audio graph":
+  en: "Rate and channels follow the audio graph"
+  zh-CN: "采样率和声道数跟随音频图"

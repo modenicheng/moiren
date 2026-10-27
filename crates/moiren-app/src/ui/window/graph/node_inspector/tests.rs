@@ -289,4 +289,74 @@ mod ui {
         });
         finish_service(runtime);
     }
+
+    #[gpui_kit::test]
+    fn recorder_inspector_selects_the_same_service_format_as_the_card(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::service::RecordingFormat;
+        let (view, cx, runtime) = test_shell(cx);
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                    kind: NodeKind::Recorder,
+                    channels: 2,
+                }));
+            });
+        });
+        let id = wait_for(Duration::from_secs(3), || {
+            view.update(cx, |shell, cx| {
+                shell.state.update(cx, |state, _| state.poll());
+                shell
+                    .state
+                    .read(cx)
+                    .snapshot
+                    .graph
+                    .node_of_kind(NodeKind::Recorder)
+                    .map(|(node, _)| node.id())
+            })
+        });
+        show_inspector(&view, cx, id, 1024., 720.);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            for key in ["float32", "pcm24", "pcm16"] {
+                assert!(
+                    window
+                        .find(format!("inspector-record-format-{id:?}-{key}"))
+                        .visible()
+                );
+            }
+            window.click(format!("inspector-record-format-{id:?}-pcm24"), cx);
+        });
+        wait_until(Duration::from_secs(3), || {
+            view.update(cx, |shell, cx| {
+                shell.state.update(cx, |state, _| state.poll());
+                shell
+                    .state
+                    .read(cx)
+                    .snapshot
+                    .recordings
+                    .iter()
+                    .any(|recording| {
+                        recording.node == id && recording.format == RecordingFormat::WavPcm24
+                    })
+            })
+        });
+        view.read_with(cx, |shell, cx| {
+            let recording = shell
+                .state
+                .read(cx)
+                .snapshot
+                .recordings
+                .iter()
+                .find(|recording| recording.node == id)
+                .unwrap();
+            assert!(
+                recording.path.is_none(),
+                "format selection must not open or invent a destination"
+            );
+            assert_eq!(recording.written_frames, 0);
+        });
+        finish_service(runtime);
+    }
 }
