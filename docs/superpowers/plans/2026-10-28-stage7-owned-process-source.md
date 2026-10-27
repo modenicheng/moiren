@@ -72,6 +72,29 @@ After A passes independent review, wire the owned child into the existing
 - Collect raw independent PCM/packet metadata; do not synthesize dual-channel
   reference wiring, calibration, measured delay or qualified status.
 
+### Dependency ruling: preparation failures must stop peers before joining
+
+Prepare the recorder first, the identity-ready owned source second, and the
+gated Process graph last. A full graph-first reorder is invalid: Process
+capture requires the actual child PID and creation time, and recorder-native
+constructors can join internally before returning an error.
+
+Before B integration, add only three control-side returning/abort entry points:
+Process capture preparation, native render preparation and renderer attachment.
+Existing APIs delegate with a no-op callback and preserve their signatures.
+On failure, request local/common stop, invoke the caller's peer-stop callback
+once on the calling control thread, then join/recover the local owner. Callback
+panic or stop failure cannot skip local cleanup. Retain the original error,
+available partial report, independent stop/join errors and callback outcome;
+render attachment must also return its renderer. Success never invokes abort.
+No callback enters a native/RT worker or changes timing/gate/driver policy.
+Exercise the actual owner guards with hardware-free failure/unwind regressions.
+
+Separately split the existing controlled-load supervisor's stop request from
+its join. Stop-token failure must not prevent reaping or erase the actual
+child outcome. B must broadcast all native/child/load stops before any join.
+Neither prerequisite completes collection or relaxes the final physical gates.
+
 ## Verification and delivery
 
 - Focused RED/GREEN tests, complete probe example tests, strict example/test
