@@ -2956,3 +2956,29 @@ means native Start/progress, not clean waveform readiness. Keep the raw failure
 and strict reconciliation; no gate is relaxed to obtain a passing candidate.
 The standalone command returns 1 for unqualified runs generally; the retained
 discontinuity counter and failure text, not exit 1 alone, identify this failure.
+
+### 2026-10-28 Process collection review and guest storage checkpoint
+
+The initial B six-file candidate passed 176 example tests and the ordinary
+Windows plus actual Windows/Linux test-profile strict lint checks. Independent
+review nevertheless requests changes for three correctness gaps: a first late
+positive Running/submitted acknowledgement can bypass its phase deadline;
+post-join bridge faults are stored without final validation; and a graph PCM
+write failure can skip the independent metadata artifact. Keep commit/native
+execution on hold until repairs, genuine regression RED/GREEN evidence and
+independent re-review pass. These passing software checks do not override the
+review findings or establish complete native collection.
+
+A fresh pinned-host-key SSH inventory at
+`2026-10-28T02:32:28.8630724+08:00` finds `C:\MoirenVadTest` empty, no matching
+Moiren/probe processes, no present dynamic Moiren children, and the installed
+`ROOT\MEDIA\0000` bus OK. Free space is 32,220,827,648 bytes (about 30.01 GiB).
+No obsolete owned file exists to delete; the inventory makes no guest writes.
+The host-only receipt is
+`target/vad-target-archive/20261028-storage-023229/inventory.json`, SHA-256
+`B25A92CB5ECF110F9DB5B19BF73D8AA3A7293D850D2E088A87CF5E2057A575FF`.
+Continue host-only builds and one bounded guest run at a time. Archive failures
+too, verify host/guest payload length and SHA-256 before deleting explicit owned
+run artifacts, and preserve Windows, DriverStore, installed/rollback packages
+and `C:\DriverTest`. This is a storage observation, not an audio run or a
+Stage 7 latency/stability qualification.

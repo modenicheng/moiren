@@ -140,3 +140,12 @@ Stage 7.
 - Read-only VM inventory at 01:55 +08:00 finds the test root empty, no test
   processes, bus OK and 32,221,892,608 bytes free; no old owned files exist
   to remove. Keep builds and caches on the host.
+- B's first independent review requests three repairs despite 176 passing
+  example tests: enforce first positive acknowledgement deadlines, reconcile
+  final stopped bridge evidence, and independently attempt graph PCM/metadata
+  persistence. Keep B commit/native execution on hold for genuine regression
+  RED/GREEN and independent re-review; initial software checks are not approval.
+- At 02:32 +08:00 the pinned-host-key guest inventory again finds the test root
+  empty, no probes or present dynamic Moiren children, bus OK and 32,220,827,648
+  bytes free. No old owned files can be removed. No guest build/cache or audio
+  run was introduced by this read-only check; the storage policy is unchanged.
