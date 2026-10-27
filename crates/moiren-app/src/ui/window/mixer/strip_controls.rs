@@ -2,8 +2,68 @@
 
 use super::*;
 
-fn control(button: ActionButton) -> Div {
-    div().flex_1().min_w_0().child(button.full_width().square())
+fn control(button: impl IntoElement) -> Div {
+    div().flex_1().min_w_0().child(button)
+}
+
+/// One flat cell of the strip's M/S group: the same unstyled
+/// [`base::Button`] the routing matrix builds on, painted with the
+/// [`ActionButton`] Primary/Secondary contract (toggled fills, hover,
+/// pressed, focus ring) but without a per-button box. The group container
+/// owns the single rounded outline, so the cell stays square and border-free
+/// apart from the interior separators its slot draws.
+fn group_cell(
+    id: SharedString,
+    label: impl Into<SharedString>,
+    toggled: bool,
+    tooltip: impl Into<SharedString>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> base::Button {
+    let label = label.into();
+    let tooltip = tooltip.into();
+    let (bg, fg, hover_bg, pressed_bg) = if toggled {
+        (
+            theme::controls::PRIMARY,
+            theme::controls::ON_ACCENT,
+            theme::controls::PRIMARY_HOVER,
+            theme::controls::PRIMARY_PRESSED,
+        )
+    } else {
+        (
+            theme::controls::RAISED,
+            theme::controls::TEXT,
+            theme::controls::RAISED,
+            theme::controls::CANVAS,
+        )
+    };
+    // Keep the ActionButton sizing contract by resolving the same metrics.
+    let metrics = ControlSize::Small.metrics(Density::default());
+    base::Button::new(id)
+        .accessibility_label(label.clone())
+        .flex_none()
+        .w_full()
+        .h_full()
+        .rounded_none()
+        .px(px(metrics.padding))
+        .font_family(theme::controls::FONT)
+        .font_weight(FontWeight::MEDIUM)
+        .text_size(px(metrics.font))
+        .line_height(px(metrics.line_height))
+        .bg(bg)
+        .text_color(fg)
+        .hover(move |s| s.bg(hover_bg).text_color(fg))
+        .active(move |s| s.bg(pressed_bg).text_color(fg))
+        .focus_visible(move |s| {
+            s.bg(bg)
+                .text_color(fg)
+                .border_2()
+                .border_color(theme::controls::FOCUS)
+        })
+        .child(label)
+        .tooltip(move |window, cx| {
+            component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+        })
+        .on_click(on_click)
 }
 
 pub(in crate::ui::window) fn node_controls(
@@ -13,6 +73,7 @@ pub(in crate::ui::window) fn node_controls(
 ) -> impl IntoElement {
     let id = entry.id;
     let requested = entry.mixer;
+    let metrics = ControlSize::Small.metrics(Density::default());
     div()
         .flex()
         .flex_col()
@@ -22,67 +83,65 @@ pub(in crate::ui::window) fn node_controls(
         .child(
             div()
                 .flex()
+                .flex_col()
                 .w_full()
-                .child(control(
-                    button(SharedString::from(format!("strip-mute-{id:?}")), "M")
-                        .tooltip(t!("Mute this channel"))
-                        .variant(if requested.muted {
-                            ButtonVariant::Primary
-                        } else {
-                            ButtonVariant::Secondary
-                        })
-                        .on_click(mixer_edit(cx.entity(), id, |state| {
-                            state.muted = !state.muted
-                        })),
-                ))
-                .child(control(
-                    button(SharedString::from(format!("strip-solo-{id:?}")), "S")
-                        .tooltip(t!("Solo this channel and its connected signal path"))
-                        .variant(if requested.solo {
-                            ButtonVariant::Primary
-                        } else {
-                            ButtonVariant::Secondary
-                        })
-                        .on_click(mixer_edit(cx.entity(), id, |state| {
-                            state.solo = !state.solo
-                        })),
-                )),
-        )
-        .child(
-            div()
-                .flex()
-                .w_full()
-                .child(control(
-                    button(
-                        SharedString::from(format!("strip-mode-{id:?}")),
-                        requested.mode_label(channels),
-                    )
-                    .variant(if requested.channel_mode != 0 {
-                        ButtonVariant::Primary
-                    } else {
-                        ButtonVariant::Secondary
-                    })
-                    .tooltip(if channels == 2 {
-                        t!("Stereo -> Mono average -> Left to both -> Right to both -> Swap")
-                    } else {
-                        t!("Cycle normal, mono average, individual channels, and reverse channel order")
-                    })
-                    .on_click(mixer_edit(cx.entity(), id, move |state| {
-                        *state = state.next_mode(channels)
-                    })),
-                ))
-                .child(control(
-                    button(SharedString::from(format!("strip-dim-{id:?}")), "DIM")
-                        .tooltip(t!("Dim attenuates the post-fader signal by 12 dB"))
-                        .variant(if requested.dimmed {
-                            ButtonVariant::Primary
-                        } else {
-                            ButtonVariant::Secondary
-                        })
-                        .on_click(mixer_edit(cx.entity(), id, |state| {
-                            state.dimmed = !state.dimmed
-                        })),
-                )),
+                .rounded(px(theme::RADIUS_SM))
+                .border_1()
+                .border_color(theme::BORDER)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex()
+                        .w_full()
+                        .h(px(metrics.height))
+                        .child(control(group_cell(
+                            SharedString::from(format!("strip-mute-{id:?}")),
+                            "M",
+                            requested.muted,
+                            t!("Mute this channel"),
+                            mixer_edit(cx.entity(), id, |state| state.muted = !state.muted),
+                        )))
+                        .child(control(group_cell(
+                            SharedString::from(format!("strip-solo-{id:?}")),
+                            "S",
+                            requested.solo,
+                            t!("Solo this channel and its connected signal path"),
+                            mixer_edit(cx.entity(), id, |state| state.solo = !state.solo),
+                        ))
+                        .border_l_1()
+                        .border_color(theme::BORDER)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .w_full()
+                        .h(px(metrics.height))
+                        .child(control(group_cell(
+                            SharedString::from(format!("strip-mode-{id:?}")),
+                            requested.mode_label(channels),
+                            requested.channel_mode != 0,
+                            if channels == 2 {
+                                t!("Stereo -> Mono average -> Left to both -> Right to both -> Swap")
+                            } else {
+                                t!("Cycle normal, mono average, individual channels, and reverse channel order")
+                            },
+                            mixer_edit(cx.entity(), id, move |state| {
+                                *state = state.next_mode(channels)
+                            }),
+                        ))
+                        .border_t_1()
+                        .border_color(theme::BORDER))
+                        .child(control(group_cell(
+                            SharedString::from(format!("strip-dim-{id:?}")),
+                            "DIM",
+                            requested.dimmed,
+                            t!("Dim attenuates the post-fader signal by 12 dB"),
+                            mixer_edit(cx.entity(), id, |state| state.dimmed = !state.dimmed),
+                        ))
+                        .border_l_1()
+                        .border_t_1()
+                        .border_color(theme::BORDER)),
+                ),
         )
 }
 
@@ -102,6 +161,21 @@ fn balance_value(position: Point<Pixels>, bounds: Bounds<Pixels>) -> f64 {
     (f32::from(position.x - bounds.left()) / f32::from(bounds.size.width))
         .clamp(0., 1.)
         .mul_add(2., -1.) as f64
+}
+
+/// Wheel direction as a step count: wheel up (or tilt right) is +1. Mirrors
+/// the fader's private helper: gpui carries touchpad pixel deltas and
+/// discrete line notches with the same sign — positive scrolls the content
+/// down, i.e. the wheel moved up. For the horizontal balance the vertical
+/// axis is the plain wheel gesture and the secondary axis covers shift+wheel
+/// and tilt wheels.
+fn wheel_direction(delta: &ScrollDelta) -> i32 {
+    let (x, y) = match delta {
+        ScrollDelta::Pixels(delta) => (f32::from(delta.x), f32::from(delta.y)),
+        ScrollDelta::Lines(delta) => (delta.x, delta.y),
+    };
+    let (x, y) = (x.signum(), y.signum());
+    if y != 0. { y as i32 } else { x as i32 }
 }
 
 fn set_balance(this: &Entity<StudioShell>, id: NodeId, balance: f64, cx: &mut App) {
@@ -146,6 +220,7 @@ pub(in crate::ui::window) fn balance(
     let track_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
     let this = cx.entity();
     let drag_this = this.clone();
+    let wheel_this = this.clone();
     let click_bounds = track_bounds.clone();
     let drag_bounds = track_bounds.clone();
     let track_id = SharedString::from(format!("balance-track-{id:?}"));
@@ -185,6 +260,26 @@ pub(in crate::ui::window) fn balance(
                     let value = balance_value(event.event.position, drag_bounds.get());
                     set_balance(&drag_this, id, value, cx);
                 })
+                .on_scroll_wheel({
+                    let this = wheel_this;
+                    move |event: &ScrollWheelEvent, _, cx| {
+                        // A wheel step rides the same dispatch as the drag and
+                        // click edits; propagation stops here so adjusting the
+                        // balance never scrolls the strip page or the
+                        // inspector panel underneath.
+                        cx.stop_propagation();
+                        let direction = wheel_direction(&event.delta);
+                        if direction == 0 {
+                            return;
+                        }
+                        // One notch is 0.1 in the Left/Right buttons' sign
+                        // convention: left is negative and a wheel-up notch
+                        // moves right. The drag path has no center snap, so
+                        // stepping keeps the value it lands on.
+                        let step = f64::from(direction) * 0.1;
+                        set_balance(&this, id, (value + step).clamp(-1., 1.), cx);
+                    }
+                })
                 .child(
                     canvas(
                         move |bounds, _, _| track_bounds.set(bounds),
@@ -213,6 +308,12 @@ pub(in crate::ui::window) fn balance(
                         .h(px(14.))
                         .bg(theme::SIGNAL_DEVICE),
                 )
+                .tooltip(|window, cx| {
+                    component::tooltip::Tooltip::new(
+                        t!("Scroll to adjust · double-click to reset").into_owned(),
+                    )
+                    .build(window, cx)
+                })
                 .gpui_test_observe(),
         )
         .child(
@@ -232,13 +333,14 @@ pub(in crate::ui::window) fn balance(
                             .unwrap_or_default()
                     },
                 ),
+                px(10.),
+                TextAlign::Center,
             )
             .flex()
             .items_center()
             .justify_center()
             .flex_none()
             .h(px(17.))
-            .text_size(px(10.))
             .font_family(theme::FONT_MONO)
             .text_color(theme::TEXT_MUTED)
             .gpui_test_observe(),

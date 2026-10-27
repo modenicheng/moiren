@@ -479,6 +479,92 @@ fn commit_node_pan(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut Ap
     }
 }
 
+/// Enter/blur commit for the send gain editor; the input subscription and
+/// [`commit_active_editor`] share it.
+fn commit_send_gain(shell: &mut StudioShell, id: EdgeId, text: &str, cx: &mut App) {
+    if shell.mixer.editing_send != Some(id) {
+        return;
+    }
+    shell.mixer.editing_send = None;
+    let gain = if matches!(text.trim(), "-inf" | "−∞" | "-∞") {
+        Some(0.)
+    } else {
+        text.parse::<f64>()
+            .ok()
+            .filter(|db| db.is_finite() && (-120. ..=24.).contains(db))
+            .map(|db| 10f64.powf(db / 20.))
+    };
+    if let Some(gain) = gain {
+        shell.state.update(cx, |state, _| {
+            if let Ok(edge) = state.snapshot.graph.graph.get_edge(id) {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::SetSend {
+                    edge: id,
+                    params: SendParams {
+                        gain,
+                        ..*edge.params()
+                    },
+                }));
+            }
+        });
+    }
+}
+
+/// Commits whichever inline editor is open, exactly as its Enter or blur
+/// would — same guard, parse, and invalid-input semantics. The window root
+/// listens for mouse presses and the editors stop presses inside their own
+/// bounds from propagating, so a press that reaches the root landed outside
+/// the active editor. Returns whether an editor was open (the caller
+/// notifies only then).
+pub(in crate::ui::window) fn commit_active_editor(shell: &mut StudioShell, cx: &mut App) -> bool {
+    let mut active = false;
+    if let Some(id) = shell.mixer.editing_value {
+        active = true;
+        if let Some(input) = shell.mixer.value_inputs.get(&id) {
+            let text = input.read(cx).value().to_string();
+            commit_mixer_gain(shell, &id, &text, cx);
+        } else {
+            shell.mixer.editing_value = None;
+        }
+    }
+    if let Some(id) = shell.mixer.editing_balance {
+        active = true;
+        if let Some(input) = shell.mixer.balance_inputs.get(&id) {
+            let text = input.read(cx).value().to_string();
+            commit_mixer_balance(shell, &id, &text, cx);
+        } else {
+            shell.mixer.editing_balance = None;
+        }
+    }
+    if let Some(id) = shell.mixer.editing_node_gain {
+        active = true;
+        if let Some(input) = shell.mixer.node_gain_inputs.get(&id) {
+            let text = input.read(cx).value().to_string();
+            commit_node_gain(shell, &id, &text, cx);
+        } else {
+            shell.mixer.editing_node_gain = None;
+        }
+    }
+    if let Some(id) = shell.mixer.editing_node_pan {
+        active = true;
+        if let Some(input) = shell.mixer.node_pan_inputs.get(&id) {
+            let text = input.read(cx).value().to_string();
+            commit_node_pan(shell, &id, &text, cx);
+        } else {
+            shell.mixer.editing_node_pan = None;
+        }
+    }
+    if let Some(id) = shell.mixer.editing_send {
+        active = true;
+        if let Some(input) = shell.mixer.send_inputs.get(&id) {
+            let text = input.read(cx).value().to_string();
+            commit_send_gain(shell, id, &text, cx);
+        } else {
+            shell.mixer.editing_send = None;
+        }
+    }
+    active
+}
+
 /// Fader rows for every node, shared verbatim by the main mixer and the tray
 /// flyout so both edit the same perceptual value space `[0..1]`: value
 /// `1 - FaderScale::position(gain)` (1 = track top), and an edit maps back
@@ -726,38 +812,15 @@ impl StudioShell {
                 cx.subscribe(
                     &input,
                     move |shell, input, event: &component::input::InputEvent, cx| {
-                        if !matches!(
+                        if matches!(
                             event,
                             component::input::InputEvent::PressEnter { .. }
                                 | component::input::InputEvent::Blur
-                        ) || shell.mixer.editing_send != Some(id)
-                        {
-                            return;
+                        ) {
+                            let text = input.read(cx).value().to_string();
+                            commit_send_gain(shell, id, &text, cx);
+                            cx.notify();
                         }
-                        shell.mixer.editing_send = None;
-                        let text = input.read(cx).value();
-                        let gain = if matches!(text.trim(), "-inf" | "−∞" | "-∞") {
-                            Some(0.)
-                        } else {
-                            text.parse::<f64>()
-                                .ok()
-                                .filter(|db| db.is_finite() && (-120. ..=24.).contains(db))
-                                .map(|db| 10f64.powf(db / 20.))
-                        };
-                        if let Some(gain) = gain {
-                            shell.state.update(cx, |state, _| {
-                                if let Ok(edge) = state.snapshot.graph.graph.get_edge(id) {
-                                    state.dispatch(AppRequest::EditGraph(GraphEdit::SetSend {
-                                        edge: id,
-                                        params: SendParams {
-                                            gain,
-                                            ..*edge.params()
-                                        },
-                                    }));
-                                }
-                            });
-                        }
-                        cx.notify();
                     },
                 )
                 .detach();

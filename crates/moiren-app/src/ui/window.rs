@@ -791,6 +791,22 @@ impl Render for StudioShell {
                     .child(sidebar::inspector_host(self, cx)),
             )
             .child(chrome::statusbar(self.state.read(cx)).gpui_test_observe())
+            // Clicking anywhere outside an open inline editor commits it, so
+            // saving never requires Enter. Editors stop presses inside their
+            // own bounds from propagating; a press that reaches this root
+            // listener therefore landed outside the active editor, and the
+            // bubble phase runs it after whatever deeper handler the press
+            // targeted.
+            .on_mouse_down(MouseButton::Left, {
+                let shell = cx.entity();
+                move |_, _, cx| {
+                    shell.update(cx, |shell, cx| {
+                        if mixer::commit_active_editor(shell, cx) {
+                            cx.notify();
+                        }
+                    });
+                }
+            })
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
             .when(self.settings_open, |v| {
                 v.child(settings::overlay(self, window, cx))

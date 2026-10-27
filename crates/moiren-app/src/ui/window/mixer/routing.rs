@@ -282,11 +282,20 @@ pub(super) fn sends(
                         )),
                 );
             if shell.mixer.editing_send == Some(edge_id) {
+                // The editor takes the label's box (32px, right-aligned mono
+                // 9px text) with the shared underline-only chrome, so the row
+                // neither grows nor shifts the text when it opens.
                 row = row.child(
-                    component::input::Input::new(&shell.mixer.send_inputs[&edge_id])
-                        .w(px(42.))
-                        .h(px(24.))
-                        .text_size(px(10.)),
+                    div()
+                        .id(SharedString::from(format!("send-value-{edge_id:?}")))
+                        .flex_none()
+                        .w(px(32.))
+                        .font_family(theme::FONT_MONO)
+                        .child(underline_editor(
+                            &shell.mixer.send_inputs[&edge_id],
+                            px(9.),
+                            TextAlign::Right,
+                        )),
                 );
             } else {
                 row = row.child(

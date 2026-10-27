@@ -15,8 +15,9 @@ use component::menu::ContextMenuExt;
 // (window::graph::compressor), so the slot type, edit type and the
 // coalesced sync/commit entry points are visible across the window.
 pub(super) use model::{
-    EditableValueFamily, MixerPresentation, SliderEdit, SliderSlot, balance_text, commit_closure,
-    fader_rows, gain_db_text, start_value_edit, sync_faders, sync_slider_range,
+    EditableValueFamily, MixerPresentation, SliderEdit, SliderSlot, balance_text,
+    commit_active_editor, commit_closure, fader_rows, gain_db_text, start_value_edit, sync_faders,
+    sync_slider_range,
 };
 use model::{StripDrag, reorder};
 use routing::{inputs, sends};
@@ -257,12 +258,12 @@ fn strip(
                                     .unwrap_or_default()
                             },
                         ),
+                        px(12.),
+                        TextAlign::Center,
                     )
                     .flex_none()
                     .h(px(24.))
-                    .text_center()
                     .font_family(theme::FONT_MONO)
-                    .text_size(px(12.))
                     .gpui_test_observe()
                 })
                 .child(

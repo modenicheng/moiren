@@ -218,10 +218,11 @@ fn thumb_top(value: f32, min: f32, max: f32) -> f32 {
 }
 
 /// Vertical channel fader for the main mixer and the tray flyout: a flat
-/// capsule track, a fill from the thumb down to the quiet end, and a 0 dB
-/// detent tick (the flyout has no ruler or unity line of its own). The
-/// widget reads its value from the slider state, so callers never duplicate
-/// the gain mapping.
+/// capsule track, a fill from the thumb down to the quiet end, a 0 dB detent
+/// tick (the flyout has no ruler or unity line of its own), and a classic
+/// fader cap — taller than wide, light-bodied with a dark horizontal slot —
+/// centered on the current value. The widget reads its value from the slider
+/// state, so callers never duplicate the gain mapping.
 pub fn fader(
     state: &Entity<base::slider::SliderState>,
     behavior: &SliderBehavior,
@@ -284,13 +285,18 @@ pub fn fader(
                 base::slider::SliderThumb::new(state)
                     .axis(Axis::Vertical)
                     .absolute()
-                    .left(px(5.))
+                    // Track spans x 13..19, so a 14px cap centers at left 9
+                    // and overhangs the 6px track by 4px per side.
+                    .left(px(9.))
                     .top(relative(thumb))
-                    .mt(px(-7.))
-                    .w(px(22.))
-                    .h(px(14.))
+                    // Half the 22px cap height keeps it centered on the value.
+                    .mt(px(-11.))
+                    .w(px(14.))
+                    .h(px(22.))
                     .rounded(px(3.))
-                    .bg(theme::SURFACE_3)
+                    // A light body so the cap reads against the dark page; the
+                    // grip is a dark slot punched through it.
+                    .bg(theme::TEXT)
                     .border_1()
                     .border_color(theme::BORDER_STRONG)
                     .child(
@@ -298,9 +304,9 @@ pub fn fader(
                             .absolute()
                             .left(px(2.))
                             .right(px(2.))
-                            .top(px(6.))
+                            .top(px(10.))
                             .h(px(2.))
-                            .bg(theme::TEXT),
+                            .bg(theme::SURFACE_3),
                     ),
             ),
     )
