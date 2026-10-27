@@ -187,3 +187,45 @@ fn density_resolves_control_heights_without_shrinking_long_labels(
         }
     });
 }
+
+struct LongResource {
+    activations: Rc<Cell<usize>>,
+}
+
+impl Render for LongResource {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let count = self.activations.clone();
+        div().w(px(220.)).child(
+            ActionButton::new(
+                "long-resource",
+                "Studio interface / a very long endpoint name / channel pair 31-32",
+            )
+            .full_width()
+            .justify_start()
+            .truncate_label()
+            .trailing("v")
+            .on_click(move |_, _, _| count.set(count.get() + 1)),
+        )
+    }
+}
+
+#[gpui_kit::test]
+fn opt_in_resource_label_stays_bounded_without_losing_keyboard_activation(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let count = Rc::new(Cell::new(0));
+    let (_, cx) = cx.add_window_view(|_, _| LongResource {
+        activations: count.clone(),
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let bounds = window.find("long-resource").bounds();
+        assert_eq!(bounds.size.width, px(220.));
+        assert_eq!(bounds.size.height, px(32.));
+        window.click("long-resource", cx);
+        window.press("enter", cx);
+        window.press("space", cx);
+    });
+    assert_eq!(count.get(), 3);
+}

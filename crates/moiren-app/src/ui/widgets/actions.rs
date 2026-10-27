@@ -76,6 +76,7 @@ pub struct ActionButton {
     on_click: Option<ClickHandler>,
     tooltip: Option<SharedString>,
     full_width: bool,
+    truncate_label: bool,
     justify_start: bool,
     trailing: Option<SharedString>,
     square: bool,
@@ -96,6 +97,7 @@ impl ActionButton {
             on_click: None,
             tooltip: None,
             full_width: false,
+            truncate_label: false,
             justify_start: false,
             trailing: None,
             square: false,
@@ -112,6 +114,12 @@ impl ActionButton {
     }
     pub fn full_width(mut self) -> Self {
         self.full_width = true;
+        self
+    }
+    /// Ellipsize the label within a constrained button, preserving its full
+    /// accessibility label. The caller owns any full-caption tooltip.
+    pub fn truncate_label(mut self) -> Self {
+        self.truncate_label = true;
         self
     }
     pub fn justify_start(mut self) -> Self {
@@ -182,12 +190,25 @@ impl RenderOnce for ActionButton {
         .text_size(px(m.font))
         .line_height(px(m.line_height))
         .when(self.full_width, |s| s.w_full().justify_center())
+        .when(self.truncate_label, |s| s.min_w_0())
         .when(self.justify_start, |s| s.justify_start())
         .when(self.square, |s| s.rounded_none())
         .when(icon_only, |s| s.w(px(m.height)).justify_center().px(px(6.)))
         .when_some(self.icon, |s, icon| s.child(icon.element()))
-        .when(!icon_only, |s| s.child(self.label))
-        .when_some(self.trailing, |s, text| s.child(div().flex_1()).child(text))
+        .when(!icon_only, |s| {
+            if self.truncate_label {
+                s.child(div().flex_1().min_w_0().truncate().child(self.label))
+            } else {
+                s.child(self.label)
+            }
+        })
+        .when_some(self.trailing, |s, text| {
+            if self.truncate_label {
+                s.child(div().flex_none().child(text))
+            } else {
+                s.child(div().flex_1()).child(text)
+            }
+        })
         .when_some(self.tooltip, |s, text| {
             s.tooltip(move |window, cx| {
                 component::tooltip::Tooltip::new(text.clone()).build(window, cx)
@@ -411,5 +432,25 @@ impl RenderOnce for ToggleIconButton {
         .when_some(self.on_change, |s, handler| {
             s.on_change(move |value, e, w, cx| handler(value, e, w, cx))
         })
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::ActionButton;
+
+    #[::core::prelude::v1::test]
+    fn label_truncation_is_opt_in_and_preserves_the_full_caption() {
+        let caption = "A long device name with an important endpoint suffix";
+        let legacy = ActionButton::new("legacy", caption);
+        assert!(!legacy.truncate_label);
+        let truncated = ActionButton::new("truncated", caption)
+            .full_width()
+            .truncate_label()
+            .trailing("v");
+        assert!(truncated.truncate_label);
+        assert_eq!(truncated.label.as_ref(), caption);
+        assert_eq!(truncated.trailing.as_deref(), Some("v"));
+        assert!(truncated.tooltip.is_none());
     }
 }

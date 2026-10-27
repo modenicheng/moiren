@@ -8,6 +8,9 @@ use crate::ui::theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+mod canvas;
+mod geometry;
+
 /// Main Mixer bars fill exactly the shared fader track; there is no second
 /// ruler or independent dB interpolation here. Channel count is never inferred
 /// from a stereo projection of mono/multichannel data.
@@ -158,66 +161,27 @@ fn meter_spans(level: DisplayLevel) -> Vec<MeterSpan> {
     spans
 }
 
-/// Draw the dual-layer fill and the held peak marker onto a prepared track.
-fn meter_bar(track: Div, channel: Option<DisplayLevel>) -> Div {
-    let Some(level) = channel else {
-        return track;
-    };
-    let mut track = track;
-    for span in meter_spans(level) {
-        track = track.child(
-            div()
-                .absolute()
-                .bottom(relative(span.bottom))
-                .w_full()
-                .h(relative(span.height))
-                .bg(span.color),
-        );
-    }
-    track.child(
-        div()
-            .absolute()
-            .bottom(relative(meter_height(level.marker)))
-            .w_full()
-            .h(px(2.))
-            .bg(theme::TEXT),
-    )
+/// Node-card viewport: 100px for mono/stereo, growing to 328px at eight channels.
+/// Further channels scroll horizontally without shrinking their 38px readout cells.
+pub fn node_meter_width(channels: usize) -> f32 {
+    geometry::node_viewport_width(channels)
 }
 
-/// Flyout-scale stereo meter: two slim bars and a clip dot, no scale readouts.
+/// A caller-height meter with an internal clip header and per-channel readouts.
+/// The outer card can use [`node_meter_width`] for the same channel-aware width.
+pub fn node_vertical_meter(
+    levels: Option<&[DisplayLevel]>,
+    channels: usize,
+    clips: &[bool],
+) -> Div {
+    canvas::node(levels, channels, clips)
+}
+
+/// Flyout-scale stereo meter with independent clip latches above its tracks.
+/// Its legacy 182px outer box contains 176px tracks; explicit height overrides
+/// are honored by the canvas without changing the main Mixer's shared track.
 pub fn compact_stereo_meter(levels: Option<[DisplayLevel; 2]>, clips: [bool; 2]) -> Div {
-    let mut pair = div()
-        .flex()
-        .flex_none()
-        .flex_col()
-        .items_center()
-        .gap(px(3.))
-        .line_height(px(10.));
-    let mut bars = div().flex().flex_none().gap(px(2.));
-    for index in 0..2 {
-        let channel = levels.map(|l| l[index]);
-        bars = bars.child(meter_bar(
-            div()
-                .relative()
-                .w(px(7.))
-                .h(px(176.))
-                .flex_none()
-                .overflow_hidden()
-                .rounded(px(1.))
-                .bg(theme::BORDER),
-            channel,
-        ));
-    }
-    pair = pair
-        .child(bars)
-        .child(div().w(px(10.)).h(px(3.)).flex_none().rounded(px(1.)).bg(
-            if clips[0] || clips[1] {
-                theme::DANGER
-            } else {
-                theme::BORDER
-            },
-        ));
-    pair
+    canvas::compact_stereo(levels, clips)
 }
 
 /// A horizontal bar reuses the vertical track space: `bottom` becomes the
@@ -226,62 +190,14 @@ fn horizontal_span(span: &MeterSpan) -> (f32, f32) {
     (span.bottom, span.height)
 }
 
-/// Inspector-scale horizontal meter: one slim bar per channel (up to a stereo
-/// pair), the quiet end at the left, reusing `meter_spans` so zone colors and
-/// the peak tail stay identical to the vertical bars. The clip latch is a
-/// single dot below the bars, like the flyout meter.
+/// One horizontal row per channel, each with its own right-edge clip latch.
+/// The marker and fill stay within the track rather than entering the clip cell.
 pub fn compact_horizontal_meter(
     levels: Option<&[DisplayLevel]>,
     channels: usize,
     clips: &[bool],
 ) -> Div {
-    let levels = levels.map(<[DisplayLevel]>::to_vec);
-    let clips = clips.to_vec();
-    let count = channels.clamp(1, 2);
-    let mut bars = div().flex().flex_none().flex_col().gap(px(2.)).w_full();
-    for index in 0..count {
-        let mut bar = div()
-            .relative()
-            .w_full()
-            .h(px(4.))
-            .flex_none()
-            .overflow_hidden()
-            .rounded(px(1.))
-            .bg(theme::BORDER);
-        if let Some(level) = levels.as_deref().and_then(|levels| levels.get(index)) {
-            for span in meter_spans(*level) {
-                let (left, width) = horizontal_span(&span);
-                bar = bar.child(
-                    div()
-                        .absolute()
-                        .left(relative(left))
-                        .top_0()
-                        .bottom_0()
-                        .w(relative(width))
-                        .bg(span.color),
-                );
-            }
-            bar = bar.child(
-                div()
-                    .absolute()
-                    .left(relative(meter_height(level.marker)))
-                    .top_0()
-                    .bottom_0()
-                    .w(px(2.))
-                    .bg(theme::TEXT),
-            );
-        }
-        bars = bars.child(bar);
-    }
-    let clip = (0..count).any(|index| clips.get(index).copied().unwrap_or(false));
-    bars.child(
-        div()
-            .w(px(6.))
-            .h(px(3.))
-            .flex_none()
-            .rounded(px(1.))
-            .bg(if clip { theme::DANGER } else { theme::BORDER }),
-    )
+    canvas::compact_horizontal(levels, channels, clips)
 }
 
 #[cfg(test)]
