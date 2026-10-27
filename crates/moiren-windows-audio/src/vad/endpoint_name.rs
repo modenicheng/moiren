@@ -1,6 +1,6 @@
 //! Explicit control-worker Windows endpoint name evidence.
 
-use super::{MAX_ENDPOINTS, VadExportDiagnosticProvenance, VadExportObservation};
+use super::{MAX_ENDPOINTS, StableEndpointId, VadExportDiagnosticProvenance, VadExportObservation};
 use moiren_engine::node::VirtualEndpointId;
 use std::{collections::BTreeMap, time::Duration};
 
@@ -170,26 +170,45 @@ fn select<'a>(
     intent: super::Intent,
     root: &str,
 ) -> Result<&'a Candidate, String> {
-    let stable_text = stable_id.to_string();
-    let mut matches = candidates.iter().filter(|candidate| {
-        let Some((hardware_id, instance)) = candidate.raw_instance.rsplit_once('\\') else {
-            return false;
-        };
-        hardware_id.eq_ignore_ascii_case(r"MOIREN\VAD_RAW")
-            && instance
-                .rsplit('&')
-                .next()
-                .is_some_and(|suffix| suffix.eq_ignore_ascii_case(&stable_text))
-            && candidate.root_instance.eq_ignore_ascii_case(root)
-            && candidate.intent == intent
+    let stable_matches: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| raw_instance_has_identity(&candidate.raw_instance, stable_id))
+        .collect();
+    let mut matches = stable_matches.iter().copied().filter(|candidate| {
+        candidate.root_instance.eq_ignore_ascii_case(root) && candidate.intent == intent
     });
     let Some(first) = matches.next() else {
-        return Err("no exact Windows endpoint matches the owned VAD identity".into());
+        let candidates = stable_matches
+            .iter()
+            .take(8)
+            .map(|candidate| {
+                format!(
+                    "flow={:?}, root={:?}, pnp={:?}",
+                    candidate.intent, candidate.root_instance, candidate.raw_instance
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let omitted = stable_matches.len().saturating_sub(8);
+        return Err(format!(
+            "no exact Windows endpoint matches the owned VAD identity (requested flow={intent:?}, root={root:?}, stable_id={stable_id}; stable-ID candidates=[{candidates}], omitted={omitted})"
+        ));
     };
     if matches.next().is_some() {
         return Err("multiple MMDevices map to the owned raw endpoint".into());
     }
     Ok(first)
+}
+
+fn raw_instance_has_identity(raw_instance: &str, stable_id: StableEndpointId) -> bool {
+    let Some((hardware_id, instance)) = raw_instance.rsplit_once('\\') else {
+        return false;
+    };
+    hardware_id.eq_ignore_ascii_case(r"MOIREN\VAD_RAW")
+        && instance
+            .rsplit('&')
+            .next()
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(&stable_id.to_string()))
 }
 
 #[cfg(test)]
@@ -351,7 +370,9 @@ mod tests {
                 Intent::Playback,
             ),
         ] {
-            assert!(select(&[candidate], stable_id, intent, root).is_err());
+            let error = select(&[candidate], stable_id, intent, root).unwrap_err();
+            assert!(error.contains("no exact Windows endpoint"));
+            assert!(error.contains("stable-ID candidates"));
         }
     }
 
