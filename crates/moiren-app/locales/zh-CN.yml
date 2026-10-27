@@ -2058,3 +2058,51 @@ _version: 2
 "Rate and channels follow the audio graph":
   en: "Rate and channels follow the audio graph"
   zh-CN: "采样率和声道数跟随音频图"
+
+"Bypassed":
+  en: "Bypassed"
+  zh-CN: "已旁通"
+
+"Bypass":
+  en: "Bypass"
+  zh-CN: "旁通"
+
+"Up":
+  en: "Up"
+  zh-CN: "上移"
+
+"Down":
+  en: "Down"
+  zh-CN: "下移"
+
+"Remove":
+  en: "Remove"
+  zh-CN: "移除"
+
+"Input, knee, hold and output gain in Details":
+  en: "Input, knee, hold and output gain in Details"
+  zh-CN: "输入、拐点、保持及输出增益见详情"
+
+"Signed weights; negative values invert polarity":
+  en: "Signed weights; negative values invert polarity"
+  zh-CN: "可输入带符号权重；负值反转极性"
+
+"Input page %{page} / %{total}":
+  en: "Input page %{page} / %{total}"
+  zh-CN: "输入页 %{page} / %{total}"
+
+"Output page %{page} / %{total}":
+  en: "Output page %{page} / %{total}"
+  zh-CN: "输出页 %{page} / %{total}"
+
+"Enter a finite routing weight":
+  en: "Enter a finite routing weight"
+  zh-CN: "请输入有限数值作为路由权重"
+
+"Edit could not be sent; try again":
+  en: "Edit could not be sent; try again"
+  zh-CN: "修改未能发送，请重试"
+
+"Unavailable for this stage":
+  en: "Unavailable for this stage"
+  zh-CN: "此阶段不可用"

@@ -267,15 +267,16 @@ impl CanvasWorld {
                 NodeKind::Limiter | NodeKind::Delay => 3. * 92. + 20.,
                 NodeKind::ChannelMapper => (logical.channels().min(8) as f32 * 68. + 76.).max(296.),
                 NodeKind::Rack => {
-                    348. + if state
-                        .builtin
-                        .rack()
-                        .is_some_and(|rack| rack.slots.len() >= 3)
-                    {
-                        crate::ui::widgets::meters::node_meter_width(logical.channels()) + 16.
-                    } else {
-                        0.
-                    }
+                    rack_content_width(state.builtin.rack())
+                        + if state
+                            .builtin
+                            .rack()
+                            .is_some_and(|rack| !rack.slots.is_empty())
+                        {
+                            crate::ui::widgets::meters::node_meter_width(logical.channels()) + 16.
+                        } else {
+                            0.
+                        }
                 }
                 NodeKind::Bus => {
                     248. + crate::ui::widgets::meters::node_meter_width(logical.channels()) + 20.
@@ -372,6 +373,22 @@ impl CanvasWorld {
             },
         }
     }
+}
+
+/// Use the widest configured stage, rather than the selected stage: switching
+/// a selector must not move its own hit target or the Rack's connection ports.
+fn rack_content_width(settings: Option<&moiren_engine::rack::RackSettings>) -> f32 {
+    use moiren_engine::rack::RackProcessor;
+    settings.map_or(248., |rack| {
+        rack.slots
+            .iter()
+            .map(|slot| match slot.processor {
+                RackProcessor::Gain { .. } | RackProcessor::Pan { .. } => 268.,
+                RackProcessor::ChannelMapper(_) => 324.,
+                _ => 304.,
+            })
+            .fold(248., f32::max)
+    })
 }
 
 impl CanvasNode {

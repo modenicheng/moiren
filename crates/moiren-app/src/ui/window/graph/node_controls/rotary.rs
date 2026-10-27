@@ -4,8 +4,7 @@ use std::cell::Cell;
 
 #[derive(Clone)]
 struct KnobDrag {
-    node: NodeId,
-    parameter: Parameter,
+    key: String,
     cursor: Rc<Cell<f32>>,
     position: Rc<Cell<f32>>,
 }
@@ -26,6 +25,12 @@ pub(super) fn knob(
     let Some(slot) = shell.node_controls.sliders.get(&key) else {
         return div().into_any_element();
     };
+    keyed_knob(format!("card-knob-{:?}-{parameter:?}", node.id), slot, cx)
+}
+
+/// Identity includes the editing surface and target. A Rack card and its
+/// Inspector can therefore reuse the dial without sharing drag ownership.
+pub(super) fn keyed_knob(key: String, slot: &SliderSlot, cx: &Context<StudioShell>) -> AnyElement {
     let value = slot.state.read(cx).value().end();
     let behavior = slot.behavior.clone();
     let wheel_commit = behavior.commit.clone();
@@ -36,14 +41,12 @@ pub(super) fn knob(
     let outside_slider = slider.clone();
     let outside_dragging = slot.dragging.clone();
     let drag = KnobDrag {
-        node: node.id,
-        parameter,
+        key: key.clone(),
         cursor: Rc::new(Cell::new(0.)),
         position: Rc::new(Cell::new(value)),
     };
-    let id = node.id;
     div()
-        .id(format!("card-knob-{id:?}-{parameter:?}"))
+        .id(key.clone())
         .w(px(54.))
         .h(px(54.))
         .flex_none()
@@ -56,7 +59,7 @@ pub(super) fn knob(
         })
         .on_drag_move(move |event: &DragMoveEvent<KnobDrag>, window, cx| {
             let drag = event.drag(cx);
-            if (drag.node, drag.parameter) != key {
+            if drag.key != key {
                 return;
             }
             let y = f32::from(event.event.position.y);

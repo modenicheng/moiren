@@ -13,6 +13,7 @@ mod fields;
 mod io;
 mod parameter;
 mod plots;
+mod rack_editor;
 mod recording;
 mod rotary;
 #[cfg(all(test, feature = "gpui-test"))]
@@ -21,6 +22,7 @@ mod utility;
 use fields::{parameter_control, parameter_row};
 use io::io_body;
 use parameter::Parameter;
+pub(super) use rack_editor::inspector as rack_inspector;
 pub(super) use recording::format_controls as recording_format_controls;
 
 #[derive(Default)]
@@ -32,6 +34,7 @@ pub(in crate::ui::window) struct NodeControls {
     errors: BTreeMap<(NodeId, Parameter), String>,
     pub(super) resource_popup: Option<NodeId>,
     application_picker: BTreeMap<NodeId, bool>,
+    rack: rack_editor::RackEditorState,
 }
 
 impl NodeControls {
@@ -39,6 +42,7 @@ impl NodeControls {
         self.inputs
             .values()
             .any(|input| input.read(cx).focus_handle(cx) == *focused)
+            || self.rack.owns_focus(focused, cx)
     }
 }
 
@@ -174,6 +178,7 @@ impl StudioShell {
                 commit: commit_closure(&ui, &edit, &slider),
             },
         );
+        rack_editor::sync(self, window, cx);
     }
 }
 
@@ -376,7 +381,7 @@ fn full_body(
         && node
             .builtin
             .rack()
-            .is_some_and(|rack| rack.slots.len() >= 3));
+            .is_some_and(|rack| !rack.slots.is_empty()));
     let content = div()
         .flex()
         .flex_col()

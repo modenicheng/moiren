@@ -1282,3 +1282,77 @@ fn recorder_card_format_controls_do_not_dispatch_while_busy(cx: &mut gpui_kit::T
     }
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn rack_card_selects_a_stage_editor_without_opening_inspector_or_editing_graph(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use crate::service::BuiltinState;
+    use moiren_engine::rack::{RackProcessor, RackSettings, RackSlot};
+    let (view, cx, runtime) = test_shell(cx);
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                kind: NodeKind::Rack,
+                channels: 2,
+            }))
+        });
+    });
+    poll_graph(&view, cx, |graph| {
+        graph.node_of_kind(NodeKind::Rack).is_some()
+    });
+    let id = view.read_with(cx, |shell, cx| {
+        shell
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node_of_kind(NodeKind::Rack)
+            .unwrap()
+            .0
+            .id()
+    });
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.dispatch(AppRequest::EditGraph(GraphEdit::SetBuiltin {
+                node: id,
+                state: BuiltinState::Rack(RackSettings {
+                    slots: vec![
+                        RackSlot {
+                            id: 4,
+                            bypass: false,
+                            processor: RackProcessor::Gain { initial: 1. },
+                        },
+                        RackSlot {
+                            id: 8,
+                            bypass: false,
+                            processor: RackProcessor::Eq(Default::default()),
+                        },
+                    ],
+                    routes: vec![],
+                }),
+            }))
+        });
+    });
+    flush_card_requests(&view, cx);
+    show_card(&view, cx, id);
+    let before = view.read_with(cx, |shell, cx| shell.state.read(cx).snapshot.graph.clone());
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(format!("rack-Card-{id:?}-editor-4")).visible());
+        window.click(format!("rack-Card-{id:?}-select-8"), cx);
+        window.render_frame(cx);
+        assert!(window.find(format!("rack-Card-{id:?}-editor-8")).visible());
+        assert!(
+            window
+                .try_find(format!("rack-Card-{id:?}-editor-4"))
+                .is_none()
+        );
+    });
+    view.read_with(cx, |shell, cx| {
+        assert!(!shell.inspector_open);
+        assert_eq!(shell.state.read(cx).snapshot.graph, before);
+        assert!(!shell.state.read(cx).pending_request);
+    });
+    finish_service(runtime);
+}

@@ -11,7 +11,6 @@ use moiren_core::graph::NodeKind;
 use moiren_engine::{
     meter::MeterSettings,
     processor::{ChannelMapperSettings, DelaySettings, EqSettings, GateSettings, LimiterSettings},
-    rack::{RackProcessor, RackSettings, RackSlot},
     recorder::RecorderSettings,
     spectrum::SpectrumSettings,
 };

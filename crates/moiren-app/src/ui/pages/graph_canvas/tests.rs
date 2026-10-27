@@ -19,6 +19,34 @@ fn workstation_geometry_follows_native_content_measurements() {
     assert_eq!(NodeLayout::new(&card).output.unwrap().0, 356.);
 }
 
+#[test]
+fn rack_width_follows_configured_parameter_budget_not_stage_count() {
+    use moiren_engine::rack::{RackProcessor, RackSettings, RackSlot};
+    let settings = |processor| RackSettings {
+        slots: vec![RackSlot {
+            id: 1,
+            bypass: false,
+            processor,
+        }],
+        ..Default::default()
+    };
+    assert_eq!(super::rack_content_width(None), 248.);
+    let gain = settings(RackProcessor::Gain { initial: 1. });
+    let eq = settings(RackProcessor::Eq(Default::default()));
+    let mapper = settings(RackProcessor::ChannelMapper(Default::default()));
+    assert!(super::rack_content_width(Some(&gain)) < super::rack_content_width(Some(&eq)));
+    assert!(super::rack_content_width(Some(&eq)) < super::rack_content_width(Some(&mapper)));
+    let mut many = gain.clone();
+    many.slots.extend((2..=64).map(|id| RackSlot {
+        id,
+        ..gain.slots[0].clone()
+    }));
+    assert_eq!(
+        super::rack_content_width(Some(&gain)),
+        super::rack_content_width(Some(&many))
+    );
+}
+
 fn assert_position(actual: (f32, f32), expected: (f32, f32)) {
     assert_close(actual.0, expected.0);
     assert_close(actual.1, expected.1);

@@ -8,6 +8,14 @@ pub(super) fn parameters(
     cx: &Context<StudioShell>,
 ) -> AnyElement {
     let id = node.id();
+    if node.kind() == NodeKind::Rack {
+        return Disclosure::new(
+            Section::Advanced,
+            id,
+            super::super::node_controls::rack_inspector(shell, entry, cx),
+        )
+        .into_any_element();
+    }
     let mut view = body();
     if node.kind() == NodeKind::Recorder {
         view = view.child(super::super::node_controls::recording_format_controls(
