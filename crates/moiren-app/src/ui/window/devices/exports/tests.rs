@@ -581,8 +581,30 @@ mod headless {
                     .update(cx, |input, cx| input.set_value("\t", window, cx))
             });
             window.render_frame(cx);
+            view.update(cx, |shell, cx| {
+                assert_eq!(
+                    shell.export_controls.names[&id]
+                        .input
+                        .read(cx)
+                        .value()
+                        .as_ref(),
+                    "\t"
+                );
+                assert!(!shell.state.read(cx).pending_request);
+            });
+        });
+        // Name diagnostics make the row taller than the headless viewport;
+        // bring the whole button into the scroll clip before hit testing it.
+        scroll_to_control(cx, SharedString::from(format!("export-rename-{id}")));
+        cx.update(|window, cx| {
             window.click(SharedString::from(format!("export-rename-{id}")), cx);
             window.render_frame(cx);
+            view.update(cx, |shell, cx| {
+                assert!(
+                    shell.state.read(cx).dispatch_error.is_some(),
+                    "invalid rename did not publish validation feedback"
+                );
+            });
             assert!(window.find("error-strip").visible());
         });
         view.update(cx, |shell, cx| {
