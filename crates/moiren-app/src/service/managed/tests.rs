@@ -1,7 +1,7 @@
 use super::*;
 use crate::service::test_backend::{FakeBackend, State};
 use moiren_core::graph::NodeKind;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 struct Rig {
     driver: ManagedDriver,
@@ -2408,4 +2408,164 @@ fn undo_after_stop_restores_the_candidate_without_restarting_audio() {
     assert_eq!(rig.c.graph.snapshot().nodes.len(), nodes_before);
     assert_eq!(rig.c.core.phase(), SessionPhase::Idle);
     assert_eq!(rig.state.starts.load(Ordering::SeqCst), starts);
+}
+
+/// Catalog fake driving `with_catalog`: rows or a sticky failure, never a session.
+struct FakeCatalog {
+    failure: AtomicBool,
+    empty: AtomicBool,
+    calls: AtomicUsize,
+}
+
+impl FakeCatalog {
+    fn filled() -> Self {
+        Self {
+            failure: AtomicBool::new(false),
+            empty: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl crate::service::BackendAdapter for FakeCatalog {
+    fn prepare(
+        &self,
+        _: crate::service::SessionSpec,
+        _: crate::service::Cancellation,
+    ) -> Result<Box<dyn crate::service::PreparedSession>, crate::service::BackendError> {
+        panic!("catalog adapter must never prepare");
+    }
+    fn catalog(&self) -> Result<crate::service::DeviceCatalog, crate::service::BackendError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.failure.load(Ordering::SeqCst) {
+            return Err(crate::service::BackendError::new(
+                "catalog",
+                "fake enumeration failure",
+            ));
+        }
+        Ok(if self.empty.load(Ordering::SeqCst) {
+            crate::service::DeviceCatalog::default()
+        } else {
+            crate::service::DeviceCatalog {
+                inputs: vec![crate::service::DeviceRow {
+                    endpoint_id: "input".into(),
+                    name: "input".into(),
+                }],
+                outputs: vec![crate::service::DeviceRow {
+                    endpoint_id: "output".into(),
+                    name: "output".into(),
+                }],
+                default_input_endpoint_id: Some("input".into()),
+                default_output_endpoint_id: Some("output".into()),
+                ..Default::default()
+            }
+        })
+    }
+}
+
+fn catalog_rig(catalog: Arc<FakeCatalog>, automatic_startup: bool) -> Rig {
+    let backend = FakeBackend::default();
+    let state = backend.0.clone();
+    let driver = ManagedDriver::new(move |_| Ok(Box::new(backend.clone()))).with_catalog(catalog);
+    let driver = if automatic_startup {
+        driver.with_automatic_startup()
+    } else {
+        driver
+    };
+    Rig {
+        driver,
+        c: ServiceContext::default(),
+        pool: JobPool::new().unwrap(),
+        state,
+    }
+}
+
+#[test]
+fn automatic_startup_uses_catalog_defaults_once_and_stop_stays_authoritative() {
+    let mut rig = catalog_rig(Arc::new(FakeCatalog::filled()), true);
+    rig.tick();
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
+    let desired = rig.c.core.desired().expect("default session").clone();
+    assert_eq!(desired.gain, 0.0);
+    assert_eq!(desired.limit, crate::service::RunLimit::UntilStopped);
+    assert_eq!(
+        desired.source,
+        crate::service::InputSelection::Physical {
+            endpoint_id: "input".into()
+        }
+    );
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+    rig.request(AppRequest::Stop);
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Idle && r.driver.is_drained());
+    let generation = rig.c.core.generation();
+    rig.request(AppRequest::RefreshCatalog);
+    rig.wait(|r| r.c.catalog_error.is_none() && r.c.catalog.outputs.len() == 1);
+    assert_eq!(rig.c.core.generation(), generation);
+    assert!(rig.c.core.desired().is_none());
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn catalog_failure_is_visible_and_refresh_preserves_running_session_and_last_rows() {
+    let catalog = Arc::new(FakeCatalog::filled());
+    catalog.failure.store(true, Ordering::SeqCst);
+    let mut rig = catalog_rig(catalog.clone(), false);
+    rig.tick();
+    rig.wait(|r| {
+        r.c.catalog_error
+            .as_deref()
+            .is_some_and(|error| error.contains("fake enumeration failure"))
+    });
+    assert_eq!(rig.c.core.phase(), SessionPhase::Idle);
+    assert!(rig.c.catalog.outputs.is_empty());
+    assert_eq!(rig.c.core.error(), None);
+    catalog.failure.store(false, Ordering::SeqCst);
+    rig.request(AppRequest::RefreshCatalog);
+    rig.wait(|r| r.c.catalog_error.is_none() && !r.c.catalog.outputs.is_empty());
+    let rows = rig.c.catalog.clone();
+    rig.request(AppRequest::Start(crate::service::SessionSpec {
+        source: crate::service::InputSelection::Tone {
+            frequency_hz: 440.0,
+        },
+        output_endpoint_id: "output".into(),
+        limit: crate::service::RunLimit::UntilStopped,
+        gain: 1.0,
+        pan: 0.0,
+        max_block_frames: 256,
+    }));
+    rig.wait(|r| r.c.core.phase() == SessionPhase::Running);
+    catalog.failure.store(true, Ordering::SeqCst);
+    rig.request(AppRequest::RefreshCatalog);
+    rig.wait(|r| r.c.catalog_error.is_some());
+    assert!(Arc::ptr_eq(&rows, &rig.c.catalog));
+    assert_eq!(rig.c.core.phase(), SessionPhase::Running);
+    assert_eq!(rig.c.core.error(), None);
+    catalog.failure.store(false, Ordering::SeqCst);
+    rig.request(AppRequest::RefreshCatalog);
+    rig.wait(|r| r.c.catalog_error.is_none());
+    assert_eq!(rig.c.core.phase(), SessionPhase::Running);
+    assert_eq!(rig.state.starts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn zero_signal_demand_still_applies_controls_retires_and_restarts() {
+    let mut r = Rig::new();
+    let topic = r.c.signals.topics.tone_output.clone();
+    r.start();
+    r.request(AppRequest::SetGainPan {
+        gain: 0.008,
+        pan: 0.5,
+    });
+    r.wait(|r| r.c.control.accepted_pending == 0 && r.c.control.last_result.is_some());
+    assert_eq!(topic.business_subscribers(), 0);
+    assert_eq!(topic.stats().attempts, 0);
+    r.request(AppRequest::Stop);
+    r.wait(|r| r.driver.is_drained() && r.c.core.phase() == SessionPhase::Idle);
+    assert_eq!(topic.stats().attempts, 0);
+    assert_eq!(r.state.stops.load(Ordering::SeqCst), 1);
+    // A clean retirement leaves the signal bus reusable for the next session.
+    r.start();
+    r.wait(|r| r.c.core.phase() == SessionPhase::Running);
+    assert_eq!(topic.business_subscribers(), 0);
+    assert_eq!(topic.stats().attempts, 0);
 }
