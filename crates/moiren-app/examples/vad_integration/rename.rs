@@ -91,6 +91,10 @@ pub(super) enum TopologyReadError {
     ConnectorCount {
         count: u32,
     },
+    Dependency {
+        stage: &'static str,
+        dependency: &'static str,
+    },
     NullString {
         field: &'static str,
     },
@@ -154,6 +158,44 @@ pub(super) struct AdapterDeviceEvidence {
     pub interface_friendly_name: PropertyReadback,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum TopologyIdentityMatch {
+    Match,
+    Mismatch,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct ConnectedPartProperties {
+    pub part_type: TopologyRead<i32>,
+    /// Entire topology-local ID; never a KS pin-factory index.
+    pub local_id: TopologyRead<u32>,
+    pub global_id: TopologyRead<String>,
+    pub name: TopologyRead<String>,
+    pub subtype: TopologyRead<String>,
+    /// A failed GetTopologyObject is retained here; GetDeviceId is not attempted.
+    pub topology_device_id: TopologyRead<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct ConnectedConnectorEvidence {
+    pub connector_type: TopologyRead<i32>,
+    pub data_flow: TopologyRead<i32>,
+    /// QueryInterface failure explicitly blocks every dependent part getter.
+    pub part: TopologyRead<ConnectedPartProperties>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct ConnectedPartEvidence {
+    /// Exact endpoint-connector GetConnectorIdConnectedTo result.
+    pub connector_id: TopologyRead<String>,
+    /// GetConnectedTo failure explicitly blocks all adapter-connector reads.
+    pub connection: TopologyRead<ConnectedConnectorEvidence>,
+    pub adapter_id_match: TopologyIdentityMatch,
+    pub connector_id_match: TopologyIdentityMatch,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct TopologyEvidence {
     /// Exact GetDeviceIdConnectedTo output: no prefix removal/path guessing.
@@ -163,6 +205,9 @@ pub(super) struct TopologyEvidence {
     /// Resolve the opaque topology ID through MMDevice, independently of SetupAPI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adapter_mmdevice: Option<TopologyRead<AdapterDeviceEvidence>>,
+    /// Optional in historical observations; newly collected failures are explicit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connected_part: Option<ConnectedPartEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

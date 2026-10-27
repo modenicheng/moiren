@@ -63,6 +63,7 @@ fn opaque_topology_and_setup_rejection_are_optional_diagnostics_not_gate_authori
             hresult: -2147024809,
         }),
         adapter_mmdevice: None,
+        connected_part: None,
     };
     let mut before = name("Playback");
     before.topology = Some(diagnostic.clone());
@@ -76,6 +77,7 @@ fn opaque_topology_and_setup_rejection_are_optional_diagnostics_not_gate_authori
         },
         setup_interface: None,
         adapter_mmdevice: None,
+        connected_part: None,
     });
     same_held_device(&before, &after).unwrap();
     assert!(windows_name(&before, &after, "new").is_err());
@@ -134,6 +136,82 @@ fn setup_interface_metadata_retains_independent_read_errors_and_raw_property_sha
         json["friendly_name"]["readback"]["error"]["kind"],
         "property_type"
     );
+}
+
+#[test]
+fn connected_part_diagnostics_cannot_replace_exact_windows_name_or_held_identity() {
+    for direction in ["Playback", "Microphone"] {
+        let before = name(direction);
+        let mut after = before.clone();
+        let mut topology = TopologyEvidence {
+            adapter_id: TopologyRead::Value {
+                value: "adapter".into(),
+            },
+            setup_interface: None,
+            adapter_mmdevice: None,
+            connected_part: None,
+        };
+        assert!(
+            serde_json::to_value(&topology)
+                .unwrap()
+                .get("connected_part")
+                .is_none()
+        );
+        topology.connected_part = Some(ConnectedPartEvidence {
+            connector_id: TopologyRead::Value {
+                value: "peer".into(),
+            },
+            connection: TopologyRead::Value {
+                value: ConnectedConnectorEvidence {
+                    connector_type: TopologyRead::Value { value: 2 },
+                    data_flow: TopologyRead::Value { value: 1 },
+                    part: TopologyRead::Value {
+                        value: ConnectedPartProperties {
+                            part_type: TopologyRead::Value { value: 0 },
+                            local_id: TopologyRead::Value { value: u32::MAX },
+                            global_id: TopologyRead::Value {
+                                value: "peer".into(),
+                            },
+                            name: TopologyRead::Value {
+                                value: "new".into(),
+                            },
+                            subtype: TopologyRead::Value {
+                                value: "raw subtype GUID".into(),
+                            },
+                            topology_device_id: TopologyRead::Value {
+                                value: "adapter".into(),
+                            },
+                        },
+                    },
+                },
+            },
+            adapter_id_match: TopologyIdentityMatch::Match,
+            connector_id_match: TopologyIdentityMatch::Match,
+        });
+        after.topology = Some(topology);
+        same_held_device(&before, &after).unwrap();
+        assert!(windows_name(&before, &after, "new").is_err());
+        after.windows_friendly_name = "new".into();
+        windows_name(&before, &after, "new").unwrap();
+        assert!(same_held_device(&before, &after).is_err());
+        let evidence = after
+            .topology
+            .as_mut()
+            .unwrap()
+            .connected_part
+            .as_mut()
+            .unwrap();
+        evidence.adapter_id_match = TopologyIdentityMatch::Mismatch;
+        evidence.connector_id_match = TopologyIdentityMatch::Unknown;
+        evidence.connection = TopologyRead::Error {
+            error: TopologyReadError::Hresult {
+                stage: "GetConnectedTo",
+                hresult: -2147467259,
+            },
+        };
+        windows_name(&before, &after, "new").unwrap();
+        assert!(same_held_device(&before, &after).is_err());
+    }
 }
 
 #[test]

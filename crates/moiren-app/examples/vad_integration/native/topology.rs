@@ -18,7 +18,9 @@ use windows::{
             Properties::{DEVPKEY_DeviceInterface_FriendlyName, DEVPROP_TYPE_STRING, DEVPROPTYPE},
         },
         Foundation::ERROR_INSUFFICIENT_BUFFER,
-        Media::Audio::{IDeviceTopology, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator},
+        Media::Audio::{
+            IConnector, IDeviceTopology, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+        },
         System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree},
     },
     core::{Error, HSTRING, PWSTR},
@@ -26,6 +28,9 @@ use windows::{
 
 const MAX_UNITS: usize = 4096;
 const PROPERTY_BYTES: usize = (MAX_UNITS + 1) * 2;
+
+#[path = "topology/connected.rs"]
+mod connected;
 
 fn bounded_utf16(
     field: &'static str,
@@ -62,14 +67,38 @@ fn collect_with(
                 adapter_id: TopologyRead::Value { value },
                 setup_interface,
                 adapter_mmdevice,
+                connected_part: None,
             }
         }
         Err(error) => TopologyEvidence {
             adapter_id: TopologyRead::Error { error },
             setup_interface: None,
             adapter_mmdevice: None,
+            connected_part: None,
         },
     }
+}
+
+fn collect_endpoint_with<C>(
+    connector: Result<C, TopologyReadError>,
+    adapter: impl FnOnce(&C) -> Result<String, TopologyReadError>,
+    setup: impl FnOnce(&str) -> SetupInterfaceEvidence,
+    resolve: impl FnOnce(&str) -> Result<AdapterDeviceEvidence, TopologyReadError>,
+    connected: impl FnOnce(&C, &TopologyRead<String>) -> super::super::rename::ConnectedPartEvidence,
+) -> TopologyEvidence {
+    let mut evidence = collect_with(
+        || connector.as_ref().map_err(Clone::clone).and_then(adapter),
+        setup,
+        resolve,
+    );
+    evidence.connected_part = Some(match connector {
+        // Adapter-ID failure must not hide a successfully reached peer/part.
+        Ok(connector) => connected(&connector, &evidence.adapter_id),
+        // The original endpoint error is retained in adapter_id; only these
+        // dependent operations are marked not attempted.
+        Err(_) => connected::unavailable(),
+    });
+    evidence
 }
 
 fn property_text(kind: u32, bytes: u32, buffer: &[u8]) -> Result<String, TopologyReadError> {
@@ -120,9 +149,26 @@ impl Drop for TaskString {
     }
 }
 
-fn adapter_id(device: &IMMDevice) -> Result<String, TopologyReadError> {
+fn task_text(
+    stage: &'static str,
+    field: &'static str,
+    result: windows::core::Result<PWSTR>,
+) -> Result<String, TopologyReadError> {
+    let owned = TaskString(result.map_err(|error| hresult(stage, error))?);
+    // Successful COM string outputs are NUL-terminated. Keep their allocation
+    // alive through the bounded, strict copy and free on every return path.
+    bounded_utf16(field, |index| {
+        if owned.0.is_null() {
+            None
+        } else {
+            Some(unsafe { *owned.0.0.add(index) })
+        }
+    })
+}
+
+fn endpoint_connector(device: &IMMDevice) -> Result<IConnector, TopologyReadError> {
     // Apartment-local activation obtains metadata only, never starts a stream.
-    // All topology/connector references are dropped before returning this value.
+    // The returned connector is used and released by collect on this thread.
     let topology: IDeviceTopology = unsafe { device.Activate(CLSCTX_ALL, None) }
         .map_err(|error| hresult("Activate(IDeviceTopology)", error))?;
     let count = unsafe { topology.GetConnectorCount() }
@@ -130,21 +176,7 @@ fn adapter_id(device: &IMMDevice) -> Result<String, TopologyReadError> {
     if count != 1 {
         return Err(TopologyReadError::ConnectorCount { count });
     }
-    let connector =
-        unsafe { topology.GetConnector(0) }.map_err(|error| hresult("GetConnector(0)", error))?;
-    let owned = TaskString(
-        unsafe { connector.GetDeviceIdConnectedTo() }
-            .map_err(|error| hresult("GetDeviceIdConnectedTo", error))?,
-    );
-    // A successful COM result is a readable NUL-terminated string. Stop at NUL
-    // or the explicit 4096-unit payload bound; never call unbounded as_wide().
-    bounded_utf16("adapter_id", |index| {
-        if owned.0.is_null() {
-            None
-        } else {
-            Some(unsafe { *owned.0.0.add(index) })
-        }
-    })
+    unsafe { topology.GetConnector(0) }.map_err(|error| hresult("GetConnector(0)", error))
 }
 
 struct DeviceSet(HDEVINFO);
@@ -301,7 +333,17 @@ fn adapter_mmdevice(exact_id: &str) -> Result<AdapterDeviceEvidence, TopologyRea
 }
 
 pub(super) fn collect(device: &IMMDevice) -> TopologyEvidence {
-    collect_with(|| adapter_id(device), setup_interface, adapter_mmdevice)
+    collect_endpoint_with(
+        endpoint_connector(device),
+        |connector| {
+            task_text("GetDeviceIdConnectedTo", "adapter_id", unsafe {
+                connector.GetDeviceIdConnectedTo()
+            })
+        },
+        setup_interface,
+        adapter_mmdevice,
+        connected::collect,
+    )
 }
 
 pub(super) fn collect_once(
@@ -314,6 +356,145 @@ pub(super) fn collect_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connected_part_is_explicit_when_endpoint_connector_is_unavailable() {
+        for error in [
+            TopologyReadError::ConnectorCount { count: 2 },
+            TopologyReadError::Hresult {
+                stage: "Activate(IDeviceTopology)",
+                hresult: -2147467259,
+            },
+            TopologyReadError::Hresult {
+                stage: "GetConnector(0)",
+                hresult: -2147024891,
+            },
+        ] {
+            let result = collect_endpoint_with::<()>(
+                Err(error.clone()),
+                |_| panic!("no endpoint connector, no adapter-ID getter"),
+                |_| panic!("no adapter ID, no SetupAPI"),
+                |_| panic!("no adapter ID, no MMDevice"),
+                |_, _| panic!("no endpoint connector, no connected-part getter"),
+            );
+            assert_eq!(result.adapter_id, TopologyRead::Error { error });
+            let json = serde_json::to_value(result).unwrap();
+            assert_eq!(
+                json["connected_part"]["connection"]["error"]["kind"],
+                "dependency"
+            );
+            assert_eq!(
+                json["connected_part"]["connection"]["error"]["stage"],
+                "GetConnectedTo"
+            );
+            assert_eq!(
+                json["connected_part"]["connection"]["error"]["dependency"],
+                "endpoint_connector"
+            );
+            assert_eq!(
+                json["connected_part"]["connector_id"]["error"]["stage"],
+                "GetConnectorIdConnectedTo"
+            );
+            assert_eq!(json["connected_part"]["adapter_id_match"], "unknown");
+        }
+    }
+
+    #[test]
+    fn connected_part_is_not_fabricated_by_adapter_only_collection() {
+        let result = collect_with(
+            || Ok("adapter".into()),
+            |_| SetupInterfaceEvidence::Rejected {
+                hresult: -2147024809,
+            },
+            |_| {
+                Err(TopologyReadError::Hresult {
+                    stage: "GetDevice(adapter_id)",
+                    hresult: -2147467259,
+                })
+            },
+        );
+        assert!(
+            result.connected_part.is_none(),
+            "adapter-only collector knows nothing about connector availability"
+        );
+    }
+
+    #[test]
+    fn connected_part_reads_survive_adapter_id_failure_and_remain_once_only() {
+        let pending = std::cell::Cell::new(true);
+        let connections = std::cell::Cell::new(0);
+        let collect = || {
+            collect_endpoint_with(
+                Ok(7u32),
+                |endpoint| {
+                    assert_eq!(*endpoint, 7);
+                    Err(TopologyReadError::Hresult {
+                        stage: "GetDeviceIdConnectedTo",
+                        hresult: -2147467259,
+                    })
+                },
+                |_| panic!("no ID, no SetupAPI"),
+                |_| panic!("no ID, no MMDevice"),
+                |endpoint, adapter| {
+                    assert_eq!(*endpoint, 7);
+                    assert!(matches!(adapter, TopologyRead::Error { .. }));
+                    connections.set(connections.get() + 1);
+                    connected::unavailable()
+                },
+            )
+        };
+        let evidence = collect_once(&pending, collect).unwrap();
+        assert!(evidence.connected_part.is_some());
+        assert!(matches!(evidence.adapter_id, TopologyRead::Error { .. }));
+        assert!(evidence.adapter_mmdevice.is_none());
+        assert!(evidence.setup_interface.is_none());
+        assert_eq!(connections.get(), 1);
+        assert!(collect_once(&pending, || panic!("must not recollect connected part")).is_none());
+    }
+
+    #[test]
+    fn connected_part_task_strings_keep_strict_bounds_field_errors_and_hresult() {
+        use windows::Win32::System::Com::CoTaskMemAlloc;
+        let read_units = |units: &[u16]| {
+            // Transfer a real task allocation to the production ownership helper.
+            let pointer = unsafe { CoTaskMemAlloc(units.len() * size_of::<u16>()) }.cast::<u16>();
+            assert!(!pointer.is_null());
+            unsafe { std::ptr::copy_nonoverlapping(units.as_ptr(), pointer, units.len()) };
+            task_text("IPart::GetName", "part_name", Ok(PWSTR(pointer)))
+        };
+        let exact: Vec<_> = " Mixed bridge name ".encode_utf16().chain([0]).collect();
+        assert_eq!(read_units(&exact).unwrap(), " Mixed bridge name ");
+        let mut maximum = vec![88u16; MAX_UNITS];
+        maximum.push(0);
+        assert_eq!(read_units(&maximum).unwrap().len(), MAX_UNITS);
+        maximum[MAX_UNITS] = 88;
+        assert_eq!(
+            read_units(&maximum),
+            Err(TopologyReadError::UnterminatedString {
+                field: "part_name",
+                max_units: MAX_UNITS,
+            })
+        );
+        assert_eq!(
+            read_units(&[0xd800, 0]),
+            Err(TopologyReadError::InvalidUtf16 { field: "part_name" })
+        );
+        assert_eq!(
+            task_text("IPart::GetName", "part_name", Ok(PWSTR::null())),
+            Err(TopologyReadError::NullString { field: "part_name" })
+        );
+        assert_eq!(
+            task_text(
+                "IPart::GetName",
+                "part_name",
+                Err(Error::from_hresult(windows::core::HRESULT(-2147024891)))
+            ),
+            Err(TopologyReadError::Hresult {
+                stage: "IPart::GetName",
+                hresult: -2147024891,
+            })
+        );
+    }
 
     #[test]
     fn bounded_utf16_preserves_exact_text_and_never_scans_beyond_limit() {
