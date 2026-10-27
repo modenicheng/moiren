@@ -1782,7 +1782,10 @@ Clock rebase for endpoint 3, session 504639348358, stream generation 6:
 | Atomic gate change | 8 to 9, both open and Running |
 
 The current serviced packet's nominal boundary is one packet earlier than
-that next deadline. This record proves a rebase and gate change, not whether
+that next deadline: packet 157 is due at QPC 504829145627, so its actual
+completion is 14.1051 ms late. At 10 MHz the 480-frame period is exactly
+100,000 ticks; both deadlines match the absolute RUN epoch without a
+rounding/phase drift. This record proves a rebase and gate change, not whether
 DPC dispatch or lock acquisition caused the lateness. The later pre-cleanup
 QUERY sees the same stream, gate 9, Present/Running/open, cumulative drops 15
 and silence 68. It is not an atomic observation of the failed request.
@@ -1876,3 +1879,69 @@ runner, run files and trace tool are removed immediately after their checks.
 At `2026-10-27T13:34:37+08:00` the guest holds only the current 7,624,192-byte
 integration probe with 30.093 GiB free. System, DriverStore and rollback
 packages are preserved. Exact Windows rename and Stage 7 remain open.
+
+### 2026-10-27 probe-only microphone cadence experiment
+
+The correlated request-1553 window supports a probe scheduling defect:
+each completion is collected before a new half-period delay is started,
+so collection/wakeup lateness can move a WRITE beyond an empty native
+callback. Its later TooOld is distinct from the subsequent clock rebase.
+The production application worker already advances a successful packet's
+intended phase, and is not changed by this probe repair.
+
+`e4aef04` advances successful completion cadence from the preceding intended
+submission phase plus one whole packet period. An overdue deadline permits
+one immediate WRITE, never a catch-up burst; pending remains at most one.
+First/unanchored and dropped completions retain the existing half-period
+re-arm. Submission at least one period late discards its stale phase.
+Startup, driver policy, freshness, queue capacity, PCM and epoch failures
+remain unchanged. Shared submission/cadence Instant is explicitly sampled
+before the helper, distinct from the unchanged QPC submit/header records.
+
+The actual scheduling helpers fail three new regressions before the fix.
+All 52 example tests, strict example/test Clippy, scoped formatting, release
+build, independent review and parent test/Clippy rerun pass. The release
+probe is 431,104 bytes, SHA-256
+`5AA92F468FF9C58E093CFB24041959D49202949CDF3CA522F66552F32EDA4EDB`;
+host archive `target/vad-target-archive/20261027-probe-e4aef04` preserves it
+before replacing the guest's integration probe.
+
+On unchanged installed driver `2121277`, the four 15-second event microphone
+cases now finish with exit 0 and no watchdog, silence, WRITE drops or native
+discontinuities:
+
+| Channels / format | Signal frames | Silent frames | WRITE drops | Native discontinuities |
+| --- | --- | --- | --- | --- |
+| mono / PCM16 | 720,000 | 0 | 0 | 0 |
+| mono / Float32 | 719,520 | 0 | 0 | 0 |
+| stereo / PCM16 | 719,520 | 0 | 0 | 0 |
+| stereo / Float32 | 719,520 | 0 | 0 | 0 |
+
+All use 480 buffer/driver packet frames and 1,500 WRITE submissions. The
+eight-event ETL decodes without loss/error/unknown formats and contains only
+the four first-transfer diagnostics, no unserved or clock rebase fragments.
+This is an improved short diagnostic window, not proof of exact full-frame
+coverage, long-run stability, minimum-period support or physical latency.
+Six original files are host/guest length/SHA-256 verified and removed from
+the guest at `2026-10-27T13:44:28+08:00`; host archive
+`target/vad-target-archive/20261027-native-e4aef04-mic-event15` retains them.
+No default or qualification gate is promoted by this result.
+
+The separate four-case 15-second timer microphone subset also exits 0 with
+zero silence, WRITE drops and native discontinuities. Its actual aligned
+buffer and driver packet frames are 2,048 (mono PCM16), 1,024 (mono Float32
+and stereo PCM16), and 512 (stereo Float32). These are actual observations
+for this run, not assumptions from page capacity or the initial 10 ms
+request. Signal frames are 719,520 for the first three cases and 694,080 for
+stereo Float32, below 720,000; zero counters alone cannot establish complete
+waveform/frame coverage. All timer native positions advance. The ETL again
+has eight events, no unserved/rebase fragments and zero lost/error/unknown
+events. The original six files are checked on host and guest and removed;
+host archive `20261027-native-e4aef04-mic-timer15` retains the incomplete
+signal observation without upgrading it to qualified.
+
+At `2026-10-27T13:46:17+08:00`, after checked removal of the runner and trace
+tool, only the current 431,104-byte native probe remains in the guest test
+root, with 30.099 GiB free and no present dynamic child/test process. No
+guest build tree or historical run archive is retained. Exact full coverage,
+small-period negotiation, long-run stability and physical latency stay open.
