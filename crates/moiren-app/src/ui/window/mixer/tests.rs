@@ -452,6 +452,9 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
         cx.notify();
     });
     cx.update(|window, cx| window.render_frame(cx));
+    // Responsive panel springs change the cached controls' layout even when
+    // audio is steady. Measure meter-only frames after that transition ends.
+    crate::ui::window::test_harness::settle_panels(cx);
     wait_until(Duration::from_secs(3), || {
         cx.update(|window, cx| {
             window.simulate_next_frame(cx);
