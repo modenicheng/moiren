@@ -78,7 +78,6 @@ pub(super) fn run_prepared(
             capacity_frames: capacity,
         },
         input.channels,
-        input.stop,
         report,
         clock,
     )?;
@@ -190,18 +189,4 @@ pub(crate) fn finish(
         }
     }
     report
-}
-
-/// Shared by native preparation and hardware-free owner lifecycle tests.
-#[cfg(test)]
-pub(super) fn ready_and_wait(
-    sender: &SyncSender<Result<Startup, CaptureError>>,
-    startup: Startup,
-    gate: &ActivationGate,
-    target: Option<HANDLE>,
-) -> Result<Activation, CaptureError> {
-    sender
-        .send(Ok(startup))
-        .map_err(|_| CaptureError::StartupLost)?;
-    Ok(gate.wait_with_target(target)?)
 }

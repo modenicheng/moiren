@@ -4,8 +4,7 @@ use windows::{
     Win32::{
         Foundation::{CloseHandle, E_INVALIDARG, FILETIME, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
         Media::Audio::{
-            AUDCLNT_BUFFERFLAGS_SILENT, IAudioCaptureClient, IAudioClient, IAudioClient3,
-            IAudioRenderClient, WAVEFORMATEX,
+            AUDCLNT_BUFFERFLAGS_SILENT, IAudioCaptureClient, IAudioClient, IAudioRenderClient,
         },
         System::{
             Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize},
@@ -91,9 +90,6 @@ pub(crate) enum LeaseFallback {
     /// AUDCLNT_BUFFERFLAGS_SILENT, so a submission aborted by validation plays
     /// silence instead of unwritten buffer memory.
     RenderSilent,
-    /// Shared-mode render cancellation: an empty packet (zero frames, no
-    /// flags) is returned; no part of an abandoned submission is used.
-    RenderEmpty,
 }
 
 /// One RAII release-buffer lease shared by the WASAPI transports. GetBuffer
@@ -128,7 +124,6 @@ impl<C: LeaseClient> Drop for PacketLease<'_, C> {
             let (frames, flags) = match self.fallback {
                 LeaseFallback::CapturePacket => (self.frames, 0),
                 LeaseFallback::RenderSilent => (self.frames, AUDCLNT_BUFFERFLAGS_SILENT.0 as u32),
-                LeaseFallback::RenderEmpty => (0, 0),
             };
             let _ = self.client.release_packet(frames, flags);
         }
@@ -219,18 +214,6 @@ impl<T> Drop for TaskMemory<T> {
 pub fn take_string(value: PWSTR) -> Result<String> {
     let _memory = TaskMemory(value.0);
     unsafe { Ok(value.to_string()?) }
-}
-
-/// Query `IAudioClient3::GetCurrentSharedModeEnginePeriod` and own the
-/// returned engine-format allocation. The period is engine-rate frames;
-/// callers decide whether the format descriptor matters for their policy.
-pub(crate) fn current_shared_mode_engine_period(
-    client: &IAudioClient3,
-) -> Result<(u32, TaskMemory<WAVEFORMATEX>)> {
-    let mut format = std::ptr::null_mut();
-    let mut period = 0;
-    unsafe { client.GetCurrentSharedModeEnginePeriod(&mut format, &mut period) }?;
-    Ok((period, TaskMemory(format)))
 }
 
 pub struct Process {

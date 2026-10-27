@@ -8,11 +8,7 @@ use thiserror::Error;
 #[cfg(windows)]
 pub(crate) mod wasapi;
 #[cfg(windows)]
-pub use wasapi::{
-    CaptureEndpoint, CaptureSession, NativeCaptureInfo, PreparedCapture, PreparedNativeCapture,
-    list_capture_endpoints, prepare_capture_native_with_gate, prepare_capture_with_gate,
-    start_capture, start_capture_with_stop,
-};
+pub use wasapi::{CaptureSession, PreparedCapture};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum CaptureError {
@@ -40,7 +36,7 @@ pub enum CaptureError {
     #[error("capture worker panicked")]
     WorkerPanicked,
     #[error(transparent)]
-    SharedPeriod(#[from] crate::shared_stream::SharedPeriodError),
+    SharedPeriod(#[from] crate::format::SharedPeriodError),
     #[error(transparent)]
     LatencyBudget(#[from] crate::latency::LatencyBudgetError),
     #[error("capture startup channel closed before preparation completed")]
@@ -61,7 +57,7 @@ pub enum CaptureError {
 #[derive(Debug, Clone)]
 pub struct CaptureOptions {
     pub latency_telemetry: crate::latency::TelemetryMode,
-    pub shared_period: crate::shared_stream::SharedPeriodPolicy,
+    pub shared_period: crate::format::SharedPeriodPolicy,
     pub endpoint_id: String,
     pub duration: SessionDuration,
 }
@@ -100,7 +96,7 @@ pub struct CaptureReport {
     pub input_queue: Option<crate::latency::PreparedInputQueue>,
     pub schema_version: u32,
     pub latency: crate::latency::LatencySnapshot,
-    pub shared_period: crate::shared_stream::SharedPeriodReport,
+    pub shared_period: crate::format::SharedPeriodReport,
     pub stream_latency_100ns: Option<i64>,
     pub source: CaptureSource,
     pub endpoint_id: Option<String>,
@@ -131,7 +127,7 @@ impl CaptureReport {
             input_queue: None,
             latency: crate::latency::LatencyRecorder::new(crate::latency::TelemetryMode::Disabled)
                 .snapshot(),
-            shared_period: crate::shared_stream::SharedPeriodReport::default(),
+            shared_period: crate::format::SharedPeriodReport::default(),
             stream_latency_100ns: None,
             source,
             endpoint_id: None,

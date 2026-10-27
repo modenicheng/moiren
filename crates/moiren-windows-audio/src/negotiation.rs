@@ -9,8 +9,6 @@
 //! explicit parameters instead of silent unification (decision D4 in
 //! `docs/superpowers/plans/2026-10-19-repo-steward-remediation.md`).
 
-use crate::owner::{OwnedHandle, TaskMemory};
-use crate::shared_stream::format::PreparedSharedFormat;
 #[cfg(feature = "probe-tools")]
 use windows::Win32::Media::Audio::EDataFlow;
 use windows::{
@@ -18,20 +16,14 @@ use windows::{
         Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
         Foundation::{E_NOINTERFACE, E_NOTIMPL, E_UNEXPECTED, S_OK},
         Media::Audio::{
-            AUDCLNT_E_ENGINE_PERIODICITY_LOCKED, AUDCLNT_E_UNSUPPORTED_FORMAT,
-            AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_SHAREMODE_SHARED,
             AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            AUDCLNT_STREAMFLAGS_NOPERSIST, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-            AudioCategory_Other, AudioClientProperties, IAudioClient, IAudioClient2, IAudioClient3,
-            IMMDevice, IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator, WAVEFORMATEX,
-            WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eCapture, eRender,
+            AUDCLNT_STREAMFLAGS_NOPERSIST, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioClient,
+            IAudioClient3, IMMDevice, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
         },
-        System::{
-            Com::{CLSCTX_ALL, CoCreateGuid, CoCreateInstance, STGM_READ},
-            Variant::VT_LPWSTR,
-        },
+        System::{Com::STGM_READ, Variant::VT_LPWSTR},
     },
-    core::{GUID, HSTRING, Interface},
+    core::GUID,
 };
 
 /// KSDATAFORMAT_SUBTYPE_PCM: integer samples in the container.
@@ -100,6 +92,7 @@ pub(crate) enum DescriptorError {
 
 impl ParsedDescriptor {
     /// The packed base header, copied by value.
+    #[cfg(test)]
     pub(crate) fn base(&self) -> WAVEFORMATEX {
         match self {
             Self::Pcm { base } | Self::Float { base } => *base,
@@ -108,6 +101,7 @@ impl ParsedDescriptor {
     }
 
     /// Valid bits per sample; present for EXTENSIBLE only.
+    #[cfg(test)]
     pub(crate) fn valid_bits(&self) -> Option<u16> {
         match self {
             Self::Extensible(extended) => {
@@ -120,6 +114,7 @@ impl ParsedDescriptor {
     }
 
     /// Channel mask; present for EXTENSIBLE only.
+    #[cfg(test)]
     pub(crate) fn channel_mask(&self) -> Option<u32> {
         match self {
             Self::Extensible(extended) => Some(extended.dwChannelMask),
@@ -128,6 +123,7 @@ impl ParsedDescriptor {
     }
 
     /// The resolved sub-format GUID.
+    #[cfg(test)]
     pub(crate) fn sub_format(&self) -> GUID {
         match self {
             Self::Pcm { .. } => SUBFORMAT_PCM,
@@ -210,20 +206,6 @@ pub(crate) enum EnginePeriodicityPolicy {
     /// also rejects out-of-range periods before Initialize instead of
     /// rounding them to a legal one.
     ExactPeriod,
-    /// Retry exactly once with the engine's current period when that period
-    /// stays legal for the negotiated format. Used by the legacy shared
-    /// stack, whose desired period is advisory.
-    EnginePeriodRetry,
-}
-
-/// Whether `code` may be retried with the engine's current period under
-/// `policy`; every other failure stays terminal.
-pub(crate) fn periodicity_locked_retry(
-    policy: EnginePeriodicityPolicy,
-    code: windows::core::HRESULT,
-) -> bool {
-    policy == EnginePeriodicityPolicy::EnginePeriodRetry
-        && code == AUDCLNT_E_ENGINE_PERIODICITY_LOCKED
 }
 
 /// GetSharedModeEnginePeriod frame bounds.
@@ -384,164 +366,9 @@ pub(crate) fn friendly_name(device: &IMMDevice) -> windows::core::Result<String>
     }
 }
 
-/// Stage labels for the shared open sequence. Every label is observable in
-/// per-stack error reports; each stack passes its own historic strings.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SharedOpenStages {
-    pub enumerator: &'static str,
-    pub device: &'static str,
-    pub endpoint: &'static str,
-    pub data_flow: &'static str,
-    pub event: &'static str,
-    pub activate: &'static str,
-    pub client2: &'static str,
-    pub client_properties: &'static str,
-    pub mix_format: &'static str,
-    pub session_guid: &'static str,
-    pub set_event: &'static str,
-}
-
-impl SharedOpenStages {
-    /// Historic labels for the physical capture owner. These strings are
-    /// surfaced in capture reports, so the shared table centralizes the
-    /// construction without changing the established diagnostics.
-    pub(crate) const fn capture() -> Self {
-        Self {
-            enumerator: "CoCreateInstance(capture)",
-            device: "GetDevice(capture pinned)",
-            endpoint: "IMMEndpoint(capture)",
-            data_flow: "GetDataFlow(capture)",
-            event: "CreateEvent(capture audio)",
-            activate: "Activate(capture)",
-            client2: "IAudioClient2(capture)",
-            client_properties: "SetClientProperties(capture)",
-            mix_format: "GetMixFormat(capture)",
-            session_guid: "CoCreateGuid(capture)",
-            set_event: "SetEventHandle(capture)",
-        }
-    }
-
-    /// Historic labels for the shared render owner. These strings are
-    /// surfaced in render reports, so the shared table centralizes the
-    /// construction without changing the established diagnostics.
-    pub(crate) const fn render() -> Self {
-        Self {
-            enumerator: "CoCreateInstance(MMDeviceEnumerator)",
-            device: "GetDevice(pinned)",
-            endpoint: "IMMEndpoint",
-            data_flow: "GetDataFlow",
-            event: "CreateEvent(audio)",
-            activate: "Activate(IAudioClient)",
-            client2: "IAudioClient2",
-            client_properties: "SetClientProperties",
-            mix_format: "GetMixFormat",
-            session_guid: "CoCreateGuid(session)",
-            set_event: "SetEventHandle",
-        }
-    }
-}
-
-/// Failures of the shared open sequence, before stack-specific mapping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OpenSharedError {
-    /// A COM stage failed.
-    Stage(StageError),
-    /// `GetDataFlow` reported the opposite direction for the pinned endpoint.
-    WrongDirection,
-}
-
-impl From<StageError> for OpenSharedError {
-    fn from(failure: StageError) -> Self {
-        Self::Stage(failure)
-    }
-}
-
-/// The open artifacts each stack keeps for streaming.
-pub(crate) struct OpenedSharedClient {
-    pub client: IAudioClient,
-    pub event: OwnedHandle,
-}
-
-/// Open one pinned shared-mode client for a direction (W4): enumerate,
-/// GetDevice, flow check, CreateEvent, Activate, SetClientProperties,
-/// GetMixFormat, initialize, SetEventHandle.
-///
-/// The caller must already hold the COM apartment for the stream's whole
-/// lifetime. `prepare_format` validates the GetMixFormat allocation, records
-/// any per-stack report fields, and returns the client format plus an extra
-/// value the caller needs after the sequence; `initialize` performs the
-/// stack's shared initialization between the mix read and SetEventHandle.
-/// Both callbacks receive the caller's report so their updates land at the
-/// same failure points as the inlined sequences they replace.
-#[allow(clippy::type_complexity)]
-pub(crate) fn open_shared_client<R, X, E>(
-    stages: SharedOpenStages,
-    endpoint_id: &str,
-    capture: bool,
-    report: &mut R,
-    prepare_format: impl FnOnce(
-        &mut R,
-        TaskMemory<WAVEFORMATEX>,
-    ) -> Result<(PreparedSharedFormat, X), E>,
-    initialize: impl FnOnce(&mut R, &IAudioClient, &PreparedSharedFormat, &GUID) -> Result<(), E>,
-) -> Result<(OpenedSharedClient, X), E>
-where
-    E: From<OpenSharedError>,
-{
-    let enumerator: IMMDeviceEnumerator = open_stage(stages.enumerator, unsafe {
-        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-    })?;
-    let device = open_stage(stages.device, unsafe {
-        enumerator.GetDevice(&HSTRING::from(endpoint_id))
-    })?;
-    let endpoint: IMMEndpoint = open_stage(stages.endpoint, device.cast())?;
-    let flow = if capture { eCapture } else { eRender };
-    if open_stage(stages.data_flow, unsafe { endpoint.GetDataFlow() })? != flow {
-        return Err(OpenSharedError::WrongDirection.into());
-    }
-    let event = open_stage(stages.event, OwnedHandle::event())?;
-    let client: IAudioClient = open_stage(stages.activate, unsafe {
-        device.Activate(CLSCTX_ALL, None)
-    })?;
-    let client2: IAudioClient2 = open_stage(stages.client2, client.cast())?;
-    open_stage(stages.client_properties, unsafe {
-        client2.SetClientProperties(&client_properties())
-    })?;
-    let memory = TaskMemory(open_stage(stages.mix_format, unsafe {
-        client.GetMixFormat()
-    })?);
-    let (format, extra) = prepare_format(report, memory)?;
-    let session_guid = open_stage(stages.session_guid, unsafe { CoCreateGuid() })?;
-    initialize(report, &client, &format, &session_guid)?;
-    open_stage(stages.set_event, unsafe { client.SetEventHandle(event.0) })?;
-    Ok((OpenedSharedClient { client, event }, extra))
-}
-
-/// Client properties both shared stacks configure before GetMixFormat.
-fn client_properties() -> AudioClientProperties {
-    AudioClientProperties {
-        cbSize: size_of::<AudioClientProperties>() as u32,
-        eCategory: AudioCategory_Other,
-        ..Default::default()
-    }
-}
-
-/// Run one labeled COM stage of the open sequence, converting into the
-/// caller's stack error.
-fn open_stage<E, T>(label: &'static str, result: windows::core::Result<T>) -> Result<T, E>
-where
-    E: From<OpenSharedError>,
-{
-    stage(label, result)
-        .map_err(OpenSharedError::from)
-        .map_err(E::from)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        EXTENSION_BYTES, EnginePeriodicityPolicy, LegacySharedInit, SUBFORMAT_FLOAT, SUBFORMAT_PCM,
-    };
+    use super::{EXTENSION_BYTES, LegacySharedInit, SUBFORMAT_FLOAT, SUBFORMAT_PCM};
     use windows::{
         Win32::{
             Foundation::{E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL},
@@ -557,8 +384,8 @@ mod tests {
         core::GUID,
     };
 
-    fn owned(format: WAVEFORMATEXTENSIBLE) -> super::TaskMemory<WAVEFORMATEX> {
-        let memory = super::TaskMemory(
+    fn owned(format: WAVEFORMATEXTENSIBLE) -> crate::owner::TaskMemory<WAVEFORMATEX> {
+        let memory = crate::owner::TaskMemory(
             unsafe { CoTaskMemAlloc(size_of::<WAVEFORMATEXTENSIBLE>()) }.cast::<WAVEFORMATEX>(),
         );
         assert!(!memory.0.is_null());
@@ -668,23 +495,6 @@ mod tests {
     }
 
     #[test]
-    fn periodicity_retry_follows_the_stack_policy() {
-        for policy in [
-            EnginePeriodicityPolicy::ExactPeriod,
-            EnginePeriodicityPolicy::EnginePeriodRetry,
-        ] {
-            assert_eq!(
-                super::periodicity_locked_retry(policy, AUDCLNT_E_ENGINE_PERIODICITY_LOCKED),
-                policy == EnginePeriodicityPolicy::EnginePeriodRetry
-            );
-            assert!(!super::periodicity_locked_retry(
-                policy,
-                AUDCLNT_E_DEVICE_INVALIDATED
-            ));
-        }
-    }
-
-    #[test]
     fn legacy_flags_compose_each_explicit_decision() {
         assert_eq!(
             super::legacy_shared_flags(LegacySharedInit {
@@ -720,24 +530,5 @@ mod tests {
         );
         assert_eq!(super::exclusive_frames_duration(480, 48_000), 100_000);
         assert_eq!(super::exclusive_frames_duration(1, 44_100), 227);
-    }
-
-    #[test]
-    fn shared_open_stages_keep_direction_specific_report_labels() {
-        let capture = super::SharedOpenStages::capture();
-        assert_eq!(capture.enumerator, "CoCreateInstance(capture)");
-        assert_eq!(capture.device, "GetDevice(capture pinned)");
-        assert_eq!(capture.endpoint, "IMMEndpoint(capture)");
-        assert_eq!(capture.event, "CreateEvent(capture audio)");
-        assert_eq!(capture.activate, "Activate(capture)");
-        assert_eq!(capture.set_event, "SetEventHandle(capture)");
-
-        let render = super::SharedOpenStages::render();
-        assert_eq!(render.enumerator, "CoCreateInstance(MMDeviceEnumerator)");
-        assert_eq!(render.device, "GetDevice(pinned)");
-        assert_eq!(render.endpoint, "IMMEndpoint");
-        assert_eq!(render.event, "CreateEvent(audio)");
-        assert_eq!(render.activate, "Activate(IAudioClient)");
-        assert_eq!(render.set_event, "SetEventHandle");
     }
 }

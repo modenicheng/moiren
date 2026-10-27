@@ -1,15 +1,7 @@
-//! Shared-mode period selection is portable; COM preparation stays on the owner.
+//! Shared-mode stream data types: endpoint mix/client descriptors, period
+//! reports and their serde shapes. Conversion policy lives with the callers.
 use serde::Serialize;
 use thiserror::Error;
-
-#[cfg(windows)]
-pub(crate) mod format;
-#[cfg(any(windows, test))]
-mod selection;
-#[cfg(windows)]
-mod wasapi;
-#[cfg(windows)]
-pub(crate) use wasapi::initialize_shared;
 
 /// Endpoint mix and client formats can differ on the Windows conversion path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -117,38 +109,4 @@ pub enum SharedPeriodError {
     DesiredPeriodOverflow,
     #[error("sample rate must be nonzero")]
     InvalidSampleRate,
-}
-
-pub fn choose_shared_period(
-    caps: SharedPeriodCaps,
-    sample_rate: u32,
-    policy: SharedPeriodPolicy,
-) -> Result<u32, SharedPeriodError> {
-    policy.validate()?;
-    if sample_rate == 0 {
-        return Err(SharedPeriodError::InvalidSampleRate);
-    }
-    if caps.fundamental_frames == 0
-        || caps.min_frames == 0
-        || caps.min_frames > caps.max_frames
-        || !(caps.min_frames..=caps.max_frames).contains(&caps.default_frames)
-        || !caps.default_frames.is_multiple_of(caps.fundamental_frames)
-    {
-        return Err(SharedPeriodError::InvalidCapabilities);
-    }
-    let fundamental = u64::from(caps.fundamental_frames);
-    let minimum = u64::from(caps.min_frames).div_ceil(fundamental) * fundamental;
-    let maximum = u64::from(caps.max_frames) / fundamental * fundamental;
-    if minimum > maximum {
-        return Err(SharedPeriodError::InvalidCapabilities);
-    }
-    let Some(milliseconds) = policy.desired_period_ms else {
-        return Ok(caps.default_frames);
-    };
-    let desired = (f64::from(sample_rate) * milliseconds / 1000.0).ceil();
-    if !desired.is_finite() || desired > f64::from(u32::MAX) {
-        return Err(SharedPeriodError::DesiredPeriodOverflow);
-    }
-    let rounded = (desired as u64).div_ceil(fundamental) * fundamental;
-    Ok(rounded.clamp(minimum, maximum) as u32)
 }

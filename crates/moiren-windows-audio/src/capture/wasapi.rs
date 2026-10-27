@@ -1,8 +1,8 @@
 //! Only kernel handles, prepared ring endpoints and scalars cross owner threads.
-use super::{CaptureError, CaptureOptions, CaptureReport};
+use super::{CaptureError, CaptureReport};
+use crate::StopSignal;
 use crate::clock_bridge::{BridgeObserver, ClockSource};
 use crate::owner::{WaitOutcome, wait_for_handles};
-use crate::{ActivationGate, StopSignal};
 use std::{
     os::windows::io::{AsRawHandle, OwnedHandle as StdHandle},
     sync::{
@@ -14,18 +14,9 @@ use std::{
 };
 use windows::Win32::{Foundation::HANDLE, System::Threading::SetEvent};
 
-mod endpoint;
-mod format;
 mod packet;
-mod physical;
-mod preparation;
-#[cfg(test)]
-pub(crate) use preparation::prepare_test_native;
-pub use preparation::{NativeCaptureInfo, PreparedNativeCapture, prepare_capture_native_with_gate};
+pub(crate) mod preparation;
 pub(crate) mod stream;
-#[cfg(test)]
-mod tests;
-pub use endpoint::{CaptureEndpoint, list_capture_endpoints};
 
 pub(crate) fn api<T>(
     stage: &'static str,
@@ -43,29 +34,17 @@ impl From<crate::negotiation::StageError> for CaptureError {
     }
 }
 
-impl From<crate::negotiation::OpenSharedError> for CaptureError {
-    fn from(failure: crate::negotiation::OpenSharedError) -> Self {
-        match failure {
-            crate::negotiation::OpenSharedError::Stage(stage) => stage.into(),
-            crate::negotiation::OpenSharedError::WrongDirection => CaptureError::InvalidEndpoint,
-        }
-    }
-}
 pub(crate) fn handle(value: &StdHandle) -> HANDLE {
     HANDLE(value.as_raw_handle())
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Wake {
+pub(crate) enum Wake {
     Stop,
     TargetExited,
     Audio,
     Timeout,
 }
-#[cfg(test)]
-fn wait(stop: HANDLE, audio: HANDLE, timeout_ms: u32) -> Result<Wake, CaptureError> {
-    wait_target(stop, audio, None, timeout_ms)
-}
-fn wait_target(
+pub(crate) fn wait_target(
     stop: HANDLE,
     audio: HANDLE,
     target: Option<HANDLE>,
@@ -146,32 +125,6 @@ pub(crate) struct Startup {
 }
 /// Non-RT startup handshake. Native negotiation happens on the worker, so a
 /// rejected format can never be attached to a supposedly running graph.
-pub fn start_capture(options: CaptureOptions) -> Result<PreparedCapture, CaptureError> {
-    options.validate()?;
-    let stop = api("CreateEvent(capture stop)", StopSignal::new())?;
-    start_capture_with_stop(options, stop)
-}
-pub fn start_capture_with_stop(
-    options: CaptureOptions,
-    stop: StopSignal,
-) -> Result<PreparedCapture, CaptureError> {
-    let gate = ActivationGate::new(stop.clone())?;
-    let prepared = prepare_capture_with_gate(options, stop, gate.clone())?;
-    gate.activate()?;
-    Ok(prepared)
-}
-/// Blocking worker-side negotiation; no audio starts until the shared gate opens.
-pub fn prepare_capture_with_gate(
-    options: CaptureOptions,
-    stop: StopSignal,
-    gate: ActivationGate,
-) -> Result<PreparedCapture, CaptureError> {
-    options.validate()?;
-    gate.validate_stop(&stop)?;
-    start_owner(stop, move |stop, sender, started| {
-        physical::run_owner(options, stop, sender, gate, started)
-    })
-}
 pub(crate) fn start_owner(
     signal: StopSignal,
     owner: impl FnOnce(

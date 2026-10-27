@@ -29,21 +29,6 @@ pub struct ClockSource {
     age_clock: Option<QpcClock>,
 }
 impl ClockSource {
-    /// Control-side handoff for a prepared process-loopback capture. Its native
-    /// client remains at 48 kHz while its graph boundary follows Engine rate.
-    #[cfg(windows)]
-    pub(crate) fn with_output_sample_rate(mut self, rate: u32) -> Result<Self, ClockBridgeError> {
-        if !moiren_engine::audio_config::SAMPLE_RATES.contains(&rate)
-            || self.current.is_some()
-            || self.next.is_some()
-        {
-            return Err(ClockBridgeError::InvalidConfig);
-        }
-        self.config.output_sample_rate = rate;
-        self.step = f64::from(self.config.input_sample_rate) / f64::from(rate);
-        Ok(self)
-    }
-
     /// Non-consuming owner-local fill, with approximate scalar counters.
     /// Concurrent producer writes can advance immediately after this sample.
     pub fn snapshot(&self) -> super::BridgeSnapshot {
