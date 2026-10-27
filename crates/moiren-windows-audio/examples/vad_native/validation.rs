@@ -349,6 +349,153 @@ impl MicrophoneCompletionDiagnostics {
     }
 }
 
+pub(super) const RECENT_WRITES: usize = 64;
+const DROP_NEIGHBORS: usize = 9;
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(super) struct WriteCompletion {
+    pub status: &'static str,
+    // These are the original WRITE header values returned by PcmOwner, not
+    // either of the probe's QPC samples surrounding submit_write().
+    pub header_sequence: u64,
+    pub header_qpc: u64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(super) struct WriteSubmission {
+    /// Probe-local correlation ID paired with an opaque ticket in the FIFO.
+    /// Never a decoded PcmTicket or a guessed native/header sequence.
+    pub probe_ticket_id: Option<u64>,
+    pub submit_before_qpc: Option<u64>,
+    pub submit_after_qpc: Option<u64>,
+    /// Instant-clock nanoseconds relative to this case's pre-Start origin.
+    pub target_deadline_elapsed_ns: Option<u128>,
+    pub submit_entry_elapsed_ns: u128,
+    pub submit_entry_lateness_ns: Option<u128>,
+    pub pending_before: usize,
+    pub pending_after: usize,
+    pub submit_succeeded: bool,
+    pub completion: Option<WriteCompletion>,
+}
+
+#[derive(Debug)]
+struct WriteRing<const N: usize> {
+    records: [Option<WriteSubmission>; N],
+    next: usize,
+    len: usize,
+}
+
+impl<const N: usize> WriteRing<N> {
+    #[cfg(windows)]
+    fn push(&mut self, record: WriteSubmission) {
+        self.records[self.next] = Some(record);
+        self.next = (self.next + 1) % N;
+        self.len = (self.len + 1).min(N);
+    }
+
+    #[cfg(windows)]
+    fn replace(&mut self, record: WriteSubmission) {
+        // Exhausted diagnostic IDs are explicitly unknown, never aliases.
+        if record.probe_ticket_id.is_some()
+            && let Some(slot) = self
+                .records
+                .iter_mut()
+                .find(|slot| slot.is_some_and(|old| old.probe_ticket_id == record.probe_ticket_id))
+        {
+            *slot = Some(record);
+        }
+    }
+}
+
+impl<const N: usize> Default for WriteRing<N> {
+    fn default() -> Self {
+        Self {
+            records: [None; N],
+            next: 0,
+            len: 0,
+        }
+    }
+}
+
+impl<const N: usize> Serialize for WriteRing<N> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.len))?;
+        for offset in 0..self.len {
+            seq.serialize_element(&self.records[(self.next + N - self.len + offset) % N])?;
+        }
+        seq.end()
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct MicrophoneSubmitDiagnostics {
+    capacity: usize,
+    submission_count: u64,
+    id_overflow: bool,
+    recent: WriteRing<RECENT_WRITES>,
+    first_completion: Option<WriteSubmission>,
+    first_dropped_completion: Option<WriteSubmission>,
+    first_drop_neighbors: WriteRing<DROP_NEIGHBORS>,
+    #[cfg(windows)]
+    #[serde(skip)]
+    drop_following_remaining: usize,
+}
+
+impl Default for MicrophoneSubmitDiagnostics {
+    fn default() -> Self {
+        Self {
+            capacity: RECENT_WRITES,
+            submission_count: 0,
+            id_overflow: false,
+            recent: WriteRing::default(),
+            first_completion: None,
+            first_dropped_completion: None,
+            first_drop_neighbors: WriteRing::default(),
+            #[cfg(windows)]
+            drop_following_remaining: 0,
+        }
+    }
+}
+
+impl MicrophoneSubmitDiagnostics {
+    #[cfg(windows)]
+    pub fn submitted(&mut self, mut record: WriteSubmission) -> WriteSubmission {
+        match self.submission_count.checked_add(1) {
+            Some(count) => self.submission_count = count,
+            None => self.id_overflow = true,
+        }
+        record.probe_ticket_id = (!self.id_overflow).then_some(self.submission_count);
+        self.recent.push(record);
+        if self.drop_following_remaining != 0 {
+            self.first_drop_neighbors.push(record);
+            self.drop_following_remaining -= 1;
+        }
+        record
+    }
+
+    #[cfg(windows)]
+    pub fn completed(&mut self, mut record: WriteSubmission, completion: WriteCompletion) {
+        record.completion = Some(completion);
+        self.recent.replace(record);
+        self.first_drop_neighbors.replace(record);
+        self.first_completion.get_or_insert(record);
+        if completion.status == "capture_dropped" && self.first_dropped_completion.is_none() {
+            self.first_dropped_completion = Some(record);
+            // The probe keeps one WRITE pending. At its completion the recent
+            // tail is that submission; retain it and up to four predecessors.
+            let count = self.recent.len.min(5);
+            for offset in 0..count {
+                let index = (self.recent.next + RECENT_WRITES - count + offset) % RECENT_WRITES;
+                if let Some(neighbor) = self.recent.records[index] {
+                    self.first_drop_neighbors.push(neighbor);
+                }
+            }
+            self.drop_following_remaining = 4;
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub(super) struct FailureCounters {
     pub mode: crate::NativeMode,
@@ -356,6 +503,7 @@ pub(super) struct FailureCounters {
     pub silent_frames: u64,
     pub microphone_dropped_packets: u64,
     pub microphone_completion_diagnostics: MicrophoneCompletionDiagnostics,
+    pub microphone_submit_diagnostics: MicrophoneSubmitDiagnostics,
     pub native_buffer_frames: u32,
     pub driver_packet_frames: u32,
     pub stream_generation: u64,
@@ -513,6 +661,7 @@ mod tests {
             silent_frames: 9_600,
             microphone_dropped_packets: 2,
             microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
             native_buffer_frames: 480,
             driver_packet_frames: 480,
             stream_generation: 11,
@@ -524,12 +673,110 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fresh_case_exposes_empty_bounded_write_submission_diagnostics() {
+        let json = serde_json::to_value(failure_counters()).unwrap();
+        let submissions = &json["microphone_submit_diagnostics"];
+        assert_eq!(submissions["recent"], serde_json::json!([]));
+        assert_eq!(submissions["capacity"], 64);
+        assert!(submissions["first_completion"].is_null());
+        assert!(submissions["first_dropped_completion"].is_null());
+        assert_eq!(submissions["first_drop_neighbors"], serde_json::json!([]));
+    }
+
+    #[cfg(windows)]
+    fn write_submission() -> WriteSubmission {
+        WriteSubmission {
+            probe_ticket_id: None,
+            submit_before_qpc: Some(100),
+            submit_after_qpc: Some(130),
+            target_deadline_elapsed_ns: Some(5_000_000),
+            submit_entry_elapsed_ns: 6_000_000,
+            submit_entry_lateness_ns: Some(1_000_000),
+            pending_before: 0,
+            pending_after: 1,
+            submit_succeeded: true,
+            completion: None,
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_ring_is_fixed_and_retains_first_drop_neighbors_after_wrap() {
+        let mut diagnostics = MicrophoneSubmitDiagnostics::default();
+        for index in 1..=200 {
+            let record = diagnostics.submitted(write_submission());
+            assert_eq!(record.probe_ticket_id, Some(index));
+            diagnostics.completed(
+                record,
+                WriteCompletion {
+                    status: if index == 70 {
+                        "capture_dropped"
+                    } else {
+                        "capture"
+                    },
+                    header_sequence: index + 1_000,
+                    header_qpc: index + 110,
+                },
+            );
+        }
+        let json = serde_json::to_value(&diagnostics).unwrap();
+        let recent = json["recent"].as_array().unwrap();
+        assert_eq!(recent.len(), RECENT_WRITES);
+        assert_eq!(recent[0]["probe_ticket_id"], 137);
+        assert_eq!(recent[63]["probe_ticket_id"], 200);
+        assert_eq!(json["first_completion"]["probe_ticket_id"], 1);
+        assert_eq!(json["first_dropped_completion"]["probe_ticket_id"], 70);
+        assert_eq!(
+            json["first_dropped_completion"]["completion"]["header_sequence"],
+            1_070
+        );
+        let neighbors = json["first_drop_neighbors"].as_array().unwrap();
+        assert_eq!(neighbors.len(), DROP_NEIGHBORS);
+        for (record, index) in neighbors.iter().zip(66..=74) {
+            assert_eq!(record["probe_ticket_id"], index);
+            assert!(!record["completion"].is_null());
+        }
+        assert_eq!(diagnostics.recent.records.len(), RECENT_WRITES);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_write_samples_and_diagnostic_id_overflow_do_not_invent_header_identity() {
+        let mut diagnostics = MicrophoneSubmitDiagnostics::default();
+        diagnostics.submission_count = u64::MAX;
+        let mut failed = write_submission();
+        failed.submit_succeeded = false;
+        failed.pending_after = 0;
+        failed.submit_before_qpc = None;
+        failed.submit_after_qpc = None;
+        diagnostics.submitted(failed);
+        let json = serde_json::to_value(diagnostics).unwrap();
+        assert_eq!(json["id_overflow"], true);
+        assert_eq!(json["submission_count"], u64::MAX);
+        assert!(json["recent"][0]["probe_ticket_id"].is_null());
+        assert!(json["recent"][0]["completion"].is_null());
+        assert!(json["first_completion"].is_null());
+        assert!(!json["recent"][0]["submit_succeeded"].as_bool().unwrap());
+    }
+
     #[cfg(windows)]
     #[test]
     fn first_dropped_capture_identity_survives_phase_and_cleanup_failures() {
         use moiren_windows_audio::vad::PcmCompletion;
 
         let mut counters = failure_counters();
+        let submitted = counters
+            .microphone_submit_diagnostics
+            .submitted(write_submission());
+        counters.microphone_submit_diagnostics.completed(
+            submitted,
+            WriteCompletion {
+                status: "capture_dropped",
+                header_sequence: 42,
+                header_qpc: 91_000,
+            },
+        );
         counters.microphone_completion_diagnostics.observe(
             &PcmCompletion::CaptureDropped {
                 stamp: PcmPacketStamp {
@@ -574,6 +821,9 @@ mod tests {
         assert_eq!(diagnostics["first_dropped_completion"], expected);
         assert_eq!(diagnostics["completion_count"], 2);
         assert_eq!(diagnostics["ordinal_overflow"], false);
+        let submitted = &json["counters"]["microphone_submit_diagnostics"];
+        assert_eq!(submitted["first_dropped_completion"]["probe_ticket_id"], 1);
+        assert_eq!(submitted["recent"][0]["completion"]["header_qpc"], 91_000);
     }
 
     #[cfg(windows)]
@@ -1123,6 +1373,7 @@ mod tests {
             silent_frames: 0,
             microphone_dropped_packets: 0,
             microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
             native_buffer_frames: 0,
             driver_packet_frames: 0,
             stream_generation: 0,
@@ -1160,6 +1411,7 @@ mod tests {
             silent_frames: 25_344,
             microphone_dropped_packets: 27,
             microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
             native_buffer_frames: 2048,
             driver_packet_frames: 480,
             stream_generation: 7,
@@ -1224,6 +1476,7 @@ mod tests {
             silent_frames: 0,
             microphone_dropped_packets: 0,
             microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
             native_buffer_frames: 480,
             driver_packet_frames: 480,
             stream_generation: 9,
@@ -1253,6 +1506,7 @@ mod tests {
             silent_frames: seen.silent_frames,
             microphone_dropped_packets: 31,
             microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
             native_buffer_frames: 480,
             driver_packet_frames: 480,
             stream_generation: 9,
@@ -1281,6 +1535,7 @@ mod tests {
             silent_frames: 0,
             microphone_dropped_packets: 0,
             microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
             native_buffer_frames: 480,
             driver_packet_frames: 480,
             stream_generation: 9,

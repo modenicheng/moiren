@@ -38,6 +38,76 @@ mod native;
 
 const CONTROL_DEADLINE: Duration = Duration::from_secs(15);
 
+#[derive(Clone, Copy, Debug)]
+struct PendingPcm<T> {
+    ticket: T,
+    write: Option<validation::WriteSubmission>,
+}
+
+#[derive(Clone, Copy)]
+struct WriteTiming {
+    origin: Instant,
+    deadline: Option<Instant>,
+    pending: usize,
+}
+
+fn submit_microphone<T, E>(
+    diagnostics: &mut validation::MicrophoneSubmitDiagnostics,
+    timing: WriteTiming,
+    now: impl FnOnce() -> Instant,
+    mut qpc: impl FnMut() -> Option<u64>,
+    submit: impl FnOnce() -> Result<T, E>,
+) -> Result<PendingPcm<T>, E> {
+    let entry = now();
+    let before = qpc();
+    let result = submit();
+    let after = qpc();
+    // No formatting, allocation or diagnostic failure is introduced into PCM.
+    // The entry Instant measures wrapper-entry lateness, not header QPC time.
+    let record = diagnostics.submitted(validation::WriteSubmission {
+        probe_ticket_id: None,
+        submit_before_qpc: before,
+        submit_after_qpc: after,
+        target_deadline_elapsed_ns: timing
+            .deadline
+            .map(|deadline| deadline.saturating_duration_since(timing.origin).as_nanos()),
+        submit_entry_elapsed_ns: entry.saturating_duration_since(timing.origin).as_nanos(),
+        submit_entry_lateness_ns: timing
+            .deadline
+            .map(|deadline| entry.saturating_duration_since(deadline).as_nanos()),
+        pending_before: timing.pending,
+        pending_after: timing.pending + usize::from(result.is_ok()),
+        submit_succeeded: result.is_ok(),
+        completion: None,
+    });
+    result.map(|ticket| PendingPcm {
+        ticket,
+        write: Some(record),
+    })
+}
+
+fn record_microphone_completion<T>(
+    diagnostics: &mut validation::MicrophoneSubmitDiagnostics,
+    pending: &PendingPcm<T>,
+    completion: &PcmCompletion<'_>,
+) {
+    let (status, stamp) = match completion {
+        PcmCompletion::Capture { stamp, .. } => ("capture", stamp),
+        PcmCompletion::CaptureDropped { stamp } => ("capture_dropped", stamp),
+        PcmCompletion::Render { .. } => return,
+    };
+    if let Some(record) = pending.write {
+        diagnostics.completed(
+            record,
+            validation::WriteCompletion {
+                status,
+                header_sequence: stamp.sequence,
+                header_qpc: stamp.qpc,
+            },
+        );
+    }
+}
+
 fn start_native_with_queued_pcm<T>(
     intent: Intent,
     mode: NativeMode,
@@ -125,6 +195,7 @@ struct CaseReport {
     closed_gate_after: Option<Observation>,
     microphone_dropped_packets: u64,
     microphone_completion_diagnostics: validation::MicrophoneCompletionDiagnostics,
+    microphone_submit_diagnostics: validation::MicrophoneSubmitDiagnostics,
     native_discontinuities: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     native_position: Option<validation::PositionProgress>,
@@ -364,6 +435,7 @@ fn exercise_case(
         silent_frames: 0,
         microphone_dropped_packets: 0,
         microphone_completion_diagnostics: Default::default(),
+        microphone_submit_diagnostics: Default::default(),
         native_buffer_frames: 0,
         driver_packet_frames: endpoint.packet_frames(),
         stream_generation: endpoint.stream_generation(),
@@ -482,6 +554,9 @@ fn exercise_case_inner(
         )
         .map_err(|error| anyhow::anyhow!("driver pattern encoding: {error:?}"))?;
         let mut decoded = vec![0.0; shape.frames() as usize * 2];
+        // Fixed diagnostic storage is already initialized in the case counters.
+        // Keep the same origin across Timer's pre-Start WRITE and later pumps.
+        let submit_origin = Instant::now();
         // Timer capture consumes at the first sub-packet segment. Prepare its
         // single WRITE while Paused, not after Start/QUERY; event capture must
         // instead retain the half-period freshness headroom below.
@@ -489,11 +564,24 @@ fn exercise_case_inner(
             endpoint.intent(),
             mode,
             || {
-                Ok(if endpoint.intent() == Intent::Playback {
-                    pcm.submit_read()?
+                if endpoint.intent() == Intent::Playback {
+                    Ok(PendingPcm {
+                        ticket: pcm.submit_read()?,
+                        write: None,
+                    })
                 } else {
-                    pcm.submit_write(&bytes)?
-                })
+                    submit_microphone(
+                        &mut counters.microphone_submit_diagnostics,
+                        WriteTiming {
+                            origin: submit_origin,
+                            deadline: None,
+                            pending: 0,
+                        },
+                        Instant::now,
+                        collection_qpc,
+                        || pcm.submit_write(&bytes).map_err(anyhow::Error::from),
+                    )
+                }
             },
             || native.start(),
         )?;
@@ -545,6 +633,8 @@ fn exercise_case_inner(
                     pattern,
                     &mut seen,
                     &mut progress,
+                    &mut counters.microphone_submit_diagnostics,
+                    submit_origin,
                 )?;
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -612,6 +702,9 @@ fn exercise_case_inner(
             closed_gate_after: after,
             microphone_dropped_packets: progress.microphone_drops,
             microphone_completion_diagnostics: progress.microphone_completion_diagnostics,
+            microphone_submit_diagnostics: std::mem::take(
+                &mut counters.microphone_submit_diagnostics,
+            ),
             native_discontinuities: native.discontinuities,
             native_position: position,
         })
@@ -643,19 +736,22 @@ fn observe_closed(native: &mut native::Stream, pattern: [f32; 2]) -> anyhow::Res
     Ok(seen)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pump_pcm(
     pcm: &mut PcmOwner,
-    pending: &mut VecDeque<PcmTicket>,
+    pending: &mut VecDeque<PendingPcm<PcmTicket>>,
     encoded: &[u8],
     decoded: &mut [f32],
     pattern: [f32; 2],
     seen: &mut Observation,
     progress: &mut TransferProgress,
+    submit_diagnostics: &mut validation::MicrophoneSubmitDiagnostics,
+    submit_origin: Instant,
 ) -> anyhow::Result<()> {
     let shape = pcm.shape();
     let playback = shape.snapshot().intent() == Intent::Playback;
-    while let Some(&ticket) = pending.front() {
-        let Some(completed) = pcm.try_complete(ticket)? else {
+    while let Some(entry) = pending.front() {
+        let Some(completed) = pcm.try_complete(entry.ticket)? else {
             break;
         };
         progress
@@ -676,14 +772,30 @@ fn pump_pcm(
                 progress.microphone_completed(Instant::now(), shape.frames());
             }
         }
+        // Keep the existing completion-relative re-arm above; recording cannot
+        // choose a later pacing origin or turn a drop into another PCM result.
+        record_microphone_completion(submit_diagnostics, entry, &completed);
         pending.pop_front();
     }
     if playback {
         while pending.len() < 4 {
-            pending.push_back(pcm.submit_read()?);
+            pending.push_back(PendingPcm {
+                ticket: pcm.submit_read()?,
+                write: None,
+            });
         }
     } else if progress.microphone_ready(Instant::now(), pending.len()) {
-        pending.push_back(pcm.submit_write(encoded)?);
+        pending.push_back(submit_microphone(
+            submit_diagnostics,
+            WriteTiming {
+                origin: submit_origin,
+                deadline: progress.next_mic_submit,
+                pending: pending.len(),
+            },
+            Instant::now,
+            collection_qpc,
+            || pcm.submit_write(encoded).map_err(anyhow::Error::from),
+        )?);
     }
     Ok(())
 }
@@ -699,6 +811,144 @@ fn collection_qpc() -> Option<u64> {
 #[cfg(test)]
 mod pacing_tests {
     use super::*;
+
+    #[test]
+    fn submission_helper_correlates_fifo_record_with_real_completion_not_opaque_ticket() {
+        use moiren_windows_audio::vad::PcmPacketStamp;
+        let origin = Instant::now();
+        let timing = WriteTiming {
+            origin,
+            deadline: Some(origin + Duration::from_millis(5)),
+            pending: 0,
+        };
+        let mut diagnostics = validation::MicrophoneSubmitDiagnostics::default();
+        let mut ticks = [Some(100), Some(140)].into_iter();
+        let pending = submit_microphone(
+            &mut diagnostics,
+            timing,
+            || origin + Duration::from_millis(7),
+            || ticks.next().unwrap(),
+            || Ok::<_, std::io::Error>("opaque ticket, not sequence 991"),
+        )
+        .unwrap();
+        assert_eq!(pending.ticket, "opaque ticket, not sequence 991");
+        let record = pending
+            .write
+            .expect("successful WRITE must retain its submission record");
+        assert_eq!(record.submit_before_qpc, Some(100));
+        assert_eq!(record.submit_after_qpc, Some(140));
+        assert_eq!(record.target_deadline_elapsed_ns, Some(5_000_000));
+        assert_eq!(record.submit_entry_lateness_ns, Some(2_000_000));
+        assert!(record.completion.is_none());
+        let next = submit_microphone(
+            &mut diagnostics,
+            timing,
+            || origin + Duration::from_millis(8),
+            || Some(200),
+            || Ok::<_, std::io::Error>("another opaque ticket"),
+        )
+        .unwrap();
+        let mut fifo = VecDeque::from([pending, next]);
+        record_microphone_completion(
+            &mut diagnostics,
+            fifo.front().unwrap(),
+            &PcmCompletion::CaptureDropped {
+                stamp: PcmPacketStamp {
+                    sequence: 991,
+                    qpc: 117,
+                },
+            },
+        );
+        fifo.pop_front();
+        let json = serde_json::to_value(&diagnostics).unwrap();
+        assert_eq!(
+            json["first_completion"]["completion"]["header_sequence"],
+            991
+        );
+        assert_eq!(
+            json["first_dropped_completion"]["completion"]["header_qpc"],
+            117
+        );
+        assert_eq!(json["recent"][0]["probe_ticket_id"], 1);
+        assert_eq!(json["recent"][0]["pending_before"], 0);
+        assert_eq!(json["recent"][0]["pending_after"], 1);
+        record_microphone_completion(
+            &mut diagnostics,
+            fifo.front().unwrap(),
+            &PcmCompletion::Capture {
+                stamp: PcmPacketStamp {
+                    sequence: 3,
+                    qpc: 202,
+                },
+                bytes: 960,
+            },
+        );
+        fifo.pop_front();
+        let json = serde_json::to_value(&diagnostics).unwrap();
+        assert_eq!(json["recent"][1]["probe_ticket_id"], 2);
+        assert_eq!(json["recent"][1]["completion"]["header_sequence"], 3);
+        assert_eq!(
+            json["first_completion"]["completion"]["header_sequence"],
+            991
+        );
+        record_microphone_completion(
+            &mut diagnostics,
+            &pending,
+            &PcmCompletion::Render {
+                stamp: PcmPacketStamp {
+                    sequence: 1,
+                    qpc: 2,
+                },
+                pcm: &[],
+            },
+        );
+        assert_eq!(serde_json::to_value(&diagnostics).unwrap(), json);
+    }
+
+    #[test]
+    fn submission_helper_keeps_original_error_even_when_diagnostic_samples_are_unavailable() {
+        let origin = Instant::now();
+        let mut diagnostics = validation::MicrophoneSubmitDiagnostics::default();
+        let original = anyhow::Error::new(std::io::Error::from_raw_os_error(5))
+            .context("original WRITE failure");
+        let identity = original.downcast_ref::<std::io::Error>().unwrap() as *const _;
+        let error = submit_microphone::<(), _>(
+            &mut diagnostics,
+            WriteTiming {
+                origin,
+                deadline: None,
+                pending: 0,
+            },
+            || origin,
+            || None,
+            || Err(original),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap() as *const _,
+            identity
+        );
+        let json = serde_json::to_value(&diagnostics).unwrap();
+        assert_eq!(json["recent"][0]["submit_succeeded"], false);
+        assert_eq!(json["recent"][0]["pending_after"], 0);
+        assert!(json["recent"][0]["submit_before_qpc"].is_null());
+        assert!(json["recent"][0]["completion"].is_null());
+        assert!(json["first_completion"].is_null());
+        let pending = submit_microphone(
+            &mut diagnostics,
+            WriteTiming {
+                origin,
+                deadline: None,
+                pending: 0,
+            },
+            || origin,
+            || None,
+            || Ok::<_, anyhow::Error>(42),
+        )
+        .unwrap();
+        assert_eq!(pending.ticket, 42);
+        assert!(pending.write.unwrap().submit_before_qpc.is_none());
+    }
 
     #[test]
     fn native_start_follows_the_required_prequeued_requests_for_each_mode() {
@@ -869,6 +1119,7 @@ mod pacing_tests {
             closed_gate_after: None,
             microphone_dropped_packets: 4_097,
             microphone_completion_diagnostics: diagnostics,
+            microphone_submit_diagnostics: Default::default(),
             native_discontinuities: 0,
             native_position: None,
         };
@@ -880,6 +1131,7 @@ mod pacing_tests {
                 silent_frames: 0,
                 microphone_dropped_packets: 0,
                 microphone_completion_diagnostics: Default::default(),
+                microphone_submit_diagnostics: Default::default(),
                 native_buffer_frames: 0,
                 driver_packet_frames: 0,
                 stream_generation: 0,
@@ -916,6 +1168,9 @@ mod pacing_tests {
         assert!(fresh["first_completion"].is_null());
         assert!(fresh["first_dropped_completion"].is_null());
         assert_eq!(fresh["completion_count"], 0);
+        let writes = &json["microphone_submit_diagnostics"];
+        assert_eq!(writes["capacity"], 64);
+        assert_eq!(writes["recent"], serde_json::json!([]));
     }
 
     #[test]
