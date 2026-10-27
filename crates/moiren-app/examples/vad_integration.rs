@@ -55,6 +55,10 @@ const HELP: &str = "vad_integration --exercise [--pcm | --rename] [--timeout-sec
     removal. Any strict failure remains failed/unqualified (exit 1), while bounded\n\
     diagnostics continue: release, record direct old Removed, fresh native init,\n\
     exact PKEY_Device_FriendlyName readback, then Engine confirmation.\n\
+    DeviceDesc and DeviceInterface_FriendlyName are optional actual MMDevice\n\
+    property diagnostics in before/held/after; typed read errors are retained.\n\
+    They never replace or normalize the exact FriendlyName gate, and cannot\n\
+    alone identify Windows composition/cache causes; no parent/registry scan.\n\
     Missing direct Removed, Absent or DTO/name success can never pass acceptance.\n\
     --rename is exclusive with --pcm and all soak options; defaults to 90s and\n\
     requires at least 60s if set. Failed readbacks and cleanup errors are retained.\n\

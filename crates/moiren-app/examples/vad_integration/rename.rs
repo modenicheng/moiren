@@ -57,6 +57,23 @@ pub(super) struct RuntimeEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(super) enum PropertyReadError {
+    OpenPropertyStore { hresult: i32, message: String },
+    GetValue { hresult: i32, message: String },
+    UnexpectedType { vartype: u16 },
+    NullString,
+    InvalidUtf16 { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(super) enum PropertyReadback {
+    Value { value: String },
+    Error { error: PropertyReadError },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct NativeName {
     pub root_instance: String,
     pub stable_id: String,
@@ -65,6 +82,9 @@ pub(super) struct NativeName {
     pub adapter_instance: String,
     /// Exact PKEY_Device_FriendlyName; never the provider's spec_name.
     pub windows_friendly_name: String,
+    /// Optional actual MMDevice diagnostics; never acceptance substitutes.
+    pub device_desc: PropertyReadback,
+    pub device_interface_friendly_name: PropertyReadback,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -322,8 +342,15 @@ fn held(
 }
 
 fn same_held_device(before: &NativeName, held: &NativeName) -> anyhow::Result<()> {
+    // Optional metadata (including an unavailable property) is diagnostic only.
+    // Keep precisely the original identity/FriendlyName acceptance surface.
     ensure!(
-        before == held,
+        before.root_instance == held.root_instance
+            && before.stable_id == held.stable_id
+            && before.direction == held.direction
+            && before.mmdevice_id == held.mmdevice_id
+            && before.adapter_instance == held.adapter_instance
+            && before.windows_friendly_name == held.windows_friendly_name,
         "held MMDevice identity or Windows FriendlyName drifted"
     );
     Ok(())

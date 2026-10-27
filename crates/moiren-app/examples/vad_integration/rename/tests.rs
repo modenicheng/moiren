@@ -38,6 +38,12 @@ fn name(direction: &str) -> NativeName {
         mmdevice_id: "mmdevice".into(),
         adapter_instance: "adapter".into(),
         windows_friendly_name: "Windows old label".into(),
+        device_desc: PropertyReadback::Value {
+            value: "Old description".into(),
+        },
+        device_interface_friendly_name: PropertyReadback::Value {
+            value: "Adapter label".into(),
+        },
     }
 }
 
@@ -504,5 +510,137 @@ fn exhausted_diagnostic_budget_never_extends_its_parent_deadline() {
     for now in [deadline, deadline + Duration::from_secs(1)] {
         assert_eq!(shared_deadline(now, deadline, 2), deadline);
         assert_eq!(retirement_deadline(now, deadline), deadline);
+    }
+}
+
+#[test]
+fn actual_mmdevice_metadata_serializes_independently_in_before_and_after() {
+    for direction in ["Playback", "Microphone"] {
+        let mut case = Case::new(direction.into(), "new".into());
+        case.before = Some(name(direction));
+        let mut after = name(direction);
+        after.device_desc = PropertyReadback::Value {
+            value: "New description".into(),
+        };
+        after.device_interface_friendly_name = PropertyReadback::Value {
+            value: "New adapter label".into(),
+        };
+        case.after = Some(after);
+        let json = serde_json::to_value(&case).unwrap();
+        assert_eq!(
+            json["before"]["device_desc"],
+            serde_json::json!({"status": "value", "value": "Old description"})
+        );
+        assert_eq!(json["after"]["device_desc"]["value"], "New description");
+        assert_eq!(
+            json["before"]["device_interface_friendly_name"]["value"],
+            "Adapter label"
+        );
+        assert_eq!(
+            json["after"]["device_interface_friendly_name"]["value"],
+            "New adapter label"
+        );
+        assert_eq!(json["after"]["windows_friendly_name"], "Windows old label");
+    }
+}
+
+#[test]
+fn optional_mmdevice_errors_preserve_typed_failure_evidence_after_exact_name_failure() {
+    let failures = [
+        (
+            PropertyReadError::OpenPropertyStore {
+                hresult: -2147024891,
+                message: "open denied".into(),
+            },
+            "open_property_store",
+        ),
+        (
+            PropertyReadError::GetValue {
+                hresult: -2147023728,
+                message: "property unavailable".into(),
+            },
+            "get_value",
+        ),
+        (
+            PropertyReadError::UnexpectedType { vartype: 0 },
+            "unexpected_type",
+        ),
+        (PropertyReadError::NullString, "null_string"),
+        (
+            PropertyReadError::InvalidUtf16 {
+                message: "unpaired surrogate".into(),
+            },
+            "invalid_utf16",
+        ),
+    ];
+    for (error, kind) in failures {
+        let mut case = Case::new("Playback".into(), "new".into());
+        case.before = Some(name("Playback"));
+        let mut after = name("Playback");
+        after.device_desc = PropertyReadback::Error {
+            error: error.clone(),
+        };
+        after.device_interface_friendly_name = PropertyReadback::Error {
+            error: error.clone(),
+        };
+        case.after = Some(after);
+        step(
+            &mut case,
+            Phase::ExactWindowsName,
+            &mut |_: &Case| {},
+            |case, _| {
+                windows_name(
+                    case.before.as_ref().unwrap(),
+                    case.after.as_ref().unwrap(),
+                    "new",
+                )
+            },
+        );
+        case.finish();
+        let json = serde_json::to_value(&case).unwrap();
+        assert_eq!(json["after"]["device_desc"]["status"], "error");
+        assert_eq!(json["after"]["device_desc"]["error"]["kind"], kind);
+        assert_eq!(
+            json["after"]["device_interface_friendly_name"]["error"],
+            serde_json::to_value(error).unwrap()
+        );
+        assert!(
+            case.error
+                .as_deref()
+                .unwrap()
+                .contains("Windows FriendlyName mismatch")
+        );
+        assert!(!case.windows_name_verified && !case.qualified);
+        assert_eq!(json["after"]["windows_friendly_name"], "Windows old label");
+    }
+}
+
+#[test]
+fn optional_mmdevice_metadata_never_changes_held_or_exact_friendly_name_gates() {
+    for direction in ["Playback", "Microphone"] {
+        let before = name(direction);
+        let mut current = before.clone();
+        current.device_desc = PropertyReadback::Error {
+            error: PropertyReadError::GetValue {
+                hresult: -2147023728,
+                message: "not available".into(),
+            },
+        };
+        current.device_interface_friendly_name = PropertyReadback::Error {
+            error: PropertyReadError::UnexpectedType { vartype: 0 },
+        };
+        same_held_device(&before, &current).unwrap();
+        current.windows_friendly_name = "new".into();
+        windows_name(&before, &current, "new").unwrap();
+        current.device_desc = PropertyReadback::Value {
+            value: "new".into(),
+        };
+        current.device_interface_friendly_name = PropertyReadback::Value {
+            value: "new".into(),
+        };
+        current.windows_friendly_name = before.windows_friendly_name.clone();
+        assert!(windows_name(&before, &current, "new").is_err());
+        current.windows_friendly_name = "new (Adapter label)".into();
+        assert!(windows_name(&before, &current, "new").is_err());
     }
 }
