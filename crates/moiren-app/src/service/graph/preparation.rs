@@ -272,12 +272,7 @@ impl GraphPreparation {
                 .iter()
                 .find(|state| state.id == node.id())
                 .expect("unique state");
-            validate_node_state(
-                state,
-                node.kind(),
-                node.inputs().first().map_or(0, |port| port.channels()),
-                node.channels(),
-            )?;
+            validate_node_topology(state, node)?;
         }
         Ok(())
     }

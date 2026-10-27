@@ -1,5 +1,7 @@
 use super::*;
 
+mod rack;
+
 #[test]
 fn builtin_settings_default_by_kind_and_invalid_edits_are_atomic() {
     use moiren_engine::processor::{ChannelMapperSettings, EqSettings};

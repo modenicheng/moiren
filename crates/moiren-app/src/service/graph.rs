@@ -6,15 +6,18 @@ use super::{
 use moiren_core::graph::{EdgeId, LogicalGraph, NodeId, NodeKind, PortId, SendParams};
 use moiren_core::protocol::ParamValue;
 use moiren_engine::host::ParameterTarget;
+use std::collections::BTreeMap;
 mod builtin;
 mod compressor;
 mod edit;
 mod mixer;
 mod preparation;
+mod rack;
 pub use builtin::BuiltinState;
 pub use compressor::{CompressorParameter, CompressorState};
 use edit::edit_candidate;
 pub use mixer::MixerState;
+pub use rack::{RackEdit, RackParameter};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphNodeState {
@@ -54,6 +57,8 @@ pub struct GraphSnapshot {
     pub exports: Vec<ExportIntent>,
     pub graph: LogicalGraph,
     pub nodes: Vec<GraphNodeState>,
+    /// Editor identity, not runtime confirmation. Never restored from undo history.
+    pub rack_epochs: BTreeMap<NodeId, u64>,
     pub candidate_revision: u64,
     /// Present only while the confirmed owner is running this topology.
     pub active_revision: Option<u64>,
@@ -106,6 +111,11 @@ pub enum GraphEdit {
     SetBuiltin {
         node: NodeId,
         state: BuiltinState,
+    },
+    EditRack {
+        node: NodeId,
+        epoch: u64,
+        edit: RackEdit,
     },
     SetCompressor {
         node: NodeId,
@@ -172,6 +182,9 @@ impl GraphEdit {
     /// coalesce with anything.
     fn undo_key(&self) -> Option<String> {
         match self {
+            Self::EditRack { node, epoch, edit } => edit
+                .undo_key()
+                .map(|key| format!("rack:{node:?}:{epoch}:{key}")),
             Self::SetCompressor {
                 node, parameter, ..
             } => Some(format!("compressor:{node:?}:{}", parameter.label())),
@@ -287,6 +300,7 @@ impl Default for ServiceGraph {
                 exports: Vec::new(),
                 graph,
                 nodes,
+                rack_epochs: BTreeMap::new(),
                 candidate_revision: 1,
                 active_revision: None,
                 pending_revision: None,
@@ -394,6 +408,7 @@ pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubje
     let node = |node: &NodeId| GraphSubject::Node(*node);
     match edit {
         GraphEdit::SetBuiltin { node: id, .. }
+        | GraphEdit::EditRack { node: id, .. }
         | GraphEdit::SetCompressor { node: id, .. }
         | GraphEdit::ClearBinding(id)
         | GraphEdit::SetMixer { node: id, .. }
@@ -454,6 +469,7 @@ pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &Logic
         | GraphEdit::RemoveBusInput { .. }
         | GraphEdit::SetExports(_)
         | GraphEdit::SetBuiltin { .. }
+        | GraphEdit::EditRack { .. }
         | GraphEdit::BindSource { .. }
         | GraphEdit::BindOutput { .. }
         | GraphEdit::ClearBinding(_) => true,
@@ -480,6 +496,22 @@ pub fn validate_node_state(
     channels: usize,
 ) -> Result<(), String> {
     state.builtin.validate(kind, input_channels, channels)?;
+    validate_node_fields(state, kind, channels)
+}
+
+fn validate_node_topology(
+    state: &GraphNodeState,
+    node: &moiren_core::graph::Node,
+) -> Result<(), String> {
+    state.builtin.validate_for_node(node)?;
+    validate_node_fields(state, node.kind(), node.channels())
+}
+
+fn validate_node_fields(
+    state: &GraphNodeState,
+    kind: NodeKind,
+    channels: usize,
+) -> Result<(), String> {
     if kind != NodeKind::Pan && (state.mono || state.swap) {
         return Err("Mono and Swap only apply to Balance nodes".into());
     }
@@ -579,10 +611,41 @@ impl ServiceGraph {
             .candidate_revision
             .checked_add(1)
             .ok_or("The graph revision space is exhausted")?;
+        // Revisions never rewind, including load and undo. Reuse their monotonic
+        // source only when Rack identities change, so queued field edits compose.
+        next.rack_epochs.retain(|node, _| {
+            next.graph
+                .get_node(*node)
+                .is_ok_and(|node| node.kind() == NodeKind::Rack)
+        });
+        for node in next
+            .graph
+            .nodes()
+            .iter()
+            .filter(|node| node.kind() == NodeKind::Rack)
+        {
+            let replace = match &edit {
+                GraphEdit::SetBuiltin { node: target, .. } => *target == node.id(),
+                GraphEdit::EditRack {
+                    node: target, edit, ..
+                } => *target == node.id() && edit.invalidates_epoch(),
+                _ => false,
+            };
+            if replace || !next.rack_epochs.contains_key(&node.id()) {
+                next.rack_epochs.insert(node.id(), next.candidate_revision);
+            }
+        }
         next.last_error = None;
         next.faults.clear();
         let structural = edit_affects_prepared_structure(&edit, &previous);
-        self.journal.record(before, edit.undo_key());
+        let undo_key = if matches!(&edit, GraphEdit::SetBuiltin { node, .. }
+            if next.kind_of(*node) == Some(NodeKind::Rack))
+        {
+            None
+        } else {
+            edit.undo_key()
+        };
+        self.journal.record(before, undo_key);
         next.can_undo = !self.journal.undo.is_empty();
         next.can_redo = !self.journal.redo.is_empty();
         self.snapshot = next;
@@ -625,6 +688,7 @@ impl ServiceGraph {
         self.snapshot.last_error = None;
         self.snapshot.faults.clear();
         self.snapshot.candidate_revision = revision;
+        self.refresh_rack_epochs();
         self.snapshot.can_undo = can_undo;
         self.snapshot.can_redo = can_redo;
         true
@@ -662,10 +726,21 @@ impl ServiceGraph {
         self.snapshot.exports = exports;
         self.snapshot.nodes = nodes;
         self.snapshot.candidate_revision = revision;
+        self.refresh_rack_epochs();
         self.snapshot.last_error = None;
         self.snapshot.can_undo = !self.journal.undo.is_empty();
         self.snapshot.can_redo = !self.journal.redo.is_empty();
         Ok(())
+    }
+    fn refresh_rack_epochs(&mut self) {
+        self.snapshot.rack_epochs = self
+            .snapshot
+            .graph
+            .nodes()
+            .iter()
+            .filter(|node| node.kind() == NodeKind::Rack)
+            .map(|node| (node.id(), self.snapshot.candidate_revision))
+            .collect();
     }
     pub fn configure_session(&mut self, spec: &SessionSpec) -> Result<(), String> {
         spec.validate().map_err(|e| format!("{e:?}"))?;

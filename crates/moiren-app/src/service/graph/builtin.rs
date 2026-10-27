@@ -167,4 +167,23 @@ impl BuiltinState {
         project.nodes.insert(id, config);
         project.validate().map_err(|error| error.to_string())
     }
+
+    pub(super) fn validate_for_node(&self, node: &moiren_core::graph::Node) -> Result<(), String> {
+        if node.kind() != NodeKind::Rack {
+            return self.validate(
+                node.kind(),
+                node.inputs().first().map_or(0, |port| port.channels()),
+                node.channels(),
+            );
+        }
+        let Some(NodeConfig::Rack(settings)) = self.node_config(node.kind())? else {
+            return Err("Rack settings are missing".into());
+        };
+        let inputs: Vec<_> = node.inputs().iter().map(|port| port.channels()).collect();
+        let outputs: Vec<_> = node.outputs().iter().map(|port| port.channels()).collect();
+        if !settings.valid_layout(&inputs, &outputs) {
+            return Err("Rack settings are invalid for the actual stream ports".into());
+        }
+        Ok(())
+    }
 }

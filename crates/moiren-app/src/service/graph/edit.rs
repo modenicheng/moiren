@@ -10,12 +10,7 @@ fn validate_edited_node(next: &GraphSnapshot, node: NodeId) -> Result<(), String
         .iter()
         .find(|entry| entry.id == node)
         .ok_or("The node does not exist")?;
-    validate_node_state(
-        state,
-        topology.kind(),
-        topology.inputs().first().map_or(0, |port| port.channels()),
-        topology.channels(),
-    )
+    validate_node_topology(state, topology)
 }
 
 pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Result<(), String> {
@@ -25,23 +20,48 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             next.exports = exports;
         }
         GraphEdit::SetBuiltin { node, state } => {
-            let (kind, input_channels, output_channels) = {
-                let topology = next
-                    .graph
-                    .get_node(node)
-                    .map_err(|error| error.to_string())?;
-                (
-                    topology.kind(),
-                    topology.inputs().first().map_or(0, |port| port.channels()),
-                    topology.channels(),
-                )
-            };
-            state.validate(kind, input_channels, output_channels)?;
+            let topology = next
+                .graph
+                .get_node(node)
+                .map_err(|error| error.to_string())?;
+            state.validate_for_node(topology)?;
+            let kind = topology.kind();
             next.nodes
                 .iter_mut()
                 .find(|entry| entry.id == node)
                 .ok_or("The node does not exist")?
                 .builtin = state.resolved(kind);
+        }
+        GraphEdit::EditRack { node, epoch, edit } => {
+            let topology = next
+                .graph
+                .get_node(node)
+                .map_err(|error| error.to_string())?;
+            if topology.kind() != NodeKind::Rack {
+                return Err("Rack edits only apply to Rack nodes".into());
+            }
+            if next.rack_epochs.get(&node) != Some(&epoch) {
+                return Err("The Rack editor is stale; refresh it before editing".into());
+            }
+            let inputs: Vec<_> = topology
+                .inputs()
+                .iter()
+                .map(|port| port.channels())
+                .collect();
+            let outputs: Vec<_> = topology
+                .outputs()
+                .iter()
+                .map(|port| port.channels())
+                .collect();
+            let state = next
+                .nodes
+                .iter_mut()
+                .find(|state| state.id == node)
+                .ok_or("The node does not exist")?;
+            let BuiltinState::Rack(settings) = state.builtin.resolved(NodeKind::Rack) else {
+                return Err("Rack settings are missing".into());
+            };
+            state.builtin = BuiltinState::Rack(edit.preview(&settings, &inputs, &outputs)?);
         }
         GraphEdit::SetCompressor {
             node,
