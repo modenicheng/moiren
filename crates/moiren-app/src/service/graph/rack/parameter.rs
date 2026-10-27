@@ -1,6 +1,11 @@
 use super::{CompressorParameter, RackProcessor};
 
-/// Values use engine units: linear Gain, normalized Pan, Hz, dB, ms and ratios.
+/// Shared Rack/independent processor field identity, always in engine units:
+/// Gain is linear, Pan is -1..1, EqFrequency is Hz, EqQ is dimensionless,
+/// EqGain/GateThreshold/GateRange/LimitInput/LimitThreshold are dB (GateRange
+/// is nonpositive attenuation). Timing fields are ms; DelayFeedback is a signed
+/// ratio and DelayMix is a 0..1 ratio, not percent. Compressor fields retain
+/// their existing engine units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RackParameter {
     Gain,
@@ -23,7 +28,11 @@ pub enum RackParameter {
 }
 
 impl RackParameter {
-    pub(super) fn set(self, processor: &mut RackProcessor, value: f64) -> Result<(), String> {
+    pub(in crate::service::graph) fn set(
+        self,
+        processor: &mut RackProcessor,
+        value: f64,
+    ) -> Result<(), String> {
         if !value.is_finite() {
             return Err("Rack parameter values must be finite".into());
         }

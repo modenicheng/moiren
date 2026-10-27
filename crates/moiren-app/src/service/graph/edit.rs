@@ -32,6 +32,27 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .ok_or("The node does not exist")?
                 .builtin = state.resolved(kind);
         }
+        GraphEdit::SetMapperWeight {
+            node,
+            input,
+            output,
+            weight,
+        } => {
+            field_edit::set_mapper_weight(next, node, input, output, weight)?;
+            validate_edited_node(next, node)?;
+        }
+        GraphEdit::MapperPreset { node, swap } => {
+            field_edit::mapper_preset(next, node, swap)?;
+            validate_edited_node(next, node)?;
+        }
+        GraphEdit::SetBuiltinParameter {
+            node,
+            parameter,
+            value,
+        } => {
+            field_edit::set_builtin_parameter(next, node, parameter, value)?;
+            validate_edited_node(next, node)?;
+        }
         GraphEdit::SetSpectrumFft { node, fft_size } => {
             edit_spectrum(next, node, |settings| {
                 settings.fft_size = fft_size;

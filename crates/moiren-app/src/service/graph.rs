@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 mod builtin;
 mod compressor;
 mod edit;
+mod field_edit;
 mod mixer;
 mod preparation;
 mod rack;
@@ -112,6 +113,30 @@ pub enum GraphEdit {
         node: NodeId,
         state: BuiltinState,
     },
+    /// Change one independent Mapper cell on the latest candidate. Indices are
+    /// zero-based, matrix rows are outputs, and weights are finite signed linear
+    /// values (not probabilities). Like other NodeId-only edits, this does not
+    /// guard against ID reuse after document load; retire stale editor callbacks.
+    SetMapperWeight {
+        node: NodeId,
+        input: usize,
+        output: usize,
+        weight: f64,
+    },
+    /// Replace an equal-width Mapper with identity or Swap 1/2, preserving all
+    /// higher channels. Swap requires at least two channels. No NodeId reuse guard.
+    MapperPreset {
+        node: NodeId,
+        swap: bool,
+    },
+    /// Edit one independent Eq/Gate/Limiter/Delay field in engine units, retaining
+    /// all other settings. Gain/Pan/Compressor retain their existing live edits.
+    /// This is a prepared-plan edit and has no guard against NodeId reuse on load.
+    SetBuiltinParameter {
+        node: NodeId,
+        parameter: RackParameter,
+        value: f64,
+    },
     SetSpectrumFft {
         node: NodeId,
         fft_size: usize,
@@ -190,6 +215,15 @@ impl GraphEdit {
     /// coalesce with anything.
     fn undo_key(&self) -> Option<String> {
         match self {
+            Self::SetMapperWeight {
+                node,
+                input,
+                output,
+                ..
+            } => Some(format!("mapper:{node:?}:{output}:{input}")),
+            Self::SetBuiltinParameter {
+                node, parameter, ..
+            } => Some(format!("builtin:{node:?}:{parameter:?}")),
             Self::SetSpectrumFft { node, .. } => Some(format!("spectrum:{node:?}:fft")),
             Self::SetSpectrumHop { node, .. } => Some(format!("spectrum:{node:?}:hop")),
             Self::EditRack { node, epoch, edit } => edit
@@ -418,6 +452,9 @@ pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubje
     let node = |node: &NodeId| GraphSubject::Node(*node);
     match edit {
         GraphEdit::SetBuiltin { node: id, .. }
+        | GraphEdit::SetMapperWeight { node: id, .. }
+        | GraphEdit::MapperPreset { node: id, .. }
+        | GraphEdit::SetBuiltinParameter { node: id, .. }
         | GraphEdit::SetSpectrumFft { node: id, .. }
         | GraphEdit::SetSpectrumHop { node: id, .. }
         | GraphEdit::EditRack { node: id, .. }
@@ -481,6 +518,9 @@ pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &Logic
         | GraphEdit::RemoveBusInput { .. }
         | GraphEdit::SetExports(_)
         | GraphEdit::SetBuiltin { .. }
+        | GraphEdit::SetMapperWeight { .. }
+        | GraphEdit::MapperPreset { .. }
+        | GraphEdit::SetBuiltinParameter { .. }
         | GraphEdit::SetSpectrumFft { .. }
         | GraphEdit::SetSpectrumHop { .. }
         | GraphEdit::EditRack { .. }
