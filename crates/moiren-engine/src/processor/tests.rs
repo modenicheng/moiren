@@ -10,6 +10,7 @@ use moiren_core::protocol::{ParamValue, ParameterKey, ProcessorId};
 const PROCESSOR: ProcessorId = ProcessorId(1);
 const METER: ProcessorId = ProcessorId(2);
 
+mod bus;
 mod compressor;
 mod contracts;
 mod delay;
@@ -17,7 +18,6 @@ mod dynamics;
 mod eq;
 mod gain;
 mod pan;
-mod sum;
 
 const CONTEXT: ProcessContext = ProcessContext {
     timeline_epoch: 1,

@@ -1094,8 +1094,8 @@ _version: 2
 "Ordered processor chain":
   en: Ordered processor chain
   zh-CN: 有序处理器链
-"Sum dynamic input ports":
-  en: Sum dynamic input ports
+"Bus dynamic input ports":
+  en: Bus dynamic input ports
   zh-CN: 汇总动态输入端口
 "WASAPI render endpoint":
   en: WASAPI render endpoint

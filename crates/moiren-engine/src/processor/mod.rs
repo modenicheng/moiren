@@ -12,7 +12,7 @@ pub mod builtin;
 pub(crate) use builtin::PassThrough;
 pub use builtin::{
     Bus, ChannelMapper, ChannelMapperSettings, Compressor, CompressorSettings, Delay,
-    DelaySettings, Eq, EqSettings, Gain, Gate, GateSettings, Limiter, LimiterSettings, Pan, Sum,
+    DelaySettings, Eq, EqSettings, Gain, Gate, GateSettings, Limiter, LimiterSettings, Pan,
 };
 pub use builtin::{ChannelMode, StripConfig};
 

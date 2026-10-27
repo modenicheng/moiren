@@ -363,7 +363,7 @@ Managed recording tap	-	crates/moiren-app/src/ui/pages/node_catalog.rs:101	模�
 Peak and RMS observation	-	crates/moiren-app/src/ui/pages/node_catalog.rs:102	模板描述
 Managed FFT observation	-	crates/moiren-app/src/ui/pages/node_catalog.rs:103	模板描述
 Ordered processor chain	-	crates/moiren-app/src/ui/pages/node_catalog.rs:104	模板描述
-Sum dynamic input ports	-	crates/moiren-app/src/ui/pages/node_catalog.rs:105	模板描述
+Bus dynamic input ports	-	crates/moiren-app/src/ui/pages/node_catalog.rs	模板描述
 WASAPI render endpoint	-	crates/moiren-app/src/ui/pages/node_catalog.rs:106	模板描述
 Choose a source	-	crates/moiren-app/src/ui/pages/graph_canvas.rs:153	画布节点 detail
 Choose an output	-	crates/moiren-app/src/ui/pages/graph_canvas.rs:154	画布节点 detail
