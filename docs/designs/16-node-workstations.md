@@ -30,9 +30,9 @@
 | Recorder | 会话内目标路径、WAV 编码、录音启停、队列容量 | 选文件、32-bit float / 24-bit PCM / 16-bit PCM 三选一、打开输出目录、开始 / 停止、状态 / 时长 / 剩余容量与错误 | 共享同一编码选择与队列容量 ±48,000 frames；不提供其他容器或独立采样率；详见录音约束 |
 | Meter | 观测窗口帧数 | 128 / 480 / 2048 / 8192 选择；逐通道大号 held peak 与 RMS、真实订阅状态 | 2048 帧快捷设置、运行状态及逐通道读数；不是 LUFS / true-peak 仪表 |
 | SpectrumAnalyzer | FFT 点数、hop 帧数、显示通道、dBFS 下限 | 真实单通道对数频谱、峰值频点、分辨率 / 窗长；FFT 与 hop 快捷选择、通道切换、−60 / −90 / −120 dBFS 显示下限、竖表 | 同一观测与快捷控制，另有完整引擎范围精确输入：FFT 16～8192 的 2 的幂，hop 1～FFT；候选配置与运行配置分开显示 |
-| Rack | 路由内阶段顺序、bypass、阶段集合 | 按实际执行顺序显示，旁通 / 移除 / 上下移动；按路由加入内置默认处理器 | 阶段数、增加 Gain、清空阶段；尚无完整的槽内 DSP 参数编辑器，也不是插件宿主 |
+| Rack | 路由内阶段顺序、bypass、阶段集合、当前阶段参数 | 阶段列表与当前阶段内联编辑；八类处理器的旋钮 / 精确输入或分页矩阵；旁通 / 移除 / 上下移动、按路由加入处理器 | 当前阶段完整参数，与卡片共享选择、独立输入实体；Compressor 十参数，Mapper 4×4 分页；不是插件宿主 |
 | Application（Source 模式） | 应用绑定、数字微调 | 应用列表、刷新、微调、Mute、图电平 | 清除 / 更换来源；绑定使用 PID 与创建时间标识实例；选中条目不等于已经收到音频 |
-| Tone（Source 模式） | 正弦频率、数字 Level | Frequency 旋钮与数值、Level、Mute、图电平 | 440 Hz 快捷绑定与 ±10 Hz 步进；不是波形选择器，仍依赖图启动与实际路由 |
+| Tone（Source 模式） | 正弦频率、数字 Level | Frequency 旋钮与精确数值、Level、Mute、图电平 | 独立精确频率输入与 440 Hz 快捷绑定；不是波形选择器，仍依赖图启动与实际路由 |
 
 Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、Delay、Mapper 的默认预设。顺序以 `RackSettings.routes` 的槽引用为准，操作前校验声道宽度；不能旁通、移除或移动会破坏宽度链的阶段。用户看到顺序和处理器名称，不显示内部 `RackSlot.id` 或「slot N」提示。
 
@@ -42,8 +42,8 @@ Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、D
 
 | 参数组 | 当前边界 / 约定 |
 | --- | --- |
-| Level / Balance | Level 有限输入约 −72～+24.08 dB，另支持静音；Balance 为 −100%～100% |
-| Tone / EQ | 卡片频率 20～20,000 Hz；EQ 增益 −24～+24 dB，Q 为 0.1～20；Inspector 的 Tone 步进当前为 1～23,999 Hz，范围尚不一致 |
+| Level / Balance | Level 精确输入与既有 Inspector 一致：−120～+24 dB，另支持静音；滑动 / 旋钮行程仍为 −72～约 +24.08 dB（16×）；Balance 为 −100%～100% |
+| Tone / EQ | Tone 卡片与 Inspector 精确输入共用既有 service 范围：0 < Hz < 24,000；旋钮舒适行程保留 20～20,000 Hz。EQ 频率 20～20,000 Hz、增益 −24～+24 dB、Q 为 0.1～20 |
 | Compressor | 范围从 service 的 `CompressorParameter` / 引擎参数域取得；卡片干湿比用 0%～100%，Inspector 精确输入明确使用 0～1 |
 | Gate / Limiter | Gate 阈值与 Range 为 −120～0 dB；Limiter 输入增益 −60～+60 dB、阈值 −60～0 dB；这些节点的时间参数为 0～5,000 ms |
 | Delay | 时间 0～`max_delay_ms`；反馈 −99.9%～99.9%，Wet mix 0%～100%；service 保存线性比例，不把百分数原值直接写入 |
@@ -180,3 +180,13 @@ Compact 下空 Rack 高 228 px；四阶段 Rack 选 Gain 高 392 px、竖表 324
 最终原生捕获 `MOIREN_CAPTURE_NODE=spectrum-live` 完成 16 张 PNG / 一份 JSON：两种密度、卡片与 Inspector、实时 / 配置生效 / 第二声道 / 停止状态。937.5 Hz、48 kHz、峰值幅度 0.1 的真实引擎测试音产生预期 −20 dBFS 峰值。所有竖表 bounds 验证为 true，精确输入未越界；Compact Inspector 与停止卡片已重新目视复核。生成物只在本地 `docs/designs/screenshots/node-workstations/spectrum-live/`，不入库；不代表物理设备验收。
 
 验证：app GPUI 全套 577 passed / 0 failed / 3 ignored；engine 351 passed、八个套件；默认及 gpui-test workspace/all-targets strict Clippy、fmt 和 diff 检查通过。回归覆盖无效输入恢复、尚未收到快照时的 FFT/hop 连续修改、快速切回已选预设、隐藏/重启/换形后的数据边界。Tone / 独立 Mapper 一致性与其余 Inspector 精确输入仍待完成。
+
+## Tone 精确输入与参数基础（2026-10-28）
+
+Tone 的卡片与 Inspector 精确频率统一使用 service 的既有合法范围；旋钮的舒适行程不等于输入域。输入显示保留可往返浮点文本，极小正频率与小数不会在未编辑失焦时量化回写。Level 数值输入支持与既有 Inspector 相同的 −120～+24 dB 和静音；保留手势端点 16×，不改变 Mixer fader 几何。Delay 的 ±99.9% 转换修正了浮点端点越过 ±0.999 的问题，不钳制非法输入。
+
+Inspector 使用独立输入实体、基线、错误草稿与待消费请求。卡片同样按真实适用参数回收控件；输入实体身份校验阻止 Tone→物理输入→Tone 后的旧 Blur 修改新绑定。连续输入 1000→440 时不因旧快照仍为 440 而丢失最后请求；队列 Busy 不提前更新基线，保留原文供重试。三项审查回归均先复现失败再修复通过。
+
+`MOIREN_CAPTURE_NODE=tone` 最终保存六张本地 PNG / 一份 JSON，两种密度各含卡片、默认 Inspector、展开绑定后的精确输入。六帧旋钮标题 / 数字 / 单位 bounds 对齐验证通过，两帧精确输入边界通过，并已目视检查 Compact 展开 Inspector 与 Comfortable 卡片；全部明确为停止状态，不宣称实时 Tone 观测。截图先于最终非视觉队列修复，该修复由原生输入接受测试验证；生成物不入库。
+
+本增量定向验证：18 项 Tone 相关测试、12 项字段级 service 意图测试、5 项 meter freshness 测试，以及 43 项 engine recorder 相关测试通过。Meter freshness 由已接收窗口持续时间推导，真实 topic 交付测试验证长窗口不提前过期、短窗口恢复后收紧期限。Recorder 提供无分配容量检查，候选验证与工厂共用 64 MiB f32 队列约束，256 声道上限为 65,536 帧。以上不是新一轮完整 workspace 验证，整体验收仍待剩余节点编辑完成。

@@ -111,8 +111,18 @@ Complete this node before moving to another card. Use the existing engine Hann-w
 - [x] Add presentation subscriptions with freshness and identity fences. Keep all preparation/copying off the audio thread and bound maximum-channel payloads.
 - [x] Replace the placeholder with a log-frequency magnitude plot and real per-channel selection, peak/bin readout, FFT/hop choices and measured resolution. Use the same controls in Inspector; merge settings edits against the latest candidate.
 - [x] Capture real tone spectra and stopped/active/settings-change states at both densities; inspect plot labels, control geometry and adaptive meter layout before acceptance.
-- [ ] Run focused and integrated tests, strict Clippy/fmt, then atomic commits/push/update PR #23. Keep every generated PNG/JSON local and do not merge.
+- [x] Run focused and integrated tests, strict Clippy/fmt, then atomic commits/push/update PR #23. Keep every generated PNG/JSON local and do not merge. Spectrum commits `93aa416` through `24885a4` are pushed; PR #23 remains open.
 
 Verification: 577 app GPUI tests passed, zero failed, three ignored; 351 engine tests passed across eight suites. Default and gpui-test workspace/all-targets strict Clippy, rustfmt and diff checks passed. The final native run completed 16 frames, with every vertical-meter check true and exact FFT/hop fields inside Inspector bounds. Real 937.5 Hz stereo input at 48 kHz produced the expected -20 dBFS peak amplitude. The first full app run exposed old fixed capture grouping; width-aware grouping fixed that failure without shrinking the viewport or weakening bounds.
 
 Review regressions cover invalid-input recovery, queued FFT/hop edits, fast preset reversal and stale-source fences. This completes real Spectrum observation, superseding earlier pending-FFT notes. Tone / independent Mapper domain consistency and remaining Inspector precision input are still open.
+
+## Remaining Precision Workstations
+
+- [x] Tone: share exact frequency validation with the existing service domain, separate it from ergonomic knob travel, provide an independent Inspector input, preserve dirty/error state and keyboard ownership; capture card and opened Inspector in both densities before advancing. Six native frames pass geometry/visual review; 18 Tone-related tests pass, including three RED/GREEN queue/rebinding regressions. Commits `79814bc`, `75aed33`.
+- [ ] Independent Mapper: finite signed exact weights with bounded 4x4 paging on both surfaces, real topology-based presets, field-level service merge/undo, separate surface drafts; capture stereo and paged multichannel cases.
+- [ ] EQ / Gate / Limiter / Delay: Inspector precision fields share card parameter contracts without sharing mounted input entities. Preserve percent conversions and prepared capacities; verify one node at a time with native captures.
+- [ ] Meter / Recorder: exact integer Inspector settings retain existing engine validation and storage/preparation contracts; capture each independently.
+- [ ] Final review, integrated tests and per-responsibility commits/push/PR update. No screenshots or generated manifests in Git; no merge.
+
+Prerequisites complete: latest-candidate scalar/Mapper field intents and per-field undo (`71087ce`, 12 tests); nonallocating recorder admission (`86aa822`, 43 recorder-related engine tests); confirmed-window meter freshness (`470310f`, five tests including real topic delivery). Mapper / remaining scalar and integer Inspector UI work is still active. Final full-suite/Clippy gates will be repeated on the integrated result.
