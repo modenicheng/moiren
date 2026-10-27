@@ -151,8 +151,6 @@ pub struct AppSnapshot {
     pub exports: Vec<super::ExportStatus>,
     pub export_plan: super::ExportReconcilePlan,
     #[cfg(windows)]
-    pub native_observations: Option<NativeSessionObservations>,
-    #[cfg(windows)]
     pub professional_observations: Option<ProfessionalSessionObservations>,
     pub latency_profile: super::AudioLatencyProfile,
     pub active_latency_profile: Option<super::AudioLatencyProfile>,
@@ -175,13 +173,6 @@ pub struct AppSnapshot {
     pub signal_topics: super::SignalTopics,
     pub elapsed: Duration,
 }
-#[cfg(windows)]
-#[derive(Debug, Clone)]
-pub struct NativeSessionObservations {
-    pub generation: SessionGeneration,
-    pub observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot,
-}
-
 #[cfg(windows)]
 #[derive(Debug, Clone)]
 pub struct ProfessionalSessionObservations {

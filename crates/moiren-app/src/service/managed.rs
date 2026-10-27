@@ -118,10 +118,6 @@ pub struct ManagedDriver {
     auto_apply_deadline: Option<Instant>,
     meters: Option<meters::MeterBridge>,
     #[cfg(windows)]
-    observations: Option<
-        Arc<std::sync::Mutex<Option<moiren_windows_audio::engine_backend::NativeObservations>>>,
-    >,
-    #[cfg(windows)]
     professional_observations: Option<
         Arc<std::sync::Mutex<Option<moiren_windows_audio::professional::ProfessionalObservations>>>,
     >,
@@ -169,8 +165,6 @@ impl ManagedDriver {
             apply_audio_settings: None,
             meters: None,
             #[cfg(windows)]
-            observations: None,
-            #[cfg(windows)]
             professional_observations: None,
             #[cfg(windows)]
             virtual_provider: None,
@@ -199,9 +193,7 @@ impl ManagedDriver {
     }
     #[cfg(windows)]
     pub fn windows() -> Self {
-        let observations = Arc::new(std::sync::Mutex::new(None));
         let professional_observations = Arc::new(std::sync::Mutex::new(None));
-        let publisher = observations.clone();
         let professional_publisher = professional_observations.clone();
         let f64_publisher = professional_observations.clone();
         let virtual_provider = moiren_windows_audio::vad::WindowsVadProvider::discover().ok();
@@ -209,33 +201,16 @@ impl ManagedDriver {
         let provider_for_f64 = virtual_provider.clone();
         let mut driver = Self::new(|_| unreachable!("Windows factory replaced before use"))
             .with_catalog(Arc::new(WindowsBackend::default()));
-        driver.factory = Arc::new(move |profile, settings| {
-            if settings != &AudioSettings::default() {
-                let backend =
-                    moiren_windows_audio::professional::ProfessionalBackend::<f32>::new()?;
-                let backend = if let Some(provider) = provider_for_factory.as_ref() {
-                    backend.with_virtual_provider(provider.clone())
-                } else {
-                    backend
-                };
-                *publisher.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                *professional_publisher
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner()) = Some(backend.observations());
-                return Ok(Box::new(backend));
-            }
-            let backend = moiren_windows_audio::engine_backend::WindowsBackend::new(
-                profile.windows_backend_config(),
-            )?;
+        driver.factory = Arc::new(move |_, _| {
+            let backend = moiren_windows_audio::professional::ProfessionalBackend::<f32>::new()?;
             let backend = if let Some(provider) = provider_for_factory.as_ref() {
                 backend.with_virtual_provider(provider.clone())
             } else {
                 backend
             };
-            *publisher.lock().unwrap_or_else(|p| p.into_inner()) = Some(backend.observations());
             *professional_publisher
                 .lock()
-                .unwrap_or_else(|p| p.into_inner()) = None;
+                .unwrap_or_else(|p| p.into_inner()) = Some(backend.observations());
             Ok(Box::new(backend))
         });
         driver.f64_factory = Some(Arc::new(move |_, _| {
@@ -248,7 +223,6 @@ impl ManagedDriver {
             *f64_publisher.lock().unwrap_or_else(|p| p.into_inner()) = Some(backend.observations());
             Ok(Box::new(backend))
         }));
-        driver.observations = Some(observations);
         driver.professional_observations = Some(professional_observations);
         driver.virtual_provider = virtual_provider;
         if let Some(provider) = &driver.virtual_provider {

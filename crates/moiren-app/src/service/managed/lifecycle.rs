@@ -17,10 +17,6 @@ impl ManagedDriver {
         c.active_audio_settings = None;
         #[cfg(windows)]
         {
-            if let Some(observations) = &self.observations {
-                *observations.lock().unwrap_or_else(|p| p.into_inner()) = None;
-            }
-            c.native_observations = None;
             if let Some(observations) = &self.professional_observations {
                 *observations.lock().unwrap_or_else(|p| p.into_inner()) = None;
             }

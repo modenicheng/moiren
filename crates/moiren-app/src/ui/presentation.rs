@@ -48,7 +48,6 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
     let _ = snapshot;
     #[cfg(windows)]
     {
-        use moiren_windows_audio::engine_backend::NativeStreamKind;
         if let Some(status) = snapshot
             .professional_observations
             .as_ref()
@@ -147,122 +146,6 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                             }),
                     ));
                 }
-            }
-            return rows;
-        }
-        if let Some(status) = snapshot.native_observations.as_ref().filter(|status| {
-            fresh_observation(
-                snapshot.phase,
-                snapshot.generation,
-                status.generation,
-                status.observation.running,
-            )
-        }) {
-            let mut rows = Vec::new();
-            for (index, stream) in status.observation.streams.iter().enumerate() {
-                let kind = match stream.kind {
-                    NativeStreamKind::MasterOutput => t!("Master output"),
-                    NativeStreamKind::FollowerOutput => t!("Follower output"),
-                    NativeStreamKind::PhysicalInput => t!("Physical input"),
-                    NativeStreamKind::ProcessInput => t!("Application input"),
-                    NativeStreamKind::VirtualPlayback => t!("Virtual playback"),
-                    NativeStreamKind::VirtualMicrophone => t!("Virtual microphone"),
-                };
-                let prefix = format!("{} {kind}", index + 1);
-                rows.push((
-                    t!("%{prefix}: actual timing", prefix = prefix).to_string(),
-                    stream
-                        .timing
-                        .map(|timing| {
-                            let period = timing
-                                .period_frames
-                                .map(|frames| {
-                                    format!(
-                                        "{frames} frames ({:.2} ms)",
-                                        f64::from(frames) * 1000. / f64::from(timing.sample_rate)
-                                    )
-                                })
-                                .unwrap_or_else(|| t!("period unknown").to_string());
-                            t!(
-                                "%{rate} Hz; %{period}; capacity %{capacity} frames",
-                                rate = timing.sample_rate,
-                                period = period,
-                                capacity = timing.capacity_frames,
-                            )
-                            .to_string()
-                        })
-                        .unwrap_or_else(|| t!("Virtual capture; no hardware period").to_string()),
-                ));
-                if let Some(period) = stream.shared_period {
-                    rows.push((
-                        t!("%{prefix}: period request", prefix = prefix).to_string(),
-                        period
-                            .desired_period_ms
-                            .map(|ms| t!("%{ms} ms requested", ms = format!("{ms:.2}")).to_string())
-                            .unwrap_or_else(|| t!("Device default requested").to_string()),
-                    ));
-                    // The initialization value is {:?} debug output and stays in English.
-                    rows.push((
-                        t!("%{prefix}: initialization", prefix = prefix).to_string(),
-                        format!(
-                            "{:?}; fallback {}",
-                            period.initialization_api,
-                            period
-                                .fallback_reason
-                                .map(|reason| format!("{reason:?}"))
-                                .unwrap_or_else(|| "none".into())
-                        ),
-                    ));
-                }
-                if let Some(queue) = stream.render_queue {
-                    rows.push((
-                        t!("%{prefix}: render queue", prefix = prefix).to_string(),
-                        t!(
-                            "Target %{target} / capacity %{capacity} frames",
-                            target = queue.target_frames,
-                            capacity = queue.capacity_frames,
-                        )
-                        .to_string(),
-                    ));
-                }
-                if let Some(queue) = stream.input_queue {
-                    rows.push((
-                        t!("%{prefix}: bridge queue", prefix = prefix).to_string(),
-                        t!(
-                            "Prime %{prime} / capacity %{capacity} frames",
-                            prime = queue.prime_frames,
-                            capacity = queue.capacity_frames,
-                        )
-                        .to_string(),
-                    ));
-                }
-            }
-            for bridge in &status.observation.bridges {
-                let prefix = status
-                    .observation
-                    .streams
-                    .iter()
-                    .position(|stream| stream.node == bridge.node)
-                    .map(|index| t!("Stream %{index}", index = index + 1).to_string())
-                    .unwrap_or_else(|| t!("Unmapped stream").to_string());
-                rows.push((
-                    t!("%{prefix}: live queue / clock", prefix = prefix).to_string(),
-                    format!(
-                        "{} frames; {:+.1} ppm",
-                        bridge.counters.fill_frames, bridge.counters.correction_ppm
-                    ),
-                ));
-                rows.push((
-                    t!("%{prefix}: faults / recovery", prefix = prefix).to_string(),
-                    t!(
-                        "Underrun %{underrun} / dropped %{dropped} frames; resets %{resets} / backlog recoveries %{recoveries}",
-                        underrun = bridge.counters.underrun_frames,
-                        dropped = bridge.counters.dropped_frames,
-                        resets = bridge.counters.resets,
-                        recoveries = bridge.counters.backlog_recoveries,
-                    )
-                    .to_string(),
-                ));
             }
             return rows;
         }

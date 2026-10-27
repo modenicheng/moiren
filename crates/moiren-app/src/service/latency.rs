@@ -40,21 +40,6 @@ impl AudioLatencyProfile {
             Self::Low => Some(256),
         }
     }
-
-    #[cfg(windows)]
-    pub fn windows_backend_config(
-        self,
-    ) -> moiren_windows_audio::engine_backend::WindowsBackendConfig {
-        use moiren_windows_audio::engine_backend::{NativeLatencyProfile, WindowsBackendConfig};
-        WindowsBackendConfig {
-            latency_profile: match self {
-                Self::Compatible => NativeLatencyProfile::Compatible,
-                Self::Balanced => NativeLatencyProfile::Balanced,
-                Self::Low => NativeLatencyProfile::Low,
-            },
-            ..WindowsBackendConfig::default()
-        }
-    }
 }
 
 #[cfg(test)]
@@ -79,21 +64,6 @@ mod tests {
             );
         }
         assert!(serde_json::from_str::<AudioLatencyProfile>("\"turbo\"").is_err());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn saved_profiles_configure_the_matching_native_preparation_policy() {
-        use moiren_windows_audio::engine_backend::NativeLatencyProfile;
-        for (profile, native) in AudioLatencyProfile::ALL.into_iter().zip([
-            NativeLatencyProfile::Compatible,
-            NativeLatencyProfile::Balanced,
-            NativeLatencyProfile::Low,
-        ]) {
-            let config = profile.windows_backend_config();
-            assert_eq!(config.latency_profile, native);
-            config.validate().unwrap();
-        }
     }
 
     #[test]

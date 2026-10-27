@@ -111,8 +111,6 @@ pub struct ServiceContext {
     pub exports: ExportService,
     pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
     #[cfg(windows)]
-    pub native_observations: Option<NativeSessionObservations>,
-    #[cfg(windows)]
     pub professional_observations: Option<ProfessionalSessionObservations>,
     pub latency_profile: AudioLatencyProfile,
     pub active_latency_profile: Option<AudioLatencyProfile>,
@@ -134,8 +132,6 @@ impl Default for ServiceContext {
         Self {
             exports: ExportService::default(),
             loaded_project: None,
-            #[cfg(windows)]
-            native_observations: None,
             #[cfg(windows)]
             professional_observations: None,
             latency_profile: AudioLatencyProfile::default(),
@@ -341,11 +337,6 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         loaded_project: c.loaded_project.clone(),
         exports: c.exports.statuses(&graph),
         export_plan: c.exports.reconcile(&graph),
-        #[cfg(windows)]
-        native_observations: c
-            .native_observations
-            .clone()
-            .filter(|value| c.fresh(value.generation)),
         #[cfg(windows)]
         professional_observations: c
             .professional_observations

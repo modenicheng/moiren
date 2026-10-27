@@ -330,29 +330,13 @@ impl ManagedDriver {
         snapshot: &host::ProjectSnapshot,
         generation: SessionGeneration,
     ) {
-        // Write-side stale guard shared by the native and professional
-        // publishers: an observation counts only while its own owner
-        // generation still runs.
+        // Write-side stale guard: an observation counts only while its own
+        // owner generation still runs.
         let fresh = |running: bool, owner_generation: u64| {
             running
                 && owner_generation == snapshot.state.owner_generation
                 && snapshot.state.execution == ExecutionState::Running
         };
-        c.native_observations = self
-            .observations
-            .as_ref()
-            .and_then(|handle| {
-                handle
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .as_ref()
-                    .and_then(|value| value.snapshot())
-            })
-            .filter(|observation| fresh(observation.running, observation.owner_generation))
-            .map(|observation| NativeSessionObservations {
-                generation,
-                observation,
-            });
         c.professional_observations = self
             .professional_observations
             .as_ref()
