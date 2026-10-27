@@ -942,3 +942,68 @@ holds only the two current probe binaries and no active probe, run directory,
 or dynamic VAD endpoint. Stage 7, native zero-quality qualification, live
 rename acceptance, calibrated Process/VAD comparison, and the `<=10 ms`
 physical gate remain open.
+
+### 2026-10-27 `a085841` signed-driver package retest
+
+The analyzed/test-signed package containing the `a085841` `Pcm.cpp` change was
+built on the host and installed on the target before this retest. The target
+reported `MoirenVad` as `Running` from
+`C:\Windows\System32\DriverStore\FileRepository\moirenvad.inf_amd64_5253ce9aaaf75b9e\MoirenVad.sys`;
+`pnputil` published the package as `oem26.inf`. The running target files
+matched the host package:
+
+| File | Length | SHA-256 |
+| --- | ---: | --- |
+| `MoirenVad.sys` | 109,840 | `C28A5BFE091FD5117EE728AB39DE338A27DB28C78558BCD7A252ABC087D84931` |
+| `MoirenVad.inf` | 1,804 | `0F11E35038DF9D161CDE23FDE59480C7D670F0D737E76E2B7133439983E04D03` |
+| `moirenvad.cat` | 8,484 | `1021FD83D4080320DF55C442973516C211CB3FF91013DFE22A5B14F65E288154` |
+
+The new-driver one-second event matrix exited `0`. All four Playback cases
+reported 47,040 signal frames, zero silent frames and zero native
+discontinuities. All four Microphone cases reported zero dropped packets and
+zero native discontinuities, but each still contained 480 silent frames. This
+is an improvement over the earlier probe's Float32 microphone drop, but it is
+not a zero-silence quality pass. The archived stdout, stderr and exit marker
+were checked by length and SHA-256 on the host and rechecked on the guest:
+
+- `target/vad-target-archive/20261027-native-a085841-event1-newdriver/`
+
+The new-driver one-second timer matrix also exited `0`, with zero dropped
+packets and zero native discontinuities in all eight cases. Initial silent
+frames remained in every case: Playback Pcm16 mono `2,048`, Playback Float32
+mono `1,024`, Playback Pcm16 stereo `1,024`, Playback Float32 stereo `512`,
+Microphone Pcm16 mono `768`, Microphone Float32 mono `768`, Microphone Pcm16
+stereo `768`, and Microphone Float32 stereo `287`. The timer artifacts were
+verified the same way and retained at:
+
+- `target/vad-target-archive/20261027-native-a085841-timer1-newdriver/`
+
+After each result was archived and hash-checked, the corresponding guest
+stdout/exit files were deleted. The VM now retains only the current
+`e2e_latency_probe-a085841.exe`, `vad_native-a085841.exe`, and the required
+`driver-a085841` package directory; no test process or dynamic VAD endpoint is
+present, and the 64 GB guest has approximately 30.1 GiB free. No
+`C:\DriverTest`, DriverStore rollback package, or system file was deleted.
+
+This retest proves that the signed `a085841` package was actually loaded and
+that the old revision-mismatch observation did not recur in these bounded
+matrices. It does not qualify the driver: startup silence remains, and no
+production `live-vad` rerun is warranted until the native quality gate is
+improved. The application still supports user-visible rename through a
+stable-ID remove/recreate protocol; the driver still has no in-place rename
+IOCTL. The target remains integrated through
+`VAD MMDevice -> native PCM -> VirtualPlayback -> Engine -> Bus -> physical
+Output`, but the existing production smoke has xrun/completion failures and
+does not establish a physical latency value.
+
+The overall target remains: for `Input -> Bus -> Output` with no other nodes,
+find the smallest stable configuration whose calibrated physical p95 is at
+most 10 ms, with p50 exploration at most 8 ms, continuous output, and zero
+drops, silent steady-state frames, underruns, discontinuities, or unexpected
+recovery. The execution order remains: fix native quality, run a real held
+client rename smoke with exact Windows MMDevice FriendlyName readback, build
+matched VAD/Process Loopback evidence under the same output/engine/load
+conditions, then sweep configurable buffer targets from larger to smaller and
+retain the smallest stable candidate before the 30-minute and two-hour gates.
+No VAD-versus-Process latency winner can be claimed before a calibrated common
+physical boundary is available.
