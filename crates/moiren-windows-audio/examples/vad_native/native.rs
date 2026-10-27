@@ -1,6 +1,7 @@
 //! One explicitly identified exclusive WASAPI client, owned on the probe thread.
 use crate::{
     NativeMode,
+    period::PeriodEvidence,
     validation::{self, Observation, PositionProgress},
 };
 use anyhow::{Context, ensure};
@@ -98,6 +99,7 @@ impl Stream {
         channels: Channels,
         pattern: [f32; 2],
         mode: NativeMode,
+        period_evidence: &mut PeriodEvidence,
     ) -> anyhow::Result<Self> {
         let wave = descriptor(format, channels);
         // SAFETY: complete descriptor, apartment-local COM objects, no reference
@@ -109,13 +111,9 @@ impl Stream {
             .ok()
             .context("IsFormatSupported(exact exclusive format)")?;
         ensure!(supported == S_OK, "exclusive format was not an exact match");
-        let mut period = 0;
-        unsafe { client.GetDevicePeriod(Some(&mut period), None)? };
-        ensure!(
-            (1..=1_000_000).contains(&period),
-            "native period out of bounds: {period}"
-        );
-        period = period.max(100_000);
+        let (mut default_hns, mut minimum_hns) = (0, 0);
+        unsafe { client.GetDevicePeriod(Some(&mut default_hns), Some(&mut minimum_hns))? };
+        let mut period = period_evidence.select(default_hns, minimum_hns)?;
         let initialize = |client: &IAudioClient, period| unsafe {
             client.Initialize(
                 AUDCLNT_SHAREMODE_EXCLUSIVE,
@@ -137,6 +135,9 @@ impl Stream {
                 "alignment buffer out of bounds: {frames}"
             );
             period = (u64::from(frames) * 10_000_000).div_ceil(48_000) as i64;
+            // Record the attempted retry before fresh activation can fail. This
+            // request is not a measurement of the eventual native cadence.
+            period_evidence.record_alignment_retry(period);
             // Failed Initialize needs a fresh client, not a second Initialize.
             drop(client);
             client = unsafe { device.Activate(CLSCTX_ALL, None)? };

@@ -4,6 +4,10 @@ use moiren_windows_audio::vad::Intent;
 use std::ffi::OsString;
 
 #[cfg(any(windows, test))]
+#[path = "vad_native/period.rs"]
+mod period;
+
+#[cfg(any(windows, test))]
 #[path = "vad_native/validation.rs"]
 mod validation;
 
@@ -22,6 +26,7 @@ struct Options {
     help: bool,
     mode: NativeMode,
     intent_filter: Option<Intent>,
+    minimum_period: bool,
 }
 
 impl Options {
@@ -32,6 +37,7 @@ impl Options {
             help: false,
             mode: NativeMode::Event,
             intent_filter: None,
+            minimum_period: false,
         };
         let mut seconds_seen = false;
         for argument in arguments {
@@ -42,6 +48,7 @@ impl Options {
                 "--exercise" if !options.exercise => options.exercise = true,
                 "--help" | "-h" => options.help = true,
                 "--timer" if options.mode == NativeMode::Event => options.mode = NativeMode::Timer,
+                "--minimum-period" if !options.minimum_period => options.minimum_period = true,
                 value if value.starts_with("--intent=") && options.intent_filter.is_none() => {
                     options.intent_filter = Some(match &value["--intent=".len()..] {
                         "playback" => Intent::Playback,
@@ -69,6 +76,10 @@ impl Options {
             "--timer requires --exercise"
         );
         anyhow::ensure!(
+            !options.minimum_period || options.exercise || options.help,
+            "--minimum-period requires --exercise or --help"
+        );
+        anyhow::ensure!(
             options.intent_filter.is_none() || options.exercise || options.help,
             "--intent requires --exercise"
         );
@@ -80,7 +91,7 @@ fn main() -> anyhow::Result<()> {
     let options = Options::parse(std::env::args_os().skip(1))?;
     if options.help || !options.exercise {
         println!(
-            "vad_native --exercise [--seconds=2] [--timer] [--intent=playback|microphone]\n\
+            "vad_native --exercise [--seconds=2] [--timer] [--intent=playback|microphone] [--minimum-period]\n\
              Explicit installed-driver probe: four owned virtual endpoints,\n\
              MMDevice/adapter identity, exclusive 48 kHz PCM16/Float32,\n\
              mono/stereo in both directions and microphone gate-close silence.\n\
@@ -88,6 +99,9 @@ fn main() -> anyhow::Result<()> {
              --intent: diagnostic subset of four cases; report identifies the selected direction.\n\
              Default: exclusive event-driven; --timer: exclusive no-event,\n\
              padding/position-driven probe with no fallback if unsupported.\n\
+             Default period: max(device default, 10 ms), unchanged baseline.\n\
+             --minimum-period: request the queried exclusive minimum, without clamp/fallback.\n\
+             Requests, buffer capacity and driver packets are separate evidence; always unqualified.\n\
              No arguments or --help: display this help without contacting a driver.\n\
              Never installs a driver, selects defaults or changes endpoint settings."
         );
@@ -103,7 +117,12 @@ fn run(_options: Options) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn run(options: Options) -> anyhow::Result<()> {
-    target::exercise(options.seconds, options.mode, options.intent_filter)
+    target::exercise(
+        options.seconds,
+        options.mode,
+        options.intent_filter,
+        options.minimum_period,
+    )
 }
 
 #[cfg(windows)]
@@ -122,6 +141,8 @@ mod tests {
     fn default_and_help_do_not_contact_a_driver() {
         assert!(!parse(&[]).unwrap().exercise);
         assert_eq!(parse(&[]).unwrap().mode, NativeMode::Event);
+        assert!(!parse(&[]).unwrap().minimum_period);
+        assert!(!parse(&["--exercise"]).unwrap().minimum_period);
         assert_eq!(parse(&["--exercise"]).unwrap().intent_filter, None);
         assert_eq!(parse(&["--exercise"]).unwrap().mode, NativeMode::Event);
         assert!(parse(&["--help"]).unwrap().help);
@@ -156,6 +177,27 @@ mod tests {
         assert!(parse(&["--timer", "--help"]).unwrap().help);
         assert!(parse(&["--timer"]).is_err());
         assert!(parse(&["--exercise", "--timer", "--timer"]).is_err());
+    }
+
+    #[test]
+    fn minimum_period_is_explicit_once_and_requires_exercise_or_help() {
+        for arguments in [
+            vec!["--exercise", "--minimum-period"],
+            vec!["--minimum-period", "--exercise", "--timer"],
+            vec!["--minimum-period", "--help"],
+            vec!["-h", "--minimum-period"],
+        ] {
+            assert!(parse(&arguments).unwrap().minimum_period, "{arguments:?}");
+        }
+        for arguments in [
+            vec!["--minimum-period"],
+            vec!["--exercise", "--minimum-period", "--minimum-period"],
+            vec!["--help", "--minimum-period", "--minimum-period"],
+            vec!["--exercise", "--minimum-period=1"],
+            vec!["--exercise", "--minimum-period=false"],
+        ] {
+            assert!(parse(&arguments).is_err(), "{arguments:?}");
+        }
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::{
     NativeMode,
+    period::PeriodEvidence,
     validation::{self, Candidate, Observation, PacketProgress},
 };
 use anyhow::{Context, ensure};
@@ -208,6 +209,7 @@ struct CaseReport {
     intent: String,
     channels: u32,
     format: String,
+    period: PeriodEvidence,
     native_buffer_frames: u32,
     driver_packet_frames: u32,
     stream_generation: u64,
@@ -227,6 +229,7 @@ struct CaseReport {
 struct Report {
     schema_version: u32,
     native_mode: NativeMode,
+    minimum_period: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     intent_filter: Option<&'static str>,
     root_instance: String,
@@ -239,6 +242,7 @@ pub(super) fn exercise(
     seconds: u32,
     mode: NativeMode,
     intent_filter: Option<Intent>,
+    minimum_period: bool,
 ) -> anyhow::Result<()> {
     let interfaces = discover_present_interfaces()?;
     ensure!(
@@ -281,7 +285,7 @@ pub(super) fn exercise(
             }
             for format in [SampleFormat::Pcm16, SampleFormat::Float32] {
                 eprintln!(
-                    "native case mode={mode:?} intent={:?} channels={:?} format={format:?} id={}",
+                    "native case mode={mode:?} minimum_period={minimum_period} intent={:?} channels={:?} format={format:?} id={}",
                     endpoint.intent(),
                     endpoint.channels(),
                     endpoint.stable_id()
@@ -296,6 +300,7 @@ pub(super) fn exercise(
                     index,
                     seconds,
                     mode,
+                    minimum_period,
                 )
                 .with_context(|| {
                     format!(
@@ -311,8 +316,9 @@ pub(super) fn exercise(
         require_never_default(&enumerator, &mappings)?;
         let after = defaults(&enumerator)?;
         Ok(Report {
-            schema_version: 2,
+            schema_version: 3,
             native_mode: mode,
+            minimum_period,
             intent_filter: intent_filter.map(|intent| match intent {
                 Intent::Playback => "Playback",
                 Intent::Microphone => "Microphone",
@@ -450,7 +456,10 @@ fn exercise_case(
     index: usize,
     seconds: u32,
     mode: NativeMode,
+    minimum_period: bool,
 ) -> anyhow::Result<CaseReport> {
+    // Caller-owned evidence survives every native preparation error path.
+    let mut period = PeriodEvidence::new(minimum_period);
     let mut counters = validation::FailureCounters {
         mode,
         signal_frames: 0,
@@ -478,10 +487,30 @@ fn exercise_case(
         seconds,
         mode,
         &mut counters,
+        &mut period,
     );
-    validation::diagnose_failure(outcome, &counters, |line| {
+    diagnose_case_failure(outcome, &counters, &period, |line| {
         // A failed stderr write must not replace the original case error.
         let _ = writeln!(std::io::stderr().lock(), "{line}");
+    })
+}
+
+fn diagnose_case_failure<T>(
+    outcome: anyhow::Result<T>,
+    counters: &validation::FailureCounters,
+    period: &PeriodEvidence,
+    emit: impl FnOnce(&str),
+) -> anyhow::Result<T> {
+    validation::diagnose_failure(outcome, counters, |line| {
+        let enriched = (|| -> serde_json::Result<String> {
+            let mut diagnostic: serde_json::Value = serde_json::from_str(line)?;
+            diagnostic["counters"]["period"] = serde_json::to_value(period)?;
+            serde_json::to_string(&diagnostic)
+        })();
+        let enriched = enriched.unwrap_or_else(|error| {
+            format!("{line}; period={period:?}; period diagnostic formatting: {error}")
+        });
+        emit(&enriched);
     })
 }
 
@@ -497,6 +526,7 @@ fn exercise_case_inner(
     seconds: u32,
     mode: NativeMode,
     counters: &mut validation::FailureCounters,
+    period: &mut PeriodEvidence,
 ) -> anyhow::Result<CaseReport> {
     let case_index = index * 2 + usize::from(format == SampleFormat::Float32);
     let pattern = validation::pattern(case_index, endpoint.channels());
@@ -514,6 +544,7 @@ fn exercise_case_inner(
         endpoint.channels(),
         pattern,
         mode,
+        period,
     )?;
     counters.native_buffer_frames = native.frames;
     let outcome = (|| -> anyhow::Result<CaseReport> {
@@ -715,6 +746,7 @@ fn exercise_case_inner(
             intent: format!("{:?}", endpoint.intent()),
             channels: endpoint.channels() as u32,
             format: format!("{format:?}"),
+            period: *period,
             native_buffer_frames: native.frames,
             driver_packet_frames: shape.frames(),
             stream_generation: running.stream_generation(),
@@ -836,6 +868,74 @@ fn collection_qpc() -> Option<u64> {
 #[cfg(test)]
 mod pacing_tests {
     use super::*;
+
+    #[test]
+    fn failed_prepare_retains_period_evidence_and_original_error() {
+        let counters = validation::FailureCounters {
+            mode: NativeMode::Event,
+            signal_frames: 0,
+            silent_frames: 0,
+            microphone_dropped_packets: 0,
+            microphone_completion_diagnostics: Default::default(),
+            microphone_submit_diagnostics: Default::default(),
+            native_buffer_frames: 0,
+            driver_packet_frames: 480,
+            stream_generation: 7,
+            native_discontinuities: 0,
+            native_position: None,
+            admitted_opened: None,
+            admitted_pcm_shape: None,
+            failure_observation: None,
+        };
+        for stage in [
+            "before-query",
+            "invalid-minimum",
+            "initial-refusal",
+            "aligned-refusal",
+        ] {
+            let mut period = PeriodEvidence::new(true);
+            let outcome = match stage {
+                "before-query" => Err(anyhow::anyhow!(std::io::Error::other("Activate failed"))),
+                "invalid-minimum" => period.select(100_000, 0).map(|_| ()),
+                _ => {
+                    period.select(100_000, 10_000).unwrap();
+                    if stage == "aligned-refusal" {
+                        period.record_alignment_retry(106_667);
+                    }
+                    Err(
+                        anyhow::anyhow!(std::io::Error::other("native initialization failed"))
+                            .context(stage.to_owned()),
+                    )
+                }
+            };
+            let original = format!("{:#}", outcome.as_ref().unwrap_err());
+            let mut line = String::new();
+            let error = diagnose_case_failure(outcome, &counters, &period, |value| {
+                line = value.to_owned();
+            })
+            .unwrap_err();
+            assert_eq!(format!("{error:#}"), original);
+            if stage != "invalid-minimum" {
+                assert!(error.downcast_ref::<std::io::Error>().is_some());
+            }
+            let json: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(
+                json["counters"]["period"],
+                serde_json::to_value(period).unwrap()
+            );
+            assert_eq!(json["diagnostic"], "vad-native-case-failure");
+            assert_eq!(json["error"], original);
+            assert_eq!(json["counters"]["native_buffer_frames"], 0);
+            assert_eq!(json["counters"]["driver_packet_frames"], 480);
+        }
+        assert_eq!(
+            diagnose_case_failure(Ok(42), &counters, &PeriodEvidence::new(false), |_| panic!(
+                "success must not emit failure evidence"
+            ))
+            .unwrap(),
+            42
+        );
+    }
 
     #[test]
     fn successful_completion_retains_intended_halfway_phase_after_delayed_collection() {
@@ -1289,13 +1389,17 @@ mod pacing_tests {
                 || panic!("the two retained records must never be replaced"),
             );
         }
-        let report = CaseReport {
+        let mut period = PeriodEvidence::new(true);
+        period.select(100_000, 10_000).unwrap();
+        period.record_alignment_retry(106_667);
+        let mut report = CaseReport {
             stable_id: "owned endpoint".into(),
             mmdevice_id: "opaque MMDevice".into(),
             adapter_instance: "owned adapter".into(),
             intent: "Microphone".into(),
             channels: 1,
             format: "Pcm16".into(),
+            period,
             native_buffer_frames: 480,
             driver_packet_frames: 480,
             stream_generation: 7,
@@ -1312,6 +1416,17 @@ mod pacing_tests {
             native_discontinuities: 0,
             native_position: None,
         };
+        // Capacity and the logical packet can differ, or coincide after alignment.
+        // Neither is the accepted request, nor proof of measured stream cadence.
+        for capacity in [2_048, 480] {
+            report.native_buffer_frames = capacity;
+            let json = serde_json::to_value(&report).unwrap();
+            assert_eq!(json["native_buffer_frames"], capacity);
+            assert_eq!(json["driver_packet_frames"], 480);
+            assert_eq!(json["period"]["initial_request_hns"], 10_000);
+            assert_eq!(json["period"]["final_request_hns"], 106_667);
+            assert_eq!(json["period"]["qualification"], "unqualified-request-only");
+        }
         let outcome = validation::diagnose_failure(
             Ok(report),
             &validation::FailureCounters {
