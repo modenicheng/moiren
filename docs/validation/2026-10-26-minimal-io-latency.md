@@ -3047,20 +3047,10 @@ diagnostic is one bounded pre-activation comparison of routing-control shared
 render against B's legacy `AUTOCONVERTPCM` setup, preserving raw HRESULTs and
 remaining unqualified. Do not repeat the full collection.
 
-The accepted `4811362` immutable-snapshot matrix currently has workspace
-build/check/tests/fmt/strict Clippy complete: 1,662 passed, 0 failed, 8
-ignored, across 71 suites. GPUI tests are active; feature/harness Clippy, probe
-and app VAD tests, RT checks/fmt, and driver host/analyzed builds remain. The
-matrix is not complete until its terminal summary and any failures are
-retained.
-
-A fresh pinned-key SSH inventory finds `C:\MoirenVadTest` empty, no matching
-Moiren/VAD/probe process and 32,219,500,544 guest free bytes (about 30.01 GiB).
-`C:\DriverTest` is a 316,666,881-byte installed test/tool tree and is
-intentionally preserved. No old owned guest artifacts exist to remove; no
-guest files were changed. Continue to keep builds/caches on the host and
-preserve Windows, DriverStore, current/rollback driver packages and generic
-temporary directories.
+The immutable matrix and current VM state are finalized in the immediately
+following terminal checkpoint. Its 13/14 result retains the original RT fmt
+failure, the active-branch formatting repair is verified separately, and the
+latest pinned-key VM inventory found no owned guest artifacts to remove.
 
 ### 2026-10-28 immutable matrix terminal result and storage recheck
 
