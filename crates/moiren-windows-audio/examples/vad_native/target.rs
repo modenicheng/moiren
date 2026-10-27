@@ -38,6 +38,25 @@ mod native;
 
 const CONTROL_DEADLINE: Duration = Duration::from_secs(15);
 
+fn start_native_with_queued_pcm<T>(
+    intent: Intent,
+    mode: NativeMode,
+    mut submit: impl FnMut() -> anyhow::Result<T>,
+    start: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<VecDeque<T>> {
+    let mut pending = VecDeque::with_capacity(4);
+    let count = match (intent, mode) {
+        (Intent::Playback, _) => 4,
+        (Intent::Microphone, NativeMode::Timer) => 1,
+        (Intent::Microphone, NativeMode::Event) => 0,
+    };
+    for _ in 0..count {
+        pending.push_back(submit()?);
+    }
+    start()?;
+    Ok(pending)
+}
+
 #[derive(Default)]
 struct TransferProgress {
     playback: PacketProgress,
@@ -453,14 +472,31 @@ fn exercise_case_inner(
         counters.admitted_pcm_shape = Some(shape.snapshot().into());
         counters.driver_packet_frames = shape.frames();
         counters.stream_generation = opened.stream_generation();
-        let mut pending = VecDeque::with_capacity(4);
-        if endpoint.intent() == Intent::Playback {
-            while pending.len() < 4 {
-                pending.push_back(pcm.submit_read()?);
-            }
-        }
-
-        native.start()?;
+        ensure!(shape.format() == format, "PCM helper format changed");
+        let mut bytes = vec![0; shape.pcm_bytes()];
+        encode_interleaved(
+            &pattern.repeat(shape.frames() as usize),
+            &mut bytes,
+            format,
+            endpoint.channels(),
+        )
+        .map_err(|error| anyhow::anyhow!("driver pattern encoding: {error:?}"))?;
+        let mut decoded = vec![0.0; shape.frames() as usize * 2];
+        // Timer capture consumes at the first sub-packet segment. Prepare its
+        // single WRITE while Paused, not after Start/QUERY; event capture must
+        // instead retain the half-period freshness headroom below.
+        let mut pending = start_native_with_queued_pcm(
+            endpoint.intent(),
+            mode,
+            || {
+                Ok(if endpoint.intent() == Intent::Playback {
+                    pcm.submit_read()?
+                } else {
+                    pcm.submit_write(&bytes)?
+                })
+            },
+            || native.start(),
+        )?;
         let mut progress = TransferProgress::native_started(
             Instant::now(),
             shape.frames(),
@@ -497,16 +533,6 @@ fn exercise_case_inner(
         counters.stream_generation = opened.stream_generation();
         let mut seen = Observation::default();
         let outcome = (|| -> anyhow::Result<_> {
-            ensure!(shape.format() == format, "PCM helper format changed");
-            let mut bytes = vec![0; shape.pcm_bytes()];
-            encode_interleaved(
-                &pattern.repeat(shape.frames() as usize),
-                &mut bytes,
-                format,
-                endpoint.channels(),
-            )
-            .map_err(|error| anyhow::anyhow!("driver pattern encoding: {error:?}"))?;
-            let mut decoded = vec![0.0; shape.frames() as usize * 2];
             native.position.begin_phase();
             let until = Instant::now() + Duration::from_secs(u64::from(seconds));
             while Instant::now() < until {
@@ -673,6 +699,56 @@ fn collection_qpc() -> Option<u64> {
 #[cfg(test)]
 mod pacing_tests {
     use super::*;
+
+    #[test]
+    fn native_start_follows_the_required_prequeued_requests_for_each_mode() {
+        use std::cell::RefCell;
+
+        for (intent, mode, expected) in [
+            (Intent::Playback, NativeMode::Event, 4),
+            (Intent::Playback, NativeMode::Timer, 4),
+            (Intent::Microphone, NativeMode::Event, 0),
+            (Intent::Microphone, NativeMode::Timer, 1),
+        ] {
+            let events = RefCell::new(Vec::new());
+            let pending = start_native_with_queued_pcm(
+                intent,
+                mode,
+                || {
+                    events.borrow_mut().push("submit");
+                    Ok(())
+                },
+                || {
+                    events.borrow_mut().push("start");
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(pending.len(), expected, "{intent:?} {mode:?}");
+            let events = events.into_inner();
+            assert_eq!(events.last(), Some(&"start"));
+            assert_eq!(&events[..expected], vec!["submit"; expected]);
+        }
+    }
+
+    #[test]
+    fn prequeue_failure_never_starts_native() {
+        use std::cell::Cell;
+
+        let started = Cell::new(false);
+        let error = start_native_with_queued_pcm::<()>(
+            Intent::Microphone,
+            NativeMode::Timer,
+            || anyhow::bail!("submit failed"),
+            || {
+                started.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "submit failed");
+        assert!(!started.get());
+    }
 
     #[test]
     fn timer_microphone_first_write_is_ready_before_the_first_native_segment() {
