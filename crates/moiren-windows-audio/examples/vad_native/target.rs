@@ -47,12 +47,12 @@ struct TransferProgress {
 }
 
 impl TransferProgress {
-    fn native_started(now: Instant, frames: u32, intent: Intent) -> Self {
+    fn native_started(now: Instant, frames: u32, intent: Intent, mode: NativeMode) -> Self {
         Self {
-            // An immediate first WRITE waits almost a full native period.
-            // Anchor its half-period headroom to Start acknowledgement, before
-            // the Running QUERY, so query latency cannot re-arm the delay.
-            next_mic_submit: (intent == Intent::Microphone)
+            // Event capture consumes at the packet boundary; timer capture
+            // consumes at its first segment and needs the WRITE immediately.
+            // Anchor event headroom before QUERY so it cannot re-arm the delay.
+            next_mic_submit: (intent == Intent::Microphone && mode == NativeMode::Event)
                 .then(|| Self::microphone_deadline(now, frames)),
             ..Self::default()
         }
@@ -461,8 +461,12 @@ fn exercise_case_inner(
         }
 
         native.start()?;
-        let mut progress =
-            TransferProgress::native_started(Instant::now(), shape.frames(), endpoint.intent());
+        let mut progress = TransferProgress::native_started(
+            Instant::now(),
+            shape.frames(),
+            endpoint.intent(),
+            mode,
+        );
         let mut snapshot = opened;
         let deadline = Instant::now() + CONTROL_DEADLINE;
         loop {
@@ -671,13 +675,36 @@ mod pacing_tests {
     use super::*;
 
     #[test]
+    fn timer_microphone_first_write_is_ready_before_the_first_native_segment() {
+        let acknowledged = Instant::now();
+        // The VM timer callbacks begin the first logical packet at about
+        // Run+1.5 ms, rather than consuming it at an event packet boundary.
+        for frames in [512, 1024, 2048] {
+            let progress = TransferProgress::native_started(
+                acknowledged,
+                frames,
+                Intent::Microphone,
+                NativeMode::Timer,
+            );
+            assert!(progress.microphone_ready(acknowledged, 0));
+            assert!(progress.microphone_ready(acknowledged + Duration::from_micros(1_000), 0));
+            assert!(!progress.microphone_ready(acknowledged, 1));
+        }
+    }
+
+    #[test]
     fn microphone_first_write_keeps_freshness_headroom_at_the_observed_late_callback() {
         let run = Instant::now();
         // Actual mono Float32 failure: WRITE at Run+0.3513 ms was rejected at
         // Run+11.0159 ms. Even the latest possible Start acknowledgement,
         // bounded by that old WRITE, must leave room before the first packet.
         let acknowledged = run + Duration::from_nanos(351_300);
-        let progress = TransferProgress::native_started(acknowledged, 480, Intent::Microphone);
+        let progress = TransferProgress::native_started(
+            acknowledged,
+            480,
+            Intent::Microphone,
+            NativeMode::Event,
+        );
         assert!(!progress.microphone_ready(acknowledged, 0));
         assert!(!progress.microphone_ready(acknowledged + Duration::from_millis(4), 0));
         let submitted = acknowledged + Duration::from_millis(5);
@@ -818,7 +845,8 @@ mod pacing_tests {
     #[test]
     fn microphone_keeps_one_pending_write_and_rearms_after_completion() {
         let now = Instant::now();
-        let mut progress = TransferProgress::native_started(now, 480, Intent::Microphone);
+        let mut progress =
+            TransferProgress::native_started(now, 480, Intent::Microphone, NativeMode::Event);
         assert!(!progress.microphone_ready(now, 0));
         assert!(progress.microphone_ready(now + Duration::from_millis(5), 0));
         let completed = now + Duration::from_millis(10);
