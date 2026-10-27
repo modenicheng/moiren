@@ -434,3 +434,46 @@ process, and has 30.11 GiB free. A short Process Loopback smoke was not run:
 the guest had no real audio-producing source process or suitable source PID.
 The probe's controlled-load supervision is therefore code-tested but still
 lacks fresh native Process Loopback evidence.
+
+### 2026-10-27 current-build VAD collection repeat
+
+The release probe built from `80ccf8d` was verified on the host and guest at
+3,843,584 bytes, SHA-256
+`69437FAEF67200E8DB499FEE5A4C5CC7AA65A6203B2807BF838EE4256263C539`. The
+guest endpoint inventory confirmed the same VMware render and microphone IDs
+used in earlier collection attempts. The run used the production
+`VirtualPlayback -> Bus -> master output` graph, a 48,000-frame scheduled
+source, a separate WASAPI microphone recorder, a 15-second ceiling and the
+supervised-load worker. It entered the native path and exited collection after
+about 0.5 seconds with `status=unqualified`; the PowerShell wrapper failed
+after probe exit while serializing its manifest, so an authoritative guest
+process exit code is unavailable and the report's zero observed duration must
+not be treated as a run duration.
+
+The raw report records 20,160/48,000 acknowledged source frames, 39 VAD
+completion gaps across 40 completed packets, zero VAD driver drops/silent
+frames/epoch resets, one virtual graph-boundary xrun and 33 soft events. The
+independent recorder negotiated 279 actual frames (245 requested; capability
+minimum/default 139/488) and captured 84 packets / 23,400 frames with 83 gap
+events, 1,873 gap frames and one discontinuity. Controlled load covered only
+0.528 seconds against its required 1.2-second window. Collection and cleanup
+are incomplete; no marker arrival, physical end-to-end latency or stable
+output is established. This is diagnostic failure evidence, not qualification.
+
+All seven guest payloads were copied to
+`target/vad-target-archive/20261027-collection-80ccf8d-15s/`; each guest and
+host length/SHA-256 was checked before deletion. The temporary probe, inputs,
+logs and run directory were removed after checking that no test process
+remained and that the preserved `vad_integration-b7896f3.exe` hash was
+unchanged. The guest test directory again contains only that 7,657,472-byte
+rename probe and has 30.09 GiB free. The host archive includes the raw
+measurement PCM, packet metadata, collection and run reports, manifests, input
+plans, a concise summary and a raw-payload hash manifest. No driver package,
+Windows file or rollback package was removed.
+
+Next diagnose the already-observed early VAD completion gaps, boundary xrun
+and physical-capture discontinuities before any longer candidate run. Repair
+the guest runner's manifest encoding separately and preserve its actual child
+exit code on future runs. Process Loopback native evidence, matched-path
+comparison, physical wiring/reference, calibration, stable candidate, and the
+30-minute/two-hour gates remain open.

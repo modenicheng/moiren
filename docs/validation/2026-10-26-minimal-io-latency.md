@@ -2102,3 +2102,58 @@ Every responsibility-sized code or evidence update is to be staged narrowly,
 verified, committed atomically, and pushed before moving to the next stage. The
 VM is for driver compatibility/debugging; it cannot substitute for calibrated
 physical latency qualification.
+
+### 2026-10-27 current-build VAD collection repeat
+
+The release `e2e_latency_probe` from source commit `80ccf8d` was built on the
+host, then copied to `DRIVER-TEST` only after confirming its 3,843,584-byte
+length and SHA-256
+`69437FAEF67200E8DB499FEE5A4C5CC7AA65A6203B2807BF838EE4256263C539` on both
+machines. Read-only endpoint inventory confirmed current capture
+`{0.0.1.00000000}.{55E7D663-AD05-4729-A5D8-CEA7688D9A92}` and render
+`{0.0.0.00000000}.{71789a68-9934-4137-9e1a-ba0a5730aa68}`. The 15-second,
+48 kHz run used stable VAD ID `...0019`, the production
+`VirtualPlayback -> Bus -> master output` graph, a 48,000-frame scheduled
+source, an independent recorder, and supervised controlled load. The source
+progressed for 0.484 seconds and the independent recorder for 0.553 seconds
+before quality-gated teardown. `report.json` retained `status=unqualified`,
+`qualified=false`, and incomplete collection/cleanup. The wrapper's guest
+manifest serialization then failed because Windows PowerShell did not support
+`-Encoding utf8NoBOM`; consequently the child process exit code is unavailable.
+Do not interpret `observed_duration_seconds=0` in that partial report as the
+native observation duration.
+
+The report retains 20,160 of 48,000 acknowledged source frames; 39 VAD
+completion gaps across 40 completed packets; zero VAD driver drops, silence
+frames or epoch resets; one virtual boundary xrun and 33 soft events. The
+independent WASAPI capture negotiated 279 actual frames despite a 245-frame
+request (capabilities: 139 minimum, 488 default/maximum); its 84 packets and
+23,400 frames contain 83 gap events, 1,873 gap frames and one discontinuity.
+The controlled-load worker exited cleanly but covered 0.528 seconds of the
+required 1.2 seconds, so its evidence is invalid. This repeat confirms the
+existing early-quality failure in the integrated current-build path; it is not
+a calibrated latency result, a VAD-versus-Process comparison, or evidence that
+the 10 ms objective is met.
+
+The seven raw guest payloads (report, collection result, manifest, PCM, packet
+metadata and both input plans) are retained under
+`target/vad-target-archive/20261027-collection-80ccf8d-15s/` with
+`host-archive-manifest.json` and `summary.json`. Each raw payload's byte length
+and SHA-256 matched between guest and host before cleanup. The test process was
+absent; only the known run directory and five named current-run temporary files
+were removed. The preserved `vad_integration-b7896f3.exe` was rechecked at
+7,657,472 bytes with unchanged SHA-256
+`AC9C985B6BDAD102E5999EB9A2F590E2A0895C3D9C75AA4BFC7D2492CF910708`. The
+guest test directory now contains only that rename-test probe and has
+32,309,325,824 bytes free (30.09 GiB). The VM driver, DriverStore, Windows
+files and rollback packages were untouched. The host archive's raw payload
+manifest excludes its derived summary and itself; the report remains the
+authoritative run record.
+
+Future guest runners must use an encoding option supported by Windows PowerShell
+5.1 and preserve the actual child exit code even if later manifest writing
+fails. Before any extended or candidate run, diagnose and remove the VAD
+completion gaps, virtual boundary xrun, and independent capture gaps under a
+short zero-quality-failure gate. Process Loopback native smoke, same-condition
+comparison, physical reference/wiring and calibration, stable output, and the
+30-minute plus independent two-hour qualification runs remain outstanding.
