@@ -2124,8 +2124,10 @@ Do not interpret `observed_duration_seconds=0` in that partial report as the
 native observation duration.
 
 The report retains 20,160 of 48,000 acknowledged source frames; 39 VAD
-completion gaps across 40 completed packets; zero VAD driver drops, silence
-frames or epoch resets; one virtual boundary xrun and 33 soft events. The
+completion-interval observations across 40 completed packets (the telemetry
+field named `completion_gaps` counts every monotonic completion interval; it
+does not count missing packets); zero VAD driver drops, silence frames or
+epoch resets; one virtual boundary xrun and 33 soft events. The
 independent WASAPI capture negotiated 279 actual frames despite a 245-frame
 request (capabilities: 139 minimum, 488 default/maximum); its 84 packets and
 23,400 frames contain 83 gap events, 1,873 gap frames and one discontinuity.
@@ -2157,3 +2159,33 @@ completion gaps, virtual boundary xrun, and independent capture gaps under a
 short zero-quality-failure gate. Process Loopback native smoke, same-condition
 comparison, physical reference/wiring and calibration, stable output, and the
 30-minute plus independent two-hour qualification runs remain outstanding.
+
+### 2026-10-27 VAD collection repeat without controlled load
+
+The same host-built `80ccf8d` collector, 48,000-frame VAD source schedule,
+production `VirtualPlayback -> Bus -> master output` graph, and independent
+WASAPI microphone recorder were repeated with controlled load disabled. The
+runner still failed to retain the child exit code; report duration zero is not
+treated as runtime, and this is one unqualified VM diagnostic, not latency
+evidence.
+
+The report records 20,640/48,000 acknowledged source frames over 0.429 seconds,
+41 completed VAD packets, zero driver drops/silence/epoch resets, one boundary
+xrun and 33 soft events. The 40 `completion_gaps` count monotonic completion
+interval observations (maximum 11.0118 ms), not lost packets. The independent
+capture retained 86 packets / 23,957 frames and failed continuity validation:
+85 device-position discontinuities contributed 2,340 absolute frame
+differences, with two DISCONTINUITY-flagged packets. Position values include
+both regressions and forward jumps; these observations do not identify their
+cause or equal missing-packet count. Teardown also recorded a cancelled VAD
+PCM I/O error. Removing controlled load did not eliminate the early boundary
+xrun or capture failure, but this single repeat cannot establish root cause.
+
+The nine raw payload lengths and SHA-256 hashes matched the guest and are
+retained with their manifest at
+`target/vad-target-archive/20261027-collection-80ccf8d-noload-15s/`. After
+guest verification, only the run's explicitly named directory, inputs, logs,
+and temporary collector were removed. The VM keeps only the unchanged
+7,657,472-byte `vad_integration-b7896f3.exe` rename probe; its SHA-256 remains
+`AC9C985B6BDAD102E5999EB9A2F590E2A0895C3D9C75AA4BFC7D2492CF910708`, with
+30.09 GiB free. Driver, Windows, DriverStore and rollback files were untouched.
