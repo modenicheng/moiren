@@ -372,9 +372,10 @@ fn exercise_case_inner(
     )?;
     counters.native_buffer_frames = native.frames;
     let outcome = (|| -> anyhow::Result<CaseReport> {
-        native.start()?;
+        // Admit the prepared stream before native Start so the driver's first
+        // scheduled packet belongs to the open gate, not closed-gate silence.
         let mut snapshot = endpoint;
-        let deadline = Instant::now() + CONTROL_DEADLINE;
+        let prepare_deadline = Instant::now() + CONTROL_DEADLINE;
         loop {
             snapshot = control
                 .query(snapshot.key())?
@@ -385,6 +386,33 @@ fn exercise_case_inner(
                 !snapshot.gate_open(),
                 "gate opened before explicit probe admission"
             );
+            if snapshot.stream_state() != StreamState::Closed {
+                break;
+            }
+            ensure!(
+                Instant::now() < prepare_deadline,
+                "native preparation was not observed as a prepared stream"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let opened = control.open_gate(snapshot)?;
+        counters.admitted_opened = Some(opened.into());
+        counters.stream_generation = opened.stream_generation();
+        counters.driver_packet_frames = opened.packet_frames();
+        // Gate admission now precedes native Start, so there is no closed-gate
+        // running interval to sample as a before/after diagnostic.
+        let before: Option<Observation> = None;
+
+        native.start()?;
+        let mut snapshot = opened;
+        let deadline = Instant::now() + CONTROL_DEADLINE;
+        loop {
+            snapshot = control
+                .query(snapshot.key())?
+                .require_progress_after(snapshot)?;
+            counters.driver_packet_frames = snapshot.packet_frames();
+            counters.stream_generation = snapshot.stream_generation();
+            ensure!(snapshot.gate_open(), "gate closed before native Start");
             if snapshot.stream_state() == StreamState::Running {
                 ensure!(
                     snapshot.sample_format() == Some(format) && snapshot.packet_frames() > 0,
@@ -400,15 +428,6 @@ fn exercise_case_inner(
             native.poll(pattern, &mut Observation::default())?;
             std::thread::sleep(Duration::from_millis(1));
         }
-        let before = if endpoint.intent() == Intent::Microphone {
-            Some(observe_closed(&mut native, pattern)?)
-        } else {
-            None
-        };
-        let opened = control.open_gate(snapshot)?;
-        counters.admitted_opened = Some(opened.into());
-        counters.stream_generation = opened.stream_generation();
-        counters.driver_packet_frames = opened.packet_frames();
         let mut pcm = match control.pcm_owner(opened) {
             Ok(pcm) => pcm,
             Err(error) => {
