@@ -5,6 +5,7 @@ use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
 use rust_i18n::t;
 
+mod frame_clock;
 pub(super) mod meter_frame;
 mod model;
 #[cfg(feature = "gpui-test")]

@@ -34,7 +34,7 @@ not hardware-independent guarantees.
 | 1024 x 720 | Prepaint | 7.537 / 9.613 | 0.320 / 0.529 |
 | 1024 x 720 | Present interval | 12.126 / 15.242 | 4.181 / 6.116 |
 
-CPU draw p95 is below the 4.17 ms budget for 240 Hz in both captures.
+CPU draw p95 is below the 4.17 ms budget for 240 Hz in both original captures.
 **Stable 240 FPS/physical 240 Hz is not established**: GPUI reports a 6.944 ms
 display refresh interval (144 Hz), and scheduling/presentation still has tails.
 Present events are not a measurement of physical scan-out refresh rate.
@@ -114,3 +114,55 @@ feature and all app targets, workspace/all-targets check, and rustfmt check.
 Follow-up: `cargo test --locked -p moiren-app --features ui-profiler`
 (391 passed, four opt-in ignored), strict Clippy with `ui-profiler`/all app
 targets, and red/green tests for window-scoped diagnostics and sample reset.
+
+## Windows 240 Hz follow-up (2026-10-28)
+
+The default Windows Mixer path now owns an absolute-deadline 240 Hz demand
+clock. A high-resolution one-shot kernel timer supplies a bounded, coalescing
+wakeup to the foreground meter view. Native GPUI paint/present remains the
+renderer; there is no busy wait, global timer-resolution change, priority
+escalation, dependency patch, or display-mode change. Missed intervals are
+skipped, not replayed in a burst. Non-Windows, headless windows, and native
+initialization/worker failures retain GPUI animation-frame fallback.
+
+Toolbar and status are separately cached siblings on Mixer only, retaining
+their allocated full width. Service notifications still update them, but
+meter-only frames no longer rebuild them. The original strip tree, interactions,
+bar painter, audio processing, and ballistics remain unchanged.
+
+`clock-timings.json` records a fresh Release run with one second of settling
+and **30 seconds per viewport**, using the default path without a clock opt-in.
+
+| Viewport | Actual draw/present FPS | Clock deliveries/s | Minimum draws in any full second | CPU draw p95 | Present gap p95 | Changing-level paints |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1440 x 900 | 245.13 | 239.97 | 241 | 1.907 ms | 5.012 ms | 4918 |
+| 1024 x 720 | 245.98 | 239.96 | 242 | 1.626 ms | 5.001 ms | 4919 |
+
+All draw/present and meter-paint counts agree; strip rebuilds, journal loss,
+and meter sample loss are zero. Every measured CPU draw is below 4.167 ms.
+The extra draws above 240 are ordinary service/interaction invalidations,
+not a faster timer or a claim that every frame contains a new audio window.
+Level fingerprints confirm continuously changing live meter scenes rather
+than accepting frozen repeated paints. Both Mixer bodies are pixel-identical
+to the previous native capture; only the status clock/route text differs
+because main gained the route/format status display.
+
+This demonstrates sustained **application rendering throughput at the 240 Hz
+target** on this machine. It does **not** prove a hard 4.167 ms presentation
+deadline on every frame or physical 240 Hz scan-out: measured present p99 is
+5.50 / 5.52 ms and maximum gaps are 9.19 / 10.27 ms. In this fresh capture both
+GPUI display-mode metadata and DWM report approximately 144 Hz, unlike the
+earlier 239.998 Hz DWM query. These are recorded separately; application
+rendering throughput must not be presented as physical display refresh rate,
+and no user display setting is changed by this implementation.
+
+The native capture also checks cancellation without another meter render for
+Graph/settings/minimized/hidden/stopped states, resumes actual meter painting,
+and exercises native minimize/restore, worker interruption with continuing RAF
+paints, and restart after leaving and returning to Mixer. Regression tests cover
+headless RAF, bounded native demand, joined cancellation, phase-preserving
+deadlines, chrome width and cache isolation. Full app tests with `ui-profiler`
+pass **403 tests, four opt-in tests ignored** (`--test-threads=2`), together
+with strict Clippy/all app targets, workspace/all-targets check and rustfmt.
+An initial unconstrained-parallel run hit an unrelated Graph spring-timing
+assertion; its isolated rerun and the complete two-thread run both pass.

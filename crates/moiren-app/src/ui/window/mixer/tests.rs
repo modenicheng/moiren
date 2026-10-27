@@ -279,6 +279,16 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
         let trace = shell.mixer.trace.borrow();
         (trace.strip_renders, trace.meter_paints)
     });
+    let chrome_before = view.read_with(cx, |shell, _| {
+        let trace = shell.mixer.trace.borrow();
+        (trace.toolbar_renders, trace.status_renders)
+    });
+    cx.update(|window, _| {
+        let toolbar = window.find("app-toolbar").bounds();
+        let status = window.find("engine-statusbar").bounds();
+        assert_eq!(toolbar.size.width, px(1440.));
+        assert_eq!(status.size.width, toolbar.size.width);
+    });
     for _ in 0..10 {
         cx.update(|window, cx| {
             assert!(window.simulate_next_frame(cx) > 0);
@@ -300,6 +310,14 @@ fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
     assert!(
         after.1 >= before.1 + 10,
         "the meter canvas must actually paint"
+    );
+    assert_eq!(
+        view.read_with(cx, |shell, _| {
+            let trace = shell.mixer.trace.borrow();
+            (trace.toolbar_renders, trace.status_renders)
+        }),
+        chrome_before,
+        "meter animation must not rebuild toolbar or status bar"
     );
 
     // Service elapsed-time publications notify the shell, not Mixer controls.
@@ -467,6 +485,7 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
         "the fake physical source is full scale"
     );
     assert!(view.read_with(cx, |shell, _| shell.node_meters.channel_clips(node)[0]));
+    crate::ui::window::test_harness::settle_panels(cx);
     backend_state.pause_audio.store(true, Ordering::SeqCst);
     // Drain any already-published windows before resetting the clip latch.
     std::thread::sleep(Duration::from_millis(20));
