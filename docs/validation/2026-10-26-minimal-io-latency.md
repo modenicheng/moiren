@@ -2393,3 +2393,72 @@ inputs. All completed guest run directories, superseded probe and staging
 copies are gone. Keep remote inventories to explicitly selected scalar
 fields; obtain a guest length/hash inventory for every payload before
 deletion and preserve raw receipt bytes during host verification.
+
+### 2026-10-27 VAD name readback and target cleanup
+
+Commits `ca57e14`, `fc99d2b`, `9ea627f`, `9d45291`, and `744f596` add
+control-side Windows endpoint-name diagnostics across the provider, app
+service, and UI. The report distinguishes the persisted/requested name, the
+driver provider's CREATE name, and the name Windows actually resolves from the
+owned MMDevice identity. The Windows reader enumerates all MMDevice states,
+then still requires an exact root instance, stable ID, and flow match; an
+inactive endpoint is observable without implying that it is active or passing
+the Engine gate. This is diagnostic readback, not a rename repair.
+
+The target is `DRIVER-TEST` at `192.168.111.128`, reached with the pinned
+`moiren-test` SSH identity. The latest run used
+`vad_integration-9d45291-allstates.exe` (7,781,376 bytes, SHA-256
+`D7E3C04D50A25CB55CD8F0D46FB63A7DF6611C113F3A72B14C6BB8A788AD396C`). Its
+three run directories each contained six payloads plus their manifest. Host
+copies and the guest were independently checked against manifest file counts,
+lengths, and SHA-256 before deletion. The latest all-states report is retained
+at `target/vad-target-archive/rename-service-name-9d45291-allstates-20261027-195318/`.
+
+Both directions recreated successfully with fresh native generations, exact
+direct-Removed observations, Engine confirmation, clean client/service
+teardown, and no cleanup errors. Rename acceptance still fails:
+
+- Playback requested `Moiren rename Playback 6460`, and the provider reports
+  that name, but MMDevice `PKEY_Device_FriendlyName` remains
+  `扬声器 (35- Moiren virtual audio endpoint)`.
+- Microphone requested `Moiren rename Microphone 6460`, and the provider
+  reports that name, but MMDevice FriendlyName remains
+  `Moiren integration microphone seed 202610271955 (36- Moiren virtual audio endpoint)`.
+- Both runs retain a strict-held failure, `missing current observation
+  generation`, when the provider is absent during recreation. Exact-name and
+  lifecycle gates were not relaxed. The report is `unqualified`, not a pass.
+
+Therefore users can edit and persist the desired VAD name and Moiren can send
+the new CREATE name, but the driver/Windows endpoint stack does not yet
+surface that name as the actual Windows endpoint FriendlyName. Do not claim a
+complete end-user rename feature until exact readback passes for both flows.
+Next trace which registered KS interface EndpointBuilder consumes; the latest
+properties show Playback DeviceDesc `扬声器`, Microphone DeviceDesc retaining
+the seed, and both DeviceInterface FriendlyNames retaining their numbered
+Moiren suffix. Avoid adding further property setters until that mapping is
+proven.
+
+The guest initially held three completed rename run directories and three
+probe executables (23,600,872 bytes total). After verifying all 18 payload
+files against host archives, cleanup removed the three run directories and
+two superseded probes, freeing 15,814,359 bytes under
+`C:\MoirenVadTest`. The latest 7,781,376-byte probe remains. The C: volume now
+has 32,287,281,152 bytes free (30.07 GiB); there are no active probe processes
+or present dynamic VAD PDOs. A separate read-only inventory found 40 historical
+`MOIREN\VAD_RAW` child nodes, all `Unknown` and non-present. Those stale child
+nodes alone were removed with PnPUtil; a fresh inventory reports zero remaining
+children. The installed `ROOT\MEDIA\0000` control bus remains present; its
+driver package, DriverStore, Windows files, audio defaults, and rollback
+packages were not touched.
+
+The VM is sufficient for lifecycle, property, and driver debugging, but cannot
+qualify calibrated physical audio latency. The `Input -> Bus -> Output` target
+remains p95 <= 10 ms at 48 kHz with continuous stable output and zero unexpected
+drops, silence, underruns, discontinuities, or recovery resets. That target is
+not achieved. First repair the probe observation-generation gap and resolve
+the endpoint naming property source; then clear the VAD boundary xrun and
+capture-continuity failures, characterize the VMware clock-rate mismatch, run
+same-condition VAD/Process comparisons and configurable queue-target sweeps,
+and finally perform calibrated 30-minute and two-hour physical qualification.
+Buffer capacity, queue target/residency, device period, and measured physical
+latency must remain separate quantities.
