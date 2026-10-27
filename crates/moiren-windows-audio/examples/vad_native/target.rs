@@ -47,11 +47,26 @@ struct TransferProgress {
 }
 
 impl TransferProgress {
+    fn native_started(now: Instant, frames: u32, intent: Intent) -> Self {
+        Self {
+            // An immediate first WRITE waits almost a full native period.
+            // Anchor its half-period headroom to Start acknowledgement, before
+            // the Running QUERY, so query latency cannot re-arm the delay.
+            next_mic_submit: (intent == Intent::Microphone)
+                .then(|| Self::microphone_deadline(now, frames)),
+            ..Self::default()
+        }
+    }
+
+    fn microphone_deadline(now: Instant, frames: u32) -> Instant {
+        let half_period = Duration::from_nanos(u64::from(frames) * 1_000_000_000 / (48_000 * 2));
+        now + half_period
+    }
+
     fn microphone_completed(&mut self, now: Instant, frames: u32) {
         // Probe policy: keep one write pending and shift its replacement by
         // half a period after completion; driver freshness stays unchanged.
-        let half_period = Duration::from_nanos(u64::from(frames) * 1_000_000_000 / (48_000 * 2));
-        self.next_mic_submit = Some(now + half_period);
+        self.next_mic_submit = Some(Self::microphone_deadline(now, frames));
     }
 
     fn microphone_ready(&self, now: Instant, pending: usize) -> bool {
@@ -446,6 +461,8 @@ fn exercise_case_inner(
         }
 
         native.start()?;
+        let mut progress =
+            TransferProgress::native_started(Instant::now(), shape.frames(), endpoint.intent());
         let mut snapshot = opened;
         let deadline = Instant::now() + CONTROL_DEADLINE;
         loop {
@@ -475,7 +492,6 @@ fn exercise_case_inner(
         counters.driver_packet_frames = shape.frames();
         counters.stream_generation = opened.stream_generation();
         let mut seen = Observation::default();
-        let mut progress = TransferProgress::default();
         let outcome = (|| -> anyhow::Result<_> {
             ensure!(shape.format() == format, "PCM helper format changed");
             let mut bytes = vec![0; shape.pcm_bytes()];
@@ -655,6 +671,26 @@ mod pacing_tests {
     use super::*;
 
     #[test]
+    fn microphone_first_write_keeps_freshness_headroom_at_the_observed_late_callback() {
+        let run = Instant::now();
+        // Actual mono Float32 failure: WRITE at Run+0.3513 ms was rejected at
+        // Run+11.0159 ms. Even the latest possible Start acknowledgement,
+        // bounded by that old WRITE, must leave room before the first packet.
+        let acknowledged = run + Duration::from_nanos(351_300);
+        let progress = TransferProgress::native_started(acknowledged, 480, Intent::Microphone);
+        assert!(!progress.microphone_ready(acknowledged, 0));
+        assert!(!progress.microphone_ready(acknowledged + Duration::from_millis(4), 0));
+        let submitted = acknowledged + Duration::from_millis(5);
+        assert!(progress.microphone_ready(submitted, 0));
+        assert!(!progress.microphone_ready(submitted, 1));
+        let callback = run + Duration::from_nanos(11_015_900);
+        assert_eq!(callback - submitted, Duration::from_nanos(5_664_600));
+        assert!(callback - submitted < Duration::from_millis(10));
+        // A later Running QUERY must not start another half-period delay.
+        assert!(progress.microphone_ready(acknowledged + Duration::from_millis(6), 0));
+    }
+
+    #[test]
     fn successful_report_retains_first_capture_and_first_drop_without_packet_history() {
         use moiren_windows_audio::vad::PcmPacketStamp;
 
@@ -780,15 +816,16 @@ mod pacing_tests {
     }
 
     #[test]
-    fn microphone_first_write_is_immediate_then_waits_half_a_period() {
+    fn microphone_keeps_one_pending_write_and_rearms_after_completion() {
         let now = Instant::now();
-        let mut progress = TransferProgress::default();
-        assert!(progress.microphone_ready(now, 0));
-        assert!(!progress.microphone_ready(now, 1));
-        progress.microphone_completed(now, 480);
-        let deadline = now + Duration::from_millis(5);
+        let mut progress = TransferProgress::native_started(now, 480, Intent::Microphone);
+        assert!(!progress.microphone_ready(now, 0));
+        assert!(progress.microphone_ready(now + Duration::from_millis(5), 0));
+        let completed = now + Duration::from_millis(10);
+        progress.microphone_completed(completed, 480);
+        let deadline = now + Duration::from_millis(15);
         assert_eq!(progress.next_mic_submit, Some(deadline));
-        for milliseconds in 0..5 {
+        for milliseconds in 10..15 {
             assert!(!progress.microphone_ready(now + Duration::from_millis(milliseconds), 0));
         }
         assert!(progress.microphone_ready(deadline, 0));
