@@ -2,8 +2,68 @@
 
 use super::*;
 
-fn control(button: ActionButton) -> Div {
-    div().flex_1().min_w_0().child(button.full_width().square())
+fn control(button: impl IntoElement) -> Div {
+    div().flex_1().min_w_0().child(button)
+}
+
+/// One flat cell of the strip's M/S group: the same unstyled
+/// [`base::Button`] the routing matrix builds on, painted with the
+/// [`ActionButton`] Primary/Secondary contract (toggled fills, hover,
+/// pressed, focus ring) but without a per-button box. The group container
+/// owns the single rounded outline, so the cell stays square and border-free
+/// apart from the interior separators its slot draws.
+fn group_cell(
+    id: SharedString,
+    label: impl Into<SharedString>,
+    toggled: bool,
+    tooltip: impl Into<SharedString>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> base::Button {
+    let label = label.into();
+    let tooltip = tooltip.into();
+    let (bg, fg, hover_bg, pressed_bg) = if toggled {
+        (
+            theme::controls::PRIMARY,
+            theme::controls::ON_ACCENT,
+            theme::controls::PRIMARY_HOVER,
+            theme::controls::PRIMARY_PRESSED,
+        )
+    } else {
+        (
+            theme::controls::RAISED,
+            theme::controls::TEXT,
+            theme::controls::RAISED,
+            theme::controls::CANVAS,
+        )
+    };
+    // Keep the ActionButton sizing contract by resolving the same metrics.
+    let metrics = ControlSize::Small.metrics(Density::default());
+    base::Button::new(id)
+        .accessibility_label(label.clone())
+        .flex_none()
+        .w_full()
+        .h_full()
+        .rounded_none()
+        .px(px(metrics.padding))
+        .font_family(theme::controls::FONT)
+        .font_weight(FontWeight::MEDIUM)
+        .text_size(px(metrics.font))
+        .line_height(px(metrics.line_height))
+        .bg(bg)
+        .text_color(fg)
+        .hover(move |s| s.bg(hover_bg).text_color(fg))
+        .active(move |s| s.bg(pressed_bg).text_color(fg))
+        .focus_visible(move |s| {
+            s.bg(bg)
+                .text_color(fg)
+                .border_2()
+                .border_color(theme::controls::FOCUS)
+        })
+        .child(label)
+        .tooltip(move |window, cx| {
+            component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+        })
+        .on_click(on_click)
 }
 
 pub(in crate::ui::window) fn node_controls(
@@ -13,6 +73,7 @@ pub(in crate::ui::window) fn node_controls(
 ) -> impl IntoElement {
     let id = entry.id;
     let requested = entry.mixer;
+    let metrics = ControlSize::Small.metrics(Density::default());
     div()
         .flex()
         .flex_col()
@@ -22,67 +83,65 @@ pub(in crate::ui::window) fn node_controls(
         .child(
             div()
                 .flex()
+                .flex_col()
                 .w_full()
-                .child(control(
-                    button(SharedString::from(format!("strip-mute-{id:?}")), "M")
-                        .tooltip(t!("Mute this channel"))
-                        .variant(if requested.muted {
-                            ButtonVariant::Primary
-                        } else {
-                            ButtonVariant::Secondary
-                        })
-                        .on_click(mixer_edit(cx.entity(), id, |state| {
-                            state.muted = !state.muted
-                        })),
-                ))
-                .child(control(
-                    button(SharedString::from(format!("strip-solo-{id:?}")), "S")
-                        .tooltip(t!("Solo this channel and its connected signal path"))
-                        .variant(if requested.solo {
-                            ButtonVariant::Primary
-                        } else {
-                            ButtonVariant::Secondary
-                        })
-                        .on_click(mixer_edit(cx.entity(), id, |state| {
-                            state.solo = !state.solo
-                        })),
-                )),
-        )
-        .child(
-            div()
-                .flex()
-                .w_full()
-                .child(control(
-                    button(
-                        SharedString::from(format!("strip-mode-{id:?}")),
-                        requested.mode_label(channels),
-                    )
-                    .variant(if requested.channel_mode != 0 {
-                        ButtonVariant::Primary
-                    } else {
-                        ButtonVariant::Secondary
-                    })
-                    .tooltip(if channels == 2 {
-                        t!("Stereo -> Mono average -> Left to both -> Right to both -> Swap")
-                    } else {
-                        t!("Cycle normal, mono average, individual channels, and reverse channel order")
-                    })
-                    .on_click(mixer_edit(cx.entity(), id, move |state| {
-                        *state = state.next_mode(channels)
-                    })),
-                ))
-                .child(control(
-                    button(SharedString::from(format!("strip-dim-{id:?}")), "DIM")
-                        .tooltip(t!("Dim attenuates the post-fader signal by 12 dB"))
-                        .variant(if requested.dimmed {
-                            ButtonVariant::Primary
-                        } else {
-                            ButtonVariant::Secondary
-                        })
-                        .on_click(mixer_edit(cx.entity(), id, |state| {
-                            state.dimmed = !state.dimmed
-                        })),
-                )),
+                .rounded(px(theme::RADIUS_SM))
+                .border_1()
+                .border_color(theme::BORDER)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex()
+                        .w_full()
+                        .h(px(metrics.height))
+                        .child(control(group_cell(
+                            SharedString::from(format!("strip-mute-{id:?}")),
+                            "M",
+                            requested.muted,
+                            t!("Mute this channel"),
+                            mixer_edit(cx.entity(), id, |state| state.muted = !state.muted),
+                        )))
+                        .child(control(group_cell(
+                            SharedString::from(format!("strip-solo-{id:?}")),
+                            "S",
+                            requested.solo,
+                            t!("Solo this channel and its connected signal path"),
+                            mixer_edit(cx.entity(), id, |state| state.solo = !state.solo),
+                        ))
+                        .border_l_1()
+                        .border_color(theme::BORDER)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .w_full()
+                        .h(px(metrics.height))
+                        .child(control(group_cell(
+                            SharedString::from(format!("strip-mode-{id:?}")),
+                            requested.mode_label(channels),
+                            requested.channel_mode != 0,
+                            if channels == 2 {
+                                t!("Stereo -> Mono average -> Left to both -> Right to both -> Swap")
+                            } else {
+                                t!("Cycle normal, mono average, individual channels, and reverse channel order")
+                            },
+                            mixer_edit(cx.entity(), id, move |state| {
+                                *state = state.next_mode(channels)
+                            }),
+                        ))
+                        .border_t_1()
+                        .border_color(theme::BORDER))
+                        .child(control(group_cell(
+                            SharedString::from(format!("strip-dim-{id:?}")),
+                            "DIM",
+                            requested.dimmed,
+                            t!("Dim attenuates the post-fader signal by 12 dB"),
+                            mixer_edit(cx.entity(), id, |state| state.dimmed = !state.dimmed),
+                        ))
+                        .border_l_1()
+                        .border_t_1()
+                        .border_color(theme::BORDER)),
+                ),
         )
 }
 
