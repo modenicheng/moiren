@@ -46,6 +46,9 @@ impl AppHandle {
                     .map_err(|_| DispatchError::InvalidConfig)?
             }
             AppRequest::Start(spec) => spec.validate()?,
+            AppRequest::SetRecordingDestination { path, .. } => {
+                recording::validate_destination(path).map_err(|_| DispatchError::InvalidConfig)?;
+            }
             AppRequest::SetAudioSettings(settings) => settings
                 .validate()
                 .map_err(|_| DispatchError::InvalidConfig)?,
@@ -188,6 +191,30 @@ impl ServiceMailbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unsupported_recording_format_never_enters_mailbox() {
+        let (handle, mailbox) = ServiceMailbox::new(std::thread::current());
+        let mut graph = moiren_core::graph::LogicalGraph::new();
+        let node = graph
+            .create_node(moiren_core::graph::NodeKind::Recorder, 2)
+            .unwrap();
+        assert_eq!(
+            handle.try_request_tracked(AppRequest::SetRecordingDestination {
+                node,
+                path: "unsupported.flac".into(),
+            }),
+            Err(DispatchError::InvalidConfig)
+        );
+        assert_eq!(mailbox.try_request(), None);
+        assert_eq!(
+            handle.try_request_tracked(AppRequest::SetRecordingDestination {
+                node,
+                path: "supported.wav".into(),
+            }),
+            Ok(RequestId(1))
+        );
+    }
+
     #[test]
     fn invalid_audio_settings_do_not_enter_queue_or_consume_request_id() {
         let (handle, mailbox) = ServiceMailbox::new(std::thread::current());

@@ -3,6 +3,9 @@ use crate::service::test_backend::{FakeBackend, State};
 use moiren_core::graph::NodeKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[path = "recording_tests.rs"]
+mod recording;
+
 struct Rig {
     driver: ManagedDriver,
     c: ServiceContext,

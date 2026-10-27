@@ -4,6 +4,34 @@ use super::*;
 impl ServiceDriver for ManagedDriver {
     fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
         match request {
+            AppRequest::SetRecordingDestination { node, path } => {
+                if self.recordings.is_busy(node) {
+                    c.graph.record_error_with_subject(
+                        GraphSubject::Node(node),
+                        "Recording is active or finalizing",
+                    );
+                } else if let Err(error) = c.recordings.configure(&c.graph.snapshot(), node, path) {
+                    c.graph
+                        .record_error_with_subject(GraphSubject::Node(node), &error);
+                } else if let Ok(channels) = c
+                    .graph
+                    .snapshot()
+                    .graph
+                    .get_node(node)
+                    .map(|node| node.channels())
+                    && let Err(error) = self.recordings.preflight(
+                        &mut c.recordings,
+                        node,
+                        c.audio_settings.processing.sample_rate,
+                        channels,
+                    )
+                {
+                    c.graph
+                        .record_error_with_subject(GraphSubject::Node(node), &error);
+                }
+            }
+            AppRequest::StartRecording { node } => self.start_recording(c, node),
+            AppRequest::StopRecording { node } => self.recordings.stop(&mut c.recordings, node),
             AppRequest::SetExportAuthorizations(values) => {
                 let previous = c.exports.authorizations.clone();
                 if let Err(error) = c.exports.set_authorizations(&values) {
@@ -29,6 +57,7 @@ impl ServiceDriver for ManagedDriver {
             }
             AppRequest::LoadProject(document) => match c.load_project(document) {
                 Ok(()) => {
+                    self.recordings.reset(&mut c.recordings);
                     self.exports_runtime.revoke();
                     self.automatic_startup = false;
                     self.document = self
@@ -86,6 +115,7 @@ impl ServiceDriver for ManagedDriver {
             }
             AppRequest::ReplaceGraph { graph, nodes } => {
                 if c.graph.replace(graph, nodes).is_ok() {
+                    self.recordings.reset(&mut c.recordings);
                     self.exports_runtime.revoke();
                     self.document = self
                         .document
@@ -97,12 +127,23 @@ impl ServiceDriver for ManagedDriver {
                 }
             }
             AppRequest::EditGraph(edit) => {
+                if let GraphEdit::SetBuiltin { node, .. } = &edit
+                    && self.recordings.is_busy(*node)
+                {
+                    c.graph.record_error_with_subject(
+                        GraphSubject::Node(*node),
+                        "Stop and finalize recording before changing Recorder configuration",
+                    );
+                    return;
+                }
                 let values = graph::edit_parameter_values(&edit);
                 let edited_strip = match &edit {
                     GraphEdit::SetMixer { node, .. } => Some(*node),
                     _ => None,
                 };
                 if let Ok(structural) = c.graph.edit(edit) {
+                    self.recordings
+                        .reconcile(&mut c.recordings, &c.graph.snapshot());
                     for (target, value) in values {
                         self.submit_parameter(c, target, value);
                     }
@@ -121,6 +162,10 @@ impl ServiceDriver for ManagedDriver {
             AppRequest::UndoGraph | AppRequest::RedoGraph => {
                 let back = matches!(request, AppRequest::UndoGraph);
                 let stepped = if back { c.graph.undo() } else { c.graph.redo() };
+                if stepped {
+                    self.recordings
+                        .reconcile(&mut c.recordings, &c.graph.snapshot());
+                }
                 if stepped && self.owner.is_some() {
                     self.auto_apply_deadline = Some(Instant::now() + super::AUTO_APPLY_DELAY);
                 }
@@ -177,9 +222,11 @@ impl ServiceDriver for ManagedDriver {
             self.poll_run_limit(c);
         }
         self.poll_exports(c, pool);
+        self.poll_recordings(c);
     }
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
         self.exiting = true;
+        self.recordings.cancel_preflights(&mut c.recordings);
         self.apply = false;
         self.apply_audio_settings = None;
         self.auto_apply_deadline = None;
@@ -191,6 +238,7 @@ impl ServiceDriver for ManagedDriver {
             && self.cleaning == 0
             && !self.catalog.is_running()
             && self.exports_runtime.is_drained()
+            && self.recordings.is_drained()
             && self
                 .completions
                 .as_ref()

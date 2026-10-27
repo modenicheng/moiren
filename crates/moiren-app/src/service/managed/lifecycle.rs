@@ -2,6 +2,7 @@ use super::*;
 
 impl ManagedDriver {
     pub(super) fn retire(&mut self, c: &mut ServiceContext) {
+        self.recordings.stop_all(&mut c.recordings);
         self.exports_runtime.revoke();
         let generation = c.core.generation();
         log::info!(
@@ -87,6 +88,18 @@ impl ManagedDriver {
                     return;
                 }
             };
+        let active = self
+            .owner
+            .as_ref()
+            .and_then(|owner| owner.observer.read().active);
+        // A file's WAV header is immutable. Drain incompatible sessions before
+        // admitting a rate/width/recorder-configuration change to the host.
+        if !self
+            .recordings
+            .prepare_apply(&mut c.recordings, &project, active.as_deref())
+        {
+            return;
+        }
         // A failed PCM worker can drain while its PDO stays healthy/Present.
         // Waiting for transport admission before replacing that host would
         // strand Apply: only a fresh preparation can create its PCM session.

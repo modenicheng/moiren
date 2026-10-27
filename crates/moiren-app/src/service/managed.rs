@@ -15,6 +15,7 @@ mod driver;
 mod lifecycle;
 mod meters;
 mod parameters;
+mod recordings;
 #[cfg(test)]
 mod tests;
 
@@ -92,6 +93,7 @@ const AUTO_APPLY_DELAY: Duration = Duration::from_millis(200);
 
 pub struct ManagedDriver {
     exports_runtime: super::exports::runtime::Runtime,
+    recordings: super::recording::Runtime,
     factory: Arc<Factory<f32>>,
     f64_factory: Option<Arc<Factory<f64>>>,
     catalog_backend: Option<Arc<dyn CatalogBackend>>,
@@ -137,6 +139,7 @@ impl ManagedDriver {
     ) -> Self {
         Self {
             exports_runtime: Default::default(),
+            recordings: Default::default(),
             factory: Arc::new(move |profile, _| factory(profile)),
             f64_factory: None,
             catalog_backend: None,

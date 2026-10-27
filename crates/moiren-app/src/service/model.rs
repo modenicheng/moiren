@@ -85,6 +85,17 @@ pub enum AppRequest {
     SetExportAuthorizations(Vec<super::ExportAuthorization>),
     SetLatencyProfile(super::AudioLatencyProfile),
     SetAudioSettings(super::AudioSettings),
+    /// Session-local destination; existing files are never overwritten.
+    SetRecordingDestination {
+        node: moiren_core::graph::NodeId,
+        path: std::path::PathBuf,
+    },
+    StartRecording {
+        node: moiren_core::graph::NodeId,
+    },
+    StopRecording {
+        node: moiren_core::graph::NodeId,
+    },
     EditGraph(super::GraphEdit),
     /// Restore the candidate content recorded before the last user edit.
     UndoGraph,
@@ -147,6 +158,7 @@ pub struct RequestId(pub u64);
 #[derive(Debug, Clone)]
 pub struct AppSnapshot {
     pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
+    pub recordings: Vec<super::RecordingSnapshot>,
     pub exports: Vec<super::ExportStatus>,
     pub export_plan: super::ExportReconcilePlan,
     #[cfg(windows)]

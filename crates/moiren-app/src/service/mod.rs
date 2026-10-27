@@ -10,6 +10,7 @@ mod latency;
 mod mailbox;
 mod managed;
 mod model;
+mod recording;
 #[cfg(test)]
 mod settings_tests;
 mod signals;
@@ -30,6 +31,9 @@ pub use graph::{
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;
 pub use moiren_engine::audio_config::*;
+pub use recording::{
+    RecordingEstimate, RecordingEstimateBasis, RecordingFormat, RecordingPhase, RecordingSnapshot,
+};
 pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
 #[cfg(windows)]
 pub use windows::WindowsBackend;
@@ -104,6 +108,7 @@ impl Default for RoundBudget {
 }
 pub struct ServiceContext {
     pub exports: ExportService,
+    pub(crate) recordings: recording::RecordingService,
     pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
     #[cfg(windows)]
     pub professional_observations: Option<ProfessionalSessionObservations>,
@@ -128,6 +133,7 @@ impl Default for ServiceContext {
     fn default() -> Self {
         Self {
             exports: ExportService::default(),
+            recordings: recording::RecordingService::default(),
             loaded_project: None,
             #[cfg(windows)]
             professional_observations: None,
@@ -195,6 +201,7 @@ impl ServiceContext {
             self.graph.replace(candidate.graph, candidate.nodes)?;
         }
         self.audio_settings = audio;
+        self.recordings.clear();
         self.loaded_project = Some(Arc::new(document));
         Ok(())
     }
@@ -285,6 +292,20 @@ impl ServiceDriver for CoreDriver {
     }
     fn request(&mut self, c: &mut ServiceContext, _: &mut JobPool, r: AppRequest) {
         match r {
+            AppRequest::SetRecordingDestination { node, path } => {
+                if let Err(error) = c.recordings.configure(&c.graph.snapshot(), node, path) {
+                    c.graph
+                        .record_error_with_subject(GraphSubject::Node(node), &error);
+                }
+            }
+            AppRequest::StartRecording { node } => {
+                if c.graph.snapshot().kind_of(node) == Some(moiren_core::graph::NodeKind::Recorder)
+                {
+                    c.recordings
+                        .fail(node, "No native audio backend is configured");
+                }
+            }
+            AppRequest::StopRecording { .. } => {}
             AppRequest::LoadProject(document) => {
                 if let Err(error) = c.load_project(document) {
                     c.graph.record_error(error);
@@ -319,6 +340,8 @@ impl ServiceDriver for CoreDriver {
             AppRequest::ReplaceGraph { graph, nodes } => {
                 if let Err(error) = c.graph.replace(graph, nodes) {
                     c.graph.record_error(error);
+                } else {
+                    c.recordings.clear();
                 }
             }
             AppRequest::ApplyGraph => {
@@ -332,6 +355,7 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
     let graph = c.graph.snapshot();
     AppSnapshot {
         loaded_project: c.loaded_project.clone(),
+        recordings: c.recordings.snapshots(&graph),
         exports: c.exports.statuses(&graph),
         export_plan: c.exports.reconcile(&graph),
         #[cfg(windows)]
