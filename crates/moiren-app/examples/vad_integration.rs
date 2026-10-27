@@ -34,6 +34,7 @@ mod native;
 mod target;
 
 const HELP: &str = "vad_integration --exercise [--pcm | --rename] [--timeout-seconds=N] [--output-dir=NEW_DIRECTORY]\n\
+    [--rename-fixture-seed=POSITIVE_U64 (only --exercise --rename)]\n\
     [--soak-idle-seconds=1..28800] [--soak-pcm-seconds=1..28800]\n\
     [--soak-pcm-file=material.wav (48kHz stereo PCM16/Float32, >=1s)]\n\
     Stage1: persisted v2 stereo VirtualPlayback -> Gain(0.5) -> VirtualMicrophone;\n\
@@ -62,6 +63,13 @@ const HELP: &str = "vad_integration --exercise [--pcm | --rename] [--timeout-sec
     Missing direct Removed, Absent or DTO/name success can never pass acceptance.\n\
     --rename is exclusive with --pcm and all soak options; defaults to 90s and\n\
     requires at least 60s if set. Failed readbacks and cleanup errors are retained.\n\
+    --rename-fixture-seed creates an explicit diagnostic baseline fixture only:\n\
+    each 16B ID is an 8B direction prefix (MrnVPlay/MrnVMic0) + 8B seed LE;\n\
+    baseline CREATE names include seed. Report records seed and project.moiren\n\
+    retains the original fixture. Both subsequent renames keep their stable IDs.\n\
+    Omitted seed leaves the default fixture unchanged. Reused seeds reproduce\n\
+    IDs, not necessarily fresh Windows instances. No random/automatic ID rotation\n\
+    or product workaround; this comparison alone cannot prove Windows caching.\n\
     Soak: one persisted graph, one App owner. Idle observes actual frame_end\n\
     throughout the requested interval, with two advances per one-second window.\n\
     PCM soak implies --pcm and keeps the same real native pair RUN; alternates\n\

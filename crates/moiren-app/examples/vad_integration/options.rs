@@ -6,6 +6,7 @@ pub(super) struct Options {
     pub exercise: bool,
     pub pcm: bool,
     pub rename: bool,
+    pub rename_fixture_seed: Option<u64>,
     pub help: bool,
     pub timeout_seconds: u64,
     pub soak_idle_seconds: u64,
@@ -22,6 +23,7 @@ impl Options {
             exercise: false,
             pcm: false,
             rename: false,
+            rename_fixture_seed: None,
             help: false,
             timeout_seconds: 30,
             soak_idle_seconds: 0,
@@ -35,6 +37,19 @@ impl Options {
                 "--exercise" if !options.exercise => options.exercise = true,
                 "--pcm" if !options.pcm => options.pcm = true,
                 "--rename" if !options.rename => options.rename = true,
+                value
+                    if value.starts_with("--rename-fixture-seed=")
+                        && options.rename_fixture_seed.is_none() =>
+                {
+                    let value = &value["--rename-fixture-seed=".len()..];
+                    ensure!(
+                        !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()),
+                        "--rename-fixture-seed requires a positive decimal u64"
+                    );
+                    let seed: u64 = value.parse().context("--rename-fixture-seed exceeds u64")?;
+                    ensure!(seed > 0, "--rename-fixture-seed must be positive");
+                    options.rename_fixture_seed = Some(seed);
+                }
                 "--help" | "-h" => options.help = true,
                 value if value.starts_with("--timeout-seconds=") && !timeout_seen => {
                     timeout_seen = true;
@@ -86,6 +101,10 @@ impl Options {
         ensure!(
             !options.rename || options.exercise,
             "--rename requires --exercise"
+        );
+        ensure!(
+            options.rename_fixture_seed.is_none() || (options.exercise && options.rename),
+            "--rename-fixture-seed requires --exercise --rename"
         );
         ensure!(
             !options.rename
@@ -261,6 +280,79 @@ mod tests {
             vec!["--exercise", "--rename", "--soak-pcm-seconds=1"],
             vec!["--exercise", "--rename", "--soak-pcm-file=missing.wav"],
             vec!["--exercise", "--rename", "--timeout-seconds=59"],
+        ] {
+            assert!(parse(&invalid).is_err(), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn rename_fixture_seed_is_explicit_positive_and_requires_exercise_rename() {
+        for seed in [1, 2, 0x0102_0304_0506_0708, u64::MAX] {
+            let argument = format!("--rename-fixture-seed={seed}");
+            let options = parse(&[&argument, "--rename", "--exercise"]).unwrap();
+            assert_eq!(options.rename_fixture_seed, Some(seed));
+            assert_eq!(options.timeout_seconds, 90);
+        }
+        for arguments in [
+            vec![],
+            vec!["--exercise"],
+            vec!["--exercise", "--rename"],
+            vec!["--exercise", "--pcm"],
+        ] {
+            assert_eq!(parse(&arguments).unwrap().rename_fixture_seed, None);
+        }
+    }
+
+    #[test]
+    fn rename_fixture_seed_rejects_zero_invalid_repeated_and_nonrename_arguments() {
+        for value in [
+            "0",
+            "-1",
+            "+1",
+            "",
+            "abc",
+            "1.0",
+            "0x01",
+            " 1",
+            "1 ",
+            "18446744073709551616",
+        ] {
+            let argument = format!("--rename-fixture-seed={value}");
+            assert!(
+                parse(&["--exercise", "--rename", &argument]).is_err(),
+                "accepted {argument:?}"
+            );
+        }
+        for invalid in [
+            vec!["--rename-fixture-seed=1"],
+            vec!["--help", "--rename-fixture-seed=1"],
+            vec!["--rename", "--rename-fixture-seed=1"],
+            vec!["--exercise", "--rename-fixture-seed=1"],
+            vec!["--exercise", "--pcm", "--rename-fixture-seed=1"],
+            vec![
+                "--exercise",
+                "--soak-idle-seconds=1",
+                "--rename-fixture-seed=1",
+            ],
+            vec!["--exercise", "--rename", "--pcm", "--rename-fixture-seed=1"],
+            vec![
+                "--exercise",
+                "--rename",
+                "--soak-pcm-seconds=1",
+                "--rename-fixture-seed=1",
+            ],
+            vec![
+                "--exercise",
+                "--rename",
+                "--rename-fixture-seed=1",
+                "--rename-fixture-seed=2",
+            ],
+            vec![
+                "--exercise",
+                "--rename",
+                "--rename-fixture-seed=1",
+                "--rename-fixture-seed=1",
+            ],
         ] {
             assert!(parse(&invalid).is_err(), "accepted {invalid:?}");
         }

@@ -80,14 +80,38 @@ pub(super) fn document() -> anyhow::Result<ProjectDocument> {
     Ok(document)
 }
 
-pub(super) fn persist(directory: &Path) -> anyhow::Result<StartupDocuments> {
+pub(super) fn document_with_seed(seed: Option<u64>) -> anyhow::Result<ProjectDocument> {
+    let mut document = document()?;
+    if let Some(seed) = seed {
+        anyhow::ensure!(seed > 0, "rename fixture seed must be positive");
+        document.name = format!("Moiren VAD integration stage1 [rename fixture seed {seed}]");
+        // Explicit diagnostic fixtures only: the first word identifies direction,
+        // the second is the caller's seed in ABI little-endian byte order. Never
+        // rotate these persistent identities during a same-ID rename exercise.
+        for (export, prefix) in document
+            .exports
+            .iter_mut()
+            .zip([*b"MrnVPlay", *b"MrnVMic0"])
+        {
+            let mut bytes = [0; 16];
+            bytes[..8].copy_from_slice(&prefix);
+            bytes[8..].copy_from_slice(&seed.to_le_bytes());
+            export.endpoint_id = VirtualEndpointId::from_bytes(bytes);
+            export.name = format!("{} seed {seed}", export.name);
+        }
+        document.validate()?;
+    }
+    Ok(document)
+}
+
+pub(super) fn persist(directory: &Path, seed: Option<u64>) -> anyhow::Result<StartupDocuments> {
     let project_path = directory.join("project.moiren");
     let preferences_path = directory.join("preferences.json");
     anyhow::ensure!(
         !project_path.exists() && !preferences_path.exists(),
         "probe will not overwrite existing documents"
     );
-    save_project(&project_path, &document()?)?;
+    save_project(&project_path, &document_with_seed(seed)?)?;
     save_preferences_at(
         &preferences_path,
         &AppPreferences {
@@ -221,7 +245,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir(&directory).unwrap();
-        let startup = persist(&directory).unwrap();
+        let startup = persist(&directory, None).unwrap();
         assert_eq!(startup.project, Some(document().unwrap()));
         assert!(startup.preferences.restore_last_project);
         assert!(startup.preferences.export_authorizations.is_empty());
@@ -235,6 +259,124 @@ mod tests {
         let context = startup.into_context().unwrap();
         assert!(ids.into_iter().all(|id| !context.exports.allow_default(id)));
         // Remove only the exact files created by this test, never a shared tree.
+        std::fs::remove_file(directory.join("project.moiren")).unwrap();
+        std::fs::remove_file(directory.join("preferences.json")).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn rename_fixture_seed_changes_only_explicit_probe_identity_and_baseline_names() {
+        let default = document().unwrap();
+        assert_eq!(document_with_seed(None).unwrap(), default);
+        assert_eq!(default.name, "Moiren VAD integration stage1");
+        assert_eq!(
+            default.exports[0].endpoint_id.to_bytes(),
+            *b"MoirenAppVadPlay"
+        );
+        assert_eq!(
+            default.exports[1].endpoint_id.to_bytes(),
+            *b"MoirenAppVadMic0"
+        );
+        assert_eq!(default.exports[0].name, "Moiren integration playback");
+        assert_eq!(default.exports[1].name, "Moiren integration microphone");
+        let mut ids = std::collections::BTreeSet::new();
+        let mut names = std::collections::BTreeSet::new();
+        for seed in [1, 2, 0x0102_0304_0506_0708, u64::MAX] {
+            let seeded = document_with_seed(Some(seed)).unwrap();
+            assert_eq!(seeded, document_with_seed(Some(seed)).unwrap());
+            seeded.validate().unwrap();
+            assert_eq!(
+                seeded.name,
+                format!("Moiren VAD integration stage1 [rename fixture seed {seed}]")
+            );
+            assert_eq!(seeded.graph, default.graph);
+            assert_eq!(seeded.processing, default.processing);
+            assert_eq!(seeded.session, default.session);
+            assert_eq!(seeded.layout, default.layout);
+            for (index, (prefix, direction)) in
+                [(*b"MrnVPlay", "playback"), (*b"MrnVMic0", "microphone")]
+                    .into_iter()
+                    .enumerate()
+            {
+                let export = &seeded.exports[index];
+                let bytes = export.endpoint_id.to_bytes();
+                assert_eq!(bytes[..8], prefix);
+                assert_eq!(bytes[8..], seed.to_le_bytes());
+                assert!(ids.insert(bytes), "seed/direction identity collision");
+                assert!(
+                    !default
+                        .exports
+                        .iter()
+                        .any(|old| old.endpoint_id == export.endpoint_id)
+                );
+                assert_eq!(
+                    export.name,
+                    format!("Moiren integration {direction} seed {seed}")
+                );
+                assert!(names.insert(export.name.clone()));
+                assert_eq!(export.binding, default.exports[index].binding);
+                assert_eq!(export.direction, default.exports[index].direction);
+                assert_eq!(export.channels, 2);
+                assert!(export.enabled);
+            }
+        }
+        assert!(document_with_seed(Some(0)).is_err());
+    }
+
+    #[test]
+    fn rename_fixture_seed_persists_original_and_restores_bindings_without_changing_id_on_rename() {
+        let seed = 0x0102_0304_0506_0708;
+        let directory = std::env::temp_dir().join(format!(
+            "moiren-vad-rename-seed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let startup = persist(&directory, Some(seed)).unwrap();
+        let original = document_with_seed(Some(seed)).unwrap();
+        assert_eq!(startup.project.as_ref(), Some(&original));
+        let bytes = std::fs::read(directory.join("project.moiren")).unwrap();
+        let saved: ProjectDocument = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(saved, original);
+        assert!(saved.name.contains(&seed.to_string()));
+        assert!(startup.preferences.export_authorizations.is_empty());
+        assert_eq!(startup.preferences.audio, AudioSettings::default());
+        let mut context = startup.into_context().unwrap();
+        let before = context.graph.snapshot();
+        for export in &before.exports {
+            assert!(!context.exports.allow_default(export.endpoint_id));
+            let node = before.graph.get_node(export.binding.unwrap()).unwrap();
+            assert_eq!(
+                node.kind(),
+                match export.direction {
+                    ExportDirection::Playback => moiren_core::graph::NodeKind::Source,
+                    ExportDirection::Microphone => moiren_core::graph::NodeKind::Sink,
+                }
+            );
+        }
+        for index in 0..2 {
+            let mut renamed = context.graph.snapshot().exports.clone();
+            renamed[index].name = format!("Requested rename direction {index}");
+            context
+                .graph
+                .edit(moiren_app::service::GraphEdit::SetExports(renamed))
+                .unwrap();
+            for (old, current) in before.exports.iter().zip(&context.graph.snapshot().exports) {
+                assert_eq!(old.endpoint_id, current.endpoint_id);
+                assert_eq!(old.binding, current.binding);
+                assert_eq!(old.direction, current.direction);
+                assert_eq!(old.channels, current.channels);
+                assert_eq!(old.enabled, current.enabled);
+            }
+        }
+        assert_eq!(
+            std::fs::read(directory.join("project.moiren")).unwrap(),
+            bytes
+        );
+        assert!(persist(&directory, Some(seed + 1)).is_err());
         std::fs::remove_file(directory.join("project.moiren")).unwrap();
         std::fs::remove_file(directory.join("preferences.json")).unwrap();
         std::fs::remove_dir(directory).unwrap();

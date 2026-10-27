@@ -36,7 +36,14 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
     let directory = output_directory(options.output_dir.clone())?;
     let soaking = options.soaking();
     eprintln!("integration evidence directory: {}", directory.display());
-    let shared = Arc::new(Mutex::new(Progress::default()));
+    let initial_report = Report {
+        rename_fixture_seed: options.rename_fixture_seed,
+        ..Default::default()
+    };
+    let shared = Arc::new(Mutex::new(Progress {
+        report: initial_report.clone(),
+        ..Default::default()
+    }));
     let worker_shared = shared.clone();
     let worker_directory = directory.clone();
     let (tx, rx) = mpsc::sync_channel(1);
@@ -48,7 +55,7 @@ pub(super) fn exercise(options: Options) -> anyhow::Result<()> {
     let mut progress_sequence = 0;
     persist_progress(
         &directory,
-        &Report::default(),
+        &initial_report,
         progress_sequence,
         started,
         false,
@@ -152,7 +159,10 @@ fn output_directory(requested: Option<PathBuf>) -> anyhow::Result<PathBuf> {
 }
 
 fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -> Report {
-    let mut report = Report::default();
+    let mut report = Report {
+        rename_fixture_seed: options.rename_fixture_seed,
+        ..Default::default()
+    };
     let pcm = options.pcm;
     if options.rename {
         report.stage = "real_service_native_rename";
@@ -163,6 +173,8 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
             "Windows FriendlyName is read from the actual MMDevice property store; provider actual_name alone cannot pass.",
             "DeviceDesc and DeviceInterface_FriendlyName are independently read from the actual MMDevice in before/while_held/after. Missing properties, unexpected VARTYPE, HRESULT and decoding errors remain typed diagnostic evidence, never acceptance gates or FriendlyName fallbacks.",
             "These property observations alone do not establish Windows name composition or cache causality. No parent/SetupAPI registry traversal, property writes, permission changes or additional control owner are added.",
+            "An explicit rename_fixture_seed changes only this probe's persisted baseline fixture IDs/names; IDs are fixed 8-byte direction prefixes plus the 8-byte little-endian seed. Both same-ID renames retain their baseline stable ID. Reusing a seed reproduces IDs; it does not ensure an unused Windows identity.",
+            "The seeded fixture is a diagnostic comparison, not a product workaround or independent cache proof. No random/automatic identity rotation, product rename changes or acceptance relaxation is performed. Original baseline project.moiren is retained alongside the report seed.",
             "Fresh replacement requires a new PDO token, newer endpoint generation, same control session, fresh service observation and Engine-confirmed open gates.",
             "Direct old Removed requires the production adapter's retained actual QUERY tombstone: same baseline PDO/session/endpoint, newer observation generation, non-regressing stream/gate epochs; the adapter guarantees Removed with closed gate. Absent or a new token never substitutes.",
             "The direct Removed checkpoint is recorded before fresh replacement/native init. Missing/invalid retirement evidence remains a separate failure while name diagnostics may continue; diagnostic_completed is not an acceptance pass.",
@@ -204,7 +216,7 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
     let overall_deadline = started + timeout;
     let outcome =
         (|| -> anyhow::Result<()> {
-            let startup = project::persist(directory)?;
+            let startup = project::persist(directory, options.rename_fixture_seed)?;
             report.persisted_project_verified = true;
             publish(shared, &report);
             // Load soak material before any driver/service work so a rejected

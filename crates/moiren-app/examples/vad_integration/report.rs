@@ -17,6 +17,8 @@ pub(super) struct Report {
     pub pcm_verified: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rename: Option<Vec<super::rename::Case>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rename_fixture_seed: Option<u64>,
     pub idle_hold: Option<IdleHoldEvidence>,
     pub pcm: Option<PcmEvidence>,
     pub soak_idle: Option<super::soak::IdleSoak>,
@@ -47,6 +49,7 @@ impl Default for Report {
             native_clients_started_by_probe: 0,
             pcm_verified: false,
             rename: None,
+            rename_fixture_seed: None,
             idle_hold: None,
             pcm: None,
             soak_idle: None,
@@ -356,6 +359,22 @@ mod tests {
         assert_eq!(json["pcm_verified"], false);
         assert_eq!(json["service_joined"], false);
         assert_eq!(json["control_session_released"], false);
+        assert_eq!(json["endpoint_absence_confirmed"], false);
+    }
+
+    #[test]
+    fn rename_fixture_seed_is_traceable_without_changing_default_report() {
+        let default = serde_json::to_value(Report::default()).unwrap();
+        assert!(default.get("rename_fixture_seed").is_none());
+        let seed = u64::MAX;
+        let report = Report {
+            rename_fixture_seed: Some(seed),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(report).unwrap();
+        assert_eq!(json["rename_fixture_seed"].as_u64(), Some(seed));
+        assert_eq!(json["status"], "failed");
+        assert_eq!(json["persisted_project_verified"], false);
         assert_eq!(json["endpoint_absence_confirmed"], false);
     }
 
