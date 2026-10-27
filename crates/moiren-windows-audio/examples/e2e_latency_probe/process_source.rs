@@ -20,10 +20,6 @@ const POLL: Duration = Duration::from_millis(10);
 #[path = "process_source/native.rs"]
 mod native;
 #[cfg(windows)]
-#[expect(
-    dead_code,
-    reason = "Section B consumes the parent API in a later slice"
-)]
 pub(crate) type ProcessSourceSession = native::ProcessSourceSession;
 
 #[path = "process_source/session.rs"]

@@ -40,6 +40,9 @@ pub(crate) mod process_source;
 #[path = "vad_collection.rs"]
 mod vad_collection;
 
+#[path = "process_collection.rs"]
+mod process_collection;
+
 #[cfg(any(windows, test))]
 #[path = "control_observation.rs"]
 mod control_observation;
@@ -73,6 +76,9 @@ const DEFAULT_CALLBACK_BUDGET_FRAMES: u32 = 48;
 struct LiveOptions {
     source_kind: EvidenceSourceKind,
     source_pid: u32,
+    source_pid_explicit: bool,
+    source_output: Option<String>,
+    process_collection: Option<PathBuf>,
     stable_endpoint_id: Option<String>,
     source_name: Option<String>,
     output_endpoint: String,
@@ -114,6 +120,9 @@ impl Default for LiveOptions {
         Self {
             source_kind: EvidenceSourceKind::ProcessLoopback,
             source_pid: 0,
+            source_pid_explicit: false,
+            source_output: None,
+            process_collection: None,
             stable_endpoint_id: None,
             source_name: None,
             output_endpoint: String::new(),
@@ -260,6 +269,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
     if arguments.is_empty() || arguments == ["--help"] {
         println!(
             "live-process-loopback --source-pid PID --output ENDPOINT --artifact-dir DIR [options]\n\
+             live-process-loopback --source-output ENDPOINT --source-schedule FILE --process-collection FILE [options]\n\
              live-vad --stable-endpoint-id ID --name NAME --output ENDPOINT --artifact-dir DIR [options]\n\
              live-vad --source-schedule FILE --vad-collection FILE opts into bounded source +\n\
              production graph + independent waveform collection. --seconds is its total ceiling.\n\
@@ -289,6 +299,19 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             vad_collection::read_config(path, options.max_input_bytes, frames, options.seconds)
         })
         .transpose()?;
+    let process_input = options
+        .process_collection
+        .as_deref()
+        .map(|path| {
+            let provenance = source::SourceProvenance::new(source_plan);
+            let frames = provenance
+                .schedule
+                .as_ref()
+                .context("Process collection source missing")?
+                .total_source_frames;
+            process_collection::read_config(path, options.max_input_bytes, frames, options.seconds)
+        })
+        .transpose()?;
     let paths = prepare_paths(&options)?;
     if let Some((bytes, _)) = &source_input {
         persist_source_plan(
@@ -305,6 +328,15 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
                 .collection_config
                 .as_deref()
                 .context("collection config artifact missing")?,
+            bytes,
+        )?;
+    }
+    if let Some((bytes, _)) = &process_input {
+        persist_source_plan(
+            paths
+                .collection_config
+                .as_deref()
+                .context("Process collection config path missing")?,
             bytes,
         )?;
     }
@@ -330,14 +362,34 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
 
     #[cfg(windows)]
     if !options.dry_run && options.source_kind == EvidenceSourceKind::ProcessLoopback {
-        let result = native::run(
-            &options,
-            &process_bridge,
-            render_queue,
-            &paths,
-            &mut native,
-            &mut gaps,
-        );
+        let result = if let Some((_, config)) = &process_input {
+            process_collection::collect(
+                &options,
+                &paths,
+                config,
+                source_plan.context("owned source missing")?,
+                &process_bridge,
+                render_queue,
+                &mut native,
+            )
+        } else {
+            native::run(
+                &options,
+                &process_bridge,
+                render_queue,
+                &paths,
+                &mut native,
+                &mut gaps,
+            )
+        };
+        if options.process_collection.is_some() {
+            source_identity = native
+                .collection
+                .as_ref()
+                .and_then(|v| v.get("source_identity"))
+                .filter(|v| !v.is_null())
+                .cloned();
+        }
         if let Err(error) = result {
             gaps.push(format!("live Process Loopback run failed: {error:#}"));
             native.error = Some(format!("{error:#}"));
@@ -380,9 +432,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         gaps.push("live Process Loopback capture/render requires Windows native APIs".into());
     }
 
-    let collection = collection_input.as_ref().map(|(_, config)| {
-        native.collection.take().unwrap_or_else(|| {
-            vad_collection::not_collected(
+    let collection = if let Some((_, config)) = &process_input {
+        Some(native.collection.take().unwrap_or_else(|| {
+            process_collection::not_collected(
                 config,
                 source::SourceProvenance::new(source_plan),
                 if options.dry_run {
@@ -391,11 +443,44 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
                     native
                         .error
                         .as_deref()
-                        .unwrap_or("collection setup failed before native collection")
+                        .unwrap_or("owned Process collection unavailable")
                 },
             )
+        }))
+    } else {
+        collection_input.as_ref().map(|(_, config)| {
+            native.collection.take().unwrap_or_else(|| {
+                vad_collection::not_collected(
+                    config,
+                    source::SourceProvenance::new(source_plan),
+                    if options.dry_run {
+                        "dry-run: no native collection attempted"
+                    } else {
+                        native
+                            .error
+                            .as_deref()
+                            .unwrap_or("collection setup failed before native collection")
+                    },
+                )
+            })
         })
-    });
+    };
+    let actual_pid = if options.process_collection.is_some() {
+        source_identity
+            .as_ref()
+            .and_then(|v| v.get("pid"))
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .or_else(|| {
+                collection
+                    .as_ref()
+                    .and_then(|v| v.pointer("/owned_source/child_pid"))
+                    .and_then(Value::as_u64)
+                    .and_then(|n| u32::try_from(n).ok())
+            })
+    } else {
+        (options.source_pid != 0).then_some(options.source_pid)
+    };
     if source_identity.is_none() {
         gaps.push("live source identity was not observed".into());
     }
@@ -442,12 +527,13 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         qualified: false,
         source: SourceReport {
             source_kind: options.source_kind,
-            pid: (options.source_pid != 0).then_some(options.source_pid),
+            pid: actual_pid,
             stable_endpoint_id: options.stable_endpoint_id.clone(),
             requested_name: options.source_name.clone(),
             identity: source_identity.clone(),
-            playback_source: (options.source_kind == EvidenceSourceKind::VadPlayback)
-                .then(|| source::SourceProvenance::new(source_plan)),
+            playback_source: (options.source_kind == EvidenceSourceKind::VadPlayback
+                || options.process_collection.is_some())
+            .then(|| source::SourceProvenance::new(source_plan)),
         },
         output_endpoint_id: options.output_endpoint.clone(),
         measurement_boundary: options.measurement_boundary,
@@ -467,12 +553,13 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         run_id,
         status: "unqualified",
         source_kind: options.source_kind,
-        source_pid: options.source_pid,
+        source_pid: actual_pid.unwrap_or(0),
         stable_endpoint_id: options.stable_endpoint_id.clone(),
         source_name: options.source_name.clone(),
         source_identity,
-        playback_source: (options.source_kind == EvidenceSourceKind::VadPlayback)
-            .then(|| source::SourceProvenance::new(source_plan)),
+        playback_source: (options.source_kind == EvidenceSourceKind::VadPlayback
+            || options.process_collection.is_some())
+        .then(|| source::SourceProvenance::new(source_plan)),
         collection: collection.clone(),
         output_endpoint_id: options.output_endpoint.clone(),
         measurement_boundary: options.measurement_boundary,
@@ -545,6 +632,8 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             | "--measurement-pcm"
             | "--schedule"
             | "--source-schedule"
+            | "--source-output"
+            | "--process-collection"
             | "--vad-collection"
             | "--calibration"
             | "--seconds"
@@ -582,7 +671,26 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
                     _ => bail!("--source-kind must be process-loopback or vad-playback"),
                 }
             }
-            "--source-pid" => options.source_pid = value.parse().context("invalid source PID")?,
+            "--source-pid" => {
+                ensure!(!options.source_pid_explicit, "duplicate --source-pid");
+                options.source_pid_explicit = true;
+                options.source_pid = value.parse().context("invalid source PID")?;
+            }
+            "--source-output" => {
+                ensure!(options.source_output.is_none(), "duplicate --source-output");
+                options.source_output = Some(value);
+            }
+            "--process-collection" => {
+                ensure!(
+                    options.process_collection.is_none(),
+                    "duplicate --process-collection"
+                );
+                ensure!(
+                    !value.is_empty() && value.trim() == value && !value.contains('\0'),
+                    "invalid --process-collection path"
+                );
+                options.process_collection = Some(value.into());
+            }
             "--stable-endpoint-id" => options.stable_endpoint_id = Some(value),
             "--name" => options.source_name = Some(value),
             "--output" => options.output_endpoint = value,
@@ -676,6 +784,44 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
 }
 
 fn validate(options: &LiveOptions) -> Result<()> {
+    let owned = options.process_collection.is_some() || options.source_output.is_some();
+    if owned {
+        ensure!(
+            options.source_kind == EvidenceSourceKind::ProcessLoopback
+                && options.process_collection.is_some()
+                && options.source_output.is_some()
+                && options.source_schedule.is_some(),
+            "owned Process requires --source-output, --source-schedule and --process-collection"
+        );
+        ensure!(
+            !options.source_pid_explicit && options.source_pid == 0,
+            "--source-pid is incompatible with owned Process collection"
+        );
+        ensure!(
+            options.vad_collection.is_none()
+                && options.stable_endpoint_id.is_none()
+                && options.source_name.is_none()
+                && !options.diagnostic_soak
+                && options.measurement_pcm.is_none()
+                && options.measurement_schedule.is_none()
+                && options.calibration.is_none(),
+            "owned Process cannot mix VAD, diagnostic soak, imported measurement or calibration"
+        );
+        let endpoint = options
+            .source_output
+            .as_deref()
+            .context("source output missing")?;
+        ensure!(
+            !endpoint.trim().is_empty()
+                && !endpoint.contains('\0')
+                && endpoint.encode_utf16().count() <= 4096,
+            "invalid explicit source output endpoint"
+        );
+        ensure!(
+            options.telemetry != TelemetryMode::Disabled,
+            "owned Process requires native summary observations"
+        );
+    }
     if options.vad_collection.is_some() {
         ensure!(
             options.source_kind == EvidenceSourceKind::VadPlayback
@@ -710,12 +856,17 @@ fn validate(options: &LiveOptions) -> Result<()> {
         );
     }
     ensure!(
-        options.source_schedule.is_none() || options.source_kind == EvidenceSourceKind::VadPlayback,
+        options.source_schedule.is_none()
+            || options.source_kind == EvidenceSourceKind::VadPlayback
+            || owned,
         "--source-schedule is only valid for live-vad"
     );
     match options.source_kind {
         EvidenceSourceKind::ProcessLoopback | EvidenceSourceKind::Vad => {
-            ensure!(options.source_pid != 0, "--source-pid must be nonzero");
+            ensure!(
+                owned || options.source_pid != 0,
+                "--source-pid must be nonzero"
+            );
             ensure!(
                 options.stable_endpoint_id.is_none() && options.source_name.is_none(),
                 "VAD identity options are only valid for live-vad"
@@ -852,11 +1003,16 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
         "measurement.f32le",
         "measurement.packets.jsonl",
         "collection.json",
+        "capture.f32le",
+        "capture.metadata.json",
+        "controlled-load.stop",
+        "controlled-load.result.json",
+        "process-source",
     ]
     .iter()
     .map(|name| output_path_key(&options.artifact_dir.join(name)))
     .collect::<Result<_>>()?;
-    if options.vad_collection.is_some() {
+    if options.vad_collection.is_some() || options.process_collection.is_some() {
         ensure!(
             !reserved.contains(&report_key) && !reserved.contains(&manifest_key),
             "report/manifest aliases reserved collection output"
@@ -872,6 +1028,7 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
         &options.measurement_schedule,
         &options.calibration,
         &options.vad_collection,
+        &options.process_collection,
     ]
     .into_iter()
     .flatten()
@@ -882,7 +1039,8 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
             "input must not alias reserved source plan, report or manifest output"
         );
         ensure!(
-            options.vad_collection.is_none() || !reserved.contains(&key),
+            (options.vad_collection.is_none() && options.process_collection.is_none())
+                || !reserved.contains(&key),
             "input aliases reserved collection output"
         );
     }
@@ -905,6 +1063,31 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
         !capture_pcm.exists() && !capture_pcm_metadata.exists(),
         "capture artifact files must be new files"
     );
+    if options.process_collection.is_some() {
+        let child = output_path_key(&options.artifact_dir.join("process-source"))?;
+        ensure!(
+            !report_key.starts_with(&child) && !manifest_key.starts_with(&child),
+            "report/manifest aliases child private directory"
+        );
+        let mut parent = options.artifact_dir.parent();
+        while let Some(path) = parent {
+            if let Ok(metadata) = fs::symlink_metadata(path) {
+                ensure!(
+                    !metadata.file_type().is_symlink(),
+                    "collection parent is a symlink"
+                );
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    ensure!(
+                        metadata.file_attributes() & 0x400 == 0,
+                        "collection parent is a reparse point"
+                    );
+                }
+            }
+            parent = path.parent();
+        }
+    }
     fs::create_dir_all(&options.artifact_dir).with_context(|| {
         format!(
             "create artifact directory {}",
@@ -920,13 +1103,15 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned())
             .or_else(|| {
-                options.vad_collection.as_ref().map(|_| {
-                    options
-                        .artifact_dir
-                        .join("measurement.f32le")
-                        .to_string_lossy()
-                        .into_owned()
-                })
+                (options.vad_collection.is_some() || options.process_collection.is_some()).then(
+                    || {
+                        options
+                            .artifact_dir
+                            .join("measurement.f32le")
+                            .to_string_lossy()
+                            .into_owned()
+                    },
+                )
             }),
         measurement_schedule: options
             .measurement_schedule
@@ -936,21 +1121,27 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
             .source_schedule
             .as_ref()
             .map(|_| source_path.to_string_lossy().into_owned()),
-        collection_config: options.vad_collection.as_ref().map(|_| {
+        collection_config: (options.vad_collection.is_some()
+            || options.process_collection.is_some())
+        .then(|| {
             options
                 .artifact_dir
                 .join("collection-config.json")
                 .to_string_lossy()
                 .into_owned()
         }),
-        collection_report: options.vad_collection.as_ref().map(|_| {
+        collection_report: (options.vad_collection.is_some()
+            || options.process_collection.is_some())
+        .then(|| {
             options
                 .artifact_dir
                 .join("collection.json")
                 .to_string_lossy()
                 .into_owned()
         }),
-        measurement_packets: options.vad_collection.as_ref().map(|_| {
+        measurement_packets: (options.vad_collection.is_some()
+            || options.process_collection.is_some())
+        .then(|| {
             options
                 .artifact_dir
                 .join("measurement.packets.jsonl")
@@ -995,6 +1186,9 @@ fn output_path_key(path: &Path) -> Result<PathBuf> {
 }
 
 fn source_identity(options: &LiveOptions, gaps: &mut Vec<String>) -> Option<Value> {
+    if options.process_collection.is_some() {
+        return None;
+    }
     if options.source_kind == EvidenceSourceKind::VadPlayback {
         return Some(serde_json::json!({
             "stable_endpoint_id": options.stable_endpoint_id,
@@ -1136,9 +1330,11 @@ fn artifact_report(
         paths: paths.clone_for_manifest(),
         measurement_pcm_status: if measurement.analysis.is_some() {
             "externally_supplied_and_analyzed"
-        } else if options.vad_collection.is_some() && options.dry_run {
+        } else if (options.vad_collection.is_some() || options.process_collection.is_some())
+            && options.dry_run
+        {
             "not_collected_dry_run"
-        } else if options.vad_collection.is_some() {
+        } else if options.vad_collection.is_some() || options.process_collection.is_some() {
             if paths
                 .measurement_pcm
                 .as_deref()
@@ -1260,7 +1456,7 @@ fn build_qualification_report(
     native: &NativeReport,
     measurement: &MeasurementEvidence,
 ) -> Option<QualificationReport> {
-    if options.vad_collection.is_some() {
+    if options.vad_collection.is_some() || options.process_collection.is_some() {
         // Negotiated recorder format and partial counts live in collection.
         // There is no analyzed waveform/calibration to feed the legacy builder.
         return None;
@@ -1580,14 +1776,12 @@ mod native {
     use anyhow::{Context, bail, ensure};
     use moiren_core::graph::{LogicalGraph, NodeKind, SendParams, edit::connect_to_new_bus_input};
     use moiren_engine::{
-        boundary::{ClockRole, audio_bridge},
-        compiler::{CompileConfig, NodeBindings, compile},
+        boundary::ClockRole,
         host::{EngineHost, EngineProject, ExecutionState, HostConfig, NodeConfig},
         node::{
             DeviceOptions, EndpointSelector, InputConfig, InputSource, OutputConfig, OutputTarget,
             VirtualEndpointId,
         },
-        runtime::EngineConfig,
     };
     use moiren_windows_audio::{
         ActivationGate, SessionDuration, StopSignal,
@@ -1596,7 +1790,7 @@ mod native {
         process_loopback::{
             ProcessLoopbackOptions, inspect_process, prepare_process_capture_with_gate,
         },
-        render::{DemandRenderer, RenderOptions, prepare_render_native_with_gate},
+        render::{RenderOptions, prepare_render_native_with_gate},
         vad::{Channels, Intent, PdoState, WindowsVadProvider},
         virtual_owner::VirtualBufferOptions,
     };
@@ -1665,38 +1859,7 @@ mod native {
         let padding = render.padding_observer();
         let bridge_observer = capture.observer.clone();
         let prepared = capture;
-        let mut graph = LogicalGraph::new();
-        let source = graph.create_node(NodeKind::Source, 2)?;
-        let bus = graph.create_node(NodeKind::Bus, 2)?;
-        let sink = graph.create_node(NodeKind::Sink, 2)?;
-        let source_port = graph.get_node(source)?.outputs()[0].id();
-        let bus_port = graph.get_node(bus)?.outputs()[0].id();
-        let sink_port = graph.get_node(sink)?.inputs()[0].id();
-        connect_to_new_bus_input(&mut graph, source_port, bus, SendParams::default())?;
-        graph.connect(bus_port, sink_port, SendParams::default())?;
-        let (writer, reader) = audio_bridge(2, 8192, 8 * 1024 * 1024)?;
-        let mut bindings = NodeBindings::new();
-        bindings.bind_source(source, prepared.source)?;
-        bindings.bind_sink(sink, writer)?;
-        let compiled = compile(
-            &graph,
-            bindings,
-            CompileConfig {
-                engine: EngineConfig {
-                    processing_sr: 48_000.0,
-                    max_block_frames: options.engine_block_frames as usize,
-                    max_events_per_block: 64,
-                },
-                audio_byte_budget: 8 * 1024 * 1024,
-                plan_revision: 1,
-                timeline_epoch: 1,
-                control_capacity: 64,
-                control_horizon_frames: 48_000,
-            },
-        )
-        .context("compile Input -> Bus -> Output graph")?;
-        let renderer =
-            DemandRenderer::new(compiled.engine, reader).context("prepare Engine renderer")?;
+        let renderer = process_collection::graph::build_renderer(options, prepared.source)?;
         let timeline = renderer.timeline_observer();
         let prepared_render = render
             .attach(renderer, queue)
@@ -2535,6 +2698,42 @@ mod native {
         Ok(project)
     }
 
+    fn retire_vad(
+        provider: &WindowsVadProvider,
+        endpoint_id: VirtualEndpointId,
+        last_observation: &mut Option<Value>,
+    ) -> Result<moiren_windows_audio::vad::VadExportObservation> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let view = provider
+                .export_observations()
+                .into_iter()
+                .find(|view| view.endpoint_id == endpoint_id)
+                .context("VAD export missing during cleanup")?;
+            *last_observation = Some(vad_observation_json(&view));
+            let Some(snapshot) = view.snapshot else {
+                ensure!(
+                    Instant::now() < deadline,
+                    "VAD cleanup snapshot became uncertain"
+                );
+                thread::sleep(Duration::from_millis(50));
+                continue;
+            };
+            if snapshot.state() == PdoState::Removed {
+                return Ok(view);
+            }
+            if snapshot.gate_open() {
+                provider.set_export_gate(endpoint_id, snapshot_stamp(snapshot), false, 0, 0)?;
+            } else if snapshot.state() != PdoState::Removing {
+                provider.retire_export(endpoint_id, snapshot_stamp(snapshot))?;
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "VAD cleanup did not reach Removed"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -2574,49 +2773,107 @@ mod native {
             assert_eq!(output.device.clock_role, ClockRole::Master);
         }
     }
-
-    fn retire_vad(
-        provider: &WindowsVadProvider,
-        endpoint_id: VirtualEndpointId,
-        last_observation: &mut Option<Value>,
-    ) -> Result<moiren_windows_audio::vad::VadExportObservation> {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let view = provider
-                .export_observations()
-                .into_iter()
-                .find(|view| view.endpoint_id == endpoint_id)
-                .context("VAD export missing during cleanup")?;
-            *last_observation = Some(vad_observation_json(&view));
-            let Some(snapshot) = view.snapshot else {
-                ensure!(
-                    Instant::now() < deadline,
-                    "VAD cleanup snapshot became uncertain"
-                );
-                thread::sleep(Duration::from_millis(50));
-                continue;
-            };
-            if snapshot.state() == PdoState::Removed {
-                return Ok(view);
-            }
-            if snapshot.gate_open() {
-                provider.set_export_gate(endpoint_id, snapshot_stamp(snapshot), false, 0, 0)?;
-            } else if snapshot.state() != PdoState::Removing {
-                provider.retire_export(endpoint_id, snapshot_stamp(snapshot))?;
-            }
-            ensure!(
-                Instant::now() < deadline,
-                "VAD cleanup did not reach Removed"
-            );
-            thread::sleep(Duration::from_millis(50));
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn owned_process_parser_is_explicit_and_preserves_external_pid_mode() {
+        let args = vec![
+            "--source-output",
+            "source",
+            "--source-schedule",
+            "plan.json",
+            "--process-collection",
+            "config.json",
+            "--output",
+            "render",
+            "--artifact-dir",
+            "new-run",
+            "--seconds",
+            "20",
+        ];
+        let owned = parse(args.iter().map(|s| s.to_string()).collect()).unwrap();
+        validate(&owned).unwrap();
+        for extra in [
+            vec!["--source-pid", "0"],
+            vec!["--source-output", "again"],
+            vec!["--process-collection", "again"],
+            vec!["--diagnostic-soak"],
+            vec!["--mode", "disabled"],
+        ] {
+            let mut mixed = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            mixed.extend(extra.into_iter().map(str::to_owned));
+            assert!(parse(mixed).and_then(|o| validate(&o)).is_err());
+        }
+        let external = parse(
+            [
+                "--source-pid",
+                "42",
+                "--output",
+                "render",
+                "--artifact-dir",
+                "external",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        )
+        .unwrap();
+        validate(&external).unwrap();
+        assert_eq!(external.source_pid, 42);
+    }
+
+    #[test]
+    fn owned_process_dry_run_retains_inputs_without_child_or_waveform_claim() {
+        let directory = temp_dir("owned-process-dry");
+        let source = directory.with_extension("source.json");
+        let config = directory.with_extension("config.json");
+        fs::write(&source, source_plan_bytes()).unwrap();
+        let bytes=br#"{"schema_version":1,"input_endpoint_id":"independent-recorder","ring_frames":1024,"max_pcm_bytes":1048576,"max_metadata_bytes":100000,"max_packets":1000,"preroll_ms":100,"postroll_ms":100}"#;
+        fs::write(&config, bytes).unwrap();
+        let args = vec![
+            "--dry-run".into(),
+            "--source-output".into(),
+            "explicit-source".into(),
+            "--source-schedule".into(),
+            source.to_string_lossy().into_owned(),
+            "--process-collection".into(),
+            config.to_string_lossy().into_owned(),
+            "--output".into(),
+            "explicit-graph-output".into(),
+            "--artifact-dir".into(),
+            directory.to_string_lossy().into_owned(),
+            "--seconds".into(),
+            "14".into(),
+        ];
+        assert_eq!(run(args).unwrap(), 1);
+        let report: Value =
+            serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["qualified"], false);
+        assert!(report["qualification"].is_null());
+        assert_eq!(
+            report["artifacts"]["measurement_pcm_status"],
+            "not_collected_dry_run"
+        );
+        assert_eq!(
+            report["collection"]["config"]["input_endpoint_id"],
+            "independent-recorder"
+        );
+        assert!(report["source"]["pid"].is_null());
+        assert_eq!(
+            fs::read(directory.join("collection-config.json")).unwrap(),
+            bytes
+        );
+        assert!(!directory.join("process-source").exists());
+        assert!(!directory.join("measurement.f32le").exists());
+        fs::remove_dir_all(directory).unwrap();
+        fs::remove_file(source).unwrap();
+        fs::remove_file(config).unwrap();
+    }
 
     #[test]
     fn collection_artifacts_never_use_source_format_or_claim_analyzed_or_missing_pcm() {
@@ -3257,11 +3514,13 @@ mod tests {
 
     #[test]
     fn measurement_options_are_paired_and_boundary_is_explicit() {
-        let mut options = LiveOptions::default();
-        options.source_pid = 1;
-        options.output_endpoint = "out".into();
-        options.artifact_dir = temp_dir("validate");
-        options.measurement_pcm = Some("capture.raw".into());
+        let options = LiveOptions {
+            source_pid: 1,
+            output_endpoint: "out".into(),
+            artifact_dir: temp_dir("validate"),
+            measurement_pcm: Some("capture.raw".into()),
+            ..Default::default()
+        };
         assert!(validate(&options).is_err());
         assert_eq!(
             parse_boundary("physical-cable").unwrap(),
@@ -3300,8 +3559,10 @@ mod tests {
 
     #[test]
     fn target_bridge_is_marked_declared_and_preserves_requested_frames() {
-        let mut options = LiveOptions::default();
-        options.input_target_frames = Some(1024);
+        let options = LiveOptions {
+            input_target_frames: Some(1024),
+            ..Default::default()
+        };
         let bridge = bridge_options(&options).unwrap();
         assert_eq!(
             bridge.input,

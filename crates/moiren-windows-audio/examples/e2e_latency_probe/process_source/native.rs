@@ -75,7 +75,6 @@ impl ProcessSourceSession {
     pub(crate) fn prepare(config: Config, run_directory: &Path) -> Result<Self> {
         Self::prepare_with_abort(config, run_directory, || {}, &mut None)
     }
-    #[expect(dead_code, reason = "Section B parent constructor with peer-stop hook")]
     pub(crate) fn prepare_with_abort(
         config: Config,
         run_directory: &Path,
@@ -226,27 +225,17 @@ impl ProcessSourceSession {
         Ok(session)
     }
 
-    #[expect(dead_code, reason = "Section B consumes the pinned child identity")]
     pub(crate) fn identity(&self) -> &ProcessIdentity {
         &self.inner.identity
     }
-    #[expect(dead_code, reason = "Section B activates after recorder and graph")]
     pub(crate) fn activate(&mut self) -> Result<()> {
         self.inner.elapsed = self.created.elapsed();
         self.inner.activate()
     }
-    #[expect(
-        dead_code,
-        reason = "Section B checks source health through the parent API"
-    )]
     pub(crate) fn check(&mut self) -> Result<Progress> {
         self.inner.elapsed = self.created.elapsed();
         self.inner.check()
     }
-    #[expect(
-        dead_code,
-        reason = "Section B broadcasts source stop before joining peers"
-    )]
     pub(crate) fn request_stop(&mut self) -> Result<()> {
         self.inner.request_stop()
     }
