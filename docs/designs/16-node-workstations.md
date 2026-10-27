@@ -1,0 +1,138 @@
+# 节点工作台：参数、观测与布局
+
+2026-10-27。依据当前 `feat/node-ui-workstations` 工作树的 gpui 卡片、Inspector 和 service 实现整理。本文记录参数清单、真实数据边界与逐节点验收方法。实现复用当前 gpui 主题及基础组件，不修改 Figma 母版；Figma 只核对指定的基础组件区域。
+
+## 交互边界
+
+- 拓扑与参数来自真实 `GraphSnapshot` / `GraphNodeState`，卡片和 Inspector 通过 `GraphEdit` 修改同一份图；UI 只保留输入、弹层、选择和布局状态。
+- 配置展示候选状态，电平展示运行图。运行中 `candidate_revision` 与 `active_revision` 不同，卡片提示「编辑尚未生效；电平显示运行中的图」，不能把旋钮变化当作引擎已经应用。
+- 卡片保留常用操作；Inspector 提供完整参数、资源绑定、通道条、端口路由、运行观测及删除。高级参数与路由默认展开，绑定、通道条和逐通道读数默认折叠。
+- DSP 参数采用旋钮与数值输入，不统一堆叠横向滑杆。旋钮纵向拖动、Shift 微调、双击复位；数值在 Enter 或失焦时校验提交，未改动的格式化文本不回写量化值，错误输入保留并提示。
+- `Level` 的含义依节点区分：Gain 卡片修改处理器增益，Source / Sink / Bus 修改通道条增益。物理输入与 Application 的数值是数字微调，不是设备硬件增益。
+
+## 节点能力清单
+
+`NodeKind` 共 15 种。Application 与 Tone 是 Source 的绑定模式，不是新增枚举；下表单列这两种用户入口。除表中次级内容外，所有节点均可进入通用 Inspector；通常有 Mute，Recorder / Meter / Spectrum 卡片不提供该快捷按钮。
+
+| 类型 / 入口 | 用户参数 | 常用卡片交互 | Inspector 次级内容与边界 |
+| --- | --- | --- | --- |
+| Source（物理输入） | 输入端点、数字微调 | 输入设备 / Application 选择器、目录刷新、微调、Mute、真实竖表 | 清除 / 更换绑定；可改为 Tone；设备可用性以目录和服务状态为准 |
+| Sink（输出） | 输出端点、通道条 Level | 输出设备选择、刷新、Level、Mute、真实竖表 | 清除 / 更换输出绑定、完整通道条、输入路由 |
+| Gain | 处理器 Level | 增益数值与电平控制、Mute、图电平 | 精确增益、±1 dB、Unity、Silence；另有独立通道条增益 |
+| Compressor | 输入增益、阈值、比率、Attack、Hold、Release、Knee、补偿增益、输出增益、干湿比 | 阈值 / 比率 / Attack / Release / 补偿 / 干湿六个主参数；拖动静态曲线改阈值与比率，Shift 微调 | 十参数按 Dynamics / Timing / Gain staging 分组；没有实时 GR 读数 |
+| Eq | 单个 peaking band 的频率、增益、Q | 三参数旋钮与数值；拖动响应曲线改频率 / 增益，滚轮改 Q，Shift 微调 | 同三个参数的有界步进；不是多段 EQ，也没有输入频谱叠加 |
+| Gate | 阈值、衰减范围、Attack、Hold、Release | 五参数旋钮与数值、Mute、图电平 | 同参数的有界步进；linked downward expander，无实时门状态 / GR 可视化 |
+| Limiter | 输入增益、阈值、Release | 三参数旋钮与数值、Mute、图电平 | 同参数步进；零延迟 linked peak limiter，不宣称 true-peak 或实时 GR |
+| Delay | 延迟时间、反馈、Wet mix | 三参数旋钮与数值、Mute、图电平 | 同参数步进；时间上限来自已配置的 `max_delay_ms`，本页不调整其分配容量 |
+| Bus | 输出 Level、动态输入端口 | 按实际输入列出来源与声道宽度，点击连接进入路由详情，增加输入 | 全部端口 / 连接、增加 / 删除末尾输入；删除已连接端口须先断开，不能凭空生成路由 |
+| Pan（Balance） | 双声道平衡、Mono、Swap L/R | Balance 旋钮与数值、Mono / Swap、Mute | 精确平衡与 Left / Center / Right 步进；这是 stereo balance，不是任意多声道声像器 |
+| ChannelMapper | 输出到输入映射，或有符号线性权重矩阵 | 显示真实宽度；等宽时 Identity / Swap；点矩阵格弹出 ±0.25 调整 | 映射与矩阵详情；内联编辑最多 8 × 8，较大矩阵只读展示实际映射；0 表示该格无贡献 |
+| Recorder | 会话内目标路径、录音启停、队列容量 | 选文件、打开输出目录、开始 / 停止、状态 / 时长 / 剩余容量与错误 | 队列容量 ±48,000 frames；编码固定，不能选其他位深、容器或采样率；详见录音约束 |
+| Meter | 观测窗口帧数 | 128 / 480 / 2048 / 8192 选择；逐通道大号 held peak 与 RMS、真实订阅状态 | 2048 帧快捷设置、运行状态及逐通道读数；不是 LUFS / true-peak 仪表 |
+| SpectrumAnalyzer | FFT 点数、hop 帧数 | FFT 512 / 1024 / 2048 / 4096 / 8192；hop 为 FFT 的 1/4、1/2、1 倍 | 显示 FFT / hop，提供 2048 / 1024 快捷设置；本视图没有频谱订阅，明确显示不可用 |
+| Rack | 路由内阶段顺序、bypass、阶段集合 | 按实际执行顺序显示，旁通 / 移除 / 上下移动；按路由加入内置默认处理器 | 阶段数、增加 Gain、清空阶段；尚无完整的槽内 DSP 参数编辑器，也不是插件宿主 |
+| Application（Source 模式） | 应用绑定、数字微调 | 应用列表、刷新、微调、Mute、图电平 | 清除 / 更换来源；绑定使用 PID 与创建时间标识实例；选中条目不等于已经收到音频 |
+| Tone（Source 模式） | 正弦频率、数字 Level | Frequency 旋钮与数值、Level、Mute、图电平 | 440 Hz 快捷绑定与 ±10 Hz 步进；不是波形选择器，仍依赖图启动与实际路由 |
+
+Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、Delay、Mapper 的默认预设。顺序以 `RackSettings.routes` 的槽引用为准，操作前校验声道宽度；不能旁通、移除或移动会破坏宽度链的阶段。用户看到顺序和处理器名称，不显示内部 `RackSlot.id` 或「slot N」提示。
+
+### 参数单位与现存差异
+
+以下是当前卡片输入边界，不代表所有 Inspector 入口已经统一。
+
+| 参数组 | 当前边界 / 约定 |
+| --- | --- |
+| Level / Balance | Level 有限输入约 −72～+24.08 dB，另支持静音；Balance 为 −100%～100% |
+| Tone / EQ | 卡片频率 20～20,000 Hz；EQ 增益 −24～+24 dB，Q 为 0.1～20；Inspector 的 Tone 步进当前为 1～23,999 Hz，范围尚不一致 |
+| Compressor | 范围从 service 的 `CompressorParameter` / 引擎参数域取得；卡片干湿比用 0%～100%，Inspector 精确输入明确使用 0～1 |
+| Gate / Limiter | Gate 阈值与 Range 为 −120～0 dB；Limiter 输入增益 −60～+60 dB、阈值 −60～0 dB；这些节点的时间参数为 0～5,000 ms |
+| Delay | 时间 0～`max_delay_ms`；反馈 −99.9%～99.9%，Wet mix 0%～100%；service 保存线性比例，不把百分数原值直接写入 |
+| Mapper | 卡片保留已有有符号权重及大于 1 的增益，不自动归一化；Inspector 旧步进会把被编辑格限于 −1～1，此差异尚未消除 |
+
+通用通道条还包含 Fader、双声道 Balance、Mute、Solo、Dim 与声道模式；它与节点本体 DSP 参数分开。Identity 区可改名并显示类型 / 声道数，声道数不是这里的自由编辑字段。
+
+## 可视化的真实来源
+
+| 展示 | 数据来源 | 不应作出的推断 |
+| --- | --- | --- |
+| 节点柱、RMS、held peak、Clip | 引擎逐通道电平窗口，经 service 的 `signal_topics.node_levels` 和 `shell.node_meters` 形成带显示平滑 / 峰值保持的 `DisplayLevel` | 仅 Running、有对应 topic 且状态 Live 时呈现有效读数；Waiting / Stale / 无发布者 / 停止不是 0 dB 或静音测量结果 |
+| Meter 窗口选择 | `MeterSettings.window_frames`；引擎节点观测使用该配置，其他隐式 UI 观测使用其默认窗口 | 候选窗口设置不证明运行图已切换；held peak 不是未经显示处理的瞬时采样 |
+| EQ 响应曲线 | 当前 EQ 设置与图处理采样率计算的 peaking biquad 静态幅频响应 | 不是实时 FFT、输入频谱或测量到的声学响应 |
+| Compressor 曲线 | 当前输入 / 补偿 / 输出增益、阈值、比率、Knee、干湿比计算的静态传输曲线 | 不模拟当前包络；Attack / Hold / Release 的动态过程与实时增益衰减（GR）未显示 |
+| Spectrum 面板 | 真实 `SpectrumSettings` 配置；当前窗口未建立频谱订阅 | **实时 FFT 视图未接入**；引擎有频谱能力，不代表 UI 已显示频谱；不得拿电平生成假频谱 |
+| LUFS / GR | 当前卡片无对应观测展示 | **LUFS 和实时 GR 未实现于此 UI**；不能把 RMS 改名为 LUFS，也不能从静态压缩曲线伪造 GR |
+| Recorder 电平 | 同一套 post-fader 图观测，标签为 `Graph monitor · post-fader` | 不是录音器精确的 pre-strip 录入采样；亮柱不证明文件已经写入 |
+| 录音状态、时间、丢帧 | service 的 `RecordingSnapshot`、WAV writer 已接收帧数 / 确认采样率、端点统计 | `written_frames` 不是 fsync 保证；丢帧计数是端点累计值，不是本文件独立累计 |
+
+### 录音约束
+
+- 当前唯一格式为 **WAV（RIFF，32-bit float）**。文件采样率与声道数来自启动时确认的图处理格式，不来自设备混音格式，也不由卡片另设。
+- 目标路径由 service 在**本次会话内**保存，不写入项目文件。要求新的 `.wav` 路径，拒绝覆盖已有文件；文件选择器返回时若图版本或项目已改变，须重新选择。
+- 录音启停独立于图的启停；必须先启动音频。关闭卡片 / Inspector 不停止 service 持有的录音；Stopping 表示正在完成文件，不允许重复开始；Canceled 明确表示创建文件前取消，不能显示“已保存”。
+- `Proposed format` 仅是录音前基于候选配置的预估；`Checking disk space` 是异步预检状态，不能冒充已打开文件的确认格式。
+- 剩余时长是已知上限的最小值：RIFF 容量与扣除预留后的磁盘容量。磁盘预留为 64 MiB 加两秒聚合写入量；磁盘未知时仅标注 RIFF 上限，全部未知时显示未知，不保证可录时长。
+
+## 自适应卡片与竖表
+
+| 原则 | 当前实现与验证要求 |
+| --- | --- |
+| 内容决定高度 | 原生控件实测高度回写卡片布局，不再给所有种类统一固定 body 高度。绑定选择器、主参数、操作按钮优先可见；矩阵、阶段列表、多通道读数可局部滚动 |
+| 按职责选布局 | I/O 将绑定放在整行，下方参数与竖表并排；当前 EQ / Compressor / Gate 使用侧表。Pan / Bus / Recorder / Meter 与至少三个阶段的 Rack 采用竖表；Gain / Tone / Limiter / Delay 和空 Rack 保持紧凑横表 |
+| 侧表只拉伸 | `node_vertical_meter(levels, channels, clips)` 使用 `h_full`，外层 `absolute top_0 bottom_0` 随相邻内容拉伸；竖表不反过来决定卡片高度 |
+| 共用宽度接口 | 外层与组件都用 `node_meter_width(channels)`：单 / 双声道 100 px，之后每声道加 38 px，外层最多占八声道的 328 px；更多声道在内部横向滚动，保留自然字宽及逐声道 Clip，不压缩成不可读的柱 |
+| bounds 内分区 | 从实际 canvas bounds 划出顶部短 CLIP 标识及逐声道锁存条、有效 track、底部 L/R 或声道编号与 held peak 数值。Clip 不画到 bounds 外；外层点击重置锁存 |
+| 一套坐标 | 刻度、marker、填充共用 `FaderScale` 和有效 track；按 track 高度筛刻度。短高 64～300 px、受限宽度和多声道由纯几何测试约束，柱宽不得为负或越界 |
+| 可读数值 | 刻度 9 px，声道名 / 读数 10 px；held peak 一位小数，不在每格重复 dB 字样，缺失为「—」，真实静音为「−∞」 |
+| 保持旧契约 | `compact_horizontal_meter` 每声道 Clip 位于最右；`compact_stereo_meter` Clip 位于顶部，默认外高仍为 182 px（176 px track 加间隔 / Clip），覆盖高度后按实际 bounds 绘制；Mixer 的 `channel_meter` 与 fader 共用 track 对齐不变 |
+| 缩放与事件 | 小于 0.85 的语义缩放展示概览与 Edit node 入口；概览优先保证 Edit node 可达，空间充足才附加读数。参数操作不触发拖卡、平移、连线或 Delete 节点；重叠卡片的原生控件与背景共享堆叠顺序 |
+
+多声道虽然有宽度计算与边界保护，仍须逐节点验证卡片总宽、内容换行与可读性；「不越界」不等于任意窄容器里仍能读清全部声道。
+
+## 逐节点截图验证
+
+采用「选一个节点 → 改布局 → 截卡片与 Inspector → 检查并记录 → 再处理下一个」的循环；批量合照仅作导航，不代替单节点验收。
+
+| 验证对象 | 必须覆盖 |
+| --- | --- |
+| Source、Application、Tone、Sink | 长资源名、未绑定 / 无资源、停止 / 运行、候选未应用；单 / 双声道，数字微调与实际电平分离 |
+| Gain、Pan、EQ、Compressor、Gate、Limiter、Delay | 主参数与单位不截断，旋钮 / 数值 / 曲线可操作，Inspector 可滚动；EQ 双「−12.0」分隔；静态图说明、Mute 与实际读数 |
+| Mapper、Bus、Rack | 等宽 / 异宽、矩阵滚动、空输入 / 空阶段、有真实连接、非法宽度操作禁用；长列表不挤掉主操作，无内部 slot ID |
+| Meter、Spectrum、Recorder | 无订阅 / 过期 / 运行读数；FFT 明确不可用；录音未选路径、预检、录制、停止收尾、失败与磁盘未知，不用模拟实时数据填图 |
+| 每一个节点 | Comfortable / Compact 密度、正常 / 概览缩放、卡片与 Inspector；文本、焦点、tooltip、按钮可达性；适用时检查多声道与短高 |
+
+截图目录为 `docs/designs/screenshots/node-workstations/`。逐节点捕获使用真实 gpui 渲染、真实引擎处理和受管电平订阅，音频 I/O 使用测试后端，不代表物理设备验证。每个节点分别捕获 1440×900 与 1024×720 下的卡片和 Inspector，并验证原生控件位于实测卡片边界内。扩展场景覆盖多输入 Bus、有阶段 Rack、录音准备/录制/封尾、50% 概览、32 声道滚动以及长资源名。录音场景先核对真实 WAV 文件头、帧数与文件大小，再删除测试 WAV，仅保留截图和清单证据。纯几何测试不代替真实字体与布局检查。
+
+### 本轮截图证据
+
+本轮在本地保留 23 份 JSON 捕获清单、98 张 PNG，清单引用的图片全部存在。按用户要求，这些生成物不进入 Git 暂存区或提交；仓库只保留捕获程序和文字验收记录。逐节点复核后再统一刷新共享控件改动；没有把一张全景图当作所有节点的验收。最后复核覆盖旋钮标签 / 输入 / 单位对齐、长设备名省略、录音长路径、多声道横向滚动、重叠节点与概览入口。
+
+复现方式：构建 `cargo build --locked -p moiren-app --features gpui-test -j 2 --example ui_capture`，设置 `MOIREN_CAPTURE_NODES=1` 与 `MOIREN_CAPTURE_NODE=<节点筛选值>`，再执行生成的 `ui_capture` 示例并传入本地输出目录。筛选值包括 `input`、`gain`、`balance`、`eq`、`compressor`、`gate`、`limiter`、`delay`、`mapper`、`bus`、`rack`、`meter`、`spectrum`、`recorder`、`output`、`application`、`tone`，以及 `bus-expanded`、`rack-populated`、`recording-states`、`overview`、`meter32`、`input-long`。
+
+以下为 Compact、100% 缩放时清单记录的逻辑像素，说明竖表由不同内容高度驱动，而非统一固定尺寸；电平表高度包括 Clip 与底部声道读数区，并非单独有效 track 的高度。
+
+| 场景 | 卡片高度 | 电平表高度 |
+| --- | ---: | ---: |
+| 物理输入 | 300 | 144.8 |
+| Balance | 244 | 175.2 |
+| Bus：一个输入 | 253 | 184.8 |
+| Bus：展开多个输入 | 417 | 348.8 |
+| Rack：已有处理阶段 | 279 | 210.4 |
+| EQ | 364 | 295.2 |
+| Compressor | 478 | 409.6 |
+| Recorder：未选文件 | 365 | 296.8 |
+| Recorder：录制中 | 450 | 381.6 |
+| Meter：32 声道 | 527 | 372.0 |
+
+录音捕获通过真实 worker 写入并完成了 48 kHz、双声道 float32 WAV：196,128 帧、1,569,082 字节，文件头与长度校验通过。清单记录 `wav_header_verified: true` 和 `capture_wav_removed: true`；不保留测试音频，不将该测试后端结果表述为物理设备验证。
+
+## 源码索引
+
+| 职责 | 路径 |
+| --- | --- |
+| 15 种节点定义 | `crates/moiren-core/src/graph/model.rs` |
+| 卡片、参数与交互 | `crates/moiren-app/src/ui/window/graph/node_controls.rs`；`node_controls/{fields,io,parameter,rotary,plots,recording}.rs`；`node_controls/utility/` |
+| 次级编辑与诊断 | `crates/moiren-app/src/ui/window/graph/node_inspector.rs`；`node_inspector/{binding,parameters,routing,strip,diagnostics,sections}.rs`；`node_inspector/builtin/` |
+| 图与录音服务 | `crates/moiren-app/src/service/graph/`；`service/recording.rs`、`service/recording/`、`service/managed/recordings.rs` |
+| 实际电平与几何 | `crates/moiren-app/src/service/managed/meters.rs`；`crates/moiren-engine/src/host/signals.rs`；`crates/moiren-app/src/ui/monitoring/`；`ui/widgets/meters.rs`、`ui/widgets/meters/` |
+
+后续新增能力须同步参数入口、订阅来源和单节点证据；没有真实数据源的观测继续明确标为不可用，不用示意动画替代。

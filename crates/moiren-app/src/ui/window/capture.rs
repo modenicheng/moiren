@@ -2,6 +2,7 @@
 use super::*;
 use crate::service::test_backend as meter_backend;
 mod mixer_states;
+mod node_workstations;
 
 fn meter_service() -> anyhow::Result<ServiceRuntime> {
     use crate::service::{
@@ -78,6 +79,9 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| "docs/designs/screenshots/application".into());
     std::fs::create_dir_all(&directory)?;
+    if std::env::var_os("MOIREN_CAPTURE_NODES").is_some() {
+        return node_workstations::run(&directory);
+    }
     let meter_capture = std::env::var_os("MOIREN_CAPTURE_METERS").is_some();
     #[cfg(feature = "ui-profiler")]
     if meter_capture {
