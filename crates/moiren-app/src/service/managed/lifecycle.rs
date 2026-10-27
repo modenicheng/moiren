@@ -13,6 +13,7 @@ impl ManagedDriver {
             self.cleaning,
         );
         self.meters = None;
+        self.spectra.clear(c);
         c.tone_session = false;
         c.signals.clear_node_levels();
         c.active_latency_profile = None;

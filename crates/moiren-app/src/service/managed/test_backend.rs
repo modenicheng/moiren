@@ -47,6 +47,8 @@ pub struct State {
     pub pause_audio: AtomicBool,
     /// Opt-in wall-clock delivery benchmark; normal lifecycle tests keep 8-frame callbacks.
     pub timed_meter_frames: AtomicUsize,
+    /// Opt-in deterministic sine for end-to-end spectrum tests; default stays DC.
+    pub spectrum_tone_hz: AtomicU64,
     pub render_history: Mutex<VecDeque<(u64, Instant)>>,
     pub fail_stop: AtomicBool,
     pub events: Mutex<VecDeque<ResourceEvent>>,
@@ -89,6 +91,19 @@ impl<S: ProcessingSample> EngineBackend<S> for FakeBackend {
             match config {
                 NodeConfig::Input(config) => {
                     self.0.sources.fetch_add(1, Ordering::SeqCst);
+                    let frequency = f64::from_bits(self.0.spectrum_tone_hz.load(Ordering::Acquire));
+                    if frequency > 0. {
+                        bindings
+                            .bind_source(
+                                node,
+                                SpectrumTone {
+                                    channels: config.channels,
+                                    frequency,
+                                },
+                            )
+                            .unwrap();
+                        continue;
+                    }
                     bindings
                         .bind_source(
                             node,
@@ -122,6 +137,34 @@ impl<S: ProcessingSample> EngineBackend<S> for FakeBackend {
     }
     fn poll_resource(&self) -> Option<ResourceEvent> {
         self.0.events.lock().unwrap().pop_front()
+    }
+}
+struct SpectrumTone {
+    channels: usize,
+    frequency: f64,
+}
+impl<S: ProcessingSample> moiren_engine::boundary::RtAudioSource<S> for SpectrumTone {
+    fn channel_count(&self) -> usize {
+        self.channels
+    }
+    fn read(
+        &mut self,
+        ctx: &ProcessContext,
+        mut output: moiren_engine::buffer::AudioBlockMut<'_, S>,
+    ) -> BoundaryReport {
+        for channel in 0..self.channels {
+            for (frame, sample) in output.channel_mut(channel).iter_mut().enumerate() {
+                let phase = std::f64::consts::TAU
+                    * self.frequency
+                    * (ctx.timeline_start + frame as u64) as f64
+                    / ctx.processing_sr;
+                *sample = S::from_f64(0.5 * phase.sin());
+            }
+        }
+        BoundaryReport {
+            transferred_frames: ctx.frames,
+            ..Default::default()
+        }
     }
 }
 struct Sink {

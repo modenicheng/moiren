@@ -1,7 +1,8 @@
 use moiren_engine::meter::signal::{AudioWindow, ChannelLevel};
+pub use moiren_engine::spectrum::{SpectrumSettings, SpectrumWindow};
 use moiren_signal::{
-    BlockInit, Bus, BusConfig, PumpBudget, PumpReport, RegisterError, Shape, StreamBlock,
-    SubscribeError, Subscriber, SubscriptionOptions, Topic,
+    BlockInit, Bus, BusConfig, LatestBlock, PumpBudget, PumpReport, RegisterError, Shape,
+    StreamBlock, SubscribeError, Subscriber, SubscriptionOptions, Topic,
 };
 use std::sync::{
     Arc,
@@ -16,9 +17,30 @@ use std::time::{Duration, Instant};
 const LEVEL_STREAM_DEPTH: usize = 16;
 
 pub type LevelTopic = StreamBlock<AudioWindow, ChannelLevel>;
+pub type SpectrumTopic = LatestBlock<SpectrumWindow, f32>;
+
+mod spectra;
+pub(super) use spectra::{MAX_SPECTRUM_COPY_BYTES, SIGNAL_BYTE_BUDGET};
+// Keep the existing bounded level bridge (131 bindings) and reserve one
+// similarly sized spectrum family. The editable graph's 4096-node limit is
+// not a promise that this application observer bridge can bind every node.
+const LEVEL_TOPICS: usize = 131;
+const SIGNAL_TOPICS: usize = LEVEL_TOPICS * 2 + 1;
+const SIGNAL_BASE_COPY_BYTES: usize = 256 * 1024;
+
+/// Only confirmed active-engine configuration is published in this binding.
+/// A different topic identity invalidates any UI cache, including hop-only edits.
+#[derive(Debug, Clone)]
+pub struct SpectrumBinding {
+    pub topic: Topic<SpectrumTopic>,
+    pub settings: SpectrumSettings,
+    pub channels: usize,
+    pub owner_generation: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct SignalTopics {
+    pub node_spectra: std::collections::BTreeMap<moiren_core::graph::NodeId, SpectrumBinding>,
     pub node_levels: std::collections::BTreeMap<moiren_core::graph::NodeId, Topic<LevelTopic>>,
     pub monitor_input: Topic<LevelTopic>,
     pub monitor_output: Topic<LevelTopic>,
@@ -29,7 +51,6 @@ pub(crate) struct SignalService {
     bus: Bus,
     pub topics: SignalTopics,
     next_poll: Instant,
-    copy_budget: usize,
     poll_timer: moiren_engine::meter::MeterPollingTimer,
 }
 
@@ -37,11 +58,13 @@ impl SignalService {
     pub(super) fn create_bridge_host(
         &mut self,
     ) -> Result<(moiren_signal::HostControl, moiren_signal::RtHost), moiren_signal::HostError> {
-        self.bus.create_host(131)
+        self.bus.create_host(LEVEL_TOPICS)
     }
     pub fn new() -> Result<Self, RegisterError> {
         let mut bus = Bus::new(BusConfig {
-            max_topics: 131,
+            max_topics: SIGNAL_TOPICS,
+            max_payload_bytes: MAX_SPECTRUM_COPY_BYTES,
+            byte_budget: SIGNAL_BYTE_BUDGET,
             ..BusConfig::default()
         })?;
         let topics = SignalTopics::register(&mut bus)?;
@@ -49,7 +72,6 @@ impl SignalService {
             bus,
             topics,
             next_poll: Instant::now(),
-            copy_budget: 256 * 1024,
             poll_timer: Default::default(),
         })
     }
@@ -64,14 +86,32 @@ impl SignalService {
         if !demand || now < self.next_poll {
             return None;
         }
-        let report = self.bus.pump(PumpBudget {
-            topic_checks: 524,
-            deliveries: 256,
-            copy_bytes: self.copy_budget,
-        });
-        self.copy_budget = (256 * 1024)
-            .max(report.required_copy_bytes)
-            .min(1024 * 1024);
+        // Bus advances its cursor on every visit, including failed copies.
+        // Reserve a whole maximum payload BEFORE each visit; otherwise small
+        // topics can repeatedly spend a later large topic's only allowance.
+        let copy_budget = MAX_SPECTRUM_COPY_BYTES + SIGNAL_BASE_COPY_BYTES;
+        let mut report = PumpReport::default();
+        let mut idle = 0;
+        while report.topic_checks < SIGNAL_TOPICS * 4
+            && report.deliveries < 256
+            && idle < SIGNAL_TOPICS
+            && copy_budget - report.copy_bytes >= MAX_SPECTRUM_COPY_BYTES
+        {
+            let step = self.bus.pump(PumpBudget {
+                topic_checks: 1,
+                deliveries: 256 - report.deliveries,
+                copy_bytes: copy_budget - report.copy_bytes,
+            });
+            report.topic_checks += step.topic_checks;
+            report.deliveries += step.deliveries;
+            report.copy_bytes += step.copy_bytes;
+            report.has_pending |= step.has_pending;
+            report.required_copy_bytes = report.required_copy_bytes.max(step.required_copy_bytes);
+            idle = if step.deliveries == 0 { idle + 1 } else { 0 };
+            if step.required_copy_bytes != 0 {
+                break;
+            }
+        }
         // The service loop uses this deadline for both the compatibility
         // bridge relay and this bus pump; no demand leaves idle waits intact.
         self.next_poll = now + Duration::from_millis(1);
@@ -102,6 +142,7 @@ impl SignalTopics {
         };
         Ok(Self {
             node_levels: Default::default(),
+            node_spectra: Default::default(),
             monitor_input: bus.register_stream_block(
                 "monitor/input/output/level",
                 initial,
@@ -265,7 +306,7 @@ mod tests {
         service.execute(request);
         let subscriber = ticket.try_take().unwrap().unwrap();
         let report = service.pump_if_due(now).unwrap();
-        assert!(report.topic_checks <= 524);
+        assert!(report.topic_checks <= SIGNAL_TOPICS * 4);
         assert!(report.deliveries <= 256);
         assert!(report.copy_bytes <= 256 * 1024);
         assert_eq!(service.wait_duration(now), Some(Duration::from_millis(1)));
@@ -449,7 +490,6 @@ mod tests {
             bus,
             topics,
             next_poll: now,
-            copy_budget: 256 * 1024,
             poll_timer: Default::default(),
         };
         let topic = service

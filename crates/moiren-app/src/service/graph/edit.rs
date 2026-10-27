@@ -32,6 +32,15 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .ok_or("The node does not exist")?
                 .builtin = state.resolved(kind);
         }
+        GraphEdit::SetSpectrumFft { node, fft_size } => {
+            edit_spectrum(next, node, |settings| {
+                settings.fft_size = fft_size;
+                settings.hop_frames = settings.hop_frames.min(fft_size);
+            })?;
+        }
+        GraphEdit::SetSpectrumHop { node, hop_frames } => {
+            edit_spectrum(next, node, |settings| settings.hop_frames = hop_frames)?;
+        }
         GraphEdit::EditRack { node, epoch, edit } => {
             let topology = next
                 .graph
@@ -225,4 +234,27 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
         }
     }
     Ok(())
+}
+
+fn edit_spectrum(
+    next: &mut GraphSnapshot,
+    node: NodeId,
+    edit: impl FnOnce(&mut moiren_engine::spectrum::SpectrumSettings),
+) -> Result<(), String> {
+    if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::SpectrumAnalyzer {
+        return Err("Spectrum settings only apply to Spectrum Analyzer nodes".into());
+    }
+    let state = next
+        .nodes
+        .iter_mut()
+        .find(|state| state.id == node)
+        .ok_or("The node does not exist")?;
+    let BuiltinState::SpectrumAnalyzer(mut settings) =
+        state.builtin.resolved(NodeKind::SpectrumAnalyzer)
+    else {
+        return Err("Spectrum Analyzer settings are missing".into());
+    };
+    edit(&mut settings);
+    state.builtin = BuiltinState::SpectrumAnalyzer(settings);
+    validate_edited_node(next, node)
 }

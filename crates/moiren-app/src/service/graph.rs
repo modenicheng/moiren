@@ -112,6 +112,14 @@ pub enum GraphEdit {
         node: NodeId,
         state: BuiltinState,
     },
+    SetSpectrumFft {
+        node: NodeId,
+        fft_size: usize,
+    },
+    SetSpectrumHop {
+        node: NodeId,
+        hop_frames: usize,
+    },
     EditRack {
         node: NodeId,
         epoch: u64,
@@ -182,6 +190,8 @@ impl GraphEdit {
     /// coalesce with anything.
     fn undo_key(&self) -> Option<String> {
         match self {
+            Self::SetSpectrumFft { node, .. } => Some(format!("spectrum:{node:?}:fft")),
+            Self::SetSpectrumHop { node, .. } => Some(format!("spectrum:{node:?}:hop")),
             Self::EditRack { node, epoch, edit } => edit
                 .undo_key()
                 .map(|key| format!("rack:{node:?}:{epoch}:{key}")),
@@ -408,6 +418,8 @@ pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubje
     let node = |node: &NodeId| GraphSubject::Node(*node);
     match edit {
         GraphEdit::SetBuiltin { node: id, .. }
+        | GraphEdit::SetSpectrumFft { node: id, .. }
+        | GraphEdit::SetSpectrumHop { node: id, .. }
         | GraphEdit::EditRack { node: id, .. }
         | GraphEdit::SetCompressor { node: id, .. }
         | GraphEdit::ClearBinding(id)
@@ -469,6 +481,8 @@ pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &Logic
         | GraphEdit::RemoveBusInput { .. }
         | GraphEdit::SetExports(_)
         | GraphEdit::SetBuiltin { .. }
+        | GraphEdit::SetSpectrumFft { .. }
+        | GraphEdit::SetSpectrumHop { .. }
         | GraphEdit::EditRack { .. }
         | GraphEdit::BindSource { .. }
         | GraphEdit::BindOutput { .. }

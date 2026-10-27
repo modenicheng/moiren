@@ -1,6 +1,7 @@
 use super::*;
 
 mod rack;
+mod spectrum;
 
 #[test]
 fn builtin_settings_default_by_kind_and_invalid_edits_are_atomic() {

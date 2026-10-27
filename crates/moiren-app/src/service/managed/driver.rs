@@ -674,6 +674,7 @@ impl ManagedDriver {
         if let Some(meters) = &mut self.meters {
             meters.poll(c, &owner.observer);
         }
+        self.spectra.poll(c, &owner.observer);
     }
     /// Stop and retire the owner once the requested run limit elapsed.
     fn poll_run_limit(&mut self, c: &mut ServiceContext) {

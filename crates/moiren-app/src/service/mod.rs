@@ -34,7 +34,10 @@ pub use moiren_engine::audio_config::*;
 pub use recording::{
     RecordingEstimate, RecordingEstimateBasis, RecordingFormat, RecordingPhase, RecordingSnapshot,
 };
-pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
+pub use signals::{
+    LevelTopic, SignalTopics, SpectrumBinding, SpectrumSettings, SpectrumTopic, SpectrumWindow,
+    SubscriptionDeliveryError, SubscriptionTicket,
+};
 #[cfg(windows)]
 pub use windows::WindowsBackend;
 

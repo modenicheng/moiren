@@ -6,6 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[path = "recording_tests.rs"]
 mod recording;
 
+#[path = "spectrum_tests.rs"]
+mod spectrum;
+
 struct Rig {
     driver: ManagedDriver,
     c: ServiceContext,

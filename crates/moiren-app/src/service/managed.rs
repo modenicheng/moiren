@@ -16,6 +16,7 @@ mod lifecycle;
 mod meters;
 mod parameters;
 mod recordings;
+mod spectra;
 #[cfg(test)]
 mod tests;
 
@@ -119,6 +120,7 @@ pub struct ManagedDriver {
     /// Armed only while an owner runs: a stopped session never auto-starts.
     auto_apply_deadline: Option<Instant>,
     meters: Option<meters::MeterBridge>,
+    spectra: spectra::SpectrumBridge,
     #[cfg(windows)]
     professional_observations: Option<
         Arc<
@@ -150,6 +152,8 @@ impl ManagedDriver {
                 signal_bindings: 8192,
                 signals: moiren_signal::BusConfig {
                     max_topics: 8192,
+                    max_payload_bytes: signals::MAX_SPECTRUM_COPY_BYTES,
+                    byte_budget: signals::SIGNAL_BYTE_BUDGET,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -171,6 +175,7 @@ impl ManagedDriver {
             apply: false,
             apply_audio_settings: None,
             meters: None,
+            spectra: Default::default(),
             #[cfg(windows)]
             professional_observations: None,
             #[cfg(windows)]
