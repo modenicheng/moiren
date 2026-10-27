@@ -216,6 +216,17 @@ pub fn take_string(value: PWSTR) -> Result<String> {
     unsafe { Ok(value.to_string()?) }
 }
 
+/// Probe-only: the engine's current shared-mode period with its owned format.
+#[cfg(feature = "probe-tools")]
+pub(crate) fn current_shared_mode_engine_period(
+    client: &windows::Win32::Media::Audio::IAudioClient3,
+) -> Result<(u32, TaskMemory<windows::Win32::Media::Audio::WAVEFORMATEX>)> {
+    let mut format = std::ptr::null_mut();
+    let mut period = 0;
+    unsafe { client.GetCurrentSharedModeEnginePeriod(&mut format, &mut period) }?;
+    Ok((period, TaskMemory(format)))
+}
+
 pub struct Process {
     pub handle: OwnedHandle,
     pub identity: ProcessIdentity,

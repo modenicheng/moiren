@@ -8,7 +8,9 @@
 //! `docs/superpowers/plans/2026-10-19-repo-steward-remediation.md`).
 
 #[cfg(feature = "probe-tools")]
-use windows::Win32::Media::Audio::EDataFlow;
+use windows::Win32::Media::Audio::{EDataFlow, IMMEndpoint};
+#[cfg(feature = "probe-tools")]
+use windows::core::Interface;
 use windows::{
     Win32::{
         Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
