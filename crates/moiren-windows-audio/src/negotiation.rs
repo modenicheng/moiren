@@ -1,12 +1,10 @@
 //! Shared WASAPI negotiation kernel.
 //!
-//! The professional and legacy stacks each negotiate shared-mode streams;
-//! this module is the single source for the pieces they had duplicated:
+//! Single source for the pieces the retired dual stacks had duplicated:
 //! PCM/floating-point sub-format GUIDs, WAVEFORMATEX descriptor parsing, the
-//! IAudioClient3 rejection matrix, endpoint friendly names, the legacy
-//! initialization flags, and the directional open sequence. COM call order
-//! and HRESULT handling stay verbatim per stack; deliberate divergences are
-//! explicit parameters instead of silent unification (decision D4 in
+//! IAudioClient3 rejection matrix, endpoint friendly names, and the shared
+//! and exclusive initialization sequences (deliberate divergences stay
+//! explicit parameters; see decision D4 in
 //! `docs/superpowers/plans/2026-10-19-repo-steward-remediation.md`).
 
 #[cfg(feature = "probe-tools")]
