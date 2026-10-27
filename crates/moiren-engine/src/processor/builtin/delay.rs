@@ -28,6 +28,15 @@ impl Default for DelaySettings {
     }
 }
 
+impl DelaySettings {
+    /// Single source for the static storage bound: `max_delay_ms` must be
+    /// finite and within [`Delay::MAX_DELAY_MS`]. Kernel preparation and every
+    /// control-side validator route through here so the three cannot drift.
+    pub(crate) fn storage_valid(&self) -> bool {
+        self.max_delay_ms.is_finite() && (0.0..=Delay::MAX_DELAY_MS).contains(&self.max_delay_ms)
+    }
+}
+
 /// A bounded, interpolated-free delay line. The ring is allocated while the
 /// plan is prepared; process only performs fixed-size channel/frame work.
 #[derive(Debug)]
@@ -42,8 +51,8 @@ impl Delay {
     pub const DELAY: ParameterId = ParameterId(0);
     pub const FEEDBACK: ParameterId = ParameterId(1);
     pub const MIX: ParameterId = ParameterId(2);
-    /// Shared bound for `max_delay_ms`; rack and project validation route
-    /// through this constant instead of repeating the literal.
+    /// Shared bound for `max_delay_ms`; validation routes through
+    /// [`DelaySettings::storage_valid`] instead of repeating the literal.
     pub(crate) const MAX_DELAY_MS: f64 = 60_000.0;
     /// Delay history is separate from the compiler's audio slab budget.
     pub const MAX_BUFFER_BYTES: usize = 64 * 1024 * 1024;
@@ -58,8 +67,7 @@ impl Delay {
         sample_rate: f64,
     ) -> Result<(), ProcessorError> {
         if !(1..=MAX_CHANNELS).contains(&channels)
-            || !settings.max_delay_ms.is_finite()
-            || !(0.0..=Self::MAX_DELAY_MS).contains(&settings.max_delay_ms)
+            || !settings.storage_valid()
             || !sample_rate.is_finite()
             || sample_rate <= 0.0
         {
@@ -100,6 +108,21 @@ impl Delay {
             write: 0,
             capacity,
         })
+    }
+
+    /// Unified preparation entry used by rack expansion and node lowering:
+    /// validate storage, build the ring, and emit the kernel's parameter
+    /// schema in one step, so a prepared kernel and its table cannot drift
+    /// apart. Storage is rejected before the ring is allocated.
+    pub fn prepare(
+        channels: usize,
+        settings: DelaySettings,
+        sample_rate: f64,
+        id: ProcessorId,
+    ) -> Result<(Self, Vec<ParamSpec>), ProcessorError> {
+        Self::validate_settings(channels, settings, sample_rate)?;
+        let kernel = Self::new(channels, settings, sample_rate)?;
+        Ok((kernel, Self::parameters(id, settings).to_vec()))
     }
 
     pub fn parameters(id: ProcessorId, settings: DelaySettings) -> [ParamSpec; 3] {

@@ -274,11 +274,9 @@ impl RackProcessor {
             Self::Gate(settings) => Gate::parameters(id, *settings).to_vec(),
             Self::Limiter(settings) => Limiter::parameters(id, *settings).to_vec(),
             Self::Delay(settings) => {
-                // This is the same prepared length limit enforced by Delay.
+                // This is the same prepared storage bound enforced by Delay.
                 // Checking it here avoids allocating a ring just to validate.
-                if !settings.max_delay_ms.is_finite()
-                    || !(0.0..=Delay::MAX_DELAY_MS).contains(&settings.max_delay_ms)
-                {
+                if !settings.storage_valid() {
                     return Err(ProcessorError::InvalidParameterDomain);
                 }
                 Delay::parameters(id, *settings).to_vec()

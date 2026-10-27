@@ -59,6 +59,13 @@ impl Eq {
         float_specs(id, &Self::DOMAINS, values)
     }
 
+    /// Unified preparation entry used by rack expansion and node lowering:
+    /// the kernel and its parameter schema come from one call, so a prepared
+    /// kernel and its table cannot drift apart.
+    pub fn prepare(id: ProcessorId, settings: EqSettings) -> (Self, Vec<ParamSpec>) {
+        (Self::new(), Self::parameters(id, settings).to_vec())
+    }
+
     /// Effective settings after applying recorded parameter intent by id; the
     /// result feeds both the default kernel construction and [`Eq::parameters`].
     pub(crate) fn resolve_settings(

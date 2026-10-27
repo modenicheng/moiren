@@ -254,9 +254,7 @@ impl EngineProject {
                 | NodeConfig::Gate(_)
                 | NodeConfig::Limiter(_) => specs_accept_initials(&node_specs(config)),
                 NodeConfig::Delay(settings) => {
-                    settings.max_delay_ms.is_finite()
-                        && (0.0..=Delay::MAX_DELAY_MS).contains(&settings.max_delay_ms)
-                        && specs_accept_initials(&node_specs(config))
+                    settings.storage_valid() && specs_accept_initials(&node_specs(config))
                 }
                 NodeConfig::ChannelMapper(settings) => {
                     settings.valid_layout(node.inputs()[0].channels(), node.outputs()[0].channels())

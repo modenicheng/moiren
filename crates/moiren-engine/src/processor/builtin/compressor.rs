@@ -123,6 +123,14 @@ impl Compressor {
         float_specs(id, &Self::DOMAINS, values)
     }
 
+    /// Unified preparation entry used by rack expansion and node lowering:
+    /// the kernel and its parameter schema come from one call, so a prepared
+    /// kernel and its table cannot drift apart. The signal-publishing variant
+    /// (`with_signal`) replaces only the kernel, never this schema.
+    pub fn prepare(id: ProcessorId, settings: CompressorSettings) -> (Self, Vec<ParamSpec>) {
+        (Self::new(), Self::parameters(id, settings).to_vec())
+    }
+
     /// Effective settings after applying recorded parameter intent by id. Each
     /// field is keyed by its named constant — never by declaration order — so
     /// reordering `CompressorSettings` can no longer silently misroute intent
