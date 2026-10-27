@@ -35,9 +35,41 @@ not hardware-independent guarantees.
 | 1024 x 720 | Present interval | 12.126 / 15.242 | 4.181 / 6.116 |
 
 CPU draw p95 is below the 4.17 ms budget for 240 Hz in both captures.
-**Stable physical 240 Hz is not established**: GPUI reports a 6.944 ms display
-refresh interval (144 Hz), and Windows scheduling/presentation still has tails.
+**Stable 240 FPS/physical 240 Hz is not established**: GPUI reports a 6.944 ms
+display refresh interval (144 Hz), and scheduling/presentation still has tails.
 Present events are not a measurement of physical scan-out refresh rate.
+
+## Steady-state follow-up
+
+One second of viewport settling is excluded, followed by twelve seconds per
+viewport. `steady-timings.json` retains measured wall time, counts, percentiles,
+deadline overruns and raw-report hashes. The previous table includes transitions
+and remains the like-for-like comparison against the original pipeline.
+
+| Viewport | Draw / present count | Measured time | Actual draw FPS | CPU draw p95 | Present gap p95 | Strip rebuilds |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1440 x 900 | 2773 / 2773 | 12.051 s | 230.11 | 2.402 ms | 6.797 ms | 0 |
+| 1024 x 720 | 2827 / 2827 | 12.035 s | 234.90 | 1.897 ms | 6.450 ms | 0 |
+
+Both captures lose zero journal entries and meter samples. Meter paint counts
+match draw counts. A managed-publisher regression also verifies that display
+ballistics continue to change without rebuilding strips, rather than accepting
+repeated paints of frozen levels. Screenshots still match the baseline except
+for the elapsed clock.
+
+The Windows compositor reports a nominal **239.998 Hz** composition/refresh
+ratio (`10000000 / 41667`), distinct from GPUI's display-mode metadata above.
+The capture now records both, without changing any system display setting.
+All handled frame signals report `NativeCallback`; observed source gaps have
+p95 6.386 / 6.217 ms. These signals may be coalesced and are **not** an independent
+count of every native tick. Draw time also has occasional overruns: 23/2773
+comfortable draws exceed 4.167 ms, compared with 0/2827 compact draws.
+
+This closes the Mixer strip-rebuild bottleneck, **not the full sustained-240
+acceptance gate**. The next investigation crosses into GPUI/Windows compositor
+pacing, message dispatch and presentation, with remaining foreground/GPU costs
+still possible contributors. This PR does not patch dependencies, bypass native
+pacing with a busy loop, or claim every missed deadline is a scheduling fault.
 
 The snapshots below match the same-commit baseline pixel-for-pixel after
 excluding the elapsed clock area. This includes meter labels and peak readouts.
@@ -53,13 +85,22 @@ eight. Do not compare their subscription counts as an error.
 ```powershell
 $env:MOIREN_CAPTURE_METERS = '1'
 $env:MOIREN_CAPTURE_STATES = '1'
+$env:MOIREN_CAPTURE_SECONDS = '12' # Optional; default 3, bounded to 1..60.
 cargo run --locked --release -p moiren-app --features ui-profiler --example ui_capture -- <output-directory>
 ```
 
-Outputs include native screenshots, `meter-frames.json`, and
-`platform-{comfortable,compact}.json`. Use platform `draw_ms` for total CPU
-render cost; meter-only timing now includes actual canvas painting, unlike
-the old element-construction-only instrumentation.
+Outputs include native screenshots, `meter-{comfortable,compact}.json`, and
+`platform-{comfortable,compact}.json`. Schema v2 platform reports contain
+`elapsed_ms`, actual `render_fps` / `present_fps`, frame arrays and foreground
+journal arrays (including short-task summaries). Only the capture window's
+frame/signal events count toward FPS. The bounded journal is drained every
+250 ms; JSON serialization happens after measurement. Meter samples restart
+for each viewport and expose any truncation via `dropped`.
+
+Use platform `draw_ms` for total CPU render cost; meter-only timing includes
+actual canvas painting, unlike the old element-construction-only instrumentation.
+Use the explicit 4.167 ms budget, not GPUI's profiler late-frame flag: its
+internal budget has a 120 Hz floor.
 
 Regression tests cover cached animation frames, unrelated shell notifications,
 control invalidation, live managed observations, clip reset, scroll geometry,
@@ -70,3 +111,6 @@ editing/dragging/routing/multichannel layout behavior.
 Local verification: `cargo test --locked -p moiren-app --features gpui-test`
 (389 passed, four explicit opt-in tests ignored), strict Clippy with the same
 feature and all app targets, workspace/all-targets check, and rustfmt check.
+Follow-up: `cargo test --locked -p moiren-app --features ui-profiler`
+(391 passed, four opt-in ignored), strict Clippy with `ui-profiler`/all app
+targets, and red/green tests for window-scoped diagnostics and sample reset.

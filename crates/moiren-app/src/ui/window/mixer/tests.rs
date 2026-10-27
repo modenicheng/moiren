@@ -474,6 +474,28 @@ fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mu
         window.simulate_next_frame(cx);
         window.draw(cx).clear(cx);
     });
+    let (bar_before, strips_before, paints_before) = view.read_with(cx, |shell, _| {
+        let trace = shell.mixer.trace.borrow();
+        (
+            shell.node_meters.channel_levels(node).unwrap()[0].bar,
+            trace.strip_renders,
+            trace.meter_paints,
+        )
+    });
+    std::thread::sleep(Duration::from_millis(30));
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    view.read_with(cx, |shell, _| {
+        let trace = shell.mixer.trace.borrow();
+        assert!(
+            shell.node_meters.channel_levels(node).unwrap()[0].bar < bar_before,
+            "cached controls must not freeze display ballistics between publications"
+        );
+        assert_eq!(trace.strip_renders, strips_before);
+        assert!(trace.meter_paints > paints_before);
+    });
     cx.update(|window, cx| window.click(SharedString::from(format!("meter-reset-{node:?}")), cx));
     assert!(view.read_with(cx, |shell, _| {
         shell.node_meters.channel_clips(node).is_empty()
