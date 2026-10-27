@@ -5,7 +5,7 @@
 - Date: 2026-10-26.
 - Branch: `feat/minimal-io-latency`.
 - Source base: `ec66e85117fbf668c2def334bdb33028afd454e9`.
-- Latest native target source: `02fd8b1`, including driver pre-Run admission
+- Latest native target source: `3289ded`, including driver pre-Run admission
   `25951de`. The matching test-signed package is installed as `oem31.inf`;
   bounded event/timer retests still fail the zero-quality gate. Earlier
   implementation, review and service/UI checkpoints are tracked below.
@@ -41,7 +41,7 @@
 | 1 | Software foundation passed | 19 marker tests; no physical observation yet |
 | 2 | Software foundation passed | 5 transport, 8 budget and delivery-timing tests |
 | 3 | Software propagation passed; target native evidence partial | Real preparation/prime and 64-frame demand regressions; target native packet probe ran but is not a complete pass |
-| 4 | Software budget/boundary passed; native quality remains unqualified | Latest matching driver/probe retests have event Microphone drops/silence and timer Playback startup silence; historical revision mismatches are retained below |
+| 4 | Software budget/boundary passed; native quality remains unqualified | `3289ded` fixes timer Playback first-buffer erasure in the one-second matrix; event Microphone drops and a five-second timer epoch mismatch still fail quality |
 | 5 | Software graph/RT regressions passed; physical timing pending | Compiled Input -> Bus -> Output delay regression; physical output timing pending |
 | 6 | App settings/rename tests passed; production/rename live validation pending | Persisted transport settings, stale active state, safe rename and held-client tests; current target native smoke is recorded below |
 | 7 | Not qualified | Calibrated physical p95, 30-minute and 2-hour PCM/load runs |
@@ -1141,3 +1141,58 @@ observation of `10.0.26300` was the development host and is not guest evidence.
 `C:\DriverTest`, installed/rollback DriverStore packages and system files
 were preserved. Future builds and evidence retention remain on the host;
 the guest is used only for the current bounded test.
+
+### 2026-10-27 playback preroll after gate admission
+
+`3289ded` moves the native probe's render preroll from `Stream::prepare` to
+`Stream::start`, after `open_gate` has completed and immediately before native
+Start. `VadSetGate` deliberately clears native storage before opening admission;
+the old ordering erased the already submitted nonzero first buffer. The fix
+keeps that revocation/silence fence and the prequeued four playback READs.
+No kernel code, buffer size, freshness predicate or signal threshold changed.
+
+The target-only regression `scripts/tests/vad-native-playback.tests.ps1`
+rejected the actual archived `02fd8b1` timer report at mono PCM16
+(45,056 matching frames, 2,048 silent frames), then accepted all four playback
+shapes in fresh `3289ded` timer and event reports. The 33 native example tests,
+strict example/test Clippy, formatting, full Windows-audio crate tests and
+release build pass. Independent static spec/quality review passes.
+
+The unchanged running `oem31.inf` SYS was verified before testing against SHA-256
+`C8D6644A7EEF6AB63EE1F713BB4BCEF6464921343AF1A467DFC39093167D705F`.
+The new probe is 392,704 bytes, SHA-256
+`C94E20164F7E7B483B8FBD342010F24F42DA7DF9B5CD4D39119E9ED721594CB9`.
+Both one-second-per-case matrices exit 0 without timeout:
+
+| Direction / channels / format | Event signal | Event silent | Event dropped writes | Timer signal | Timer silent |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Playback / mono / PCM16 | 47,040 | 0 | 0 | 47,104 | 0 |
+| Playback / mono / Float32 | 47,040 | 0 | 0 | 47,104 | 0 |
+| Playback / stereo / PCM16 | 47,040 | 0 | 0 | 47,104 | 0 |
+| Playback / stereo / Float32 | 47,040 | 0 | 0 | 47,616 | 0 |
+| Microphone / mono / PCM16 | 47,520 | 0 | 0 | 47,520 | 0 |
+| Microphone / mono / Float32 | 47,520 | 0 | 0 | 47,520 | 0 |
+| Microphone / stereo / PCM16 | 47,520 | 0 | 0 | 47,520 | 0 |
+| Microphone / stereo / Float32 | 47,040 | 480 | 1 | 46,560 | 0 |
+
+All cases report zero native discontinuities. All six system-default identities
+are unchanged in each complete matrix. Event microphone still fails zero quality.
+
+A five-second-per-case timer repeat exits 1 in Playback mono Float32 with
+`0x8007051A`. Its retained diagnostic has 80,896 matching frames, zero observed
+silent frames, zero native discontinuities and zero microphone drops. Admission
+was stream generation 2 / gate epoch 4; the post-failure, pre-cleanup QUERY
+reports the same stream Running with gate open and epoch 5, plus one dropped
+packet. This establishes an epoch change during the case, not its exact cause or
+a recovered/pass result. Earlier `ScheduleTimerDrivenStep` stall rebase is a
+candidate path requiring separate evidence. No long run is justified.
+
+Host archives `target/vad-target-archive/20261027-native-3289ded-timer1`,
+`20261027-native-3289ded-event1` and `20261027-native-3289ded-timer5`
+retain stdout, stderr, exit metadata, manifest and cleanup inventory, including
+the failed run. Every payload length/SHA-256 was checked on the host and
+rechecked on the guest before bounded deletion under `C:\MoirenVadTest`;
+reparse points were rejected. At `2026-10-27T10:50:05+08:00` the guest again
+holds only the current 392,704-byte probe, has no active test processes or
+present dynamic children, and has 30.106 GiB free. Temporary runner and obsolete
+probe are deleted. The driver installation and system/rollback packages remain.
