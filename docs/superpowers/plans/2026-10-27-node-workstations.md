@@ -63,6 +63,12 @@ Ignored tests require explicit hardware, machine-specific registry, native-windo
 
 This verified milestone is being delivered as responsibility-scoped commits and a PR at the user's request. Capture source is versioned; PNGs and generated JSON manifests remain local and are excluded through Git's local exclude file. No Figma master or original-workspace source edits were performed.
 
+### Pre-PR Integration Check
+
+The branch was rebased onto `origin/main` at `05e340e`, retaining the upstream Mixer render isolation and test-job improvements. On that integrated tree, app GPUI tests passed with **477 passed, 0 failed, 3 ignored**; default and GPUI-feature workspace strict Clippy, formatting and diff-whitespace checks also passed. The upstream live-Mixer cache test was measuring while responsive panels were still animating; it now uses the existing panel-settle helper before recording meter-only frame counts, with the original assertions unchanged. The earlier 1,317-test workspace result above describes the pre-rebase baseline, not a fresh complete post-rebase run.
+
+The PR diff contains no screenshots, generated capture manifests or binary files. The 98 local screenshots predate the rebase; fresh post-rebase integration evidence is the headless GPUI suite, not a claim that all native captures were repeated.
+
 ## Follow-up Audit
 
 The full redesign goal remains open beyond this verified milestone. The original workflow calls for pre-recording format selection, useful Rack-stage parameter editing and appropriate analyzer visualization. This milestone still has fixed float32 WAV output, default-only Rack stages, and an explicitly unavailable realtime spectrum display. Tone/Mapper parameter-domain consistency and complete Inspector precision editing also remain follow-up work. They must not be represented as complete merely because the baseline tests pass.
