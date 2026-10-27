@@ -2982,3 +2982,42 @@ too, verify host/guest payload length and SHA-256 before deleting explicit owned
 run artifacts, and preserve Windows, DriverStore, installed/rollback packages
 and `C:\DriverTest`. This is a storage observation, not an audio run or a
 Stage 7 latency/stability qualification.
+
+### 2026-10-28 accepted owned Process collector
+
+`481136255235586fe9012046ef412fe7745d0289` contains the six-file B integration,
+atomically committed and pushed after independent spec/quality re-review
+closes all three findings. First positive acknowledgements must meet their
+deadlines; final stopped bridge/delivery/timeline evidence is independently
+validated without requiring joined owners to remain alive; graph PCM and
+metadata writes are independently attempted and both failures are retained.
+The ordinary external-PID path and compatible product defaults remain intact.
+
+The owner retains genuine five-test RED -> focused GREEN, PCM-attempt RED ->
+GREEN and final-timeline RED -> GREEN, with expanded deadline/counter/metadata
+coverage explicitly distinguished from separately observed RED runs. Final
+focused tests pass 28/28; the full example passes 189/189. Parent independently
+reruns all 189 tests and strict ordinary/actual-test-profile Windows and Linux
+Clippy with exit 0, verifies all six frozen hashes, scoped formatting and diff
+checks, then commits exactly those paths. Linux is compile/lint evidence, not
+Linux test execution. Injected Guard/action tests do not prove every native
+prepare/compile/attach failure or an OS-enforced cleanup watchdog.
+
+Host-only clean Git archive SHA-256 is
+`FE0708DC1E13DA03615A10D6A861C087E27C1A1DD3E9E5421BA4B529E0F8C8FF`.
+The release example builds successfully in 76.6920766 seconds; its executable
+is 6,172,160 bytes, SHA-256
+`BA3298DD468D03C4BD291C94D0FEE3BA7D21C11DA59695261AEBF0CC792E8C09`.
+Build provenance is retained at
+`target/20261028-owned-process/build-provenance-4811362.json`; command and
+parent regression logs are adjacent. A separate complete accepted-pin software
+matrix is still running in the immutable source snapshot. Do not substitute
+older green whole-workspace results or this release build for its completion.
+
+The local host smoke helper independently requires repairs to source/binary
+provenance, missing/malformed receipt retention and unstable-output manifest
+eligibility. Its review hold remains until those repairs pass; B's source PASS
+does not clear the helper hold. No B native run or guest file change has occurred
+at this checkpoint. Raw collection always remains unqualified; physical
+calibration, matched path comparison, short clean VAD gates, 30-minute candidate
+and two independent two-hour qualifications remain outstanding.

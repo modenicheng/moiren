@@ -149,3 +149,13 @@ Stage 7.
   empty, no probes or present dynamic Moiren children, bus OK and 32,220,827,648
   bytes free. No old owned files can be removed. No guest build/cache or audio
   run was introduced by this read-only check; the storage policy is unchanged.
+- B repairs now pass independent spec/quality re-review and were atomically
+  committed/pushed as `4811362`. Parent freshly reruns all 189 example tests
+  and ordinary/actual-test-profile Windows and Linux strict lint successfully.
+  Genuine regression failures and their fixes remain retained. This resolves
+  the B source-review hold, not any native/physical gate.
+- A clean `4811362` Git archive builds the release example successfully on the
+  host. Complete accepted-pin workspace/app/RT/driver-host verification is
+  running in that isolated snapshot; no result is claimed while commands run.
+  A separate host smoke helper has its own provenance/partial-evidence review
+  findings under repair and must pass re-review before native execution.
