@@ -173,6 +173,12 @@ pub struct AppSnapshot {
     pub catalog_error: Option<String>,
     pub control: ControlSummary,
     pub signal_topics: super::SignalTopics,
+    /// Whether the active session feeds its levels into the tone topic
+    /// instead of the physical monitor pair. The meter bridge resolves this
+    /// from the running host graph and publishes it as a fact, so every
+    /// consumer (meter subscriptions today) reads one answer instead of
+    /// re-deriving "is this a software source" from its own input.
+    pub tone_session: bool,
     pub elapsed: Duration,
 }
 #[cfg(windows)]

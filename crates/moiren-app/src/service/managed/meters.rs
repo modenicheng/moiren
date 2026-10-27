@@ -75,6 +75,9 @@ impl MeterBridge {
                 }))
             )
         });
+        // The resolved wiring is the fact: consumers read `tone_session` from
+        // the snapshot instead of re-deriving it from their own input.
+        c.tone_session = tone;
         let nodes = [
             source.filter(|_| !tone).map(|n| n.id()),
             sink.filter(|_| !tone).map(|n| n.id()),
