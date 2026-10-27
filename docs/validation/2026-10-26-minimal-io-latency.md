@@ -2594,3 +2594,59 @@ VAD child or Moiren AudioEndpoint, and `ROOT\MEDIA\0000` remains `OK`; C: has
 32,293,236,736 bytes free (30.08 GiB). User-level rename remains unqualified
 until Windows endpoint FriendlyName exactly matches the request in both
 flows. Stage 7's PCM and physical-latency qualification gates remain open.
+
+### 2026-10-28 VM storage recheck
+
+The user's storage constraint remains binding: `DRIVER-TEST` has only a
+64 GB-class system disk, including Windows. A pinned-host-key SSH inventory
+at `2026-10-28T00:19:11.2891255+08:00` reports a 67,599,593,472-byte C:
+volume with 32,224,870,400 bytes free (about 30.01 GiB). `C:\MoirenVadTest`
+contains no files or directories, no Moiren/VAD/latency-probe process is
+active, and `ROOT\MEDIA\0000` remains `OK`. No obsolete owned test artifact
+exists to delete; no storage-reclamation amount is claimed.
+
+The scalar receipt is retained on the host at
+`target/vad-target-archive/20261028-storage-inventory/inventory.json`.
+This inventory is not an audio run or a stability/latency qualification.
+No system, installed driver, DriverStore, rollback or `C:\DriverTest`
+infrastructure was removed. Continue building only on the host; copy each
+completed run's evidence back, verify every payload length and SHA-256 on
+both machines, then delete only that verified run and obsolete named
+binaries. Keep one current probe only while a follow-up is queued;
+otherwise leave the guest test directory empty.
+
+### 2026-10-28 requested settings and rename feedback regressions
+
+Requested Process/VAD expert bounds now have a regression across the real
+preferences save/load and startup boundaries: startup retains the requests,
+stays Idle, and does not fabricate active transport settings. A rendered
+settings failure test drives the real UI transaction through an injected
+failed-service snapshot and verifies the draft, visible error and requested
+transport survive while active transport is absent and saved preferences
+remain unchanged. It does not qualify native rejection or teardown.
+
+The initially isolated export feedback failure was reproduced with the
+original real click. The draft remained a tab, the candidate name remained
+`Valid`, and no request was pending. The rendered rename button extended
+below the headless page clip (button y=1029..1057, page bottom=1052), so the
+click produced no validation error. The test now uses its existing bounded
+scroll helper before the same real click. It retains all previous assertions
+and additionally checks the draft, no pending request, and dispatch error.
+There is no production rename-validation or layout-policy change.
+
+Fresh verification of this combined source state:
+
+- Focused persistence, failed restart, and corrected rename-feedback tests:
+  one pass each. The rename-feedback test's original and diagnostic RED logs
+  are retained alongside the corrected GREEN log.
+- `cargo test --locked -p moiren-app --features gpui-test`: exit 0,
+  494 passed, 4 ignored, 20 result suites; includes 13 UI acceptance tests.
+- `cargo clippy --locked -p moiren-app --all-targets --features gpui-test -- -D warnings`:
+  exit 0; `cargo fmt --all -- --check` and `git diff --check`: exit 0.
+- Logs: `target/20261028-settings-verification/`. Independent static reviews
+  of the settings slice and test-only scroll follow-up report no specification
+  or code-quality findings.
+
+No driver binary was deployed and no new audio run was performed. These host
+regressions do not advance Windows exact-name, native stability, calibration,
+matched-path comparison or long-duration qualification gates.

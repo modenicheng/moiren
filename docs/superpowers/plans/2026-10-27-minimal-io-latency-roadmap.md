@@ -315,6 +315,33 @@ independent accepted two-hour repetitions.
   native queues are labeled as effective prepared values, and physical E2E
   latency remains `Unknown / unqualified` without calibrated evidence. Focused
   unit/GPUI checks and all 13 app UI acceptance tests passed.
+- [x] Transport settings persistence/refusal slice: requested Process/VAD
+  bounds round-trip through preferences and startup without an active claim;
+  rejected restart preserves requested settings, visible error and draft while
+  leaving saved preferences unchanged. Focused tests, 13 UI acceptance tests,
+  strict app Clippy, fmt and diff checks passed. The initial full GPUI library
+  run retained an invalid-export-rename feedback test failure; the 2026-10-28
+  follow-up below closes that test-only reachability issue.
+- [x] 2026-10-28 GPUI follow-up: added name diagnostics pushed the rename
+  button into the viewport clip. The existing regression now scrolls the
+  whole button into view before the real click, retains invalid input and
+  candidate-name assertions, and explicitly requires validation feedback.
+  Fresh full app GPUI tests pass 494/4 ignored across 20 result suites,
+  including 13 UI acceptance tests; feature-enabled strict app Clippy,
+  fmt and diff checks pass. Independent static reviews of both bounded
+  changes report no spec or quality findings. Native rename and physical
+  qualification are unaffected.
+- [x] 2026-10-27 VM storage inventory: 32,290,861,056 bytes free, test
+  directory empty, no Moiren/VAD/probe processes, and `ROOT\MEDIA\0000` OK.
+  No old test artifacts existed to remove; system and installed driver files
+  were left untouched.
+- [x] 2026-10-28 storage recheck: the 67,599,593,472-byte system volume
+  has 32,224,870,400 bytes free (about 30.01 GiB); `C:\MoirenVadTest` remains
+  empty, no audio test process is active, and `ROOT\MEDIA\0000` is `OK`.
+  No files were deleted because there were no obsolete owned test artifacts.
+  Preserve `C:\DriverTest`, installed packages and rollback infrastructure;
+  keep builds/source trees on the host and archive/hash-check/delete each
+  completed guest run before staging another one.
 - [ ] Exact Windows endpoint FriendlyName rename acceptance for Playback and
   Microphone.
 - [ ] Zero-quality-fault VAD playback/microphone short gates and characterized
