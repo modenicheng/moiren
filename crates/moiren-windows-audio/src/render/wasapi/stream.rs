@@ -1,6 +1,8 @@
 //! All COM objects stay on the worker; preparation precedes the event loop.
 use super::{RenderOwnerExit, Wake, api, format::mix_format, handle, packet::submit, wait};
-use crate::latency::{CallbackObservation, LatencyRecorder, clock::QpcClock};
+use crate::latency::{
+    CallbackObservation, DeviceClockObservation, LatencyRecorder, clock::QpcClock,
+};
 use crate::negotiation::{OpenedSharedClient, SharedOpenStages, open_shared_client};
 use crate::render::SampleRenderer;
 use crate::{Activation, ActivationGate};
@@ -127,13 +129,20 @@ fn record_callback(
         bridge_after,
         ..Default::default()
     });
-    telemetry.record(CallbackObservation {
-        wake_qpc_100ns: wake.wake_qpc_100ns,
-        completed_qpc_100ns: clock.and_then(QpcClock::now),
-        demand_frames: u64::from(demand_frames),
-        padding_before_frames: Some(wake.padding_before_frames),
-        submitted_frames,
-    });
+    telemetry.record_with_device_clock(
+        CallbackObservation {
+            wake_qpc_100ns: wake.wake_qpc_100ns,
+            completed_qpc_100ns: clock.and_then(QpcClock::now),
+            demand_frames: u64::from(demand_frames),
+            padding_before_frames: Some(wake.padding_before_frames),
+            submitted_frames,
+        },
+        wake.native_clock.map(|sample| DeviceClockObservation {
+            position_units: sample.position_units,
+            qpc_100ns: sample.qpc_100ns,
+            hresult: sample.hresult,
+        }),
+    );
 }
 
 pub(super) struct NativeRender {
@@ -360,6 +369,10 @@ pub(super) fn run_stream(
                 Wake::Audio => report.stats.audio_wakes += 1,
             }
             let wake_qpc_100ns = clock.as_ref().and_then(QpcClock::now);
+            // Query the native device clock on the same bounded trace sample.
+            let device_clock = trace
+                .then(|| native_clock.as_ref().map(clock_sample))
+                .flatten();
             let padding = api("GetCurrentPadding", unsafe { client.GetCurrentPadding() })?;
             writable_frames(capacity, padding)?;
             if let Some(owner) = padding_observation.0.as_mut() {
@@ -374,9 +387,7 @@ pub(super) fn run_stream(
                 wake_qpc_100ns,
                 padding_before_frames: padding,
                 submitted_frames_before: report.stats.submitted_frames,
-                native_clock: trace
-                    .then(|| native_clock.as_ref().map(clock_sample))
-                    .flatten(),
+                native_clock: device_clock,
                 bridge_before: trace.then(|| renderer.bridge_snapshot()).flatten(),
             };
             let writable = writable_frames(capacity, padding)?;
@@ -493,7 +504,7 @@ pub(super) fn run_owner_with(
 }
 pub(super) fn new_report(options: &RenderOptions) -> RenderReport {
     RenderReport {
-        schema_version: 9,
+        schema_version: 10,
         queue: None,
         latency: LatencyRecorder::new(options.latency_telemetry).snapshot(),
         diagnostics: {
@@ -1057,7 +1068,13 @@ pub(super) mod diagnostic_tests {
         assert_eq!(callback["native_clock"]["position_units"], 1234);
         assert_eq!(callback["native_clock"]["qpc_100ns"], 5678);
         assert_eq!(callback["native_clock"]["hresult"], 0);
+        let trace = &json["latency"]["trace"][0]["device_clock"];
+        assert_eq!(trace["position_units"], 1234);
+        assert_eq!(trace["qpc_100ns"], 5678);
+        assert_eq!(trace["hresult"], 0);
         assert_eq!(json["clock_frequency"], 384_000);
+        assert_eq!(json["latency"]["schema_version"], 2);
+        assert_eq!(json["schema_version"], 10);
         assert_eq!(json["clock_hresult"], serde_json::Value::Null);
     }
 

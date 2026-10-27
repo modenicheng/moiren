@@ -23,8 +23,8 @@ pub(crate) mod clock;
 
 use serde::Serialize;
 pub use telemetry::{
-    CallbackObservation, HistogramSnapshot, LatencyRecorder, LatencySnapshot, TRACE_CAPACITY,
-    TraceRecord, TraceSnapshot,
+    CallbackObservation, DeviceClockObservation, HistogramSnapshot, LatencyRecorder,
+    LatencySnapshot, TRACE_CAPACITY, TraceRecord, TraceSnapshot,
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]

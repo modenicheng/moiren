@@ -1,8 +1,8 @@
 use moiren_windows_audio::{
     clock_bridge::{CapturePacket, ClockBridgeConfig, capture_bridge},
     latency::{
-        CallbackObservation, LatencyRecorder, MeasurementMethod, TRACE_CAPACITY, TelemetryMode,
-        qpc_ticks_to_100ns,
+        CallbackObservation, DeviceClockObservation, LatencyRecorder, MeasurementMethod,
+        TRACE_CAPACITY, TelemetryMode, qpc_ticks_to_100ns,
     },
     stats::SILENT,
 };
@@ -125,6 +125,35 @@ fn snapshot_is_independent_and_serializes_only_valid_trace_entries() {
     let json = serde_json::to_value(before).unwrap();
     assert_eq!(json["trace"].as_array().unwrap().len(), 1);
     assert_eq!(json["measurement_method"], "unknown");
+}
+
+#[test]
+fn trace_retains_paired_native_device_clock_position_and_qpc() {
+    let mut recorder = LatencyRecorder::new(TelemetryMode::Trace);
+    recorder.record_with_device_clock(
+        callback(100, 20),
+        Some(DeviceClockObservation {
+            position_units: 48_000,
+            qpc_100ns: 200,
+            hresult: 0,
+        }),
+    );
+
+    let snapshot = recorder.snapshot();
+    let record = snapshot.trace.records().first().unwrap();
+    assert_eq!(
+        record.device_clock,
+        Some(DeviceClockObservation {
+            position_units: 48_000,
+            qpc_100ns: 200,
+            hresult: 0,
+        })
+    );
+
+    let json = serde_json::to_value(snapshot).unwrap();
+    assert_eq!(json["trace"][0]["device_clock"]["position_units"], 48_000);
+    assert_eq!(json["trace"][0]["device_clock"]["qpc_100ns"], 200);
+    assert_eq!(json["trace"][0]["device_clock"]["hresult"], 0);
 }
 
 #[test]
