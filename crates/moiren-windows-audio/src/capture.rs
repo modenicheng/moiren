@@ -19,10 +19,10 @@ pub use evidence::{
 pub(crate) mod wasapi;
 #[cfg(windows)]
 pub use wasapi::{
-    CaptureEndpoint, CapturePreparationFailure, CaptureSession, NativeCaptureInfo, PreparedCapture,
-    PreparedNativeCapture, list_capture_endpoints, prepare_capture_native_with_gate,
-    prepare_capture_native_with_gate_returning, prepare_capture_with_gate, start_capture,
-    start_capture_with_stop,
+    CaptureEndpoint, CapturePreparationAbortFailure, CapturePreparationFailure, CaptureSession,
+    NativeCaptureInfo, PreparedCapture, PreparedNativeCapture, list_capture_endpoints,
+    prepare_capture_native_with_gate, prepare_capture_native_with_gate_returning,
+    prepare_capture_with_gate, start_capture, start_capture_with_stop,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]

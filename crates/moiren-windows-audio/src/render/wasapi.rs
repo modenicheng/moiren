@@ -25,7 +25,9 @@ mod packet;
 mod preparation;
 mod stream;
 pub use preparation::{
-    NativeRenderInfo, PreparedNativeRender, RenderAttachFailure, prepare_render_native_with_gate,
+    NativeRenderInfo, PreparedNativeRender, RenderAttachAbortFailure, RenderAttachFailure,
+    RenderPreparationAbortFailure, prepare_render_native_with_gate,
+    prepare_render_native_with_gate_returning_with_abort,
 };
 #[cfg(test)]
 pub(crate) use preparation::{TestOutcome, prepare_test_native, prepare_test_native_with_info};
@@ -114,7 +116,11 @@ impl RenderSession {
                 .ok_or(RenderError::StartupLost)?,
         })
     }
-    fn join_owner(mut self) -> Result<NativeOwnerExit, RenderError> {
+    fn join_owner(self) -> Result<NativeOwnerExit, RenderError> {
+        let (exit, error) = self.join_owner_returning();
+        exit.ok_or_else(|| error.expect("failed render join"))
+    }
+    fn join_owner_returning(mut self) -> (Option<NativeOwnerExit>, Option<RenderError>) {
         let joined = self
             .worker
             .take()
@@ -130,18 +136,21 @@ impl RenderSession {
         match joined {
             Ok(mut exit) => {
                 exit.renderer = exit.renderer.or(recovered);
-                Ok(exit)
+                (Some(exit), None)
             }
             Err(error) => match (recovered, self.fallback.take()) {
                 (Some(renderer), Some(mut report)) => {
                     report.failure = Some(error.to_string());
-                    Ok(NativeOwnerExit {
-                        renderer: Some(renderer),
-                        report,
-                        _padding: None,
-                    })
+                    (
+                        Some(NativeOwnerExit {
+                            renderer: Some(renderer),
+                            report,
+                            _padding: None,
+                        }),
+                        Some(error),
+                    )
                 }
-                _ => Err(error),
+                _ => (None, Some(error)),
             },
         }
     }

@@ -18,7 +18,8 @@ pub use identity::inspect_process;
 pub(crate) use stream::{capture_format, process_loopback_stream_flags};
 #[cfg(windows)]
 pub use stream::{
-    prepare_process_capture_with_gate, start_process_capture, start_process_capture_with_stop,
+    prepare_process_capture_with_gate, prepare_process_capture_with_gate_returning_with_abort,
+    start_process_capture, start_process_capture_with_stop,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

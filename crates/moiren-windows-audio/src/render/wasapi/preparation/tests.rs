@@ -125,6 +125,601 @@ fn assert_stopped(stop: &StopSignal) {
 }
 
 #[test]
+fn render_abort_precedes_internal_startup_reap() {
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let (abort, aborted) = mpsc::channel();
+    let observed = Arc::new(AtomicBool::new(false));
+    let worker_observed = observed.clone();
+    let result = start_native_owner_returning_with_abort(
+        stop,
+        gate,
+        stream::new_report(&options()),
+        move |_, _, _, preparation| {
+            preparation
+                .ready
+                .send(Err(RenderError::UnsupportedFormat))
+                .unwrap();
+            worker_observed.store(
+                aborted
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .is_ok(),
+                Ordering::Release,
+            );
+            NativeOwnerExit {
+                report: stream::new_report(&options()),
+                renderer: None,
+                _padding: None,
+            }
+        },
+        || abort.send(()).unwrap(),
+    );
+    assert!(result.is_err());
+    assert!(
+        observed.load(Ordering::Acquire),
+        "peer abort must precede the constructor's cleanup join"
+    );
+}
+
+#[test]
+fn render_abort_retains_prepare_report_and_peer_errors_on_control() {
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let control = thread::current().id();
+    let mut calls = 0;
+    let failure = start_native_owner_returning_with_abort(
+        stop,
+        gate,
+        stream::new_report(&options()),
+        |_, _, _, preparation| {
+            let mut report = stream::new_report(&options());
+            report.endpoint_id = "exact-partial".into();
+            report.failure = Some("native failure retained".into());
+            preparation
+                .ready
+                .send(Err(RenderError::UnsupportedFormat))
+                .unwrap();
+            NativeOwnerExit {
+                report,
+                renderer: None,
+                _padding: None,
+            }
+        },
+        || {
+            assert_eq!(thread::current().id(), control);
+            calls += 1;
+            Err::<(), _>("recorder failed; child attempted")
+        },
+    )
+    .err()
+    .unwrap();
+    assert_eq!(calls, 1);
+    assert_eq!(failure.error, RenderError::UnsupportedFormat);
+    let report = failure.report.unwrap();
+    assert_eq!(report.endpoint_id, "exact-partial");
+    assert_eq!(report.failure.as_deref(), Some("native failure retained"));
+    assert_eq!(failure.abort, Some(Err("recorder failed; child attempted")));
+    assert_eq!(failure.stop_error, None);
+    assert_eq!(failure.join_error, None);
+}
+
+#[test]
+fn render_abort_lost_metadata_worker_and_callback_panics_still_reap() {
+    for panic_worker in [false, true] {
+        let stop = StopSignal::new().unwrap();
+        let gate = ActivationGate::new(stop.clone()).unwrap();
+        let failure = start_native_owner_returning_with_abort(
+            stop,
+            gate,
+            stream::new_report(&options()),
+            move |_, _, _, preparation| {
+                drop(preparation);
+                assert!(!panic_worker, "injected worker panic");
+                NativeOwnerExit {
+                    report: stream::new_report(&options()),
+                    renderer: None,
+                    _padding: None,
+                }
+            },
+            || panic!("injected peer stop panic"),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(failure.error, RenderError::StartupLost);
+        assert_eq!(
+            failure.join_error,
+            panic_worker.then_some(RenderError::WorkerPanicked)
+        );
+        assert_eq!(failure.report.is_some(), !panic_worker);
+        assert!(failure.abort_panicked);
+    }
+}
+
+#[test]
+fn render_abort_validation_spawn_and_control_unwind_have_no_hidden_join() {
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let mut invalid = options();
+    invalid.endpoint_id.clear();
+    let failure = prepare_render_native_with_gate_returning_with_abort(
+        invalid,
+        stop.clone(),
+        gate.clone(),
+        || 42,
+    )
+    .err()
+    .unwrap();
+    assert_eq!(failure.error, RenderError::InvalidEndpoint);
+    assert_eq!(failure.abort, Some(42));
+    assert!(failure.report.is_none());
+    let failure = start_native_owner_with_spawn(
+        stop.clone(),
+        gate.clone(),
+        stream::new_report(&options()),
+        |_, _, _, _| panic!("must not spawn"),
+        || 43,
+        true,
+        |_| Err(std::io::Error::from_raw_os_error(8)),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(failure.error, RenderError::WorkerSpawn { code: Some(8) });
+    assert_eq!(failure.abort, Some(43));
+    assert!(failure.report.is_none());
+    let (abort, aborted) = mpsc::channel();
+    let (done, completed) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        aborted
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        done.send(()).unwrap();
+        NativeOwnerExit {
+            report: stream::new_report(&options()),
+            renderer: None,
+            _padding: None,
+        }
+    });
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let _guard = RenderAbortGuard {
+            stop_without_owner: true,
+            stop: stop.clone(),
+            session: Some(RenderSession {
+                stop: stop.event.clone(),
+                started: Arc::new(AtomicBool::new(false)),
+                worker: Some(worker),
+                recovery: None,
+                fallback: None,
+                padding: None,
+            }),
+            before_join: Some(|| {
+                abort.send(()).unwrap();
+                panic!("peer stop panic")
+            }),
+        };
+        panic!("control unwind");
+    }));
+    assert!(result.is_err());
+    completed.try_recv().unwrap();
+}
+
+#[test]
+fn render_abort_legacy_validation_and_spawn_do_not_signal_stop() {
+    let stop = StopSignal::new().unwrap();
+    let foreign = ActivationGate::new(StopSignal::new().unwrap()).unwrap();
+    assert!(prepare_render_native_with_gate(options(), stop.clone(), foreign).is_err());
+    assert_eq!(
+        unsafe { windows::Win32::System::Threading::WaitForSingleObject(handle(&stop.event), 0) },
+        windows::Win32::Foundation::WAIT_TIMEOUT
+    );
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let failure = start_native_owner_with_spawn(
+        stop.clone(),
+        gate,
+        stream::new_report(&options()),
+        |_, _, _, _| panic!("no owner"),
+        || (),
+        false,
+        |_| Err(std::io::Error::from_raw_os_error(8)),
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(failure.error, RenderError::WorkerSpawn { .. }));
+    assert_eq!(
+        unsafe { windows::Win32::System::Threading::WaitForSingleObject(handle(&stop.event), 0) },
+        windows::Win32::Foundation::WAIT_TIMEOUT
+    );
+}
+
+#[test]
+fn render_abort_attachment_guard_control_unwind_reaps_and_recovers_once() {
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let (abort, aborted) = mpsc::channel();
+    let prepared = start_native_owner(
+        stop.clone(),
+        gate,
+        stream::new_report(&options()),
+        move |stop, _, _, mut preparation| {
+            preparation.ready.send(Ok(info())).unwrap();
+            let (handoff, _) = preparation.receiver.receive(&stop).unwrap().unwrap();
+            preparation.renderer = handoff.lock().unwrap().take();
+            aborted
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            panic!("owner panic after peer stop");
+        },
+    )
+    .unwrap();
+    let (dropped, released) = mpsc::channel();
+    let control = thread::current().id();
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let PreparedNativeRender {
+            session,
+            renderer: sender,
+            ..
+        } = prepared;
+        let guard = RenderAbortGuard {
+            stop,
+            session: Some(session),
+            before_join: Some(|| {
+                abort.send(()).unwrap();
+                panic!("peer-stop panic")
+            }),
+            stop_without_owner: true,
+        };
+        let retained = guard
+            .session
+            .as_ref()
+            .unwrap()
+            .recovery
+            .as_ref()
+            .unwrap()
+            .clone();
+        *retained.lock().unwrap() = Some(NativeRenderer::Master(Box::new(
+            super::super::tests::probe_renderer(dropped),
+        )));
+        sender
+            .send((
+                retained,
+                prepare_render_queue(info().timing, RenderQueuePolicy::FullCapacity).unwrap(),
+            ))
+            .ok()
+            .unwrap();
+        panic!("attachment control unwind with owned renderer");
+    }));
+    assert!(result.is_err());
+    assert_eq!(released.try_recv().unwrap(), control);
+    assert!(released.try_recv().is_err());
+}
+
+#[test]
+fn render_abort_attachment_failures_return_renderer_once_and_preserve_native_failure() {
+    for (outcome, expected) in [
+        (Outcome::FailAfterReceive, RenderError::StagingBudget),
+        (Outcome::PanicAfterReceive, RenderError::WorkerPanicked),
+        (Outcome::LostAttachment, RenderError::StartupLost),
+    ] {
+        for panic_abort in [false, true] {
+            let stop = StopSignal::new().unwrap();
+            let gate = ActivationGate::new(stop.clone()).unwrap();
+            let native = fake_prepared(stop.clone(), gate, outcome).unwrap();
+            let (dropped, released) = mpsc::channel();
+            let control = thread::current().id();
+            let mut calls = 0;
+            let failure = native
+                .attach_returning_with_abort(
+                    super::super::tests::probe_renderer(dropped),
+                    RenderQueuePolicy::FullCapacity,
+                    || {
+                        calls += 1;
+                        assert_eq!(thread::current().id(), control);
+                        assert_stopped(&stop);
+                        assert!(!panic_abort, "peer stop panic");
+                        Err::<(), _>("both peer stops attempted")
+                    },
+                )
+                .err()
+                .unwrap();
+            assert_eq!(calls, 1);
+            assert_eq!(failure.error, expected);
+            assert_eq!(failure.abort_panicked, panic_abort);
+            assert_eq!(failure.abort.is_some(), !panic_abort);
+            let report = failure.report.as_ref().unwrap();
+            assert_eq!(report.endpoint_id, "fake-738");
+            if !matches!(outcome, Outcome::LostAttachment) {
+                assert_eq!(
+                    report.failure.as_deref(),
+                    Some(expected.to_string().as_str())
+                );
+            }
+            assert!(released.try_recv().is_err());
+            drop(failure.renderer);
+            assert_eq!(released.try_recv().unwrap(), control);
+            assert!(released.try_recv().is_err());
+        }
+    }
+}
+
+#[test]
+fn render_abort_invalid_queue_and_closed_sender_abort_before_owner_reap() {
+    for invalid_queue in [true, false] {
+        let stop = StopSignal::new().unwrap();
+        let gate = ActivationGate::new(stop.clone()).unwrap();
+        let (abort, aborted) = mpsc::channel();
+        let (closed, is_closed) = mpsc::channel();
+        let prepared = start_native_owner(
+            stop.clone(),
+            gate,
+            stream::new_report(&options()),
+            move |_, _, _, preparation| {
+                preparation.ready.send(Ok(info())).unwrap();
+                if !invalid_queue {
+                    preparation.receiver.close_and_take();
+                }
+                closed.send(()).unwrap();
+                aborted
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .unwrap();
+                NativeOwnerExit {
+                    report: stream::new_report(&options()),
+                    renderer: None,
+                    _padding: None,
+                }
+            },
+        )
+        .unwrap();
+        is_closed
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        let (dropped, released) = mpsc::channel();
+        let queue = if invalid_queue {
+            RenderQueuePolicy::Target {
+                frames: 1,
+                wake_margin_frames: 96,
+                callback_budget_frames: 48,
+            }
+        } else {
+            RenderQueuePolicy::FullCapacity
+        };
+        let failure = prepared
+            .attach_returning_with_abort(
+                super::super::tests::probe_renderer(dropped),
+                queue,
+                || abort.send(()).unwrap(),
+            )
+            .err()
+            .unwrap();
+        if invalid_queue {
+            assert!(matches!(failure.error, RenderError::LatencyBudget(_)));
+        } else {
+            assert!(matches!(
+                failure.error,
+                RenderError::Api {
+                    stage: "Send prepared renderer",
+                    ..
+                }
+            ));
+        }
+        assert!(failure.report.is_some());
+        assert_eq!(failure.join_error, None);
+        drop(failure.renderer);
+        assert_eq!(released.try_recv().unwrap(), thread::current().id());
+    }
+}
+
+#[test]
+fn render_abort_fallback_retains_worker_panic_and_renderer() {
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let prepared = start_native_owner(
+        stop.clone(),
+        gate,
+        stream::new_report(&options()),
+        |stop, _, _, mut preparation| {
+            preparation.ready.send(Ok(info())).unwrap();
+            let (retained, _) = preparation.receiver.receive(&stop).unwrap().unwrap();
+            preparation.renderer = retained.lock().unwrap().take();
+            panic!("outside normal native unwind scope");
+        },
+    )
+    .unwrap();
+    let (dropped, released) = mpsc::channel();
+    let failure = prepared
+        .attach_returning_with_abort(
+            super::super::tests::probe_renderer(dropped),
+            RenderQueuePolicy::FullCapacity,
+            || (),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(failure.error, RenderError::StartupLost);
+    assert_eq!(failure.join_error, Some(RenderError::WorkerPanicked));
+    assert_eq!(
+        failure.report.as_ref().unwrap().failure.as_deref(),
+        Some(RenderError::WorkerPanicked.to_string().as_str())
+    );
+    assert!(released.try_recv().is_err());
+    drop(failure.renderer);
+    assert_eq!(released.try_recv().unwrap(), thread::current().id());
+}
+
+#[test]
+fn render_abort_success_prepare_and_attach_never_call_callback() {
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let prepared = start_native_owner_returning_with_abort(
+        stop.clone(),
+        gate,
+        stream::new_report(&options()),
+        |stop, gate, _, preparation| {
+            preparation.ready.send(Ok(info())).unwrap();
+            let _attachment = preparation.receiver.receive(&stop).unwrap();
+            preparation.attached.send(Ok(())).unwrap();
+            assert_eq!(gate.wait().unwrap(), Activation::Cancelled);
+            NativeOwnerExit {
+                report: stream::new_report(&options()),
+                renderer: None,
+                _padding: None,
+            }
+        },
+        || panic!("successful prepare must not abort"),
+    )
+    .unwrap();
+    let (dropped, released) = mpsc::channel();
+    let attached = prepared
+        .attach_returning_with_abort(
+            super::super::tests::probe_renderer(dropped),
+            RenderQueuePolicy::FullCapacity,
+            || panic!("successful attach must not abort"),
+        )
+        .ok()
+        .unwrap();
+    attached.request_stop().unwrap();
+    attached.into_session().join().unwrap();
+    assert_eq!(released.try_recv().unwrap(), thread::current().id());
+}
+
+#[test]
+fn render_abort_legacy_explicit_error_and_closed_handshake_panic_precedence() {
+    for explicit in [false, true] {
+        let stop = StopSignal::new().unwrap();
+        let gate = ActivationGate::new(stop.clone()).unwrap();
+        let result = start_native_owner(
+            stop,
+            gate,
+            stream::new_report(&options()),
+            move |_, _, _, preparation| {
+                if explicit {
+                    preparation
+                        .ready
+                        .send(Err(RenderError::StartupLost))
+                        .unwrap();
+                }
+                drop(preparation);
+                panic!("join panic");
+            },
+        );
+        let expected = if explicit {
+            RenderError::StartupLost
+        } else {
+            RenderError::WorkerPanicked
+        };
+        assert!(matches!(result, Err(error) if error == expected));
+    }
+}
+
+#[test]
+fn render_abort_stop_failure_join_panic_and_peer_error_are_independent() {
+    use std::os::windows::io::FromRawHandle;
+    let mutex =
+        unsafe { windows::Win32::System::Threading::CreateMutexW(None, false, None) }.unwrap();
+    let stop = StopSignal {
+        event: Arc::new(unsafe { OwnedHandle::from_raw_handle(mutex.0) }),
+    };
+    let actual_stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(actual_stop).unwrap();
+    let failure = start_native_owner_returning_with_abort(
+        stop,
+        gate,
+        stream::new_report(&options()),
+        |_, _, _, preparation| {
+            preparation
+                .ready
+                .send(Err(RenderError::UnsupportedFormat))
+                .unwrap();
+            panic!("join panic after primary failure");
+        },
+        || Err::<(), _>("both peer stops attempted"),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(failure.error, RenderError::UnsupportedFormat);
+    assert!(matches!(
+        failure.stop_error,
+        Some(RenderError::Api {
+            stage: "SetEvent(stop)",
+            ..
+        })
+    ));
+    assert_eq!(failure.join_error, Some(RenderError::WorkerPanicked));
+    assert_eq!(failure.abort, Some(Err("both peer stops attempted")));
+    assert!(failure.report.is_none());
+}
+
+#[test]
+fn render_abort_lost_metadata_and_attachment_reply_signal_before_reap() {
+    for attach in [false, true] {
+        let stop = StopSignal::new().unwrap();
+        let gate = ActivationGate::new(stop.clone()).unwrap();
+        let (abort, aborted) = mpsc::channel();
+        let (done, completed) = mpsc::channel();
+        let before_join = || {
+            abort.send(()).unwrap();
+            panic!("peer callback panic after stops")
+        };
+        let owner = move |stop: Arc<OwnedHandle>,
+                          _: ActivationGate,
+                          _: Arc<AtomicBool>,
+                          mut preparation: RenderPreparation| {
+            if attach {
+                preparation.ready.send(Ok(info())).unwrap();
+                let (handoff, _) = preparation.receiver.receive(&stop).unwrap().unwrap();
+                preparation.renderer = handoff.lock().unwrap().take();
+            }
+            let (unused_ready, _) = mpsc::sync_channel(1);
+            let (unused_attached, _) = mpsc::sync_channel(1);
+            drop(std::mem::replace(&mut preparation.ready, unused_ready));
+            drop(std::mem::replace(
+                &mut preparation.attached,
+                unused_attached,
+            ));
+            aborted
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            done.send(()).unwrap();
+            let renderer = preparation.renderer.take();
+            NativeOwnerExit {
+                report: stream::new_report(&options()),
+                renderer,
+                _padding: None,
+            }
+        };
+        if attach {
+            let prepared =
+                start_native_owner(stop, gate, stream::new_report(&options()), owner).unwrap();
+            let (dropped, released) = mpsc::channel();
+            let failure = prepared
+                .attach_returning_with_abort(
+                    super::super::tests::probe_renderer(dropped),
+                    RenderQueuePolicy::FullCapacity,
+                    before_join,
+                )
+                .err()
+                .unwrap();
+            assert_eq!(failure.error, RenderError::StartupLost);
+            assert!(failure.abort_panicked);
+            assert!(failure.report.is_some());
+            drop(failure.renderer);
+            assert_eq!(released.try_recv().unwrap(), thread::current().id());
+        } else {
+            let failure = start_native_owner_returning_with_abort(
+                stop,
+                gate,
+                stream::new_report(&options()),
+                owner,
+                before_join,
+            )
+            .err()
+            .unwrap();
+            assert_eq!(failure.error, RenderError::StartupLost);
+            assert!(failure.abort_panicked);
+            assert!(failure.report.is_some());
+        }
+        completed.try_recv().unwrap();
+    }
+}
+
+#[test]
 fn prepared_padding_observer_stays_unknown_and_is_invalidated_after_native_exit() {
     let stop = StopSignal::new().unwrap();
     let gate = ActivationGate::new(stop.clone()).unwrap();

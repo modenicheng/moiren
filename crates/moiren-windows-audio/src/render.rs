@@ -26,9 +26,10 @@ pub(crate) use source::{FollowerRenderer, NativeRenderer, SampleRenderer};
 pub(crate) mod wasapi;
 #[cfg(windows)]
 pub use wasapi::{
-    NativeRenderInfo, PreparedNativeRender, PreparedRenderSession, RenderAttachFailure,
-    RenderEndpoint, RenderOwnerExit, RenderSession, list_render_endpoints,
-    prepare_render_native_with_gate, start_render, start_render_prepared,
+    NativeRenderInfo, PreparedNativeRender, PreparedRenderSession, RenderAttachAbortFailure,
+    RenderAttachFailure, RenderEndpoint, RenderOwnerExit, RenderPreparationAbortFailure,
+    RenderSession, list_render_endpoints, prepare_render_native_with_gate,
+    prepare_render_native_with_gate_returning_with_abort, start_render, start_render_prepared,
     start_render_prepared_with_gate, start_render_with_stop,
 };
 
