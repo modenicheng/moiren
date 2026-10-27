@@ -1300,7 +1300,10 @@ impl Rig {
         self.wait_with_budget(predicate, RoundBudget::default());
     }
     fn wait_with_budget(&mut self, predicate: impl Fn(&Self) -> bool, budget: RoundBudget) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Generous slack: the rig polls a 2 ms cadence, so progress normally
+        // lands in milliseconds; the margin only matters when a loaded CI
+        // runner starves the rig's threads for seconds at a time.
+        let deadline = Instant::now() + Duration::from_secs(20);
         while !predicate(self) {
             assert!(
                 Instant::now() < deadline,

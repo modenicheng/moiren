@@ -34,18 +34,20 @@ pub fn prepare_slot<S: ProcessingSample>(
     if !sample_rate.is_finite() || sample_rate <= 0.0 {
         return Err(ProcessorError::InvalidIo);
     }
+    // checked_parameters stays the single precheck (channel contracts and
+    // initial-value domains) so this entry cannot accept what the control-side
+    // schema query rejects; each fixed-schema kernel's `prepare` then builds
+    // the kernel and its schema from the same source.
     let parameters = processor.checked_parameters(channels, id)?;
     let kernel: Box<dyn RtProcessor<S>> = match processor {
         RackProcessor::Gain { .. } => Box::new(Gain),
         RackProcessor::Pan { .. } => Box::new(Pan),
-        RackProcessor::Compressor(_) => Box::new(Compressor::new()),
-        RackProcessor::Eq(_) => Box::new(Eq::new()),
-        RackProcessor::Gate(_) => Box::new(Gate::new()),
-        RackProcessor::Limiter(_) => Box::new(Limiter::new()),
+        RackProcessor::Compressor(settings) => Box::new(Compressor::prepare(id, *settings).0),
+        RackProcessor::Eq(settings) => Box::new(Eq::prepare(id, *settings).0),
+        RackProcessor::Gate(settings) => Box::new(Gate::prepare(id, *settings).0),
+        RackProcessor::Limiter(settings) => Box::new(Limiter::prepare(id, *settings).0),
         RackProcessor::Delay(settings) => {
-            // Reject oversized rings before allocating; same contract as Delay.
-            Delay::validate_settings(channels, *settings, sample_rate)?;
-            Box::new(Delay::new(channels, *settings, sample_rate)?)
+            Box::new(Delay::prepare(channels, *settings, sample_rate, id)?.0)
         }
         RackProcessor::ChannelMapper(settings) => Box::new(ChannelMapper::with_layout(
             channels,

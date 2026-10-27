@@ -21,6 +21,7 @@ pub(crate) mod test_backend;
 mod windows;
 pub use backend::*;
 pub use exports::*;
+pub(crate) use graph::primary_node_of;
 pub use graph::{
     BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphFault, GraphNodeState,
     GraphPreparation, GraphSnapshot, GraphSubject, MixerState, ServiceGraph, default_label,
@@ -116,6 +117,10 @@ pub struct ServiceContext {
     pub catalog_error: Option<String>,
     pub control: ControlSummary,
     pub(crate) signals: signals::SignalService,
+    /// Whether the active session routes its levels into the tone topic
+    /// instead of the physical monitor pair. The meter bridge resolves it
+    /// from the running host graph and retires it with the owner.
+    pub tone_session: bool,
     pending: VecDeque<(JobPriority, Job, DeferredPermit)>,
     slots: Arc<AtomicUsize>,
 }
@@ -136,6 +141,7 @@ impl Default for ServiceContext {
             catalog_error: None,
             control: ControlSummary::default(),
             signals: signals::SignalService::new().expect("fixed application signal topics"),
+            tone_session: false,
             pending: VecDeque::with_capacity(MAX_PENDING_JOBS),
             slots: Arc::new(AtomicUsize::new(MAX_PENDING_JOBS)),
         }
@@ -316,7 +322,8 @@ impl ServiceDriver for CoreDriver {
                 }
             }
             AppRequest::ApplyGraph => {
-                c.graph.record_error("未配置原生音频驱动");
+                c.graph
+                    .record_error("No native audio backend is configured");
             }
         }
     }
@@ -349,6 +356,7 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         catalog_error: c.catalog_error.clone(),
         control: c.control.clone(),
         signal_topics: c.signals.topics.clone(),
+        tone_session: c.tone_session,
         elapsed: c.core.elapsed(),
     }
 }

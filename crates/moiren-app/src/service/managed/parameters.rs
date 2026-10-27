@@ -35,7 +35,8 @@ impl ManagedDriver {
         } else if self.unsent.len() < 64 {
             self.unsent.push((target, value));
         } else {
-            c.graph.record_error("实时参数队列繁忙；候选值已保留");
+            c.graph
+                .record_error("The live parameter queue is busy; the candidate value is kept");
         }
         c.control.pending_node_parameters = self.unsent.len();
     }

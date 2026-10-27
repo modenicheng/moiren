@@ -999,6 +999,51 @@ fn ctrl_z_keystroke_steps_the_undo_journal(cx: &mut gpui_kit::TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn ctrl_z_in_a_mixer_send_editor_leaves_the_graph_journal_alone(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|_, cx| {
+        cx.bind_keys([gpui_kit::KeyBinding::new(
+            "ctrl-z",
+            super::app_view::Undo,
+            None,
+        )]);
+    });
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+    });
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = pages::Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let handle = view.update(cx, |shell, cx| {
+        use gpui_kit::Focusable;
+        let edge = shell.state.read(cx).snapshot.graph.graph.edges()[0].id();
+        shell.mixer.send_inputs[&edge].read(cx).focus_handle(cx)
+    });
+    cx.update(|window, cx| window.focus(&handle, cx));
+    // The send-gain editor is a text field: typing_focus must claim it so
+    // the shell's undo action declines to step the journal mid-edit.
+    view.update(cx, |shell, cx| {
+        assert!(shell.typing_focus(&handle, cx));
+    });
+    let nodes = view.update(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.nodes.len()
+    });
+    cx.simulate_keystrokes("ctrl-z");
+    // Give a (wrongly) dispatched undo time to reach the service; the
+    // journal must still be where it was.
+    std::thread::sleep(Duration::from_millis(400));
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| state.poll());
+        assert_eq!(shell.state.read(cx).snapshot.graph.nodes.len(), nodes);
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
 fn inspector_panel_fills_the_column_even_for_its_empty_state(cx: &mut gpui_kit::TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.update(|window, cx| {

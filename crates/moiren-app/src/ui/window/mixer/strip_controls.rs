@@ -181,15 +181,7 @@ fn wheel_direction(delta: &ScrollDelta) -> i32 {
 fn set_balance(this: &Entity<StudioShell>, id: NodeId, balance: f64, cx: &mut App) {
     this.update(cx, |shell, cx| {
         shell.state.update(cx, |state, _| {
-            if let Some(node) = state.snapshot.graph.node(id) {
-                state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
-                    node: id,
-                    state: MixerState {
-                        balance: balance.clamp(-1., 1.),
-                        ..node.mixer
-                    },
-                }));
-            }
+            state.edit_mixer(id, |state| state.balance = balance.clamp(-1., 1.));
         });
         cx.notify();
     });

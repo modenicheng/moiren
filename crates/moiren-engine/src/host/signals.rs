@@ -28,22 +28,20 @@ use moiren_signal::{
 pub type ManagedLevelTopic = LatestBlock<AudioWindow, ChannelLevel>;
 pub type ManagedSpectrumTopic = LatestBlock<SpectrumWindow, f32>;
 
-pub struct ManagedLevelSubscription {
+/// Control-side subscription handle shared by every managed signal flavor:
+/// the owning generation plus one bus subscriber. It becomes stale when its
+/// owner generation is replaced; staleness against later owner changes is
+/// the flavor's per-read concern.
+pub struct ManagedSubscription<T: Shape> {
     pub owner_generation: u64,
-    pub subscriber: Subscriber<ManagedLevelTopic>,
+    pub subscriber: Subscriber<T>,
 }
+
+pub type ManagedLevelSubscription = ManagedSubscription<ManagedLevelTopic>;
+pub type ManagedSignalSubscription = ManagedSubscription<LatestValue<f32>>;
+pub type ManagedSpectrumSubscription = ManagedSubscription<ManagedSpectrumTopic>;
 
 use super::{BackendError, EngineProject, NodeConfig};
-
-pub struct ManagedSignalSubscription {
-    pub owner_generation: u64,
-    pub subscriber: Subscriber<LatestValue<f32>>,
-}
-
-pub struct ManagedSpectrumSubscription {
-    pub owner_generation: u64,
-    pub subscriber: Subscriber<ManagedSpectrumTopic>,
-}
 
 type ReaderSlot<T> = Arc<Mutex<Option<(u64, T)>>>;
 
@@ -303,10 +301,7 @@ impl SignalHub {
         unregister_topics(&mut directory.bus, std::mem::take(&mut directory.spectra))?;
         clear_slots(&mut directory.meters);
         clear_slots(&mut directory.recorders);
-        directory
-            .bus
-            .create_host(capacity)
-            .map_err(|error| BackendError::Failed(error.to_string()))
+        directory.bus.create_host(capacity).map_err(failed)
     }
     pub(crate) fn prepare_levels<S: crate::sample::ProcessingSample>(
         &self,
@@ -350,23 +345,19 @@ impl SignalHub {
                     )
                 })?;
             let publisher = host
-                .prepare(
-                    &topic,
-                    host.new_binding()
-                        .map_err(|e| BackendError::Failed(e.to_string()))?,
-                )
-                .map_err(|e| BackendError::Failed(e.to_string()))?;
+                .prepare(&topic, host.new_binding().map_err(failed)?)
+                .map_err(failed)?;
             let window_frames = match project.nodes.get(&node.id()) {
                 Some(NodeConfig::Meter(settings)) => settings.window_frames,
                 _ => crate::meter::ui_window_frames(project.processing.engine.processing_sr),
             };
-            let meter = SignalLevelMeter::new(port.channels(), window_frames, publisher)
-                .map_err(|e| BackendError::Failed(e.to_string()))?;
+            let meter =
+                SignalLevelMeter::new(port.channels(), window_frames, publisher).map_err(failed)?;
             match node.kind() {
                 moiren_core::graph::NodeKind::Sink => bindings.observe_input(port.id(), meter),
                 _ => bindings.observe_output(port.id(), meter),
             }
-            .map_err(|e| BackendError::Failed(e.to_string()))?;
+            .map_err(failed)?;
         }
         Ok(())
     }
@@ -385,7 +376,7 @@ impl SignalHub {
         let directory = &mut *guard;
         let capacity = channels
             .checked_mul(settings.bins_per_channel())
-            .ok_or_else(|| BackendError::Failed("spectrum topic capacity overflow".into()))?;
+            .ok_or_else(|| failed("spectrum topic capacity overflow"))?;
         let shape = (node, channels, settings.fft_size);
         let generation = directory.generation;
         let topic = topic_or_register(&mut directory.bus, &mut directory.spectra, shape, |bus| {
@@ -408,12 +399,8 @@ impl SignalHub {
                 },
             )
         })?;
-        host.prepare(
-            &topic,
-            host.new_binding()
-                .map_err(|error| BackendError::Failed(error.to_string()))?,
-        )
-        .map_err(|error| BackendError::Failed(error.to_string()))
+        host.prepare(&topic, host.new_binding().map_err(failed)?)
+            .map_err(failed)
     }
 
     pub(crate) fn subscribe_spectrum(
@@ -436,7 +423,6 @@ impl SignalHub {
             subscriber,
         })
     }
-
     pub(crate) fn install_readers(&self, generation: u64, mut readers: PreparedReaders) {
         let mut directory = self
             .directory
@@ -552,12 +538,8 @@ impl SignalHub {
                 0.0_f32,
             )
         })?;
-        host.prepare(
-            &topic,
-            host.new_binding()
-                .map_err(|error| BackendError::Failed(error.to_string()))?,
-        )
-        .map_err(|error| BackendError::Failed(error.to_string()))
+        host.prepare(&topic, host.new_binding().map_err(failed)?)
+            .map_err(failed)
     }
     pub(crate) fn subscribe(&self, node: NodeId) -> Result<ManagedSignalSubscription, String> {
         let mut guard = self
@@ -610,49 +592,36 @@ impl SignalHub {
             .directory
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let removed: Vec<_> = directory
-            .topics
-            .iter()
-            .filter(|(node, _)| {
-                !matches!(
-                    project.and_then(|p| p.nodes.get(node)),
-                    Some(NodeConfig::Compressor(_))
-                )
-            })
-            .map(|(&node, topic)| (node, topic.clone()))
-            .collect();
-        for (node, topic) in removed {
-            if directory.bus.unregister(&topic).is_ok() {
-                directory.topics.remove(&node);
-            }
-        }
-        let removed: Vec<_> = directory
-            .spectra
-            .iter()
-            .filter(|((node, _, _), topic)| directory.active_spectra.get(node) != Some(*topic))
-            .map(|(&shape, topic)| (shape, topic.clone()))
-            .collect();
-        for (shape, topic) in removed {
-            if directory.bus.unregister(&topic).is_ok() {
-                directory.spectra.remove(&shape);
-            }
-        }
-        let removed: Vec<_> = directory
-            .levels
-            .iter()
-            .filter(|((node, _, _), topic)| directory.active_levels.get(node) != Some(*topic))
-            .map(|(&shape, topic)| (shape, topic.clone()))
-            .collect();
-        for (shape, topic) in removed {
-            if directory.bus.unregister(&topic).is_ok() {
-                directory.levels.remove(&shape);
-            }
-        }
+        // Split the directory borrow: each family prunes against its own
+        // active-topic map while the bus mutates independently.
+        let Directory {
+            bus,
+            topics,
+            levels,
+            active_levels,
+            spectra,
+            active_spectra,
+            meters,
+            recorders,
+            ..
+        } = &mut *directory;
+        unregister_stale(bus, topics, |node, _| {
+            !matches!(
+                project.and_then(|p| p.nodes.get(node)),
+                Some(NodeConfig::Compressor(_))
+            )
+        });
+        unregister_stale(bus, spectra, |(node, ..), topic| {
+            active_spectra.get(node) != Some(topic)
+        });
+        unregister_stale(bus, levels, |(node, ..), topic| {
+            active_levels.get(node) != Some(topic)
+        });
         if let Some(project) = project {
-            prune_slots(&mut directory.meters, &project.nodes, |config| {
+            prune_slots(meters, &project.nodes, |config| {
                 matches!(config, NodeConfig::Meter(_))
             });
-            prune_slots(&mut directory.recorders, &project.nodes, |config| {
+            prune_slots(recorders, &project.nodes, |config| {
                 matches!(config, NodeConfig::Recorder(_))
             });
         }
@@ -689,6 +658,34 @@ fn install_slots<T>(
     });
 }
 
+/// Shared prune step of every topic family: collect the entries `stale`
+/// reports, unregister them from the bus, and drop only the ones that
+/// unregistered cleanly (a busy lease keeps its entry for a later prune).
+fn unregister_stale<K: Ord + Copy, T: Shape>(
+    bus: &mut Bus,
+    cache: &mut BTreeMap<K, Topic<T>>,
+    stale: impl Fn(&K, &Topic<T>) -> bool,
+) {
+    let removed: Vec<_> = cache
+        .iter()
+        .filter(|(key, topic)| stale(key, topic))
+        .map(|(&key, topic)| (key, topic.clone()))
+        .collect();
+    for (key, topic) in removed {
+        if bus.unregister(&topic).is_ok() {
+            cache.remove(&key);
+        }
+    }
+}
+
+/// Shared error mapping of every bus/host failure this hub surfaces to the
+/// backend: [`BackendError::Failed`] carrying the source message. A file-local
+/// helper rather than a `From` impl so unrelated `?` sites keep their
+/// inference and match exhaustiveness untouched.
+fn failed(error: impl std::fmt::Display) -> BackendError {
+    BackendError::Failed(error.to_string())
+}
+
 /// Get-or-register shared by every shape-keyed topic cache: a hit reuses the
 /// topic an earlier (possibly retired) preparation registered, a miss
 /// registers through `build` and caches the result. Caching by shape rather
@@ -703,7 +700,7 @@ fn topic_or_register<K: Ord + Copy, T: Shape>(
     if let Some(topic) = cache.get(&key) {
         return Ok(topic.clone());
     }
-    let topic = build(bus).map_err(|error| BackendError::Failed(error.to_string()))?;
+    let topic = build(bus).map_err(failed)?;
     cache.insert(key, topic.clone());
     Ok(topic)
 }
@@ -756,8 +753,7 @@ fn unregister_topics<K, T: Shape>(
     topics: BTreeMap<K, Topic<T>>,
 ) -> Result<(), BackendError> {
     for topic in topics.into_values() {
-        bus.unregister(&topic)
-            .map_err(|error| BackendError::Failed(error.to_string()))?;
+        bus.unregister(&topic).map_err(failed)?;
     }
     Ok(())
 }

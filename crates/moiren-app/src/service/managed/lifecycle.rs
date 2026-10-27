@@ -12,6 +12,7 @@ impl ManagedDriver {
             self.cleaning,
         );
         self.meters = None;
+        c.tone_session = false;
         c.signals.clear_node_levels();
         c.active_latency_profile = None;
         c.active_audio_settings = None;
@@ -134,7 +135,8 @@ impl ManagedDriver {
                 return;
             }
             let Some(apply_id) = owner.latest_apply_id.checked_add(1) else {
-                c.graph.record_error("应用请求身份空间已耗尽");
+                c.graph
+                    .record_error("The apply request identity space is exhausted");
                 self.apply = false;
                 return;
             };

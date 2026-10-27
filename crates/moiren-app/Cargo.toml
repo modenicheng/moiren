@@ -15,8 +15,8 @@ raw-window-handle = "0.6"
 # Compile-time embedded translations; locale switch is process-global and
 # shared with gpui-component's own translation backend.
 rust-i18n = "4.2"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tray-icon = "0.21"
 

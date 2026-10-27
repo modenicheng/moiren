@@ -691,7 +691,7 @@ fn legacy_single_io_restriction_does_not_limit_managed_graph_preparation() {
             .preparation()
             .io_nodes()
             .unwrap_err()
-            .contains("1 个输入")
+            .contains("one Source and one Sink node")
     );
     assert!(service.preparation().primary_io_nodes().is_ok());
     assert_eq!(service.snapshot.graph.nodes().len(), 5);
@@ -946,7 +946,7 @@ fn undo_clears_faults_like_a_successful_edit() {
         })
         .unwrap();
     // A rejected rebuild leaves a fault behind while the journal is intact.
-    service.record_error("这个通道缺少可用的处理器配置");
+    service.record_error("This channel is missing a usable processor configuration");
     assert!(!service.snapshot().faults.is_empty());
     assert!(service.snapshot().last_error.is_some());
     assert!(service.undo());

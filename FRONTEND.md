@@ -264,7 +264,7 @@ Geometry：`radius/none = 0`、`radius/sm = 4`、`radius/md = 6`、`radius/lg = 
 
 图编辑错误以 rustc 风格的错误列表呈现在全局状态区：每条错误三行——`错误：<原因>`、`位置：<通道或 route 的用户可见名>`（可定位时）、`提示：<怎么改>`（可推断时）。点击一条错误选中对应通道或 route 并打开 Inspector。整组错误在下一次成功编辑落地或激活时清除。错误文案只说哪里错了、怎么改；禁止出现「图」「引擎」「会话」「plan」「编译」等实现层词汇，也不描述软件内部状态。
 
-2026-10-14 首批源码实现：Filled / Quiet、Standard / Toggle Icon Button、Window Button、Workspace Tab 已移植为 gpui 公共组件，入口由 `moiren_app::ui` 导出。令牌位于 [theme/controls.rs](crates/moiren-app/src/ui/theme/controls.rs)，原生预览与状态边界见 [第一批 gpui 公共组件](docs/designs/12-gpui-ready-action-components.md)。其他组件仍按当前母版逐批实现。
+2026-10-14 首批源码实现：Filled / Quiet、Standard / Toggle Icon Button、Window Button、Workspace Tab 已移植为 gpui 公共组件，入口由 `moiren_app::ui` 导出。令牌位于 [theme/controls.rs](crates/moiren-app/src/ui/theme/controls.rs)，原生预览与状态边界见 [第一批 gpui 公共组件](docs/designs/15-gpui-ready-action-components.md)。其他组件仍按当前母版逐批实现。
 
 - 「Show in Graph」使用 `Button / Quiet` 实例。
 - 替换时同时核对标签、图标、尺寸、对齐和回调。母版默认的 Plus 图标不能无条件保留到所有操作上；图标必须符合操作语义。
@@ -336,6 +336,12 @@ Geometry：`radius/none = 0`、`radius/sm = 4`、`radius/md = 6`、`radius/lg = 
 Devices 区分 Inputs、Outputs、Applications、Clock；设备详情展示能力、身份、Default、Active、Next start、可用性和诊断。默认设备、活动设备与下一次 Start 的候选不是同一状态。设备消失后保留稳定身份与不可用原因；刷新失败保留最后一次成功数据。
 
 Settings 负责 Audio Engine、Appearance、Shortcuts、Diagnostics 等应用偏好。关闭后回到原工作区并恢复选择、相机与面板状态。设备选择、路由与 Session 参数留在各自工作区，避免重复入口。
+
+### 7.5 2026 年 10 月下旬落地的交互形态
+
+- **全局检查器侧栏**：Graph、Matrix、Devices 三个工作区共用同一条右侧检查器列；左侧库以可收起窄轨常驻。检查器按当前选中对象分发到对应实现，字段渲染复用公共 controls 词汇。
+- **图撤销/重做与自动应用**：结构编辑、参数修改与 undo/redo 走服务侧同一份日志，共用 200ms 尾沿防抖重建；图改动即应用，失败保持旧图不断信号。文本输入框持有焦点时 Ctrl+Z 归文本编辑，不作用于图日志。
+- **图标化画布工具栏**：画布编辑工具栏以 Tabler 图标替代文字按钮，图标必须登记 ActionAssets 白名单后经 `assets/icons/` 加载。
 
 ## 8. 数据、运行与工程契约
 

@@ -49,12 +49,12 @@ fn sum_inputs<S: ProcessingSample>() {
             },
         ])
         .unwrap();
-    RtProcessor::<S>::validate_io(&Sum, &io).unwrap();
+    RtProcessor::<S>::validate_io(&Bus, &io).unwrap();
     let (_, parameters) = parameter_channel(vec![], 1, 1, 1, 16).unwrap();
     let bindings = parameters.bindings(PROCESSOR);
     arena
         .with_io(&io, 0..4, |io| {
-            Sum.process(
+            Bus.process(
                 &CONTEXT,
                 io,
                 parameters.view(&bindings),
@@ -95,7 +95,7 @@ fn sum_render<S: ProcessingSample>(input_count: usize) {
     });
     let (meter, mut reader) = level_meter(4, 2).unwrap();
     let resources = RtResources::<S>::new(vec![
-        ProcessorInstance::new(PROCESSOR, Sum),
+        ProcessorInstance::new(PROCESSOR, Bus),
         ProcessorInstance::new(METER, Observer(meter)),
     ])
     .unwrap();

@@ -1,5 +1,6 @@
 //! Routing rows retain graph edge/port identity, including parallel connections.
 use super::*;
+use crate::service::GraphEdit;
 use crate::ui::widgets::fader::hslider;
 
 fn section(

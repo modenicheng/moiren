@@ -9,7 +9,7 @@ fn validate_edited_node(next: &GraphSnapshot, node: NodeId) -> Result<(), String
         .nodes
         .iter()
         .find(|entry| entry.id == node)
-        .ok_or("节点不存在")?;
+        .ok_or("The node does not exist")?;
     validate_node_state(
         state,
         topology.kind(),
@@ -40,7 +40,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             next.nodes
                 .iter_mut()
                 .find(|entry| entry.id == node)
-                .ok_or("Node missing")?
+                .ok_or("The node does not exist")?
                 .builtin = state.resolved(kind);
         }
         GraphEdit::SetCompressor {
@@ -50,19 +50,21 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
         } => {
             if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Compressor
             {
-                return Err("Compressor 参数只能用于 Compressor 节点".into());
+                return Err("Compressor parameters only apply to Compressor nodes".into());
             }
             next.nodes
                 .iter_mut()
                 .find(|entry| entry.id == node)
-                .ok_or("节点不存在")?
+                .ok_or("The node does not exist")?
                 .compressor
                 .set(parameter, value);
             validate_edited_node(next, node)?;
         }
         GraphEdit::AddNode { kind, channels } => {
             if next.graph.nodes().len() >= 4096 || channels > 256 {
-                return Err("图最多包含 4096 个节点，每节点最多 256 声道".into());
+                return Err(
+                    "The graph is limited to 4096 nodes with at most 256 channels each".into(),
+                );
             }
             let id = next
                 .graph
@@ -86,7 +88,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             next.nodes
                 .iter_mut()
                 .find(|entry| entry.id == node)
-                .ok_or("Node missing")?
+                .ok_or("The node does not exist")?
                 .mixer = state;
             validate_edited_node(next, node)?;
         }
@@ -95,7 +97,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .nodes
                 .iter_mut()
                 .find(|entry| entry.id == node)
-                .ok_or("Node missing")?;
+                .ok_or("The node does not exist")?;
             entry.source = None;
             entry.output_endpoint_id = None;
         }
@@ -143,29 +145,29 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             next.nodes
                 .iter_mut()
                 .find(|s| s.id == node)
-                .ok_or("节点不存在")?
+                .ok_or("The node does not exist")?
                 .label = label;
             validate_edited_node(next, node)?;
         }
         GraphEdit::SetGain { node, gain } => {
             if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Gain {
-                return Err("只能调整 Gain 节点的增益".into());
+                return Err("Only Gain nodes have an adjustable gain".into());
             }
             next.nodes
                 .iter_mut()
                 .find(|entry| entry.id == node)
-                .ok_or("节点不存在")?
+                .ok_or("The node does not exist")?
                 .gain = gain;
             validate_edited_node(next, node)?;
         }
         GraphEdit::SetPan { node, pan } => {
             if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Pan {
-                return Err("只能调整 Balance 节点的位置".into());
+                return Err("Only Balance nodes have an adjustable position".into());
             }
             next.nodes
                 .iter_mut()
                 .find(|entry| entry.id == node)
-                .ok_or("节点不存在")?
+                .ok_or("The node does not exist")?
                 .pan = pan;
             validate_edited_node(next, node)?;
         }
@@ -173,7 +175,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             next.nodes
                 .iter_mut()
                 .find(|s| s.id == node)
-                .ok_or("节点不存在")?
+                .ok_or("The node does not exist")?
                 .source = Some(source);
             validate_edited_node(next, node)?;
         }
@@ -181,7 +183,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             next.nodes
                 .iter_mut()
                 .find(|state| state.id == node)
-                .ok_or("节点不存在")?
+                .ok_or("The node does not exist")?
                 .mono = mono;
             validate_edited_node(next, node)?;
         }
@@ -189,7 +191,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             next.nodes
                 .iter_mut()
                 .find(|state| state.id == node)
-                .ok_or("节点不存在")?
+                .ok_or("The node does not exist")?
                 .swap = swap;
             validate_edited_node(next, node)?;
         }
@@ -197,7 +199,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             next.nodes
                 .iter_mut()
                 .find(|s| s.id == node)
-                .ok_or("节点不存在")?
+                .ok_or("The node does not exist")?
                 .output_endpoint_id = Some(endpoint_id);
             validate_edited_node(next, node)?;
         }

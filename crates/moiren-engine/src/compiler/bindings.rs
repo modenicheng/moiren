@@ -385,6 +385,9 @@ impl<S: ProcessingSample> RtProcessor<S> for BoundIo<S> {
     fn latency_frames(&self) -> u32 {
         self.0.latency_frames()
     }
+    fn transport_interchangeable(&self) -> bool {
+        self.0.transport_interchangeable()
+    }
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
         self.0.validate_io(io)
     }

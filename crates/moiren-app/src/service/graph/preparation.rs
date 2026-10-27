@@ -101,11 +101,17 @@ impl GraphPreparation {
                 }
                 NodeKind::Source => {
                     let mut device = DeviceOptions::default();
-                    let source = match state.source.as_ref().ok_or("输入节点尚未绑定音源")?
+                    let source = match state
+                        .source
+                        .as_ref()
+                        .ok_or("The Source node is not bound to an input source")?
                     {
                         InputSelection::Physical { endpoint_id } => {
                             if !inputs.insert(format!("physical:{endpoint_id}")) {
-                                return Err("多个输入节点绑定了同一物理设备".into());
+                                return Err(
+                                    "Multiple Source nodes are bound to the same physical device"
+                                        .into(),
+                                );
                             }
                             device = settings.effective_input(endpoint_id).device_options(
                                 settings.backend,
@@ -124,11 +130,14 @@ impl GraphPreparation {
                             creation_time_100ns,
                         } => {
                             if *creation_time_100ns == 0 {
-                                return Err("应用音源缺少稳定进程身份".into());
+                                return Err(
+                                    "The application source is missing a stable process identity"
+                                        .into(),
+                                );
                             }
                             let executable = format!("moiren:process:{pid}:{creation_time_100ns}");
                             if !inputs.insert(executable.clone()) {
-                                return Err("多个输入节点绑定了同一应用音源".into());
+                                return Err("Multiple Source nodes are bound to the same application source".into());
                             }
                             // Process loopback owns a fixed WASAPI Shared float
                             // stream. Physical input defaults cannot turn it
@@ -154,9 +163,9 @@ impl GraphPreparation {
                     let endpoint = state
                         .output_endpoint_id
                         .as_ref()
-                        .ok_or("输出节点尚未绑定设备")?;
+                        .ok_or("The Sink node is not bound to an output device")?;
                     if !endpoints.insert(endpoint.clone()) {
-                        return Err("多个输出节点绑定了同一设备".into());
+                        return Err("Multiple Sink nodes are bound to the same device".into());
                     }
                     let clock_role = if Some(node.id()) == master {
                         ClockRole::Master
@@ -232,29 +241,21 @@ impl GraphPreparation {
     }
     pub fn primary_io_nodes(&self) -> Result<(NodeId, NodeId), String> {
         self.validate_state()?;
-        let source = self
-            .graph
-            .nodes()
-            .iter()
-            .filter(|n| n.kind() == NodeKind::Source)
+        let source = primary_node_of(&self.graph, NodeKind::Source)
             .map(|n| n.id())
-            .min()
-            .ok_or("图需要输入节点")?;
-        let sink = self
-            .graph
-            .nodes()
-            .iter()
-            .filter(|n| n.kind() == NodeKind::Sink)
+            .ok_or("The graph needs a Source node")?;
+        let sink = primary_node_of(&self.graph, NodeKind::Sink)
             .map(|n| n.id())
-            .min()
-            .ok_or("图需要输出节点")?;
+            .ok_or("The graph needs a Sink node")?;
         Ok((source, sink))
     }
     pub(super) fn validate_state(&self) -> Result<(), String> {
         self.graph.validate().map_err(|e| e.to_string())?;
         validate_exports(&self.exports, &self.graph)?;
         if self.graph.nodes().len() > 4096 || self.nodes.len() != self.graph.nodes().len() {
-            return Err("节点状态数量不匹配或图超过 4096 个节点".into());
+            return Err(
+                "Node state count does not match the graph, or the graph exceeds 4096 nodes".into(),
+            );
         }
         for node in self.graph.nodes() {
             if self
@@ -264,7 +265,7 @@ impl GraphPreparation {
                 .count()
                 != 1
             {
-                return Err("项目节点状态与拓扑身份不一致".into());
+                return Err("Project node states do not match the topology identity".into());
             }
             let state = self
                 .nodes
@@ -300,27 +301,19 @@ impl GraphPreparation {
             .filter(|n| n.kind() == NodeKind::Sink)
             .collect();
         if sources.len() != 1 || sinks.len() != 1 {
-            return Err("当前音频驱动需要 1 个输入节点和 1 个输出节点；多设备图尚未实现".into());
+            return Err("The current audio backend needs exactly one Source and one Sink node; multi-device graphs are not supported yet".into());
         }
         if self.graph.get_node(sources[0].id()).unwrap().channels() != 2
             || self.graph.get_node(sinks[0].id()).unwrap().channels() != 2
         {
-            return Err("当前设备桥仅支持双声道节点".into());
+            return Err("The current device bridge only supports stereo nodes".into());
         }
         Ok((sources[0].id(), sinks[0].id()))
     }
     pub fn gain_pan_nodes(&self) -> Option<(NodeId, NodeId)> {
         Some((
-            self.graph
-                .nodes()
-                .iter()
-                .find(|n| n.kind() == NodeKind::Gain)?
-                .id(),
-            self.graph
-                .nodes()
-                .iter()
-                .find(|n| n.kind() == NodeKind::Pan)?
-                .id(),
+            primary_node_of(&self.graph, NodeKind::Gain)?.id(),
+            primary_node_of(&self.graph, NodeKind::Pan)?.id(),
         ))
     }
     #[cfg_attr(not(windows), allow(dead_code))]

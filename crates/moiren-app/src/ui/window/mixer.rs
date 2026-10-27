@@ -1,5 +1,6 @@
 use super::*;
-use crate::service::{GraphEdit, GraphNodeState, MixerState};
+use crate::service::{GraphNodeState, MixerState};
+use crate::ui::presentation::db_text;
 use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
 use rust_i18n::t;
@@ -244,7 +245,7 @@ fn strip(
                     let editing = shell.mixer.editing_value == Some(id);
                     editable_value(
                         SharedString::from(format!("strip-readout-{id:?}")),
-                        db(entry.mixer.gain),
+                        db_text(entry.mixer.gain),
                         editing,
                         &shell.mixer.value_inputs[&id],
                         start_value_edit(
@@ -321,16 +322,9 @@ fn mixer_edit(
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
     move |_, _, cx| {
         this.update(cx, |shell, cx| {
-            shell.state.update(cx, |state, _| {
-                if let Some(node) = state.snapshot.graph.node(id) {
-                    let mut requested = node.mixer;
-                    change(&mut requested);
-                    state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
-                        node: id,
-                        state: requested,
-                    }));
-                }
-            });
+            shell
+                .state
+                .update(cx, |state, _| state.edit_mixer(id, &change));
             cx.notify();
         })
     }

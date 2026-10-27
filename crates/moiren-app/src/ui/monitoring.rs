@@ -172,12 +172,16 @@ impl MeterSubscriptions {
                 self.clear();
                 self.session = Some((snapshot.generation, spec.source.clone()));
             }
-            let (input_topic, output_topic) = match spec.source {
-                InputSelection::Tone { .. } => (None, &snapshot.signal_topics.tone_output),
-                _ => (
+            // Which topics the running session feeds is a published fact
+            // resolved by the service's meter bridge from the active host
+            // graph — a tone session has no observable input at all.
+            let (input_topic, output_topic) = if snapshot.tone_session {
+                (None, &snapshot.signal_topics.tone_output)
+            } else {
+                (
                     Some(&snapshot.signal_topics.monitor_input),
                     &snapshot.signal_topics.monitor_output,
-                ),
+                )
             };
             if !input_visible {
                 self.input_subscription = None;

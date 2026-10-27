@@ -728,7 +728,11 @@ impl Render for StudioShell {
                             div()
                                 .text_color(theme::DANGER)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(t!("Error: %{cause}", cause = fault.cause.as_str())),
+                                // Causes and hints are English catalog keys
+                                // produced by the service; translation happens
+                                // here so a locale switch re-renders stored
+                                // faults, and unknown prose passes through.
+                                .child(t!("Error: %{cause}", cause = t!(fault.cause.as_str()))),
                         )
                         .when_some(location, |row, location| {
                             row.child(
@@ -742,17 +746,20 @@ impl Render for StudioShell {
                             row.child(
                                 div()
                                     .text_color(theme::TEXT)
-                                    .child(t!("Hint: %{hint}", hint = hint)),
+                                    .child(t!("Hint: %{hint}", hint = t!(hint))),
                             )
                         });
                     list = list.child(row.gpui_test_observe());
                 }
                 if let Some(error) = other {
+                    // Dispatch/persistence diagnostics may be plain prose; a
+                    // catalog miss renders the source text unchanged.
+                    let message = t!(error.as_str()).into_owned();
                     list = list.child(
                         div()
                             .id("error-strip-message")
                             .text_color(theme::DANGER)
-                            .child(error),
+                            .child(message),
                     );
                 }
                 list.child(
@@ -856,6 +863,25 @@ impl StudioShell {
         }
     }
 
+    /// True when a text field anywhere in the shell owns focus: graph
+    /// search, node rename, inspector editors, mixer send gains, and export
+    /// fields all keep typing shortcuts (and their undo) for themselves.
+    fn typing_focus(&self, focused: &FocusHandle, cx: &App) -> bool {
+        self.node_search.read(cx).focus_handle(cx) == *focused
+            || self.node_name.read(cx).focus_handle(cx) == *focused
+            || self
+                .compressor
+                .inputs
+                .values()
+                .any(|input| input.read(cx).focus_handle(cx) == *focused)
+            || self
+                .mixer
+                .send_inputs
+                .values()
+                .any(|input| input.read(cx).focus_handle(cx) == *focused)
+            || self.export_controls.owns_focus(focused, cx)
+    }
+
     /// Ctrl+Z / Ctrl+Y: step the service graph journal. Typing focus and
     /// modal settings keep the shortcut for themselves.
     fn undo_redo_graph(&mut self, redo: bool, window: &Window, cx: &mut Context<Self>) {
@@ -872,18 +898,10 @@ impl StudioShell {
         }
         // A focused text field owns ctrl-z; undoing the graph out from under
         // a keystroke the user is typing would be a surprise.
-        if let Some(focused) = window.focused(cx) {
-            let typing = self.node_search.read(cx).focus_handle(cx) == focused
-                || self.node_name.read(cx).focus_handle(cx) == focused
-                || self
-                    .compressor
-                    .inputs
-                    .values()
-                    .any(|input| input.read(cx).focus_handle(cx) == focused)
-                || self.export_controls.owns_focus(&focused, cx);
-            if typing {
-                return;
-            }
+        if let Some(focused) = window.focused(cx)
+            && self.typing_focus(&focused, cx)
+        {
+            return;
         }
         self.state.update(cx, |state, _| {
             state.dispatch(if redo {
@@ -907,15 +925,7 @@ impl StudioShell {
             return;
         }
         let focused = window.focused(cx);
-        let text_input_focused = focused.is_some_and(|focused| {
-            self.node_search.read(cx).focus_handle(cx) == focused
-                || self.node_name.read(cx).focus_handle(cx) == focused
-                || self
-                    .compressor
-                    .inputs
-                    .values()
-                    .any(|input| input.read(cx).focus_handle(cx) == focused)
-        });
+        let text_input_focused = focused.is_some_and(|focused| self.typing_focus(&focused, cx));
         if !text_input_focused {
             window.focus(&self.graph_focus, cx);
         }
@@ -934,17 +944,11 @@ impl StudioShell {
         let graph = &snapshot.graph;
         if snapshot.phase == SessionPhase::Running {
             let source = graph
-                .graph
-                .nodes()
-                .iter()
-                .find(|n| n.kind() == NodeKind::Source)
-                .map(|n| n.id());
+                .node_of_kind(NodeKind::Source)
+                .map(|(node, _)| node.id());
             let sink = graph
-                .graph
-                .nodes()
-                .iter()
-                .find(|n| n.kind() == NodeKind::Sink)
-                .map(|n| n.id());
+                .node_of_kind(NodeKind::Sink)
+                .map(|(node, _)| node.id());
             self.observation_nodes = source
                 .zip(sink)
                 .map(|(source, sink)| (snapshot.generation, source, sink));
