@@ -2467,3 +2467,70 @@ same-condition VAD/Process comparisons and configurable queue-target sweeps,
 and finally perform calibrated 30-minute and two-hour physical qualification.
 Buffer capacity, queue target/residency, device period, and measured physical
 latency must remain separate quantities.
+
+### 2026-10-27 ten-second output-clock control and immediate cleanup
+
+The output-only `routing_probe` was built at `7de0c8c` and copied to
+`DRIVER-TEST`. The 2,663,936-byte executable has SHA-256
+`97CDFC5BB42D4CD761679FAD03D895E9EE8706DDCED383242B364DE627D12D6A`.
+The exact output endpoint is
+`{0.0.0.00000000}.{71789a68-9934-4137-9e1a-ba0a5730aa68}`;
+arguments select Compatible, ten seconds, and tracing. The guest run began
+at `2026-10-27T12:37:52.0085539Z`.
+
+The archive is
+`target/vad-target-archive/routing-clock-7de0c8c-10s-20261027-2037/`.
+All four payloads match the guest manifest in byte length and SHA-256, and
+the manifest itself was compared across machines before cleanup:
+
+| Payload | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `preflight.json` | 701 | `7E861AD6DBBE1C1C5B7CF7964826F953601C0C58F1032450DCD1E7A241F11905` |
+| `receipt.json` | 609 | `3CDB54CCCCDD5C541DA5F37A0199A105846D360487F7146659D01AAD531802A6` |
+| `stderr.log` | 73 | `2C53281038FF09C365B5F23C3804690F1412C41C1AF6C6284ADC7C57CFBA985E` |
+| `stdout.json` | 129,421 | `B881446A49FEB1A7BE5C6CBEB6349754927064ACD0A42B14D8AFAC611FD28948` |
+
+The application reports 10.0171921 active seconds, `healthy=true`,
+`clean_shutdown=true`, no fault, and a stopped native render stream. The
+original receipt nevertheless has `exit_code=null`; the wrapper did not
+reliably capture the child exit code. It must stay unknown. Its
+`clock_frequency=null` is also a wrapper extraction gap: the authoritative
+`native.render.clock_frequency` is 384,000 units/s. The receipt's 20.359-second
+elapsed value measures the wrapper, not the active stream.
+
+At 48 kHz, native positions convert to frames by dividing by eight. The
+native latency telemetry has 1,030 callback observations, but retains only
+the first 256 exact trace records; the other 774 records exceed diagnostic
+capacity. That counter is not a PCM-drop count. The retained native clock/QPC
+pairs span 2.3287991 seconds, with positions advancing from 8,448 to 980,032
+units (121,448 frames of progress). Their first-last slope is
+52,150.483913 frames/s; OLS over all 256 pairs gives 53,024.191535 frames/s.
+First-half and second-half OLS slopes differ: 54,488.565458 and
+50,930.860809 frames/s. This changing, retained-window rate is not a fixed
+calibration or a whole-run rate. All retained clock reads succeed; no native
+QPC or position regression occurs. One adjacent native position is stationary.
+
+Whole-run wake intervals have 1,029 samples, minimum 6.8002 ms and maximum
+12.4233 ms. Their p50/p95/p99 histogram upper bounds are each 11.4687 ms;
+these bounds are not exact quantiles. The retained 255 exact wake intervals
+have nearest-rank p50/p95/p99 of 9.0922/10.0683/10.3861 ms. Whole-run callback
+duration ranges from 0.0484 to 1.8547 ms; its p95 histogram upper bound is
+0.1791 ms. No timestamp or wake regression counter is set. Timeout wakes,
+zero-demand wakes and bridge shortfall frames are zero; the initial callback
+has empty padding. Those counters do not establish PCM integrity.
+
+The actual Client3 period is 480 frames (10 ms), with an advertised minimum
+of 128 and fundamental of 32. Capacity/target are 1,056 frames (22 ms);
+steady retained padding is 576 frames (12 ms). These are separate values,
+not measured physical delay. Output is muted, with no input, capture,
+nonzero sample or marker; physical end-to-end latency remains null.
+Neither a VAD/Process comparison nor a Stage 7 pass can be inferred.
+
+After host verification, the guest independently rechecked every payload
+and the executable digest before deleting the run directory and this
+temporary executable. Cleanup released 2,795,950 bytes. A fresh inventory
+reports 32,286,109,696 bytes free (about 30.07 GiB), no active probe, and
+`ROOT\MEDIA\0000` still `OK`. The sole remaining test file is the
+7,781,376-byte rename probe required for follow-up testing. Keep this
+archive-verify-delete sequence after subsequent runs; the 64 GB system VM
+must not accumulate completed runs or superseded binaries.
