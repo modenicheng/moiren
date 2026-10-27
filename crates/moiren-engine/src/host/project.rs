@@ -259,9 +259,7 @@ impl EngineProject {
                 NodeConfig::ChannelMapper(settings) => {
                     settings.valid_layout(node.inputs()[0].channels(), node.outputs()[0].channels())
                 }
-                NodeConfig::Recorder(settings) => {
-                    settings.valid() && node.channels() <= MAX_CHANNELS
-                }
+                NodeConfig::Recorder(settings) => settings.valid_for_channels(node.channels()),
                 NodeConfig::Meter(settings) => settings.valid() && node.channels() <= MAX_CHANNELS,
                 NodeConfig::SpectrumAnalyzer(settings) => {
                     settings.valid() && node.channels() <= MAX_CHANNELS

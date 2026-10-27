@@ -24,8 +24,7 @@ pub(crate) use wav::{RecordingSource, spawn_recording};
 #[cfg(test)]
 mod tests;
 
-/// Same built-in channel budget as the processing kernels; see
-/// `builtin::MAX_CHANNELS` for why builtin state is width-bounded.
+/// Per-recorder interleaved f32 sample storage, independent of WAV encoding.
 const MAX_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -35,12 +34,34 @@ pub struct RecorderSettings {
 }
 
 impl RecorderSettings {
-    /// Preparation is capped independently of channel count; the factory also
-    /// limits total queue storage to 64 MiB.
+    /// Channel-independent frame bound; [`Self::max_capacity_frames`] also
+    /// accounts for the queue's 64 MiB sample-storage limit.
     pub const MAX_CAPACITY_FRAMES: usize = 1_000_000;
 
+    /// Validate the frame count alone. Use [`Self::valid_for_channels`] once
+    /// the node's channel width is known.
     pub fn valid(self) -> bool {
         (1..=Self::MAX_CAPACITY_FRAMES).contains(&self.capacity_frames)
+    }
+
+    /// Largest preparable frame count without allocating queue storage.
+    ///
+    /// Returns `None` outside the supported 1..=256 channel domain. Storage is
+    /// always f32, even with f64 processing or a different WAV sample encoding.
+    pub fn max_capacity_frames(channels: usize) -> Option<usize> {
+        if !(1..=MAX_CHANNELS).contains(&channels) {
+            return None;
+        }
+        let frame_bytes = channels.checked_mul(std::mem::size_of::<f32>())?;
+        let byte_limit = MAX_BUFFER_BYTES.min(isize::MAX as usize);
+        Some(Self::MAX_CAPACITY_FRAMES.min(byte_limit / frame_bytes))
+    }
+
+    /// Shared nonallocating admission check for candidate graphs and the factory.
+    pub fn valid_for_channels(self, channels: usize) -> bool {
+        self.valid()
+            && Self::max_capacity_frames(channels)
+                .is_some_and(|maximum| self.capacity_frames <= maximum)
     }
 }
 
@@ -106,18 +127,12 @@ pub fn recorder(
     channels: usize,
     settings: RecorderSettings,
 ) -> Result<(Recorder, RecorderReader), ProcessorError> {
-    if !(1..=MAX_CHANNELS).contains(&channels) || !settings.valid() {
+    if !settings.valid_for_channels(channels) {
         return Err(ProcessorError::InvalidIo);
     }
     let samples = channels
         .checked_mul(settings.capacity_frames)
         .ok_or(ProcessorError::InvalidIo)?;
-    let bytes = samples
-        .checked_mul(std::mem::size_of::<f32>())
-        .ok_or(ProcessorError::InvalidIo)?;
-    if bytes > MAX_BUFFER_BYTES || bytes > isize::MAX as usize {
-        return Err(ProcessorError::InvalidIo);
-    }
 
     let (tx, rx) = RingBuffer::new(samples);
     let control = Arc::new(RecorderControl {

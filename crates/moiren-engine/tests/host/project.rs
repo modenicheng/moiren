@@ -2,6 +2,72 @@ use moiren_core::graph::{LogicalGraph, NodeKind};
 use moiren_engine::host::{EngineProject, NodeConfig, ProjectError};
 
 #[test]
+fn recorder_project_validation_checks_the_channel_dependent_buffer_limit() {
+    use moiren_engine::recorder::RecorderSettings;
+
+    for (channels, capacity_frames, valid) in [
+        (1, 1_000_000, true),
+        (2, 1_000_000, true),
+        (32, 524_288, true),
+        (32, 524_289, false),
+        (256, 65_536, true),
+        (256, 65_537, false),
+        (257, 1, false),
+        (1, 0, false),
+        (1, 1_000_001, false),
+        (256, usize::MAX / 2 + 1, false),
+        (256, usize::MAX, false),
+    ] {
+        let mut project = EngineProject::default();
+        let node = project
+            .graph
+            .create_node(NodeKind::Recorder, channels)
+            .unwrap();
+        project.nodes.insert(
+            node,
+            NodeConfig::Recorder(RecorderSettings { capacity_frames }),
+        );
+        let expected = if valid {
+            Ok(())
+        } else {
+            Err(ProjectError::InvalidProcessor(node))
+        };
+        assert_eq!(
+            project.validate(),
+            expected,
+            "{channels} channels, {capacity_frames} frames"
+        );
+    }
+}
+
+#[test]
+fn recorder_project_edit_preserves_the_previous_preparable_capacity() {
+    use moiren_engine::recorder::RecorderSettings;
+
+    let mut project = EngineProject::default();
+    let node = project.graph.create_node(NodeKind::Recorder, 256).unwrap();
+    project.nodes.insert(
+        node,
+        NodeConfig::Recorder(RecorderSettings {
+            capacity_frames: 65_536,
+        }),
+    );
+    project.validate().unwrap();
+    let original = project.clone();
+    for capacity_frames in [65_537, usize::MAX] {
+        let result = project.edit(|candidate| {
+            candidate.nodes.insert(
+                node,
+                NodeConfig::Recorder(RecorderSettings { capacity_frames }),
+            );
+            Ok(())
+        });
+        assert_eq!(result, Err(ProjectError::InvalidProcessor(node)));
+        assert_eq!(project, original);
+    }
+}
+
+#[test]
 fn rack_strip_channel_selection_must_fit_every_output() {
     use moiren_engine::{
         processor::{ChannelMode, StripConfig},

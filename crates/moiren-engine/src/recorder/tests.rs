@@ -220,6 +220,43 @@ fn settings_default_and_serde_contract() {
 }
 
 #[test]
+fn recorder_capacity_limit_matches_the_float32_queue_budget_without_allocating() {
+    for (channels, expected) in [(1, 1_000_000), (2, 1_000_000), (32, 524_288), (256, 65_536)] {
+        assert_eq!(
+            RecorderSettings::max_capacity_frames(channels),
+            Some(expected)
+        );
+    }
+    for channels in 1..=256 {
+        let maximum = RecorderSettings::max_capacity_frames(channels).unwrap();
+        assert!(settings(maximum).valid_for_channels(channels));
+        assert!(!settings(maximum + 1).valid_for_channels(channels));
+        assert!(maximum <= RecorderSettings::MAX_CAPACITY_FRAMES);
+        assert!(maximum * channels * size_of::<f32>() <= 64 * 1024 * 1024);
+    }
+    assert!(settings(65_536).valid_for_channels(256));
+    assert!(!settings(65_537).valid_for_channels(256));
+}
+
+#[test]
+fn recorder_layout_validation_rejects_invalid_and_overflowing_dimensions() {
+    for channels in [0, 257, usize::MAX / size_of::<f32>() + 1, usize::MAX] {
+        assert_eq!(RecorderSettings::max_capacity_frames(channels), None);
+        assert!(!settings(1).valid_for_channels(channels));
+        assert!(!settings(usize::MAX).valid_for_channels(channels));
+    }
+    for capacity in [
+        0,
+        RecorderSettings::MAX_CAPACITY_FRAMES + 1,
+        usize::MAX / 2 + 1,
+        usize::MAX,
+    ] {
+        assert!(!settings(capacity).valid_for_channels(2));
+        assert!(!settings(capacity).valid_for_channels(256));
+    }
+}
+
+#[test]
 fn rejects_invalid_channels_capacity_and_excessive_memory_before_allocating() {
     for channels in [0, 257, usize::MAX] {
         assert!(matches!(
@@ -236,6 +273,14 @@ fn rejects_invalid_channels_capacity_and_excessive_memory_before_allocating() {
     }
     assert!(matches!(
         recorder(256, settings(RecorderSettings::MAX_CAPACITY_FRAMES)),
+        Err(ProcessorError::InvalidIo)
+    ));
+    assert!(matches!(
+        recorder(256, settings(65_537)),
+        Err(ProcessorError::InvalidIo)
+    ));
+    assert!(matches!(
+        recorder(usize::MAX, settings(usize::MAX)),
         Err(ProcessorError::InvalidIo)
     ));
     let (_, reader) = recorder(256, settings(1)).unwrap();
