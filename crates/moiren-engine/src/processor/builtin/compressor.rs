@@ -1,5 +1,7 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
-use super::dynamics::{db_to_gain, float_specs, resolve_float, smooth, validate_float_domains};
+use super::dynamics::{
+    db_to_gain, float_specs, resolve_float, smooth, validate_float_domains, validate_linked_io,
+};
 use crate::{
     buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
     control::{FloatRamp, ParamSpec, ProcessParameters},
@@ -206,14 +208,7 @@ impl<S: ProcessingSample> RtProcessor<S> for Compressor {
         self.signal.as_ref().map_or(&[], |signal| &signal.bindings)
     }
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
-        if io.input_count() != 1
-            || io.output_count() != 1
-            || io.input_channels(0).is_none()
-            || io.input_channels(0) != io.output_channels(0)
-        {
-            return Err(ProcessorError::InvalidIo);
-        }
-        Ok(())
+        validate_linked_io(io)
     }
 
     fn validate_parameters(&self, params: ProcessParameters<'_>) -> Result<(), ProcessorError> {
