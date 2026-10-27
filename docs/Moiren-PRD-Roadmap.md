@@ -1,7 +1,7 @@
 # Moiren 需求文档与功能规划
 
 > 状态：Draft / 当前讨论基线  
-> 更新日期：2026-10-08
+> 更新日期：2026-10-27（增补 Audio File Player Node 与 VAD ASIO 接口规划）
 > 文档目标：统一产品需求、功能边界、架构约束与开发顺序。本文优先采用最近一次已收敛设计；尚未验证或仍有争议内容统一标为“待定”。
 
 ---
@@ -337,6 +337,36 @@ Output Node 需要逐步支持：
 - Resampler / Format Adapter（多数情况下由 Compiler 隐式插入并在 UI 暴露诊断）；
 - 后续其它 Utility。
 
+### 5.7 Audio File Player Node
+
+音频文件播放输入节点，把本地音频文件作为 Graph 源接入，覆盖背景音乐（BGM）与音效触发两类场景。
+
+同一 Node 类型提供两种模式，共享同一播放内核：
+
+1. **Playlist 模式**：有序播放列表，面向 BGM。支持顺序 / 循环 / 随机、上一首 / 下一首、单曲进度与音量，适合多首曲目长时间连续播放；
+2. **Pad 模式**：固定槽位即时触发，面向音效。每个 Pad 可绑定快捷键，支持 loop 与再次触发的打断语义；Pad 同样可以加载较长曲目（如多段 BGM）循环播放，短音效与长背景音乐走同一触发协议。
+
+模式差异只是 UI / 控制形态差异，不引入第二种音频源实现。
+
+技术约束：
+
+- 实时路径禁止文件 I/O 与动态分配：读盘与解码全部发生在控制 / 工作线程；
+- Pad 音效优先整段预解码常驻内存，触发在 RT 侧只做缓冲切换，快捷键到出声控制在 block 级延迟内；
+- Playlist 采用有界 look-ahead 流式解码，经 ring buffer 交付 RT，不整曲占内存；
+- 文件采样率 / 声道与 Processing SR 不一致时，由 Compiler 插入显式可见的转换；
+- transport（play / stop / seek / trigger）走现有实时参数通道，不触发整图重编译；
+- 快捷键监听是应用层服务，只向 Node 发控制消息，不属于 Graph 拓扑；
+- 项目持久化覆盖文件路径（相对路径优先）、Playlist、Pad 槽位与快捷键绑定；文件缺失时 Node 显式报错，不悄悄输出静音。
+
+待定：
+
+- 首批解码格式（WAV 必做；MP3 / OGG / FLAC 的范围与解码库选型）；
+- Pad 常驻内存总上限与淘汰策略；
+- 多 Player 实例是否共享解码工作线程池；
+- 全局快捷键注册范围（仅应用前台 / 系统全局）与冲突处理。
+
+与 17.16 的关系：外部播放器（如 hytao）仍走通用音频端点接入；内嵌文件播放面向轻量 BGM 与音效触发，不为此设计插件或自定义 Node 通路。
+
 ---
 
 ## 6. Routing 与 Mixer 需求
@@ -623,6 +653,8 @@ ASIO 是长期核心能力，不只是“兼容插件”。
 - DAW coexistence；
 - 设备已被外部程序使用时的可解释状态。
 
+方向补充：上述是 Moiren 作为 ASIO host 使用物理 ASIO 设备；Moiren 作为 ASIO device 被其它应用使用的反向能力（VAD ASIO 接口）规划见 11.3。
+
 ### 10.3 MME / DirectSound / KS — 兼容层
 
 不作为 Engine 核心模型基础。确有需求时作为 backend adapter 或兼容入口加入。
@@ -673,6 +705,32 @@ Moiren Engine
 Graph、DSP、routing 继续运行在用户态。
 
 实现语言可以采用 C / C++ + WDK，不要求内核层使用 Rust。
+
+### 11.3 VAD ASIO 接口
+
+在 ACX VAD（标准 Windows Endpoint 路径）之外，为 Moiren 虚拟 I/O 追加原生 ASIO 接口，让 DAW 等专业 ASIO 客户端绕过 Windows 共享模式音频栈，以更低延迟接入 Graph。
+
+```text
+DAW / ASIO 客户端
+        ↕  Moiren ASIO driver（用户态）
+     Moiren Graph
+        ↕  ACX VAD
+   普通 Windows 应用
+```
+
+产品语义：
+
+- 提供 Moiren 自有 ASIO driver，把选定 Bus / Virtual Endpoint 暴露为 ASIO 输入 / 输出通道；
+- 与 10.2 方向相反：10.2 是 Moiren 作为 ASIO host 使用物理设备（ProfessionalBackend v1 已落地），本节是 Moiren 作为 ASIO device 被其它应用使用；
+- ASIO driver 是用户态组件，没有内核签名负担，发布节奏可与 VAD 内核驱动解耦，可作为低延迟专业路径的先行交付候选。
+
+关键问题（待定）：
+
+- ASIO driver 与 Engine 的 IPC 协议：共享内存 ring、buffer / 采样率协商，能否复用 VAD 现有 shared memory 协议；
+- ASIO 客户端能否成为 clock owner，还是恒定跟随 Processing Timeline；
+- Bus → ASIO 通道的映射方式与通道数上限；
+- ASIO 单客户端语义：多个专业应用同时连接时的行为与可解释状态；
+- 安装 / 卸载、系统注册与多版本共存。
 
 ---
 
@@ -736,6 +794,13 @@ Graph 始终是 canonical topology。
 
 面向复杂场景提供大规模连接总览与快速编辑。
 
+### 12.6 File Player 编辑器 — P1
+
+- Playlist 管理：添加 / 排序 / 删除、循环与随机；
+- Pad 网格：加载文件、命名、着色、loop 开关；
+- 快捷键捕获、冲突检测与展示；
+- 播放状态与进度在 Graph View / Node Inspector 的最小呈现。
+
 ---
 
 ## 13. 状态、配置与持久化
@@ -750,6 +815,7 @@ Graph 始终是 canonical topology。
 - Bus 配置；
 - Rack 与 Processor state；
 - Output / Input 设备绑定；
+- 文件播放资源：文件路径、Playlist、Pad 槽位与快捷键绑定；
 - Processing SR；
 - UI 布局中真正影响工作流的必要状态。
 
@@ -914,6 +980,7 @@ Takeover 可行性是并行 P0 Gate：验证原始输出抑制、session mute/vo
 - Channel Mapper；
 - Meter / Analyzer 增强；
 - Recorder；
+- Audio File Player（Playlist / Pad 模式，含快捷键触发）；
 - Scene / Profile 语义定稿；
 - Routing Matrix（可按需求延后）。
 
@@ -945,6 +1012,7 @@ Takeover 可行性是并行 P0 Gate：验证原始输出抑制、session mute/vo
 - Virtual Microphone；
 - Virtual Playback Endpoint；
 - Bus / Node `Expose to Windows`；
+- VAD ASIO 接口（DAW 等专业客户端低延迟接入，见 11.3）；
 - endpoint 生命周期与权限；
 - driver ↔ user-mode shared memory / IPC；
 - 安装、升级、卸载与驱动签名流程。
@@ -1032,6 +1100,10 @@ CI 常规矩阵覆盖整个 workspace 的编译、测试、Clippy 与格式检�
 15. Network Audio / Remote Control；
 16. **hytao-music-player 接入方式**（2026-10-23）：候选方案是通用音频端点接入（hytao 作为普通 Windows 应用，经 Process Loopback / 虚拟 Endpoint 进入 Graph），或为它另设低延迟、高音质、低占用的专用通路。需评估是否有必要为此设计独立插件系统或自定义 Node 功能；当前判断：插件 / 自定义 Node 路线在技术上没有明显改进，且大概率显著推高代码复杂度，倾向先走通用端点接入，待实测延迟 / 音质 / 占用不达标再重估。
 
+17. **VAD ASIO 接口协议**（2026-10-27）：driver ↔ Engine IPC、时钟归属、通道映射与安装方案，见 11.3；
+
+18. **Audio File Player 解码与缓冲**（2026-10-27）：解码格式范围、Pad 内存上限、快捷键注册范围，见 5.7。
+
 ---
 
 ## 18. MVP 功能边界建议
@@ -1063,7 +1135,9 @@ Windows Application / Physical Input
 
 - 内核 VAD；
 - 动态虚拟设备；
+- VAD ASIO 接口；
 - ASIO 完整支持；
+- 音频文件播放（Playlist / Pad）；
 - VST3 / CLAP；
 - 完整 Recording Studio；
 - MIDI；
