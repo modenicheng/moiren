@@ -40,9 +40,10 @@ use windows::{
         },
         Media::Audio::{
             AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED,
-            AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, DEVICE_STATE_ACTIVE,
-            IAudioClient, IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
-            WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eRender,
+            AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, DEVICE_STATE_ACTIVE, IAudioClient,
+            IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
+            WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eRender,
         },
         System::{
             Com::{
@@ -79,12 +80,26 @@ pub struct PlaybackOutcome {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlaybackInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_mode: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub stable_endpoint_id: String,
     pub mmdevice_id: String,
     pub observed_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub adapter_instance: String,
     pub native_buffer_frames: u32,
     pub packet_format: String,
+}
+
+enum PlaybackTarget {
+    Vad {
+        stable_id: StableEndpointId,
+        root: String,
+    },
+    Shared {
+        endpoint: String,
+    },
 }
 
 pub struct PlaybackSession {
@@ -161,6 +176,42 @@ impl PlaybackSession {
         before_join: impl FnMut(),
         partial: &mut Option<PlaybackOutcome>,
     ) -> Result<Self> {
+        Self::prepare_target(
+            PlaybackTarget::Vad {
+                stable_id,
+                root: root_instance,
+            },
+            source_plan,
+            before_join,
+            partial,
+        )
+    }
+
+    pub(super) fn prepare_shared(
+        endpoint: String,
+        plan: PreparedSource,
+        partial: &mut Option<PlaybackOutcome>,
+    ) -> Result<Self> {
+        ensure!(
+            !endpoint.trim().is_empty()
+                && !endpoint.contains('\0')
+                && endpoint.encode_utf16().count() <= 4096,
+            "explicit shared endpoint required"
+        );
+        Self::prepare_target(
+            PlaybackTarget::Shared { endpoint },
+            Some(plan),
+            || {},
+            partial,
+        )
+    }
+
+    fn prepare_target(
+        target: PlaybackTarget,
+        source_plan: Option<PreparedSource>,
+        before_join: impl FnMut(),
+        partial: &mut Option<PlaybackOutcome>,
+    ) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let activate = Arc::new(AtomicBool::new(false));
         let latest = Arc::new(Mutex::new(WorkerState::default()));
@@ -173,8 +224,7 @@ impl PlaybackSession {
             .name("moiren-vad-native-playback".into())
             .spawn(move || {
                 let result = run_worker(
-                    stable_id,
-                    &root_instance,
+                    target,
                     source_plan,
                     worker_stop,
                     worker_activate,
@@ -573,6 +623,32 @@ fn descriptor(format: SampleFormat) -> WAVEFORMATEXTENSIBLE {
     }
 }
 
+fn available_frames(capacity: u32, padding: u32) -> Result<u32> {
+    ensure!(
+        (1..=MAX_PACKET_FRAMES * 2).contains(&capacity),
+        "shared native buffer out of bounds"
+    );
+    capacity
+        .checked_sub(padding)
+        .context("shared padding exceeds native buffer")
+}
+
+fn submit_packet(
+    source: &mut SourceCursor,
+    samples: &mut [f32],
+    frames: u32,
+    preroll: bool,
+    release: impl FnOnce(&[f32]) -> Result<()>,
+) -> Result<()> {
+    if frames == 0 {
+        return Ok(());
+    }
+    let packet = samples
+        .get_mut(..frames as usize * 2)
+        .context("source packet exceeds preallocation")?;
+    source.submit(packet, preroll, release)
+}
+
 struct Stream {
     client: IAudioClient,
     render: IAudioRenderClient,
@@ -582,6 +658,7 @@ struct Stream {
     encoded: Vec<u8>,
     samples: Vec<f32>,
     active: bool,
+    shared: bool,
 }
 
 impl Stream {
@@ -653,6 +730,76 @@ impl Stream {
             encoded: vec![0; frames as usize * 2 * format.bytes_per_sample()],
             samples: vec![0.0; frames as usize * 2],
             active: false,
+            shared: false,
+        })
+    }
+
+    fn prepare_shared(device: &IMMDevice) -> Result<Self> {
+        let client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None)? };
+        let pointer = unsafe { client.GetMixFormat()? };
+        struct Mix(*mut WAVEFORMATEX);
+        impl Drop for Mix {
+            fn drop(&mut self) {
+                unsafe { CoTaskMemFree(Some(self.0.cast())) };
+            }
+        }
+        let owned = Mix(pointer);
+        ensure!(!owned.0.is_null(), "null shared mix format");
+        let wave = unsafe { &*owned.0 };
+        ensure!(
+            wave.nSamplesPerSec == 48_000 && wave.nChannels == 2,
+            "shared source requires exact 48 kHz stereo mix format"
+        );
+        let format = match (wave.wFormatTag, wave.wBitsPerSample) {
+            (1, 16) => SampleFormat::Pcm16,
+            (3, 32) => SampleFormat::Float32,
+            (0xfffe, bits) if wave.cbSize == 22 => {
+                let ext = unsafe { &*owned.0.cast::<WAVEFORMATEXTENSIBLE>() };
+                ensure!(
+                    ext.dwChannelMask == 3 && unsafe { ext.Samples.wValidBitsPerSample } == bits,
+                    "unsupported shared channel mask or valid bits"
+                );
+                let pcm = descriptor(SampleFormat::Pcm16).SubFormat;
+                let float = descriptor(SampleFormat::Float32).SubFormat;
+                match (ext.SubFormat, bits) {
+                    (id, 16) if id == pcm => SampleFormat::Pcm16,
+                    (id, 32) if id == float => SampleFormat::Float32,
+                    _ => anyhow::bail!("unsupported shared mix subtype"),
+                }
+            }
+            _ => anyhow::bail!("unsupported shared source mix format"),
+        };
+        ensure!(
+            wave.nBlockAlign as usize == 2 * format.bytes_per_sample()
+                && wave.nAvgBytesPerSec == 48_000 * wave.nBlockAlign as u32,
+            "invalid shared mix alignment"
+        );
+        unsafe {
+            client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                0,
+                0,
+                owned.0,
+                None,
+            )?
+        };
+        let frames = unsafe { client.GetBufferSize()? };
+        available_frames(frames, 0)?;
+        let event =
+            unsafe { OwnedHandle::from_raw_handle(CreateEventW(None, false, false, None)?.0) };
+        unsafe { client.SetEventHandle(HANDLE(event.as_raw_handle()))? };
+        let render = unsafe { client.GetService()? };
+        Ok(Self {
+            client,
+            render,
+            event,
+            frames,
+            format,
+            encoded: vec![0; frames as usize * 2 * format.bytes_per_sample()],
+            samples: vec![0.0; frames as usize * 2],
+            active: false,
+            shared: true,
         })
     }
 
@@ -664,18 +811,32 @@ impl Stream {
     }
 
     fn fill_and_submit(&mut self, source: &mut SourceCursor, preroll: bool) -> Result<()> {
+        let frames = if self.shared {
+            available_frames(self.frames, unsafe { self.client.GetCurrentPadding()? })?
+        } else {
+            self.frames
+        };
+        if frames == 0 {
+            return Ok(());
+        }
+        let bytes = frames as usize * 2 * self.format.bytes_per_sample();
         let silent_preroll = preroll && source.has_schedule();
-        source.submit(&mut self.samples, preroll, |samples| {
-            encode_interleaved(samples, &mut self.encoded, self.format, Channels::Stereo)
-                .map_err(|error| anyhow::anyhow!("encode native VAD PCM: {error:?}"))?;
-            let pointer = unsafe { self.render.GetBuffer(self.frames)? };
+        submit_packet(source, &mut self.samples, frames, preroll, |samples| {
+            encode_interleaved(
+                samples,
+                &mut self.encoded[..bytes],
+                self.format,
+                Channels::Stereo,
+            )
+            .map_err(|error| anyhow::anyhow!("encode native VAD PCM: {error:?}"))?;
+            let pointer = unsafe { self.render.GetBuffer(frames)? };
             ensure!(!pointer.is_null(), "VAD render buffer is null");
-            // SAFETY: WASAPI granted exactly self.frames of the checked format.
+            // SAFETY: WASAPI granted exactly frames of the checked format.
             // Only successful ReleaseBuffer commits the portable source cursor.
             unsafe {
-                std::ptr::copy_nonoverlapping(self.encoded.as_ptr(), pointer, self.encoded.len());
+                std::ptr::copy_nonoverlapping(self.encoded.as_ptr(), pointer, bytes);
                 self.render.ReleaseBuffer(
-                    self.frames,
+                    frames,
                     if silent_preroll {
                         AUDCLNT_BUFFERFLAGS_SILENT.0 as u32
                     } else {
@@ -700,8 +861,7 @@ impl Drop for Stream {
 }
 
 fn run_worker(
-    stable_id: StableEndpointId,
-    root: &str,
+    target: PlaybackTarget,
     source_plan: Option<PreparedSource>,
     stop: Arc<AtomicBool>,
     activate: Arc<AtomicBool>,
@@ -711,13 +871,46 @@ fn run_worker(
     let _apartment = Apartment::new()?;
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
-    let (device, mmdevice_id, observed_name, adapter_instance) =
-        wait_playback(&enumerator, stable_id, root)?;
-    let mut stream = Stream::prepare(&device)?;
+    let (device, mmdevice_id, observed_name, adapter_instance, stable_endpoint_id, shared) =
+        match target {
+            PlaybackTarget::Vad { stable_id, root } => {
+                let (device, id, name, adapter) = wait_playback(&enumerator, stable_id, &root)?;
+                (device, id, name, adapter, stable_id.to_string(), false)
+            }
+            PlaybackTarget::Shared { endpoint } => {
+                let device = unsafe { enumerator.GetDevice(&HSTRING::from(&endpoint))? };
+                let id = take_string(unsafe { device.GetId()? })?;
+                ensure!(id == endpoint, "shared MMDevice identity mismatch");
+                let flow: windows::Win32::Media::Audio::IMMEndpoint =
+                    windows::core::Interface::cast(&device)?;
+                ensure!(
+                    unsafe { flow.GetDataFlow()? } == eRender,
+                    "shared source endpoint is not render"
+                );
+                let properties = unsafe { device.OpenPropertyStore(STGM_READ)? };
+                let property = unsafe { properties.GetValue(&PKEY_Device_FriendlyName)? };
+                let name = if property.vt() == VT_LPWSTR {
+                    unsafe { property.Anonymous.Anonymous.Anonymous.pwszVal.to_string()? }
+                } else {
+                    anyhow::bail!("shared source name is not a string")
+                };
+                ensure!(
+                    name.encode_utf16().count() <= 4096,
+                    "shared source name exceeds receipt budget"
+                );
+                (device, id, name, String::new(), String::new(), true)
+            }
+        };
+    let mut stream = if shared {
+        Stream::prepare_shared(&device)?
+    } else {
+        Stream::prepare(&device)?
+    };
     let mut source = SourceCursor::new(source_plan);
     latest.lock().unwrap_or_else(|p| p.into_inner()).provenance = Some(source.provenance());
     let info = PlaybackInfo {
-        stable_endpoint_id: stable_id.to_string(),
+        source_mode: shared.then(|| "shared_explicit_mmdevice".into()),
+        stable_endpoint_id,
         mmdevice_id,
         observed_name,
         adapter_instance,
@@ -801,6 +994,62 @@ pub fn discover_root() -> Result<(DeviceInterface, String)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_source_padding_bounds_the_packet_and_rejects_invalid_padding() {
+        assert_eq!(super::available_frames(480, 352).unwrap(), 128);
+        assert_eq!(super::available_frames(480, 480).unwrap(), 0);
+        assert!(super::available_frames(480, 481).is_err());
+        assert!(super::available_frames(0, 0).is_err());
+    }
+
+    #[test]
+    fn shared_source_packet_slices_to_padding_and_failed_release_does_not_advance() {
+        let plan = super::super::source::SourceSchedule {
+            schema_version: 1,
+            schedule_id: "padding".into(),
+            waveform_version: super::super::source::WAVEFORM_VERSION.into(),
+            sample_rate: 48_000,
+            channels: 2,
+            marker_frames: 32,
+            marker_amplitude: 0.1,
+            total_source_frames: 64,
+            starts: vec![0],
+        }
+        .prepare(1)
+        .unwrap();
+        let mut source = SourceCursor::new(Some(plan));
+        let mut samples = [9.0; 960];
+        let frames = available_frames(480, 448).unwrap();
+        submit_packet(&mut source, &mut samples, frames, true, |pcm| {
+            assert_eq!(
+                pcm.len(),
+                64,
+                "native ReleaseBuffer must use available frames only"
+            );
+            assert!(pcm.iter().all(|sample| *sample == 0.0));
+            Ok(())
+        })
+        .unwrap();
+        let before = source.progress.clone();
+        assert_eq!(before.native_preroll_frames, 32);
+        assert_eq!(samples[64], 9.0, "unused capacity must not be generated");
+        assert!(
+            submit_packet(&mut source, &mut samples, frames, false, |_| {
+                anyhow::bail!("ReleaseBuffer failed")
+            })
+            .is_err()
+        );
+        assert_eq!(source.progress, before);
+        submit_packet(&mut source, &mut samples, frames, false, |_| Ok(())).unwrap();
+        assert_eq!(source.progress.acknowledged_source_frames, 32);
+        assert_eq!(source.progress.origin_submission_frame, Some(32));
+        let before = source.progress.clone();
+        submit_packet(&mut source, &mut samples, 0, false, |_| {
+            panic!("full buffer must skip release")
+        })
+        .unwrap();
+        assert_eq!(source.progress, before);
+    }
     use super::*;
     #[test]
     fn playback_native_stop_ack_is_distinct_from_join_and_retains_both_errors() {
@@ -910,6 +1159,7 @@ mod tests {
             activation_attempted: false,
             unexpected_exit: AtomicBool::new(false),
             info: PlaybackInfo {
+                source_mode: None,
                 stable_endpoint_id: "test".into(),
                 mmdevice_id: "test".into(),
                 observed_name: "test".into(),

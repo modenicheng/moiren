@@ -74,6 +74,12 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         return Ok(0);
     }
     let command = &arguments[0];
+    if command == "process-source-worker" {
+        #[cfg(any(windows, test))]
+        return live::process_source::run_worker(arguments[1..].to_vec());
+        #[cfg(not(any(windows, test)))]
+        bail!("process source worker requires Windows");
+    }
     if command == "record-measurement" {
         if arguments[1..] == ["--list"] {
             return crate::measurement::list_inputs();

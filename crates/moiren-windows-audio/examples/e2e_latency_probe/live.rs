@@ -33,6 +33,10 @@ use std::{
 #[path = "source.rs"]
 mod source;
 
+#[path = "process_source.rs"]
+#[cfg(any(windows, test))]
+pub(crate) mod process_source;
+
 #[path = "vad_collection.rs"]
 mod vad_collection;
 
