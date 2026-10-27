@@ -1,6 +1,6 @@
 use super::*;
 use crate::recorder::{
-    recorder,
+    WavFormat, recorder,
     tests::{observe, settings},
 };
 use std::io::Cursor;
@@ -91,6 +91,42 @@ fn worker_drains_while_running_and_finish_preserves_queued_tail() {
     assert_eq!(summary.stats.accepted_frames, 4);
     assert_eq!(summary.stats.read_frames, 4);
     assert_wav(&destination, &[1.0, 2.0, 3.0, 4.0]);
+}
+
+#[test]
+fn worker_encodes_selected_pcm_format_and_finalizes_odd_tail() {
+    for (format, width) in [(WavFormat::Pcm16, 2), (WavFormat::Pcm24, 3)] {
+        let (mut recorder, reader) = recorder(1, settings(8)).unwrap();
+        let destination = Destination::default();
+        let session = reader
+            .record_with_writer_format(destination.clone(), 48_000, format)
+            .unwrap();
+        observe::<f64>(&mut recorder, &[&[-1.0, 1.0, 0.0]]);
+        wait_for(&session, |status| status.written_frames == 3);
+        let summary = session.finish().unwrap();
+        assert_eq!(summary.written_frames, 3);
+        assert_eq!(summary.stats.read_frames, 3);
+        let storage = destination.bytes.lock().unwrap();
+        let bytes = storage.get_ref();
+        assert_eq!(
+            u16::from_le_bytes(bytes[20..22].try_into().unwrap()),
+            0xfffe
+        );
+        assert_eq!(
+            u32::from_le_bytes(bytes[64..68].try_into().unwrap()),
+            3 * width as u32
+        );
+        let expected = if format == WavFormat::Pcm16 {
+            vec![0, 128, 255, 127, 0, 0]
+        } else {
+            vec![0, 0, 128, 255, 255, 127, 0, 0, 0, 0]
+        };
+        assert_eq!(&bytes[68..], expected);
+        assert_eq!(
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize,
+            bytes.len() - 8
+        );
+    }
 }
 
 #[test]

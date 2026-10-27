@@ -14,7 +14,7 @@ use crate::{
         signal::{AudioWindow, ChannelLevel, SignalLevelMeter},
     },
     recorder::{
-        RecorderReader, RecorderStats, RecordingSession, RecordingSource, WavRecording,
+        RecorderReader, RecorderStats, RecordingSession, RecordingSource, WavFormat, WavRecording,
         spawn_recording,
     },
     spectrum::{SpectrumSettings, SpectrumWindow},
@@ -198,8 +198,24 @@ impl ManagedRecorderReader {
         writer: W,
         sample_rate: u32,
     ) -> io::Result<RecordingSession> {
+        self.record_with_writer_format(writer, sample_rate, WavFormat::Float32)
+    }
+
+    /// Select file encoding without changing the leased float32 transport.
+    /// Claim validation and all file IO retain the same off-RT ownership rules.
+    pub fn record_with_writer_format<W: Write + Seek + Send + 'static>(
+        &self,
+        writer: W,
+        sample_rate: u32,
+        format: WavFormat,
+    ) -> io::Result<RecordingSession> {
         let mut source = self.claim()?;
-        let wav = WavRecording::from_writer(writer, source.reader().channel_count(), sample_rate)?;
+        let wav = WavRecording::from_writer_with_format(
+            writer,
+            source.reader().channel_count(),
+            sample_rate,
+            format,
+        )?;
         spawn_recording(source, wav)
     }
 

@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use super::{DRAIN_CHUNK_FRAMES, WavRecording};
+use super::{DRAIN_CHUNK_FRAMES, WavFormat, WavRecording};
 use crate::recorder::{RecorderReader, RecorderState, RecorderStats};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,7 +125,19 @@ impl RecorderReader {
         path: impl AsRef<Path>,
         sample_rate: u32,
     ) -> io::Result<RecordingSession> {
-        let wav = WavRecording::create(path, self.channel_count(), sample_rate)?;
+        self.record_wav_format(path, sample_rate, WavFormat::Float32)
+    }
+
+    /// Explicit encoding; capture transport remains float32 and conversion is
+    /// performed off RT by the file worker. See [`WavFormat`] for PCM policy.
+    pub fn record_wav_format(
+        self,
+        path: impl AsRef<Path>,
+        sample_rate: u32,
+        format: WavFormat,
+    ) -> io::Result<RecordingSession> {
+        let wav =
+            WavRecording::create_with_format(path, self.channel_count(), sample_rate, format)?;
         spawn_recording(self, wav)
     }
 
@@ -136,7 +148,22 @@ impl RecorderReader {
         writer: W,
         sample_rate: u32,
     ) -> io::Result<RecordingSession> {
-        let wav = WavRecording::from_writer(writer, self.channel_count(), sample_rate)?;
+        self.record_with_writer_format(writer, sample_rate, WavFormat::Float32)
+    }
+
+    /// Explicit-encoding variant; caller-owned writer must be empty.
+    pub fn record_with_writer_format<W: Write + Seek + Send + 'static>(
+        self,
+        writer: W,
+        sample_rate: u32,
+        format: WavFormat,
+    ) -> io::Result<RecordingSession> {
+        let wav = WavRecording::from_writer_with_format(
+            writer,
+            self.channel_count(),
+            sample_rate,
+            format,
+        )?;
         spawn_recording(self, wav)
     }
 }

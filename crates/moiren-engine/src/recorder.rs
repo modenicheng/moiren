@@ -16,7 +16,7 @@ use crate::{
 
 mod wav;
 pub use wav::{
-    RecordingError, RecordingSession, RecordingState, RecordingStatus, RecordingSummary,
+    RecordingError, RecordingSession, RecordingState, RecordingStatus, RecordingSummary, WavFormat,
     WavRecording,
 };
 pub(crate) use wav::{RecordingSource, spawn_recording};
