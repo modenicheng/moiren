@@ -15,13 +15,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::Ordering};
 
+mod rack_editing;
 mod recording_formats;
 mod wav_validation;
 
 const ISOLATED_CONFIG: &str = "MOIREN_CAPTURE_NODES_CONFIG";
 const NODE_FILTER: &str = "MOIREN_CAPTURE_NODE";
-const SCENARIOS: [&str; 7] = [
+const SCENARIOS: [&str; 8] = [
     "rack-populated",
+    "rack-editing",
     "recording-states",
     "recording-formats",
     "bus-expanded",
@@ -436,6 +438,9 @@ async fn capture(
     }
     if filter == Some("recording-formats") {
         return recording_formats::capture_formats(window, shell, directory, cx).await;
+    }
+    if filter == Some("rack-editing") {
+        return rack_editing::capture_rack(window, shell, directory, cx).await;
     }
     if filter == Some("overview") {
         return capture_overviews(window, shell, directory, cx).await;
@@ -1676,7 +1681,7 @@ fn verify_native_bounds(
             .and_then(|node| node.builtin.rack())
             .map(|rack| rack.slots.len());
         let vertical_meter = matches!(node.kind, NodeKind::Bus | NodeKind::Recorder)
-            || (node.kind == NodeKind::Rack && rack_stages.is_some_and(|stages| stages >= 3));
+            || (node.kind == NodeKind::Rack && rack_stages.is_some_and(|stages| stages > 0));
         let meter = measured.meters.get(id);
         let channels = snapshot
             .graph
@@ -2249,10 +2254,12 @@ mod tests {
         let runtime = spawn_service();
         let mut snapshot = (*initial_projection(&runtime.handle())).clone();
         let initial = fixture().unwrap();
-        for (variant, kind) in [
-            ("rack-populated", NodeKind::Rack),
-            ("bus-expanded", NodeKind::Bus),
-            ("recorder", NodeKind::Recorder),
+        for (variant, kind, rack_slots) in [
+            ("rack-populated", NodeKind::Rack, Some(1)),
+            ("rack-populated", NodeKind::Rack, Some(2)),
+            ("rack-populated", NodeKind::Rack, Some(4)),
+            ("bus-expanded", NodeKind::Bus, None),
+            ("recorder", NodeKind::Recorder, None),
         ] {
             let mut graph = ServiceGraph::default();
             graph
@@ -2260,6 +2267,22 @@ mod tests {
                 .unwrap();
             for edit in expansion_edits(&graph.snapshot(), variant).unwrap() {
                 graph.edit(edit).unwrap();
+            }
+            if let Some(count) = rack_slots {
+                let mut rack = populated_rack();
+                rack.slots.truncate(count);
+                let node = graph
+                    .snapshot()
+                    .node_of_kind(NodeKind::Rack)
+                    .unwrap()
+                    .0
+                    .id();
+                graph
+                    .edit(crate::service::GraphEdit::SetBuiltin {
+                        node,
+                        state: crate::service::BuiltinState::Rack(rack),
+                    })
+                    .unwrap();
             }
             snapshot.graph = std::sync::Arc::new(graph.snapshot());
             let id = snapshot.graph.node_of_kind(kind).unwrap().0.id();
