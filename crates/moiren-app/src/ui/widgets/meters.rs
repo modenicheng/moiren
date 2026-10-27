@@ -36,35 +36,22 @@ pub fn channel_meter(levels: Option<&[DisplayLevel]>, channels: usize, clips: &[
                     window.paint_quad(fill(track, theme::BORDER));
                     let level = levels.as_deref().and_then(|levels| levels.get(index));
                     if let Some(level) = level {
-                        let amount = |value| 1. - FaderScale::position(f64::from(value));
-                        let peak = amount(level.bar);
-                        let mut bottom: f32 = 0.;
-                        for (top, color) in [
-                            (meter_height(10f32.powf(-6. / 20.)), theme::SUCCESS),
-                            (meter_height(1.), theme::WARNING),
-                            (1., theme::DANGER),
-                        ] {
-                            let height = (peak.min(top) - bottom).max(0.);
+                        // The zone segmentation, the dark peak tail and their
+                        // colors are the DOM bars' [`meter_spans`]; only the
+                        // painting surface differs here.
+                        for span in meter_spans(*level) {
                             window.paint_quad(fill(
                                 Bounds::new(
                                     point(
                                         left,
-                                        bounds.bottom() - bounds.size.height * (bottom + height),
+                                        bounds.bottom()
+                                            - bounds.size.height * (span.bottom + span.height),
                                     ),
-                                    size(px(width), bounds.size.height * height),
+                                    size(px(width), bounds.size.height * span.height),
                                 ),
-                                color,
+                                span.color,
                             ));
-                            bottom = top;
                         }
-                        let rms = amount(level.rms).min(peak);
-                        window.paint_quad(fill(
-                            Bounds::new(
-                                point(left, bounds.bottom() - bounds.size.height * peak),
-                                size(px(width), bounds.size.height * (peak - rms).max(0.)),
-                            ),
-                            theme::METER_PEAK_ZONE,
-                        ));
                         let y = bounds.top()
                             + bounds.size.height * FaderScale::position(f64::from(level.marker));
                         window.paint_quad(fill(
@@ -134,10 +121,11 @@ struct MeterSpan {
 /// a translucent dark extension above it reaches the peak bar so the
 /// sustained reading stays light and transients show as the dark tail.
 /// Zone boundaries use the compact digital reference: −6 dBFS
-/// (green→yellow) and 0 dBFS (yellow→red).
+/// (green→yellow) and 0 dBFS (yellow→red). This is the single source for the
+/// segmentation strategy: the canvas meter paints the same spans with quads.
 fn meter_spans(level: DisplayLevel) -> Vec<MeterSpan> {
     let bar_amount = meter_height(level.bar);
-    let mut spans = Vec::new();
+    let mut spans = Vec::with_capacity(4);
     let green_top = meter_height(10f32.powf(-6. / 20.));
     let red_top = meter_height(1.);
     for (bottom, top, color) in [
