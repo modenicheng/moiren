@@ -121,13 +121,21 @@ Stage 7.
   tests and selected strict Windows lint PASS. Actual test-profile strict
   lint gaps remain explicitly recorded in the validation document.
 - Signal-only controlled-load stop prerequisite accepted/pushed as `2a0561d`.
-- The nine-file production preparation-abort prerequisite is frozen for
-  independent review, not yet accepted. Its final full library test attempt
-  failed at the virtual-owner Running wait; investigate and retain
-  that failure before claiming a full-candidate pass.
-- B integration remains pending both prerequisite acceptance and the exact
-  implementation brief. No collection, physical qualification or default
-  promotion follows from A.
+- The nine-file production preparation-abort prerequisite was independently
+  reviewed and accepted/pushed as `6660ee1`. Parent abort tests (24), strict
+  all-target crate lint and scoped formatting pass; the owner also records
+  105 WASAPI tests and the 86-test RT harness passing. Its first full parallel
+  library attempt failed (509 pass, one failure, two ignored) at the existing
+  virtual-owner transient Running wait. The same failure reproduces in pristine
+  `bdfe6e3` and the candidate under a bounded child-only single-CPU experiment;
+  keep the failure and its triage rather than claiming a full parallel pass.
+  The final serial retry passes 510 library tests with two ignored; integrations
+  are still running. No overall final-candidate full-suite pass is claimed.
+- B integration is dispatched against `6660ee1`, using the exact four-file
+  brief and the accepted source/load/library interfaces. Removing only newly
+  unfulfilled example-local dead-code expectations is permitted as consumption
+  hygiene, not a behavioral change to A. No collection, physical qualification
+  or default promotion follows from these prerequisites.
 - Read-only VM inventory at 01:55 +08:00 finds the test root empty, no test
   processes, bus OK and 32,221,892,608 bytes free; no old owned files exist
   to remove. Keep builds and caches on the host.

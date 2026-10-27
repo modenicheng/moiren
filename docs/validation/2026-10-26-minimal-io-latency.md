@@ -2811,3 +2811,68 @@ There are no obsolete owned test artifacts to delete. Receipt:
 No guest file, installed/rollback driver, audio endpoint or system setting was
 changed. Builds remain host-only. Stage 7 and all physical/long-run gates remain
 open; these source/tests/storage observations do not qualify latency.
+
+### 2026-10-28 preparation-failure peer-stop prerequisite
+
+`6660ee1` adds three control-side returning/abort entry points for Process
+capture preparation, native render preparation and renderer attachment. On
+failure they signal the common/local stop, invoke the borrowed caller callback
+exactly once on the control thread, then join/recover the local owner. Callback
+panic or stop failure does not skip cleanup. Separate typed primary/stop/join
+errors, available native reports, callback results and attachment renderer are
+retained. Success never invokes abort. Legacy APIs preserve their validation/
+no-owner stop side effects and WorkerPanicked error behavior; no RT callback,
+driver ABI, buffering or default changes are part of this prerequisite.
+
+Independent frozen nine-file spec/quality review passes. Parent fresh abort
+tests pass 24/24 and all-target Windows-audio strict Clippy plus scoped format
+checks pass. Owner tests additionally record 105 WASAPI tests and RT86 passing.
+Logs: `target/20261028-owned-process/parent-native-abort*.log` and
+`target/task7-native-prepare-abort/`. The shadow RT harness retains its existing
+unused/dead-code warnings; no new lint suppression is introduced.
+
+The first frozen-candidate parallel full-library attempt fails: 509 passed,
+one failed, two ignored. The failed virtual-observation test polls a transient
+Running state while its fake clock stops after four wakes. The exact failure
+also reproduces in pristine `bdfe6e3` under the same bounded child-only CPU
+affinity experiment; normal focused repetitions pass 100/100 for each binary.
+This establishes a baseline failure mode, not the exact scheduling history of
+the initial failure. No production code or test assertion was weakened to
+obtain these results. Its serial final-candidate retry passes 510 library tests
+with two ignored; full integrations remain running at this checkpoint. Retain
+both attempts, and do not substitute older pre-final tests or partial serial
+results for an overall terminal pass. A separate test-fixture handshake repair
+is being developed; it is not part of `6660ee1`.
+
+### 2026-10-28 clean-pin host source-only native smoke
+
+Built an isolated Git archive of `64645814fae37273a704a09f28b386a849fe3bf9`,
+excluding concurrent library work. The release build succeeds; its executable
+is 5,854,208 bytes with SHA-256
+`7B5D1CCEC788219F0677F1EAD6A5470E5F7084CC62889BA1C7436F8B8DA47298`.
+A short host-only diagnostic directly launches process-source-worker on explicit
+non-default virtual endpoint CABLE In 16ch, MMDevice ID
+`{0.0.0.00000000}.{93f962ad-26f6-4485-8a34-e1c7b27f44d5}`. Despite its display
+name, its selected mix is 48 kHz stereo Float32. No physical output, microphone,
+default selection, driver or VM file was changed.
+
+The retained actual child is PID 57208, creation FILETIME 134375975498259716;
+all four receipts match. Ready precedes activation; native Start/submission
+receipts follow. The schedule contains 9,600 source frames, two 256-frame
+markers at frames 0 and 4,800, amplitude 0.05. Final evidence retains 1,056
+silent preroll frames, exactly 9,600 acknowledged source frames and 12,096
+native submitted frames (including 1,440 zero-tail frames). Native buffer is
+1,056 frames, event timeouts zero, explicit native Stop attempted/succeeded and
+worker_joined true. Actual child exit is 0 without forced termination; wrapper
+elapsed is 0.5087471 seconds, distinct from native elapsed 0.2185914 seconds.
+The 10-second worker option is a finite ceiling, not the observed duration.
+
+Archive: `target/20261028-owned-process/source-smoke-6464581-20261028-015909/`.
+All ten payloads (12,375 bytes) match their lengths/SHA-256; its 1,577-byte
+manifest has SHA-256
+`55791D1BDDB2727BE0245C03FD2E79FFA7D840F9337567E60AEA4E470D741345`.
+Independent numerical/identity/archive review passes. This helper exercises
+the worker directly, not ProcessSourceSession or the B collector; its final
+identity was independently checked from raw evidence. These observations are
+submission/cleanup evidence only: no independent PCM, audible playback proof,
+source-to-recorder mapping, physical latency or stability qualification follows.
