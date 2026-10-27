@@ -250,9 +250,12 @@ cargo test --locked -p moiren-app --test monitor_cli --no-default-features
   changes. Run microphone cases separately; microphone freshness failures must
   not be hidden by the playback result.
 - [ ] Hold a native client, close the Engine gate, request a rename, and verify:
-  old endpoint becomes/remains removing, final `Removed` is observed, the new
-  endpoint has the requested name, the stable ID and graph binding are kept,
-  and the gate reopens only after Engine confirmation.
+  safe native revocation, a direct fresh old `Removed` observation, a fresh
+  replacement with the exact requested Windows MMDevice name, preserved stable
+  ID and graph binding, and gate reopen only after Engine confirmation. A held
+  COM reference does not guarantee the old PDO remains `Removing`; retain the
+  original strict-probe failure separately rather than changing the driver to
+  manufacture that historical expectation.
 - [x] Repeat the held-client case with remove failure and create failure. The
   requested name must remain visible as pending; the app must not claim native
   presence or active audio when the recreation failed.

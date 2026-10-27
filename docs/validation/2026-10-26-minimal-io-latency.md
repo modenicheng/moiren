@@ -1501,3 +1501,20 @@ first failed at runtime, then 38 service/export tests, strict lib/test Clippy,
 feature-off all-target check, formatting and independent review passed. The
 exact oldest-eviction regression also passes. This closes a read-only evidence
 projection gap, not the real rename acceptance or Windows name discrepancy.
+
+### 2026-10-27 regression and guest-retention checkpoint
+
+The full app run with `gpui-test,vad-integration-probe` completes with 500
+passed, four ignored and no failures across 20 suites. The earlier workspace
+run is not a pass: the virtual-only owner observation test failed its existing
+one-second Running deadline. An exact isolated repeat passes, followed by a
+complete Windows-audio library repeat with 478 passed and two ignored. These
+repeats do not establish the cause of the original failure or erase it; no
+deadline was relaxed. Logs remain under host `target/20261027-parent-*.log`.
+
+At `2026-10-27T12:31:58+08:00`, a fresh SSH inventory confirms the guest test
+root contains only `vad_integration-54029a3.exe` (7,552,512 bytes, the verified
+hash recorded above), with 30.099 GiB free, no probe processes and no present
+dynamic children. Builds and archived evidence remain on the host. Subsequent
+runs must keep the same archive/length/SHA-256/recheck/delete sequence and
+replace the old binary rather than accumulating probes on the 64 GB guest.
