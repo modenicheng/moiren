@@ -85,6 +85,7 @@ NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& reque
     if (reserved >= 0) {
         auto& slot = shared->Slots[reserved];
         shared->PcmDiagnostics[reserved].Reset(0);
+        shared->UnservedDiagnostics[reserved].Reset(0);
         shared->ClockDiagnostics[reserved].Reset(0);
         slot.StableId = request.StableId;
         slot.AllowDefault = request.AllowDefault;
@@ -404,6 +405,7 @@ NTSTATUS VadAudioAcquireStream(WDFDEVICE child, uint64_t* generation)
         } else if (InterlockedCompareExchange(&context->ActiveStreams, 1, 0) == 0) {
             *generation = ++slot.StreamGeneration;
             shared->PcmDiagnostics[context->Index].Reset(*generation);
+            shared->UnservedDiagnostics[context->Index].Reset(*generation);
             shared->ClockDiagnostics[context->Index].Reset(*generation);
             slot.SampleFormat = 0;
             slot.PacketFrames = 0;

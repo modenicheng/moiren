@@ -98,6 +98,49 @@ static void TracePendingClockDiagnostic(VAD_SHARED* shared,
         static_cast<ULONG>(item.After.Running));
 }
 
+static void TracePendingUnservedDiagnostics(VAD_SHARED* shared,
+    const MOIREN_VAD_ENDPOINT_SNAPSHOT& snapshot)
+{
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    if (snapshot.Intent != MOIREN_VAD_INTENT_MICROPHONE ||
+        !WPP_LEVEL_FLAGS_ENABLED(TRACE_LEVEL_INFORMATION, VAD_CONTROL)) {
+        return;
+    }
+    vad::UnservedDiagnostics diagnostic = {};
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    for (ULONG i = 0; i < MOIREN_VAD_MAX_ENDPOINTS; ++i) {
+        const auto& slot = shared->Slots[i];
+        if (slot.Id == snapshot.EndpointId && slot.Session == snapshot.SessionEpoch &&
+            slot.StreamGeneration == snapshot.StreamGeneration) {
+            diagnostic = shared->UnservedDiagnostics[i].TakeUnreported();
+            break;
+        }
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+    for (ULONG i = 0; i < 3; ++i) {
+        const auto& item = diagnostic.First[i];
+        if ((item.Flags & vad::UnservedReport) == 0) { continue; }
+        // First unserved only, never a per-packet trace. Repeat correlation so
+        // interleaved fragments remain joinable. Deadline=0 means timer mode.
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Mic unserved callback endpoint=%I64u session=%I64u generation=%I64u stream=%I64u state_qpc=%I64u kind=%u gate=%I64u flags=%u dpc_qpc=%I64u deadline_qpc=%I64u retrieve=%!STATUS! calls=%u freq=%I64u",
+            snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation,
+            diagnostic.Stream, item.StateQpc, i, item.GateEpoch,
+            static_cast<ULONG>(item.Flags), item.DpcQpc, item.DeadlineQpc,
+            static_cast<NTSTATUS>(item.RetrieveStatus),
+            static_cast<ULONG>(item.RetrieveCalls), diagnostic.Frequency);
+        // Pre-forward is a safe admission-attempt boundary, not actual enqueue
+        // time; there is deliberately no post-forward request/context access.
+        VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+            "Mic unserved write_pre endpoint=%I64u session=%I64u generation=%I64u stream=%I64u state_qpc=%I64u kind=%u gate=%I64u has_write=%u request=%I64u header_qpc=%I64u pre_forward_qpc=%I64u",
+            snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation,
+            diagnostic.Stream, item.StateQpc, i, item.GateEpoch,
+            static_cast<ULONG>((item.Flags & vad::UnservedHasWrite) != 0),
+            item.WriteSequence, item.WriteHeaderQpc, item.WritePreForwardQpc);
+    }
+}
+
 VAD_PAGE NTSTATUS VadControlInitialize(WDFDEVICE device)
 {
     PAGED_CODE();
@@ -220,6 +263,7 @@ static NTSTATUS Dispatch(WDFDEVICE device, WDFREQUEST request, size_t* informati
             (code == IOCTL_MOIREN_VAD_SET_GATE && local.Gate.Open == 0)) {
             TracePendingPcmDiagnostics(shared, snapshot);
             TracePendingClockDiagnostic(shared, snapshot);
+            TracePendingUnservedDiagnostics(shared, snapshot);
         }
         RtlCopyMemory(output, &snapshot, sizeof(snapshot));
         *information = sizeof(snapshot);

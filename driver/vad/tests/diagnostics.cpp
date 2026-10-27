@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "../src/PcmDiagnostics.h"
+#include "../src/UnservedDiagnostics.h"
 #include "../src/Lifecycle.h"
 #include "../src/Ownership.h"
 #include <array>
@@ -21,6 +22,9 @@ using ULONG = uint32_t;
 using NTSTATUS = int32_t;
 using PVOID = void*;
 using PUCHAR = unsigned char*;
+using LONG = long;
+using KIRQL = unsigned;
+struct SpinLock { bool Held = false; };
 constexpr NTSTATUS STATUS_SUCCESS = 0;
 constexpr NTSTATUS STATUS_REVISION_MISMATCH = -1;
 constexpr NTSTATUS STATUS_IO_TIMEOUT = -2;
@@ -30,6 +34,9 @@ constexpr NTSTATUS STATUS_IO_TIMEOUT = -2;
 struct Request {
     MOIREN_VAD_PCM_HEADER Header = {};
     PVOID Buffer = nullptr;
+    struct VAD_SHARED* Shared = nullptr;
+    ULONG Index = 0;
+    LONG Counted = 0;
 };
 using WDFREQUEST = Request*;
 struct Queue {
@@ -38,9 +45,14 @@ struct Queue {
     ULONG Count = 0;
 };
 struct VAD_SHARED {
-    vad::Slot Slots[1] = {};
-    vad::PcmDiagnostics PcmDiagnostics[1] = {};
-    Queue* PcmQueues[1] = {};
+    SpinLock Lock;
+    vad::Slot Slots[MOIREN_VAD_MAX_ENDPOINTS] = {};
+    vad::PcmDiagnostics PcmDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
+    vad::UnservedDiagnostics UnservedDiagnostics[MOIREN_VAD_MAX_ENDPOINTS] = {};
+    Queue* PcmQueues[MOIREN_VAD_MAX_ENDPOINTS] = {};
+    LONG PcmOnline = 1;
+    unsigned PcmRundown = 0;
+    unsigned PcmDrain[1] = {};
 };
 struct VAD_PCM_COMPLETION {
     WDFREQUEST Request;
@@ -50,11 +62,12 @@ struct VAD_PCM_COMPLETION {
 struct VAD_PCM_BATCH {
     vad::CompletionBatch<VAD_PCM_COMPLETION, MOIREN_VAD_REQUEST_SLOTS> Completions = {};
     VAD_SHARED* Shared;
+    vad::CallbackBoundary Callback = {};
 };
 struct LARGE_INTEGER { int64_t QuadPart; };
 static LARGE_INTEGER KeQueryPerformanceCounter(LARGE_INTEGER* frequency)
 {
-    frequency->QuadPart = 48000;
+    if (frequency != nullptr) { frequency->QuadPart = 48000; }
     return {1001};
 }
 static NTSTATUS WdfIoQueueRetrieveNextRequest(Queue* queue, WDFREQUEST* result)
@@ -72,6 +85,7 @@ static void RtlCopyMemory(PVOID target, const void* source, ULONG bytes)
 }
 #include "pcm-production.inc"
 
+#ifndef VAD_DIAGNOSTICS_FIXTURE
 static void ProductionTransferDiagnostics()
 {
     VAD_SHARED shared = {};
@@ -198,3 +212,4 @@ int main()
     std::puts("PASS: unchanged freshness boundaries, empty/first rejection, "
         "QPC window, bounded control publication and generation reset");
 }
+#endif

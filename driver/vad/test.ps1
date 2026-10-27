@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics')]
+    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics')]
     [string]$Test = 'all'
 )
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,7 @@ $version = (Get-Content -LiteralPath "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVe
 $tools = Join-Path $vs "VC\Tools\MSVC\$version"
 $sdk = "${env:ProgramFiles(x86)}\Windows Kits\10"
 $compiler = Join-Path $tools 'bin\Hostx64\x64\cl.exe'
-foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics') } else { @($Test) })) {
+foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics') } else { @($Test) })) {
     if ($testName -eq 'clock_diagnostics' -and
         (Test-Path (Join-Path $PSScriptRoot 'src\audio\ClockDiagnostic.h'))) {
         # Reuse the brace-aware extractor; test the actual callback/epoch glue.
@@ -42,10 +42,33 @@ for relative, functions in (
 '@ | & python - $PSScriptRoot $buildRoot
         if ($LASTEXITCODE -ne 0) { throw "Clock source extraction failed ($LASTEXITCODE)." }
     }
-    if ($testName -eq 'diagnostics') {
+    if ($testName -eq 'diagnostics' -or $testName -eq 'unserved_diagnostics') {
         & python (Join-Path $PSScriptRoot 'tests\extract-cleanup.py') --kind pcm `
             (Join-Path $PSScriptRoot 'src\Pcm.cpp') (Join-Path $buildRoot 'pcm-production.inc')
         if ($LASTEXITCODE -ne 0) { throw "PCM source extraction failed ($LASTEXITCODE)." }
+    }
+    if ($testName -eq 'unserved_diagnostics') {
+        @'
+import importlib.util
+from pathlib import Path
+import sys
+sys.dont_write_bytecode = True
+root, output = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location('extract', root / 'tests/extract-cleanup.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+parts = []
+for relative, functions in (
+    ('src/Pcm.cpp', ('ReserveRequest', 'VadPcmSubmit')),
+    ('src/Control.cpp', ('TracePendingUnservedDiagnostics',)),
+):
+    source = root / relative
+    patterns = tuple((name, r'(?:static\s+)?(?:NTSTATUS|void)\s+' + name +
+        r'\s*\([^;{}]*\)\s*\{') for name in functions)
+    parts.append(module.extract(source.read_text(encoding='utf-8'), source.as_posix(), patterns))
+(output / 'unserved-production.inc').write_text('\n'.join(parts), encoding='utf-8')
+'@ | & python - $PSScriptRoot $buildRoot
+        if ($LASTEXITCODE -ne 0) { throw "Unserved source extraction failed ($LASTEXITCODE)." }
     }
     if ($testName -eq 'cleanup') {
         # Compile the real cleanup functions against host DDI stubs, not a copy.

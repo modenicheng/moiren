@@ -70,6 +70,13 @@ static NTSTATUS ReserveRequest(VAD_SHARED* shared, VAD_PCM_REQUEST* context,
         if (capture) {
             slot.LastSequence = header.Sequence;
             slot.HasSequence = 1;
+            // A safe reservation-side pre-forward boundary, NOT actual queue
+            // insertion or proof that forward succeeds. Never touch a request
+            // after successful WdfRequestForwardToIoQueue: WDF may complete it.
+            shared->UnservedDiagnostics[index].RecordPreForward(
+                header.StreamGeneration, {header.GateEpoch, header.Sequence,
+                    header.Qpc, static_cast<uint64_t>(
+                        KeQueryPerformanceCounter(nullptr).QuadPart)});
         }
     }
     KeReleaseSpinLock(&shared->Lock, irql);
@@ -268,6 +275,11 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
     bool copied = false;
     const bool capture = slot.Intent == MOIREN_VAD_INTENT_MICROPHONE;
     auto& diagnostic = shared->PcmDiagnostics[index];
+    // Stack-only accumulation: a rejected WRITE is not an unserved callback
+    // if a later request in the unchanged bounded loop supplies this packet.
+    uint16_t unservedReasons = 0;
+    uint16_t retrieveCalls = 0;
+    NTSTATUS retrieveStatus = STATUS_SUCCESS;
     const ULONG bytes = frames * blockAlign;
     if (capture) {
         RtlZeroMemory(buffer, bytes);
@@ -279,8 +291,11 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
         // for later native packets.
         for (ULONG count = 0; count < MOIREN_VAD_REQUEST_SLOTS && !copied; ++count) {
             WDFREQUEST request = nullptr;
-            if (!NT_SUCCESS(WdfIoQueueRetrieveNextRequest(shared->PcmQueues[index],
-                &request))) {
+            retrieveStatus = WdfIoQueueRetrieveNextRequest(shared->PcmQueues[index],
+                &request);
+            ++retrieveCalls;
+            if (!NT_SUCCESS(retrieveStatus)) {
+                unservedReasons |= vad::UnservedEmpty;
                 if (capture && slot.GateOpen != 0 &&
                     slot.StreamState == MOIREN_VAD_STREAM_RUNNING) {
                     diagnostic.Record({vad::PcmWriteOutcome::Empty,
@@ -299,6 +314,7 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
             if (!vad::SameStream(slot, header) ||
                 slot.SampleFormat != header.SampleFormat || header.Frames != frames ||
                 header.Channels != slot.Channels || bytes > MOIREN_VAD_MAX_PCM_BYTES) {
+                unservedReasons |= vad::UnservedNoCurrent;
                 continue;
             }
             if (capture) {
@@ -311,6 +327,9 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
                     header.Sequence, header.Qpc, qpc,
                     static_cast<uint64_t>(checked.QuadPart), period, frames});
                 if (outcome != vad::PcmWriteOutcome::Success) {
+                    if (outcome == vad::PcmWriteOutcome::TooOld) {
+                        unservedReasons |= vad::UnservedTooOld;
+                    }
                     ++slot.DroppedPackets;
                     completion.Status = STATUS_IO_TIMEOUT;
                     continue;
@@ -335,6 +354,10 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
                     // without reaching the empty-queue or freshness branch.
                     diagnostic.Record({vad::PcmWriteOutcome::NoCurrentRequest,
                         slot.AdmissionGeneration, sequence, 0, 0, qpc, 0, 0, frames});
+                    shared->UnservedDiagnostics[index].RecordUnserved(
+                        slot.StreamGeneration, slot.AdmissionGeneration,
+                        batch->Callback, retrieveStatus, retrieveCalls,
+                        unservedReasons != 0 ? unservedReasons : vad::UnservedNoCurrent);
                 }
                 ++slot.SilencePackets;
             } else {

@@ -10,6 +10,7 @@ int main()
 }
 #else
 #include "../src/audio/ClockDiagnostic.h"
+#include "../src/UnservedDiagnostics.h"
 #include <array>
 #include <cstring>
 #include <limits>
@@ -144,9 +145,13 @@ struct VAD_AUDIO_STREAM {
 };
 struct TimerContext { VAD_AUDIO_STREAM* Stream; };
 using WDFTIMER = TimerContext*;
-struct VAD_PCM_BATCH {};
+struct VAD_PCM_BATCH { vad::CallbackBoundary Callback = {}; };
 static KIRQL CurrentIrql = PASSIVE_LEVEL;
 static uint64_t CallbackQpc = 0;
+static std::array<uint64_t, 3> CallbackSamples = {};
+static unsigned SampleIndex = 0;
+static bool ScriptSamples = false;
+static vad::CallbackBoundary LastCallback = {};
 static unsigned Starts = 0;
 static unsigned Notifications = 0;
 static unsigned Transfers = 0;
@@ -197,7 +202,14 @@ static void KeReleaseSpinLock(SpinLock* lock, KIRQL previous)
     CurrentIrql = previous;
 }
 struct Counter { uint64_t QuadPart; };
-static Counter KeQueryPerformanceCounter(void*) { return {CallbackQpc}; }
+static Counter KeQueryPerformanceCounter(void*)
+{
+    if (ScriptSamples) {
+        Check(SampleIndex < CallbackSamples.size(), "callback QPC sample count");
+        return {CallbackSamples[SampleIndex++]};
+    }
+    return {CallbackQpc};
+}
 static bool VadAudioIsStreamCurrent(WDFDEVICE child, uint64_t generation)
 {
     return child->Shared->Slots[0].StreamGeneration == generation;
@@ -209,7 +221,11 @@ static void RtlZeroMemory(void* address, ULONG size) { std::memset(address, 0, s
 static void TransferTimerSegment(VAD_AUDIO_STREAM*, const TimerDrivenSegment&,
     uint64_t, VAD_PCM_BATCH*) { ++Transfers; }
 static void VadPcmTransfer(WDFDEVICE, uint64_t, void*, ULONG, ULONG,
-    uint64_t, uint64_t, VAD_PCM_BATCH*) { ++Transfers; }
+    uint64_t, uint64_t, VAD_PCM_BATCH* batch)
+{
+    LastCallback = batch->Callback;
+    ++Transfers;
+}
 static void VadPcmComplete(VAD_PCM_BATCH*)
 {
     Check(CurrentIrql == PASSIVE_LEVEL, "PCM completion stays outside spin locks");
@@ -339,10 +355,38 @@ static void ProductionCallSites()
     Check(TraceEvents == 3, "repeated passive query does not re-emit any first rebase fragment");
 }
 
+static void ProductionCallbackBoundary()
+{
+    Shared shared = {};
+    Child child = {&shared};
+    auto& slot = shared.Slots[0];
+    slot.StreamGeneration = 3;
+    VAD_AUDIO_STREAM stream = {};
+    stream.Device = &child;
+    stream.Capture = true;
+    TimerContext timer = {&stream};
+    // DPC dispatch is 10 ticks late; State is acquired another 20 ticks later.
+    // Keep the original scheduling QPC distinct so the test detects reuse.
+    CallbackSamples = {10100010, 10100030, 10100031};
+    SampleIndex = 0;
+    ScriptSamples = true;
+    Transfers = 0;
+    VadAudioTimer(&timer);
+    ScriptSamples = false;
+    Check(SampleIndex == 3 && Transfers == 1 &&
+        LastCallback.DpcQpc == 10100010 && LastCallback.StateQpc == 10100030 &&
+        LastCallback.DeadlineQpc == 10100000 && LastCallback.Stream == 77 &&
+        LastCallback.Frequency == 10000000 && stream.CompletedPackets == 1,
+        "actual callback separates DPC dispatch from State wait and uses SERVICED pre-schedule deadline");
+    Check(stream.Clock.EpochQpc == 10000000 && !shared.Lock.Held && !stream.State.Held,
+        "callback evidence does not rebase an ordinarily late event or retain locks");
+}
+
 int main()
 {
     PureFirstRebase();
     ProductionCallSites();
+    ProductionCallbackBoundary();
     std::printf("PASS: first event/timer rebase, real callback/epoch causality, "
         "lateness, generation reset, passive WPP; fixed diagnostic=%zu bytes\n", sizeof(ClockDiagnostic));
 }

@@ -8,6 +8,7 @@
 #include "Lifecycle.h"
 #include "Ownership.h"
 #include "PcmDiagnostics.h"
+#include "UnservedDiagnostics.h"
 #include "audio/ClockDiagnostic.h"
 
 extern const GUID VadControlInterface;
@@ -24,6 +25,7 @@ struct VAD_SHARED {
     volatile LONG References;
     vad::Slot Slots[MOIREN_VAD_MAX_ENDPOINTS];
     vad::PcmDiagnostics PcmDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
+    vad::UnservedDiagnostics UnservedDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
     vad::audio::ClockDiagnostic ClockDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
     WDFDEVICE Children[MOIREN_VAD_MAX_ENDPOINTS]; // Owns one WDF reference.
     WDFQUEUE PcmQueues[MOIREN_VAD_MAX_ENDPOINTS];
@@ -127,6 +129,7 @@ struct VAD_PCM_COMPLETION {
 struct VAD_PCM_BATCH {
     vad::CompletionBatch<VAD_PCM_COMPLETION, MOIREN_VAD_REQUEST_SLOTS> Completions;
     VAD_SHARED* Shared; // Owns PCM rundown until completion, not just until copy.
+    vad::CallbackBoundary Callback; // Stack-only timing evidence; never changes scheduling.
 };
 // DPC-safe bounded packet copy. Caller must finish the batch after releasing
 // ALL spin locks. Neither copying nor collecting completes an IRP.

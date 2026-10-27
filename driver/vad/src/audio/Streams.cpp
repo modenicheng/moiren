@@ -300,6 +300,7 @@ static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
 _Use_decl_annotations_
 VOID VadAudioTimer(WDFTIMER timer)
 {
+    const auto dpcQpc = static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart);
     VAD_PCM_BATCH batch = {};
     auto timerContext = VadAudioTimerContext(timer);
     auto stream = timerContext->Stream;
@@ -308,11 +309,16 @@ VOID VadAudioTimer(WDFTIMER timer)
     }
     KIRQL irql;
     KeAcquireSpinLock(&stream->State, &irql);
+    const auto stateQpc = static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart);
     if (!stream->Running || stream->Packets == nullptr || stream->PacketCount == 0) {
         KeReleaseSpinLock(&stream->State, irql);
         return;
     }
     const auto now = static_cast<uint64_t>(KeQueryPerformanceCounter(nullptr).QuadPart);
+    batch.Callback = {dpcQpc, stateQpc,
+        stream->PacketCount == 1 ? 0 : vad::audio::FrameQpc(stream->Clock,
+            (stream->CompletedPackets + 1) * stream->PacketFrames),
+        reinterpret_cast<uint64_t>(stream->Stream), stream->Clock.Frequency};
     if (!VadAudioIsStreamCurrent(stream->Device, stream->Generation)) {
         vad::audio::PauseClock(stream->Clock, now);
         stream->Running = FALSE;
