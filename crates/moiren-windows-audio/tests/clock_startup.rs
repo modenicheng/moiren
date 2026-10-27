@@ -282,6 +282,7 @@ fn clock_startup_joint_queue_matrix_handles_staggered_owners() {
         })
         .unwrap_or(120);
     assert!((120..=7_200).contains(&seconds));
+    let mut cases = Vec::new();
     for input_rate in [44_100, 48_000] {
         for render_period in [336, 480] {
             let phases: &[u32] = if render_period == 336 {
@@ -296,7 +297,7 @@ fn clock_startup_joint_queue_matrix_handles_staggered_owners() {
                         StartOrder::CaptureFirst,
                         StartOrder::RenderFirst,
                     ] {
-                        let case = StartupCase {
+                        cases.push(StartupCase {
                             input_rate,
                             render_period,
                             drift_ppm,
@@ -304,41 +305,48 @@ fn clock_startup_joint_queue_matrix_handles_staggered_owners() {
                             start_order,
                             segment_frames: 256,
                             prefill_capacity: false,
-                        };
-                        let result = simulate(case, seconds);
-                        assert_stable(case, &result);
-                        println!(
-                            "startup_case,{input_rate},{},{render_period},{},{},1056,{drift_ppm},{phase_frames},{},256,{seconds},{},{},{},{},{},{},{},{},{},{},{},{}",
-                            case.capture_period(),
-                            case.target(),
-                            case.render_target(),
-                            start_order.name(),
-                            result.first_audio_at,
-                            result.startup_partial_callbacks,
-                            result.short_callbacks,
-                            result.source_xruns,
-                            result.render_missing_frames,
-                            result.bridge.priming_frames,
-                            result.bridge.prime_discarded_frames,
-                            result.bridge.underrun_frames,
-                            result.bridge.dropped_frames,
-                            result.bridge.resets,
-                            result.bridge.low_water_guard_frames,
-                            result.bridge.correction_ppm,
-                        );
+                        });
                     }
                 }
             }
         }
     }
+    common::for_each_parallel(&cases, |&case| {
+        let result = simulate(case, seconds);
+        assert_stable(case, &result);
+        println!(
+            "startup_case,{},{},{},{},{},1056,{},{},{},256,{seconds},{},{},{},{},{},{},{},{},{},{},{},{}",
+            case.input_rate,
+            case.capture_period(),
+            case.render_period,
+            case.target(),
+            case.render_target(),
+            case.drift_ppm,
+            case.phase_frames,
+            case.start_order.name(),
+            result.first_audio_at,
+            result.startup_partial_callbacks,
+            result.short_callbacks,
+            result.source_xruns,
+            result.render_missing_frames,
+            result.bridge.priming_frames,
+            result.bridge.prime_discarded_frames,
+            result.bridge.underrun_frames,
+            result.bridge.dropped_frames,
+            result.bridge.resets,
+            result.bridge.low_water_guard_frames,
+            result.bridge.correction_ppm,
+        );
+    });
 }
 
 #[test]
 fn clock_startup_capacity_prefill_and_segments_preserve_real_startup_accounting() {
+    let mut cases = Vec::new();
     for input_rate in [44_100, 48_000] {
         for start_order in [StartOrder::CaptureFirst, StartOrder::RenderFirst] {
             for segment_frames in [1, 64, 256] {
-                let case = StartupCase {
+                cases.push(StartupCase {
                     input_rate,
                     render_period: 336,
                     drift_ppm: -1_000,
@@ -346,14 +354,16 @@ fn clock_startup_capacity_prefill_and_segments_preserve_real_startup_accounting(
                     start_order,
                     segment_frames,
                     prefill_capacity: true,
-                };
-                let result = simulate(case, 120);
-                assert_stable(case, &result);
-                assert!(result.zero_demand_callbacks > 0, "{case:?}: {result:?}");
-                if start_order == StartOrder::RenderFirst {
-                    assert!(result.bridge.priming_frames > 0, "{case:?}: {result:?}");
-                }
+                });
             }
         }
     }
+    common::for_each_parallel(&cases, |&case| {
+        let result = simulate(case, 120);
+        assert_stable(case, &result);
+        assert!(result.zero_demand_callbacks > 0, "{case:?}: {result:?}");
+        if case.start_order == StartOrder::RenderFirst {
+            assert!(result.bridge.priming_frames > 0, "{case:?}: {result:?}");
+        }
+    });
 }

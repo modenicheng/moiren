@@ -76,6 +76,13 @@ jobs:
     env:
       # Word-split on purpose: the cargo -p list is space-separated.
       PKGS: ${{ needs.changes.outputs.pkgs }}
+      # CI never benefits from incremental artifacts (rust-cache discards them)
+      # and full debuginfo dominates MSVC compile+link time. Line tables keep
+      # failing backtraces resolvable to file:line. dev and test must stay in
+      # sync or cargo builds the dependency set twice for the two profiles.
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -91,10 +98,8 @@ jobs:
       - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - uses: Swatinem/rust-cache@6fd3edff6979b79f87531400ad694fb7f2c84b1f
       # cargo -p takes one package per flag, so expand the list first.
-      - run: |
-          pkgs=()
-          for p in $PKGS; do pkgs+=(-p "$p"); done
-          cargo +stable check --locked --all-targets "${pkgs[@]}"
+      # No separate `cargo check` pass: `cargo test` compiles the same targets
+      # and the clippy job already lints --all-targets.
       - run: |
           pkgs=()
           for p in $PKGS; do pkgs+=(-p "$p"); done
@@ -106,11 +111,16 @@ jobs:
         if: contains(needs.changes.outputs.pkgs, 'moiren-windows-audio')
         run: cargo +stable test --locked -p moiren-windows-audio --features vad-probe --example vad_lifecycle --example vad_native --example vad_active_lifecycle
       - name: Test VAD application integration contracts without devices
-        if: contains(needs.changes.outputs.pkgs, 'moiren-app')
+        if: runner.os == 'Linux' && contains(needs.changes.outputs.pkgs, 'moiren-app')
         run: cargo +stable test --locked -p moiren-app --features vad-integration-probe --example vad_integration
-      - name: Test headless desktop UI
+      # One build with both feature sets instead of two full moiren-app
+      # rebuilds. The second command reuses the build and only runs the
+      # example's tests (examples need an explicit --example to execute).
+      - name: Test headless desktop UI and VAD application integration
         if: runner.os == 'Windows' && contains(needs.changes.outputs.pkgs, 'moiren-app')
-        run: cargo +stable test --locked -p moiren-app --features gpui-test
+        run: |
+          cargo +stable test --locked -p moiren-app --features gpui-test,vad-integration-probe
+          cargo +stable test --locked -p moiren-app --features gpui-test,vad-integration-probe --example vad_integration
       - run: cargo +stable run --locked -p moiren-engine --example offline
         if: contains(needs.changes.outputs.pkgs, 'moiren-engine')
       - run: cargo +stable run --locked -p moiren-engine --example logical_graph

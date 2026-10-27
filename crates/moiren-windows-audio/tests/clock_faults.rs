@@ -254,79 +254,86 @@ fn clock_faults_joint_queue_handles_bursts_stalls_and_pause_recovery() {
         })
         .unwrap_or(120);
     assert!((120..=7200).contains(&seconds));
+    let mut cases = Vec::new();
     for fault in [Fault::Burst, Fault::CaptureStall, Fault::RenderPause] {
         for input_rate in [44_100, 48_000] {
             for drift_ppm in [-1000, 0, 1000] {
                 for phase_frames in [0, 84, 168, 252] {
                     for render_first in [false, true] {
-                        let case = FaultCase {
+                        cases.push(FaultCase {
                             fault,
                             input_rate,
                             drift_ppm,
                             phase_frames,
                             render_first,
                             segment_frames: 256,
-                        };
-                        let result = simulate(case, seconds);
-                        assert_eq!(result.stable_short_callbacks, 0, "{case:?}: {result:?}");
-                        assert_eq!(result.stable_source_xruns, 0, "{case:?}: {result:?}");
-                        assert_eq!(
-                            result.bridge.resets, result.resets_at_deadline,
-                            "{case:?}: {result:?}"
-                        );
-                        assert_eq!(
-                            result.bridge.underrun_frames, result.underruns_at_deadline,
-                            "{case:?}: {result:?}"
-                        );
-                        assert_eq!(
-                            result.bridge.backlog_recoveries, result.recoveries_at_deadline,
-                            "{case:?}: {result:?}"
-                        );
-                        assert_eq!(
-                            result.bridge.dropped_frames, result.drops_at_deadline,
-                            "{case:?}: {result:?}"
-                        );
-                        if fault == Fault::RenderPause {
-                            assert!(result.render_missing_frames > 0, "{case:?}: {result:?}");
-                            assert!(result.bridge.dropped_frames > 0, "{case:?}: {result:?}");
-                            assert_eq!(result.bridge.backlog_recoveries, 1, "{case:?}: {result:?}");
-                            assert!(
-                                (u64::from(case.budget(1024).unwrap().input.high_water_frames)
-                                    - 1024..=8194 - 1024)
-                                    .contains(&result.bridge.backlog_discarded_frames),
-                                "{case:?}: {result:?}"
-                            );
-                            assert!(result.recovery_callbacks <= 11, "{case:?}: {result:?}");
-                        } else {
-                            assert_eq!(result.short_callbacks, 0, "{case:?}: {result:?}");
-                            assert_eq!(result.source_xruns, 0, "{case:?}: {result:?}");
-                            assert_eq!(result.render_missing_frames, 0, "{case:?}: {result:?}");
-                            assert_eq!(result.bridge.dropped_frames, 0, "{case:?}: {result:?}");
-                            assert_eq!(result.bridge.backlog_recoveries, 0, "{case:?}: {result:?}");
-                        }
-                        println!(
-                            "fault_case,{},{input_rate},{},336,{},8192,480,{},96,8,17,256,{drift_ppm},{phase_frames},{render_first},{seconds},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-                            fault.name(),
-                            case.capture_period(),
-                            fault.input_target(),
-                            fault.capture_delay(),
-                            result.short_callbacks,
-                            result.stable_short_callbacks,
-                            result.source_xruns,
-                            result.stable_source_xruns,
-                            result.render_missing_frames,
-                            result.bridge.underrun_frames,
-                            result.bridge.dropped_frames,
-                            result.bridge.backlog_recoveries,
-                            result.bridge.backlog_discarded_frames,
-                            result.bridge.resets,
-                            result.recovery_callbacks,
-                            result.last_short_after_resume_frames,
-                            result.bridge.low_water_guard_frames,
-                        );
+                        });
                     }
                 }
             }
         }
     }
+    common::for_each_parallel(&cases, |&case| {
+        let result = simulate(case, seconds);
+        assert_eq!(result.stable_short_callbacks, 0, "{case:?}: {result:?}");
+        assert_eq!(result.stable_source_xruns, 0, "{case:?}: {result:?}");
+        assert_eq!(
+            result.bridge.resets, result.resets_at_deadline,
+            "{case:?}: {result:?}"
+        );
+        assert_eq!(
+            result.bridge.underrun_frames, result.underruns_at_deadline,
+            "{case:?}: {result:?}"
+        );
+        assert_eq!(
+            result.bridge.backlog_recoveries, result.recoveries_at_deadline,
+            "{case:?}: {result:?}"
+        );
+        assert_eq!(
+            result.bridge.dropped_frames, result.drops_at_deadline,
+            "{case:?}: {result:?}"
+        );
+        if case.fault == Fault::RenderPause {
+            assert!(result.render_missing_frames > 0, "{case:?}: {result:?}");
+            assert!(result.bridge.dropped_frames > 0, "{case:?}: {result:?}");
+            assert_eq!(result.bridge.backlog_recoveries, 1, "{case:?}: {result:?}");
+            assert!(
+                (u64::from(case.budget(1024).unwrap().input.high_water_frames) - 1024
+                    ..=8194 - 1024)
+                    .contains(&result.bridge.backlog_discarded_frames),
+                "{case:?}: {result:?}"
+            );
+            assert!(result.recovery_callbacks <= 11, "{case:?}: {result:?}");
+        } else {
+            assert_eq!(result.short_callbacks, 0, "{case:?}: {result:?}");
+            assert_eq!(result.source_xruns, 0, "{case:?}: {result:?}");
+            assert_eq!(result.render_missing_frames, 0, "{case:?}: {result:?}");
+            assert_eq!(result.bridge.dropped_frames, 0, "{case:?}: {result:?}");
+            assert_eq!(result.bridge.backlog_recoveries, 0, "{case:?}: {result:?}");
+        }
+        println!(
+            "fault_case,{},{},{},336,{},8192,480,{},96,8,17,256,{},{},{},{seconds},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            case.fault.name(),
+            case.input_rate,
+            case.capture_period(),
+            case.fault.input_target(),
+            case.fault.capture_delay(),
+            case.drift_ppm,
+            case.phase_frames,
+            case.render_first,
+            result.short_callbacks,
+            result.stable_short_callbacks,
+            result.source_xruns,
+            result.stable_source_xruns,
+            result.render_missing_frames,
+            result.bridge.underrun_frames,
+            result.bridge.dropped_frames,
+            result.bridge.backlog_recoveries,
+            result.bridge.backlog_discarded_frames,
+            result.bridge.resets,
+            result.recovery_callbacks,
+            result.last_short_after_resume_frames,
+            result.bridge.low_water_guard_frames,
+        );
+    });
 }
