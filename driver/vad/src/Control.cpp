@@ -5,6 +5,48 @@
 VAD_PAGE static EVT_WDF_WORKITEM ControlWork;
 static EVT_WDF_REQUEST_CANCEL CancelControl;
 
+// Only the passive control path emits diagnostics. Audio callbacks retain two
+// fixed first observations; no PCM, user names, paths, or per-packet log stream.
+static void TracePcmObservation(const MOIREN_VAD_ENDPOINT_SNAPSHOT& snapshot,
+    const vad::PcmDiagnostics& diagnostic, const vad::PcmTransferObservation& item,
+    ULONG kind)
+{
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "PCM diagnostic endpoint=%I64u session=%I64u stream=%I64u run_gate=%I64u run_qpc=%I64u kind=%u outcome=%u gate=%I64u native=%I64u request=%I64u header_qpc=%I64u callback_qpc=%I64u check_qpc=%I64u period=%I64u frames=%u",
+        snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation,
+        diagnostic.RunGateEpoch, diagnostic.RunQpc, kind,
+        static_cast<ULONG>(item.Outcome), item.GateEpoch, item.NativeSequence,
+        item.RequestSequence, item.HeaderQpc, item.CallbackQpc, item.CheckQpc,
+        item.PeriodTicks, item.Frames);
+}
+
+static void TracePendingPcmDiagnostics(VAD_SHARED* shared,
+    const MOIREN_VAD_ENDPOINT_SNAPSHOT& snapshot)
+{
+    if (snapshot.Intent != MOIREN_VAD_INTENT_MICROPHONE ||
+        !WPP_LEVEL_FLAGS_ENABLED(TRACE_LEVEL_INFORMATION, VAD_CONTROL)) {
+        return;
+    }
+    vad::PcmDiagnostics diagnostic = {};
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    for (ULONG i = 0; i < MOIREN_VAD_MAX_ENDPOINTS; ++i) {
+        const auto& slot = shared->Slots[i];
+        if (slot.Id == snapshot.EndpointId && slot.Session == snapshot.SessionEpoch &&
+            slot.StreamGeneration == snapshot.StreamGeneration) {
+            diagnostic = shared->PcmDiagnostics[i].TakeUnreported();
+            break;
+        }
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+    if (diagnostic.ReportFirst) {
+        TracePcmObservation(snapshot, diagnostic, diagnostic.FirstTransfer, 1);
+    }
+    if (diagnostic.ReportRejected) {
+        TracePcmObservation(snapshot, diagnostic, diagnostic.FirstRejected, 2);
+    }
+}
+
 VAD_PAGE NTSTATUS VadControlInitialize(WDFDEVICE device)
 {
     PAGED_CODE();
@@ -121,6 +163,12 @@ static NTSTATUS Dispatch(WDFDEVICE device, WDFREQUEST request, size_t* informati
         }
     }
     if (NT_SUCCESS(status)) {
+        // Gate close stops further admitted transfers before passive logging;
+        // successful probes need no extra QUERY in their measured interval.
+        if (code == IOCTL_MOIREN_VAD_QUERY ||
+            (code == IOCTL_MOIREN_VAD_SET_GATE && local.Gate.Open == 0)) {
+            TracePendingPcmDiagnostics(shared, snapshot);
+        }
         RtlCopyMemory(output, &snapshot, sizeof(snapshot));
         *information = sizeof(snapshot);
     }

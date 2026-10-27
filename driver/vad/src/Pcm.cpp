@@ -267,6 +267,7 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
     auto& slot = shared->Slots[index];
     bool copied = false;
     const bool capture = slot.Intent == MOIREN_VAD_INTENT_MICROPHONE;
+    auto& diagnostic = shared->PcmDiagnostics[index];
     const ULONG bytes = frames * blockAlign;
     if (capture) {
         RtlZeroMemory(buffer, bytes);
@@ -280,6 +281,11 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
             WDFREQUEST request = nullptr;
             if (!NT_SUCCESS(WdfIoQueueRetrieveNextRequest(shared->PcmQueues[index],
                 &request))) {
+                if (capture && slot.GateOpen != 0 &&
+                    slot.StreamState == MOIREN_VAD_STREAM_RUNNING) {
+                    diagnostic.Record({vad::PcmWriteOutcome::Empty,
+                        slot.AdmissionGeneration, sequence, 0, 0, qpc, 0, 0, frames});
+                }
                 break;
             }
             auto context = VadPcmRequest(request);
@@ -297,10 +303,14 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
             }
             if (capture) {
                 LARGE_INTEGER frequency;
-                (void)KeQueryPerformanceCounter(&frequency);
+                const auto checked = KeQueryPerformanceCounter(&frequency);
                 const uint64_t period = static_cast<uint64_t>(frequency.QuadPart) *
                     frames / MOIREN_VAD_SAMPLE_RATE;
-                if (header.Qpc > qpc || qpc - header.Qpc > period) {
+                const auto outcome = vad::ClassifyPcmWrite(header.Qpc, qpc, period);
+                diagnostic.Record({outcome, slot.AdmissionGeneration, sequence,
+                    header.Sequence, header.Qpc, qpc,
+                    static_cast<uint64_t>(checked.QuadPart), period, frames});
+                if (outcome != vad::PcmWriteOutcome::Success) {
                     ++slot.DroppedPackets;
                     completion.Status = STATUS_IO_TIMEOUT;
                     continue;
@@ -319,6 +329,13 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
         }
         if (!copied) {
             if (capture) {
+                if (slot.GateOpen != 0 &&
+                    slot.StreamState == MOIREN_VAD_STREAM_RUNNING) {
+                    // Four retired requests can exhaust the bounded loop
+                    // without reaching the empty-queue or freshness branch.
+                    diagnostic.Record({vad::PcmWriteOutcome::NoCurrentRequest,
+                        slot.AdmissionGeneration, sequence, 0, 0, qpc, 0, 0, frames});
+                }
                 ++slot.SilencePackets;
             } else {
                 ++slot.DroppedPackets;

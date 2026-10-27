@@ -84,6 +84,7 @@ NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& reque
         request.Intent, request.Channels);
     if (reserved >= 0) {
         auto& slot = shared->Slots[reserved];
+        shared->PcmDiagnostics[reserved].Reset(0);
         slot.StableId = request.StableId;
         slot.AllowDefault = request.AllowDefault;
         RtlCopyMemory(slot.Name, request.Name, sizeof(request.Name));
@@ -401,6 +402,7 @@ NTSTATUS VadAudioAcquireStream(WDFDEVICE child, uint64_t* generation)
             status = STATUS_INTEGER_OVERFLOW;
         } else if (InterlockedCompareExchange(&context->ActiveStreams, 1, 0) == 0) {
             *generation = ++slot.StreamGeneration;
+            shared->PcmDiagnostics[context->Index].Reset(*generation);
             slot.SampleFormat = 0;
             slot.PacketFrames = 0;
             slot.StreamState = MOIREN_VAD_STREAM_PAUSED;
@@ -480,6 +482,19 @@ void VadAudioDescribeStream(WDFDEVICE child, uint64_t generation,
             MOIREN_VAD_FORMAT_PCM16 : MOIREN_VAD_FORMAT_FLOAT32;
         slot.PacketFrames = frames;
         slot.StreamState = state;
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+}
+
+void VadAudioRecordRun(WDFDEVICE child, uint64_t generation, uint64_t qpc)
+{
+    auto context = VadChild(child);
+    auto shared = context->Shared;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    const auto& slot = shared->Slots[context->Index];
+    if (slot.Id == context->Id && slot.StreamGeneration == generation) {
+        shared->PcmDiagnostics[context->Index].RecordRun(slot.AdmissionGeneration, qpc);
     }
     KeReleaseSpinLock(&shared->Lock, irql);
 }

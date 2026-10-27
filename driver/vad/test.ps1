@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal')]
+    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics')]
     [string]$Test = 'all'
 )
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,12 @@ $version = (Get-Content -LiteralPath "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVe
 $tools = Join-Path $vs "VC\Tools\MSVC\$version"
 $sdk = "${env:ProgramFiles(x86)}\Windows Kits\10"
 $compiler = Join-Path $tools 'bin\Hostx64\x64\cl.exe'
-foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal') } else { @($Test) })) {
+foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics') } else { @($Test) })) {
+    if ($testName -eq 'diagnostics') {
+        & python (Join-Path $PSScriptRoot 'tests\extract-cleanup.py') --kind pcm `
+            (Join-Path $PSScriptRoot 'src\Pcm.cpp') (Join-Path $buildRoot 'pcm-production.inc')
+        if ($LASTEXITCODE -ne 0) { throw "PCM source extraction failed ($LASTEXITCODE)." }
+    }
     if ($testName -eq 'cleanup') {
         # Compile the real cleanup functions against host DDI stubs, not a copy.
         & python (Join-Path $PSScriptRoot 'tests\extract-cleanup.py') `

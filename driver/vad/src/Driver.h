@@ -7,6 +7,7 @@
 #include "Trace.h"
 #include "Lifecycle.h"
 #include "Ownership.h"
+#include "PcmDiagnostics.h"
 
 extern const GUID VadControlInterface;
 
@@ -21,6 +22,7 @@ struct VAD_SHARED {
     KSPIN_LOCK Lock;
     volatile LONG References;
     vad::Slot Slots[MOIREN_VAD_MAX_ENDPOINTS];
+    vad::PcmDiagnostics PcmDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
     WDFDEVICE Children[MOIREN_VAD_MAX_ENDPOINTS]; // Owns one WDF reference.
     WDFQUEUE PcmQueues[MOIREN_VAD_MAX_ENDPOINTS];
     EX_RUNDOWN_REF PcmRundown;
@@ -100,6 +102,7 @@ bool VadAudioIsStreamCurrent(WDFDEVICE child, uint64_t generation);
 void VadAudioReleaseStream(WDFDEVICE child);
 void VadAudioDescribeStream(WDFDEVICE child, uint64_t generation,
     ULONG blockAlign, ULONG frames, ULONG state);
+void VadAudioRecordRun(WDFDEVICE child, uint64_t generation, uint64_t qpc);
 void VadAudioPrepareFailed(WDFDEVICE child, NTSTATUS status);
 
 struct VAD_PCM_REQUEST {

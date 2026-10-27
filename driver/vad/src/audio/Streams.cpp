@@ -499,6 +499,7 @@ NTSTATUS VadAudioStreamRun(ACXSTREAM stream)
     }
     VadAudioDescribeStream(context->Device, context->Generation,
         context->BlockAlign, context->PacketFrames, MOIREN_VAD_STREAM_RUNNING);
+    VadAudioRecordRun(context->Device, context->Generation, now);
     Schedule(context, now);
     KeReleaseSpinLock(&context->State, irql);
     return STATUS_SUCCESS;
