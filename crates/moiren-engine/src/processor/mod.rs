@@ -57,6 +57,14 @@ pub trait RtProcessor<S: ProcessingSample>: Send {
     fn latency_frames(&self) -> u32 {
         0
     }
+    /// Whether separate and in-place transports are interchangeable for this
+    /// kernel: identical persistent state and identical output either way. The
+    /// compiler may then fold the op's slots in place at last use, and swap
+    /// reuse may normalize the snapshot's IO mode. Control-side query only;
+    /// process never branches on it.
+    fn transport_interchangeable(&self) -> bool {
+        false
+    }
     /// Non-RT prepare hook; process never queries or changes its port schema.
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError>;
     fn validate_parameters(&self, _params: ProcessParameters<'_>) -> Result<(), ProcessorError> {

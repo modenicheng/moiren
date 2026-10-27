@@ -177,12 +177,16 @@ impl MeterSubscriptions {
                 self.clear();
                 self.session = Some((snapshot.generation, spec.source.clone()));
             }
-            let (input_topic, output_topic) = match spec.source {
-                InputSelection::Tone { .. } => (None, &snapshot.signal_topics.tone_output),
-                _ => (
+            // Which topics the running session feeds is a published fact
+            // resolved by the service's meter bridge from the active host
+            // graph — a tone session has no observable input at all.
+            let (input_topic, output_topic) = if snapshot.tone_session {
+                (None, &snapshot.signal_topics.tone_output)
+            } else {
+                (
                     Some(&snapshot.signal_topics.monitor_input),
                     &snapshot.signal_topics.monitor_output,
-                ),
+                )
             };
             if !input_visible {
                 self.input_subscription = None;
@@ -919,6 +923,8 @@ mod tests {
 
     fn fixture(source: InputSelection) -> (ServiceContext, AppHandle, ServiceMailbox, AppSnapshot) {
         let mut context = ServiceContext::default();
+        // Mirror the meter bridge's resolution for the fixture's source.
+        let tone_session = matches!(source, InputSelection::Tone { .. });
         let generation = context
             .core
             .start(SessionSpec {
@@ -932,6 +938,7 @@ mod tests {
             .unwrap();
         assert!(context.core.activated(generation));
         assert!(context.core.owner_started(generation));
+        context.tone_session = tone_session;
         let snapshot = crate::service::snapshot(&context);
         let (handle, mailbox) =
             ServiceMailbox::with_snapshot(std::thread::current(), snapshot.clone());

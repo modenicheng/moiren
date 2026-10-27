@@ -22,6 +22,22 @@ pub(crate) struct LatestSender<S: Clone + Send> {
     pub(crate) _charge: Charge,
 }
 
+impl<S: Clone + Send> LatestSender<S> {
+    /// Latest delivery eligibility: active demand whose activation generation
+    /// matches the publication and a sequence this receiver has not accepted
+    /// yet. There is no sender-side generation to compare: a latest subscriber
+    /// keeps no activation identity, and its read path re-filters stale
+    /// generations against the live demand snapshot on every read (the
+    /// `LatestReceiver` read checks), so a stored sender generation would only
+    /// duplicate that read-side filter as a second, separately staleable copy.
+    /// Callers check lease liveness separately (upgrade success).
+    pub(crate) fn eligible(&self, meta: PublicationMeta, demand: &DemandSnapshot) -> bool {
+        demand.active
+            && meta.activation_generation == demand.generation
+            && meta.sequence > self.last_sequence
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ValueSlot<T> {

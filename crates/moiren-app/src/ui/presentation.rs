@@ -79,8 +79,7 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
             }
             for (index, stream) in status.observation.streams.iter().enumerate() {
                 let kind = if stream.input {
-                    // "Input" is not in the i18n key catalog; kept as source text.
-                    "Input".to_string()
+                    t!("Input").to_string()
                 } else if stream.master {
                     t!("Master output").to_string()
                 } else {
@@ -283,6 +282,38 @@ pub fn elapsed_text(snapshot: &AppSnapshot) -> String {
     }
 }
 
+/// A linear gain as a signed dB readout; exact digital silence is −∞ dB.
+/// Shared by every fader/route/inspector readout so one spelling of silence
+/// and one decimal shape appear everywhere.
+pub fn db_text(gain: f64) -> String {
+    if gain == 0. {
+        "−∞ dB".into()
+    } else {
+        format!("{:+.1} dB", 20. * gain.log10())
+    }
+}
+
+/// A level amplitude as a signed dBFS readout; exact digital silence is
+/// −∞ dBFS, spelled with the same U+2212 minus as [`db_text`].
+pub fn dbfs_text(amplitude: f32) -> String {
+    if amplitude <= 0. {
+        "−∞ dBFS".into()
+    } else {
+        format!("{:+.1} dBFS", 20. * f64::from(amplitude).log10())
+    }
+}
+
+/// One multiplicative ±`delta_db` step of a linear gain, clamped to
+/// `min..=max`. Exact digital silence has no dB domain: multiplying zero
+/// keeps it exactly silent, so a surface that wants silence to become
+/// audible seeds a nonzero value itself (the Gain inspector does).
+pub fn step_db(gain: f64, delta_db: f64, min: f64, max: f64) -> f64 {
+    if gain <= 0. {
+        return gain;
+    }
+    (gain * 10f64.powf(delta_db / 20.)).clamp(min, max)
+}
+
 pub fn control_feedback(snapshot: &AppSnapshot, pending_request: bool) -> String {
     let control = &snapshot.control;
     if pending_request {
@@ -311,5 +342,42 @@ pub fn control_feedback(snapshot: &AppSnapshot, pending_request: bool) -> String
         t!("No parameter changes requested").into()
     } else {
         t!("Next start · engine stopped").into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{db_text, dbfs_text, step_db};
+
+    #[test]
+    fn db_text_reads_signed_db_and_one_infinity_for_silence() {
+        assert_eq!(db_text(0.), "−∞ dB");
+        assert_eq!(db_text(1.), "+0.0 dB");
+        assert_eq!(db_text(10f64.powf(-6. / 20.)), "-6.0 dB");
+        assert_eq!(db_text(16.), "+24.1 dB");
+    }
+
+    #[test]
+    fn dbfs_text_matches_db_text_but_in_the_meter_unit() {
+        assert_eq!(dbfs_text(0.), "−∞ dBFS");
+        assert_eq!(dbfs_text(1.), "+0.0 dBFS");
+        assert_eq!(dbfs_text(10f32.powf(-6. / 20.)), "-6.0 dBFS");
+        // Negative amplitudes are as absent as silence: ballistics never
+        // produce them, and silence is the honest rendering if they appear.
+        assert_eq!(dbfs_text(-0.5), "−∞ dBFS");
+    }
+
+    #[test]
+    fn step_db_moves_one_db_and_clamps_silence_is_sticky() {
+        let one_db = 10f64.powf(1. / 20.);
+        assert!((step_db(1., 1., 0., 16.) - one_db).abs() < 1e-12);
+        assert!((step_db(one_db, -1., 0., 16.) - 1.).abs() < 1e-12);
+        // Silence has no dB domain and stays exactly silent.
+        assert_eq!(step_db(0., 1., 0., 16.), 0.);
+        assert_eq!(step_db(0., -1., 0., 16.), 0.);
+        // The Gain node domain clamps at amplitude 16.
+        assert_eq!(step_db(16., 1., 0., 16.), 16.);
+        // Send gains have no upper limit by design.
+        assert!((step_db(16., 1., 0., f64::INFINITY) - 16. * one_db).abs() < 1e-9);
     }
 }

@@ -728,7 +728,11 @@ impl Render for StudioShell {
                             div()
                                 .text_color(theme::DANGER)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(t!("Error: %{cause}", cause = fault.cause.as_str())),
+                                // Causes and hints are English catalog keys
+                                // produced by the service; translation happens
+                                // here so a locale switch re-renders stored
+                                // faults, and unknown prose passes through.
+                                .child(t!("Error: %{cause}", cause = t!(fault.cause.as_str()))),
                         )
                         .when_some(location, |row, location| {
                             row.child(
@@ -742,17 +746,20 @@ impl Render for StudioShell {
                             row.child(
                                 div()
                                     .text_color(theme::TEXT)
-                                    .child(t!("Hint: %{hint}", hint = hint)),
+                                    .child(t!("Hint: %{hint}", hint = t!(hint))),
                             )
                         });
                     list = list.child(row.gpui_test_observe());
                 }
                 if let Some(error) = other {
+                    // Dispatch/persistence diagnostics may be plain prose; a
+                    // catalog miss renders the source text unchanged.
+                    let message = t!(error.as_str()).into_owned();
                     list = list.child(
                         div()
                             .id("error-strip-message")
                             .text_color(theme::DANGER)
-                            .child(error),
+                            .child(message),
                     );
                 }
                 list.child(
@@ -937,17 +944,11 @@ impl StudioShell {
         let graph = &snapshot.graph;
         if snapshot.phase == SessionPhase::Running {
             let source = graph
-                .graph
-                .nodes()
-                .iter()
-                .find(|n| n.kind() == NodeKind::Source)
-                .map(|n| n.id());
+                .node_of_kind(NodeKind::Source)
+                .map(|(node, _)| node.id());
             let sink = graph
-                .graph
-                .nodes()
-                .iter()
-                .find(|n| n.kind() == NodeKind::Sink)
-                .map(|n| n.id());
+                .node_of_kind(NodeKind::Sink)
+                .map(|(node, _)| node.id());
             self.observation_nodes = source
                 .zip(sink)
                 .map(|(source, sink)| (snapshot.generation, source, sink));

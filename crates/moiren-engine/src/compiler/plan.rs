@@ -88,11 +88,42 @@ impl<S: ProcessingSample> Builder<S> {
         &mut self,
         processor: impl RtProcessor<S> + 'static,
     ) -> Result<ProcessorId, CompileError> {
-        let id = ProcessorId(
-            u64::try_from(self.instances.len()).map_err(|_| CompileError::TooManyProcessors)?,
-        );
+        let id = self.reserved_id()?;
         self.instances.push(ProcessorInstance::new(id, processor));
         Ok(id)
+    }
+
+    /// Reserve the next runtime id without committing its instance: a fixed
+    /// schema needs the id before its kernel can be prepared.
+    fn reserved_id(&self) -> Result<ProcessorId, CompileError> {
+        Ok(ProcessorId(
+            u64::try_from(self.instances.len()).map_err(|_| CompileError::TooManyProcessors)?,
+        ))
+    }
+
+    /// Commit a prepared kernel together with the plan-local parameter schema
+    /// that [`Builder::reserved_id`] parametrized. Nothing else may reserve an
+    /// id in between, so the schema keys cannot desynchronize from the
+    /// instance they describe.
+    fn prepared(
+        &mut self,
+        kernel: impl RtProcessor<S> + 'static,
+        specs: impl IntoIterator<Item = ParamSpec>,
+    ) -> Result<ProcessorId, CompileError> {
+        let id = self.reserved_id()?;
+        let specs: Vec<_> = specs.into_iter().collect();
+        debug_assert!(specs.iter().all(|spec| spec.key.processor == id));
+        self.instances.push(ProcessorInstance::new(id, kernel));
+        self.params.extend(specs);
+        Ok(id)
+    }
+
+    /// Single source for "the storage optimizer may fold this op in place at
+    /// last use": the op's own kernel declares both transports equivalent.
+    fn transport_interchangeable(&self, id: ProcessorId) -> bool {
+        self.instances
+            .get(usize::try_from(id.0).unwrap_or(usize::MAX))
+            .is_some_and(|instance| instance.transport_interchangeable())
     }
     fn node_processor(
         &mut self,
@@ -153,50 +184,43 @@ impl<S: ProcessingSample> Builder<S> {
                     } else {
                         (Default::default(), None)
                     };
-                let compressor = publisher.map_or_else(Compressor::new, Compressor::with_signal);
-                let processor = self.processor(compressor)?;
-                self.params
-                    .extend(Compressor::parameters(processor, settings));
-                processor
+                let (kernel, specs) = Compressor::prepare(self.reserved_id()?, settings);
+                let kernel = publisher.map_or_else(move || kernel, Compressor::with_signal);
+                self.prepared(kernel, specs)?
             }
             NodeKind::Eq => {
                 let settings = match binding {
                     Some(Binding::Eq(settings)) => settings,
                     _ => Default::default(),
                 };
-                let processor = self.processor(Eq::new())?;
-                self.params.extend(Eq::parameters(processor, settings));
-                processor
+                let (kernel, specs) = Eq::prepare(self.reserved_id()?, settings);
+                self.prepared(kernel, specs)?
             }
             NodeKind::Gate => {
                 let settings = match binding {
                     Some(Binding::Gate(settings)) => settings,
                     _ => Default::default(),
                 };
-                let processor = self.processor(Gate::new())?;
-                self.params.extend(Gate::parameters(processor, settings));
-                processor
+                let (kernel, specs) = Gate::prepare(self.reserved_id()?, settings);
+                self.prepared(kernel, specs)?
             }
             NodeKind::Limiter => {
                 let settings = match binding {
                     Some(Binding::Limiter(settings)) => settings,
                     _ => Default::default(),
                 };
-                let processor = self.processor(Limiter::new())?;
-                self.params.extend(Limiter::parameters(processor, settings));
-                processor
+                let (kernel, specs) = Limiter::prepare(self.reserved_id()?, settings);
+                self.prepared(kernel, specs)?
             }
             NodeKind::Delay => {
                 let settings = match binding {
                     Some(Binding::Delay(settings)) => settings,
                     _ => Default::default(),
                 };
-                let processor = self.processor(
-                    Delay::new(channels, settings, processing_sr)
-                        .map_err(|_| CompileError::BindingKind { node })?,
-                )?;
-                self.params.extend(Delay::parameters(processor, settings));
-                processor
+                let (kernel, specs) =
+                    Delay::prepare(channels, settings, processing_sr, self.reserved_id()?)
+                        .map_err(|_| CompileError::BindingKind { node })?;
+                self.prepared(kernel, specs)?
             }
             NodeKind::ChannelMapper => self.processor(
                 ChannelMapper::with_layout(
@@ -375,7 +399,7 @@ pub(super) fn build<S: ProcessingSample>(
             } else {
                 None
             },
-            in_place_candidate: !use_mix && matches!(node.kind(), NodeKind::Gain | NodeKind::Pan),
+            in_place_candidate: !use_mix && builder.transport_interchangeable(processor),
             in_place: false,
         });
         // A strip is a node control shared across its output streams, but each

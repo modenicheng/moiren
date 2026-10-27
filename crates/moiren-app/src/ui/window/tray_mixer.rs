@@ -10,12 +10,13 @@
 use rust_i18n::t;
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::controls::{button, db, heading, label};
+use super::controls::{button, heading, label};
 use super::desktop::Desktop;
 use super::mixer::{SliderSlot, fader_rows, node_kind_color, sync_faders};
 use super::*;
-use crate::service::{AppRequest, GraphEdit, GraphNodeState, GraphSnapshot, MixerState};
+use crate::service::{GraphNodeState, GraphSnapshot, MixerState};
 use crate::ui::monitoring::NodeMeters;
+use crate::ui::presentation::db_text;
 use crate::ui::widgets::fader::fader;
 use moiren_core::graph::{NodeId, NodeKind};
 
@@ -324,7 +325,7 @@ fn strip(
                         .font_family(theme::FONT_MONO)
                         .text_size(px(11.))
                         .text_color(theme::TEXT_MUTED)
-                        .child(db(entry.mixer.gain)),
+                        .child(db_text(entry.mixer.gain)),
                 )
                 .gpui_test_observe(),
         )
@@ -339,16 +340,7 @@ fn mixer_edit(
     change: impl Fn(&mut MixerState) + 'static,
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
     move |_, _, cx| {
-        state.update(cx, |state, _| {
-            if let Some(node) = state.snapshot.graph.node(id) {
-                let mut requested = node.mixer;
-                change(&mut requested);
-                state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
-                    node: id,
-                    state: requested,
-                }));
-            }
-        });
+        state.update(cx, |state, _| state.edit_mixer(id, &change));
         this.update(cx, |_, cx| cx.notify());
     }
 }

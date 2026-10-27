@@ -1,7 +1,5 @@
 //! Finite, muted multi-endpoint validation. No system settings or PCM files change.
 use anyhow::{Context, bail};
-#[cfg(test)]
-use moiren_core::graph::GraphIndex;
 #[cfg(any(windows, test))]
 use moiren_core::graph::{NodeId, NodeKind, SendParams, edit::connect_to_new_bus_input};
 #[cfg(any(windows, test))]
@@ -543,8 +541,12 @@ mod tests {
                 sinks += 1;
                 masters += usize::from(output.device.clock_role == ClockRole::Master);
                 let input = project.graph.get_node(id).unwrap().inputs()[0].id();
-                let index = GraphIndex::new(&project.graph);
-                let edge = index.input_edge(input).unwrap().unwrap();
+                let edge = project
+                    .graph
+                    .edges()
+                    .iter()
+                    .find(|edge| edge.dst_port() == input)
+                    .expect("every output sink input is connected");
                 let guard = edge.src();
                 assert!(guards.insert(guard));
                 assert!(matches!(

@@ -2,6 +2,7 @@ use rust_i18n::t;
 
 use super::*;
 use crate::service::{GraphEdit, InputSelection};
+use crate::ui::presentation::{db_text, dbfs_text, step_db};
 use crate::ui::widgets::fader::hslider;
 use crate::ui::widgets::meters::compact_horizontal_meter;
 use crate::ui::window::mixer::{EditableValueFamily, gain_db_text, start_value_edit};
@@ -136,7 +137,7 @@ pub(in crate::ui::window) fn inspector(
                     .id("node-name-edit-hint")
                     .text_size(px(theme::TEXT_XS))
                     .text_color(theme::TEXT_FAINT)
-                    .child("rename"),
+                    .child(t!("rename")),
             )
             .on_click({
                 let this = cx.entity();
@@ -172,7 +173,7 @@ pub(in crate::ui::window) fn inspector(
         .child(detail_editable(
             &t!("Fader"),
             SharedString::from(format!("inspector-fader-{id:?}")),
-            db(entry.mixer.gain),
+            db_text(entry.mixer.gain),
             shell.mixer.editing_value == Some(id),
             &shell.mixer.value_inputs[&id],
             start_value_edit(cx.entity(), EditableValueFamily::Fader, id, move |graph| {
@@ -341,7 +342,7 @@ pub(in crate::ui::window) fn inspector(
             .child(detail_editable(
                 &t!("Requested"),
                 SharedString::from(format!("inspector-node-gain-{id:?}")),
-                db(entry.gain),
+                db_text(entry.gain),
                 shell.mixer.editing_node_gain == Some(id),
                 &shell.mixer.node_gain_inputs[&id],
                 start_value_edit(
@@ -364,17 +365,19 @@ pub(in crate::ui::window) fn inspector(
                         cx.entity(),
                         GraphEdit::SetGain {
                             node: id,
-                            gain: entry.gain * 10f64.powf(-1. / 20.),
+                            gain: step_db(entry.gain, -1., 0., 16.),
                         },
                     )))
                     .child(button("node-gain-up", "+1 dB").on_click(edit(
                         cx.entity(),
                         GraphEdit::SetGain {
                             node: id,
+                            // Silence cannot be multiplied into something
+                            // audible: the first up-step seeds a finite value.
                             gain: if entry.gain == 0. {
                                 0.01
                             } else {
-                                (entry.gain * 10f64.powf(1. / 20.)).min(16.)
+                                step_db(entry.gain, 1., 0., 16.)
                             },
                         },
                     )))
@@ -554,24 +557,16 @@ fn node_observation(
             readings = readings
                 .child(detail(
                     &t!("Peak %{index}", index = channel + 1),
-                    level_db(level.marker),
+                    dbfs_text(level.marker),
                 ))
                 .child(detail(
                     &t!("RMS %{index}", index = channel + 1),
-                    level_db(level.rms),
+                    dbfs_text(level.rms),
                 ));
         }
         view = view.child(readings);
     }
     view.into_any_element()
-}
-
-fn level_db(value: f32) -> String {
-    if value <= 0. {
-        "-inf dBFS".into()
-    } else {
-        format!("{:+.1} dBFS", 20. * value.log10())
-    }
 }
 
 fn builtin_controls(

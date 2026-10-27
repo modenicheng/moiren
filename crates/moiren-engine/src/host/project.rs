@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     compiler::CompileConfig,
-    control::{accepts_parameter, specs_accept_initials},
+    control::{ParamSpec, accepts_parameter, specs_accept_initials},
     node::{InputConfig, IoConfigError, OutputConfig},
     processor::{
         ChannelMapperSettings, Compressor, CompressorSettings, Delay, DelaySettings,
@@ -155,6 +155,28 @@ pub enum ProjectError {
     Capacity,
 }
 
+/// Single control-side source for a node kernel's live parameter schema: every
+/// table routes through the kernel's own `parameters` constructor, so validate,
+/// validate_parameter and parameter_values cannot drift from the kernels (or
+/// from each other). Strip and edge schemas route through their kernel tables
+/// at the `validate_parameter` call sites, which own the node width.
+fn node_specs(config: &NodeConfig) -> Vec<ParamSpec> {
+    // Schema identity only; the caller's plan never sees this placeholder id.
+    const ID: ProcessorId = ProcessorId(0);
+    match config {
+        NodeConfig::Gain { initial } => vec![crate::processor::Gain::parameter(ID, *initial)],
+        NodeConfig::Pan { initial } => {
+            crate::processor::Pan::parameters(ID, *initial, false, false).to_vec()
+        }
+        NodeConfig::Compressor(settings) => Compressor::parameters(ID, *settings).to_vec(),
+        NodeConfig::Eq(settings) => EqProcessor::parameters(ID, *settings).to_vec(),
+        NodeConfig::Gate(settings) => Gate::parameters(ID, *settings).to_vec(),
+        NodeConfig::Limiter(settings) => Limiter::parameters(ID, *settings).to_vec(),
+        NodeConfig::Delay(settings) => Delay::parameters(ID, *settings).to_vec(),
+        _ => Vec::new(),
+    }
+}
+
 impl EngineProject {
     pub fn validate(&self) -> Result<(), ProjectError> {
         self.graph.validate()?;
@@ -225,29 +247,14 @@ impl EngineProject {
                 }
             }
             let valid = match config {
-                NodeConfig::Gain { initial } => {
-                    crate::processor::Gain::parameter(ProcessorId(0), *initial)
-                        .accepts(ParamValue::Float(*initial), 0)
-                }
-                NodeConfig::Pan { initial } => {
-                    initial.is_finite() && (-1.0..=1.0).contains(initial)
-                }
-                NodeConfig::Compressor(settings) => {
-                    specs_accept_initials(&Compressor::parameters(ProcessorId(0), *settings))
-                }
-                NodeConfig::Eq(settings) => {
-                    specs_accept_initials(&EqProcessor::parameters(ProcessorId(0), *settings))
-                }
-                NodeConfig::Gate(settings) => {
-                    specs_accept_initials(&Gate::parameters(ProcessorId(0), *settings))
-                }
-                NodeConfig::Limiter(settings) => {
-                    specs_accept_initials(&Limiter::parameters(ProcessorId(0), *settings))
-                }
+                NodeConfig::Gain { .. }
+                | NodeConfig::Pan { .. }
+                | NodeConfig::Compressor(_)
+                | NodeConfig::Eq(_)
+                | NodeConfig::Gate(_)
+                | NodeConfig::Limiter(_) => specs_accept_initials(&node_specs(config)),
                 NodeConfig::Delay(settings) => {
-                    settings.max_delay_ms.is_finite()
-                        && (0.0..=Delay::MAX_DELAY_MS).contains(&settings.max_delay_ms)
-                        && specs_accept_initials(&Delay::parameters(ProcessorId(0), *settings))
+                    settings.storage_valid() && specs_accept_initials(&node_specs(config))
                 }
                 NodeConfig::ChannelMapper(settings) => {
                     settings.valid_layout(node.inputs()[0].channels(), node.outputs()[0].channels())
@@ -395,43 +402,15 @@ impl EngineProject {
     ) -> Result<(), ProjectError> {
         let valid = match target {
             ParameterTarget::Node { node, parameter } => match self.nodes.get(&node) {
-                Some(NodeConfig::Gain { .. }) => {
-                    parameter == crate::processor::Gain::LEVEL
-                        && crate::processor::Gain::parameter(ProcessorId(0), 1.0).accepts(value, 0)
-                }
-                Some(NodeConfig::Pan { .. }) => {
-                    (parameter == crate::processor::Pan::POSITION
-                        && matches!(value, ParamValue::Float(value) if value.is_finite() && (-1.0..=1.0).contains(&value)))
-                        || (matches!(
-                            parameter,
-                            crate::processor::Pan::MONO | crate::processor::Pan::SWAP
-                        ) && matches!(value, ParamValue::Bool(_)))
-                }
-                Some(NodeConfig::Compressor(settings)) => accepts_parameter(
-                    &Compressor::parameters(ProcessorId(0), *settings),
-                    parameter,
-                    value,
-                ),
-                Some(NodeConfig::Eq(settings)) => accepts_parameter(
-                    &EqProcessor::parameters(ProcessorId(0), *settings),
-                    parameter,
-                    value,
-                ),
-                Some(NodeConfig::Gate(settings)) => accepts_parameter(
-                    &Gate::parameters(ProcessorId(0), *settings),
-                    parameter,
-                    value,
-                ),
-                Some(NodeConfig::Limiter(settings)) => accepts_parameter(
-                    &Limiter::parameters(ProcessorId(0), *settings),
-                    parameter,
-                    value,
-                ),
-                Some(NodeConfig::Delay(settings)) => accepts_parameter(
-                    &Delay::parameters(ProcessorId(0), *settings),
-                    parameter,
-                    value,
-                ),
+                Some(
+                    config @ (NodeConfig::Gain { .. }
+                    | NodeConfig::Pan { .. }
+                    | NodeConfig::Compressor(_)
+                    | NodeConfig::Eq(_)
+                    | NodeConfig::Gate(_)
+                    | NodeConfig::Limiter(_)
+                    | NodeConfig::Delay(_)),
+                ) => accepts_parameter(&node_specs(config), parameter, value),
                 _ => false,
             },
             ParameterTarget::RackSlot {
@@ -444,42 +423,56 @@ impl EngineProject {
                     .is_ok_and(|specs| accepts_parameter(&specs, parameter, value))
             }),
             ParameterTarget::Strip { node, parameter } => {
+                // Logical slot identity maps onto the strip kernel's own ids;
+                // width only shapes the Mode domain. PRE strips omit the gain
+                // slot, but live strip intent is always POST (include_gain).
+                let slot = match parameter {
+                    StripParameter::Gain => crate::processor::builtin::ChannelStrip::GAIN,
+                    StripParameter::Balance => crate::processor::builtin::ChannelStrip::BALANCE,
+                    StripParameter::Mode => crate::processor::builtin::ChannelStrip::MODE,
+                    StripParameter::EffectiveMute => {
+                        crate::processor::builtin::ChannelStrip::EFFECTIVE_MUTE
+                    }
+                };
                 let width = self.strip_width(node).unwrap_or(usize::MAX);
                 self.strips.contains_key(&node)
-                    && match (parameter, value) {
-                        (StripParameter::Gain, ParamValue::Float(value)) => {
-                            value.is_finite() && (0.0..=16.0).contains(&value)
-                        }
-                        (StripParameter::Balance, ParamValue::Float(value)) => {
-                            value.is_finite() && (-1.0..=1.0).contains(&value)
-                        }
-                        (StripParameter::Mode, ParamValue::Enum(value)) => {
-                            (value as usize) < width.saturating_add(3)
-                        }
-                        (StripParameter::EffectiveMute, ParamValue::Bool(_)) => true,
-                        _ => false,
-                    }
+                    && accepts_parameter(
+                        &crate::processor::builtin::ChannelStrip::parameters(
+                            ProcessorId(0),
+                            width,
+                            crate::processor::StripConfig::default(),
+                            true,
+                        ),
+                        slot,
+                        value,
+                    )
             }
-            ParameterTarget::Edge { edge, parameter } => {
-                self.graph.get_edge(edge).is_ok()
-                    && match (parameter, value) {
-                        (SendParameter::Gain, ParamValue::Float(value)) => {
-                            value.is_finite() && value >= 0.0
-                        }
-                        (SendParameter::Pan, ParamValue::Float(value)) => {
-                            value.is_finite()
-                                && (-1.0..=1.0).contains(&value)
-                                && (value == 0.0
-                                    || self
-                                        .graph
-                                        .get_edge(edge)
-                                        .and_then(|edge| self.graph.get_port(edge.src_port()))
-                                        .is_ok_and(|port| port.channels() == 2))
-                        }
-                        (SendParameter::Mute, ParamValue::Bool(_)) => true,
-                        _ => false,
-                    }
-            }
+            ParameterTarget::Edge { edge, parameter } => match self.graph.get_edge(edge) {
+                Ok(edge) => {
+                    let slot = match parameter {
+                        SendParameter::Gain => crate::compiler::send::Send::GAIN,
+                        SendParameter::Pan => crate::compiler::send::Send::PAN,
+                        SendParameter::Mute => crate::compiler::send::Send::MUTE,
+                    };
+                    // A mono route narrows the send kernel's pan domain to
+                    // center; an unresolvable port behaves the same way.
+                    let channels = self
+                        .graph
+                        .get_port(edge.src_port())
+                        .map_or(1, |port| port.channels());
+                    accepts_parameter(
+                        &crate::compiler::send::Send::parameters(
+                            ProcessorId(0),
+                            channels,
+                            *edge.params(),
+                        )
+                        .0,
+                        slot,
+                        value,
+                    )
+                }
+                Err(_) => false,
+            },
         };
         if valid {
             Ok(())
@@ -527,25 +520,13 @@ impl EngineProject {
                 continue;
             }
             let specs = match config {
-                NodeConfig::Gain { initial } => {
-                    vec![crate::processor::Gain::parameter(ProcessorId(0), *initial)]
-                }
-                NodeConfig::Pan { initial } => {
-                    vec![crate::processor::Pan::parameter(ProcessorId(0), *initial)]
-                }
-                NodeConfig::Compressor(settings) => {
-                    Compressor::parameters(ProcessorId(0), *settings).to_vec()
-                }
-                NodeConfig::Eq(settings) => {
-                    EqProcessor::parameters(ProcessorId(0), *settings).to_vec()
-                }
-                NodeConfig::Gate(settings) => Gate::parameters(ProcessorId(0), *settings).to_vec(),
-                NodeConfig::Limiter(settings) => {
-                    Limiter::parameters(ProcessorId(0), *settings).to_vec()
-                }
-                NodeConfig::Delay(settings) => {
-                    Delay::parameters(ProcessorId(0), *settings).to_vec()
-                }
+                NodeConfig::Gain { .. }
+                | NodeConfig::Pan { .. }
+                | NodeConfig::Compressor(_)
+                | NodeConfig::Eq(_)
+                | NodeConfig::Gate(_)
+                | NodeConfig::Limiter(_)
+                | NodeConfig::Delay(_) => node_specs(config),
                 _ => Vec::new(),
             };
             for spec in specs {
@@ -556,14 +537,6 @@ impl EngineProject {
                     },
                     value: spec.initial,
                 });
-            }
-            if matches!(config, NodeConfig::Pan { .. }) {
-                for parameter in [crate::processor::Pan::MONO, crate::processor::Pan::SWAP] {
-                    values.push(DesiredParameter {
-                        target: ParameterTarget::Node { node, parameter },
-                        value: ParamValue::Bool(false),
-                    });
-                }
             }
         }
         for edge in self.graph.edges() {

@@ -70,6 +70,34 @@ impl GraphSnapshot {
     pub fn node(&self, id: NodeId) -> Option<&GraphNodeState> {
         self.nodes.iter().find(|node| node.id == id)
     }
+
+    /// Node kind of `id`, for surfaces that degrade gracefully when the
+    /// topology row behind a state entry has already vanished.
+    pub fn kind_of(&self, id: NodeId) -> Option<NodeKind> {
+        self.graph.get_node(id).ok().map(|node| node.kind())
+    }
+
+    /// The primary node of `kind` paired with its state. Every layer that
+    /// needs "the one Source/Sink/Gain/Pan" (UI selection, observation
+    /// targets, meter wiring, preparation) must agree on this choice; see
+    /// [`primary_node_of`] and [`GraphPreparation::primary_io_nodes`].
+    pub fn node_of_kind(
+        &self,
+        kind: NodeKind,
+    ) -> Option<(&moiren_core::graph::Node, &GraphNodeState)> {
+        let node = primary_node_of(&self.graph, kind)?;
+        Some((node, self.node(node.id())?))
+    }
+}
+
+/// The primary node of `kind`: the first match in graph order. Node ids are
+/// only ever appended, so this is also the lowest id — the same node the
+/// meter bridge's former `min_by_key` scan and preparation's `min` resolved.
+pub(crate) fn primary_node_of(
+    graph: &LogicalGraph,
+    kind: NodeKind,
+) -> Option<&moiren_core::graph::Node> {
+    graph.nodes().iter().find(|node| node.kind() == kind)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -372,18 +400,20 @@ pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubje
     }
 }
 
-/// Plain-language fixes for the common validation causes.
+/// Plain-language fixes for the common validation causes. Causes and hints
+/// are English catalog keys; the UI translates them when rendering, so the
+/// matching here keys on stable English substrings regardless of locale.
 fn edit_hint(error: &str) -> Option<&'static str> {
-    if error.contains("尚未绑定音源") {
-        Some("在通道顶部选择一个输入源，或删除这个通道")
-    } else if error.contains("尚未绑定设备") {
-        Some("在通道顶部选择一个输出设备，或删除这个通道")
+    if error.contains("not bound to an input source") {
+        Some("Choose an input source at the top of the channel, or delete the channel")
+    } else if error.contains("not bound to an output device") {
+        Some("Choose an output device at the top of the channel, or delete the channel")
     } else if error.contains("Mixer") {
-        Some("推子范围是 −∞ 到 +24 dB；声道模式按循环键回到有效档位")
-    } else if error.contains("Mono 和 Swap") {
-        Some("这两个开关只在 Balance 通道上可用")
-    } else if error.contains("绑定了同一") {
-        Some("每个设备或应用音源只能接一个通道；先解开另一条绑定")
+        Some("Faders cover −∞ to +24 dB; cycle the channel-mode button back to a valid setting")
+    } else if error.contains("Mono and Swap") {
+        Some("These two switches only apply to Balance channels")
+    } else if error.contains("the same") {
+        Some("Each device or application source can feed one channel; unbind the other one first")
     } else {
         None
     }
@@ -432,35 +462,35 @@ pub fn validate_node_state(
 ) -> Result<(), String> {
     state.builtin.validate(kind, input_channels, channels)?;
     if kind != NodeKind::Pan && (state.mono || state.swap) {
-        return Err("Mono 和 Swap 只能用于 Balance 节点".into());
+        return Err("Mono and Swap only apply to Balance nodes".into());
     }
     if !state.compressor.valid() {
-        return Err("Compressor 参数超出有效范围".into());
+        return Err("Compressor parameters are outside their valid range".into());
     }
     if !state.mixer.valid(channels) {
-        return Err("Mixer 增益或声道模式无效".into());
+        return Err("Mixer gain or channel mode is invalid".into());
     }
     if state.label.trim().is_empty() || state.label.len() > 256 || state.label.contains('\0') {
-        return Err("节点名称不能为空且最多 256 字节".into());
+        return Err("Node names cannot be empty and are limited to 256 bytes".into());
     }
     if !state.gain.is_finite() || !(0.0..=16.0).contains(&state.gain) {
-        return Err("Gain 节点增益必须为 0..16 的有限值".into());
+        return Err("The Gain node's gain must be a finite value in 0..16".into());
     }
     if !state.pan.is_finite() || !(-1.0..=1.0).contains(&state.pan) {
-        return Err("Balance 节点位置必须为 -1..1 的有限值".into());
+        return Err("The Balance node's position must be a finite value in -1..1".into());
     }
     if let Some(source) = &state.source {
         if kind != NodeKind::Source {
-            return Err("只有输入节点可以绑定音源".into());
+            return Err("Only Source nodes can bind an input source".into());
         }
         source
             .validate()
-            .map_err(|_| "输入音源配置无效".to_string())?;
+            .map_err(|_| "The input source configuration is invalid".to_string())?;
     }
     if let Some(output) = &state.output_endpoint_id
         && (kind != NodeKind::Sink || output.is_empty() || output.contains('\0'))
     {
-        return Err("只有输出节点可以绑定有效设备".into());
+        return Err("Only Sink nodes can bind a valid output device".into());
     }
     Ok(())
 }
@@ -529,7 +559,7 @@ impl ServiceGraph {
         next.candidate_revision = next
             .candidate_revision
             .checked_add(1)
-            .ok_or("图版本空间已耗尽")?;
+            .ok_or("The graph revision space is exhausted")?;
         next.last_error = None;
         next.faults.clear();
         let structural = edit_affects_prepared_structure(&edit, &previous);
@@ -607,7 +637,7 @@ impl ServiceGraph {
             .snapshot
             .candidate_revision
             .checked_add(1)
-            .ok_or("图版本空间已耗尽")?;
+            .ok_or("The graph revision space is exhausted")?;
         self.journal.record(self.snapshot.clone(), None);
         self.snapshot.graph = graph;
         self.snapshot.exports = exports;
@@ -647,7 +677,7 @@ impl ServiceGraph {
             next.candidate_revision = next
                 .candidate_revision
                 .checked_add(1)
-                .ok_or("图版本空间已耗尽")?;
+                .ok_or("The graph revision space is exhausted")?;
             next.last_error = None;
             self.snapshot = next;
         }
@@ -681,12 +711,12 @@ impl ServiceGraph {
             .snapshot
             .node(source)
             .and_then(|s| s.source.clone())
-            .ok_or("请选择输入资源")?;
+            .ok_or("Choose an input resource")?;
         let output_endpoint_id = self
             .snapshot
             .node(output)
             .and_then(|s| s.output_endpoint_id.clone())
-            .ok_or("请选择输出设备")?;
+            .ok_or("Choose an output device")?;
         let mut spec = current.cloned().unwrap_or(SessionSpec {
             source: source.clone(),
             output_endpoint_id: output_endpoint_id.clone(),

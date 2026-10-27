@@ -174,14 +174,6 @@ pub(super) fn button(id: impl Into<ElementId>, text: impl Into<SharedString>) ->
     ActionButton::new(id, text).size(ControlSize::Small)
 }
 
-pub(super) fn db(gain: f64) -> String {
-    if gain == 0. {
-        "−∞ dB".into()
-    } else {
-        format!("{:+.1} dB", 20. * gain.log10())
-    }
-}
-
 pub(super) fn edit(
     this: Entity<StudioShell>,
     edit: crate::service::GraphEdit,

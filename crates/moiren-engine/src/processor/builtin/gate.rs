@@ -4,7 +4,7 @@ use super::dynamics::{
     validate_linked_io,
 };
 use crate::{
-    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    buffer::{FrameIo, PreparedIo, ProcessIo},
     control::{ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
@@ -82,6 +82,13 @@ impl Gate {
             settings.range_db,
         ];
         float_specs(id, &Self::DOMAINS, values)
+    }
+
+    /// Unified preparation entry used by rack expansion and node lowering:
+    /// the kernel and its parameter schema come from one call, so a prepared
+    /// kernel and its table cannot drift apart.
+    pub fn prepare(id: ProcessorId, settings: GateSettings) -> (Self, Vec<ParamSpec>) {
+        (Self::new(), Self::parameters(id, settings).to_vec())
     }
 
     /// Effective settings after applying recorded parameter intent by id; the
@@ -196,24 +203,6 @@ impl<S: ProcessingSample> RtProcessor<S> for Gate {
         params: ProcessParameters<'_>,
         _signals: crate::signal::ProcessSignals<'_>,
     ) {
-        match io {
-            ProcessIo::Separate {
-                inputs,
-                mut outputs,
-            } => self.process_linked(
-                &mut SeparateFrames::new(
-                    inputs.get(0).expect("validated gate input"),
-                    outputs.get_mut(0).expect("validated gate output"),
-                ),
-                &params,
-                ctx.processing_sr,
-            ),
-            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
-                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated gate pair")),
-                &params,
-                ctx.processing_sr,
-            ),
-            ProcessIo::ReadOnly { .. } => unreachable!("gate requires an output"),
-        }
+        linked_io!(io, self, "gate", &params, ctx.processing_sr)
     }
 }

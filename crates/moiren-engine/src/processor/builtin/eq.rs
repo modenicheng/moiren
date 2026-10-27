@@ -4,7 +4,7 @@ use super::dynamics::{
     float_specs, resolve_float, sanitize_sample_rate, validate_float_domains, validate_linked_io,
 };
 use crate::{
-    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    buffer::{FrameIo, PreparedIo, ProcessIo},
     control::{FloatRamp, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
@@ -57,6 +57,13 @@ impl Eq {
     pub fn parameters(id: ProcessorId, settings: EqSettings) -> [ParamSpec; 3] {
         let values = [settings.frequency_hz, settings.gain_db, settings.q];
         float_specs(id, &Self::DOMAINS, values)
+    }
+
+    /// Unified preparation entry used by rack expansion and node lowering:
+    /// the kernel and its parameter schema come from one call, so a prepared
+    /// kernel and its table cannot drift apart.
+    pub fn prepare(id: ProcessorId, settings: EqSettings) -> (Self, Vec<ParamSpec>) {
+        (Self::new(), Self::parameters(id, settings).to_vec())
     }
 
     /// Effective settings after applying recorded parameter intent by id; the
@@ -169,28 +176,6 @@ impl<S: ProcessingSample> RtProcessor<S> for Eq {
             .float(Self::GAIN)
             .expect("validated EQ gain parameter");
         let q = params.float(Self::Q).expect("validated EQ Q parameter");
-        match io {
-            ProcessIo::Separate {
-                inputs,
-                mut outputs,
-            } => self.process_linked(
-                &mut SeparateFrames::new(
-                    inputs.get(0).expect("validated EQ input"),
-                    outputs.get_mut(0).expect("validated EQ output"),
-                ),
-                frequency,
-                gain,
-                q,
-                ctx.processing_sr,
-            ),
-            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
-                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated EQ pair")),
-                frequency,
-                gain,
-                q,
-                ctx.processing_sr,
-            ),
-            ProcessIo::ReadOnly { .. } => unreachable!("EQ requires an output"),
-        }
+        linked_io!(io, self, "EQ", frequency, gain, q, ctx.processing_sr)
     }
 }

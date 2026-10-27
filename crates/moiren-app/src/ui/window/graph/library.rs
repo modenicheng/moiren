@@ -118,9 +118,8 @@ pub(in crate::ui::window) fn library(
                     state
                         .snapshot
                         .graph
-                        .graph
-                        .get_node(id)
-                        .map_or(moiren_core::graph::NodeKind::Bus, |node| node.kind()),
+                        .kind_of(id)
+                        .unwrap_or(moiren_core::graph::NodeKind::Bus),
                 ),
             )
             .variant(if selected {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::service::GraphSnapshot;
+use crate::service::{GraphEdit, GraphSnapshot};
 use crate::ui::widgets::fader::{Commit, FaderScale, SliderBehavior};
 use rust_i18n::t;
 use std::cell::Cell;
@@ -415,12 +415,7 @@ fn commit_mixer_gain(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut 
     shell.mixer.editing_value = None;
     if let Some(gain) = parse_gain_db(text) {
         shell.state.update(cx, |state, _| {
-            if let Some(node) = state.snapshot.graph.node(*id) {
-                state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
-                    node: *id,
-                    state: MixerState { gain, ..node.mixer },
-                }));
-            }
+            state.edit_mixer(*id, |state| state.gain = gain)
         });
     }
 }
@@ -433,15 +428,7 @@ fn commit_mixer_balance(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &m
     shell.mixer.editing_balance = None;
     if let Some(balance) = parse_balance(text) {
         shell.state.update(cx, |state, _| {
-            if let Some(node) = state.snapshot.graph.node(*id) {
-                state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
-                    node: *id,
-                    state: MixerState {
-                        balance,
-                        ..node.mixer
-                    },
-                }));
-            }
+            state.edit_mixer(*id, |state| state.balance = balance);
         });
     }
 }
@@ -752,7 +739,7 @@ impl StudioShell {
         // /Pan node fields only for their kind, mirroring the surfaces that
         // render them.
         let channels_of = |id: NodeId| graph.graph.get_node(id).ok().map(|node| node.channels());
-        let kind_of = |id: NodeId| graph.graph.get_node(id).ok().map(|node| node.kind());
+        let kind_of = |id: NodeId| graph.kind_of(id);
         self.mixer
             .value_inputs
             .retain(|id, _| graph.node(*id).is_some());

@@ -523,7 +523,9 @@ impl ServiceDriver for BackendDriver {
                         }
                     } else {
                         c.graph
-                            .record_error("实时参数队列繁忙；候选值已保留，可稍后重试或应用图");
+                            .record_error(
+                                "The live parameter queue is busy; the candidate value is kept — retry or apply the graph later",
+                            );
                     }
                 }
             }
@@ -552,8 +554,9 @@ impl ServiceDriver for BackendDriver {
             AppRequest::ApplyGraph => self.apply_candidate(c),
             AppRequest::SetGainPan { gain, pan } if model::valid_gain_pan(gain, pan) => {
                 if !self.candidate_identity_matches_session {
-                    c.graph
-                        .record_error("请先应用载入的候选项目，再调整该项目的实时参数");
+                    c.graph.record_error(
+                        "Apply the loaded project candidate before editing its live parameters",
+                    );
                     return;
                 }
                 c.core.update_gain_pan(gain, pan);

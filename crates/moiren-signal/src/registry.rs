@@ -47,7 +47,14 @@ fn next_sender_slot<S>(
 }
 
 /// Reclaims the staged-retired physical slots, then clears the adopted
-/// slot's completion bit.
+/// slot's completion bit. This function is the single authority for the
+/// ordering invariant shared by `subscribe_latest` and `subscribe_stream`:
+/// every fallible step — `demand.check_add`, slot selection and
+/// `Bus::reserve_subscription_bytes` — must complete before this call, so a
+/// reservation always precedes reclamation and a failed subscription leaves
+/// retired slots staged and the budget untouched; after this call the
+/// replacement sender must be installed and `occupied` extended immediately,
+/// with no fallible step in between.
 ///
 /// Mirrors `storage::retire_sender`'s field order: each retired slot is
 /// detached from senders/occupied/fanout.recipients first. The adopted
@@ -247,6 +254,22 @@ impl Bus {
             .ok_or(SubscribeError::ForeignTopic)
     }
 
+    /// Checks headroom and reserves one subscription's bytes as a single
+    /// charged pair, strictly before any fallible business preparation or
+    /// reclamation. A replacement is allocated while retired senders are still
+    /// staged, so this bounds the peak rather than lending retired credit
+    /// before its actual non-RT release; retained sender/ring/payload owners
+    /// keep their charge until real destruction. A failed check or reservation
+    /// changes neither demand nor the budget.
+    fn reserve_subscription_bytes(&self, bytes: usize) -> Result<Charge, SubscribeError> {
+        self.budget
+            .check(bytes)
+            .map_err(|_| SubscribeError::BudgetExceeded)?;
+        self.budget
+            .try_reserve(bytes)
+            .map_err(|_| SubscribeError::BudgetExceeded)
+    }
+
     pub(crate) fn subscribe_latest<P: Shape, S: Payload>(
         &mut self,
         topic: &Topic<P>,
@@ -265,17 +288,7 @@ impl Bus {
         let sender_slot = next_sender_slot(&storage.senders, &retired_slots)?;
         let bytes = budget::latest_subscriber::<S>(storage.template.element_bytes())
             .map_err(|_| SubscribeError::BudgetExceeded)?;
-        // The replacement is allocated while retired senders are still staged.
-        // Bound this peak too, rather than lending their credit before release.
-        self.budget
-            .check(bytes)
-            .map_err(|_| SubscribeError::BudgetExceeded)?;
-        // Retired resources are only reclaimed after all fallible preparation;
-        // failed subscriptions preserve both demand and the charged budget.
-        let charge = self
-            .budget
-            .try_reserve(bytes)
-            .map_err(|_| SubscribeError::BudgetExceeded)?;
+        let charge = self.reserve_subscription_bytes(bytes)?;
         let storage = self.latest_storage_mut::<P, S>(topic)?;
         let (mut input, output) = triple_buffer::TripleBuffer::new(&storage.template).split();
         let lease = SubscriptionLease::staged(&storage.state, sender_slot);
@@ -346,15 +359,7 @@ impl Bus {
         let sender_slot = next_sender_slot(&storage.senders, &retired_slots)?;
         let bytes = budget::stream_subscriber::<S>(depth, storage.template.element_bytes())
             .map_err(|_| SubscribeError::BudgetExceeded)?;
-        // Bound preparation's peak; retained sender/ring/payload owners cannot
-        // lend their charge to a replacement until actual non-RT destruction.
-        self.budget
-            .check(bytes)
-            .map_err(|_| SubscribeError::BudgetExceeded)?;
-        let charge = self
-            .budget
-            .try_reserve(bytes)
-            .map_err(|_| SubscribeError::BudgetExceeded)?;
+        let charge = self.reserve_subscription_bytes(bytes)?;
         let storage = self.stream_storage_mut::<P, S>(topic)?;
         let (writer, reader) = pool(&storage.template, depth);
         let retirement = Arc::new(std::sync::Mutex::new(None));
