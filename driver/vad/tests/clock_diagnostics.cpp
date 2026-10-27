@@ -10,6 +10,7 @@ int main()
 }
 #else
 #include "../src/audio/ClockDiagnostic.h"
+#include <array>
 #include <cstring>
 #include <limits>
 
@@ -153,16 +154,31 @@ static unsigned Quiesces = 0;
 static long long LastDue = 0;
 static bool TraceEnabled = false;
 static unsigned TraceEvents = 0;
+struct TraceRecord {
+    const char* Format = nullptr;
+    std::array<uint64_t, 14> Values = {};
+    size_t Count = 0;
+};
+static std::array<TraceRecord, 3> TraceRecords = {};
 static SpinLock* TraceLock = nullptr;
 #define WPP_LEVEL_FLAGS_ENABLED(level, flags) TraceEnabled
 constexpr unsigned TRACE_LEVEL_INFORMATION = 4;
 constexpr unsigned VAD_CONTROL = 1;
 static KIRQL KeGetCurrentIrql() { return CurrentIrql; }
 template<typename... Args>
-static void VadTrace(unsigned, unsigned, const char*, Args...)
+static void VadTrace(unsigned, unsigned, const char* format, Args... args)
 {
     Check(CurrentIrql == PASSIVE_LEVEL && TraceLock != nullptr && !TraceLock->Held,
         "WPP emission is passive and outside the shared lock");
+    Check(sizeof...(Args) <= 14, "each decodable WPP fragment has at most 14 arguments");
+    Check(TraceEvents < TraceRecords.size(), "first diagnostic emits at most three fragments");
+    auto& record = TraceRecords[TraceEvents];
+    record.Format = format;
+    record.Count = sizeof...(Args);
+    const std::array<uint64_t, sizeof...(Args)> values = {static_cast<uint64_t>(args)...};
+    for (size_t i = 0; i < values.size(); ++i) {
+        record.Values[i] = values[i];
+    }
     ++TraceEvents;
 }
 static Child* VadChild(WDFDEVICE child) { return child; }
@@ -299,11 +315,28 @@ static void ProductionCallSites()
         "passive query cannot misattribute evidence to a different generation");
     --snapshot.StreamGeneration;
     TracePendingClockDiagnostic(&shared, snapshot);
-    Check(TraceEvents == 1 && !shared.ClockDiagnostics[0].ReportFirst &&
+    Check(TraceEvents == 3 && !shared.ClockDiagnostics[0].ReportFirst &&
         shared.ClockDiagnostics[0].First.LatenessTicks == stalled.First.LatenessTicks,
-        "actual control body emits one event after unlock and retains first evidence");
+        "actual control body emits three bounded fragments after unlock and retains first evidence");
+    Check(std::strstr(TraceRecords[0].Format, "Clock rebase cause endpoint=") != nullptr &&
+        std::strstr(TraceRecords[1].Format, "Clock rebase before endpoint=") != nullptr &&
+        std::strstr(TraceRecords[2].Format, "Clock rebase after endpoint=") != nullptr &&
+        TraceRecords[0].Count == 13 && TraceRecords[1].Count == 14 && TraceRecords[2].Count == 14,
+        "cause and before/after fragments have explicit names and bounded decoding fields");
+    for (const auto& record : TraceRecords) {
+        Check(record.Values[0] == slot.Id && record.Values[1] == slot.Session &&
+            record.Values[2] == 4 && record.Values[3] == 77 &&
+            record.Values[4] == stalled.First.CallbackQpc,
+            "all fragments carry identical endpoint/session/generation/stream/callback correlation");
+    }
+    Check(TraceRecords[0].Values[5] == static_cast<uint64_t>(ClockRebaseReason::TimerStall) &&
+        TraceRecords[0].Values[8] == stalled.First.LatenessTicks &&
+        TraceRecords[1].Values[6] == slot.AdmissionGeneration &&
+        TraceRecords[2].Values[6] == slot.AdmissionGeneration &&
+        TraceRecords[1].Values[7] == 1 && TraceRecords[2].Values[7] == 0,
+        "split payload retains actual cause, lateness and fail-closed before/after gate");
     TracePendingClockDiagnostic(&shared, snapshot);
-    Check(TraceEvents == 1, "repeated passive query does not re-emit first rebase");
+    Check(TraceEvents == 3, "repeated passive query does not re-emit any first rebase fragment");
 }
 
 int main()

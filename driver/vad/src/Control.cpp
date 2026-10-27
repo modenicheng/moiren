@@ -74,19 +74,28 @@ static void TracePendingClockDiagnostic(VAD_SHARED* shared,
     const auto& after = diagnostic.EndpointAfter;
     // Fixed first observation only, emitted after releasing Shared->Lock.
     // QPC ticks/frequency are evidence, not wall time or physical audio latency.
+    // Keep each WPP payload small enough for tracepdb/TMF decoding. Repeat the
+    // immutable correlation tuple so interleaved endpoint fragments can be joined.
     VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
-        "Clock rebase endpoint=%I64u session=%I64u stream=%I64u generation=%I64u reason=%u callback_qpc=%I64u deadline_frame=%I64u deadline_qpc=%I64u late_ticks=%I64u frames=%u packets=%u completed=%I64u presented=%I64u before_gen=%I64u after_gen=%I64u before_gate=%I64u after_gate=%I64u before_open=%u after_open=%u before_state=%u after_state=%u before_freq=%I64u after_freq=%I64u before_epoch=%I64u after_epoch=%I64u before_base=%I64u after_base=%I64u before_limit=%I64u after_limit=%I64u before_running=%u after_running=%u",
-        snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Stream,
-        diagnostic.Generation, static_cast<ULONG>(item.Reason), item.CallbackQpc,
+        "Clock rebase cause endpoint=%I64u session=%I64u generation=%I64u stream=%I64u callback_qpc=%I64u reason=%u deadline_frame=%I64u deadline_qpc=%I64u late_ticks=%I64u frames=%u packets=%u completed=%I64u presented=%I64u",
+        snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation,
+        diagnostic.Stream, item.CallbackQpc, static_cast<ULONG>(item.Reason),
         item.DeadlineFrame, item.DeadlineQpc, item.LatenessTicks, item.PacketFrames,
-        item.PacketCount, item.CompletedPackets, item.PresentedFrames,
-        before.Generation, after.Generation, before.GateEpoch, after.GateEpoch,
-        before.GateOpen, after.GateOpen, before.StreamState, after.StreamState,
-        item.Before.Frequency, item.After.Frequency,
-        item.Before.EpochQpc, item.After.EpochQpc,
-        item.Before.BaseFrames, item.After.BaseFrames,
-        item.Before.LimitFrames, item.After.LimitFrames,
-        static_cast<ULONG>(item.Before.Running), static_cast<ULONG>(item.After.Running));
+        item.PacketCount, item.CompletedPackets, item.PresentedFrames);
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Clock rebase before endpoint=%I64u session=%I64u generation=%I64u stream=%I64u callback_qpc=%I64u slot_gen=%I64u gate=%I64u open=%u state=%u freq=%I64u epoch=%I64u base=%I64u limit=%I64u running=%u",
+        snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation,
+        diagnostic.Stream, item.CallbackQpc, before.Generation, before.GateEpoch,
+        before.GateOpen, before.StreamState, item.Before.Frequency,
+        item.Before.EpochQpc, item.Before.BaseFrames, item.Before.LimitFrames,
+        static_cast<ULONG>(item.Before.Running));
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Clock rebase after endpoint=%I64u session=%I64u generation=%I64u stream=%I64u callback_qpc=%I64u slot_gen=%I64u gate=%I64u open=%u state=%u freq=%I64u epoch=%I64u base=%I64u limit=%I64u running=%u",
+        snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Generation,
+        diagnostic.Stream, item.CallbackQpc, after.Generation, after.GateEpoch,
+        after.GateOpen, after.StreamState, item.After.Frequency,
+        item.After.EpochQpc, item.After.BaseFrames, item.After.LimitFrames,
+        static_cast<ULONG>(item.After.Running));
 }
 
 VAD_PAGE NTSTATUS VadControlInitialize(WDFDEVICE device)
