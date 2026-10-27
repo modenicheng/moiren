@@ -1,5 +1,6 @@
 //! One concrete VAD source/graph/independent-recorder run, always unqualified.
 
+#[cfg(windows)]
 use crate::controlled_load;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};

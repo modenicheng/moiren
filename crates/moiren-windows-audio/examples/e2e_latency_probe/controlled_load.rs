@@ -2,16 +2,21 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
+#[cfg(windows)]
 use std::{
-    fs::{self, OpenOptions},
+    fs,
+    process::{Child, Command, Stdio},
+};
+use std::{
+    fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const WORKER_SCHEMA_VERSION: u32 = 1;
 const MAX_ID_BYTES: usize = 256;
+#[cfg(windows)]
 const STOP_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -28,6 +33,8 @@ pub(crate) struct WorkerResult {
     pub(crate) stop_requested: bool,
 }
 
+// Native supervision is Windows-only; keep evidence validation portable in tests.
+#[cfg(any(windows, test))]
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Evidence {
     pub(crate) schema_version: u32,
@@ -48,6 +55,7 @@ pub(crate) struct Evidence {
     pub(crate) failure: Option<String>,
 }
 
+#[cfg(windows)]
 pub(crate) struct Supervisor {
     load_id: String,
     requested_seconds: u64,
@@ -58,6 +66,7 @@ pub(crate) struct Supervisor {
     exit_code: Option<Option<i32>>,
 }
 
+#[cfg(windows)]
 impl Supervisor {
     pub(crate) fn start(
         load_id: &str,
@@ -165,6 +174,7 @@ impl Supervisor {
     }
 }
 
+#[cfg(windows)]
 impl Drop for Supervisor {
     fn drop(&mut self) {
         if self.exit_code.is_none() {
@@ -254,6 +264,7 @@ fn parse_worker(arguments: Vec<String>) -> Result<(String, u64, PathBuf, PathBuf
     Ok((id, seconds, stop_path, result_path))
 }
 
+#[cfg(any(windows, test))]
 fn validate_worker_result(
     result: &WorkerResult,
     expected_id: &str,
@@ -289,6 +300,7 @@ fn validate_worker_result(
     Ok(())
 }
 
+#[cfg(any(windows, test))]
 struct EvidenceInput<'a> {
     load_id: &'a str,
     requested_seconds: u64,
@@ -300,6 +312,7 @@ struct EvidenceInput<'a> {
     active_window: Duration,
 }
 
+#[cfg(any(windows, test))]
 fn build_evidence(input: EvidenceInput<'_>) -> Evidence {
     let EvidenceInput {
         load_id,
@@ -368,6 +381,7 @@ fn build_evidence(input: EvidenceInput<'_>) -> Evidence {
     }
 }
 
+#[cfg(windows)]
 fn read_worker_result(path: &Path) -> Result<WorkerResult> {
     let bytes = fs::read(path).with_context(|| format!("read worker result {}", path.display()))?;
     ensure!(
@@ -385,6 +399,7 @@ fn write_json_new(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn write_stop_signal(path: &Path) -> Result<()> {
     write_json_new(path, &serde_json::json!({"stop": true}))
 }

@@ -5,6 +5,7 @@
 //! physical qualification still requires an independent measurement artifact
 //! and calibration provenance.
 
+#[cfg(windows)]
 use super::controlled_load;
 use super::pcm::{PcmAnalysis, PcmSchedule, analyze};
 use anyhow::{Context, Result, bail, ensure};
