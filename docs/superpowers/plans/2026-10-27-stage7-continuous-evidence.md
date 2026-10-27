@@ -138,6 +138,37 @@ guest rechecks and immediate run deletion. At `2026-10-27T12:00:38+08:00`, the
 free and no live test processes/dynamic children. Temporary trace tools and
 runners are removed; installed system/rollback packages are untouched.
 
+### 2026-10-27 real native rename attempt and evidence projection
+
+`54029a3` supplies a real production-service/native rename probe for both
+directions, with initialized exclusive clients, old/fresh identities, exact
+Windows FriendlyName and bounded cleanup reporting. All 67 focused tests,
+strict example/test Clippy, release and independent review pass. The first VM
+attempt exits 1 before replacement: held objects remain readable but the
+service advances Removing -> Absent, removing its current diagnostics. Native
+REMOVE does not promise to keep a PDO alive for a held IAudioClient, so the
+probe's mandatory held-remains-Removing assumption is not a demonstrated
+driver contract. Keep this failed attempt and investigate subsequent lifecycle
+phases separately; do not modify driver teardown to manufacture acceptance.
+
+`5893bbf` preserves actual native Removed evidence through the existing
+adapter in a probe-feature-only historical record, independently of current
+resource/gate authority. Plain Absent, Removing, stale/error snapshots cannot
+produce it. History is bounded at 64 entries, with session/availability
+fencing, no repeated-poll freshness inflation and oldest-first eviction.
+RED/GREEN, 38 export/service tests, strict Clippy, feature-off all-target check
+and independent review pass. The full feature-enabled app library also passes
+326 tests / 2 ignored. This is an observation improvement, not a rename pass.
+
+The first real attempt's eight files (45,106 bytes) are verified/retained at
+`target/vad-target-archive/20261027-rename-54029a3-r1`; no runtime or storage
+cap fired. Guest recheck preceded immediate removal of run/runner/checklist/
+cleanup helper. At `2026-10-27T12:06:43+08:00`, the VM holds only the current
+7,552,512-byte integration probe, no dynamic children/test processes, and
+30.101 GiB free. Native name propagation, diagnostic continuation and final
+rename acceptance remain open; the baseline Windows names still differ from
+provider specs.
+
 ### 2026-10-27 short target matrix and retention
 
 The host-built native probe at source pin `f6f2718` produced all eight timer

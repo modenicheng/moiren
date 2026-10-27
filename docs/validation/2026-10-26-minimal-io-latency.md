@@ -1435,3 +1435,69 @@ runners, trace tool and logs are removed. The VM retains only
 `vad_native-ee0cf79.exe`, with 30.108 GiB free, no active test processes or
 present dynamic children, and the unchanged installed SYS hash. No system or
 rollback package was removed.
+
+### 2026-10-27 first real service/native rename attempt
+
+`54029a3` adds explicit `vad_integration --exercise --rename`, mutually
+exclusive with PCM/soak. It uses the existing production service/control
+owner, actual initialized exclusive WASAPI clients and exact
+`PKEY_Device_FriendlyName` readback, with separate Playback/Microphone cases,
+retained phase/cleanup evidence and the existing overall watchdog. All 67
+example tests, strict example/test Clippy, release build and independent
+review pass; default/help remain non-exercising. This is an acceptance probe,
+not a driver naming repair or PCM test.
+
+The 7,552,512-byte release probe has SHA-256
+`CAA93C5D2BA5696B33B0145FD4D1DBF1A567C380295A37977AE96319183E92FE`.
+Its first VM run exits 1 after 2,066 ms of reported probe work, without
+watchdog or storage-cap timeout. Both clients initialize and are released;
+the service joins and releases its control session. Neither direction reaches
+replacement initialization or the new-name gate. The held loop first sees
+Removing, then Absent with absent diagnostics/provider name, causing
+`missing current observation generation` in both cases. The old MMDevice
+object still returns its previous ID/name; that does not prove its native
+stream or PDO remains valid.
+
+This exposes an incorrect probe assumption, not proof of unsafe driver
+recreation. The driver REMOVE path does not check ActiveStreams before
+revoking and calling AcxDeviceRemoveCircuitDevice. Holding an initialized
+IAudioClient is not a guaranteed PDO-lifetime pin. The fake `fail_remove`
+service regression covers a removal refusal; it does not establish that
+every real held client must produce one. Do not change driver removal
+semantics merely to satisfy this probe assumption. Keep the failed artifacts
+and continue release/replacement/name diagnostics separately without promoting
+the strict failed attempt into a pass.
+
+The actual baseline Windows names are:
+
+- Playback: `扬声器 (7- Moiren virtual audio endpoint)`.
+- Microphone: `Moiren integration microphone (6- Moiren virtual audio endpoint)`.
+
+They differ from provider spec names. No replacement-name claim follows from
+these baseline strings. Exact readback must remain distinct from provider DTO
+success; do not strip the parent suffix or use a substring comparison to pass.
+
+Eight original files, including manifest and project/preferences fixtures,
+total 45,106 bytes at
+`target/vad-target-archive/20261027-rename-54029a3-r1`. Every payload length and
+SHA-256 was verified on the host, then rechecked against the host checklist
+on the guest before deletion. The wrapper bounds the run to 150 seconds,
+32 files, 2 MiB per file and 8 MiB total with 500 ms cap checks; caps did not
+trigger. A too-long encoded cleanup command failed before executing; the
+same checked cleanup succeeded via a copied short script, then removed itself.
+At `2026-10-27T12:06:43+08:00`, only the current integration probe remains,
+with 30.101 GiB free and no test processes/dynamic children. System and
+rollback files are untouched.
+
+`5893bbf` adds a separate, feature-gated historical native retirement record.
+Only the native adapter's fresh, error-free, gate-closed actual Removed
+snapshot can supply it; ordinary Absent/Removing and missing/failed evidence
+cannot. It retains the exact stamp and accepted sequence independently of
+current presence, up to 64 latest-per-export entries with oldest-first
+eviction. Repeated identical Removed polls do not refresh the sequence;
+availability loss or a new control session clears the history. No reconcile,
+dispatch, readiness or gate logic reads it. The missing-evidence regression
+first failed at runtime, then 38 service/export tests, strict lib/test Clippy,
+feature-off all-target check, formatting and independent review passed. The
+exact oldest-eviction regression also passes. This closes a read-only evidence
+projection gap, not the real rename acceptance or Windows name discrepancy.
