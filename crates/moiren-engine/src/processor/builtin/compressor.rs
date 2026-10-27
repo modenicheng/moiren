@@ -3,7 +3,7 @@ use super::dynamics::{
     db_to_gain, float_specs, resolve_float, smooth, validate_float_domains, validate_linked_io,
 };
 use crate::{
-    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    buffer::{FrameIo, PreparedIo, ProcessIo},
     control::{FloatRamp, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
@@ -241,25 +241,7 @@ impl<S: ProcessingSample> RtProcessor<S> for Compressor {
                 .float(ParameterId(index as u32))
                 .expect("validated compressor parameter")
         });
-        match io {
-            ProcessIo::Separate {
-                inputs,
-                mut outputs,
-            } => self.process_linked(
-                &mut SeparateFrames::new(
-                    inputs.get(0).expect("validated compressor input"),
-                    outputs.get_mut(0).expect("validated compressor output"),
-                ),
-                ramps,
-                ctx.processing_sr,
-            ),
-            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
-                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated compressor pair")),
-                ramps,
-                ctx.processing_sr,
-            ),
-            ProcessIo::ReadOnly { .. } => unreachable!("compressor requires an output"),
-        }
+        linked_io!(io, self, "compressor", ramps, ctx.processing_sr);
         if let Some(signal) = &self.signal
             && signals
                 .demand(&signal.publisher)

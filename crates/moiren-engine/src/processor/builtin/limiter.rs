@@ -4,7 +4,7 @@ use super::dynamics::{
     validate_linked_io,
 };
 use crate::{
-    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    buffer::{FrameIo, PreparedIo, ProcessIo},
     control::{FloatRamp, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
@@ -148,28 +148,14 @@ impl<S: ProcessingSample> RtProcessor<S> for Limiter {
         let input_gain = params
             .float(Self::INPUT_GAIN)
             .expect("validated limiter input gain");
-        match io {
-            ProcessIo::Separate {
-                inputs,
-                mut outputs,
-            } => self.process_linked(
-                &mut SeparateFrames::new(
-                    inputs.get(0).expect("validated limiter input"),
-                    outputs.get_mut(0).expect("validated limiter output"),
-                ),
-                threshold,
-                release,
-                input_gain,
-                ctx.processing_sr,
-            ),
-            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
-                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated limiter pair")),
-                threshold,
-                release,
-                input_gain,
-                ctx.processing_sr,
-            ),
-            ProcessIo::ReadOnly { .. } => unreachable!("limiter requires an output"),
-        }
+        linked_io!(
+            io,
+            self,
+            "limiter",
+            threshold,
+            release,
+            input_gain,
+            ctx.processing_sr
+        )
     }
 }

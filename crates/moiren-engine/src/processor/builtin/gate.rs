@@ -4,7 +4,7 @@ use super::dynamics::{
     validate_linked_io,
 };
 use crate::{
-    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    buffer::{FrameIo, PreparedIo, ProcessIo},
     control::{ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
@@ -203,24 +203,6 @@ impl<S: ProcessingSample> RtProcessor<S> for Gate {
         params: ProcessParameters<'_>,
         _signals: crate::signal::ProcessSignals<'_>,
     ) {
-        match io {
-            ProcessIo::Separate {
-                inputs,
-                mut outputs,
-            } => self.process_linked(
-                &mut SeparateFrames::new(
-                    inputs.get(0).expect("validated gate input"),
-                    outputs.get_mut(0).expect("validated gate output"),
-                ),
-                &params,
-                ctx.processing_sr,
-            ),
-            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
-                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated gate pair")),
-                &params,
-                ctx.processing_sr,
-            ),
-            ProcessIo::ReadOnly { .. } => unreachable!("gate requires an output"),
-        }
+        linked_io!(io, self, "gate", &params, ctx.processing_sr)
     }
 }

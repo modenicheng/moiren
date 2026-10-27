@@ -1,7 +1,7 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
 use super::dynamics::resolve_float;
 use crate::{
-    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    buffer::{FrameIo, PreparedIo, ProcessIo},
     control::{FloatRamp, ParamDomain, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
@@ -25,7 +25,12 @@ impl Gain {
     }
 
     /// One kernel for both transports; the ramp is sampled once per frame.
-    fn process_linked<S: ProcessingSample, Io: FrameIo<S>>(io: &mut Io, level: FloatRamp) {
+    /// Stateless, but a method like every linked kernel so dispatch is uniform.
+    fn process_linked<S: ProcessingSample, Io: FrameIo<S>>(
+        &mut self,
+        io: &mut Io,
+        level: FloatRamp,
+    ) {
         for frame in 0..io.frames() {
             let gain = level.sample(frame);
             for channel in 0..io.channel_count() {
@@ -74,22 +79,6 @@ impl<S: ProcessingSample> RtProcessor<S> for Gain {
         _signals: crate::signal::ProcessSignals<'_>,
     ) {
         let gain = params.float(Self::LEVEL).expect("validated gain parameter");
-        match io {
-            ProcessIo::Separate {
-                inputs,
-                mut outputs,
-            } => Self::process_linked(
-                &mut SeparateFrames::new(
-                    inputs.get(0).expect("validated main input"),
-                    outputs.get_mut(0).expect("validated main output"),
-                ),
-                gain,
-            ),
-            ProcessIo::InPlace { mut pairs, .. } => Self::process_linked(
-                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated main pair")),
-                gain,
-            ),
-            ProcessIo::ReadOnly { .. } => unreachable!("gain requires an output"),
-        }
+        linked_io!(io, self, "gain", gain)
     }
 }

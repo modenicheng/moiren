@@ -1,7 +1,7 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
 use super::dynamics::resolve_float;
 use crate::{
-    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    buffer::{FrameIo, PreparedIo, ProcessIo},
     control::{FloatRamp, ParamDomain, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
@@ -97,8 +97,10 @@ impl Pan {
     }
 
     /// One kernel for both transports: both input channels of a frame are
-    /// read before either is written.
+    /// read before either is written. Stateless, but a method like every
+    /// linked kernel so dispatch is uniform.
     fn process_linked<S: ProcessingSample, Io: FrameIo<S>>(
+        &mut self,
         io: &mut Io,
         position: FloatRamp,
         mono: bool,
@@ -168,26 +170,6 @@ impl<S: ProcessingSample> RtProcessor<S> for Pan {
             .expect("validated pan parameter");
         let mono = params.discrete(Self::MONO) == Some(ParamValue::Bool(true));
         let swap = params.discrete(Self::SWAP) == Some(ParamValue::Bool(true));
-        match io {
-            ProcessIo::Separate {
-                inputs,
-                mut outputs,
-            } => Self::process_linked(
-                &mut SeparateFrames::new(
-                    inputs.get(0).expect("validated stereo input"),
-                    outputs.get_mut(0).expect("validated stereo output"),
-                ),
-                position,
-                mono,
-                swap,
-            ),
-            ProcessIo::InPlace { mut pairs, .. } => Self::process_linked(
-                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated stereo pair")),
-                position,
-                mono,
-                swap,
-            ),
-            ProcessIo::ReadOnly { .. } => unreachable!("pan requires an output"),
-        }
+        linked_io!(io, self, "pan", position, mono, swap)
     }
 }

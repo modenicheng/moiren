@@ -2,7 +2,7 @@ use super::super::{ProcessContext, ProcessorError, RtProcessor};
 use super::MAX_CHANNELS;
 use super::dynamics::resolve_float;
 use crate::{
-    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    buffer::{FrameIo, PreparedIo, ProcessIo},
     control::{FloatRamp, ParamDomain, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
@@ -255,28 +255,6 @@ impl<S: ProcessingSample> RtProcessor<S> for Delay {
             .float(Self::FEEDBACK)
             .expect("validated feedback parameter");
         let mix = params.float(Self::MIX).expect("validated mix parameter");
-        match io {
-            ProcessIo::Separate {
-                inputs,
-                mut outputs,
-            } => self.process_linked(
-                &mut SeparateFrames::new(
-                    inputs.get(0).expect("validated delay input"),
-                    outputs.get_mut(0).expect("validated delay output"),
-                ),
-                delay,
-                feedback,
-                mix,
-                ctx.processing_sr,
-            ),
-            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
-                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated delay pair")),
-                delay,
-                feedback,
-                mix,
-                ctx.processing_sr,
-            ),
-            ProcessIo::ReadOnly { .. } => unreachable!("delay requires an output"),
-        }
+        linked_io!(io, self, "delay", delay, feedback, mix, ctx.processing_sr)
     }
 }
