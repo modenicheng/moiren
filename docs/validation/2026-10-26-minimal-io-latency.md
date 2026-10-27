@@ -891,6 +891,11 @@ the target at 3,843,584 bytes with SHA-256
 `C5CC1A01A98952BD3F75CF2AE8BC6E2F144B9336E9703D7B0E0933A739739B3F`.
 The matching `vad_native` probe was 391,168 bytes with SHA-256
 `413004345D0B004AE6BB3A10702F2EA197479FE5D8AE5CB4A49CE388505FD8FA`.
+This operation deployed the probe binaries only; the installed `MoirenVad.sys`
+package was intentionally not rebuilt or replaced. The observations below
+therefore do not yet validate the `a085841` `Pcm.cpp` change on the guest
+driver. A driver-package build, install, package-hash record and repeat matrix
+are still required.
 After the run, the target retained only these two current probes in
 `C:\MoirenVadTest`; old probes and logs were removed only after evidence was
 copied to the host and checked. `C:\DriverTest`, the installed driver package,
