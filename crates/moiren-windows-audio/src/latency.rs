@@ -10,6 +10,7 @@ pub use budget::{
 };
 
 pub(crate) mod clock;
+pub use clock::QpcClock;
 
 use serde::Serialize;
 pub use telemetry::{

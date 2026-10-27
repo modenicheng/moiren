@@ -1,7 +1,7 @@
 //! Resolve intent on control, then negotiate every native stream on its owner.
 use super::{
     asio::{AsioOptions, AsioStream},
-    bridge::{ProcessSource, RingSink, RingSource, Tone, unsupported},
+    bridge::{CaptureWriteClock, ProcessSource, RingSink, RingSource, Tone, unsupported},
     native::{NativeStreamInfo, canonical_asio_driver_id},
     observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
     owner::{AuxiliaryOwner, StreamFactory, Transport, WorkerRequest, spawn},
@@ -409,11 +409,11 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 return Err(BackendError::Cancelled);
             }
             let counters = Arc::new(Counters::default());
-            let (capture_tx, capture_rx) = if group.input.is_some() {
+            let (capture_tx, capture_rx, capture_clock) = if group.input.is_some() {
                 let (tx, rx) = RingBuffer::new(capacity);
-                (Some(tx), Some(rx))
+                (Some(tx), Some(rx), Some(Arc::new(CaptureWriteClock::new())))
             } else {
-                (None, None)
+                (None, None, None)
             };
             let (render_tx, render_rx) = if group.output.is_some() {
                 let (tx, rx) = RingBuffer::new(capacity);
@@ -424,6 +424,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             let worker_request = WorkerRequest {
                 factory: native.factory(&group, rate)?,
                 capture: capture_tx,
+                capture_clock: capture_clock.clone(),
                 render: render_rx,
                 counters: counters.clone(),
                 state: transport.state.clone(),
@@ -493,6 +494,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                             info.buffer_frames as usize,
                             capacity,
                             counters.clone(),
+                            capture_clock.unwrap(),
                         )?,
                     )
                     .map_err(unsupported)?;

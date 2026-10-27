@@ -1,7 +1,7 @@
 //! Native workers park before activation. The master borrows Engine during the
 //! unwind boundary, then returns it through a control-only handoff after Stop.
 use super::{
-    bridge::{FollowerServo, refill, unsupported},
+    bridge::{CaptureWriteClock, FollowerServo, refill, unsupported},
     native::{NativeStream, NativeStreamInfo, StereoFrame},
     observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
     recovery::RecoveryTicket,
@@ -181,6 +181,7 @@ impl Worker {
 pub(super) struct WorkerRequest<S: ProcessingSample> {
     pub factory: StreamFactory,
     pub capture: Option<Producer<StereoFrame>>,
+    pub capture_clock: Option<Arc<CaptureWriteClock>>,
     pub render: Option<Consumer<StereoFrame>>,
     pub counters: Arc<Counters>,
     pub state: Arc<RunState>,
@@ -291,6 +292,7 @@ fn native_owner<S: ProcessingSample>(
     }
     let mut pump = match Pump::new(
         request.capture.take(),
+        request.capture_clock.take(),
         request.render.take(),
         info,
         request.engine_rate,
@@ -407,6 +409,9 @@ fn native_owner<S: ProcessingSample>(
 
 pub(super) struct Pump {
     capture: Option<Producer<StereoFrame>>,
+    capture_clock: Option<Arc<CaptureWriteClock>>,
+    capture_frames: u64,
+    qpc: Option<crate::latency::QpcClock>,
     render: Option<Consumer<StereoFrame>>,
     src: Option<StereoResampler>,
     input: Box<[StereoFrame]>,
@@ -419,8 +424,10 @@ pub(super) struct Pump {
     max_engine_frames: usize,
 }
 impl Pump {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         capture: Option<Producer<StereoFrame>>,
+        capture_clock: Option<Arc<CaptureWriteClock>>,
         render: Option<Consumer<StereoFrame>>,
         info: NativeStreamInfo,
         engine_rate: u32,
@@ -440,8 +447,14 @@ impl Pump {
         // watermark is a drift target, never a condition for native start.
         let period_frames = (u64::from(info.buffer_frames) * u64::from(engine_rate)
             / u64::from(info.sample_rate)) as usize;
+        let qpc = (capture.is_some())
+            .then(crate::latency::QpcClock::new)
+            .flatten();
         Ok(Self {
             capture,
+            capture_clock,
+            capture_frames: 0,
+            qpc,
             render,
             src,
             input: vec![[0.0; 2]; info.buffer_frames as usize].into_boxed_slice(),
@@ -465,6 +478,7 @@ impl Pump {
         let mut progress = false;
         if let Some(tx) = &mut self.capture {
             // Snapshot-sized work: a perpetually busy capture cannot starve output.
+            let mut captured = 0usize;
             for _ in 0..4 {
                 let frames = native.read(&mut self.input)?;
                 if frames > self.input.len() {
@@ -474,6 +488,7 @@ impl Pump {
                     break;
                 }
                 progress = true;
+                captured += frames;
                 let accepted = frames.min(tx.slots());
                 for &frame in &self.input[..accepted] {
                     let _ = tx.push(frame);
@@ -481,6 +496,16 @@ impl Pump {
                 self.counters
                     .dropped
                     .fetch_add((frames - accepted) as u64, Ordering::Relaxed);
+            }
+            if captured > 0 {
+                // One stamp per wake carries the capture/QPC slope; dropped
+                // frames stay part of the position so the rate stays honest.
+                self.capture_frames += captured as u64;
+                if let Some(now) = self.qpc.as_ref().and_then(|clock| clock.now())
+                    && let Some(clock) = &self.capture_clock
+                {
+                    clock.publish(self.capture_frames, now);
+                }
             }
         }
         if let (Some(rx), Some(src)) = (&mut self.render, &mut self.src) {

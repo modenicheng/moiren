@@ -232,6 +232,7 @@ impl Fixture {
                     }))
                 }),
                 capture: capture_tx,
+                capture_clock: capture.then(|| Arc::new(CaptureWriteClock::new())),
                 render: render_rx,
                 counters: counters.clone(),
                 state: state.clone(),

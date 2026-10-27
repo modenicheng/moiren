@@ -537,6 +537,7 @@ impl EngineBackend<f64> for MockBackend {
         let owner_cancel = cancel.clone();
         let (worker, actual) = owner::spawn(
             WorkerRequest {
+                capture_clock: None,
                 factory: Box::new(move || {
                     let number = probe.opens.fetch_add(1, Ordering::AcqRel) + 1;
                     probe.record(Event::Open(number));
@@ -581,6 +582,7 @@ impl EngineBackend<f64> for MockBackend {
             };
             let (worker, _) = owner::spawn(
                 WorkerRequest {
+                    capture_clock: None,
                     factory: Box::new(move || Ok(Box::new(follower))),
                     capture: None,
                     render: {

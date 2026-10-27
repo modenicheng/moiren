@@ -14,6 +14,7 @@ use moiren_engine::{
 };
 #[cfg(windows)]
 use moiren_windows_audio::clock_bridge;
+use moiren_windows_audio::latency;
 #[cfg(windows)]
 use moiren_windows_audio::process_loopback;
 use moiren_windows_audio::professional::native;
@@ -384,7 +385,7 @@ fn measure_renderer<S: ProcessingSample>() {
         },
         false,
     );
-    let mut pump = Pump::new(None, Some(rx), info(), 96000, 4096, counters, true).unwrap();
+    let mut pump = Pump::new(None, None, Some(rx), info(), 96000, 4096, counters, true).unwrap();
     let probe = Arc::new(Probe::default());
     let mut native = FakeNative {
         info: info(),
@@ -414,7 +415,16 @@ fn master_renderer_and_graph_sink_are_allocation_free_in_both_precisions_with_pa
 fn measure_capture<S: ProcessingSample>() {
     let counters = Arc::new(Counters::default());
     let (mut tx, rx) = rtrb::RingBuffer::new(4096);
-    let mut source = RingSource::<S>::new(rx, 44100, 96000, 128, 4096, counters.clone()).unwrap();
+    let mut source = RingSource::<S>::new(
+        rx,
+        44100,
+        96000,
+        128,
+        4096,
+        counters.clone(),
+        std::sync::Arc::new(bridge::CaptureWriteClock::new()),
+    )
+    .unwrap();
     let mut arena = BufferArena::<S>::new(
         &[BufferSlotLayout {
             channels: 2,
@@ -546,6 +556,7 @@ fn transport_with_recovery<S: ProcessingSample>(
                 }))
             }),
             capture: None,
+            capture_clock: None,
             render: Some(rx),
             counters,
             state: transport.state.clone(),
