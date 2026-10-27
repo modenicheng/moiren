@@ -1684,3 +1684,50 @@ SHA-256 checks precede deletion. At `2026-10-27T12:55:19+08:00`, the guest
 contains only the current 7,618,560-byte integration probe, with 30.096 GiB
 free and no active test processes or present dynamic children. System,
 DriverStore and rollback files are unchanged by cleanup.
+
+### 2026-10-27 explicit fresh-identity naming control
+
+`d786851` adds opt-in `--rename-fixture-seed=positive_u64`, allowed only with
+`--exercise --rename`. Default fixtures are unchanged. The explicit seed
+selects distinct diagnostic endpoint identities and initial CREATE names;
+within each rename case the same stable ID and graph binding are preserved.
+It is not a product workaround or an instruction to rotate IDs on rename.
+All 87 example tests, strict example/test Clippy, release build and independent
+review pass. The 7,624,192-byte release probe has SHA-256
+`44CBFBF9AA0AA673F98F2EF81A5BEA69F136357EBA01143EB409510776388D1C`.
+
+Seed `202610271303` produces a new Playback/Microphone pair on `78e0e34`.
+The actual initial microphone DeviceDesc is
+`Moiren integration microphone seed 202610271303`, proving that the initial
+requested pin description reaches this fresh endpoint. After same-ID
+recreation it still has that initial description, not the requested rename.
+Playback DeviceDesc is `扬声器` both before and after; adapter descriptions
+remain `25- Moiren virtual audio endpoint` and
+`26- Moiren virtual audio endpoint`. Final names remain the corresponding
+composed old strings. Exact-name checks fail unchanged.
+
+Direct old Removed, native initialization, fresh replacement/Engine
+confirmation and release pass for both directions. Native PDO/endpoint
+generations advance 17 to 19 and 18 to 20 under one session. The historical
+strict-held failures are retained (Playback native identity/generation changed;
+Microphone missing current observation generation). The run exits 1 with
+4,009 ms reported work, no watchdog/storage cap and no cleanup error. This
+separates initial publication from same-ID refresh behavior but does not by
+itself prove the underlying Windows storage/consumption cause.
+
+A separate read-only interface-registry observation for the preceding default
+fixture sees the new requested name in both conventional FriendlyName and
+EP/0 FriendlyName under Audio and the matching Render/Capture interface
+Device Parameters. Actual MMDevice names remained old. The protected
+Properties subtree rejects traversal; no ACL or property is modified. These
+post-removal persistent interface values do not prove which interface/name
+EndpointBuilder actually consumed while the endpoint was live. The successful
+read is retained in the host `rename-58ed492-r1` archive, separate from its
+original payload manifest.
+
+The fresh-ID run's eight original files total 77,870 bytes at
+`target/vad-target-archive/20261027-rename-d786851-r1`. Host/guest length and
+SHA-256 checks precede immediate deletion. At `2026-10-27T13:09:34+08:00`, only
+that current integration probe remains, with 30.095 GiB free. No system,
+DriverStore or rollback files are removed. Native naming and Stage 7 remain
+unqualified.
