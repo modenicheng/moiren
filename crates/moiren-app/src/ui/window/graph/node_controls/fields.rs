@@ -108,6 +108,8 @@ pub(super) fn dial_field(
     knob: AnyElement,
     error: Option<&String>,
 ) -> AnyElement {
+    let label_id = format!("{id}-label");
+    let unit_id = format!("{id}-unit");
     div()
         .id(id)
         .flex()
@@ -118,12 +120,14 @@ pub(super) fn dial_field(
         .flex_none()
         .child(
             div()
+                .id(label_id)
                 .h(px(28.))
                 .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(note(label.to_owned())),
+                .child(note(label.to_owned()))
+                .gpui_test_observe(),
         )
         .child(knob)
         .child(
@@ -145,14 +149,17 @@ pub(super) fn dial_field(
                 )
                 .child(
                     div()
+                        .id(unit_id)
                         .absolute()
-                        .left(px(72.))
-                        .top(px(3.))
-                        .w(px(16.))
+                        .left(px(76.))
+                        .top_0()
+                        .w(px(12.))
+                        .h(px(22.))
                         .text_size(px(9.))
                         .line_height(px(22.))
                         .text_color(theme::TEXT_FAINT)
-                        .child(unit),
+                        .child(unit)
+                        .gpui_test_observe(),
                 ),
         )
         .when_some(error, |view, error| {

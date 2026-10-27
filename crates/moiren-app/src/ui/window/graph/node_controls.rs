@@ -7,21 +7,28 @@ use crate::ui::widgets::fader::{SliderBehavior, hslider};
 use crate::ui::widgets::meters::compact_horizontal_meter;
 use crate::ui::window::mixer::{SliderEdit, SliderSlot, commit_closure, sync_slider_range};
 use moiren_core::graph::{NodeId, NodeKind};
-use std::{collections::BTreeMap, rc::Rc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 
 mod fields;
 mod io;
 mod parameter;
 mod plots;
+mod precision;
 mod rack_editor;
 mod recording;
 mod rotary;
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
+#[cfg(all(test, feature = "gpui-test"))]
+mod tone_tests;
 mod utility;
 use fields::{parameter_control, parameter_row};
 use io::io_body;
 use parameter::Parameter;
+pub(super) use precision::tone_inspector;
 pub(super) use rack_editor::inspector as rack_inspector;
 pub(super) use recording::format_controls as recording_format_controls;
 pub(super) use utility::spectrum::inspector as spectrum_inspector;
@@ -32,7 +39,9 @@ pub(in crate::ui::window) struct NodeControls {
     sliders: BTreeMap<(NodeId, Parameter), SliderSlot>,
     inputs: BTreeMap<(NodeId, Parameter), Entity<component::input::InputState>>,
     input_baselines: BTreeMap<(NodeId, Parameter), String>,
+    input_pending: BTreeMap<(NodeId, Parameter), crate::service::RequestId>,
     errors: BTreeMap<(NodeId, Parameter), String>,
+    precision: precision::Editors,
     pub(super) resource_popup: Option<NodeId>,
     application_picker: BTreeMap<NodeId, bool>,
     rack: rack_editor::RackEditorState,
@@ -47,6 +56,7 @@ impl NodeControls {
             .any(|input| input.read(cx).focus_handle(cx) == *focused)
             || self.rack.owns_focus(focused, cx)
             || self.spectrum_editors.owns_focus(focused, cx)
+            || self.precision.owns_focus(focused, cx)
     }
 }
 
@@ -57,6 +67,19 @@ impl StudioShell {
         cx: &mut Context<Self>,
     ) {
         let graph = self.state.read(cx).snapshot.graph.clone();
+        let consumed = self.state.read(cx).snapshot.consumed_request_id;
+        // A surviving NodeId does not imply the same controls: rebinding Tone
+        // to a device retires its frequency draft, focus owner and callbacks.
+        let applicable: BTreeSet<_> = graph
+            .nodes
+            .iter()
+            .filter_map(|node| graph.kind_of(node.id).map(|kind| (node, kind)))
+            .flat_map(|(node, kind)| {
+                Parameter::primary(kind, node)
+                    .into_iter()
+                    .map(move |parameter| (node.id, parameter))
+            })
+            .collect();
         self.node_controls
             .heights
             .retain(|id, _| graph.node(*id).is_some());
@@ -65,16 +88,19 @@ impl StudioShell {
             .retain(|id, _| graph.kind_of(*id) == Some(NodeKind::SpectrumAnalyzer));
         self.node_controls
             .sliders
-            .retain(|(id, _), _| graph.node(*id).is_some());
+            .retain(|key, _| applicable.contains(key));
         self.node_controls
             .inputs
-            .retain(|(id, _), _| graph.node(*id).is_some());
+            .retain(|key, _| applicable.contains(key));
         self.node_controls
             .input_baselines
-            .retain(|(id, _), _| graph.node(*id).is_some());
+            .retain(|key, _| applicable.contains(key));
+        self.node_controls
+            .input_pending
+            .retain(|key, request| applicable.contains(key) && *request > consumed);
         self.node_controls
             .errors
-            .retain(|(id, _), _| graph.node(*id).is_some());
+            .retain(|key, _| applicable.contains(key));
         let mut rows = Vec::new();
         for node in &graph.nodes {
             let Some(kind) = graph.kind_of(node.id) else {
@@ -84,7 +110,11 @@ impl StudioShell {
                 let id = node.id;
                 let key = (id, parameter);
                 let value = parameter.value(kind, node);
-                let text = format!("{value:.2}");
+                let text = if parameter == Parameter::Frequency {
+                    value.to_string()
+                } else {
+                    format!("{value:.2}")
+                };
                 self.node_controls
                     .input_baselines
                     .entry(key)
@@ -103,11 +133,22 @@ impl StudioShell {
                             ) {
                                 return;
                             }
+                            // A queued Blur may outlive an input removed by
+                            // rebinding. Never let it act on the new entity at
+                            // the same (node, parameter) key.
+                            if shell.node_controls.inputs.get(&key).map(Entity::entity_id)
+                                != Some(input.entity_id())
+                            {
+                                return;
+                            }
                             let graph = shell.state.read(cx).snapshot.graph.clone();
                             let Some(node) = graph.node(id) else { return };
                             let Some(kind) = graph.kind_of(id) else {
                                 return;
                             };
+                            if !Parameter::primary(kind, node).contains(&parameter) {
+                                return;
+                            }
                             let text = input.read(cx).value().to_string();
                             // A knob can change the graph while this field keeps
                             // focus. Only submit edits to the displayed text, not
@@ -118,21 +159,32 @@ impl StudioShell {
                                 return;
                             }
                             let value = parameter::parse(&text, parameter.unit());
-                            let edit = value.and_then(|v| parameter.edit(v, kind, node));
+                            let edit = value.and_then(|v| parameter.edit_precision(v, kind, node));
                             if let Some(edit) = edit {
-                                shell.node_controls.errors.remove(&key);
-                                shell.node_controls.input_baselines.insert(key, text);
-                                if value != Some(parameter.value(kind, node)) {
-                                    shell
-                                        .state
-                                        .update(cx, |s, _| s.dispatch(AppRequest::EditGraph(edit)));
+                                // Changed text is ordered intent, even when it
+                                // equals an older snapshot ahead of publication.
+                                match shell.state.update(cx, |state, _| {
+                                    state.try_dispatch(AppRequest::EditGraph(edit))
+                                }) {
+                                    Ok(request) => {
+                                        shell.node_controls.errors.remove(&key);
+                                        shell.node_controls.input_baselines.insert(key, text);
+                                        shell.node_controls.input_pending.insert(key, request);
+                                    }
+                                    Err(_) => {
+                                        // Busy leaves the draft dirty and retryable;
+                                        // neither Enter nor Blur may mark it clean.
+                                        shell.node_controls.errors.insert(
+                                            key,
+                                            t!("Edit could not be sent; try again").to_string(),
+                                        );
+                                    }
                                 }
                             } else {
-                                let (min, max) = parameter.range(node);
-                                shell.node_controls.errors.insert(
-                                    key,
-                                    format!("{min:.1} .. {max:.1} {}", parameter.unit()),
-                                );
+                                shell
+                                    .node_controls
+                                    .errors
+                                    .insert(key, parameter.precision_error(node));
                             }
                             cx.notify();
                         },
@@ -142,6 +194,7 @@ impl StudioShell {
                 });
                 if !input.read(cx).focus_handle(cx).is_focused(window)
                     && !self.node_controls.errors.contains_key(&key)
+                    && !self.node_controls.input_pending.contains_key(&key)
                     && self
                         .node_controls
                         .input_baselines
@@ -149,8 +202,8 @@ impl StudioShell {
                         .map(String::as_str)
                         == Some(input.read(cx).value().as_str())
                 {
-                    // A render may precede Blur delivery; leave dirty text for
-                    // the subscription to validate and commit before syncing.
+                    // Preserve dirty text until Blur commits, and committed
+                    // text until the service publishes its consumed request.
                     if input.read(cx).value().as_str() != text {
                         input.update(cx, |s, cx| s.set_value(text.clone(), window, cx));
                     }
@@ -162,6 +215,9 @@ impl StudioShell {
                     Box::new(move |position, graph: &crate::service::GraphSnapshot| {
                         let node = graph.node(id)?;
                         let kind = graph.kind_of(id)?;
+                        if !Parameter::primary(kind, node).contains(&parameter) {
+                            return None;
+                        }
                         parameter
                             .edit(parameter.value_at_position(position, node), kind, node)
                             .map(AppRequest::EditGraph)
@@ -187,6 +243,7 @@ impl StudioShell {
         );
         rack_editor::sync(self, window, cx);
         utility::spectrum::editor::sync(self, window, cx);
+        precision::sync(self, window, cx);
     }
 }
 

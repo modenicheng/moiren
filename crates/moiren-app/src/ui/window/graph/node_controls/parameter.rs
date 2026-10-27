@@ -1,4 +1,4 @@
-//! One parameter contract shared by card sliders and precision entry.
+//! Shared parameters with separate gesture travel and exact-entry domains.
 use crate::service::{
     BuiltinState, CompressorParameter, GraphEdit, GraphNodeState, InputSelection,
 };
@@ -230,6 +230,61 @@ impl Parameter {
         if !silence && (!value.is_finite() || value < min || value > max) {
             return None;
         }
+        self.edit_validated(value, kind, node)
+    }
+
+    /// Precision entry follows the service/Inspector contract, not the dial's
+    /// ergonomic travel. In particular, the existing 16x gesture endpoint stays
+    /// valid while typed Level values stop at +24 dB.
+    pub fn edit_precision(
+        self,
+        value: f64,
+        kind: NodeKind,
+        node: &GraphNodeState,
+    ) -> Option<GraphEdit> {
+        match self {
+            Self::Frequency => {
+                if kind != NodeKind::Source
+                    || !matches!(node.source, Some(InputSelection::Tone { .. }))
+                    || (InputSelection::Tone {
+                        frequency_hz: value,
+                    })
+                    .validate()
+                    .is_err()
+                {
+                    return None;
+                }
+            }
+            Self::Level => {
+                if value != f64::NEG_INFINITY
+                    && (!value.is_finite() || !(-120. ..=24.).contains(&value))
+                {
+                    return None;
+                }
+            }
+            _ => return self.edit(value, kind, node),
+        }
+        self.edit_validated(value, kind, node)
+    }
+
+    pub fn precision_error(self, node: &GraphNodeState) -> String {
+        match self {
+            Self::Frequency => "0 < Frequency < 24000 Hz".into(),
+            Self::Level => "-120 .. 24 dB, or -inf".into(),
+            _ => {
+                let (min, max) = self.range(node);
+                format!("{min:.1} .. {max:.1} {}", self.unit())
+            }
+        }
+    }
+
+    fn edit_validated(
+        self,
+        value: f64,
+        kind: NodeKind,
+        node: &GraphNodeState,
+    ) -> Option<GraphEdit> {
+        let silence = self == Self::Level && value == f64::NEG_INFINITY;
         let id = node.id;
         let mut builtin = node.builtin.clone();
         match self {
@@ -312,7 +367,18 @@ impl Parameter {
                 if let BuiltinState::Delay(s) = &mut builtin {
                     match self {
                         Self::DelayTime => s.delay_ms = value,
-                        Self::DelayFeedback => s.feedback = value / 100.,
+                        Self::DelayFeedback => {
+                            // Validation already rejected out-of-domain text.
+                            // Exact UI endpoints otherwise divide one ULP past
+                            // the engine's inclusive +/-0.999 feedback bound.
+                            s.feedback = if value == -99.9 {
+                                -0.999
+                            } else if value == 99.9 {
+                                0.999
+                            } else {
+                                value / 100.
+                            };
+                        }
                         _ => s.mix = value / 100.,
                     }
                 } else {
@@ -349,6 +415,101 @@ pub(super) fn parse(text: &str, unit: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tone_precision_domain_does_not_change_rotary_or_level_endpoints() {
+        let graph = crate::service::ServiceGraph::default().snapshot();
+        let mut source = graph.node_of_kind(NodeKind::Source).unwrap().1.clone();
+        source.source = Some(InputSelection::Tone { frequency_hz: 440. });
+        assert_eq!(Parameter::Frequency.range(&source), (20., 20_000.));
+        for value in [0.0000001, 1., 23999., 23999.999] {
+            assert!(
+                Parameter::Frequency
+                    .edit_precision(value, NodeKind::Source, &source)
+                    .is_some()
+            );
+            assert!(
+                Parameter::Frequency
+                    .edit(value, NodeKind::Source, &source)
+                    .is_none()
+            );
+        }
+        for value in [0., -1., 24000., f64::NAN, f64::INFINITY] {
+            assert!(
+                Parameter::Frequency
+                    .edit_precision(value, NodeKind::Source, &source)
+                    .is_none()
+            );
+        }
+        let (_, gain) = graph.node_of_kind(NodeKind::Gain).unwrap();
+        let maximum = Parameter::Level.range(gain).1;
+        let Some(GraphEdit::SetGain { gain: actual, .. }) =
+            Parameter::Level.edit(maximum, NodeKind::Gain, gain)
+        else {
+            panic!("the 16x gesture endpoint must remain editable")
+        };
+        assert_eq!(actual, 16.);
+        assert!(
+            Parameter::Level
+                .edit_precision(maximum, NodeKind::Gain, gain)
+                .is_none()
+        );
+        for value in [-120., -100., 24., f64::NEG_INFINITY] {
+            assert!(
+                Parameter::Level
+                    .edit_precision(value, NodeKind::Gain, gain)
+                    .is_some()
+            );
+        }
+        for value in [-120.1, 24.01, f64::NAN, f64::INFINITY] {
+            assert!(
+                Parameter::Level
+                    .edit_precision(value, NodeKind::Gain, gain)
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn precision_delay_feedback_endpoints_match_engine_without_clamping_invalid_text() {
+        let mut graph = crate::service::ServiceGraph::default();
+        graph
+            .edit(GraphEdit::AddNode {
+                kind: NodeKind::Delay,
+                channels: 2,
+            })
+            .unwrap();
+        let snapshot = graph.snapshot();
+        let node = snapshot.nodes.last().unwrap();
+        for (text, expected) in [("99.9%", 0.999), ("-99.9%", -0.999)] {
+            let value = parse(text, Parameter::DelayFeedback.unit()).unwrap();
+            let Some(GraphEdit::SetBuiltin {
+                state: BuiltinState::Delay(settings),
+                ..
+            }) = Parameter::DelayFeedback.edit(value, NodeKind::Delay, node)
+            else {
+                panic!("valid feedback endpoint")
+            };
+            assert_eq!(settings.feedback, expected);
+            graph
+                .edit(GraphEdit::SetBuiltin {
+                    node: node.id,
+                    state: BuiltinState::Delay(settings),
+                })
+                .expect("the service accepts the exact engine endpoint");
+        }
+        for value in [
+            99.90000000000002,
+            -99.90000000000002,
+            f64::INFINITY,
+            f64::NAN,
+        ] {
+            assert!(
+                Parameter::DelayFeedback
+                    .edit(value, NodeKind::Delay, node)
+                    .is_none()
+            );
+        }
+    }
     #[test]
     fn precision_entry_keeps_units_and_rejects_invalid_values() {
         assert_eq!(parse("1.5k Hz", "Hz"), Some(1500.));

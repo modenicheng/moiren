@@ -42,32 +42,8 @@ pub(super) fn binding(
                     },
                 )),
             );
-        if let Some(InputSelection::Tone { frequency_hz }) = entry.source {
-            view = view
-                .child(detail(&t!("Frequency"), format!("{frequency_hz:.1} Hz")))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(4.))
-                        .child(button("tone-down", "−10 Hz").on_click(edit(
-                            cx.entity(),
-                            GraphEdit::BindSource {
-                                node: id,
-                                source: InputSelection::Tone {
-                                    frequency_hz: (frequency_hz - 10.).max(1.),
-                                },
-                            },
-                        )))
-                        .child(button("tone-up", "+10 Hz").on_click(edit(
-                            cx.entity(),
-                            GraphEdit::BindSource {
-                                node: id,
-                                source: InputSelection::Tone {
-                                    frequency_hz: (frequency_hz + 10.).min(23999.),
-                                },
-                            },
-                        ))),
-                );
+        if matches!(entry.source, Some(InputSelection::Tone { .. })) {
+            view = view.child(node_controls::tone_inspector(shell, id));
         }
         let inputs = input_rows(&snapshot.catalog, snapshot.audio_settings.backend);
         let mut devices = resource_list("inspector-input-resources", t!("Input devices"));
