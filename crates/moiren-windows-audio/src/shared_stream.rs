@@ -146,7 +146,6 @@ pub fn choose_shared_period(
         || caps.min_frames == 0
         || caps.min_frames > caps.max_frames
         || !(caps.min_frames..=caps.max_frames).contains(&caps.default_frames)
-        || !caps.default_frames.is_multiple_of(caps.fundamental_frames)
     {
         return Err(SharedPeriodError::InvalidCapabilities);
     }

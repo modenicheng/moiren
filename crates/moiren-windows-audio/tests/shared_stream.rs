@@ -61,6 +61,31 @@ fn rounds_to_legal_multiples_with_device_bounds_and_native_rate() {
 }
 
 #[test]
+fn accepts_vm_capabilities_with_an_unaligned_default_period() {
+    let vm_caps = SharedPeriodCaps {
+        default_frames: 488,
+        fundamental_frames: 35,
+        min_frames: 139,
+        max_frames: 488,
+    };
+
+    assert_eq!(
+        choose_shared_period(vm_caps, 48_000, SharedPeriodPolicy::default()),
+        Ok(245)
+    );
+    assert_eq!(
+        choose_shared_period(
+            vm_caps,
+            48_000,
+            SharedPeriodPolicy {
+                desired_period_ms: None,
+            }
+        ),
+        Ok(488)
+    );
+}
+
+#[test]
 fn wide_rounding_does_not_overflow_near_u32_limit() {
     let caps = SharedPeriodCaps {
         default_frames: u32::MAX,
@@ -96,7 +121,7 @@ fn rejects_bad_capabilities_and_conversion_overflow() {
             ..caps()
         },
         SharedPeriodCaps {
-            default_frames: 481,
+            default_frames: 961,
             ..caps()
         },
         SharedPeriodCaps {
