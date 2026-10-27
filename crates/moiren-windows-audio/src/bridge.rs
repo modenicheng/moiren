@@ -478,9 +478,7 @@ mod tests {
     fn capture_gap_discards_the_backlog_across_the_discontinuity() {
         let (mut source, mut tx) = source(8192);
         // Stamps must be plausible absolute QPC values for the stall check.
-        let base = QpcClock::new()
-            .and_then(|clock| clock.now())
-            .unwrap_or_default();
+        let base = QpcClock::new().and_then(|clock| clock.now()).unwrap_or(1);
         // Prime with a live stamp sequence.
         source.clock.publish(480, base);
         for _ in 0..1024 {
@@ -511,9 +509,7 @@ mod tests {
         // queue is kept at the 512 target so the occupancy follower stays
         // near zero and the measured correction is the feed-forward term.
         let mut frames = 0u64;
-        let base = QpcClock::new()
-            .and_then(|clock| clock.now())
-            .unwrap_or_default();
+        let base = QpcClock::new().and_then(|clock| clock.now()).unwrap_or(1);
         let mut qpc = base;
         // Anchor first while priming the queue.
         source.clock.publish(frames, qpc);
