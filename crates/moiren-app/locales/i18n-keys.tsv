@@ -5,7 +5,10 @@ Application file logging is unavailable	-	错误条内日志路径缺失时的�
 Diagnostics: %{log_path}	log_path=log_path（crate::logging::log_path().display()）	format! 原文 "Diagnostics: {log_path}"
 Start	-	传输按钮（未运行时）
 Stop	-	传输按钮（运行中）
-%{rate} Hz  ·  period %{frames} frames	rate=d.observation.prepared.output.sample_rate|frames=actual_period_frames（未知时显示 "—"）	format! 原文 "{} Hz  ·  period {} frames"；注意原文双空格
+%{khz} kHz · %{frames} smp · %{ms} ms · %{precision}	khz=rate/1000 保留一位|frames=运行中取专业后端 master 输出流实测 buffer_frames 否则 processing.block_frames|ms=frames*1000/rate 一位小数|precision=f32/f64	状态栏音频格式行（chrome.rs format_text）
+%{khz} kHz · period unknown · %{precision}	khz 同上|precision 同上	状态栏：实测或配置帧数为 0 时不臆造周期
+%{source} → %{sink}	source=输入名（设备目录行名，进程名，或测试音）|sink=输出设备名	状态栏路由链（chrome.rs route_label）；名字截断到 24 字符
+Tone generator · %{hz} Hz	hz=desired.source 的 Tone 频率	状态栏路由链的软件源名称
 Apply graph	-	共享按钮
 Mono	-	声道按钮/导出声道选项
 Stereo	-	导出声道选项

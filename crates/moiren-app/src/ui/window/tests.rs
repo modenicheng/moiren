@@ -1079,3 +1079,22 @@ fn inspector_panel_fills_the_column_even_for_its_empty_state(cx: &mut gpui_kit::
     });
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn statusbar_shows_the_configured_format_and_hides_route_and_clock_when_idle(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    // Reaching Running through the real driver needs live audio devices, so
+    // the running-path composition is covered by chrome's unit tests.
+    let (_view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.find("statusbar-format").visible(),
+            "the configured processing format is informative even when idle"
+        );
+        assert!(window.try_find("statusbar-route").is_none());
+        assert!(window.try_find("statusbar-drift").is_none());
+    });
+    finish_service(runtime);
+}

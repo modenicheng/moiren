@@ -11,13 +11,45 @@ use std::borrow::Cow;
 /// owner identity is not published to the UI, so this deliberately checks only
 /// phase, generation, and the observation's own running flag.
 #[cfg(windows)]
-fn fresh_observation(
+pub(crate) fn fresh_observation(
     phase: SessionPhase,
     generation: SessionGeneration,
     status_generation: SessionGeneration,
     running: bool,
 ) -> bool {
     phase == SessionPhase::Running && generation == status_generation && running
+}
+
+/// The measured `(sample rate, buffer frames)` of the fresh master output
+/// stream. `None` when idle, off Windows, or the observation is stale:
+/// callers fall back to configured values instead of plausible-looking
+/// stale truth.
+#[cfg(windows)]
+pub(crate) fn measured_master_output(snapshot: &AppSnapshot) -> Option<(u32, u32)> {
+    let status = snapshot
+        .professional_observations
+        .as_ref()
+        .filter(|status| {
+            fresh_observation(
+                snapshot.phase,
+                snapshot.generation,
+                status.generation,
+                status.observation.running,
+            )
+        })?;
+    let stream = status
+        .observation
+        .streams
+        .iter()
+        .find(|stream| stream.master && !stream.input)?;
+    Some((stream.actual.sample_rate, stream.actual.buffer_frames))
+}
+
+/// Non-Windows builds carry no professional observation snapshot; callers
+/// fall back to configured values.
+#[cfg(not(windows))]
+pub(crate) fn measured_master_output(_: &AppSnapshot) -> Option<(u32, u32)> {
+    None
 }
 
 pub fn phase_text(snapshot: &AppSnapshot) -> Cow<'static, str> {

@@ -20,9 +20,18 @@ _version: 2
 "Stop":
   en: Stop
   zh-CN: 停止
-"%{rate} Hz  ·  period %{frames} frames":
-  en: "%{rate} Hz  ·  period %{frames} frames"
-  zh-CN: "%{rate} Hz  ·  周期 %{frames} 帧"
+"%{khz} kHz · %{frames} smp · %{ms} ms · %{precision}":
+  en: "%{khz} kHz · %{frames} smp · %{ms} ms · %{precision}"
+  zh-CN: "%{khz} kHz · %{frames} 采样 · %{ms} ms · %{precision}"
+"%{khz} kHz · period unknown · %{precision}":
+  en: "%{khz} kHz · period unknown · %{precision}"
+  zh-CN: "%{khz} kHz · 周期未知 · %{precision}"
+"%{source} → %{sink}":
+  en: "%{source} → %{sink}"
+  zh-CN: "%{source} → %{sink}"
+"Tone generator · %{hz} Hz":
+  en: Tone generator · %{hz} Hz
+  zh-CN: 测试音发生器 · %{hz} Hz
 "Apply graph":
   en: Apply graph
   zh-CN: 应用图
