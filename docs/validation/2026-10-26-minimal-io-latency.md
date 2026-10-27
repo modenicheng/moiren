@@ -5,9 +5,9 @@
 - Date: 2026-10-26.
 - Branch: `feat/minimal-io-latency`.
 - Source base: `ec66e85117fbf668c2def334bdb33028afd454e9`.
-- Latest native target source: `ee0cf79`, including driver diagnostics
-  `1d30d78` and pre-Run admission `25951de`. The matching test-signed
-  package is installed as `oem32.inf`;
+- Latest native target period diagnostic: `405f6ec` adds an opt-in request for
+  the queried exclusive minimum. The matching test-signed package remains
+  installed as `oem32.inf`;
   bounded event/timer retests still fail the zero-quality gate. Earlier
   implementation, review and service/UI checkpoints are tracked below.
 - Worktree: `D:\coding\moiren\.worktrees\minimal-io-latency`.
@@ -1979,3 +1979,126 @@ entire failure. At `2026-10-27T13:54:15+08:00`, only the current 431,104-byte
 probe remains, with 30.099 GiB free; runner, trace tool and run files are
 removed after verification. The qualification remains failed/open, not a
 reason to enlarge queues, weaken freshness or ignore the changed gate.
+
+### 2026-10-27 read-only MMDevice-to-interface topology follow-up
+
+`b7896f3` retains a bounded optional observation from the actual held
+MMDevice topology connector. Its `GetDeviceIdConnectedTo` result is preserved
+exactly (UTF-16 bounded, with no trimming, prefix removal or path guessing)
+and offered once to read-only SetupAPI. Raw SetupAPI rejection HRESULTs,
+configuration-manager identities, and typed interface friendly-name
+readbacks remain separate fields. These diagnostics never replace the exact
+MMDevice FriendlyName, alter ownership/removal/Engine gates or make a failed
+observation stop the rename continuation. The HeldClient does not retain extra
+COM/SetupAPI objects between observations.
+
+All 94 integration-example tests, strict example/test Clippy, scoped format
+check, release build and independent review pass. On the VM the seeded
+`202610271357` rename probe exits 1 after 3.8 seconds without watchdog,
+storage-cap or cleanup failure. Direct old Removed, fresh replacement/native
+initialization, Engine confirmation and release still pass both directions;
+the pre-existing strict-held and exact-name failures remain sticky.
+
+The actual topology adapter IDs are the Audio-category `MoirenEndpoint`
+interface IDs under the matching MOIREN/VAD_RAW PDO, for the exact playback
+and microphone stable IDs. The exact IDs are retained in
+`target/vad-target-archive/20261027-rename-b7896f3-r1/evidence/report.json`.
+Passing those opaque values unchanged to `SetupDiOpenDeviceInterfaceW`
+returns HRESULT `-536870363` (`0xE0000005`) for both directions, both before
+and after same-ID recreation. No SetupAPI PDO/parent or interface FriendlyName
+readback is consequently available; no speculative normalized retry is
+attempted. This is a concrete failed mapping observation, not evidence that
+the typed publication targeted a different interface or that Windows cache
+caused the name result.
+
+MMDevice DeviceDesc and final FriendlyName still retain the original values
+for Playback (`扬声器`, composed with adapter 29) and Microphone (initial
+seed description, composed with adapter 30), while exact requested rename
+names fail. The experiment narrows the question to resolving the opaque
+topology adapter ID to its real system interface path using a documented
+mapping API; it does not justify another setter, ID rotation, or acceptance
+relaxation. The 122-event ETL has zero lost, malformed or unknown events.
+Ten original run files are host-length/hash verified and guest-rechecked
+before deletion; the host archive is
+`target/vad-target-archive/20261027-rename-b7896f3-r1`. The trace utility,
+runner and run files are removed immediately. The guest retains only the
+7,657,472-byte current integration probe with 30.092 GiB free. Windows,
+DriverStore and rollback packages are untouched.
+
+### 2026-10-27 explicit exclusive minimum-period diagnostic
+
+The user-level latency objective remains calibrated physical p95 <= 10 ms for
+the 48 kHz `Input -> Bus -> Output` graph with no other processing nodes, plus
+stable continuous output and zero unexpected drops, silence, underruns,
+discontinuities or epoch resets. A minimum-period request is only a bounded
+feasibility experiment, not a latency result or a change to production defaults.
+
+`405f6ec` adds opt-in `vad_native --minimum-period`; the baseline request path
+is unchanged. The report keeps queried default/minimum, initial/final requested
+period, alignment retry, native buffer capacity and driver packet size separate.
+All period fields explicitly remain `unqualified-request-only`; no requested
+value is represented as actual stream cadence. The 60 native example tests,
+feature-enabled all-target strict Clippy, format check and release example
+build pass. The code commit was pushed before the VM run.
+
+On `DRIVER-TEST`, the release probe was verified at 518,656 bytes and SHA-256
+`3C31131FBB26537E758EB882DF4709AF21E372F7B1F9EF37FD1F3DC5E625AAFA`. The
+15-second-per-case microphone event subset failed in its first Mono PCM16 case
+after about 0.48 seconds of submission: queried default 100,000 hns (10 ms),
+minimum/request 30,000 hns (3 ms), native buffer 144 frames, and driver packet
+144 frames. There were 109 WRITE submissions and 36 dropped completions; the
+first completion was already dropped. The diagnostic counted 10,368 signal and
+12,096 silent frames, with zero WASAPI native discontinuities. The first write
+was 8.9626 ms late at submission entry against a 9.8905 ms target deadline. A
+post-failure QUERY observed `gate_open=true` and gate epoch 2 after admission
+at epoch 1, then `GetOverlappedResult(VAD PCM)` returned `0x8007051A`.
+
+The epoch advance is consistent with the driver's event-deadline clock rebase:
+`SchedulePacket` rebases a missed packet deadline, and the callback invalidates
+old PCM by advancing the admission epoch without closing the gate. The QUERY is
+later than the failing completion and does not prove that a rebase caused this
+run's first drop. The failure archive has no matching WPP ETL, so causality is
+still open. The next reproduction must correlate the first-drop QPC neighborhood
+and its neighboring WRITE submissions with WPP `Clock rebase` cause and
+before/after state. Until then, the proven facts are the late first submission,
+the initial dropped completion, subsequent drops/silence, an epoch change, and
+the revision-mismatch result. The explicit 3 ms request fails the short
+zero-drop gate; it neither qualifies a smaller cadence nor establishes whether
+smaller packets help.
+
+The runner captured `TimedOut=false` and completed in 2.13 seconds, but its
+PowerShell `ExitCode` field is null; the failure classification therefore uses
+the raw HRESULT, counters and cleanup evidence, not an asserted process exit
+code. Guest payload lengths and SHA-256 were checked against its manifest
+before cleanup. Only the 7,657,472-byte integration probe
+`vad_integration-b7896f3.exe` remains in `C:\MoirenVadTest`; its hash is
+`AC9C985B6BDAD102E5999EB9A2F590E2A0895C3D9C75AA4BFC7D2492CF910708`, and
+30.092 GiB is free at the latest post-run inventory. The guest temporary native
+probe, runner and run directory were removed; the installed driver, Windows
+files, DriverStore and rollback packages were not touched. The VM's 64 GB
+system disk has 30.092 GiB free and `C:\MoirenVadTest` contains only the
+integration probe needed by the still-open rename check. Host failure evidence
+is retained at
+`target/vad-target-archive/20261027-native-405f6ec-mic-event15-minimum/`; the
+executed `run.ps1` and `cleanup.ps1` helpers have also been removed, leaving the
+verified 518,656-byte probe binary and five raw run-evidence files (547,071
+bytes total).
+
+Do not promote minimum-period mode or claim VAD is faster than Process Loopback
+from this result. Continue with the specific scheduling/gate failure and
+period negotiation investigation, then compare both application and native
+paths under the same source/output, measurement and quality gates. Buffer
+capacity remains configurable separately from normal queue residency; reducing
+capacity alone is not evidence of lower end-to-end latency.
+
+Execution order and acceptance gates are recorded in
+`docs/superpowers/plans/2026-10-26-vad-live-qualification.md`: reproduce and
+correlate the first drop with driver clock diagnostics; fix only a demonstrated
+driver or client defect; pass a short zero-drop gate before a separate period
+matrix; revalidate the VAD application path; compare VAD and Process Loopback
+under the same physical setup; sweep one buffer target at a time; then require
+30-minute and two independent two-hour stable runs before default promotion.
+Every responsibility-sized code or evidence update is to be staged narrowly,
+verified, committed atomically, and pushed before moving to the next stage. The
+VM is for driver compatibility/debugging; it cannot substitute for calibrated
+physical latency qualification.

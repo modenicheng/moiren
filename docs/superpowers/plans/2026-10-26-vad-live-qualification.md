@@ -49,6 +49,10 @@ PowerShell target scripts, and the existing offline qualification evaluator.
   lengths and SHA-256 hashes before deleting guest copies. Remove superseded
   binaries and staging files promptly; retain the current probe, active-run
   files, and packages needed for the next install or rollback.
+- The VM is a driver compatibility and dual-machine debug target, not a
+  substitute for a calibrated physical audio measurement setup. Run physical
+  latency qualification only on a real source/output path with the calibration
+  boundary below.
 
 ## Decision Record
 
@@ -60,6 +64,121 @@ PowerShell target scripts, and the existing offline qualification evaluator.
 | Which is faster, VAD or Process Loopback? | No defensible measured winner yet. Process Loopback is the shorter structural baseline; VAD has driver, native PCM, worker, and virtual-boundary work. | Same physical endpoint, graph, marker, render policy, load, and calibration. |
 | Can application bypass buffering be reduced? | Yes, the input capacity/target/jitter/packet/gap and render target are configurable. Reducing capacity alone does not reduce normal residency. | Packet/gap telemetry and physical sweep must prove a candidate is stable. |
 | Does audible doubling prove `>80 ms`? | No. Direct output plus a delayed Moiren path creates comb filtering or slapback at much shorter delays. | A marker correlation above 3,840 frames at 48 kHz, measured at the physical boundary, is required to claim `>80 ms`. |
+
+## Execution Plan After the Minimum-Period Failure
+
+### Current Baseline
+
+- `405f6ec` is pushed. `vad_native --minimum-period` is opt-in and records a
+  requested WASAPI period separately from actual buffer and driver packet
+  sizes. It does not change the production default.
+- On `DRIVER-TEST`, the first 144-frame mono microphone event case requested
+  30,000 hns (3 ms); the client buffer and driver packet were both 144 frames.
+  Its first WRITE entered 8.9626 ms after its 9.8905 ms target deadline. The
+  first completion was dropped; the case then recorded 36 dropped writes,
+  10,368 signal frames, 12,096 silent frames, and zero WASAPI discontinuities
+  before `GetOverlappedResult(VAD PCM)` returned `0x8007051A`.
+- A post-failure QUERY saw `gate_open=true` and `gate_epoch=2` after admission
+  at epoch 1. The driver advances the PCM admission epoch on an event deadline
+  rebase while leaving the gate open. This makes a clock rebase a concrete
+  hypothesis, not yet a proven cause for this run: the next reproduction must
+  correlate the probe's first-drop QPC neighborhood with the driver's WPP
+  `Clock rebase` event and its before/after gate state.
+- At the latest VM inventory, `C:\MoirenVadTest` contains only the 7,657,472-byte
+  integration probe needed by the remaining rename check; the system disk has
+  30.092 GiB free. The host failure archive is 547,071 bytes and retains the
+  verified probe plus raw run evidence, without the executed runner scripts.
+
+### Ordered Work and Atomic Checkpoints
+
+1. **Reproduce and classify the first failure.** Keep the current VM package
+   and control session unchanged. Run the short microphone event case with the
+   existing WPP clock-rebase trace enabled; capture the first drop's neighboring
+   WRITE records, driver reason/deadline/lateness, and before/after gate epoch
+   on a common QPC timeline. Repeat the same case enough times to distinguish a
+   repeatable deadline defect from a one-off host scheduling stall. Run a
+   default-period control case with the same binary, endpoint, and instrumentation.
+   Do not infer epoch cause from a later QUERY alone.
+2. **Fix only the demonstrated cause.** If the trace shows driver packet-clock
+   rebase or epoch invalidation is incorrect, add a focused regression in the
+   driver host tests and fix that state transition. If the driver behaves as
+   designed and the client missed freshness deadlines, keep the driver
+   unchanged and correct only the proven client pacing/scheduling fault. Do not
+   enlarge queues, weaken one-period microphone freshness, ignore epoch changes,
+   or turn an epoch mismatch into a retry using refreshed admission state.
+3. **Commit and qualify each driver/probe slice.** For each responsibility-sized
+   code change, first run its focused host tests, `driver/vad/test.ps1`, and
+   `driver/vad/build.ps1 -Analyze` when driver code changes. Commit and push
+   before copying a matching, hash-verified binary/package to the VM. Record
+   the deployed source commit and artifact hashes in the validation ledger.
+   Keep the prior install/rollback package until the new target smoke is
+   classified.
+4. **Re-run period negotiation as a separate experiment.** After the short
+   zero-drop gate passes, compare default and queried-minimum requests in
+   separate event-mode playback and microphone cases. Record requested period,
+   `GetBufferSize`, driver packet frames, actual completion cadence, packet
+   gaps, late submissions, drops, silence, clock-rebase reason, and all epoch
+   transitions. Add timer mode only as a separately labeled matrix. A smaller
+   request is not a pass unless cadence and zero-failure quality are observed.
+5. **Verify live application paths, then compare them fairly.** Reconfirm VAD
+   MMDevice -> native PCM worker -> `VirtualPlayback` -> Engine -> Bus -> physical
+   render. Then compare VAD and Process Loopback using the same source marker,
+   physical output endpoint, `Input -> Bus -> Output` graph, render policy,
+   controlled load, measurement inputs, and calibration. Disable the source's
+   direct physical path so a doubled signal cannot contaminate correlation.
+   Report structural/software timing separately from physical latency.
+6. **Sweep application bypass budgets one variable at a time.** Starting from
+   a stable baseline, sweep Process input target 1024/768/512/256/128 frames,
+   VAD target 480/240/128/64 only when native packet timing admits it, render
+   target 480/240/128/64, and input capacity from 8192 downward only after
+   measured packet headroom and complete demand are known. Capacity is storage
+   headroom, not a target queue fill. Reject any candidate with a drop, silent
+   frame, underrun, discontinuity, marker gap, unexpected reset, or refusal;
+   do not hide a failed candidate by raising another budget.
+7. **Qualify duration and promote conservatively.** Only candidates passing a
+   2-5 minute smoke enter a 30-minute controlled-load PCM run. Require zero
+   quality failures and calibrated physical p95 plus uncertainty `<= 10 ms`.
+   Then run two independent two-hour repetitions before changing a default.
+   Keep Compatible as default and any faster expert profile experimental until
+   both repetitions pass. Explore p50 `<= 8 ms` without making it a substitute
+   for the p95 gate.
+
+### Storage and VM Run Hygiene
+
+- Build all Rust probes and driver packages on the development host; transfer
+  only the exact artifacts needed for the next bounded case.
+- Before and after every VM run, record free bytes and enumerate
+  `C:\MoirenVadTest`. Use unique run directories and cap every test duration.
+- Copy run evidence to the host, verify every file length and SHA-256 against
+  the guest manifest, then remove only that run directory and its superseded
+  temporary probe/runner. Keep the integration probe until rename qualification
+  is complete. Never remove Windows, DriverStore, current driver, or rollback
+  package files as space cleanup.
+- Keep raw failed output on the host. Remove duplicate staging copies and
+  completed temporary scripts immediately; avoid archiving reusable binaries
+  unless their hash is needed to reproduce a result.
+
+### Commit and Push Boundaries
+
+- Commit the causal diagnostics, any proven correction, period observations,
+  application/latency harness slices, and each qualification-ledger update as
+  separate reviewable units. Stage only the files for that unit.
+- Run the focused verification before each commit. Push each commit as soon as
+  it passes; do not batch several completed target experiments into one large
+  unpushed change. Record the commit ID beside its test and target evidence.
+- A failed experiment is still committed as an evidence-ledger update after
+  hashes and cleanup are verified. A failure does not become a code fix unless
+  the trace establishes a defect.
+
+### Exit Criteria
+
+- VAD and Process Loopback have comparable same-condition physical results;
+  neither is declared lower-latency from topology or subjective listening.
+- The 48 kHz graph is exactly `Input -> Bus -> Output` and calibrated physical
+  p95 plus uncertainty is `<= 10 ms` with stable continuous output.
+- Both two-hour qualification repetitions have zero unexpected drops, silent
+  frames, underruns, marker gaps, discontinuities, epoch changes, or recovery
+  resets. Otherwise the objective remains open and the default is unchanged.
 
 ## Task 0: Freeze the Measurement Contract
 
