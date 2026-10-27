@@ -111,6 +111,33 @@ report's bounded freshness section for source pins, exact records and hashes.
 No stable candidate, physical calibration, rename acceptance, 30-minute or
 two-hour gate is checked off by these diagnostic results.
 
+### 2026-10-27 mode-specific first microphone submission
+
+`7d8de8c` phases the first event microphone WRITE half a packet after native
+Start acknowledgement, before Running QUERY. The short event repeat removes
+first-packet TooOld but retains silence; a five-second repeat still fails
+with a later TooOld/epoch change. The first version incorrectly delayed timer
+capture too. `1d6c85a` restores timer immediacy, then `ee0cf79` prequeues its
+single first WRITE while Paused/gate-open because the first segment can run
+before any after-Start QUERY/pump. Sample buffers are prepared before Start;
+event microphone is not prequeued. No driver freshness, buffer or quality gate
+changes. All 41 example tests, strict test Clippy, release build and independent
+review pass; ordering/error regressions demonstrated RED/GREEN.
+
+The final one-second timer microphone subset has four successful first native
+packets and zero silent frames, drops or native discontinuities. The event
+repeat has four successful first packets but later three dropped WRITEs and
+3,360 silent frames. This is only a startup repair, not stability or physical
+qualification. The exact later epoch-reset trigger and scheduling gaps remain
+to be diagnosed. Detailed source/hash/counter records are in the validation
+report.
+
+All six new bounded runs are archived with checked payload lengths/SHA-256,
+guest rechecks and immediate run deletion. At `2026-10-27T12:00:38+08:00`, the
+64 GB VM retains only the 401,920-byte current native probe, with 30.108 GiB
+free and no live test processes/dynamic children. Temporary trace tools and
+runners are removed; installed system/rollback packages are untouched.
+
 ### 2026-10-27 short target matrix and retention
 
 The host-built native probe at source pin `f6f2718` produced all eight timer

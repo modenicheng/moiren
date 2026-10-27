@@ -5,7 +5,7 @@
 - Date: 2026-10-26.
 - Branch: `feat/minimal-io-latency`.
 - Source base: `ec66e85117fbf668c2def334bdb33028afd454e9`.
-- Latest native target source: `10a33ae`, including driver diagnostics
+- Latest native target source: `ee0cf79`, including driver diagnostics
   `1d30d78` and pre-Run admission `25951de`. The matching test-signed
   package is installed as `oem32.inf`;
   bounded event/timer retests still fail the zero-quality gate. Earlier
@@ -1326,3 +1326,112 @@ only from validated, non-reparse paths below `C:\MoirenVadTest`. At
 `vad_native-10a33ae.exe` (400,896 bytes), with no active test processes or
 present dynamic children and 30.103 GiB free. Installed SYS was rechecked
 against the recorded signed hash. System and rollback packages remain.
+
+### 2026-10-27 native first-WRITE phase and mode-specific regression
+
+`7d8de8c` anchors the first microphone WRITE deadline to native Start
+acknowledgement before the Running QUERY, with half-period headroom. The
+observed mono Float32 startup fixture first failed at runtime in the added
+regression, then all 38 example tests, strict example/test Clippy, formatting
+and the host release build passed. Independent review found no blocking
+defect in the event path. Driver freshness, subsequent completion pacing,
+pending-request bound, buffers and quality thresholds were unchanged.
+
+The 401,408-byte probe has SHA-256
+`F912DE1BBFCB03DE8DF9CA0EE43C26286ADF8E4C3B9B6BE0D1D46B9002A90467`.
+The guest SYS still matches the recorded `1d30d78` / `oem32.inf` hash.
+Its one-second event microphone subset exits 0, with all six defaults unchanged:
+
+| Channels / format | Signal frames | Silent frames | Dropped writes | First native packet age |
+| --- | ---: | ---: | ---: | ---: |
+| mono / PCM16 | 47,040 | 960 | 0 | 1.6595 ms |
+| mono / Float32 | 47,040 | 480 | 0 | 4.5155 ms |
+| stereo / PCM16 | 47,040 | 480 | 0 | 4.1081 ms |
+| stereo / Float32 | 47,520 | 0 | 0 | 4.6932 ms |
+
+All four first native packets consume matching user WRITE identities with
+unchanged 10 ms freshness; native discontinuities are zero. This removes the
+previous first-packet rejection in this short repeat, not all silent intervals
+or VM scheduling failures. The five-second event repeat exits 1 in mono PCM16
+with 960 signal / 2,400 silent frames, one dropped WRITE and epoch 1 -> 2
+while Running/gate open. The first callback at Run+10.9699 ms has no request;
+the first WRITE is not stamped until Run+16.8441 ms. Native packet 5 later
+rejects request 3 at age 11.0810 ms. No Start-acknowledgement QPC was retained,
+so this record cannot attribute that initial delay to QUERY, setup or
+preemption, nor establish the exact epoch-reset trigger.
+
+The one-second timer subset exposed a separate probe regression in this
+commit: timer capture consumes at its first logical segment, about 1.3--2.2 ms
+after Run in these records, rather than at the event packet boundary. Delaying
+its first WRITE misses the first logical packet: all four kernel records say
+NoCurrentRequest. The subset exits 0 but retains 2,048 / 1,024 / 1,024 / 493
+silent frames, so it is a quality failure. The correction must preserve
+immediate first timer submission while retaining event headroom.
+
+All three traces decode with zero lost events, format errors or unknowns.
+Each session remains capped at 1 MiB. The six files in each run, including
+manifest, were checked by length/SHA-256 on the host and rechecked on the guest
+before immediate deletion. Host archives:
+
+- `target/vad-target-archive/20261027-native-7d8de8c-mic-event1`: 207,652 bytes.
+- `target/vad-target-archive/20261027-native-7d8de8c-mic-event5`: 138,811 bytes.
+- `target/vad-target-archive/20261027-native-7d8de8c-mic-timer1`: 143,165 bytes.
+
+These byte totals cover original payloads plus manifest, excluding host-decoded
+text and cleanup metadata. The old probe was archived and hash-verified before
+replacement. Temporary runs and the runner are already removed; the small
+trace tool is retained only for the immediate mode-correction retest.
+
+`1d6c85a` restricts the half-period start phase to event microphone and
+restores immediate timer submission. Its timer regression first failed on
+the delayed path; 39 example tests, strict example/test Clippy, formatting
+and release build then passed. On the VM, three timer cases have zero silence
+and a successful first packet. Mono PCM16 still has 2,048 silent frames:
+the first segment runs at Run+1.5584 ms, before WRITE at Run+3.9375 ms.
+The missing request is a startup ordering issue; immediate after-Start
+submission alone does not guarantee it arrives before the timer callback.
+
+`ee0cf79` therefore prepares sample buffers before Start and prequeues one
+timer microphone WRITE while Paused/gate-open. Playback retains four prequeued
+READs, while event microphone has no prequeued WRITE and keeps its half-period
+deadline. The production-used startup helper has RED/GREEN ordering coverage
+for all four direction/mode combinations and submission-failure suppression
+of Start. All 41 example tests, strict example/test Clippy, formatting and
+release build pass. Independent review finds no blocking defect. Early Start
+errors still use existing PcmOwner RAII cancellation/drain; this slice does not
+establish an independent bounded native teardown guarantee.
+
+The final 401,920-byte probe has SHA-256
+`CD885C7BAF548E91B16908A039D42C8FDEB22B4ED8D7A3DBAD49A7E195C05AB3`.
+Both one-second microphone subsets exit 0, with defaults unchanged and zero
+native discontinuities:
+
+| Channels / format | Timer signal | Timer silent | Timer drops | Event signal | Event silent | Event drops |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| mono / PCM16 | 48,000 | 0 | 0 | 45,120 | 1,920 | 2 |
+| mono / Float32 | 48,000 | 0 | 0 | 47,040 | 480 | 0 |
+| stereo / PCM16 | 47,520 | 0 | 0 | 47,520 | 0 | 0 |
+| stereo / Float32 | 46,560 | 0 | 0 | 46,560 | 960 | 1 |
+
+All first native packets now match a successful WRITE. The timer first WRITE
+stamps precede Run and pass the unchanged freshness check; no timestamp was
+fabricated or moved to callback time. Event still has later TooOld rejections:
+mono PCM16 native packet 7 / request 7 at 13.6823 ms, and stereo Float32
+native packet 53 / request 350 at 10.4927 ms. The fixed first-packet phase is
+not a repair for later callback stalls or empty queue intervals. No stable
+candidate, physical latency, long-run or full matrix gate passes here.
+
+The additional archives retain payloads plus manifests at:
+
+- `target/vad-target-archive/20261027-native-1d6c85a-mic-timer1`: 274,232 bytes.
+- `target/vad-target-archive/20261027-native-ee0cf79-mic-timer1`: 208,692 bytes.
+- `target/vad-target-archive/20261027-native-ee0cf79-mic-event1`: 208,013 bytes.
+
+All three traces decode without lost events, format errors or unknowns. Host
+length/hash checks and a second guest verification preceded each run's
+deletion. Obsolete probes were replaced only after exact new/old hash checks;
+host archives retain their binaries. At `2026-10-27T12:00:38+08:00`, temporary
+runners, trace tool and logs are removed. The VM retains only
+`vad_native-ee0cf79.exe`, with 30.108 GiB free, no active test processes or
+present dynamic children, and the unchanged installed SYS hash. No system or
+rollback package was removed.
