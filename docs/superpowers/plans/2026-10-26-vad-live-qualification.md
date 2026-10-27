@@ -88,11 +88,29 @@ PowerShell target scripts, and the existing offline qualification evaluator.
   integration probe needed by the remaining rename check; the system disk has
   30.092 GiB free. The host failure archive is 547,071 bytes and retains the
   verified probe plus raw run evidence, without the executed runner scripts.
+- `5c143a6` completed the telemetry naming correction: schema 2 emits
+  `completion_interval_observations` and `max_completion_interval_100ns`,
+  with schema-1 JSON aliases retained for reading historical evidence.
+  Completion intervals are timing observations, not missing-packet counts;
+  all drop, silence, epoch and boundary-xrun gates remain unchanged.
+- The two current-build collection attempts (with and without controlled
+  load) both failed early with one virtual-boundary xrun and 33 soft events.
+  Neither wrapper retained the actual child exit code. Startup samples have
+  observation order but no sample timestamps: `health.stamp` contains PDO,
+  session, endpoint, stream and gate identities, not elapsed milliseconds.
+  Historical samples cannot establish the fault's QPC time. Capture
+  device-position mismatches likewise do not directly count lost PCM frames.
 
 ### Ordered Work and Atomic Checkpoints
 
 1. **Reproduce and classify the first failure.** Keep the current VM package
-   and control session unchanged. Run the short microphone event case with the
+   and control session unchanged. First preserve the actual child exit code
+   before manifest serialization in a Windows PowerShell 5.1-compatible
+   runner, and add explicitly labeled control-observation QPC windows to
+   bounded startup samples. These windows bracket the reads; they are not
+   realtime event timestamps. Recheck startup probe publication and align
+   the next collection's capture QPC, position and flags without weakening
+   its zero-quality-failure gate. Run the short microphone event case with the
    existing WPP clock-rebase trace enabled; capture the first drop's neighboring
    WRITE records, driver reason/deadline/lateness, and before/after gate epoch
    on a common QPC timeline. Repeat the same case enough times to distinguish a
