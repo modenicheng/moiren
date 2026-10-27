@@ -3,6 +3,7 @@
 use moiren_windows_audio::latency::qpc_ticks_to_100ns;
 use serde::Serialize;
 
+#[cfg(windows)]
 pub(super) const SCOPE: &str = "control-side reads before provider QUERY and after all snapshots, \
     in WASAPI capture QPC 100ns units; not RT event times or proof that retained boundary probes \
     were refreshed (including during priming); absent endpoints remain unknown";

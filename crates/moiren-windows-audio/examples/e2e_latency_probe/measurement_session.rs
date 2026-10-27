@@ -3,9 +3,10 @@
 use crate::measurement_sink::{EvidenceSink, SinkReport};
 use anyhow::{Context, Result, ensure};
 use moiren_windows_audio::capture::{CaptureReport, PcmEvidenceFrame};
+#[cfg(windows)]
+use std::fmt;
 use std::{
     cell::RefCell,
-    fmt,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -67,20 +68,24 @@ pub(crate) struct MeasurementOutcome {
     pub(crate) failure: Option<String>,
 }
 
+#[cfg(windows)]
 #[derive(Debug)]
 pub(crate) struct MeasurementPreparationFailure {
     pub(crate) error: anyhow::Error,
     pub(crate) native_capture: Option<Box<CaptureReport>>,
 }
 
+#[cfg(windows)]
 impl fmt::Display for MeasurementPreparationFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.error.fmt(formatter)
     }
 }
 
+#[cfg(windows)]
 impl std::error::Error for MeasurementPreparationFailure {}
 
+#[cfg(windows)]
 impl From<anyhow::Error> for MeasurementPreparationFailure {
     fn from(error: anyhow::Error) -> Self {
         Self {
@@ -302,6 +307,7 @@ impl MeasurementSession {
         &self.info
     }
 
+    #[cfg(windows)]
     fn stop_and_join_native(&mut self) -> (Option<CaptureReport>, Option<anyhow::Error>) {
         let Some(mut native) = self.native.take() else {
             return (
@@ -634,6 +640,7 @@ fn append_failure(failure: &mut Option<String>, message: &str) {
     text.push_str(&message[..end]);
 }
 
+#[cfg(windows)]
 fn with_cleanup_error(error: anyhow::Error, cleanup_error: Option<anyhow::Error>) -> anyhow::Error {
     match cleanup_error {
         Some(cleanup_error) => {

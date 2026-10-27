@@ -215,7 +215,7 @@ fn a_two_hour_capture_reads_only_admitted_windows() {
 #[test]
 fn channel_mapping_is_explicit_and_ambiguous_or_negative_delays_are_retained_as_failures() {
     let mut swapped = raw_fixture(false);
-    for frame in swapped.chunks_exact_mut(8) {
+    for frame in swapped.as_chunks_mut::<8>().0 {
         for index in 0..4 {
             frame.swap(index, index + 4);
         }
@@ -232,7 +232,7 @@ fn channel_mapping_is_explicit_and_ambiguous_or_negative_delays_are_retained_as_
     MarkerGenerator::new(255, 0.1).unwrap().fill(&mut marker);
     let mut raw = raw_fixture(false);
     // Replace the final processed marker with one preceding the observed reference.
-    for frame in raw[8 * 1024..].chunks_exact_mut(8) {
+    for frame in raw[8 * 1024..].as_chunks_mut::<8>().0 {
         frame[4..].fill(0);
     }
     for (index, sample) in marker.iter().enumerate() {

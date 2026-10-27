@@ -26,7 +26,7 @@ struct Options {
     dry_run: bool,
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 impl Options {
     fn config(&self) -> session::MeasurementConfig {
         session::MeasurementConfig {
