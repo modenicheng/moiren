@@ -362,9 +362,10 @@ The `c3fbc8d` release probe was verified on the guest as 3,748,352 bytes with
 SHA-256 `7490E742A9297982431AA3DBD28C24D50264D8C5E196CE6F33C4A3F6306B71B`.
 The repeated 15-second collection progressed past recorder preparation and
 recorded actual period 279 frames. It remains unqualified: VAD had 36
-completion gaps, the virtual boundary had one xrun and 33 soft events, and
-the independent physical capture had 74 gap events, 1,835 gap frames and two
-discontinuities. Only 18,720 of 48,000 source frames were acknowledged.
+completion-interval timing observations, the virtual boundary had one xrun
+and 33 soft events, and the independent physical capture had 74 position-gap
+events, 1,835 absolute frame differences and two discontinuities. Only
+18,720 of 48,000 source frames were acknowledged.
 
 All seven run payloads (1,327,509 bytes) were copied to and verified in
 `target/vad-target-archive/20261027-collection-c3fbc8d-15s/`. Guest cleanup
@@ -388,8 +389,9 @@ completed: `elapsed_seconds=0.5462443` versus
 `required_window_seconds=1.2`; the worker itself exited zero and observed the
 stop signal, so the failure is correctly attributed to insufficient collection
 coverage rather than an orphaned load process. The same run also retained one
-virtual xrun, 33 soft events, 41 VAD completion gaps, 87 independent capture
-gap events, 2,128 gap frames and two discontinuities.
+virtual xrun, 33 soft events, 41 VAD completion-interval timing observations,
+87 independent capture position-gap events, 2,128 absolute frame differences
+and two discontinuities.
 
 The run is archived at
 `target/vad-target-archive/20261027-controlled-load-3c94765-15s/` and the guest
@@ -473,8 +475,8 @@ measurement PCM, packet metadata, collection and run reports, manifests, input
 plans, a concise summary and a raw-payload hash manifest. No driver package,
 Windows file or rollback package was removed.
 
-Next diagnose the already-observed early VAD completion gaps, boundary xrun
-and physical-capture discontinuities before any longer candidate run. Repair
+Next diagnose the early VAD completion timing, virtual boundary xrun and
+physical-capture continuity failures before any longer candidate run. Repair
 the guest runner's manifest encoding separately and preserve its actual child
 exit code on future runs. Process Loopback native evidence, matched-path
 comparison, physical wiring/reference, calibration, stable candidate, and the
@@ -491,12 +493,15 @@ remains diagnostic evidence only.
 
 The report records 20,640/48,000 acknowledged source frames over about
 0.429 seconds, 41 completed VAD packets, zero driver drops/silence/epoch resets,
-one virtual boundary xrun and 33 soft events. Its 40 `completion_gaps` are
-monotonic completion-interval observations, not 40 dropped packets; the
-maximum observed interval was 11.0118 ms. Disabling controlled load did not
+one virtual boundary xrun and 33 soft events. Its 40 legacy-field
+`completion_gaps` are monotonic completion-interval timing observations, not
+40 dropped packets; the maximum observed interval was 11.0118 ms. Disabling controlled load did not
 remove the early boundary failure. The independent capture recorded 86
-packets / 23,957 stored frames, 85 device-position discontinuities totaling
-2,340 absolute frame differences, and two packets flagged DISCONTINUITY.
+packets / 23,957 stored frames, 85 device-position mismatches totaling 2,340
+absolute frame differences, and two packets flagged DISCONTINUITY. Of the 85
+mismatches, 84 positions moved backward by 17-23 frames and one moved forward
+by 444 frames. These are position-continuity observations, not a direct count
+of lost capture frames.
 Packet positions both regress and jump forward; this confirms invalid capture
 continuity but does not establish a unique cause or equate the 85 position
 observations with lost packets. Teardown also retained a cancelled VAD PCM

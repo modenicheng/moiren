@@ -875,10 +875,11 @@ receive the stop request and exited zero, but the collection ended after
 0.5462443 seconds while 1.2 seconds were required, so
 `controlled_load.valid=false` and `window_complete=false`.
 
-The quality evidence remains a failure: VAD completed 42 packets with 41
-completion gaps; the virtual boundary recorded one xrun and 33 soft events;
-the independent capture recorded 87 gap events, 2,128 gap frames and two
-discontinuities. The complete seven-file run archive, including manifest,
+The run remains unqualified: VAD completed 42 packets with 41 monotonic
+completion-interval timing observations (not packet drops); the virtual
+boundary recorded one xrun and 33 soft events, and the independent capture
+recorded 87 device-position mismatches totaling 2,128 absolute frame
+differences plus two discontinuities. The complete seven-file run archive, including manifest,
 report, PCM and packet metadata, is retained at
 `target/vad-target-archive/20261027-controlled-load-3c94765-15s/`; host hashes
 are in `host-sha256.txt` and the condensed result is in `summary.json`. The VM
@@ -928,10 +929,10 @@ The report retained stable ID
 `{0.0.0.00000000}.{71789a68-9934-4137-9E1A-BA0A5730AA68}`.
 
 This production smoke is still unqualified. The VAD provider submitted 304
-packets and completed 300 with 299 completion gaps; the virtual boundary
-reported 7 xruns and 135 soft events. Provider driver/carrier/stale/silence/
-epoch/recovery counters were zero, but those counters do not override the
-completion and boundary failures. The run used diagnostic pulses without a
+packets and completed 300, yielding 299 monotonic completion-interval timing
+observations (not packet drops); the virtual boundary reported 7 xruns and 135
+soft events. Provider driver/carrier/stale/silence/epoch/recovery counters
+were zero, but boundary xruns remain a quality failure. The run used diagnostic pulses without a
 source schedule, retained no marker-bearing measurement PCM, and used the
 internal boundary without calibration, so it provides no physical latency
 result:
@@ -2125,8 +2126,9 @@ native observation duration.
 
 The report retains 20,160 of 48,000 acknowledged source frames; 39 VAD
 completion-interval observations across 40 completed packets (the telemetry
-field named `completion_gaps` counts every monotonic completion interval; it
-does not count missing packets); zero VAD driver drops, silence frames or
+legacy field named `completion_gaps` counts every monotonic completion
+interval; it does not count missing packets); zero VAD driver drops, silence
+frames or
 epoch resets; one virtual boundary xrun and 33 soft events. The
 independent WASAPI capture negotiated 279 actual frames despite a 245-frame
 request (capabilities: 139 minimum, 488 default/maximum); its 84 packets and
@@ -2155,9 +2157,10 @@ authoritative run record.
 Future guest runners must use an encoding option supported by Windows PowerShell
 5.1 and preserve the actual child exit code even if later manifest writing
 fails. Before any extended or candidate run, diagnose and remove the VAD
-completion gaps, virtual boundary xrun, and independent capture gaps under a
-short zero-quality-failure gate. Process Loopback native smoke, same-condition
-comparison, physical reference/wiring and calibration, stable output, and the
+completion-interval timing, virtual boundary xrun, and independent capture
+continuity failures under a short zero-quality-failure gate. Process Loopback
+native smoke, same-condition comparison, physical reference/wiring and
+calibration, stable output, and the
 30-minute plus independent two-hour qualification runs remain outstanding.
 
 ### 2026-10-27 VAD collection repeat without controlled load
@@ -2171,13 +2174,14 @@ evidence.
 
 The report records 20,640/48,000 acknowledged source frames over 0.429 seconds,
 41 completed VAD packets, zero driver drops/silence/epoch resets, one boundary
-xrun and 33 soft events. The 40 `completion_gaps` count monotonic completion
-interval observations (maximum 11.0118 ms), not lost packets. The independent
-capture retained 86 packets / 23,957 frames and failed continuity validation:
-85 device-position discontinuities contributed 2,340 absolute frame
-differences, with two DISCONTINUITY-flagged packets. Position values include
-both regressions and forward jumps; these observations do not identify their
-cause or equal missing-packet count. Teardown also recorded a cancelled VAD
+xrun and 33 soft events. The 40 legacy-field `completion_gaps` count monotonic
+completion-interval timing observations (maximum 11.0118 ms), not lost
+packets. The independent capture retained 86 packets / 23,957 frames and
+failed continuity validation: 85 device-position mismatches contributed 2,340
+absolute frame differences, with two DISCONTINUITY-flagged packets. 84
+mismatches were 17-23-frame regressions and one was a 444-frame forward jump.
+These observations are not a direct count of lost capture frames. Teardown
+also recorded a cancelled VAD
 PCM I/O error. Removing controlled load did not eliminate the early boundary
 xrun or capture failure, but this single repeat cannot establish root cause.
 

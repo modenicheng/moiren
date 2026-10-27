@@ -304,10 +304,17 @@ Required VAD quality fields:
 
 ```text
 submission_attempts, submitted_packets, completed_packets,
-completion_gaps, max_completion_gap, driver_drops, quota_drops,
+completion_interval_observations, max_completion_interval_100ns,
+driver_drops, quota_drops,
 carrier_drops, stale_packets, silence_packets, silence_frames,
 epoch_resets, recovery_events, effective_packet_frames
 ```
+
+`completion_interval_observations` counts monotonic timestamp intervals
+between completed packets; it is not a missing-packet/drop counter. Telemetry
+schema 2 emits this corrected field name and accepts legacy schema-1 JSON
+`completion_gaps` as a deserialization alias. Drop, silence, stale, recovery,
+epoch and boundary-xrun accounting remain independent quality signals.
 
 Validation:
 
