@@ -15,11 +15,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::Ordering};
 
+mod recording_formats;
+mod wav_validation;
+
 const ISOLATED_CONFIG: &str = "MOIREN_CAPTURE_NODES_CONFIG";
 const NODE_FILTER: &str = "MOIREN_CAPTURE_NODE";
-const SCENARIOS: [&str; 6] = [
+const SCENARIOS: [&str; 7] = [
     "rack-populated",
     "recording-states",
+    "recording-formats",
     "bus-expanded",
     "overview",
     "meter32",
@@ -429,6 +433,9 @@ async fn capture(
 
     if filter == Some("recording-states") {
         return capture_recording_states(window, shell, directory, cx).await;
+    }
+    if filter == Some("recording-formats") {
+        return recording_formats::capture_formats(window, shell, directory, cx).await;
     }
     if filter == Some("overview") {
         return capture_overviews(window, shell, directory, cx).await;
@@ -1668,7 +1675,7 @@ fn verify_native_bounds(
             .node(*id)
             .and_then(|node| node.builtin.rack())
             .map(|rack| rack.slots.len());
-        let vertical_meter = node.kind == NodeKind::Bus
+        let vertical_meter = matches!(node.kind, NodeKind::Bus | NodeKind::Recorder)
             || (node.kind == NodeKind::Rack && rack_stages.is_some_and(|stages| stages >= 3));
         let meter = measured.meters.get(id);
         let channels = snapshot
@@ -1884,6 +1891,19 @@ async fn capture_group(
     running: bool,
     cx: &mut AsyncApp,
 ) -> anyhow::Result<serde_json::Value> {
+    // A preceding native click can leave its tooltip over the next frame.
+    // Move to noninteractive titlebar space before settling and capturing.
+    window.update(cx, |_, window, cx| {
+        window.dispatch_event(
+            gpui_kit::MouseMoveEvent {
+                position: point(px(2.), px(2.)),
+                pressed_button: None,
+                modifiers: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+    })?;
     let (ids, settled) = prepare_group(window, shell, kinds, inspector, running, cx).await?;
     let path = directory.join(format!("{name}.png"));
     let (dimensions, geometry, recordings) =
@@ -2225,13 +2245,14 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn expanded_rack_and_bus_require_vertical_meters_to_follow_measured_content() {
+    fn expanded_rack_bus_and_recorder_require_meters_to_follow_measured_content() {
         let runtime = spawn_service();
         let mut snapshot = (*initial_projection(&runtime.handle())).clone();
         let initial = fixture().unwrap();
         for (variant, kind) in [
             ("rack-populated", NodeKind::Rack),
             ("bus-expanded", NodeKind::Bus),
+            ("recorder", NodeKind::Recorder),
         ] {
             let mut graph = ServiceGraph::default();
             graph
