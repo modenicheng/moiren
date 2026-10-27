@@ -404,6 +404,22 @@ fn observe(snapshot: &AppSnapshot, id: &str) -> anyhow::Result<RuntimeEvidence> 
         },
         requested_name: export.intent.name.clone(),
         provider_name: export.actual_name.clone(),
+        windows_name: export
+            .windows_name
+            .as_ref()
+            .and_then(|observation| observation.name.clone()),
+        windows_name_identity: export
+            .windows_name
+            .as_ref()
+            .map(|observation| observation.native_identity),
+        windows_name_mmdevice_id: export
+            .windows_name
+            .as_ref()
+            .and_then(|observation| observation.mmdevice_id.clone()),
+        windows_name_error: export
+            .windows_name
+            .as_ref()
+            .and_then(|observation| observation.error.clone()),
         rename_pending: export.rename_pending,
         resource: format!("{:?}", export.resource).to_ascii_lowercase(),
         observation_generation: diagnostics.map(|d| d.generation),
