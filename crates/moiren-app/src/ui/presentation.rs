@@ -10,7 +10,7 @@ use rust_i18n::t;
 use std::borrow::Cow;
 
 mod export_diagnostics;
-pub use export_diagnostics::export_diagnostic_rows;
+pub use export_diagnostics::{export_diagnostic_rows, windows_name_match_text};
 #[cfg(windows)]
 mod native_live;
 
@@ -231,7 +231,11 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                 }
                 if let Some(queue) = stream.render_queue {
                     rows.push((
-                        t!("%{prefix}: render queue", prefix = prefix).to_string(),
+                        t!(
+                            "%{prefix}: effective prepared render queue",
+                            prefix = prefix
+                        )
+                        .to_string(),
                         t!(
                             "Target %{target} / capacity %{capacity} frames",
                             target = queue.target_frames,
@@ -242,7 +246,11 @@ pub fn native_timing_rows(snapshot: &AppSnapshot) -> Vec<(String, String)> {
                 }
                 if let Some(queue) = stream.input_queue {
                     rows.push((
-                        t!("%{prefix}: bridge queue", prefix = prefix).to_string(),
+                        t!(
+                            "%{prefix}: effective prepared bridge queue",
+                            prefix = prefix
+                        )
+                        .to_string(),
                         t!(
                             "Prime %{prime} / capacity %{capacity} frames",
                             prime = queue.prime_frames,

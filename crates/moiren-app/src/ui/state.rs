@@ -1151,7 +1151,7 @@ mod tests {
                 NativeBridgeObservation, NativeObservationSnapshot, NativeStreamKind,
                 NativeStreamObservation,
             },
-            latency::NativeStreamTiming,
+            latency::{NativeStreamTiming, PreparedInputQueue, PreparedRenderQueue},
         };
         let runtime = spawn_service();
         let handle = runtime.handle();
@@ -1178,8 +1178,12 @@ mod tests {
                         actual_period_frames: Some(336),
                         ..Default::default()
                     }),
-                    render_queue: None,
-                    input_queue: None,
+                    render_queue: Some(PreparedRenderQueue {
+                        capacity_frames: 960,
+                        target_frames: 480,
+                        deadline_budget_frames: Some(96),
+                    }),
+                    input_queue: Some(PreparedInputQueue::compatible()),
                 }],
                 boundary_probes: vec![],
                 bridges: vec![NativeBridgeObservation {
@@ -1204,6 +1208,22 @@ mod tests {
             crate::ui::presentation::native_timing_rows(&state.snapshot)
                 .iter()
                 .any(|(_, value)| value == "5.00 ms requested")
+        );
+        assert!(
+            crate::ui::presentation::native_timing_rows(&state.snapshot)
+                .iter()
+                .any(|(label, value)| {
+                    label == "1 Master output: effective prepared render queue"
+                        && value == "Target 480 / capacity 960 frames"
+                })
+        );
+        assert!(
+            crate::ui::presentation::native_timing_rows(&state.snapshot)
+                .iter()
+                .any(|(label, value)| {
+                    label == "1 Master output: effective prepared bridge queue"
+                        && value == "Prime 2048 / capacity 8192 frames"
+                })
         );
         assert!(
             crate::ui::presentation::native_timing_rows(&state.snapshot)

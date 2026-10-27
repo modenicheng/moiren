@@ -172,6 +172,10 @@ fn expert_input_buffers_are_explicit_drafts_with_unqualified_latency(
         window.click("open-settings", cx);
         window.click("settings-transport", cx);
         assert!(window.find("transport-latency-unqualified").visible());
+        assert_eq!(
+            window.find("transport-latency-unqualified").label(),
+            Some("Input targets are estimates. Physical end-to-end latency is unqualified.")
+        );
         assert!(window.try_find("process-expert-fields").is_none());
         assert!(window.try_find("vad-expert-fields").is_none());
         window.click("process-policy-1", cx);

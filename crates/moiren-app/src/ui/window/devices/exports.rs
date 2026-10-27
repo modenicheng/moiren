@@ -352,6 +352,16 @@ fn export_row(
         .bg(theme::SURFACE)
         .rounded(px(theme::RADIUS_MD))
         .child(heading(status.intent.name.clone()))
+        .child(
+            detail(&t!("Requested endpoint name"), status.intent.name.clone())
+                .id(SharedString::from(format!("export-requested-name-{id}")))
+                .aria_label(format!(
+                    "{}: {}",
+                    t!("Requested endpoint name"),
+                    status.intent.name
+                ))
+                .gpui_test_observe(),
+        )
         .child(detail(
             &t!("Provider-created name"),
             status
@@ -369,18 +379,7 @@ fn export_row(
         ))
         .child(detail(
             &t!("Windows name match"),
-            if status.rename_pending {
-                t!("Pending native recreation")
-            } else if let Some(observation) = &status.windows_name {
-                match observation.name.as_deref() {
-                    Some(name) if name == status.intent.name => t!("Matches requested name"),
-                    Some(_) => t!("Does not match requested name"),
-                    None if observation.error.is_some() => t!("Read failed"),
-                    None => t!("Unknown / not observed"),
-                }
-            } else {
-                t!("Unknown / not observed")
-            },
+            crate::ui::presentation::windows_name_match_text(status),
         ))
         .when(status.rename_pending, |row| {
             row.child(label(t!("Name pending; waiting for native recreation")))

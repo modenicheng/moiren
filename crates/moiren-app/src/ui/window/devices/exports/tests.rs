@@ -356,6 +356,14 @@ mod headless {
         assert!(first.enabled && first.binding.is_none());
         assert_eq!(candidate(&view, cx).active_revision, None);
         let id = first.endpoint_id;
+        let requested_name_row = format!("export-requested-name-{id}");
+        cx.update(|window, _cx| {
+            let row = window.find(SharedString::from(requested_name_row.clone()));
+            assert_eq!(
+                row.label(),
+                Some("Requested endpoint name: Moiren Playback")
+            );
+        });
         let key = |action| SharedString::from(format!("export-{action}-{id}"));
         let graph = candidate(&view, cx);
         let source = graph
@@ -376,8 +384,9 @@ mod headless {
             shell.selected_node = Some(sink);
             cx.notify();
         });
+        scroll_to_control(cx, key("bind"));
+        scroll_to_control(cx, key("unbind"));
         cx.update(|window, cx| {
-            window.render_frame(cx);
             window.click(key("bind"), cx);
             window.click(key("unbind"), cx);
         });
@@ -392,8 +401,8 @@ mod headless {
             shell.selected_node = Some(source);
             cx.notify();
         });
+        scroll_to_control(cx, key("bind"));
         cx.update(|window, cx| {
-            window.render_frame(cx);
             window.click(key("bind"), cx);
         });
         wait_for(&view, cx, |snapshot| {
@@ -404,6 +413,7 @@ mod headless {
             None,
             "binding edits do not activate audio"
         );
+        scroll_to_control(cx, key("mono"));
         cx.update(|window, cx| {
             window.click(key("mono"), cx);
             window.render_frame(cx);
@@ -411,20 +421,24 @@ mod headless {
         });
         assert_eq!(candidate(&view, cx).exports[0].channels, 2);
         assert_eq!(candidate(&view, cx).exports[0].binding, Some(source));
+        scroll_to_control(cx, key("unbind"));
         cx.update(|window, cx| window.click(key("unbind"), cx));
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].binding.is_none()
         });
+        scroll_to_control(cx, key("mono"));
         cx.update(|window, cx| window.click(key("mono"), cx));
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].channels == 1
         });
+        scroll_to_control(cx, key("bind"));
         cx.update(|window, cx| window.click(key("bind"), cx));
         assert_eq!(
             candidate(&view, cx).exports[0].binding,
             None,
             "stereo selection cannot bind mono export"
         );
+        scroll_to_control(cx, key("stereo"));
         cx.update(|window, cx| window.click(key("stereo"), cx));
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].channels == 2
@@ -438,15 +452,26 @@ mod headless {
                     });
             });
             window.render_frame(cx);
-            window.click(key("rename"), cx);
         });
+        scroll_to_control(cx, key("rename"));
+        cx.update(|window, cx| window.click(key("rename"), cx));
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].name == "Renamed Playback"
         });
+        cx.update(|window, _cx| {
+            let row = window.find(SharedString::from(requested_name_row.clone()));
+            assert_eq!(
+                row.label(),
+                Some("Requested endpoint name: Renamed Playback")
+            );
+        });
+        scroll_to_control(cx, key("toggle"));
         cx.update(|window, cx| window.click(key("toggle"), cx));
         wait_for(&view, cx, |snapshot| !snapshot.graph.exports[0].enabled);
+        scroll_to_control(cx, key("toggle"));
         cx.update(|window, cx| window.click(key("toggle"), cx));
         wait_for(&view, cx, |snapshot| snapshot.graph.exports[0].enabled);
+        scroll_to_control(cx, key("default"));
         cx.update(|window, cx| window.click(key("default"), cx));
         wait_for(&view, cx, |snapshot| {
             snapshot
@@ -458,6 +483,7 @@ mod headless {
             assert_eq!(shell.preferences.export_authorizations.len(), 1);
             assert!(shell.preferences.export_authorizations[0].allow_default);
         });
+        scroll_to_control(cx, key("default"));
         cx.update(|window, cx| window.click(key("default"), cx));
         wait_for(&view, cx, |snapshot| {
             snapshot
@@ -465,6 +491,7 @@ mod headless {
                 .iter()
                 .any(|status| status.intent.endpoint_id == id && !status.allow_default)
         });
+        scroll_to_control(cx, key("remove"));
         cx.update(|window, cx| window.click(key("remove"), cx));
         wait_for(&view, cx, |snapshot| snapshot.graph.exports.is_empty());
         cx.update(|window, cx| {

@@ -269,9 +269,9 @@ independent accepted two-hour repetitions.
 
 ## Stage 7: Product Status and Delivery
 
-- [ ] Present requested name, provider name and actual Windows FriendlyName
+- [x] Present requested name, provider name and actual Windows FriendlyName
   independently; never label a pending desired name as the confirmed name.
-- [ ] Present requested/effective queue targets and physical latency as
+- [x] Present requested/effective queue targets and physical latency as
   separate measurements. Display `unqualified` rather than a latency number
   when calibration or required evidence is absent.
 - [ ] Audit the final UI, diagnostics, project/preferences persistence and
@@ -309,6 +309,12 @@ independent accepted two-hour repetitions.
   running, and C: has 32,289,374,208 bytes free (about 30.07 GiB). No old VM
   test files needed removal; leave Windows, DriverStore, and driver rollback
   files untouched.
+- [x] Stage 7 UI status slice: export cards and diagnostics distinguish
+  requested, provider-created and exact Windows endpoint names; a Windows
+  mismatch remains visible even while provider recreation is pending. Live
+  native queues are labeled as effective prepared values, and physical E2E
+  latency remains `Unknown / unqualified` without calibrated evidence. Focused
+  unit/GPUI checks and all 13 app UI acceptance tests passed.
 - [ ] Exact Windows endpoint FriendlyName rename acceptance for Playback and
   Microphone.
 - [ ] Zero-quality-fault VAD playback/microphone short gates and characterized

@@ -1253,15 +1253,15 @@ _version: 2
 "%{prefix}: initialization":
   en: "%{prefix}: initialization"
   zh-CN: "%{prefix}：初始化"
-"%{prefix}: render queue":
-  en: "%{prefix}: render queue"
-  zh-CN: "%{prefix}：渲染队列"
+"%{prefix}: effective prepared render queue":
+  en: "%{prefix}: effective prepared render queue"
+  zh-CN: "%{prefix}：实际准备的渲染队列"
 "Target %{target} / capacity %{capacity} frames":
   en: "Target %{target} / capacity %{capacity} frames"
   zh-CN: "目标 %{target} / 容量 %{capacity} 帧"
-"%{prefix}: bridge queue":
-  en: "%{prefix}: bridge queue"
-  zh-CN: "%{prefix}：桥接队列"
+"%{prefix}: effective prepared bridge queue":
+  en: "%{prefix}: effective prepared bridge queue"
+  zh-CN: "%{prefix}：实际准备的桥接队列"
 "Prime %{prime} / capacity %{capacity} frames":
   en: "Prime %{prime} / capacity %{capacity} frames"
   zh-CN: "预填充 %{prime} / 容量 %{capacity} 帧"

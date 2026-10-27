@@ -12,18 +12,6 @@ pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
     let windows_name_text = windows_name
         .and_then(|observation| observation.name.clone())
         .unwrap_or_else(|| t!("Unknown / not observed").into());
-    let windows_name_match = if status.rename_pending {
-        t!("Pending native recreation").into()
-    } else if let Some(observation) = windows_name {
-        match observation.name.as_deref() {
-            Some(name) if name == status.intent.name => t!("Matches requested name").into(),
-            Some(_) => t!("Does not match requested name").into(),
-            None if observation.error.is_some() => t!("Read failed").into(),
-            None => t!("Unknown / not observed").into(),
-        }
-    } else {
-        t!("Unknown / not observed").into()
-    };
     let mut rows = vec![
         (
             t!("Stable endpoint ID").into(),
@@ -48,7 +36,10 @@ pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
                 .unwrap_or_else(|| t!("Unknown / not present").into()),
         ),
         (t!("Windows endpoint name").into(), windows_name_text),
-        (t!("Windows name match").into(), windows_name_match),
+        (
+            t!("Windows name match").into(),
+            windows_name_match_text(status),
+        ),
     ];
     if let Some(observation) = windows_name {
         if let Some(error) = &observation.error {
@@ -150,6 +141,22 @@ pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
         ),
     ]);
     rows
+}
+
+pub fn windows_name_match_text(status: &ExportStatus) -> String {
+    if let Some(observation) = status.windows_name.as_ref() {
+        return match observation.name.as_deref() {
+            Some(name) if name == status.intent.name => t!("Matches requested name").into(),
+            Some(_) => t!("Does not match requested name").into(),
+            None if observation.error.is_some() => t!("Read failed").into(),
+            None => t!("Unknown / not observed").into(),
+        };
+    }
+    if status.rename_pending {
+        t!("Pending native recreation").into()
+    } else {
+        t!("Unknown / not observed").into()
+    }
 }
 
 #[cfg(windows)]

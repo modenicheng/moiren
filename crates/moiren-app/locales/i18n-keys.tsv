@@ -416,9 +416,9 @@ Virtual capture; no hardware period	-	crates/moiren-app/src/ui/presentation.rs:1
 %{ms} ms requested	ms=period.desired_period_ms（{ms:.2}）	crates/moiren-app/src/ui/presentation.rs:182	format! 原文 "{ms:.2} ms requested"
 Device default requested	-	crates/moiren-app/src/ui/presentation.rs:183	周期请求缺失回退值
 %{prefix}: initialization	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:186	format! 原文 "{prefix}: initialization"；行值为 {:?} 调试输出，保持英文
-%{prefix}: render queue	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:199	format! 原文 "{prefix}: render queue"
+%{prefix}: effective prepared render queue	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs	实际准备的渲染队列
 Target %{target} / capacity %{capacity} frames	target=queue.target_frames|capacity=queue.capacity_frames	crates/moiren-app/src/ui/presentation.rs:201	format! 原文 "Target {} / capacity {} frames"
-%{prefix}: bridge queue	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs:208	format! 原文 "{prefix}: bridge queue"
+%{prefix}: effective prepared bridge queue	prefix=format!("{} {kind}", index+1)	crates/moiren-app/src/ui/presentation.rs	实际准备的桥接队列
 Prime %{prime} / capacity %{capacity} frames	prime=queue.prime_frames|capacity=queue.capacity_frames	crates/moiren-app/src/ui/presentation.rs:210	format! 原文 "Prime {} / capacity {} frames"
 Stream %{index}	index=position+1	crates/moiren-app/src/ui/presentation.rs:222	format! 原文 "Stream {}"
 Unmapped stream	-	crates/moiren-app/src/ui/presentation.rs:223	桥前缀回退

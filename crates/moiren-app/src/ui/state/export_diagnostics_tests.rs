@@ -102,6 +102,11 @@ fn windows_name_mismatch_and_read_error_are_visible() {
     let rows = export_diagnostic_rows(&status);
     assert_eq!(value(&rows, "Provider-created name"), "Requested playback");
     assert_eq!(value(&rows, "Windows endpoint name"), "Stale Windows name");
+    assert_eq!(
+        value(&rows, "Windows name match"),
+        "Does not match requested name",
+        "a real Windows mismatch must not be hidden behind pending provider recreation"
+    );
     status.rename_pending = false;
     let rows = export_diagnostic_rows(&status);
     assert_eq!(

@@ -80,6 +80,9 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .child(
             div()
                 .id("transport-latency-unqualified")
+                .aria_label(t!(
+                    "Input targets are estimates. Physical end-to-end latency is unqualified."
+                ))
                 .child(label(t!("Input targets are estimates. Physical end-to-end latency is unqualified.")))
                 .gpui_test_observe(),
         )
