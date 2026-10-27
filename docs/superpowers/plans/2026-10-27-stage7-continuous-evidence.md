@@ -284,3 +284,31 @@ All seven run payloads (1,327,509 bytes) were copied to and verified in
 left only the current probe and 30.11 GiB free. The next work item remains a
 real supervised controlled-load contract; `--controlled-load-id` is still
 metadata only and must not make a report qualify.
+
+### 2026-10-27 supervised controlled-load contract
+
+`3c94765` implements the supervised controlled-load contract and pushes it
+before target execution. The VAD collector starts the worker only after the
+recorder reaches `Running`, checks that it remains alive, sends an explicit
+stop signal during retirement, validates the worker result identity and exit
+status, requires coverage of source duration plus postroll, and records
+cleanup/validity separately from collection success. Unit coverage includes
+missing-result, short-window, stale-result and clean-stop cases.
+
+The first VM run used the same 48 kHz, 48,000-frame schedule and endpoint as
+the repaired collection repeat. It exited 1 before the required load window
+completed: `elapsed_seconds=0.5462443` versus
+`required_window_seconds=1.2`; the worker itself exited zero and observed the
+stop signal, so the failure is correctly attributed to insufficient collection
+coverage rather than an orphaned load process. The same run also retained one
+virtual xrun, 33 soft events, 41 VAD completion gaps, 87 independent capture
+gap events, 2,128 gap frames and two discontinuities.
+
+The run is archived at
+`target/vad-target-archive/20261027-controlled-load-3c94765-15s/` and the guest
+now retains only `e2e_latency_probe-3c94765.exe`. Stage 7 remains open. Before
+any 30-minute or two-hour candidate run, fix the underlying early quality
+failure, add a Process Loopback supervisor using the same evidence contract,
+and run a matched VAD/Process sweep over target, render queue, engine block,
+period and CPU-load settings. Only then proceed to calibrated physical
+Input-to-Bus-to-Output measurements and the 10 ms gate.

@@ -853,3 +853,33 @@ After verification, the guest retained only the current probe binary, with no
 run directory, input files, runner, old probe, active test process or dynamic
 VAD endpoint; free space was 30.12 GiB. No driver INF/SYS/CAT or system files
 were removed.
+
+### 2026-10-27 supervised controlled-load collection
+
+Commit `3c94765` adds a real supervised CPU-load worker to the VAD collection
+path. The worker has a unique load ID, PID, checksum, stop handshake, bounded
+result schema and cleanup evidence. Collection starts it only after the
+independent recorder is `Running`, polls for early exit, requires coverage of
+the source plus postroll window, and fails closed when the worker result is
+missing, invalid or too short. The implementation was pushed before the VM
+run; 113 example tests, strict example Clippy, format and diff checks passed.
+
+The release probe from `3c94765` was copied to the VM as
+`e2e_latency_probe-3c94765.exe`, verified at 3,841,024 bytes with SHA-256
+`F1A72D6EB3BD658D8054498904754F06241950CCB6682DF36F615BC5C5AAF29E` on both
+host and guest. A bounded 15-second VAD collection used load ID
+`load-3c94765-15s`. The run exited 1 and remains unqualified. The worker did
+receive the stop request and exited zero, but the collection ended after
+0.5462443 seconds while 1.2 seconds were required, so
+`controlled_load.valid=false` and `window_complete=false`.
+
+The quality evidence remains a failure: VAD completed 42 packets with 41
+completion gaps; the virtual boundary recorded one xrun and 33 soft events;
+the independent capture recorded 87 gap events, 2,128 gap frames and two
+discontinuities. The complete seven-file run archive, including manifest,
+report, PCM and packet metadata, is retained at
+`target/vad-target-archive/20261027-controlled-load-3c94765-15s/`; host hashes
+are in `host-sha256.txt` and the condensed result is in `summary.json`. The VM
+was cleaned to only the current probe binary, with 30.12 GiB free. No driver,
+DriverStore or system files were removed. This is controlled-load failure
+evidence, not latency qualification.
