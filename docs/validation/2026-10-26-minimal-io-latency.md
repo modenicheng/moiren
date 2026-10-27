@@ -1583,3 +1583,56 @@ and verify the package on the already-trusted guest. Host signature trust
 verification also correctly rejects the test root, which is intentionally
 not added to the host trust store; guest chain/catalog verification remains
 mandatory before installation.
+
+### 2026-10-27 decodable clock diagnostics and bounded native repeats
+
+`78e0e34` splits the passive first-rebase output into cause/before/after
+fragments with 13/14/14 fields and the same endpoint/session/generation/stream/
+callback-QPC tuple. The new production-body tests fail on the original large
+event, then pass with matching fragments and unchanged first-only semantics.
+Eight host suites, analyzed WDK build, InfVerif, independent review and actual
+tracepdb/TMF inspection pass without warnings or omitted fields. No RT callback,
+freshness, packet size, queue target or scheduling behavior changes in this fix.
+
+The signed package is installed only on the VMware guest after guest
+catalog-membership and trusted-chain verification of both SYS and INF:
+
+| File | Bytes | SHA-256 |
+| --- | ---: | --- |
+| SYS | 114,072 | `3762BBDDD7FF3715F8231ECA31233EFCE7B2A01775CA23A2ABA40DA0C5E0D6D6` |
+| INF | 1,805 | `59123AEA16634D362F1937670C3340504241DA83B69AB4EC82A264500CEA3A05` |
+| CAT | 2,474 | `7E682446FE5348AF57A1DB3A683F017B4A438480D28B6E81CB8711CEB06DB9BD` |
+
+PnP publishes `oem33.inf`; the restarted root reports the driver Running at
+`moirenvad.inf_amd64_9b20f2da60729718`. Installed package hashes match the host.
+The host retains package, matching TMF and install evidence in
+`target/vad-target-archive/20261027-driver-78e0e34`. Six temporary installation
+files are rechecked and removed from the guest; DriverStore/rollback remain.
+
+The unchanged `ee0cf79` native probe runs three serial microphone subsets:
+
+| Channels / format | Event 5s signal / silent / drops | Timer 5s signal / silent / drops | Event 15s signal / silent / drops |
+| --- | --- | --- | --- |
+| mono / PCM16 | 237,600 / 1,920 / 1 | 239,520 / 0 / 0 | 719,040 / 480 / 0 |
+| mono / Float32 | 239,520 / 0 / 0 | 240,000 / 0 / 0 | 718,560 / 960 / 0 |
+| stereo / PCM16 | 239,520 / 0 / 0 | 239,520 / 0 / 0 | 716,160 / 3,360 / 3 |
+| stereo / Float32 | 239,520 / 0 / 0 | 231,360 / 0 / 0 | 714,240 / 5,280 / 5 |
+
+All wrappers/probes exit zero with unchanged defaults and zero native
+discontinuities. That is not the zero-silence/drop acceptance gate: event
+subsets remain unqualified. In event 5s, the first TooOld rejection has age
+10.8821 ms; event 15s stereo PCM16/Float32 first rejection ages are 10.3580 ms
+and 10.2939 ms. All three ETLs decode with zero lost events, format errors and
+unknowns, but contain **no Clock rebase fragments**. No actual first-rebase
+cause is established in these windows; ordinary lateness/empty PCM queues
+must not be misreported as a proven clock reset. Timer samples and 5/15-second
+subsets cannot establish full-frame coverage, long-run stability or physical
+latency, nor a VAD-versus-Process winner.
+
+Each six-file payload/manifest archive is length/SHA-256 verified on the host
+and rechecked on the guest before deletion. Archives are named
+`20261027-native-78e0e34-mic-event5`, `...-timer5` and `...-event15` under
+`target/vad-target-archive/`. The trace tool is also verified and removed.
+At `2026-10-27T12:52:11+08:00`, the guest test root contains only the current
+401,920-byte native probe, has 30.103 GiB free, and has no probe processes or
+present dynamic children. Stage 7 remains open.
