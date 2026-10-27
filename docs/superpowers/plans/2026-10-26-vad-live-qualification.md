@@ -84,9 +84,9 @@ PowerShell target scripts, and the existing offline qualification evaluator.
   hypothesis, not yet a proven cause for this run: the next reproduction must
   correlate the probe's first-drop QPC neighborhood with the driver's WPP
   `Clock rebase` event and its before/after gate state.
-- At the latest VM inventory, `C:\MoirenVadTest` contains only the 7,657,472-byte
-  integration probe needed by the remaining rename check; the system disk has
-  30.092 GiB free. The host failure archive is 547,071 bytes and retains the
+- At the earlier minimum-period inventory, `C:\MoirenVadTest` retained the
+  7,657,472-byte integration probe needed by the remaining rename check; the
+  system disk had 30.092 GiB free. That host failure archive is 547,071 bytes and retains the
   verified probe plus raw run evidence, without the executed runner scripts.
 - `5c143a6` completed the telemetry naming correction: schema 2 emits
   `completion_interval_observations` and `max_completion_interval_100ns`,
@@ -100,17 +100,62 @@ PowerShell target scripts, and the existing offline qualification evaluator.
   session, endpoint, stream and gate identities, not elapsed milliseconds.
   Historical samples cannot establish the fault's QPC time. Capture
   device-position mismatches likewise do not directly count lost PCM frames.
+- Commit `c346424` added bounded QPC control-read windows and Engine timeline
+  frames to the startup trace. The no-load 15-second run retained 52 samples;
+  its first render wake interval was 3,930,974 QPC 100-ns units (393.0974 ms)
+  at QPC 601387562250. The same QPC appears on the independent capture's first
+  packet. The Engine timeline advanced from frame 2,016 to 2,976 across the
+  surrounding control observations, then continued while the VAD completion
+  count advanced at about ten packets per second. The carrier was observed at
+  2,384 frames, later at 467, then starved with one xrun. This is evidence of
+  an initial virtual render scheduling hiatus and subsequent carrier drain,
+  not yet proof of the precise QPC missed-wake/debt-repayment cause; the
+  retained Engine timeline is sampled only by the control owner.
+- A separate 2-second independent capture-only run, with no VAD playback or
+  Engine graph, reproduced capture position discontinuities: 223 packets and
+  61,913 frames over 1.379 seconds, 222 mismatches / 5,704 absolute position
+  differences, three discontinuity flags, and zero reported dropped or silent
+  frames, overflow, or timestamp errors. After three initial packets with
+  `DATA_DISCONTINUITY` and repeated position zero, 221 subsequent packet
+  positions advanced by 256 while their PCM packet sizes were 278/279 frames.
+  Their QPC wake gaps were mostly 5-7 ms. Since the client and advertised mix
+  rates are both 48 kHz, this VM capture-position behavior is independent of
+  the VAD/Engine chain, but its underlying device/virtual-audio clock cause
+  remains unproven. Do not treat the absolute position differences as a count
+  of missing PCM frames or weaken the capture quality gate.
+- Raw VAD-run evidence is at
+  `target/vad-target-archive/20261027-collection-c346424-qpc-trace-noload-15s/`
+  (11 files, 1,627,419 bytes). The independent capture-only evidence is at
+  `target/vad-target-archive/20261027-capture-only-c346424-2s/` (7 files,
+  532,034 bytes). Both archives were length and SHA-256 checked against a
+  guest inventory taken after collection. Only the explicitly scoped run
+  directories were deleted on the guest. The system disk retains about
+  30.08 GiB free; the reviewed probe, schedule/config inputs, runner and
+  rename-test executable remain; Windows, DriverStore and rollback packages
+  were untouched.
+- Commit `fcf2124` replaced the runner's fast-exit PID/handle race with the
+  original `Process.Start()` handle and passed the Windows PowerShell 5.1
+  regressions. The QPC collection receipt retained the actual exit code `1`.
+  Independent review then found that a redirected-output drain timeout could
+  still lead to hashing unstable logs. That exceptional-path repair and its
+  regression are required before the next target collection.
 
 ### Ordered Work and Atomic Checkpoints
 
 1. **Reproduce and classify the first failure.** Keep the current VM package
-   and control session unchanged. First preserve the actual child exit code
-   before manifest serialization in a Windows PowerShell 5.1-compatible
-   runner, and add explicitly labeled control-observation QPC windows to
-   bounded startup samples. These windows bracket the reads; they are not
+   and control session unchanged. The runner now preserves the actual child
+   exit code before manifest serialization, and bounded startup samples now
+   contain explicitly labeled control-observation QPC windows. Finish the
+   runner's drain-timeout evidence-stability repair and independent re-review
+   before collecting again. The QPC windows bracket the reads; they are not
    realtime event timestamps. Recheck startup probe publication and align
    the next collection's capture QPC, position and flags without weakening
-   its zero-quality-failure gate. Run the short microphone event case with the
+   its zero-quality-failure gate. The capture-only result means position
+   continuity is a separate VM capture qualification failure, not an effect
+   attributable only to VAD playback. Add the bounded
+   `moiren::audio::vad=debug` virtual-clock gap trace to the next VAD run and
+   align its QPC/frame/skipped/stage records with the render wake trace before
+   making a clock-owner change. Run the short microphone event case with the
    existing WPP clock-rebase trace enabled; capture the first drop's neighboring
    WRITE records, driver reason/deadline/lateness, and before/after gate epoch
    on a common QPC timeline. Repeat the same case enough times to distinguish a
