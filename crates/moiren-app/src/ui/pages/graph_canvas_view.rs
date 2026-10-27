@@ -323,46 +323,6 @@ fn overview_clear(world: &CanvasWorld, camera: Camera, viewport: Option<Size<f32
     })
 }
 
-#[cfg(test)]
-mod overview_tests {
-    use super::*;
-
-    #[::core::prelude::v1::test]
-    fn minimap_yields_to_tall_cards_and_reappears_in_clear_corner() {
-        let mut card = super::super::graph_canvas::CanvasWorld::new(vec![], vec![]);
-        let camera = Camera {
-            adjusted: true,
-            ..Default::default()
-        };
-        assert!(!overview_clear(&card, camera, None));
-        assert!(overview_clear(&card, camera, Some(size(700., 650.))));
-        card.nodes.push(CanvasNode {
-            node_id: None,
-            id: "rack".into(),
-            name: "Rack".into(),
-            detail: String::new(),
-            icon: None,
-            x: 130.,
-            y: 72.,
-            wide: false,
-            input_count: 1,
-            input_ports: vec![],
-            output_port: None,
-            has_output: false,
-            tint: None,
-            gain: 1.,
-            balance: None,
-            peaks: None,
-            kind: moiren_core::graph::NodeKind::Rack,
-            measured_height: Some(560.),
-            content_width: 440.,
-        });
-        assert!(!overview_clear(&card, camera, Some(size(700., 650.))));
-        card.nodes[0].measured_height = Some(250.);
-        assert!(overview_clear(&card, camera, Some(size(700., 650.))));
-    }
-}
-
 pub fn graph_canvas_view(
     world: Arc<CanvasWorld>,
     camera: Camera,
@@ -795,5 +755,45 @@ fn scroll_canvas(
         crate::ui::scroll_policy::ScrollAction::Zoom(factor) => {
             zoom((factor, point(px(anchor.0), px(anchor.1))), window, cx)
         }
+    }
+}
+
+#[cfg(test)]
+mod overview_tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn minimap_yields_to_tall_cards_and_reappears_in_clear_corner() {
+        let mut card = super::super::graph_canvas::CanvasWorld::new(vec![], vec![]);
+        let camera = Camera {
+            adjusted: true,
+            ..Default::default()
+        };
+        assert!(!overview_clear(&card, camera, None));
+        assert!(overview_clear(&card, camera, Some(size(700., 650.))));
+        card.nodes.push(CanvasNode {
+            node_id: None,
+            id: "rack".into(),
+            name: "Rack".into(),
+            detail: String::new(),
+            icon: None,
+            x: 130.,
+            y: 72.,
+            wide: false,
+            input_count: 1,
+            input_ports: vec![],
+            output_port: None,
+            has_output: false,
+            tint: None,
+            gain: 1.,
+            balance: None,
+            peaks: None,
+            kind: moiren_core::graph::NodeKind::Rack,
+            measured_height: Some(560.),
+            content_width: 440.,
+        });
+        assert!(!overview_clear(&card, camera, Some(size(700., 650.))));
+        card.nodes[0].measured_height = Some(250.);
+        assert!(overview_clear(&card, camera, Some(size(700., 650.))));
     }
 }
