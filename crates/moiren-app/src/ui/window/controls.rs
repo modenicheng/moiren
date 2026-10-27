@@ -62,20 +62,67 @@ pub(super) fn detail_editable(
         .py(px(6.))
         .child(label(key.to_string()))
         .child(
-            editable_value(id, text, editing, input, on_start)
+            editable_value(id, text, editing, input, on_start, px(12.), TextAlign::Left)
                 .min_w_0()
                 .max_w(px(190.))
-                .text_size(px(12.))
                 .text_color(theme::TEXT),
         )
 }
 
+/// The click-to-type editor chrome: a transparent, borderless
+/// [`component::input::Input`] with a single 1px underline drawn along the
+/// bottom of its wrapper. The component's own chrome — filled background,
+/// full border, corner radius, 10px/8px padding, fixed 32px height,
+/// 0.875rem text at a fixed 1.25rem line height — is stripped so the text
+/// sits exactly where the readout it replaced sat: the caller's font
+/// cascades in, the size and line box (`phi` × font size, gpui's text
+/// default) match the label, padding is zero, and the field spans the
+/// wrapper's width with the requested alignment. The wrapper stops mouse
+/// presses from propagating so a click inside the editor never reaches the
+/// window root's outside-click commit. The editor box is observed under
+/// `editable-editor` (keyed by the input state) so tests can assert the
+/// no-jump geometry.
+pub(super) fn underline_editor(
+    input: &Entity<component::input::InputState>,
+    text_size: Pixels,
+    align: TextAlign,
+) -> impl IntoElement {
+    div()
+        .id(("editable-editor", input.entity_id()))
+        .relative()
+        .w_full()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .h(px(1.))
+                .bg(theme::BORDER),
+        )
+        .child(
+            component::input::Input::new(input)
+                .appearance(false)
+                .px(px(0.))
+                .py(px(0.))
+                .h_auto()
+                .text_size(text_size)
+                .line_height(phi())
+                .when(align == TextAlign::Center, |input| input.text_center())
+                .when(align == TextAlign::Right, |input| input.text_right()),
+        )
+        .gpui_test_observe()
+}
+
 /// Click-to-type numeric readout shared by the mixer strip, the balance
-/// label and the inspector rows: a plain text value until clicked, then the
-/// inline editor styled like the node-name field. The helper owns no
+/// label and the inspector rows: a plain text value until clicked, then an
+/// underline-only inline editor (`underline_editor`) in the same box.
+/// `text_size` and `align` style the label and the editor alike so the text
+/// neither moves nor resizes when the editor opens. The helper owns no
 /// parsing — the call site's `on_start` enters edit mode and the value
 /// family's input subscription commits on Enter/blur. The site keeps its
-/// readout styling and `gpui_test_observe` by chaining on the returned
+/// layout styling and `gpui_test_observe` by chaining on the returned
 /// `Stateful<Div>`.
 pub(super) fn editable_value(
     id: impl Into<ElementId>,
@@ -83,18 +130,20 @@ pub(super) fn editable_value(
     editing: bool,
     input: &Entity<component::input::InputState>,
     on_start: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    text_size: Pixels,
+    align: TextAlign,
 ) -> Stateful<Div> {
     if editing {
-        return div().id(id).child(
-            component::input::Input::new(input)
-                .bg(theme::SURFACE_3)
-                .text_color(theme::TEXT)
-                .border_color(theme::BORDER),
-        );
+        return div()
+            .id(id)
+            .child(underline_editor(input, text_size, align));
     }
     div()
         .id(id)
         .cursor_pointer()
+        .text_size(text_size)
+        .when(align == TextAlign::Center, |label| label.text_center())
+        .when(align == TextAlign::Right, |label| label.text_right())
         .child(text.into())
         .tooltip(|window, cx| {
             component::tooltip::Tooltip::new(t!("Click to type a value").into_owned())

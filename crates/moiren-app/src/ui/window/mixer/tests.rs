@@ -564,6 +564,83 @@ fn send_numeric_edit_and_deleted_edge_cleanup_preserve_shared_layout(cx: &mut Te
     finish_service(runtime);
 }
 
+#[gpui_kit::test]
+fn send_numeric_edit_commits_on_blur_and_rejects_invalid(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    activate_window(cx);
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let edge = view.update(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.graph.edges()[0].id()
+    });
+    let gain = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        view.update(cx, |shell, cx| {
+            let gain = shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .graph
+                .get_edge(edge)
+                .unwrap()
+                .params()
+                .gain;
+            (gain, shell.mixer.editing_send)
+        })
+    };
+    let open = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| {
+        let position = cx.update(|window, _| {
+            window
+                .find(SharedString::from(format!("send-value-{edge:?}")))
+                .bounds()
+                .center()
+        });
+        cx.simulate_event(gpui_kit::MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui_kit::MouseUpEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 2,
+        });
+        view.update(cx, |shell, _| {
+            assert_eq!(shell.mixer.editing_send, Some(edge), "editor must open");
+        });
+    };
+    let editor = view.update(cx, |shell, _| shell.mixer.send_inputs[&edge].clone());
+
+    // Focus loss runs the same commit path as Enter.
+    open(&view, cx);
+    type_and_blur(&view, cx, &editor, "-18.5");
+    let (value, editing) = gain(&view, cx);
+    assert!(
+        (20. * value.log10() + 18.5).abs() < 1e-9,
+        "blur must commit -18.5 dB"
+    );
+    assert_eq!(editing, None, "blur closes the send editor");
+
+    // An invalid entry changes nothing on blur, and still closes.
+    open(&view, cx);
+    type_and_blur(&view, cx, &editor, "abc");
+    let (value, editing) = gain(&view, cx);
+    assert!(
+        (20. * value.log10() + 18.5).abs() < 1e-9,
+        "an invalid blur changes nothing"
+    );
+    assert_eq!(editing, None);
+    finish_service(runtime);
+}
+
 /// Clicks one editable readout and asserts its editor opened.
 fn open_editor(
     view: &Entity<StudioShell>,
@@ -591,6 +668,36 @@ fn type_and_commit(
                 shift: false,
             });
         });
+    });
+    poll(view, cx);
+}
+
+/// Makes the window active so real focus changes dispatch `Focus`/`Blur`
+/// events: headless windows start inactive, and gpui blanks the focus paths
+/// of the focus event for inactive windows, so `window.blur()` alone would
+/// reach no listener.
+fn activate_window(cx: &mut VisualTestContext) {
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+}
+
+/// Types into an open editor and blurs it for real: the frame render turns
+/// the focus loss into the input's `Blur` event, which runs the family's
+/// commit subscription exactly like Enter does. One frame is drawn while the
+/// editor holds focus first — gpui dispatches focus events on focus-path
+/// changes between rendered frames, so the editor must appear focused in a
+/// rendered frame before the loss can be observed.
+fn type_and_blur(
+    view: &Entity<StudioShell>,
+    cx: &mut VisualTestContext,
+    input: &Entity<gpui_kit::component::input::InputState>,
+    text: &str,
+) {
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| input.set_value(text, window, cx));
+        window.render_frame(cx);
+        window.blur(cx);
+        window.render_frame(cx);
     });
     poll(view, cx);
 }
@@ -656,9 +763,221 @@ fn fader_readout_click_to_type_commits_valid_and_rejects_invalid(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
+fn fader_readout_blur_commits_valid_and_rejects_invalid(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1600.), px(1000.)));
+    activate_window(cx);
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let editor = view.update(cx, |shell, _| shell.mixer.value_inputs[&id].clone());
+    let gain = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> (f64, Option<NodeId>) {
+        view.update(cx, |shell, cx| {
+            let graph = &shell.state.read(cx).snapshot.graph;
+            (
+                graph.node(id).expect("strip node").mixer.gain,
+                shell.mixer.editing_value,
+            )
+        })
+    };
+
+    // Focus loss runs the same commit path as Enter.
+    let editing = open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    assert_eq!(editing, id);
+    type_and_blur(&view, cx, &editor, "-6");
+    let (value, editing) = gain(&view, cx);
+    assert!(
+        (value - 10f64.powf(-6. / 20.)).abs() < 1e-9,
+        "blur must commit -6 dB, got {value}"
+    );
+    assert_eq!(editing, None, "blur closes the editor");
+
+    // An invalid entry changes nothing on blur, and still closes.
+    let (before, _) = gain(&view, cx);
+    for rejected in ["abc", "99"] {
+        open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+        type_and_blur(&view, cx, &editor, rejected);
+        let (value, editing) = gain(&view, cx);
+        assert_eq!(
+            value, before,
+            "blur with \"{rejected}\" must change nothing"
+        );
+        assert_eq!(editing, None, "an invalid blur still closes the editor");
+    }
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn fader_readout_enter_then_stale_blur_commits_once(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1600.), px(1000.)));
+    activate_window(cx);
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let editor = view.update(cx, |shell, _| shell.mixer.value_inputs[&id].clone());
+    let gain = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> (f64, Option<NodeId>) {
+        view.update(cx, |shell, cx| {
+            let graph = &shell.state.read(cx).snapshot.graph;
+            (
+                graph.node(id).expect("strip node").mixer.gain,
+                shell.mixer.editing_value,
+            )
+        })
+    };
+
+    open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    type_and_commit(&view, cx, &editor, "-6");
+    let (value, editing) = gain(&view, cx);
+    assert!((value - 10f64.powf(-6. / 20.)).abs() < 1e-9);
+    assert_eq!(editing, None);
+
+    // Enter closed the editor; a late blur carrying new text must find no
+    // active editor and dispatch nothing.
+    cx.update(|window, cx| {
+        editor.update(cx, |input, cx| {
+            input.set_value("+6", window, cx);
+            cx.emit(gpui_kit::component::input::InputEvent::Blur);
+        });
+    });
+    poll(&view, cx);
+    let (value, editing) = gain(&view, cx);
+    assert!(
+        (value - 10f64.powf(-6. / 20.)).abs() < 1e-9,
+        "a stale blur after Enter must not re-dispatch, got {value}"
+    );
+    assert_eq!(editing, None);
+    finish_service(runtime);
+}
+
+/// Clicking anywhere outside the open editor commits it like Enter. The
+/// engine statusbar carries no focusable surface, so the input never loses
+/// focus and this exercises the window root's outside-click path, not the
+/// blur path.
+#[gpui_kit::test]
+fn fader_readout_commits_when_clicking_outside_the_editor(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1600.), px(1000.)));
+    activate_window(cx);
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let editor = view.update(cx, |shell, _| shell.mixer.value_inputs[&id].clone());
+    let gain = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> (f64, Option<NodeId>) {
+        view.update(cx, |shell, cx| {
+            let graph = &shell.state.read(cx).snapshot.graph;
+            (
+                graph.node(id).expect("strip node").mixer.gain,
+                shell.mixer.editing_value,
+            )
+        })
+    };
+    let outside = cx.update(|window, _| window.find("engine-statusbar").bounds().center());
+    let click = |view: &Entity<StudioShell>,
+                 cx: &mut VisualTestContext,
+                 position: gpui_kit::Point<gpui_kit::Pixels>| {
+        cx.simulate_event(gpui_kit::MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui_kit::MouseUpEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        });
+        poll(view, cx);
+    };
+
+    open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    cx.update(|window, cx| {
+        editor.update(cx, |input, cx| input.set_value("-6", window, cx));
+        window.render_frame(cx);
+    });
+    click(&view, cx, outside);
+    let (value, editing) = gain(&view, cx);
+    assert!(
+        (value - 10f64.powf(-6. / 20.)).abs() < 1e-9,
+        "an outside click must commit -6 dB, got {value}"
+    );
+    assert_eq!(editing, None, "an outside click closes the editor");
+
+    // Invalid text: the outside click still closes, and changes nothing.
+    let (before, _) = gain(&view, cx);
+    open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    cx.update(|window, cx| {
+        editor.update(cx, |input, cx| input.set_value("abc", window, cx));
+        window.render_frame(cx);
+    });
+    click(&view, cx, outside);
+    let (value, editing) = gain(&view, cx);
+    assert_eq!(
+        value, before,
+        "an outside click with invalid text changes nothing"
+    );
+    assert_eq!(
+        editing, None,
+        "an invalid outside click still closes the editor"
+    );
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn fader_readout_editor_occupies_the_label_box(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1600.), px(1000.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let label = cx.update(|window, _| window.find(readout_of(id)).bounds());
+
+    open_editor(&view, cx, readout_of(id), |shell| shell.mixer.editing_value);
+    let input = view.update(cx, |shell, _| shell.mixer.value_inputs[&id].clone());
+    let editor =
+        cx.update(|window, _| window.find(("editable-editor", input.entity_id())).bounds());
+    assert!(
+        (f32::from(editor.top()) - f32::from(label.top())).abs() <= 1.,
+        "the editor text must start where the readout started"
+    );
+    // One text line in the readout's 12px font is round(phi * 12) = 19px;
+    // the old editor forced a 32px input box.
+    assert_eq!(
+        editor.size.height,
+        px(19.),
+        "the editor is one text line tall"
+    );
+    assert!(
+        (f32::from(editor.left()) - f32::from(label.left())).abs() <= 1.
+            && (f32::from(editor.right()) - f32::from(label.right())).abs() <= 1.,
+        "the underline field spans the readout's width"
+    );
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
 fn balance_label_click_to_type_commits_valid_and_rejects_invalid(cx: &mut TestAppContext) {
     let (view, cx, runtime) = test_shell(cx);
     cx.simulate_resize(size(px(1440.), px(900.)));
+    activate_window(cx);
     view.update(cx, |shell, cx| {
         shell.presentation.page = Page::Mixer;
         shell.inspector_open = false;
@@ -703,6 +1022,25 @@ fn balance_label_click_to_type_commits_valid_and_rejects_invalid(cx: &mut TestAp
     type_and_commit(&view, cx, &editor, "C");
     let (value, _) = balance(&view, cx);
     assert_eq!(value, 0., "\"C\" recenters");
+
+    // Focus loss runs the same commit path as Enter.
+    open_editor(&view, cx, label.clone(), editing_flag);
+    type_and_blur(&view, cx, &editor, "L 50");
+    let (value, editing) = balance(&view, cx);
+    assert!(
+        (value + 0.5).abs() < 1e-9,
+        "blur must commit \"L 50\", got {value}"
+    );
+    assert_eq!(editing, None, "blur closes the editor");
+    open_editor(&view, cx, label.clone(), editing_flag);
+    type_and_blur(&view, cx, &editor, "C");
+    let (value, _) = balance(&view, cx);
+    assert_eq!(value, 0., "a blurred \"C\" recenters");
+    open_editor(&view, cx, label.clone(), editing_flag);
+    type_and_blur(&view, cx, &editor, "150");
+    let (value, editing) = balance(&view, cx);
+    assert_eq!(value, 0., "an invalid blur changes nothing");
+    assert_eq!(editing, None, "an invalid blur still closes the editor");
 
     open_editor(&view, cx, label, editing_flag);
     type_and_commit(&view, cx, &editor, "150");

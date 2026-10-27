@@ -333,13 +333,14 @@ pub(in crate::ui::window) fn balance(
                             .unwrap_or_default()
                     },
                 ),
+                px(10.),
+                TextAlign::Center,
             )
             .flex()
             .items_center()
             .justify_center()
             .flex_none()
             .h(px(17.))
-            .text_size(px(10.))
             .font_family(theme::FONT_MONO)
             .text_color(theme::TEXT_MUTED)
             .gpui_test_observe(),
