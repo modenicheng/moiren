@@ -52,7 +52,7 @@ static NTSTATUS ReserveRequest(VAD_SHARED* shared, VAD_PCM_REQUEST* context,
     NTSTATUS status = STATUS_SUCCESS;
     if (InterlockedCompareExchange(&shared->PcmOnline, 0, 0) == 0) {
         status = STATUS_DEVICE_REMOVED;
-    } else if (!vad::SameStream(slot, header)) {
+    } else if (!vad::CanQueuePcm(slot, header)) {
         status = STATUS_REVISION_MISMATCH;
     } else if (slot.SampleFormat != header.SampleFormat ||
         slot.PacketFrames != header.Frames || slot.Channels != header.Channels ||
