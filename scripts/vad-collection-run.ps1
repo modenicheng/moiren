@@ -71,6 +71,7 @@ $failure = $null
 $timedOut = $false
 $forced = $false
 $confirmed = $false
+$outputStable = $false
 $cleanupErrors = [Collections.Generic.List[string]]::new()
 $started = [DateTime]::UtcNow.ToString('o')
 $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -117,18 +118,19 @@ try {
             $exitCode = $process.ExitCode
             if ($null -eq $exitCode) { throw 'Owned child exited without a readable ExitCode' }
         } catch { $cleanupErrors.Add($_.Exception.Message) }
+        $outputStable = $confirmed -and $null -ne $stdoutCopy -and $null -ne $stderrCopy
         foreach ($copy in @($stdoutCopy, $stderrCopy)) {
             if ($null -eq $copy) { continue }
             try {
                 if (-not $copy.Wait(5000)) { throw 'Redirected child output did not drain within 5 seconds' }
                 $copy.GetAwaiter().GetResult()
-            } catch { $cleanupErrors.Add($_.Exception.Message) }
+            } catch { $outputStable = $false; $cleanupErrors.Add($_.Exception.Message) }
         }
-        try { $process.Dispose() } catch { $cleanupErrors.Add($_.Exception.Message) }
+        try { $process.Dispose() } catch { $outputStable = $false; $cleanupErrors.Add($_.Exception.Message) }
     }
     foreach ($stream in @($stdoutFile, $stderrFile)) {
         if ($null -ne $stream) {
-            try { $stream.Dispose() } catch { $cleanupErrors.Add($_.Exception.Message) }
+            try { $stream.Dispose() } catch { $outputStable = $false; $cleanupErrors.Add($_.Exception.Message) }
         }
     }
     $clock.Stop()
@@ -144,24 +146,32 @@ $receipt = [ordered]@{
     started_utc = $started; finished_utc = [DateTime]::UtcNow.ToString('o'); elapsed_seconds = $clock.Elapsed.TotalSeconds
     child_exit_code = $exitCode; timed_out = $timedOut; forced_termination = $forced
     termination_confirmed = $confirmed; error = $failure; cleanup_errors = $cleanupErrors.ToArray()
+    output_state = $(if ($outputStable) { 'stable' } else { 'unavailable' })
+    artifact_manifest_state = $(if ($outputStable) { 'eligible' } else { 'unavailable' })
 }
 Write-NewJson (Join-Path $OutputDirectory 'receipt.json') $receipt
 
 # Receipt is immutable from here. Metadata errors must never replace the child
 # outcome or remove stdout/stderr/probe artifacts. No recursive artifact sweep.
 $metadataError = $null
-try {
-    $artifacts = foreach ($name in @('receipt.json', 'stdout.log', 'stderr.log')) {
-        $path = Join-Path $OutputDirectory $name
-        if (Test-Path -LiteralPath $path -PathType Leaf) {
-            [ordered]@{ file = $name; bytes = (Get-Item -LiteralPath $path).Length
-                sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
+if (-not $outputStable) {
+    # A timed-out copy may still own an in-flight write after Dispose. Retain
+    # partial logs, but never hash them without successful drains and closes.
+    $metadataError = 'Artifact manifest unavailable: redirected output was not proven stable; receipt retained'
+} else {
+    try {
+        $artifacts = foreach ($name in @('receipt.json', 'stdout.log', 'stderr.log')) {
+            $path = Join-Path $OutputDirectory $name
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+                [ordered]@{ file = $name; bytes = (Get-Item -LiteralPath $path).Length
+                    sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
+            }
         }
-    }
-    Write-NewJson (Join-Path $OutputDirectory 'artifact-manifest.json') ([ordered]@{
-        schema_version = 1; scope = 'runner_owned_artifacts'; artifacts = @($artifacts)
-    })
-} catch { $metadataError = "Artifact manifest failed; receipt retained: $($_.Exception.Message)" }
+        Write-NewJson (Join-Path $OutputDirectory 'artifact-manifest.json') ([ordered]@{
+            schema_version = 1; scope = 'runner_owned_artifacts'; artifacts = @($artifacts)
+        })
+    } catch { $metadataError = "Artifact manifest failed; receipt retained: $($_.Exception.Message)" }
+}
 if ($status -ne 'child_exited') { throw "Collection $status`: $failure; $($cleanupErrors -join '; '); $metadataError" }
 if ($metadataError) { throw $metadataError }
 Write-Output "Collection child exited 0; receipt: $(Join-Path $OutputDirectory 'receipt.json')"

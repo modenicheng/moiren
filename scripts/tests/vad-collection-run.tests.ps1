@@ -66,10 +66,43 @@ if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) {
 $csharpSource = Join-Path $testRoot 'fast-exit.cs'
 [IO.File]::WriteAllText($csharpSource, @'
 using System;
+using System.Diagnostics;
+using System.Threading;
 class FastExit {
-    static int Main() {
+    static int Main(string[] args) {
+        if (args.Length == 4 && args[0] == "hold-pipes") {
+            using (var release = EventWaitHandle.OpenExisting(args[1]))
+            using (var ready = EventWaitHandle.OpenExisting(args[2]))
+            using (var closed = EventWaitHandle.OpenExisting(args[3])) {
+                try {
+                    Console.Out.WriteLine("inherited stdout retained");
+                    Console.Error.WriteLine("inherited stderr retained");
+                    ready.Set();
+                    return release.WaitOne(30000) ? 0 : 98;
+                } finally {
+                    Console.Out.Close();
+                    Console.Error.Close();
+                    closed.Set();
+                }
+            }
+        }
         Console.Out.WriteLine("native stdout retained");
         Console.Error.WriteLine("native stderr retained");
+        if (args.Length == 4 && args[0] == "spawn-holder") {
+            var start = new ProcessStartInfo {
+                FileName = Environment.GetCommandLineArgs()[0],
+                Arguments = "hold-pipes " + args[1] + " " + args[2] + " " + args[3],
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            // Inherit both output handles, then exit while the holder keeps
+            // them open. The test releases only this fixture via named events.
+            using (var holder = Process.Start(start))
+            using (var ready = EventWaitHandle.OpenExisting(args[2])) {
+                return ready.WaitOne(5000) ? 0 : 97;
+            }
+        }
         return 37;
     }
 }
@@ -149,6 +182,40 @@ foreach ($index in 1..12) {
     Require ([IO.File]::ReadAllText((Join-Path $output 'stderr.log')).Contains('native stderr retained')) "Native .exe run $index lost stderr"
 }
 Write-Output 'PASS: twelve genuine fast native .exe exit-37 children preserve code and both streams'
+
+$eventPrefix = 'Local\MoirenRunnerDrain-' + [Guid]::NewGuid().ToString('N')
+$releaseName = $eventPrefix + '-release'
+$readyName = $eventPrefix + '-ready'
+$closedName = $eventPrefix + '-closed'
+$release = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::ManualReset, $releaseName)
+$ready = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::ManualReset, $readyName)
+$closed = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::ManualReset, $closedName)
+try {
+    $output = Join-Path $testRoot 'inherited output drain timeout'
+    $failure = $null
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $null = & $Runner @nativeCommon -OutputDirectory $output `
+            -ArgumentList @('spawn-holder', $releaseName, $readyName, $closedName)
+    } catch { $failure = $_.Exception.Message }
+    $clock.Stop()
+    $receipt = Read-Json (Join-Path $output 'receipt.json')
+    Require ($receipt.child_exit_code -eq 0 -and $receipt.termination_confirmed) 'Drain timeout lost the actual exited child result'
+    Require ($receipt.status -eq 'runner_failed' -and $failure -like '*did not drain*') 'Held inherited pipes did not trigger a real asynchronous drain timeout'
+    Require (-not (Test-Path -LiteralPath (Join-Path $output 'artifact-manifest.json'))) 'Drain timeout published a manifest for output that was not proven stable'
+    Require ($receipt.output_state -eq 'unavailable' -and $receipt.artifact_manifest_state -eq 'unavailable') 'Drain timeout receipt must explicitly mark output and manifest unavailable'
+    Require ($clock.Elapsed.TotalSeconds -lt 20 -and -not $closed.WaitOne(0)) 'Runner must return within its bound while inherited pipes remain held'
+    Require ([IO.File]::ReadAllText((Join-Path $output 'stdout.log')).Contains('native stdout retained')) 'Drain timeout lost captured partial stdout'
+    Require ([IO.File]::ReadAllText((Join-Path $output 'stderr.log')).Contains('native stderr retained')) 'Drain timeout lost captured partial stderr'
+} finally {
+    # Never look up or kill descendants. Release this fixture's inherited
+    # handles cooperatively; its own wait also has a 30-second safety bound.
+    $null = $release.Set()
+    try { Require ($closed.WaitOne(5000)) 'Inherited-pipe fixture did not close its output within its cleanup bound' }
+    finally { $release.Dispose(); $ready.Dispose(); $closed.Dispose() }
+}
+Write-Output 'PASS: held inherited pipes fail collection without hashing incomplete logs; bounded fixture cleanup'
+Require ($zero.Receipt.output_state -eq 'stable' -and $zero.Receipt.artifact_manifest_state -eq 'eligible') 'Completed drains must remain eligible for the runner manifest'
 
 $metadata = Invoke-Case 'metadata failure' 'metadata-failure'
 Require ($metadata.Receipt.child_exit_code -eq 37 -and $metadata.Receipt.status -eq 'child_failed') 'Metadata failure erased original child result'
