@@ -4,6 +4,7 @@
 //! from native client lifetimes. A raw PDO may be Present while no client has
 //! opened a stream; that is an idle, usable state, not a transport failure.
 
+use super::endpoint_name::NameObserver;
 use super::{
     Channels, ClientError, ControlClient, DeviceInterface, Intent, PcmCompletion,
     PcmMicrophoneBridge, PcmOwner, PcmPlaybackBridge, PcmTicket, PdoState, ResidualPcm,
@@ -109,6 +110,9 @@ struct TransportEndpoint {
 pub struct WindowsVadProvider {
     state: Arc<Mutex<Lifecycle<ControlClient>>>,
     admission: Arc<Admission>,
+    name_observer: Mutex<NameObserver>,
+    name_reader: Mutex<super::endpoint_name::WindowsEndpointNameReader>,
+    name_clock: Mutex<super::endpoint_name::WindowsObserverClock>,
 }
 
 impl WindowsVadProvider {
@@ -136,6 +140,11 @@ impl WindowsVadProvider {
         Ok(Arc::new(Self {
             state: Arc::new(Mutex::new(Lifecycle::new(control))),
             admission: Arc::new(Admission::new()),
+            name_observer: Mutex::new(NameObserver::default()),
+            name_reader: Mutex::new(super::endpoint_name::WindowsEndpointNameReader::new(
+                interface.clone(),
+            )),
+            name_clock: Mutex::new(super::endpoint_name::WindowsObserverClock::new()),
         }))
     }
 
@@ -175,6 +184,29 @@ impl WindowsVadProvider {
             .into_iter()
             .map(Into::into)
             .collect()
+    }
+
+    /// Explicitly read Windows endpoint names on a control worker.
+    ///
+    /// This is deliberately separate from `export_observations`: normal
+    /// lifecycle polling and service pumps never enumerate MMDevice endpoints.
+    pub fn export_name_observations(
+        &self,
+        exports: &[VadExportObservation],
+    ) -> Vec<super::VadEndpointNameObservation> {
+        let mut observer = self
+            .name_observer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut reader = self
+            .name_reader
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut clock = self
+            .name_clock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        observer.observe(exports, &mut *reader, &mut *clock)
     }
 
     pub fn set_export_gate(
