@@ -79,6 +79,107 @@ pub(super) struct Pair {
     _apartment: Apartment,
 }
 
+/// One initialized exclusive WASAPI client. It deliberately never calls Start:
+/// pin/client ownership, independent of PCM quality, is the rename precondition.
+/// Only this opt-in path retains an MMDevice for Windows property readback.
+pub(super) struct HeldClient {
+    stream: Stream,
+    device: IMMDevice,
+    identity: super::rename::NativeName,
+    // All COM references above must be released before CoUninitialize.
+    _apartment: Apartment,
+}
+
+impl HeldClient {
+    pub fn prepare(
+        stable: StableEndpointId,
+        intent: Intent,
+        deadline: Instant,
+    ) -> anyhow::Result<Self> {
+        let apartment = Apartment::new()?;
+        let interfaces = discover_present_interfaces()?;
+        ensure!(
+            interfaces.len() == 1,
+            "rename requires exactly one present VAD root"
+        );
+        let root = identity::root_instance(&interfaces[0])?;
+        let enumerator: IMMDeviceEnumerator =
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
+        let candidate = loop {
+            ensure!(
+                Instant::now() < deadline,
+                "rename MMDevice enumeration timed out"
+            );
+            let (candidates, errors) = identity::candidates(&enumerator)?;
+            if let Some(candidate) = validation::select(&candidates, stable, intent, &root)? {
+                break candidate.clone();
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "rename MMDevice not present; topology errors: {errors:?}"
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+        let device = exact_device(&enumerator, &candidate, stable, &root)?;
+        let stream = Stream::prepare(&device, intent)?;
+        let windows_friendly_name = windows_friendly_name(&device)?;
+        ensure!(
+            Instant::now() < deadline,
+            "rename native initialization exceeded deadline"
+        );
+        Ok(Self {
+            stream,
+            device,
+            identity: super::rename::NativeName {
+                root_instance: root,
+                stable_id: stable.to_string(),
+                direction: format!("{intent:?}"),
+                mmdevice_id: candidate.id,
+                adapter_instance: candidate.raw_instance,
+                windows_friendly_name,
+            },
+            _apartment: apartment,
+        })
+    }
+
+    pub fn observe(&self) -> anyhow::Result<super::rename::NativeName> {
+        let mut observed = self.identity.clone();
+        // GetId and a newly opened read-only property store use the held actual
+        // MMDevice. No cached provider name participates in this observation.
+        observed.mmdevice_id = identity::take_string(unsafe { self.device.GetId()? })?;
+        observed.windows_friendly_name = windows_friendly_name(&self.device)?;
+        Ok(observed)
+    }
+
+    pub fn release(mut self) -> anyhow::Result<()> {
+        let stopped = self.stream.stop();
+        // Drop every native reference even if Stop fails; do not postpone release
+        // until a successful service rename or hide the original Stop error.
+        drop(self);
+        stopped
+    }
+}
+
+fn windows_friendly_name(device: &IMMDevice) -> anyhow::Result<String> {
+    use windows::Win32::{
+        Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
+        System::{Com::STGM_READ, Variant::VT_LPWSTR},
+    };
+    // SAFETY: apartment-local IMMDevice; the PROPVARIANT owns its string until
+    // the strict UTF-16 copy finishes. Its Drop clears the COM allocation.
+    unsafe {
+        let store = device.OpenPropertyStore(STGM_READ)?;
+        let property = store.GetValue(&PKEY_Device_FriendlyName)?;
+        ensure!(
+            property.Anonymous.Anonymous.vt == VT_LPWSTR,
+            "Windows FriendlyName is not VT_LPWSTR"
+        );
+        let pointer = property.Anonymous.Anonymous.Anonymous.pwszVal;
+        ensure!(!pointer.is_null(), "Windows FriendlyName is null");
+        Ok(String::from_utf16(pointer.as_wide())?)
+    }
+}
+
 impl Pair {
     pub fn prepare(ids: [StableEndpointId; 2], deadline: Instant) -> anyhow::Result<Self> {
         let apartment = Apartment::new()?;

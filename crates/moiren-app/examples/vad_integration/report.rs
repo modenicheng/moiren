@@ -15,6 +15,8 @@ pub(super) struct Report {
     pub persisted_project_verified: bool,
     pub native_clients_started_by_probe: u32,
     pub pcm_verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rename: Option<Vec<super::rename::Case>>,
     pub idle_hold: Option<IdleHoldEvidence>,
     pub pcm: Option<PcmEvidence>,
     pub soak_idle: Option<super::soak::IdleSoak>,
@@ -44,6 +46,7 @@ impl Default for Report {
             persisted_project_verified: false,
             native_clients_started_by_probe: 0,
             pcm_verified: false,
+            rename: None,
             idle_hold: None,
             pcm: None,
             soak_idle: None,

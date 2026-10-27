@@ -154,6 +154,19 @@ fn output_directory(requested: Option<PathBuf>) -> anyhow::Result<PathBuf> {
 fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -> Report {
     let mut report = Report::default();
     let pcm = options.pcm;
+    if options.rename {
+        report.stage = "real_service_native_rename";
+        report.limitations = vec![
+            "Playback and Microphone are tested sequentially with initialized exclusive 48kHz stereo Float32 WASAPI clients; no Start or PCM quality claim.",
+            "Held rename completion refusal means production Removing plus rename_pending with the old provider name and closed gate; the service accepts the desired intent, without a synchronous Rejected response.",
+            "Windows FriendlyName is read from the actual MMDevice property store; provider actual_name alone cannot pass.",
+            "Fresh replacement requires a new PDO token, newer endpoint generation, same control session, fresh service observation and Engine-confirmed open gates.",
+            "The service does not expose a direct old-Removed tombstone; recreation evidence is retained separately and is not called a direct Removed observation.",
+            "Native/control calls and teardown share the existing overall process watchdog; a forced exit never confirms graceful cleanup.",
+            "No physical latency, PCM, long-run qualification, driver installation or default-device changes.",
+            "Service Exited plus join proves control-file release, not final PDO absence.",
+        ];
+    }
     if pcm || options.soaking() {
         report.stage = "stage2_real_graph_native_pcm";
         report.limitations = vec![
@@ -256,6 +269,16 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
                 running.active_revision.is_some(),
                 "missing Engine confirmation"
             );
+            if options.rename {
+                return super::rename::target::exercise(
+                    &handle,
+                    &ids,
+                    stable_ids,
+                    work_deadline,
+                    &mut report,
+                    |report| publish(shared, report),
+                );
+            }
             if pcm || options.soaking() {
                 let session = LiveSession {
                     handle: &handle,

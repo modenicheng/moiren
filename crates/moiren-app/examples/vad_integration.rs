@@ -11,6 +11,9 @@ mod progress;
 #[path = "vad_integration/project.rs"]
 mod project;
 #[cfg(any(windows, test))]
+#[path = "vad_integration/rename.rs"]
+mod rename;
+#[cfg(any(windows, test))]
 #[path = "vad_integration/report.rs"]
 mod report;
 #[cfg(any(windows, test))]
@@ -30,7 +33,7 @@ mod native;
 #[path = "vad_integration/target.rs"]
 mod target;
 
-const HELP: &str = "vad_integration --exercise [--pcm] [--timeout-seconds=N] [--output-dir=NEW_DIRECTORY]\n\
+const HELP: &str = "vad_integration --exercise [--pcm | --rename] [--timeout-seconds=N] [--output-dir=NEW_DIRECTORY]\n\
     [--soak-idle-seconds=1..28800] [--soak-pcm-seconds=1..28800]\n\
     [--soak-pcm-file=material.wav (48kHz stereo PCM16/Float32, >=1s)]\n\
     Stage1: persisted v2 stereo VirtualPlayback -> Gain(0.5) -> VirtualMicrophone;\n\
@@ -45,6 +48,14 @@ const HELP: &str = "vad_integration --exercise [--pcm] [--timeout-seconds=N] [--
     stream generation; re-admission is bounded to 5s and the existing phase limit.\n\
     Both gates must be open at successful hold/signal-phase completion.\n\
     --pcm defaults to a 90s overall watchdog and requires at least 60s if set.\n\
+    --rename: real service/native Playback then Microphone remove/recreate.\n\
+    Hold an initialized exclusive client (no Start/PCM), Stop the Engine, request\n\
+    rename and require pending Removing, unchanged native identity and Windows\n\
+    FriendlyName; release every client, then require a fresh initialized native\n\
+    replacement, newer PDO/endpoint identity, Engine confirmation and an exact\n\
+    PKEY_Device_FriendlyName match. Provider/DTO names alone never pass.\n\
+    --rename is exclusive with --pcm and all soak options; defaults to 90s and\n\
+    requires at least 60s if set. Failed readbacks and cleanup errors are retained.\n\
     Soak: one persisted graph, one App owner. Idle observes actual frame_end\n\
     throughout the requested interval, with two advances per one-second window.\n\
     PCM soak implies --pcm and keeps the same real native pair RUN; alternates\n\

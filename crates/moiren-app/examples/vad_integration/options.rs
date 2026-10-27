@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub(super) struct Options {
     pub exercise: bool,
     pub pcm: bool,
+    pub rename: bool,
     pub help: bool,
     pub timeout_seconds: u64,
     pub soak_idle_seconds: u64,
@@ -20,6 +21,7 @@ impl Options {
         let mut options = Self {
             exercise: false,
             pcm: false,
+            rename: false,
             help: false,
             timeout_seconds: 30,
             soak_idle_seconds: 0,
@@ -32,6 +34,7 @@ impl Options {
             match argument.as_str() {
                 "--exercise" if !options.exercise => options.exercise = true,
                 "--pcm" if !options.pcm => options.pcm = true,
+                "--rename" if !options.rename => options.rename = true,
                 "--help" | "-h" => options.help = true,
                 value if value.starts_with("--timeout-seconds=") && !timeout_seen => {
                     timeout_seen = true;
@@ -80,6 +83,15 @@ impl Options {
             options.exercise || (!options.pcm && !options.soaking()),
             "--pcm and soak durations require --exercise"
         );
+        ensure!(
+            !options.rename || options.exercise,
+            "--rename requires --exercise"
+        );
+        ensure!(
+            !options.rename
+                || (!options.pcm && !options.soaking() && options.soak_pcm_file.is_none()),
+            "--rename cannot be combined with --pcm or any soak option"
+        );
         options.pcm |= options.soak_pcm_seconds > 0;
         if let Some(path) = &options.soak_pcm_file {
             ensure!(
@@ -116,13 +128,14 @@ impl Options {
                 "--timeout-seconds must be in 10..=120 without soak"
             );
         }
-        if options.pcm && !options.soaking() {
+        if (options.pcm || options.rename) && !options.soaking() {
             if !timeout_seen {
                 options.timeout_seconds = 90;
             }
             ensure!(
                 options.timeout_seconds >= 60,
-                "--pcm needs an overall timeout of at least 60 seconds"
+                "{} needs an overall timeout of at least 60 seconds",
+                if options.rename { "--rename" } else { "--pcm" }
             );
         }
         Ok(options)
@@ -225,6 +238,32 @@ mod tests {
         );
         assert!(parse(&["--exercise", "--pcm", "--timeout-seconds=59"]).is_err());
         assert!(parse(&["--exercise", "--pcm", "--pcm"]).is_err());
+    }
+
+    #[test]
+    fn rename_is_explicit_exclusive_and_reserves_cleanup_budget() {
+        let options = parse(&["--exercise", "--rename"]).expect("explicit rename probe");
+        assert_eq!(options.timeout_seconds, 90);
+        assert_eq!(options.work_budget().as_secs(), 60);
+        assert_eq!(
+            parse(&["--rename", "--exercise", "--timeout-seconds=60"])
+                .unwrap()
+                .timeout_seconds,
+            60
+        );
+        for invalid in [
+            vec!["--rename"],
+            vec!["--help", "--rename"],
+            vec!["--exercise", "--rename", "--rename"],
+            vec!["--exercise", "--rename", "--pcm"],
+            vec!["--exercise", "--pcm", "--rename"],
+            vec!["--exercise", "--rename", "--soak-idle-seconds=1"],
+            vec!["--exercise", "--rename", "--soak-pcm-seconds=1"],
+            vec!["--exercise", "--rename", "--soak-pcm-file=missing.wav"],
+            vec!["--exercise", "--rename", "--timeout-seconds=59"],
+        ] {
+            assert!(parse(&invalid).is_err(), "accepted {invalid:?}");
+        }
     }
 
     #[test]
