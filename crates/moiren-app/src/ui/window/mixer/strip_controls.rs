@@ -163,6 +163,21 @@ fn balance_value(position: Point<Pixels>, bounds: Bounds<Pixels>) -> f64 {
         .mul_add(2., -1.) as f64
 }
 
+/// Wheel direction as a step count: wheel up (or tilt right) is +1. Mirrors
+/// the fader's private helper: gpui carries touchpad pixel deltas and
+/// discrete line notches with the same sign — positive scrolls the content
+/// down, i.e. the wheel moved up. For the horizontal balance the vertical
+/// axis is the plain wheel gesture and the secondary axis covers shift+wheel
+/// and tilt wheels.
+fn wheel_direction(delta: &ScrollDelta) -> i32 {
+    let (x, y) = match delta {
+        ScrollDelta::Pixels(delta) => (f32::from(delta.x), f32::from(delta.y)),
+        ScrollDelta::Lines(delta) => (delta.x, delta.y),
+    };
+    let (x, y) = (x.signum(), y.signum());
+    if y != 0. { y as i32 } else { x as i32 }
+}
+
 fn set_balance(this: &Entity<StudioShell>, id: NodeId, balance: f64, cx: &mut App) {
     this.update(cx, |shell, cx| {
         shell.state.update(cx, |state, _| {
@@ -205,6 +220,7 @@ pub(in crate::ui::window) fn balance(
     let track_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::default()));
     let this = cx.entity();
     let drag_this = this.clone();
+    let wheel_this = this.clone();
     let click_bounds = track_bounds.clone();
     let drag_bounds = track_bounds.clone();
     let track_id = SharedString::from(format!("balance-track-{id:?}"));
@@ -244,6 +260,26 @@ pub(in crate::ui::window) fn balance(
                     let value = balance_value(event.event.position, drag_bounds.get());
                     set_balance(&drag_this, id, value, cx);
                 })
+                .on_scroll_wheel({
+                    let this = wheel_this;
+                    move |event: &ScrollWheelEvent, _, cx| {
+                        // A wheel step rides the same dispatch as the drag and
+                        // click edits; propagation stops here so adjusting the
+                        // balance never scrolls the strip page or the
+                        // inspector panel underneath.
+                        cx.stop_propagation();
+                        let direction = wheel_direction(&event.delta);
+                        if direction == 0 {
+                            return;
+                        }
+                        // One notch is 0.1 in the Left/Right buttons' sign
+                        // convention: left is negative and a wheel-up notch
+                        // moves right. The drag path has no center snap, so
+                        // stepping keeps the value it lands on.
+                        let step = f64::from(direction) * 0.1;
+                        set_balance(&this, id, (value + step).clamp(-1., 1.), cx);
+                    }
+                })
                 .child(
                     canvas(
                         move |bounds, _, _| track_bounds.set(bounds),
@@ -272,6 +308,12 @@ pub(in crate::ui::window) fn balance(
                         .h(px(14.))
                         .bg(theme::SIGNAL_DEVICE),
                 )
+                .tooltip(|window, cx| {
+                    component::tooltip::Tooltip::new(
+                        t!("Scroll to adjust · double-click to reset").into_owned(),
+                    )
+                    .build(window, cx)
+                })
                 .gpui_test_observe(),
         )
         .child(

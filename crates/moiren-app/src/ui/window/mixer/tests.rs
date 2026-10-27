@@ -3,8 +3,8 @@ use crate::ui::widgets::fader::FaderScale;
 use crate::ui::window::test_harness::{finish_service, test_shell, wait_until};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    Entity, Modifiers, MouseButton, SharedString, TestAppContext, VisualTestContext, point, px,
-    size,
+    Entity, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, SharedString, TestAppContext,
+    VisualTestContext, point, px, size,
 };
 
 fn poll(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
@@ -379,6 +379,91 @@ fn balance_drag_targets_its_own_strip_and_double_click_centers_it(cx: &mut TestA
             0.
         );
     });
+    finish_service(runtime);
+}
+
+/// A wheel notch is `Lines { y: 1. }` — gpui's positive wheel delta means the
+/// wheel moved up, which must step the balance right (+0.1), matching the
+/// inspector's Left/Right buttons' sign convention. Wheel steps ride the same
+/// dispatch as the drag edits and clamp to the ±1 track limits.
+#[gpui_kit::test]
+fn balance_wheel_steps_a_tenth_and_clamps_at_the_limits(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let id = view.update(cx, |shell, _| shell.mixer.order[0]);
+    let set_balance = |view: &Entity<StudioShell>, cx: &mut VisualTestContext, balance: f64| {
+        view.update(cx, |shell, cx| {
+            let mixer = shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(id)
+                .expect("strip node")
+                .mixer;
+            shell.state.update(cx, |state, _| {
+                state.dispatch(crate::service::AppRequest::EditGraph(
+                    crate::service::GraphEdit::SetMixer {
+                        node: id,
+                        state: crate::service::MixerState { balance, ..mixer },
+                    },
+                ));
+            });
+        });
+        poll(view, cx);
+    };
+    let balance = |view: &Entity<StudioShell>, cx: &mut VisualTestContext| -> f64 {
+        view.update(cx, |shell, cx| {
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .graph
+                .node(id)
+                .expect("strip node")
+                .mixer
+                .balance
+        })
+    };
+    let notch = |view: &Entity<StudioShell>, cx: &mut VisualTestContext, y: f32| {
+        let center = cx.update(|window, _| {
+            window
+                .find(SharedString::from(format!("balance-track-{id:?}")))
+                .bounds()
+                .center()
+        });
+        cx.simulate_event(ScrollWheelEvent {
+            position: center,
+            delta: ScrollDelta::Lines(point(0., y)),
+            ..Default::default()
+        });
+        poll(view, cx);
+    };
+
+    assert_eq!(balance(&view, cx), 0.);
+    // Wheel up moves the balance right by one tenth.
+    notch(&view, cx, 1.);
+    assert!((balance(&view, cx) - 0.1).abs() < 1e-9);
+    // Wheel down moves it back left, past center, by the same step.
+    notch(&view, cx, -1.);
+    notch(&view, cx, -1.);
+    assert!((balance(&view, cx) + 0.1).abs() < 1e-9);
+
+    // Stepping clamps at the right limit instead of overshooting it.
+    set_balance(&view, cx, 0.95);
+    notch(&view, cx, 1.);
+    assert_eq!(balance(&view, cx), 1.);
+    notch(&view, cx, 1.);
+    assert_eq!(balance(&view, cx), 1.);
+    set_balance(&view, cx, -0.95);
+    notch(&view, cx, -1.);
+    assert_eq!(balance(&view, cx), -1.);
     finish_service(runtime);
 }
 
