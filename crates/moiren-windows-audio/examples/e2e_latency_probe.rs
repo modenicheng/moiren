@@ -1,6 +1,8 @@
 //! Offline evidence analysis and an explicitly unqualified live Process Loopback harness.
 #[path = "e2e_latency_probe/cli.rs"]
 mod cli;
+#[path = "e2e_latency_probe/controlled_load.rs"]
+mod controlled_load;
 #[path = "e2e_latency_probe/live.rs"]
 mod live;
 #[path = "e2e_latency_probe/measurement.rs"]

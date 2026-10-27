@@ -682,6 +682,17 @@ fn validate(options: &LiveOptions) -> Result<()> {
             options.telemetry != TelemetryMode::Disabled,
             "collection requires native summary observations"
         );
+        if options.controlled_load_id.is_some() {
+            ensure!(
+                options.seconds >= 1,
+                "controlled load requires a positive collection duration"
+            );
+        }
+    } else {
+        ensure!(
+            options.controlled_load_id.is_none(),
+            "--controlled-load-id requires --vad-collection"
+        );
     }
     ensure!(
         options.source_schedule.is_none() || options.source_kind == EvidenceSourceKind::VadPlayback,

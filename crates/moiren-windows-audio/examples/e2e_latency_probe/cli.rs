@@ -80,6 +80,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         }
         return crate::measurement::run(arguments[1..].to_vec());
     }
+    if command == "controlled-load-worker" {
+        return crate::controlled_load::run_worker(arguments[1..].to_vec());
+    }
     if matches!(command.as_str(), "live-process-loopback" | "live-vad") {
         let mut live_arguments = arguments[1..].to_vec();
         if command == "live-vad" {

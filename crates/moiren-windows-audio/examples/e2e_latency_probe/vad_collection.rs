@@ -1,5 +1,6 @@
 //! One concrete VAD source/graph/independent-recorder run, always unqualified.
 
+use crate::controlled_load;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 #[cfg(any(windows, test))]
@@ -321,6 +322,9 @@ pub(super) fn collect(
         .context("collection source schedule missing")?
         .total_source_frames;
     let mut phases = Phases::new(config.clone(), frames, options.seconds);
+    let controlled_load_required_window = phases
+        .source_duration
+        .saturating_add(Duration::from_millis(config.postroll_ms));
     // Install the outer owner before recorder preparation or CREATE. Even a
     // half-prepared source has a stop-before-join callback into this same owner.
     let mut guard = CollectionGuard {
@@ -328,6 +332,10 @@ pub(super) fn collect(
         measurement: None,
         measurement_outcome: None,
         measurement_preparation_capture: None,
+        controlled_load_id: options.controlled_load_id.clone(),
+        controlled_load: None,
+        controlled_load_evidence: None,
+        controlled_load_required_window,
         failures: None,
         cleanup_failures: None,
         first_failure_observations: None,
@@ -410,6 +418,21 @@ pub(super) fn collect(
                 .as_ref()
                 .context("recorder missing")?
                 .check()?;
+            if let Some(load_id) = guard.controlled_load_id.as_deref()
+                && guard.controlled_load.is_none()
+                && matches!(recorder, MeasurementProgress::Running { .. })
+            {
+                let directory = Path::new(&paths.directory);
+                guard.controlled_load = Some(controlled_load::Supervisor::start(
+                    load_id,
+                    options.seconds,
+                    directory.join("controlled-load.stop"),
+                    directory.join("controlled-load.result.json"),
+                )?);
+            }
+            if let Some(load) = guard.controlled_load.as_mut() {
+                load.check()?;
+            }
             ensure!(
                 matches!(
                     recorder,
@@ -543,6 +566,9 @@ pub(super) fn collect(
             "native_summary": guard.vad.report.backend_diagnostics,
             "engine_cleanup": guard.vad.report.engine_cleanup, "vad_cleanup": guard.vad.report.vad_cleanup },
         "measurement": measurement, "phases": phases.stamps,
+        "controlled_load_id": guard.controlled_load_id,
+        "controlled_load": guard.controlled_load_evidence,
+        "controlled_load_requested": guard.controlled_load_id.is_some(),
         "source_submitted_complete": source_submitted_complete,
         "source_completion_observed_in_phases": phases.completed.is_some(), "preroll_complete": phases.source_requested.is_some(),
         "postroll_complete": phases_complete, "collection_complete": complete,
@@ -565,6 +591,10 @@ struct CollectionGuard<'a> {
     measurement: Option<crate::measurement::session::MeasurementSession>,
     measurement_outcome: Option<crate::measurement::session::MeasurementOutcome>,
     measurement_preparation_capture: Option<Box<moiren_windows_audio::capture::CaptureReport>>,
+    controlled_load_id: Option<String>,
+    controlled_load: Option<controlled_load::Supervisor>,
+    controlled_load_evidence: Option<controlled_load::Evidence>,
+    controlled_load_required_window: Duration,
     failures: Option<String>,
     cleanup_failures: Option<String>,
     first_failure_observations: Option<serde_json::Value>,
@@ -579,6 +609,31 @@ impl CollectionGuard<'_> {
             return;
         }
         self.retired = true;
+        if let Some(load) = self.controlled_load.take() {
+            match load.finish(self.controlled_load_required_window) {
+                Ok(evidence) => {
+                    if !evidence.valid {
+                        append_failure(
+                            &mut self.failures,
+                            evidence
+                                .failure
+                                .as_deref()
+                                .unwrap_or("controlled load evidence is invalid"),
+                        );
+                    }
+                    self.controlled_load_evidence = Some(evidence);
+                }
+                Err(error) => append_failure(
+                    &mut self.failures,
+                    &format!("finish controlled load: {error:#}"),
+                ),
+            }
+        } else if self.controlled_load_id.is_some() {
+            append_failure(
+                &mut self.failures,
+                "controlled load was requested but never started",
+            );
+        }
         let mut failures = None;
         retire(
             |stage| match stage {
