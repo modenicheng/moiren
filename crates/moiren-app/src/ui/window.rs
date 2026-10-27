@@ -130,6 +130,7 @@ pub struct StudioShell {
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
     meters: MeterSubscriptions,
     node_meters: super::monitoring::NodeMeters,
+    node_spectra: super::spectrum::NodeSpectra,
     node_meter_points:
         std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<moiren_core::graph::NodeId>>>,
     gain_slider: Entity<base::slider::SliderState>,
@@ -286,6 +287,7 @@ impl StudioShell {
         .detach();
         let meters = MeterSubscriptions::new(state.read(cx).handle.clone());
         let node_meters = super::monitoring::NodeMeters::new(state.read(cx).handle.clone());
+        let node_spectra = super::spectrum::NodeSpectra::new(state.read(cx).handle.clone());
         let preferences = crate::project::load_preferences().unwrap_or_default();
         let density = match preferences.density {
             crate::project::UiDensity::Compact => Density::Compact,
@@ -328,6 +330,7 @@ impl StudioShell {
             selected_route: None,
             meters,
             node_meters,
+            node_spectra,
             node_meter_points: Default::default(),
             gain_slider,
             pan_slider,
@@ -398,6 +401,7 @@ impl StudioShell {
             shell.presentation.minimized = !visibility.is_visible();
             if !visibility.is_visible() {
                 shell.meters.update(&shell.state.read(cx).snapshot, false);
+                shell.update_node_meters(false, cx);
             }
             cx.notify();
         })
@@ -458,11 +462,14 @@ impl StudioShell {
     /// display refresh rate.
     fn meters_frame_active(&self, cx: &App) -> bool {
         let snapshot = &self.state.read(cx).snapshot;
+        self.observations_visible() && snapshot.phase == SessionPhase::Running
+    }
+
+    fn observations_visible(&self) -> bool {
         self.presentation.visible
             && !self.presentation.minimized
             && !self.settings_open
             && matches!(self.presentation.page, Page::Graph | Page::Mixer)
-            && snapshot.phase == SessionPhase::Running
     }
 
     /// Refresh every meter observation once: reads the latest windows,
@@ -482,15 +489,22 @@ impl StudioShell {
             visible && points.0,
             visible && points.1,
         );
-        let node_meter_changed = self.update_node_meters(visible, cx);
+        // Visible stopped analyzers report Stopped, not Hidden. Transport state
+        // is reconciled by the observation models, independently of layout.
+        let node_meter_changed = self.update_node_meters(self.observations_visible(), cx);
         meter_changed || node_meter_changed
     }
 
     fn set_page(&mut self, page: Page, cx: &mut Context<Self>) {
+        if self.presentation.page != page {
+            self.meter_points.set((false, false));
+            self.node_meter_points.borrow_mut().clear();
+        }
         self.presentation.page = page;
         self.window_state.workspace = desktop::workspace(page);
         self.settings_open = false;
         self.project_menu = false;
+        self.update_node_meters(self.observations_visible(), cx);
         #[cfg(feature = "gpui-test")]
         if let Some(cell) = &self.test_page {
             cell.update(cx, |cell, _| cell.page = page);
@@ -587,6 +601,9 @@ mod test_harness;
 pub use test_harness::{finish_service, initial_projection, spawn_service, wait_for, wait_until};
 #[cfg(feature = "gpui-test")]
 pub use test_harness::{settle_panels, shell_with_state, test_shell};
+#[cfg(all(test, feature = "gpui-test"))]
+#[path = "spectrum/hook_tests.rs"]
+mod spectrum_hook_tests;
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
 mod tray_mixer;

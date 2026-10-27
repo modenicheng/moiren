@@ -45,8 +45,30 @@ impl StudioShell {
         {
             nodes.insert(selected);
         }
-        self.node_meters
-            .update(&self.state.read(cx).snapshot, &nodes)
+        let snapshot = &self.state.read(cx).snapshot;
+        let mut spectra = std::collections::BTreeSet::new();
+        if visible && matches!(self.presentation.page, Page::Graph | Page::Mixer) {
+            // Mixer strips are not spectrum plots. Only Graph viewport cards
+            // and the open Inspector own FFT demand.
+            if self.presentation.page == Page::Graph {
+                spectra.extend(self.node_meter_points.borrow().iter().copied());
+            }
+            if self.inspector_open
+                && let Some(selected) = self.selected_node
+            {
+                spectra.insert(selected);
+            }
+            spectra.retain(|id| {
+                snapshot
+                    .graph
+                    .graph
+                    .get_node(*id)
+                    .is_ok_and(|node| node.kind() == NodeKind::SpectrumAnalyzer)
+            });
+        }
+        let meters_changed = self.node_meters.update(snapshot, &nodes);
+        let spectra_changed = self.node_spectra.update(snapshot, &spectra);
+        meters_changed || spectra_changed
     }
 }
 

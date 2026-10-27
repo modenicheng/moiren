@@ -17,6 +17,7 @@ mod widgets;
 mod window;
 
 pub mod signals;
+pub mod spectrum;
 pub use component_gallery::run_component_preview;
 
 pub use widgets::action_assets::ActionIcon;
