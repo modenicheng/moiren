@@ -106,11 +106,13 @@ PowerShell target scripts, and the existing offline qualification evaluator.
   at QPC 601387562250. The same QPC appears on the independent capture's first
   packet. The Engine timeline advanced from frame 2,016 to 2,976 across the
   surrounding control observations, then continued while the VAD completion
-  count advanced at about ten packets per second. The carrier was observed at
+  count advanced at about one 480-frame packet per 10 ms. The carrier was observed at
   2,384 frames, later at 467, then starved with one xrun. This is evidence of
-  an initial virtual render scheduling hiatus and subsequent carrier drain,
-  not yet proof of the precise QPC missed-wake/debt-repayment cause; the
-  retained Engine timeline is sampled only by the control owner.
+  an initial native render wake hiatus and subsequent carrier drain. The graph
+  declares its physical output as `ClockRole::Master` and uses
+  `WindowsTransport`, so the independent virtual-owner QPC debt schedule does
+  not drive this path. The retained Engine timeline is sampled only by the
+  control owner; it does not prove the native hiatus's underlying cause.
 - A separate 2-second independent capture-only run, with no VAD playback or
   Engine graph, reproduced capture position discontinuities: 223 packets and
   61,913 frames over 1.379 seconds, 222 mismatches / 5,704 absolute position
@@ -139,6 +141,10 @@ PowerShell target scripts, and the existing offline qualification evaluator.
   Independent review then found that a redirected-output drain timeout could
   still lead to hashing unstable logs. That exceptional-path repair and its
   regression are required before the next target collection.
+- The collection example does not currently install a `log` implementation.
+  Setting `RUST_LOG` alone therefore cannot enable provider debug output. Add
+  an example-only stderr logger before the next diagnostic run; keep logging
+  off the render callback and preserve the bounded native render trace.
 
 ### Ordered Work and Atomic Checkpoints
 
@@ -152,10 +158,12 @@ PowerShell target scripts, and the existing offline qualification evaluator.
    the next collection's capture QPC, position and flags without weakening
    its zero-quality-failure gate. The capture-only result means position
    continuity is a separate VM capture qualification failure, not an effect
-   attributable only to VAD playback. Add the bounded
-   `moiren::audio::vad=debug` virtual-clock gap trace to the next VAD run and
-   align its QPC/frame/skipped/stage records with the render wake trace before
-   making a clock-owner change. Run the short microphone event case with the
+   attributable only to VAD playback. Enable example-side
+   `RUST_LOG=info,moiren::audio::vad=debug` and align retained provider records,
+   render wake QPC/demand/padding and Engine timeline observations. This
+   physical-master graph does not run the independent virtual owner, so
+   `virtual_clock_gap` events are not expected and cannot establish its cause.
+   Run the short microphone event case with the
    existing WPP clock-rebase trace enabled; capture the first drop's neighboring
    WRITE records, driver reason/deadline/lateness, and before/after gate epoch
    on a common QPC timeline. Repeat the same case enough times to distinguish a
