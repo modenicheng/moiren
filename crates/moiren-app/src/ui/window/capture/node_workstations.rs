@@ -18,6 +18,7 @@ use std::sync::{Arc, atomic::Ordering};
 mod rack_editing;
 mod recording_formats;
 mod spectrum_live;
+mod tone_precision;
 mod wav_validation;
 
 const ISOLATED_CONFIG: &str = "MOIREN_CAPTURE_NODES_CONFIG";
@@ -626,27 +627,31 @@ async fn capture(
             for inspector in [false, true] {
                 let surface = if inspector { "inspector" } else { "card" };
                 let name = format!("nodes-{density}-{surface}-{variant}-stopped");
+                let mut frame = capture_group(
+                    window,
+                    shell,
+                    directory,
+                    &name,
+                    &[NodeKind::Source],
+                    inspector,
+                    false,
+                    cx,
+                )
+                .await?;
+                if filter == Some("tone") {
+                    frame["tone"] = tone_precision::closed_evidence(window, shell, source, cx)?;
+                }
+                manifest.push(frame);
+            }
+            if filter == Some("tone") {
                 manifest.push(
-                    capture_group(
-                        window,
-                        shell,
-                        directory,
-                        &name,
-                        &[NodeKind::Source],
-                        inspector,
-                        false,
-                        cx,
-                    )
-                    .await?,
+                    tone_precision::capture_binding(window, shell, source, directory, density, cx)
+                        .await?,
                 );
             }
         }
     }
-    let expected_frames = if matches!(filter, Some("meter32" | "input-long")) {
-        6
-    } else {
-        4
-    };
+    let expected_frames = single_node_frame_count(filter);
     anyhow::ensure!(
         filter.is_none() || manifest.len() == expected_frames,
         "single-node capture must save exactly {expected_frames} frames"
@@ -1040,6 +1045,14 @@ fn source_variants() -> [(&'static str, InputSelection); 2] {
         ),
         ("tone", InputSelection::Tone { frequency_hz: 440. }),
     ]
+}
+
+fn single_node_frame_count(filter: Option<&str>) -> usize {
+    if matches!(filter, Some("meter32" | "input-long" | "tone")) {
+        6
+    } else {
+        4
+    }
 }
 
 fn populated_rack() -> RackSettings {
@@ -2562,6 +2575,17 @@ mod tests {
         assert_eq!(capture_filter(Some(" input ")).unwrap(), Some("input"));
         for invalid in ["", "unknown", "input,eq", "input eq"] {
             assert!(capture_filter(Some(invalid)).is_err());
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn tone_precision_adds_only_two_open_binding_frames_to_its_filter() {
+        assert_eq!(super::single_node_frame_count(Some("tone")), 6);
+        for filter in ["meter32", "input-long"] {
+            assert_eq!(super::single_node_frame_count(Some(filter)), 6);
+        }
+        for filter in ["application", "input", "eq", "spectrum", "recorder"] {
+            assert_eq!(super::single_node_frame_count(Some(filter)), 4);
         }
     }
 
