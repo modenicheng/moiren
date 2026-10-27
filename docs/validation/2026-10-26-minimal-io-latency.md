@@ -5,9 +5,10 @@
 - Date: 2026-10-26.
 - Branch: `feat/minimal-io-latency`.
 - Source base: `ec66e85117fbf668c2def334bdb33028afd454e9`.
-- Current reviewed probe-quality implementation: `a57abde`, with reviewed
-  bounded diagnostic collection repair `2c61452`; latest target probe and
-  diagnostic run: `2c61452`. Service/UI slices are tracked separately below.
+- Latest native target source: `02fd8b1`, including driver pre-Run admission
+  `25951de`. The matching test-signed package is installed as `oem31.inf`;
+  bounded event/timer retests still fail the zero-quality gate. Earlier
+  implementation, review and service/UI checkpoints are tracked below.
 - Worktree: `D:\coding\moiren\.worktrees\minimal-io-latency`.
 - Reference graph: Input -> Bus -> Output, 48 kHz.
 - Target: measured steady p95 <= 10 ms with stable continuous waveform.
@@ -40,7 +41,7 @@
 | 1 | Software foundation passed | 19 marker tests; no physical observation yet |
 | 2 | Software foundation passed | 5 transport, 8 budget and delivery-timing tests |
 | 3 | Software propagation passed; target native evidence partial | Real preparation/prime and 64-frame demand regressions; target native packet probe ran but is not a complete pass |
-| 4 | Software budget/boundary passed; target native matrix failed | Explicit VAD target/capacity tests passed; target event/timer PCM matrix hit `0x8007051A` revision mismatches |
+| 4 | Software budget/boundary passed; native quality remains unqualified | Latest matching driver/probe retests have event Microphone drops/silence and timer Playback startup silence; historical revision mismatches are retained below |
 | 5 | Software graph/RT regressions passed; physical timing pending | Compiled Input -> Bus -> Output delay regression; physical output timing pending |
 | 6 | App settings/rename tests passed; production/rename live validation pending | Persisted transport settings, stale active state, safe rename and held-client tests; current target native smoke is recorded below |
 | 7 | Not qualified | Calibrated physical p95, 30-minute and 2-hour PCM/load runs |
@@ -1049,3 +1050,94 @@ before native Start removes the previous Playback startup-silence pattern in
 event mode, while timer Playback and Microphone delivery still need work. No
 production `live-vad` rerun or long qualification follows from this bounded
 matrix until the native zero-quality gate passes.
+
+### 2026-10-27 `02fd8b1` matching signed-driver retest and cleanup
+
+The development host rebuilt source `02fd8b186bc27c14bbf7f761b6968eeed8d9fde5`
+with `build.ps1 -Analyze`: no warnings/errors, valid INF and generated CAT.
+All six driver host suites and all 33 `vad_native` example tests pass. The
+release native probe was rebuilt and remains 392,704 bytes with SHA-256
+`D3D64E87F73F450A0CDC2CDCD1CC4B6AFE4A40CDF2EB0113DD602005FED25C0B`.
+
+The package contains `25951de`'s separate pre-Run queue admission predicate;
+the transfer predicate still requires Running. Probe `02fd8b1` prequeues
+Playback PCM before native Start. These changes were already atomically
+committed and pushed before deployment.
+
+The SYS was signed using the existing WDK test certificate, the catalog was
+regenerated over that signed SYS, and the CAT was then signed. The development
+host does not trust the self-signed root, so its trust verification failed;
+the guest already trusts the exact signer
+`7F17CCDCA257D6ABC84255DD0D1854E93B9B5C1D`. Guest SignTool verification of
+both SYS and INF against the signed catalog passed before installation.
+`pnputil /add-driver /install` published `oem31.inf`, version `10.13.1.204`.
+The exact `ROOT\MEDIA\0000` device was restarted with no active probe or
+present dynamic children. The resulting service is Running from
+`C:\Windows\System32\DriverStore\FileRepository\moirenvad.inf_amd64_393dad2e93e4b62f\MoirenVad.sys`.
+All three installed files match the host package:
+
+| File | Length | SHA-256 |
+| --- | ---: | --- |
+| `MoirenVad.sys` | 103,832 | `C8D6644A7EEF6AB63EE1F713BB4BCEF6464921343AF1A467DFC39093167D705F` |
+| `MoirenVad.inf` | 1,804 | `DC3529821E0C68B290D00F44809CF2733B97177A62C5891F1C05F26769895DD3` |
+| `moirenvad.cat` | 2,474 | `632B125D249BFC9E3A17A56E5E0C1303B8ED280FE5DF65EAE8EC3C46B2B6773E` |
+
+The first event run produced a complete eight-case report, but its wrapper
+recorded a null exit code because it had not retained the process handle.
+That run is archived as diagnostic evidence with an unknown exit code; it
+is not promoted to a successful execution. Its Microphone cases contain
+0-960 silent frames and three dropped packets in total. The wrapper was
+repaired to acquire the owned process handle immediately after launch.
+Subsequent timer and repeated event runs both recorded exit 0, no timeout,
+and no present dynamic children after cleanup.
+
+The following are the actual one-second-per-case results from
+`native-02fd8b1-event1-r2` and `native-02fd8b1-timer1`. Signal frames are
+reported counts, not a guaranteed 48,000-frame delivery rate. An exit of 0
+reflects the probe's existing bounded acceptance threshold; it does not
+override these zero-quality failures.
+
+| Direction / channels / format | Event signal | Event silent | Event dropped writes | Timer signal | Timer silent |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Playback / mono / PCM16 | 47,040 | 0 | 0 | 45,056 | 2,048 |
+| Playback / mono / Float32 | 47,040 | 0 | 0 | 46,080 | 1,024 |
+| Playback / stereo / PCM16 | 47,040 | 0 | 0 | 46,080 | 1,024 |
+| Playback / stereo / Float32 | 47,040 | 0 | 0 | 47,104 | 512 |
+| Microphone / mono / PCM16 | 47,040 | 480 | 1 | 48,000 | 0 |
+| Microphone / mono / Float32 | 47,520 | 0 | 0 | 47,520 | 0 |
+| Microphone / stereo / PCM16 | 47,040 | 480 | 1 | 47,520 | 0 |
+| Microphone / stereo / Float32 | 47,040 | 480 | 1 | 46,080 | 0 |
+
+Every case in these two runs reports zero native discontinuities; the timer
+run reports zero dropped writes in every case. All six default-device
+readbacks are identical before and after each run. No revision-mismatch
+failure appeared in these bounded runs, but event Microphone quality and
+timer Playback startup silence remain unresolved. No production graph
+rerun, held-client rename, calibrated physical latency or long-duration
+qualification is claimed.
+
+Host archives, including guest payload manifests, exit metadata, stdout and
+stderr, are:
+
+- `target/vad-target-archive/20261027-native-02fd8b1-event1/`
+- `target/vad-target-archive/20261027-native-02fd8b1-timer1/`
+- `target/vad-target-archive/20261027-native-02fd8b1-event1-r2/`
+- `target/vad-target-archive/20261027-driver-02fd8b1/`
+
+All run payload lengths and SHA-256 hashes were checked after transfer and
+checked again on the guest before deletion. The package archive retains the
+signed files, manifest, installation/restart log, previous installation logs
+and final cleanup inventory. Temporary unsigned/signed staging directories,
+superseded probes, the temporary signature verifier, completed run directories,
+wrappers and copied manifests were removed only inside the validated
+`C:\MoirenVadTest` tree, after rejecting reparse points.
+
+At `2026-10-27T10:27:03+08:00`, the guest retains only
+`C:\MoirenVadTest\vad_native-02fd8b1.exe` (392,704 bytes) in that test tree.
+There are no active test processes or present dynamic VAD children; the
+installed `MoirenVad` service remains Running. Free space is 30.107 GiB.
+The guest is `DRIVER-TEST`, Windows `10.0.26200`; the earlier mixed-shell
+observation of `10.0.26300` was the development host and is not guest evidence.
+`C:\DriverTest`, installed/rollback DriverStore packages and system files
+were preserved. Future builds and evidence retention remain on the host;
+the guest is used only for the current bounded test.
