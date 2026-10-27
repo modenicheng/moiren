@@ -16,7 +16,7 @@ use windows::{
         },
         Foundation::PROPERTYKEY,
         Media::Audio::{
-            DEVICE_STATE_ACTIVE, IDeviceTopology, IMMDevice, IMMDeviceEnumerator,
+            DEVICE_STATE, DEVICE_STATEMASK_ALL, IDeviceTopology, IMMDevice, IMMDeviceEnumerator,
             MMDeviceEnumerator, eCapture, eRender,
         },
         System::{
@@ -152,8 +152,12 @@ fn enumerate_candidates(
         (eRender, super::super::Intent::Playback),
         (eCapture, super::super::Intent::Microphone),
     ] {
-        let devices = unsafe { enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE) }
-            .map_err(|error| hresult(&format!("EnumAudioEndpoints({intent:?})"), &error))?;
+        // A VAD MMDevice may be present but inactive between recreation and a
+        // client opening it. Enumerate all states, then require the exact root,
+        // stable ID and flow below instead of treating Active as existence.
+        let devices =
+            unsafe { enumerator.EnumAudioEndpoints(flow, DEVICE_STATE(DEVICE_STATEMASK_ALL)) }
+                .map_err(|error| hresult(&format!("EnumAudioEndpoints({intent:?})"), &error))?;
         let count = unsafe { devices.GetCount() }.map_err(|error| {
             hresult(
                 &format!("IMMDeviceCollection::GetCount({intent:?})"),
