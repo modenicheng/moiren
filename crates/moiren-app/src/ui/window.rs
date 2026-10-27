@@ -856,6 +856,25 @@ impl StudioShell {
         }
     }
 
+    /// True when a text field anywhere in the shell owns focus: graph
+    /// search, node rename, inspector editors, mixer send gains, and export
+    /// fields all keep typing shortcuts (and their undo) for themselves.
+    fn typing_focus(&self, focused: &FocusHandle, cx: &App) -> bool {
+        self.node_search.read(cx).focus_handle(cx) == *focused
+            || self.node_name.read(cx).focus_handle(cx) == *focused
+            || self
+                .compressor
+                .inputs
+                .values()
+                .any(|input| input.read(cx).focus_handle(cx) == *focused)
+            || self
+                .mixer
+                .send_inputs
+                .values()
+                .any(|input| input.read(cx).focus_handle(cx) == *focused)
+            || self.export_controls.owns_focus(focused, cx)
+    }
+
     /// Ctrl+Z / Ctrl+Y: step the service graph journal. Typing focus and
     /// modal settings keep the shortcut for themselves.
     fn undo_redo_graph(&mut self, redo: bool, window: &Window, cx: &mut Context<Self>) {
@@ -872,18 +891,10 @@ impl StudioShell {
         }
         // A focused text field owns ctrl-z; undoing the graph out from under
         // a keystroke the user is typing would be a surprise.
-        if let Some(focused) = window.focused(cx) {
-            let typing = self.node_search.read(cx).focus_handle(cx) == focused
-                || self.node_name.read(cx).focus_handle(cx) == focused
-                || self
-                    .compressor
-                    .inputs
-                    .values()
-                    .any(|input| input.read(cx).focus_handle(cx) == focused)
-                || self.export_controls.owns_focus(&focused, cx);
-            if typing {
-                return;
-            }
+        if let Some(focused) = window.focused(cx)
+            && self.typing_focus(&focused, cx)
+        {
+            return;
         }
         self.state.update(cx, |state, _| {
             state.dispatch(if redo {
@@ -907,15 +918,7 @@ impl StudioShell {
             return;
         }
         let focused = window.focused(cx);
-        let text_input_focused = focused.is_some_and(|focused| {
-            self.node_search.read(cx).focus_handle(cx) == focused
-                || self.node_name.read(cx).focus_handle(cx) == focused
-                || self
-                    .compressor
-                    .inputs
-                    .values()
-                    .any(|input| input.read(cx).focus_handle(cx) == focused)
-        });
+        let text_input_focused = focused.is_some_and(|focused| self.typing_focus(&focused, cx));
         if !text_input_focused {
             window.focus(&self.graph_focus, cx);
         }

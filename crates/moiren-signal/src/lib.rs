@@ -2,6 +2,10 @@
 //!
 //! Registration, subscription and name resolution are non-real-time operations.
 //! Publication requires the unique host and a current operation scope.
+//!
+//! The Stream transport is spec-complete but carries no production traffic
+//! yet: it is awaiting its first routed consumer (the planned UI waveform
+//! view). Latest carries all current publication paths.
 
 mod budget;
 mod demand;

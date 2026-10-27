@@ -2,6 +2,12 @@
 
 ## Result
 
+> **Update (2026-10-22):** the eight-hour **idle** run subsequently **passed**
+> (28,730/28,800 windows, zero epochs) while the music phase failed
+> environmentally — see the closing "Long-soak attempt 2" section below and
+> `driver/vad/STATUS.md` for the current gate status. This header reflects the
+> 2026-10-21 snapshot only.
+
 The short combined target gate remains **FAIL**. Do not start or qualify the
 eight-hour idle/PCM runs from these results. No silence, waveform, freshness,
 coverage, or deadline acceptance rule was relaxed. No driver was installed and

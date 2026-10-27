@@ -22,10 +22,9 @@ pub use pan::Pan;
 pub(crate) use passthrough::PassThrough;
 pub(crate) use strip::ChannelStrip;
 pub use strip::{ChannelMode, StripConfig};
-/// Bus and Sum share the same prepared mixing kernel. Dynamic logical input
-/// editing stays in core; runtime inputs are fixed by the prepared IO bindings.
+/// The prepared mixing kernel. Dynamic logical input editing stays in core;
+/// runtime inputs are fixed by the prepared IO bindings.
 pub use sum::Sum as Bus;
-pub use sum::Sum;
 
 /// Built-in state is fixed-size so `process` never allocates for a new graph
 /// channel count. Larger layouts need a processor-specific prepared contract.

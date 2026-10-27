@@ -58,6 +58,15 @@ impl TopicState {
             },
         }
     }
+    /// Publication gate shared by every endpoint flavor: a closed topic
+    /// rejects writes regardless of transport mode.
+    pub(crate) fn check_open(&self) -> Result<(), crate::PublishError> {
+        if self.demand.is_closed() {
+            Err(crate::PublishError::Closed)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 pub(crate) struct SubscriptionLease {

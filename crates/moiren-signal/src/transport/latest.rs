@@ -14,7 +14,6 @@ pub(crate) struct LatestEndpoint<'a, S: Clone + Send> {
 #[cfg(test)]
 impl<S: Clone + Send + 'static> LatestStorage<S> {
     // B5 validates host/binding authority before acquiring this private borrow.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn endpoint(&mut self) -> LatestEndpoint<'_, S> {
         assert_eq!(
             self.state
@@ -45,18 +44,10 @@ impl<S: Clone + Send> LatestEndpoint<'_, S> {
     pub(crate) fn demand(&self) -> DemandSnapshot {
         self.demand
     }
-    fn check_open(&self) -> Result<(), PublishError> {
-        if self.state.demand.is_closed() {
-            Err(PublishError::Closed)
-        } else {
-            Ok(())
-        }
-    }
 }
 impl<T: Copy + Send> LatestEndpoint<'_, ValueSlot<T>> {
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish(&mut self, value: T) -> Result<PublishOutcome, PublishError> {
-        self.check_open()?;
+        self.state.check_open()?;
         if !self.demand.active {
             return Ok(PublishOutcome::NoDemand);
         }
@@ -98,7 +89,7 @@ impl<H: Copy + Send, E: Copy + Send> BlockWriteGuard<'_, H, E> {
         if len > self.max_len {
             return Err(PublishError::InvalidLength);
         }
-        self.endpoint.check_open()?;
+        self.endpoint.state.check_open()?;
         if !self.endpoint.demand.active {
             return Ok(PublishOutcome::NoDemand);
         }
@@ -120,7 +111,7 @@ impl<H: Copy + Send, E: Copy + Send> LatestEndpoint<'_, BlockSlot<H, E>> {
     /// Validation shared with the production `try_write_owned` path so the
     /// test-facing borrow entry point exercises the same checks.
     fn check_write(&mut self, max_len: usize) -> Result<(), WriteError> {
-        self.check_open()?;
+        self.state.check_open()?;
         if max_len > self.input.input_buffer_mut().elements.len() {
             return Err(PublishError::InvalidLength.into());
         }
