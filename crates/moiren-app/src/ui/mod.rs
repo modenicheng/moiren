@@ -36,4 +36,4 @@ pub use window::{WindowPresentation, run};
 #[cfg(any(test, feature = "gpui-test"))]
 pub use window::{finish_service, initial_projection, spawn_service, wait_for, wait_until};
 #[cfg(feature = "gpui-test")]
-pub use window::{shell_with_state, test_shell};
+pub use window::{settle_panels, shell_with_state, test_shell};

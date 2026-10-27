@@ -19,7 +19,7 @@ use crate::service::{AppHandle, AppSnapshot, ServiceRuntime};
 #[cfg(feature = "gpui-test")]
 use crate::ui::state::UiState;
 use crate::ui::state::initial_snapshot;
-#[cfg(all(test, feature = "gpui-test"))]
+#[cfg(feature = "gpui-test")]
 use gpui_kit::test::TestWindowExt;
 
 /// Sleep between polls; the deadline, not the interval, is the budget.
@@ -42,11 +42,9 @@ pub fn finish_service(runtime: ServiceRuntime) {
     runtime.join().unwrap();
 }
 
-/// Polls until `poll` returns true, panicking once `timeout` elapses.
-#[track_caller]
 /// Panel springs animate in real time; tests that toggle panels must let the
 /// widths settle before clicking handles or measuring canvas geometry.
-#[cfg(all(test, feature = "gpui-test"))]
+#[cfg(feature = "gpui-test")]
 pub fn settle_panels(cx: &mut gpui_kit::VisualTestContext) {
     std::thread::sleep(Duration::from_millis(900));
     cx.update(|window, cx| {
@@ -55,6 +53,8 @@ pub fn settle_panels(cx: &mut gpui_kit::VisualTestContext) {
     });
 }
 
+/// Polls until `poll` returns true, panicking once `timeout` elapses.
+#[track_caller]
 pub fn wait_until(timeout: Duration, mut poll: impl FnMut() -> bool) {
     let deadline = Instant::now() + timeout;
     while !poll() {
@@ -95,7 +95,7 @@ pub fn shell_with_state(
     &mut gpui_kit::VisualTestContext,
 ) {
     cx.update(gpui_kit::init);
-    cx.add_window_view(|window, cx| super::StudioShell::new(state, window, cx, None))
+    cx.add_window_view(|window, cx| test_shell_body(state, window, cx))
 }
 
 /// Standard headless shell: inits gpui, spawns the core-driver service,
@@ -114,7 +114,20 @@ pub fn test_shell(
     let handle = runtime.handle();
     let snapshot = initial_projection(&handle);
     let state = cx.new(|_| UiState::new(handle, snapshot));
-    let (view, cx) =
-        cx.add_window_view(|window, cx| super::StudioShell::new(state, window, cx, None));
+    let (view, cx) = cx.add_window_view(|window, cx| test_shell_body(state, window, cx));
     (view, cx, runtime)
+}
+
+/// The shell under test must never persist to the developer's real
+/// configuration; `StudioShell::new` still reads it for density and language,
+/// but preference writes are disabled.
+#[cfg(feature = "gpui-test")]
+fn test_shell_body(
+    state: gpui_kit::Entity<UiState>,
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::Context<super::StudioShell>,
+) -> super::StudioShell {
+    let mut shell = super::StudioShell::new(state, window, cx, None);
+    shell.preferences_path = None;
+    shell
 }

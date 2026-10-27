@@ -273,6 +273,7 @@ impl StudioShell {
     pub(in super::super) fn set_language(
         &mut self,
         language: crate::i18n::UiLanguage,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.preferences.language == language {
@@ -281,6 +282,17 @@ impl StudioShell {
         crate::i18n::apply(language);
         self.preferences.language = language;
         self.save_preferences(cx);
+        // Strings stored in component state never re-read the locale on
+        // re-render; the search placeholder must follow the switch like the
+        // render-time t! calls do.
+        self.node_search.update(cx, |search, cx| {
+            search.set_placeholder(t!("Search nodes"), window, cx);
+        });
+        // The untitled name is presentational, so it follows the locale too;
+        // a loaded document's name is user data and stays as authored.
+        if self.project_path.is_none() && !self.project_busy && self.pending_project.is_none() {
+            self.project_name = t!("Untitled session").into();
+        }
         cx.notify();
     }
 
@@ -331,7 +343,8 @@ impl StudioShell {
             self.settings.device = self.current_settings_draft(cx);
         }
         self.selected_device = Some(id);
-        self.inspector_open = true;
+        // Configure is an explicit request for the override editor.
+        self.open_inspector();
         cx.notify();
     }
 }
