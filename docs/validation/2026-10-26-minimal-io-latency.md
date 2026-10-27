@@ -2424,9 +2424,10 @@ teardown, and no cleanup errors. Rename acceptance still fails:
 - Microphone requested `Moiren rename Microphone 6460`, and the provider
   reports that name, but MMDevice FriendlyName remains
   `Moiren integration microphone seed 202610271955 (36- Moiren virtual audio endpoint)`.
-- Both runs retain a strict-held failure, `missing current observation
-  generation`, when the provider is absent during recreation. Exact-name and
-  lifecycle gates were not relaxed. The report is `unqualified`, not a pass.
+- Both Playback and Microphone cases retain a strict-held failure,
+  `missing current observation generation`, when the provider is absent during
+  recreation. Exact-name and lifecycle gates were not relaxed. The report is
+  `unqualified`, not a pass.
 
 Therefore users can edit and persist the desired VAD name and Moiren can send
 the new CREATE name, but the driver/Windows endpoint stack does not yet
