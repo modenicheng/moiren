@@ -5,6 +5,10 @@
 - Date: 2026-10-26.
 - Branch: `feat/minimal-io-latency`.
 - Source base: `ec66e85117fbf668c2def334bdb33028afd454e9`.
+- Latest collector/control diagnostics: `d64250f`, with runner repair
+  `59e781b`. VAD remains unqualified; an output-only control reproduces native
+  demand above nominal 48 kHz. See the final 2026-10-27 section for the current
+  target inventory and raw archive locations.
 - Latest native target period diagnostic: `405f6ec` adds an opt-in request for
   the queried exclusive minimum. The matching test-signed package remains
   installed as `oem32.inf`;
@@ -2193,3 +2197,107 @@ and temporary collector were removed. The VM keeps only the unchanged
 7,657,472-byte `vad_integration-b7896f3.exe` rename probe; its SHA-256 remains
 `AC9C985B6BDAD102E5999EB9A2F590E2A0895C3D9C75AA4BFC7D2492CF910708`, with
 30.09 GiB free. Driver, Windows, DriverStore and rollback files were untouched.
+
+### 2026-10-27 bounded provider trace and output-only cadence control
+
+Runner `59e781b` keeps the original child handle and numeric exit result,
+then publishes artifact hashes only after both redirected output tasks have
+successfully drained and their streams have closed. A real child that exits
+while an independently cooperative descendant holds its inherited pipes
+reproduces the original defect. With the repair, the receipt records
+`output_state=unavailable` and `artifact_manifest_state=unavailable`, retains
+partial logs and withholds the manifest. The original runner fails this
+regression; the repair passes all nine PowerShell 5.1 behavior groups.
+Independent spec and code-quality review passed.
+
+Collector `d64250f` initializes the existing workspace logger only when
+`RUST_LOG` is explicitly set. It parses the filter strictly and writes to
+stderr without a file writer. The handle lives through CLI cleanup, including
+native owner joins. The example passed 126 tests, strict example Clippy,
+focused formatting and a release build. Five real release `--help` invocations
+verified default silence, target filtering, invalid-filter exit 2, stderr-only
+logging and unchanged successful stdout. Independent review passed. The
+matching `routing_probe` release also built successfully; it was not modified.
+
+These target runs used the same render and independent capture endpoints as
+the earlier collections. Their reviewed binaries were host-built, copied
+individually and hash-checked before execution:
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `e2e_latency_probe.exe` | 5,784,576 | `61E2FDC6FDC47C376C11DBA169366548CBC5148604EB0B5FC8DB4ECC100EDB02` |
+| `routing_probe.exe` | 2,652,160 | `73AB74EE20914C8F079F44C178BA062D3A39362FE0B2F4F9C3CF202C951B3CA0` |
+| `vad-collection-run.ps1` | 9,017 | `32AD3AB9C6401BCE8ECDC08A95DCF539FF9B3FC1DB9B593E565D1841F1100088` |
+
+The VAD run used the 15-second collection ceiling, no controlled load and
+`RUST_LOG=info,moiren::audio::vad=debug`. The runner preserved actual exit
+code `1`, confirmed process termination, stable output and the three-artifact
+manifest; it returned after 5.2138878 seconds without forced termination.
+The run retained 49 startup observations and provider debug records, but
+stopped early with one boundary xrun, 33 soft events and incomplete collection.
+All final provider drop/silence/recovery/epoch-reset counters were zero.
+A native render wake interval was 350.8985 ms. Between positive-queue control
+observations at QPC 628742753788 and 628745814790, Engine progress was 16,320
+frames over 0.3061002 seconds (about 53,316 frames/s), while completed packets
+advanced from 6 to 37 at 480 frames each (about 48,612 frames/s). The queue
+was observed at 2,384 frames and later at 467 before exhaustion. These sampled
+observations suggest a rate mismatch, without assigning its underlying cause.
+The independent recorder still failed its own continuity gate: 75 packets,
+20,892 frames, 74 position mismatches with 1,669 absolute position differences
+and one discontinuity flag; zero tap drops, overflow, silent frames or
+timestamp-error packets. Position differences do not directly count missing
+PCM frames.
+
+The graph's physical output is explicitly `ClockRole::Master`, and backend
+preparation selects `WindowsTransport`. It does not execute the independent
+virtual-owner QPC debt schedule; absence of `virtual_clock_gap` output is
+therefore expected and cannot prove or disprove this failure's cause.
+
+The separate two-second output control ran:
+
+```text
+routing_probe --output {0.0.0.00000000}.{71789a68-9934-4137-9e1a-ba0a5730aa68} --seconds 2 --profile compatible --trace
+```
+
+It has no VAD or capture, mixes two software tones behind zero-gain guards,
+and uses the same physical output. The runner records exit `0`; the report
+records healthy routing, muted output, closed host and clean shutdown.
+Both client and native mix report 48 kHz, a 480-frame period and native clock
+frequency 384,000. Its 224 callback timestamps span 2.0054339 seconds.
+The 223 submissions after the first total 107,040 frames, about 53,375
+frames/s, with median wake interval 8.9781 ms. Full native elapsed time is
+2.0089849 seconds and total submissions are 109,152 frames including priming.
+The first retained wake has empty padding; it is a startup observation, not
+a clean physical-quality result. Faster-than-nominal output consumption thus
+reproduces independently of VAD. Its native-device, format or QPC cause
+remains unproven. This diagnostic graph and its successful control exit do
+not qualify the reference graph or physical latency.
+
+The host archives retain the executed scripts, input provenance, raw payloads,
+guest inventories and derived analysis:
+
+- `target/vad-target-archive/20261027-collection-d64250f-providertrace-15s/`:
+  11 raw payloads totaling 1,552,998 bytes; the prior 3,855,360-byte probe
+  was also copied and hash-checked on the host before replacement.
+- `target/vad-target-archive/20261027-collection-d64250f-render-control-2s/`:
+  four raw payloads totaling 67,674 bytes, plus final guest inventory.
+
+Raw payload counts exclude host-authored provenance, analysis and cleanup
+records. Each guest payload length/SHA-256 matched on the host, and the guest
+was rechecked against that same inventory before scoped directory deletion.
+The collector cleanup's initial direct encoded command exceeded the target shell
+command-line limit after archiving; no evidence was lost or deleted by that
+failure. The same cleanup logic was transferred as a hash-checked script,
+executed, and removed. The temporary routing probe and all command helpers
+were removed too.
+
+Final `C:\MoirenVadTest` inventory is five files: current collector,
+`vad_integration-b7896f3.exe`, runner and two JSON input plans; no test
+processes or present dynamic VAD children, and 30.081 GiB free. The guest
+retains no run directories or superseded collector. Driver/package, device
+defaults, Windows and DriverStore were not changed. Next investigate native
+output demand against QPC/device-clock/format progression before another
+integrated repeat; keep capture qualification separate and do not enlarge
+buffers or weaken quality gates to mask the VM behavior. Physical calibration,
+same-condition Process comparison and the sustained qualification windows
+remain open; the 10 ms target is not achieved.

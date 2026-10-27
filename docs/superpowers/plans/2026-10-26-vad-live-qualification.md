@@ -86,8 +86,9 @@ PowerShell target scripts, and the existing offline qualification evaluator.
   `Clock rebase` event and its before/after gate state.
 - At the earlier minimum-period inventory, `C:\MoirenVadTest` retained the
   7,657,472-byte integration probe needed by the remaining rename check; the
-  system disk had 30.092 GiB free. That host failure archive is 547,071 bytes and retains the
-  verified probe plus raw run evidence, without the executed runner scripts.
+  system disk had 30.092 GiB free. That host failure archive is 547,071 bytes
+  and retains the verified probe plus raw run evidence, without the executed
+  runner scripts.
 - `5c143a6` completed the telemetry naming correction: schema 2 emits
   `completion_interval_observations` and `max_completion_interval_100ns`,
   with schema-1 JSON aliases retained for reading historical evidence.
@@ -106,10 +107,10 @@ PowerShell target scripts, and the existing offline qualification evaluator.
   at QPC 601387562250. The same QPC appears on the independent capture's first
   packet. The Engine timeline advanced from frame 2,016 to 2,976 across the
   surrounding control observations, then continued while the VAD completion
-  count advanced at about one 480-frame packet per 10 ms. The carrier was observed at
-  2,384 frames, later at 467, then starved with one xrun. This is evidence of
-  an initial native render wake hiatus and subsequent carrier drain. The graph
-  declares its physical output as `ClockRole::Master` and uses
+  count advanced at about one 480-frame packet per 10 ms. The carrier was
+  observed at 2,384 frames, later at 467, then starved with one xrun. This is
+  evidence of an initial native render wake hiatus and subsequent carrier
+  drain. The graph declares its physical output as `ClockRole::Master` and uses
   `WindowsTransport`, so the independent virtual-owner QPC debt schedule does
   not drive this path. The retained Engine timeline is sampled only by the
   control owner; it does not prove the native hiatus's underlying cause.
@@ -139,33 +140,71 @@ PowerShell target scripts, and the existing offline qualification evaluator.
   original `Process.Start()` handle and passed the Windows PowerShell 5.1
   regressions. The QPC collection receipt retained the actual exit code `1`.
   Independent review then found that a redirected-output drain timeout could
-  still lead to hashing unstable logs. That exceptional-path repair and its
-  regression are required before the next target collection.
-- The collection example does not currently install a `log` implementation.
-  Setting `RUST_LOG` alone therefore cannot enable provider debug output. Add
-  an example-only stderr logger before the next diagnostic run; keep logging
-  off the render callback and preserve the bounded native render trace.
+  still lead to hashing unstable logs. Commit `59e781b` closes that defect:
+  unproven output is explicitly unavailable and no manifest is published.
+  A real inherited-pipe regression fails against the original runner and
+  passes with the repair; all nine PS5.1 behavior groups and independent
+  spec/quality review passed.
+- Commit `d64250f` adds example-only opt-in `RUST_LOG` stderr logging, with no
+  render-callback logging or audio-default changes. All 126 example tests,
+  strict example Clippy, focused formatting, two release builds and five
+  real filter/routing invocations passed; independent spec/quality review
+  passed. Previously, this example installed no logger, so setting `RUST_LOG`
+  alone could not enable provider debug output.
+- The matching 15-second-ceiling collection with provider debug enabled
+  returned actual exit code `1` after 5.214 seconds. Its 49 startup samples
+  retain a 350.8985 ms native wake interval, one boundary xrun and 33 soft
+  events; final provider drop/silence/recovery/epoch-reset counters remain
+  zero. Across 0.3061002 seconds of positive-queue control observations,
+  Engine frame progress implies approximately 53,316 frames/s while completed
+  VAD packets imply approximately 48,612 frames/s. These unsynchronized
+  control observations suggest a consumption/production mismatch; they are
+  not physical latency or exact packet-event timestamps.
+- A separate muted two-second `routing_probe` control on the same output,
+  with no VAD or capture, also consumed faster than nominal 48 kHz:
+  224 retained callbacks span 2.0054339 seconds; the 223 submissions after
+  the first total 107,040 frames, approximately 53,375 frames/s. Median wake
+  interval is 8.9781 ms for the nominal 480-frame period. It reports healthy
+  routing, closed host and clean shutdown. Its two software tones and
+  zero-gain guards make it an output-cadence diagnostic, not the reference
+  qualification graph. The mismatch therefore reproduces without VAD, but
+  its native-device/format/QPC cause remains unknown.
+- The new raw payload archives are
+  `target/vad-target-archive/20261027-collection-d64250f-providertrace-15s/`
+  (11 payloads, 1,552,998 bytes) and
+  `target/vad-target-archive/20261027-collection-d64250f-render-control-2s/`
+  (four payloads, 67,674 bytes). Each length and SHA-256 matched the guest
+  inventory and was rechecked there before deleting its run directory.
+  The previous probe is archived on the host; the temporary routing probe
+  and all guest helpers are removed. Final inventory has five retained files,
+  zero test processes/dynamic VAD children and 30.081 GiB free.
+- Mark each target checkpoint archived and hash-verified before running the
+  next case. The host now retains exact scripts and per-run inventories;
+  transfer only the required executable and runner. Keep the rename probe and
+  current input plans on the 64 GB guest disk and remove command helpers after
+  execution.
 
 ### Ordered Work and Atomic Checkpoints
 
 1. **Reproduce and classify the first failure.** Keep the current VM package
    and control session unchanged. The runner now preserves the actual child
    exit code before manifest serialization, and bounded startup samples now
-   contain explicitly labeled control-observation QPC windows. Finish the
-   runner's drain-timeout evidence-stability repair and independent re-review
-   before collecting again. The QPC windows bracket the reads; they are not
-   realtime event timestamps. Recheck startup probe publication and align
-   the next collection's capture QPC, position and flags without weakening
-   its zero-quality-failure gate. The capture-only result means position
+   contain explicitly labeled control-observation QPC windows. The runner
+   stability repair, example logger and their independent reviews are
+   complete. Before another VAD repeat, investigate native render demand
+   versus QPC/device-clock progression: the no-VAD output control already
+   reproduces the faster-than-nominal consumption. The QPC windows bracket
+   reads, not realtime events. Keep the capture continuity investigation and
+   its zero-quality-failure gate separate. The capture-only result means position
    continuity is a separate VM capture qualification failure, not an effect
-   attributable only to VAD playback. Enable example-side
+   attributable only to VAD playback. Retain example-side
    `RUST_LOG=info,moiren::audio::vad=debug` and align retained provider records,
    render wake QPC/demand/padding and Engine timeline observations. This
    physical-master graph does not run the independent virtual owner, so
    `virtual_clock_gap` events are not expected and cannot establish its cause.
-   Run the short microphone event case with the
-   existing WPP clock-rebase trace enabled; capture the first drop's neighboring
-   WRITE records, driver reason/deadline/lateness, and before/after gate epoch
+   Run the short microphone event case with the existing WPP clock-rebase
+   trace enabled; capture the first drop's neighboring WRITE records, driver
+   reason/deadline/lateness, and before/after gate epoch
    on a common QPC timeline. Repeat the same case enough times to distinguish a
    repeatable deadline defect from a one-off host scheduling stall. Run a
    default-period control case with the same binary, endpoint, and instrumentation.
