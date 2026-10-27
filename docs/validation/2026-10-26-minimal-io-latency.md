@@ -2650,3 +2650,65 @@ Fresh verification of this combined source state:
 No driver binary was deployed and no new audio run was performed. These host
 regressions do not advance Windows exact-name, native stability, calibration,
 matched-path comparison or long-duration qualification gates.
+
+### 2026-10-28 actual connected-part name diagnostic
+
+Probe commit `c6361057dd62ea02be8079a97ce552933f0019e9` adds an optional,
+read-only one-hop observation of the actual `GetConnectedTo` connector and
+its `IPart`. It retains independent HRESULTs, full topology-local IDs,
+exact global/device IDs, name/category, and match/mismatch/unknown identity
+checks. It does not change driver properties, categories, gates, default
+devices or rename acceptance predicates. This is DeviceTopology evidence,
+not a literal KS property response or a trace of EndpointBuilder's calls.
+
+Independent specification/code review passed. Fresh parent verification:
+108 example tests passed; strict example/test Clippy, fmt/diff and release
+build passed. The implementation report also retains 12 focused passing
+tests and multiple genuine RED/GREEN cases. The Windows PowerShell 5.1
+collection-runner regression script passed all nine groups on the host.
+
+The committed clean source was rebuilt before transfer. The probe is
+7,831,040 bytes, SHA-256
+`A87DC06170C427BDF6CC3821F7B85DE2E17EA170CFC5EA84EF7771C66EF11E00`.
+Installed package `oem35.inf`, version `13.30.29.665`, was unchanged; SYS
+SHA-256 is `3762BBDDD7FF3715F8231ECA31233EFCE7B2A01775CA23A2ABA40DA0C5E0D6D6`.
+Only the probe, reviewed runner, short helper and scalar installed-driver
+inventory were staged; no source, build tree or toolchain entered the VM.
+
+One `--exercise --rename --rename-fixture-seed=202610271027` run used the
+90-second probe / 105-second outer ceilings. The retained child exited **1**
+after 4.8423847 seconds; no timeout, forced termination or runner cleanup
+error occurred. The probe reported 3,274 ms of work, completed service join
+and control release, and retained both diagnostic failures rather than
+claiming acceptance. Both directions have direct old-Removed and fresh
+replacement evidence; neither satisfies strict-held or exact-name gates.
+No known-signal PCM was verified and no stable-audio claim follows.
+
+| Flow | Actual connected part before | Actual connected part after | Windows endpoint FriendlyName after |
+| --- | --- | --- | --- |
+| Playback | `Moiren integration playback seed 202610271027` | `Moiren rename Playback 12612` | Unchanged localized speaker label, `2- Moiren virtual audio endpoint` suffix |
+| Microphone | `Moiren integration microphone seed 202610271027` | `Moiren rename Microphone 12612` | Unchanged `Moiren integration microphone seed 202610271027 (Moiren virtual audio endpoint)` |
+
+Both before/after observations report exact adapter/device and connector/global
+ID matches. Both retain full local ID `65537` (not inferred to be a KS PinId).
+Playback subtype is `DFF21CE1-F70F-11D0-B917-00A0C9223196`; Microphone subtype
+is `DFF21BE1-F70F-11D0-B917-00A0C9223196`. The requested name reaches the
+observed actual topology part after recreation, while the MMDevice display
+property remains unchanged. This localizes the unresolved boundary beyond
+provider-spec/adapter-property reporting, but does not prove a cache cause,
+the exact registered interface consumed, or a supported display-name setter.
+The complete raw localized text and identities are preserved in the archive.
+
+Host archive:
+`target/vad-target-archive/connected-c636105-20261028-005318/`.
+All 14 payloads (7,969,743 bytes, including the executable and helpers) were
+copied and checked against the guest manifest. Its 3,700-byte copy has SHA-256
+`0DE2DE16CBBB6A8BB0DD06F2C0B6E8A9E84F30040FCB94002263669D035C88FA`.
+The same manifest and every payload were then re-hashed on the guest before
+deleting only the validated direct-child run directory: 7,973,443 file bytes
+removed, not a claim of equivalent reclaimed filesystem space. The final
+00:55:14 +08:00 scalar inventory confirms an empty `C:\MoirenVadTest`, no
+test process or present dynamic VAD child, bus `OK`, unchanged SYS hash, and
+32,224,735,232 bytes free (about 30.01 GiB). DriverStore, system, debugging
+infrastructure and rollback files were not removed. Rename and all physical
+latency/quality/long-duration gates remain open.

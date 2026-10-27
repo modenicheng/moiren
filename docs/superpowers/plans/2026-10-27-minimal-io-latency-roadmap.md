@@ -342,6 +342,15 @@ independent accepted two-hour repetitions.
   Preserve `C:\DriverTest`, installed packages and rollback infrastructure;
   keep builds/source trees on the host and archive/hash-check/delete each
   completed guest run before staging another one.
+- [x] 2026-10-28 connected-part diagnostic (`c636105`, pushed): one-hop
+  actual connector/IPart names change to the requested value in both flows,
+  with exact adapter/global identity matches, while Windows endpoint names
+  remain unchanged. Independent review, 108 example tests, strict Clippy,
+  fmt and release build pass. The single target run exits 1 and preserves
+  strict-held and exact-name failures; it is not rename acceptance. All 14
+  payloads and the manifest were checked on host and guest before removing
+  7,973,443 file bytes. Final guest root is empty, bus OK, no test process or
+  dynamic child, 32,224,735,232 bytes free. No driver/default changes.
 - [ ] Exact Windows endpoint FriendlyName rename acceptance for Playback and
   Microphone.
 - [ ] Zero-quality-fault VAD playback/microphone short gates and characterized
