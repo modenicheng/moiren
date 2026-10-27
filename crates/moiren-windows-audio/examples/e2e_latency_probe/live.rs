@@ -5,6 +5,7 @@
 //! physical qualification still requires an independent measurement artifact
 //! and calibration provenance.
 
+use super::controlled_load;
 use super::pcm::{PcmAnalysis, PcmSchedule, analyze};
 use anyhow::{Context, Result, bail, ensure};
 use moiren_windows_audio::latency::qualification::{
@@ -211,6 +212,7 @@ struct NativeReport {
     diagnostic_observations: u64,
     error: Option<String>,
     collection: Option<Value>,
+    controlled_load: Option<Value>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -682,16 +684,20 @@ fn validate(options: &LiveOptions) -> Result<()> {
             options.telemetry != TelemetryMode::Disabled,
             "collection requires native summary observations"
         );
-        if options.controlled_load_id.is_some() {
-            ensure!(
-                options.seconds >= 1,
-                "controlled load requires a positive collection duration"
-            );
-        }
-    } else {
+    }
+    if options.controlled_load_id.is_some() {
         ensure!(
-            options.controlled_load_id.is_none(),
-            "--controlled-load-id requires --vad-collection"
+            options.seconds >= 1,
+            "controlled load requires a positive collection duration"
+        );
+        ensure!(
+            !options.diagnostic_soak,
+            "--controlled-load-id cannot mix diagnostic-soak"
+        );
+        ensure!(
+            options.source_kind == EvidenceSourceKind::ProcessLoopback
+                || options.vad_collection.is_some(),
+            "--controlled-load-id requires Process Loopback or --vad-collection"
         );
     }
     ensure!(
@@ -1605,7 +1611,7 @@ mod native {
     ) -> Result<()> {
         let identity =
             inspect_process(options.source_pid).context("inspect selected source process")?;
-        let duration = if options.diagnostic_soak {
+        let duration = if options.diagnostic_soak || options.controlled_load_id.is_some() {
             SessionDuration::UntilStopped
         } else {
             SessionDuration::For(Duration::from_secs(options.seconds))
@@ -1689,41 +1695,98 @@ mod native {
         gate.activate().context("activate capture/render gate")?;
         let capture_session = prepared.session;
         let render_session = prepared_render.into_session();
-        let collection = if let Some(journal) = journal.as_mut() {
+        let mut controlled_load = if let Some(load_id) = options.controlled_load_id.as_deref() {
+            let startup_deadline = Instant::now() + Duration::from_secs(5);
+            while !(capture_session.has_started() && render_session.has_started()) {
+                ensure!(
+                    !capture_session.is_finished() && !render_session.is_finished(),
+                    "native owner stopped before controlled load startup"
+                );
+                ensure!(
+                    Instant::now() < startup_deadline,
+                    "native owners did not start before controlled load startup deadline"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            let directory = Path::new(&paths.directory);
+            Some(controlled_load::Supervisor::start(
+                load_id,
+                options.seconds,
+                directory.join("controlled-load.stop"),
+                directory.join("controlled-load.result.json"),
+            )?)
+        } else {
+            None
+        };
+        let collection = if journal.is_some() || controlled_load.is_some() {
             let duration = Duration::from_secs(options.seconds);
             let interval = Duration::from_secs(options.observation_interval_seconds);
             let mut next_observation = Duration::ZERO;
             soak_control::run_until(
                 duration,
                 |elapsed| {
-                    journal.check()?;
-                    if elapsed >= next_observation {
-                        journal.record(&serde_json::json!({
-                            "schema_version": 1, "source_kind": options.source_kind,
-                            "elapsed_seconds": elapsed.as_secs_f64(),
-                            "capture_started": capture_session.has_started(),
-                            "render_started": render_session.has_started(),
-                            "capture_finished": capture_session.is_finished(),
-                            "render_finished": render_session.is_finished(),
-                            "bridge": bridge_observer.snapshot(),
-                            "render_padding": soak::process_padding_observation(&padding),
-                            "timeline": timeline.try_snapshot().map(|value| serde_json::json!({
-                                "frame": value.frame, "epoch": value.epoch, "revision": value.revision,
-                            })),
-                        }))?;
-                        next_observation = elapsed.saturating_add(interval);
+                    if let Some(journal) = journal.as_mut() {
+                        journal.check()?;
+                        if elapsed >= next_observation {
+                            journal.record(&serde_json::json!({
+                                "schema_version": 1, "source_kind": options.source_kind,
+                                "elapsed_seconds": elapsed.as_secs_f64(),
+                                "capture_started": capture_session.has_started(),
+                                "render_started": render_session.has_started(),
+                                "capture_finished": capture_session.is_finished(),
+                                "render_finished": render_session.is_finished(),
+                                "bridge": bridge_observer.snapshot(),
+                                "render_padding": soak::process_padding_observation(&padding),
+                                "timeline": timeline.try_snapshot().map(|value| serde_json::json!({
+                                    "frame": value.frame, "epoch": value.epoch, "revision": value.revision,
+                                })),
+                            }))?;
+                            next_observation = elapsed.saturating_add(interval);
+                        }
+                    }
+                    if let Some(load) = controlled_load.as_mut() {
+                        load.check()?;
                     }
                     ensure!(
                         !capture_session.is_finished() && !render_session.is_finished(),
-                        "native owner stopped before diagnostic deadline"
+                        "native owner stopped before supervised deadline"
                     );
                     Ok(())
                 },
-                || stop.request_stop().context("stop diagnostic native owners"),
+                || stop.request_stop().context("stop supervised native owners"),
             )
         } else {
             Ok(())
         };
+        let mut collection = collection;
+        if let Some(load) = controlled_load.take() {
+            match load.finish(Duration::from_secs(options.seconds)) {
+                Ok(evidence) => {
+                    if !evidence.valid {
+                        let failure = evidence
+                            .failure
+                            .clone()
+                            .unwrap_or_else(|| "controlled load evidence is invalid".into());
+                        collection =
+                            soak_cleanup::combine(collection, Err(anyhow::anyhow!(failure)));
+                    }
+                    native_report.controlled_load = Some(serde_json::to_value(evidence)?);
+                }
+                Err(error) => {
+                    native_report.controlled_load = Some(serde_json::json!({
+                        "load_id": options.controlled_load_id,
+                        "requested_seconds": options.seconds,
+                        "valid": false,
+                        "cleanup_complete": false,
+                        "failure": format!("finish controlled load: {error:#}"),
+                    }));
+                    collection = soak_cleanup::combine(
+                        collection,
+                        Err(anyhow::anyhow!("finish controlled load: {error:#}")),
+                    );
+                }
+            }
+        }
         let capture_result = capture_session.join();
         let render_result = render_session.join();
         match capture_result {
@@ -3158,6 +3221,34 @@ mod tests {
             EvidenceBoundary::PhysicalCable
         );
         assert!(parse_boundary("physical").is_err());
+    }
+
+    #[test]
+    fn process_loopback_accepts_supervised_controlled_load() {
+        let options = LiveOptions {
+            source_pid: 1,
+            output_endpoint: "out".into(),
+            artifact_dir: temp_dir("process-controlled-load"),
+            controlled_load_id: Some("process-load".into()),
+            ..Default::default()
+        };
+        validate(&options).unwrap();
+    }
+
+    #[test]
+    fn process_loopback_controlled_load_is_retained_in_native_report() {
+        let native = NativeReport {
+            controlled_load: Some(serde_json::json!({
+                "load_id": "process-load",
+                "window_complete": false,
+                "valid": false,
+                "failure": "controlled load did not cover the measured collection window"
+            })),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(native).unwrap();
+        assert_eq!(value["controlled_load"]["load_id"], "process-load");
+        assert_eq!(value["controlled_load"]["valid"], false);
     }
 
     #[test]
