@@ -6,9 +6,6 @@ mod model;
 pub use model::*;
 pub mod edit;
 
-mod query;
-pub use query::GraphIndex;
-
 #[cfg(test)]
 mod tests;
 
