@@ -234,18 +234,42 @@ pub(in crate::ui::window) fn readout(shell: &StudioShell, id: NodeId) -> impl In
 }
 
 pub(in crate::ui::window) struct MixerMeterFrame {
-    shell: WeakEntity<StudioShell>,
+    pub(super) shell: WeakEntity<StudioShell>,
     geometry: Geometry,
+    pub(in crate::ui::window) clock: super::frame_clock::FrameClock,
+    _subscription: Subscription,
 }
 
 impl MixerMeterFrame {
-    pub fn new(shell: WeakEntity<StudioShell>, geometry: Geometry) -> Self {
-        Self { shell, geometry }
+    pub fn new(shell: Entity<StudioShell>, geometry: Geometry, cx: &mut Context<Self>) -> Self {
+        let subscription = cx.observe(&shell, |view, shell, cx| {
+            let shell = shell.read(cx);
+            if shell.presentation.page != Page::Mixer || !shell.meters_frame_active(cx) {
+                // This also runs while unmounted: render alone cannot stop a
+                // timer after switching tabs or hiding the native window.
+                view.clock.stop();
+            }
+        });
+        Self {
+            shell: shell.downgrade(),
+            geometry,
+            clock: Default::default(),
+            _subscription: subscription,
+        }
+    }
+
+    pub(super) fn frame_active(&self, cx: &App) -> bool {
+        self.shell.upgrade().is_some_and(|shell| {
+            let shell = shell.read(cx);
+            shell.presentation.page == Page::Mixer && shell.meters_frame_active(cx)
+        })
     }
 }
 
 impl Render for MixerMeterFrame {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let active = self.frame_active(cx);
+        let clocked = self.clock.sync(active, window, cx);
         let shell = self.shell.clone();
         let geometry = self.geometry.clone();
         // No hitbox: faders, clip reset, tooltips and context menus continue
@@ -259,7 +283,7 @@ impl Render for MixerMeterFrame {
                     #[cfg(feature = "gpui-test")]
                     let began = std::time::Instant::now();
                     shell.pump_meters(cx);
-                    if shell.meters_frame_active(cx) {
+                    if !clocked && shell.meters_frame_active(cx) {
                         window.request_animation_frame();
                     }
                     #[cfg(feature = "gpui-test")]
@@ -271,6 +295,8 @@ impl Render for MixerMeterFrame {
                 shell.update(cx, |shell, cx| {
                     #[cfg(feature = "gpui-test")]
                     let began = std::time::Instant::now();
+                    #[cfg(feature = "gpui-test")]
+                    let mut levels_fingerprint = 0u64;
                     let geometry = geometry.0.borrow();
                     for (&id, &(placement, channels, legacy_input)) in &geometry.tracks {
                         if !placement.decorations_visible() {
@@ -287,6 +313,13 @@ impl Render for MixerMeterFrame {
                             .node_meters
                             .channel_levels(id)
                             .or_else(|| legacy.as_ref().map(|levels| levels.as_slice()));
+                        #[cfg(feature = "gpui-test")]
+                        for level in levels.into_iter().flatten() {
+                            levels_fingerprint = levels_fingerprint.rotate_left(7)
+                                ^ u64::from(level.bar.to_bits())
+                                ^ (u64::from(level.rms.to_bits()) << 32)
+                                ^ u64::from(level.marker.to_bits());
+                        }
                         window.with_content_mask(Some(placement.mask), |window| {
                             crate::ui::widgets::meters::paint_channel_meter(
                                 placement.bounds,
@@ -336,6 +369,7 @@ impl Render for MixerMeterFrame {
                     #[cfg(feature = "gpui-test")]
                     {
                         let mut trace = shell.mixer.trace.borrow_mut();
+                        trace.levels(levels_fingerprint);
                         trace.meter_paints += 1;
                         trace.add(began.elapsed());
                         trace.finish(shell.node_meter_points.borrow().len());
@@ -354,6 +388,24 @@ impl Render for MixerMeterFrame {
 mod tests {
     use super::Placement;
     use gpui_kit::{Bounds, ContentMask, point, px, size};
+
+    #[cfg(all(windows, feature = "gpui-test"))]
+    #[gpui_kit::test]
+    fn headless_meter_view_keeps_deterministic_animation_fallback(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (shell, cx, runtime) = crate::ui::window::test_harness::test_shell(cx);
+        let view = shell.read_with(cx, |shell, _| shell.mixer_frame.clone());
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                assert!(
+                    !view.clock.sync(true, window, cx),
+                    "a headless window must not launch a native timer or replace simulated RAF"
+                );
+            });
+        });
+        crate::ui::window::test_harness::finish_service(runtime);
+    }
 
     #[test]
     fn vertical_culling_keeps_clip_and_channel_label_extents() {

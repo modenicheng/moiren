@@ -4,6 +4,10 @@ use super::*;
 use controls::*;
 
 pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl IntoElement {
+    #[cfg(feature = "gpui-test")]
+    {
+        shell.mixer.trace.borrow_mut().toolbar_renders += 1;
+    }
     let this = cx.entity();
     let state = shell.state.read(cx);
     let limit = if shell.compact { 16 } else { 24 };
@@ -160,6 +164,81 @@ pub(super) fn toolbar(shell: &StudioShell, cx: &Context<StudioShell>) -> impl In
                     }),
                 ),
         )
+        .gpui_test_observe()
+}
+
+/// Chrome is a sibling of the animated meter view, never a cached parent of
+/// the controls. Rebuilding a cached parent forces its nested caches fresh.
+pub(super) struct CachedChrome {
+    shell: WeakEntity<StudioShell>,
+    toolbar: bool,
+    _subscription: Subscription,
+}
+
+impl CachedChrome {
+    pub fn new(shell: Entity<StudioShell>, toolbar: bool, cx: &mut Context<Self>) -> Self {
+        let subscription = cx.observe(&shell, |_, _, cx| cx.notify());
+        Self {
+            shell: shell.downgrade(),
+            toolbar,
+            _subscription: subscription,
+        }
+    }
+}
+
+impl Render for CachedChrome {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(shell) = self.shell.upgrade() else {
+            return div().into_any_element();
+        };
+        shell.update(cx, |shell, cx| {
+            let content = if self.toolbar {
+                toolbar(shell, cx).into_any_element()
+            } else {
+                #[cfg(feature = "gpui-test")]
+                {
+                    shell.mixer.trace.borrow_mut().status_renders += 1;
+                }
+                statusbar(shell.state.read(cx))
+                    .gpui_test_observe()
+                    .into_any_element()
+            };
+            // A cached view is laid out as a root. Give the original flex row
+            // its allocated width explicitly, not its intrinsic content width.
+            div().size_full().child(content).into_any_element()
+        })
+    }
+}
+
+pub(super) fn toolbar_for_page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
+    if shell.presentation.page == Page::Mixer {
+        shell
+            .mixer_toolbar
+            .clone()
+            .cached(
+                StyleRefinement::default()
+                    .w_full()
+                    .h(px(theme::TOOLBAR_HEIGHT))
+                    .flex_none(),
+            )
+            .into_any_element()
+    } else {
+        toolbar(shell, cx).into_any_element()
+    }
+}
+
+pub(super) fn status_for_page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement {
+    if shell.presentation.page == Page::Mixer {
+        shell
+            .mixer_status
+            .clone()
+            .cached(StyleRefinement::default().w_full().h(px(28.)).flex_none())
+            .into_any_element()
+    } else {
+        statusbar(shell.state.read(cx))
+            .gpui_test_observe()
+            .into_any_element()
+    }
 }
 
 fn titlebar_drag_region(id: &'static str) -> impl IntoElement {

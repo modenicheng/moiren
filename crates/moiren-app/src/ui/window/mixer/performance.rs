@@ -10,13 +10,18 @@ pub(in crate::ui::window) use platform_trace::PlatformTrace;
 pub(in crate::ui::window) struct MeterTrace {
     pub meter_paints: usize,
     pub strip_renders: usize,
+    pub toolbar_renders: usize,
+    pub status_renders: usize,
+    pub clock_ticks: usize,
     previous: Option<Instant>,
     cpu: Duration,
     gap: Duration,
     active: bool,
     frames: Vec<(f64, f64, usize)>,
     dropped: usize,
-    sample_counts: (usize, usize),
+    sample_counts: (usize, usize, usize, usize, usize),
+    level_changes: usize,
+    previous_levels: Option<u64>,
 }
 
 impl MeterTrace {
@@ -26,7 +31,15 @@ impl MeterTrace {
         self.gap = Duration::ZERO;
         self.frames.clear();
         self.dropped = 0;
-        self.sample_counts = (self.strip_renders, self.meter_paints);
+        self.sample_counts = (
+            self.strip_renders,
+            self.meter_paints,
+            self.toolbar_renders,
+            self.status_renders,
+            self.clock_ticks,
+        );
+        self.level_changes = 0;
+        self.previous_levels = None;
     }
 
     pub fn begin(&mut self, active: bool) {
@@ -62,6 +75,18 @@ impl MeterTrace {
         }
     }
 
+    pub fn levels(&mut self, fingerprint: u64) {
+        if self.active {
+            if self
+                .previous_levels
+                .is_some_and(|previous| previous != fingerprint)
+            {
+                self.level_changes += 1;
+            }
+            self.previous_levels = Some(fingerprint);
+        }
+    }
+
     pub fn write(&self, path: &std::path::Path) -> anyhow::Result<()> {
         std::fs::write(
             path,
@@ -69,6 +94,10 @@ impl MeterTrace {
                 "schema_version": 2, "samples": self.frames, "dropped": self.dropped,
                 "strip_renders": self.strip_renders - self.sample_counts.0,
                 "meter_paints": self.meter_paints - self.sample_counts.1,
+                "toolbar_renders": self.toolbar_renders - self.sample_counts.2,
+                "status_renders": self.status_renders - self.sample_counts.3,
+                "clock_ticks": self.clock_ticks - self.sample_counts.4,
+                "level_changes": self.level_changes,
             }))?,
         )?;
         let mut cpu: Vec<_> = self

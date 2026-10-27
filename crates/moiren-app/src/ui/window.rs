@@ -167,6 +167,8 @@ pub struct StudioShell {
     mixer: mixer::MixerPresentation,
     mixer_geometry: mixer::meter_frame::Geometry,
     mixer_controls: Entity<mixer::meter_frame::MixerControls>,
+    mixer_toolbar: Entity<chrome::CachedChrome>,
+    mixer_status: Entity<chrome::CachedChrome>,
     mixer_frame: Entity<mixer::meter_frame::MixerMeterFrame>,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
@@ -301,12 +303,15 @@ impl StudioShell {
                 child_cx,
             )
         });
-        let mixer_frame = cx.new(|_| {
+        let mixer_frame = cx.new(|cx| {
             mixer::meter_frame::MixerMeterFrame::new(
-                shell_entity.downgrade(),
+                shell_entity.clone(),
                 mixer_geometry.clone(),
+                cx,
             )
         });
+        let mixer_toolbar = cx.new(|cx| chrome::CachedChrome::new(shell_entity.clone(), true, cx));
+        let mixer_status = cx.new(|cx| chrome::CachedChrome::new(shell_entity.clone(), false, cx));
         let mut shell = Self {
             state,
             settings_open: false,
@@ -355,6 +360,8 @@ impl StudioShell {
             mixer: mixer::MixerPresentation::default(),
             mixer_geometry,
             mixer_controls,
+            mixer_toolbar,
+            mixer_status,
             mixer_frame,
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
@@ -794,7 +801,7 @@ impl Render for StudioShell {
             .text_color(theme::TEXT)
             .font_family(theme::FONT_UI)
             .text_size(px(theme::TEXT_MD))
-            .child(chrome::toolbar(self, cx))
+            .child(chrome::toolbar_for_page(self, cx))
             .when_some(error_strip, |view, error_strip| view.child(error_strip))
             .child(
                 div()
@@ -811,7 +818,7 @@ impl Render for StudioShell {
                     })
                     .child(sidebar::inspector_host(self, cx)),
             )
-            .child(chrome::statusbar(self.state.read(cx)).gpui_test_observe())
+            .child(chrome::status_for_page(self, cx))
             // Clicking anywhere outside an open inline editor commits it, so
             // saving never requires Enter. Editors stop presses inside their
             // own bounds from propagating; a press that reaches this root
