@@ -1731,3 +1731,92 @@ SHA-256 checks precede immediate deletion. At `2026-10-27T13:09:34+08:00`, only
 that current integration probe remains, with 30.095 GiB free. No system,
 DriverStore or rollback files are removed. Native naming and Stage 7 remain
 unqualified.
+
+### 2026-10-27 bounded native submission and unserved correlation
+
+`6cc7713` adds a fixed 248-byte per-endpoint first-unserved record for Empty,
+NoCurrent and TooOld. It captures DPC entry and after-State QPC, the nominal
+event packet boundary, bounded retrieval outcome, and the latest matching
+WRITE reservation-side pre-forward boundary. That boundary is not actual
+queue insertion or proof that forwarding succeeds, and it is not necessarily
+the request rejected by a later callback. Passive correlated WPP fragments
+retain the existing State-to-Shared lock order, admission/freshness/epoch
+policy and PCM behavior. Nine host C++ suites, analyzed driver build,
+InfVerif, generated TMF checks and independent review pass.
+
+`edb5ab8` adds a fixed 64-entry user WRITE submission ring, first completion,
+first drop and up to four neighbors on each side. The pending FIFO retains
+the opaque request ticket until its actual completion supplies header
+sequence/QPC. Submit-before/after QPC and Instant-based target/lateness are
+distinct observations, not substitutes for the internally stamped header.
+All 46 native-example tests, strict example/test Clippy and release build
+pass; scheduling, queue depth and freshness remain unchanged.
+
+Driver `6cc7713` is installed as `oem34.inf`; its signed SYS is 119,192 bytes,
+SHA-256 `6031B0E13F7EB3F7172F2E6173FC13542521823444651EBBF0095C5CFF5CD30E`.
+The current `edb5ab8` native probe is 430,592 bytes, SHA-256
+`59FE949ABA24B1717CA12E6A21DEBE0D873CD0AAD26103BA4649D68F58C00799`.
+Package/PDB/TMF/install evidence is retained on the host in
+`target/vad-target-archive/20261027-driver-6cc7713`, and the probe is separately
+archived in `20261027-probe-edb5ab8`.
+
+The requested four 15-second event-driven microphone cases abort during
+mono Float32, stream generation 6. The wrapper exits 1 after 23.5 seconds,
+without timeout, with `GetOverlappedResult(VAD PCM)` revision mismatch
+`0x8007051A`. No complete four-case report exists: stdout is empty, and stderr
+retains the structured failure plus the original error chain. Failed-case
+observations are 65,280 signal frames, 10,080 silent frames, seven WRITE
+drops and zero native discontinuities; these are not a quality pass.
+
+The ETL decodes 20 events with zero lost events, format errors or unknown
+formats. Unlike the preceding short windows it retains an actual event
+Clock rebase for endpoint 3, session 504639348358, stream generation 6:
+
+| Observation | Actual value |
+| --- | --- |
+| Callback QPC / next deadline QPC | 504829286678 / 504829245627 |
+| Lateness past that next deadline | 41,051 ticks at 10 MHz = 4.1051 ms |
+| Packet frames / packets / completed | 480 / 2 / 158 |
+| Clock before epoch / base / limit | 504813345627 / 0 / 75,840 |
+| Clock after epoch / base / limit | 504829286678 / 75,840 / 76,320 |
+| Atomic gate change | 8 to 9, both open and Running |
+
+The current serviced packet's nominal boundary is one packet earlier than
+that next deadline. This record proves a rebase and gate change, not whether
+DPC dispatch or lock acquisition caused the lateness. The later pre-cleanup
+QUERY sees the same stream, gate 9, Present/Running/open, cumulative drops 15
+and silence 68. It is not an atomic observation of the failed request.
+
+Earlier correlated first-unserved records in that same stream show:
+
+| Observation | First Empty | First TooOld/final unserved |
+| --- | --- | --- |
+| DPC entry QPC | 504819549394 | 504819655540 |
+| After-State QPC | 504819549414 | 504819655561 |
+| Nominal packet boundary QPC | 504819545627 | 504819645627 |
+| Latest reservation request | 1552 | 1553 |
+| Latest header QPC | 504819424882 | 504819550081 |
+| Latest pre-forward QPC | 504819427838 | 504819551707 |
+| Retrieval calls / final status | 1 / NO_MORE_ENTRIES | 2 / NO_MORE_ENTRIES |
+
+For the Empty callback, DPC-entry-to-State is 2 microseconds and the State
+sample is 0.3787 ms after its nominal boundary. Request 1553 is submitted
+shortly after that empty callback. For TooOld, the actual PCM callback QPC
+504819655563 gives header age 10.5482 ms, crossing the unchanged 10 ms limit;
+State is 0.9934 ms after the nominal boundary. The matching user ticket 62
+retains header sequence 1553 and header QPC 504819550081, submit-before/after
+QPC 504819550048/504819550702, and target/entry elapsed times
+618,125,700/620,520,700 ns (2.395 ms submission lateness). The driver
+reservation can happen after the asynchronous user call returns. These
+earlier records cannot establish DPC-to-State delay at the later rebase.
+
+All six original run files are length/SHA-256 checked on the host and
+rechecked before deletion from the guest. The archive is
+`target/vad-target-archive/20261027-native-6cc7713-mic-event15`.
+At `2026-10-27T13:24:26+08:00`, a fresh guest inventory confirms only the
+430,592-byte current native probe remains in `C:\MoirenVadTest`, with
+30.101 GiB free, no test process and no present dynamic child. Temporary
+installation/trace/runner/run files have been removed; Windows, DriverStore
+and rollback packages are preserved. Builds and historical artifacts stay
+on the host. Stage 7, zero-quality native stability, exact Windows naming
+and calibrated physical latency remain unqualified.
