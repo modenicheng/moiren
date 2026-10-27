@@ -262,3 +262,25 @@ Five payloads are retained and verified at
 removed the temporary run, plans, runner, logs and previous probe after hash
 verification. Only the new 3,748,352-byte probe remains on the 64 GB guest;
 free space is 30.12 GiB. No driver/system files were removed.
+
+### 2026-10-27 period repair and bounded collection repeat
+
+`c3fbc8d` removes the incorrect requirement that `default_frames` be a
+fundamental multiple. A VM capability set of `default=488`, `fundamental=35`,
+`min=139`, `max=488` is valid; 5 ms selected 245 frames and Client3 accepted
+the stream. Focused shared-stream tests, Client3 tests, format, diff checks
+and strict Clippy passed before the commit was pushed.
+
+The `c3fbc8d` release probe was verified on the guest as 3,748,352 bytes with
+SHA-256 `7490E742A9297982431AA3DBD28C24D50264D8C5E196CE6F33C4A3F6306B71B`.
+The repeated 15-second collection progressed past recorder preparation and
+recorded actual period 279 frames. It remains unqualified: VAD had 36
+completion gaps, the virtual boundary had one xrun and 33 soft events, and
+the independent physical capture had 74 gap events, 1,835 gap frames and two
+discontinuities. Only 18,720 of 48,000 source frames were acknowledged.
+
+All seven run payloads (1,327,509 bytes) were copied to and verified in
+`target/vad-target-archive/20261027-collection-c3fbc8d-15s/`. Guest cleanup
+left only the current probe and 30.11 GiB free. The next work item remains a
+real supervised controlled-load contract; `--controlled-load-id` is still
+metadata only and must not make a report qualify.

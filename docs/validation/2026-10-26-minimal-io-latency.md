@@ -795,6 +795,33 @@ The `<10 ms` target is not passed by this branch yet. Internal markers,
 software queue timestamps, VM lifecycle results and silent-counter tests are
 necessary diagnostics but are not physical end-to-end evidence.
 
+### 2026-10-27 valid VM shared-period negotiation and quality failure
+
+Commit `c3fbc8d` removes an incorrect local requirement that the Client3
+default period itself be a multiple of the fundamental period. The target VM
+reported `default=488`, `fundamental=35`, `min=139`, `max=488`; the 5 ms
+request selected 245 frames and Client3 initialized successfully. This is a
+valid capability set, so the earlier `0x80070057` at `choose_shared_period`
+was a host-side validation defect, not a driver or endpoint rejection.
+
+The host release probe from `c3fbc8d` was verified on the target as 3,748,352
+bytes with SHA-256
+`7490E742A9297982431AA3DBD28C24D50264D8C5E196CE6F33C4A3F6306B71B`. The same
+15-second VAD collection inputs were used. The run exited 1 and remains
+unqualified, but it progressed through independent recorder activation and
+produced 1,327,509 bytes of evidence. The recorder reported requested period
+245 and actual period 279 frames, with no period-selection failure.
+
+The quality gate still fails: VAD completed 37 packets with 36 completion
+gaps; the production virtual boundary recorded one xrun and 33 soft events;
+the physical capture recorded 74 gap events, 1,835 gap frames and two
+discontinuities. The source acknowledged only 18,720 of 48,000 planned
+frames before the collection stopped. The run is archived at
+`target/vad-target-archive/20261027-collection-c3fbc8d-15s/`; every payload
+was checked against the guest manifest by length and SHA-256. The guest was
+cleaned back to the current probe only, with 30.11 GiB free. No driver,
+DriverStore or system files were removed.
+
 ### 2026-10-27 collection failure evidence after retention repair
 
 The two atomic commits `4850ccf` and `bc90dbd` were pushed to
