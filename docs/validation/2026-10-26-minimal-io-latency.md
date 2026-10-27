@@ -3061,3 +3061,43 @@ intentionally preserved. No old owned guest artifacts exist to remove; no
 guest files were changed. Continue to keep builds/caches on the host and
 preserve Windows, DriverStore, current/rollback driver packages and generic
 temporary directories.
+
+### 2026-10-28 immutable matrix terminal result and storage recheck
+
+The immutable `4811362` source snapshot matrix is terminal. The retained
+`target/post-b-4811362-verification/summary.json` records **13/14 commands
+passed** and one failed command, `rt-fmt`; do not rewrite the archived result
+as all-green after repairing the formatting on the active branch. Summing the
+workspace and focused test-command results gives **2,618 passed, 0 failed, 12
+ignored** (command totals can include overlapping tests). Build, check,
+workspace tests/fmt/Clippy, GPUI acceptance (494/4),
+feature and B-harness Clippy, probe tests (268), app VAD tests (108), RT guards
+(86), driver host tests, and driver analyzed build passed. The sole failure was
+the RT harness rustfmt check, with its original output retained in
+`target/post-b-4811362-verification/rt-fmt.log`.
+
+The follow-up active-branch change `0fe08b1` only applies rustfmt's requested
+layout to `crates/moiren-windows-audio/src/professional/asio_rt_tests.rs`.
+After that edit, `cargo fmt --manifest-path tools/rt-check/Cargo.toml --all -- --check`
+passes and the standalone RT harness test suite passes **86/86**.
+An additional standalone RT-harness strict Clippy attempt is not part of the
+14-command matrix and fails on 14 existing `dead_code` warnings; it is retained
+as a separate lint limitation, not reported as a matrix failure. The original
+matrix source-integrity receipt still confirms all 1,004 archived inputs
+unchanged at completion, before the active-branch formatting-only repair.
+
+A fresh pinned-key, read-only SSH inventory at
+`2026-10-28T03:27:32+08:00` confirms `DRIVER-TEST`, a 67,599,593,472-byte C:
+volume with 32,219,459,584 bytes free (30.0067 GiB), an empty
+`C:\MoirenVadTest` tree, no matching Moiren/VAD/probe process, and
+`ROOT\MEDIA\0000` status `OK`. The host-side receipt is
+`target/vad-target-archive/20261028-stage7-final-inventory/inventory.json`,
+392 bytes, SHA-256
+`5803C951804E65A20A6B3DED5B923997F04F9263010188E048034E9A5317E03E`. There
+are no obsolete owned VM artifacts to remove. No guest files were written or
+deleted; builds and caches remain on the host, and Windows, DriverStore,
+`C:\DriverTest`, and installed or rollback driver packages remain untouched.
+This inventory and the software matrix do not close the native diagnosis or
+any physical latency/stability gate. The next native action remains the
+reviewed, explicitly authorized, bounded pre-activation shared-render
+comparison described above; do not rerun the full Process collection.

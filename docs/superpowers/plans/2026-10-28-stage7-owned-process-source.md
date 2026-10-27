@@ -169,14 +169,26 @@ Stage 7.
   smallest next step is one bounded pre-activation shared-render comparison
   (routing path vs B's legacy AUTOCONVERTPCM path), not a full collection retry.
   It must preserve raw HRESULTs and remain unqualified.
-- The complete pinned snapshot matrix is still running. At this checkpoint,
-  workspace build/check/tests/fmt/strict Clippy passed (1662 passed, 0 failed,
-  8 ignored); GPUI tests are active, followed by feature/harness Clippy, probe
-  and app VAD tests, RT checks/fmt, and driver host/analyzed builds. Do not
-  claim the matrix complete until its final summary and retained failures exist.
+- The immutable `4811362` pinned-source matrix is terminal: 13/14 commands
+  passed, with the sole failure being `rt-fmt`. Summing the workspace and
+  focused test-command results gives 2,618 passed, zero failed, and 12 ignored
+  (some tests occur in more than one command). The original matrix failure
+  remains authoritative. Active-branch formatting fix
+  `0fe08b1` was separately checked with RT fmt and 86/86 RT tests passing; it
+  does not rewrite the archived matrix result. A standalone RT-harness strict
+  Clippy attempt outside that matrix still reports 14 existing `dead_code`
+  warnings.
 - Latest read-only SSH inventory (2026-10-28): `C:\MoirenVadTest` is empty;
   no matching Moiren/VAD/probe process exists; free space is 32,219,500,544
   bytes (about 30.01 GiB). `C:\DriverTest` is a preserved 316,666,881-byte
   installed test/tool tree and must not be cleaned. There are no obsolete
   owned artifacts to delete. Windows, DriverStore, installed/current/rollback
   driver material and generic temp trees remain out of scope for cleanup.
+- Fresh pinned-key VM read-only inventory at 03:27:32 +08:00 confirms
+  `DRIVER-TEST`, C: total 67,599,593,472 bytes/free 32,219,459,584 bytes
+  (30.0067 GiB), recursively empty `C:\MoirenVadTest`, no matching
+  Moiren/VAD/probe process, and `ROOT\MEDIA\0000` status `OK`. Its host
+  receipt is `target/vad-target-archive/20261028-stage7-final-inventory/`.
+  Nothing was deleted because there were no obsolete owned artifacts. No VM
+  write, build, driver install, or audio run occurred. Builds/caches stay
+  host-side.
