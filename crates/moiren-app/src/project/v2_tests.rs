@@ -189,7 +189,9 @@ fn project_import_keeps_local_authorization_and_startup_is_desired_before_first_
     let runtime =
         ServiceRuntime::spawn_with_startup(InspectStartup(checked.clone()), startup).unwrap();
     let handle = runtime.handle();
-    let snapshot = handle.try_snapshot().unwrap();
+    // Publication can briefly hold the intentionally nonblocking snapshot lock.
+    // The driver separately checks the startup state on its very first poll.
+    let snapshot = crate::ui::wait_for(std::time::Duration::from_secs(2), || handle.try_snapshot());
     assert_eq!(snapshot.graph.exports.len(), 1);
     assert_eq!(snapshot.graph.active_revision, None);
     assert_eq!(snapshot.phase, SessionPhase::Idle);
