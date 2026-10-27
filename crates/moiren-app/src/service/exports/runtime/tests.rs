@@ -680,6 +680,144 @@ mod native_stamp {
     }
 
     #[test]
+    fn current_accepted_generation_tracks_absence_separately_from_historical_removed() {
+        for direction in [ExportDirection::Playback, ExportDirection::Microphone] {
+            let (mut graph, mut intent) = runtime_graph();
+            intent.direction = direction;
+            graph.exports[0].direction = direction;
+            let mut runtime = Runtime::default();
+            let mut service = ExportService::default();
+            service.set_available(true);
+            let old = [11, 22, 33, 44, 55];
+            runtime.complete(&mut service, Ok(observed(&intent, Some(old))));
+            let baseline = service.statuses(&graph)[0].observation_generation.unwrap();
+            runtime.complete(&mut service, Ok(removed(&intent, old)));
+            let status = &service.statuses(&graph)[0];
+            let retirement = status.native_retirement.unwrap();
+            let first = status.observation_generation.unwrap();
+            assert!(first > baseline);
+            assert_eq!(status.resource, ExportResourceState::Absent);
+            assert!(status.diagnostics.is_none());
+            assert_eq!(status.native_stamp, None);
+            assert!(!status.gate_open && status.active_revision.is_none());
+
+            runtime.complete(&mut service, Ok(removed(&intent, old)));
+            let status = &service.statuses(&graph)[0];
+            let second = status.observation_generation.unwrap();
+            assert!(second > first);
+            assert_eq!(status.native_retirement, Some(retirement));
+            assert_eq!(status.native_stamp, None);
+
+            let fresh = [12, 22, 34, 1, 1];
+            runtime.complete(&mut service, Ok(observed(&intent, Some(fresh))));
+            let status = &service.statuses(&graph)[0];
+            assert!(status.observation_generation.unwrap() > second);
+            assert_eq!(status.native_retirement, Some(retirement));
+            assert_eq!(status.native_stamp, Some(fresh));
+            assert!(!status.gate_open && status.active_revision.is_none());
+        }
+    }
+
+    #[test]
+    fn current_generation_is_cleared_by_missing_failed_rejected_or_unavailable_results() {
+        for direction in [ExportDirection::Playback, ExportDirection::Microphone] {
+            let (mut graph, mut intent) = runtime_graph();
+            intent.direction = direction;
+            graph.exports[0].direction = direction;
+            for failure in ["missing", "failed", "rejected", "unavailable", "adapter"] {
+                let mut runtime = Runtime::default();
+                let mut service = ExportService::default();
+                service.set_available(true);
+                let old = [11, 22, 33, 44, 55];
+                runtime.complete(&mut service, Ok(removed(&intent, old)));
+                let retirement = service.statuses(&graph)[0].native_retirement;
+                assert!(service.statuses(&graph)[0].observation_generation.is_some());
+                match failure {
+                    "missing" => {
+                        runtime.complete(
+                            &mut service,
+                            Ok(Batch {
+                                observations: vec![],
+                                errors: vec![],
+                            }),
+                        );
+                    }
+                    "failed" => {
+                        runtime.complete(&mut service, Err("worker failed".into()));
+                    }
+                    "rejected" => {
+                        let mut batch = removed(&intent, old);
+                        batch.observations[0].intent.channels = 3;
+                        runtime.complete(&mut service, Ok(batch));
+                    }
+                    "unavailable" => {
+                        let mut batch = observed(&intent, Some(old));
+                        batch.observations[0].resource = ExportResourceState::Unavailable;
+                        runtime.complete(&mut service, Ok(batch));
+                    }
+                    "adapter" => service.set_available(false),
+                    _ => unreachable!(),
+                }
+                let status = &service.statuses(&graph)[0];
+                assert_eq!(
+                    status.observation_generation, None,
+                    "{direction:?}/{failure}"
+                );
+                if failure != "adapter" {
+                    assert_eq!(status.native_retirement, retirement);
+                }
+                assert!(!status.gate_open && status.active_revision.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn stale_or_failed_native_results_cannot_republish_current_generation() {
+        for direction in [ExportDirection::Playback, ExportDirection::Microphone] {
+            let (mut graph, mut intent) = runtime_graph();
+            intent.direction = direction;
+            graph.exports[0].direction = direction;
+            for failure in [
+                "stale",
+                "query",
+                "absent_query",
+                "absent_gate",
+                "absent_open",
+            ] {
+                let mut runtime = Runtime::default();
+                let mut service = ExportService::default();
+                service.set_available(true);
+                let old = [11, 22, 33, 44, 55];
+                runtime.complete(&mut service, Ok(observed(&intent, Some(old))));
+                assert!(service.statuses(&graph)[0].observation_generation.is_some());
+                let mut batch = observed(&intent, Some(old));
+                match failure {
+                    "stale" => runtime.sequence = 0,
+                    "query" => batch.observations[0].error = Some("QUERY failed".into()),
+                    _ => {
+                        batch = removed(&intent, old);
+                        match failure {
+                            "absent_query" => {
+                                batch.observations[0].error = Some("QUERY failed".into());
+                            }
+                            "absent_gate" => batch.observations[0].gate_open = true,
+                            "absent_open" => batch.observations[0].can_open = true,
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+                runtime.complete(&mut service, Ok(batch));
+                let status = &service.statuses(&graph)[0];
+                assert_eq!(
+                    status.observation_generation, None,
+                    "{direction:?}/{failure}"
+                );
+                assert!(!status.gate_open && status.active_revision.is_none());
+            }
+        }
+    }
+
+    #[test]
     fn raw_stamp_updates_without_granting_gate_admission_or_dispatching_io() {
         let (graph, intent) = runtime_graph();
         let adapter = Arc::new(FakeAdapter::default());
@@ -864,6 +1002,8 @@ mod native_stamp {
         let status = &service.statuses(&graph)[0];
         assert_eq!(status.resource, ExportResourceState::Absent);
         assert_eq!(status.native_retirement, None);
+        assert_eq!(status.observation_generation, None);
+        assert_eq!(status.native_stamp, None);
     }
 
     #[test]

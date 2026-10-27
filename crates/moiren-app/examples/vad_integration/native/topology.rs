@@ -1,6 +1,7 @@
 //! Optional bounded evidence, never rename/ownership admission authority.
 use super::super::rename::{
-    SetupInterfaceEvidence, TopologyEvidence, TopologyRead, TopologyReadError, TypedInterfaceName,
+    AdapterDeviceEvidence, SetupInterfaceEvidence, TopologyEvidence, TopologyRead,
+    TopologyReadError, TypedInterfaceName,
 };
 use windows::{
     Win32::{
@@ -11,11 +12,14 @@ use windows::{
                 SetupDiGetDeviceInterfaceDetailW, SetupDiGetDeviceInterfacePropertyW,
                 SetupDiOpenDeviceInterfaceW,
             },
+            FunctionDiscovery::{
+                PKEY_Device_DeviceDesc, PKEY_Device_FriendlyName, PKEY_DeviceInterface_FriendlyName,
+            },
             Properties::{DEVPKEY_DeviceInterface_FriendlyName, DEVPROP_TYPE_STRING, DEVPROPTYPE},
         },
         Foundation::ERROR_INSUFFICIENT_BUFFER,
-        Media::Audio::{IDeviceTopology, IMMDevice},
-        System::Com::{CLSCTX_ALL, CoTaskMemFree},
+        Media::Audio::{IDeviceTopology, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator},
+        System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree},
     },
     core::{Error, HSTRING, PWSTR},
 };
@@ -48,18 +52,22 @@ fn bounded_utf16(
 fn collect_with(
     read: impl FnOnce() -> Result<String, TopologyReadError>,
     setup: impl FnOnce(&str) -> SetupInterfaceEvidence,
+    resolve: impl FnOnce(&str) -> Result<AdapterDeviceEvidence, TopologyReadError>,
 ) -> TopologyEvidence {
     match read() {
         Ok(value) => {
+            let adapter_mmdevice = Some(readback(resolve(&value)));
             let setup_interface = Some(setup(&value));
             TopologyEvidence {
                 adapter_id: TopologyRead::Value { value },
                 setup_interface,
+                adapter_mmdevice,
             }
         }
         Err(error) => TopologyEvidence {
             adapter_id: TopologyRead::Error { error },
             setup_interface: None,
+            adapter_mmdevice: None,
         },
     }
 }
@@ -261,8 +269,39 @@ fn setup_interface(exact_id: &str) -> SetupInterfaceEvidence {
     }
 }
 
+fn adapter_mmdevice(exact_id: &str) -> Result<AdapterDeviceEvidence, TopologyReadError> {
+    // GetDeviceIdConnectedTo returns an opaque MMDevice ID. Its documented
+    // consumer is GetDevice, even when SetupAPI rejects that same exact text.
+    let enumerator: IMMDeviceEnumerator =
+        unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+            .map_err(|error| hresult("CoCreateInstance(MMDeviceEnumerator)", error))?;
+    let device = unsafe { enumerator.GetDevice(&HSTRING::from(exact_id)) }
+        .map_err(|error| hresult("GetDevice(adapter_id)", error))?;
+    let device_id = (|| {
+        let owned = TaskString(
+            unsafe { device.GetId() }.map_err(|error| hresult("GetId(adapter)", error))?,
+        );
+        bounded_utf16("adapter_mmdevice_id", |index| {
+            if owned.0.is_null() {
+                None
+            } else {
+                Some(unsafe { *owned.0.0.add(index) })
+            }
+        })
+    })();
+    Ok(AdapterDeviceEvidence {
+        device_id: readback(device_id),
+        device_desc: super::optional_property(&device, &PKEY_Device_DeviceDesc),
+        friendly_name: super::optional_property(&device, &PKEY_Device_FriendlyName),
+        interface_friendly_name: super::optional_property(
+            &device,
+            &PKEY_DeviceInterface_FriendlyName,
+        ),
+    })
+}
+
 pub(super) fn collect(device: &IMMDevice) -> TopologyEvidence {
-    collect_with(|| adapter_id(device), setup_interface)
+    collect_with(|| adapter_id(device), setup_interface, adapter_mmdevice)
 }
 
 pub(super) fn collect_once(
@@ -333,6 +372,13 @@ mod tests {
                     hresult: -2147024809,
                 }
             },
+            |actual| {
+                assert_eq!(actual, opaque);
+                Err(TopologyReadError::Hresult {
+                    stage: "GetDevice(adapter_id)",
+                    hresult: -2147467259,
+                })
+            },
         );
         assert_eq!(calls, 1);
         assert_eq!(
@@ -347,6 +393,15 @@ mod tests {
                 hresult: -2147024809
             })
         );
+        assert_eq!(
+            result.adapter_mmdevice,
+            Some(TopologyRead::Error {
+                error: TopologyReadError::Hresult {
+                    stage: "GetDevice(adapter_id)",
+                    hresult: -2147467259,
+                }
+            })
+        );
         let error = TopologyReadError::Hresult {
             stage: "GetDeviceIdConnectedTo",
             hresult: -2147467259,
@@ -354,9 +409,51 @@ mod tests {
         let result = collect_with(
             || Err(error.clone()),
             |_| panic!("no ID, no SetupAPI attempt"),
+            |_| panic!("no ID, no MMDevice attempt"),
         );
         assert_eq!(result.adapter_id, TopologyRead::Error { error });
         assert!(result.setup_interface.is_none());
+        assert!(result.adapter_mmdevice.is_none());
+    }
+
+    #[test]
+    fn supported_mmdevice_resolution_survives_setup_rejection_without_name_fallback() {
+        use super::super::super::rename::{PropertyReadError, PropertyReadback};
+        let opaque = r"{2}.\\?\Mixed#Opaque Adapter ";
+        let names = AdapterDeviceEvidence {
+            device_id: TopologyRead::Value {
+                value: opaque.into(),
+            },
+            device_desc: PropertyReadback::Value {
+                value: "Adapter description ".into(),
+            },
+            friendly_name: PropertyReadback::Error {
+                error: PropertyReadError::UnexpectedType { vartype: 0 },
+            },
+            interface_friendly_name: PropertyReadback::Value {
+                value: "Different adapter interface".into(),
+            },
+        };
+        let result = collect_with(
+            || Ok(opaque.into()),
+            |_| SetupInterfaceEvidence::Rejected {
+                hresult: -536870363,
+            },
+            |actual| {
+                assert_eq!(actual, opaque);
+                Ok(names.clone())
+            },
+        );
+        assert_eq!(
+            result.adapter_mmdevice,
+            Some(TopologyRead::Value { value: names })
+        );
+        assert_eq!(
+            result.setup_interface,
+            Some(SetupInterfaceEvidence::Rejected {
+                hresult: -536870363
+            })
+        );
     }
 
     #[test]
@@ -422,6 +519,7 @@ mod tests {
                     ))
                 },
                 |_| panic!("failed adapter read must not call SetupAPI"),
+                |_| panic!("failed adapter read must not call MMDevice"),
             )
         })
         .unwrap();

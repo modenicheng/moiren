@@ -2534,3 +2534,63 @@ reports 32,286,109,696 bytes free (about 30.07 GiB), no active probe, and
 7,781,376-byte rename probe required for follow-up testing. Keep this
 archive-verify-delete sequence after subsequent runs; the 64 GB system VM
 must not accumulate completed runs or superseded binaries.
+
+### 2026-10-27 accepted observation generation and opaque adapter resolution
+
+The earlier strict-held probe reported `missing current observation
+generation` even when the lifecycle adapter had accepted a real Absent result.
+Probe-only `ExportStatus.observation_generation` now exposes that accepted
+lifecycle sequence independently from (1) the current-provider native stamp
+and (2) the historical direct-Removed record. Accepted Absent remains absent
+to reconciliation and still requests a fresh CREATE. Missing, failed, stale,
+rejected, unavailable and lost-adapter results clear current diagnostic
+generation. This feature does not participate in resource, readiness or gate
+decisions. Regression coverage exercises both directions and ensures repeated
+Removed history is not refreshed or substituted for a current native stamp.
+
+The rename probe also resolves the exact opaque string returned by
+`IConnector::GetDeviceIdConnectedTo` through
+`IMMDeviceEnumerator::GetDevice`, in addition to retaining the independent
+SetupAPI rejection. Microsoft documents the topology identifier as an input
+to `GetDevice`; it is not a SetupAPI interface path. The VM readback confirms
+that `PKEY_DeviceInterface_FriendlyName` on the resolved adapter describes
+that adapter, not the endpoint. The adapter's `PKEY_Device_DeviceDesc` and
+`PKEY_Device_FriendlyName` return `VT_EMPTY` (typed `unexpected_type`,
+vartype 0); its interface FriendlyName changes to the requested name. That
+adapter property does not explain endpoint-name composition. Continue tracing
+the actual KS bridge-pin/category name and EndpointBuilder inputs; do not write
+more properties or infer an endpoint rename from adapter metadata.
+
+The updated release probe used source commit
+`0d154c6237af70700364e29c4783e942bd2ae457` as its HEAD base, with the
+uncommitted service/probe changes recorded in this section already present in
+the build tree. It is not a clean-commit build. Its 7,782,400-byte executable has
+SHA-256 `49B29AA60F1E1D313B277204B99E5A5C4086E21D03BE1B8524328BB0A07756BD`.
+The run is archived at
+`target/vad-target-archive/rename-0d154c6-adapter-20261027-211948/`.
+All ten payloads are retained with `guest-manifest.json`; every byte length
+and SHA-256 was checked on host and guest before guest cleanup. The manifest
+digest is `EC7B24DA2D0B77CD2DD21E75647134C0733E70ABA858DBB756644B2AAA3F105A`.
+Compact interpreted results are in the archive's `summary.json`.
+
+The runner captured child exit code **1**, no timeout and no cleanup error.
+This is an unqualified diagnostic failure, not a successful rename: Playback
+accepted-held generation 93 follows direct-Removed generation 92; Microphone
+149 follows 148. Both correctly have no current native stamp while the old
+provider is Absent, and both strict-held gates report `old provider resource
+is no longer held`. Requested CREATE names reach the replacement provider,
+but endpoint `PKEY_Device_FriendlyName` remains
+`扬声器 (2- Moiren virtual audio endpoint)` for Playback and
+`Moiren integration microphone seed 202610271027 (Moiren virtual audio endpoint)`
+for Microphone. The separately resolved adapter interface FriendlyName equals
+the requested name in both cases, while the adapter's other two queried
+properties remain `VT_EMPTY`. Teardown reported no cleanup error; this does
+not mean the strict-held or exact endpoint-name gates passed.
+
+After verifying the manifest, all ten payloads and the executable, the guest
+run, temporary release executable and temporary runner were removed. Final VM
+inventory has no files under `C:\MoirenVadTest`, no active probe, no present
+VAD child or Moiren AudioEndpoint, and `ROOT\MEDIA\0000` remains `OK`; C: has
+32,293,236,736 bytes free (30.08 GiB). User-level rename remains unqualified
+until Windows endpoint FriendlyName exactly matches the request in both
+flows. Stage 7's PCM and physical-latency qualification gates remain open.

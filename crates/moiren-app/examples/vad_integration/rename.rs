@@ -147,11 +147,22 @@ pub(super) enum SetupInterfaceEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct AdapterDeviceEvidence {
+    pub device_id: TopologyRead<String>,
+    pub device_desc: PropertyReadback,
+    pub friendly_name: PropertyReadback,
+    pub interface_friendly_name: PropertyReadback,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct TopologyEvidence {
     /// Exact GetDeviceIdConnectedTo output: no prefix removal/path guessing.
     pub adapter_id: TopologyRead<String>,
     /// Not attempted if the topology ID could not be read within the bound.
     pub setup_interface: Option<SetupInterfaceEvidence>,
+    /// Resolve the opaque topology ID through MMDevice, independently of SetupAPI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adapter_mmdevice: Option<TopologyRead<AdapterDeviceEvidence>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -526,9 +537,13 @@ fn advance(
     let old = baseline
         .native_stamp
         .context("missing fresh baseline native QUERY stamp")?;
-    let new = current
-        .native_stamp
-        .context("missing fresh current native QUERY stamp")?;
+    let new = current.native_stamp.with_context(|| {
+        if current.resource == "absent" {
+            "missing fresh current native QUERY stamp; old provider resource is no longer held"
+        } else {
+            "missing fresh current native QUERY stamp"
+        }
+    })?;
     ensure!(
         old[..3].iter().all(|value| *value > 0) && new[..3].iter().all(|value| *value > 0),
         "invalid zero native identity"

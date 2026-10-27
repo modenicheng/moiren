@@ -125,6 +125,8 @@ pub struct ExportService {
     #[cfg(feature = "vad-integration-probe")]
     pub(super) native_stamps: BTreeMap<VirtualEndpointId, [u64; 5]>,
     #[cfg(feature = "vad-integration-probe")]
+    pub(super) observation_generations: BTreeMap<VirtualEndpointId, u64>,
+    #[cfg(feature = "vad-integration-probe")]
     pub(super) native_retirements: BTreeMap<VirtualEndpointId, ExportRetirementEvidence>,
 }
 
@@ -150,6 +152,8 @@ impl ExportService {
             self.diagnostics.clear();
             #[cfg(feature = "vad-integration-probe")]
             self.native_stamps.clear();
+            #[cfg(feature = "vad-integration-probe")]
+            self.observation_generations.clear();
             #[cfg(feature = "vad-integration-probe")]
             self.native_retirements.clear();
             for observation in self.observations.values_mut() {
@@ -192,6 +196,9 @@ impl ExportService {
         self.diagnostics.remove(&observation.intent.endpoint_id);
         #[cfg(feature = "vad-integration-probe")]
         self.native_stamps.remove(&observation.intent.endpoint_id);
+        #[cfg(feature = "vad-integration-probe")]
+        self.observation_generations
+            .remove(&observation.intent.endpoint_id);
         self.observations
             .insert(observation.intent.endpoint_id, observation);
         Ok(())

@@ -62,6 +62,7 @@ fn opaque_topology_and_setup_rejection_are_optional_diagnostics_not_gate_authori
         setup_interface: Some(SetupInterfaceEvidence::Rejected {
             hresult: -2147024809,
         }),
+        adapter_mmdevice: None,
     };
     let mut before = name("Playback");
     before.topology = Some(diagnostic.clone());
@@ -74,6 +75,7 @@ fn opaque_topology_and_setup_rejection_are_optional_diagnostics_not_gate_authori
             },
         },
         setup_interface: None,
+        adapter_mmdevice: None,
     });
     same_held_device(&before, &after).unwrap();
     assert!(windows_name(&before, &after, "new").is_err());
@@ -154,6 +156,7 @@ fn held_rename_requires_explicit_production_pending_removal_and_unchanged_identi
             |e| e.intent.binding = None,
             |e| e.intent.direction = "other".into(),
             |e| e.native_stamp = None,
+            |e| e.resource = "absent".into(),
             |e| e.native_stamp = Some([12, 7, 13, 3, 5]),
             |e| e.observation_generation = Some(40),
             |e| e.gate_open = true,
@@ -238,6 +241,44 @@ fn dto_name_success_needs_fresh_native_pdo_endpoint_and_engine_confirmation() {
                 "{invalid:?}"
             );
         }
+    }
+}
+
+#[test]
+fn absent_accepted_observation_stays_distinct_from_historical_removal_and_fails_held() {
+    for direction in ["Playback", "Microphone"] {
+        let old = baseline(direction);
+        let mut absent = old.clone();
+        absent.requested_name = "new".into();
+        absent.resource = "absent".into();
+        absent.rename_pending = true;
+        absent.observation_generation = Some(44);
+        absent.native_stamp = None;
+        absent.native_retirement = Some(RetirementEvidence {
+            generation: 41,
+            native_stamp: [10, 7, 11, 3, 5],
+        });
+        absent.candidate_revision = 9;
+        absent.consumed_request_id = 4;
+
+        let error = held(&old, &absent, "new", 4).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing fresh current native QUERY stamp")
+        );
+        assert!(error.to_string().contains("resource is no longer held"));
+        assert_eq!(absent.observation_generation, Some(44));
+        assert_eq!(absent.native_stamp, None);
+        assert_eq!(absent.native_retirement.unwrap().generation, 41);
+        assert!(direct_removed(&old, absent.native_retirement.as_ref()).is_ok());
+
+        let mut missing = absent.clone();
+        missing.observation_generation = None;
+        assert_eq!(
+            held(&old, &missing, "new", 4).unwrap_err().to_string(),
+            "missing current observation generation"
+        );
     }
 }
 

@@ -75,6 +75,8 @@ fn held_export(direction: ExportDirection, name: &str, old_name: &str, id: u8) -
         #[cfg(feature = "vad-integration-probe")]
         native_stamp: None,
         #[cfg(feature = "vad-integration-probe")]
+        observation_generation: None,
+        #[cfg(feature = "vad-integration-probe")]
         native_retirement: None,
         windows_name: None,
     }

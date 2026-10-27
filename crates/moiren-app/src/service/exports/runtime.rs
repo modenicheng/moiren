@@ -163,6 +163,8 @@ impl Runtime {
         service.diagnostics.clear();
         #[cfg(feature = "vad-integration-probe")]
         service.native_stamps.clear();
+        #[cfg(feature = "vad-integration-probe")]
+        service.observation_generations.clear();
         if std::mem::take(&mut self.shutdown_in_flight) {
             // Even a failed retirement attempt must permit closing the owning
             // file. Its cleanup revokes every endpoint, including unknown keys.
@@ -187,6 +189,8 @@ impl Runtime {
         let mut errors = batch.errors;
         for native in batch.observations {
             let id = native.intent.endpoint_id;
+            #[cfg(feature = "vad-integration-probe")]
+            let accepted_result = native.error.is_none();
             #[cfg(feature = "vad-integration-probe")]
             if service.available
                 && native.error.is_none()
@@ -236,8 +240,31 @@ impl Runtime {
                 }
             }
             if native.resource == ExportResourceState::Absent {
-                // Confirmed absence needs no tombstone on the app side. A
-                // future desired export is reconciled as a fresh CREATE.
+                // Project only the probe's accepted sequence. Keep the live
+                // provider observation absent so reconciliation still plans
+                // a fresh CREATE and no historical stamp becomes current.
+                self.sequence = self
+                    .sequence
+                    .checked_add(1)
+                    .expect("export observation sequence exhausted");
+                let generation = self.sequence;
+                let accepted = native.error.is_none()
+                    && !native.gate_open
+                    && !native.can_open
+                    && service
+                        .observe(ExportObservation {
+                            intent: native.intent.clone(),
+                            generation,
+                            resource: ExportResourceState::Absent,
+                            allow_default: native.allow_default,
+                            gate_open: false,
+                            active_revision: None,
+                        })
+                        .is_ok();
+                if accepted {
+                    #[cfg(feature = "vad-integration-probe")]
+                    service.observation_generations.insert(id, generation);
+                }
                 service.observations.remove(&id);
                 continue;
             }
@@ -284,9 +311,10 @@ impl Runtime {
                 .sequence
                 .checked_add(1)
                 .expect("export observation sequence exhausted");
+            let generation = self.sequence;
             if let Err(error) = service.observe(ExportObservation {
                 intent: native.intent,
-                generation: self.sequence,
+                generation,
                 resource: native.resource,
                 allow_default: native.allow_default,
                 gate_open: native.gate_open,
@@ -294,6 +322,10 @@ impl Runtime {
             }) {
                 errors.push(error);
             } else {
+                #[cfg(feature = "vad-integration-probe")]
+                if native.resource != ExportResourceState::Unavailable && accepted_result {
+                    service.observation_generations.insert(id, generation);
+                }
                 #[cfg(windows)]
                 if let Some(mut diagnostics) =
                     diagnostics.filter(|_| native.resource != ExportResourceState::Unavailable)

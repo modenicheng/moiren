@@ -422,7 +422,7 @@ fn observe(snapshot: &AppSnapshot, id: &str) -> anyhow::Result<RuntimeEvidence> 
             .and_then(|observation| observation.error.clone()),
         rename_pending: export.rename_pending,
         resource: format!("{:?}", export.resource).to_ascii_lowercase(),
-        observation_generation: diagnostics.map(|d| d.generation),
+        observation_generation: export.observation_generation,
         native_stamp: diagnostics.and_then(|d| d.native_stamp),
         native_retirement: export.native_retirement.map(Into::into),
         gate_open: export.gate_open,
