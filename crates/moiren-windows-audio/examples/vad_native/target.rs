@@ -428,12 +428,13 @@ fn exercise_case_inner(
             native.poll(pattern, &mut Observation::default())?;
             std::thread::sleep(Duration::from_millis(1));
         }
-        let mut pcm = match control.pcm_owner(opened) {
+        let running = snapshot;
+        let mut pcm = match control.pcm_owner(running) {
             Ok(pcm) => pcm,
             Err(error) => {
                 return validation::revoke_and_drain(
                     Err(error.into()),
-                    || revoke(control, opened),
+                    || revoke(control, running),
                     || Ok(()),
                 );
             }
@@ -490,7 +491,7 @@ fn exercise_case_inner(
         // diagnostic snapshot to rebind the owner or authorize more PCM.
         let outcome = validation::observe_signal_failure(
             outcome,
-            opened,
+            running,
             &mut counters.failure_observation,
             |key| Ok(control.query(key)?),
         );
@@ -498,7 +499,7 @@ fn exercise_case_inner(
         // closing its native stream, including phase and revocation failures.
         let outcome = validation::revoke_and_drain(
             outcome,
-            || revoke(control, opened),
+            || revoke(control, running),
             || Ok(pcm.shutdown(Duration::from_secs(5))?),
         );
         drop(pcm);
@@ -527,7 +528,7 @@ fn exercise_case_inner(
             format: format!("{format:?}"),
             native_buffer_frames: native.frames,
             driver_packet_frames: shape.frames(),
-            stream_generation: opened.stream_generation(),
+            stream_generation: running.stream_generation(),
             signal_seconds: seconds,
             observation: seen,
             closed_gate_before: before,
