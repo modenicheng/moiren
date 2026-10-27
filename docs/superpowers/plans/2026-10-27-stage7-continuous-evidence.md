@@ -336,3 +336,14 @@ end-to-end p95 latency below 10 ms, measurement uncertainty at most 10 ms,
 continuous marker evidence and zero quality failures. Do not promote smaller
 defaults or claim VAD/Process superiority until matched, calibrated runs pass;
 VM measurements are diagnostic only.
+
+The host release probe from `96a03de` was copied to the VM as
+`e2e_latency_probe-96a03de.exe` and verified on both sides at 3,843,584 bytes
+with SHA-256
+`C5CC1A01A98952BD3F75CF2AE8BC6E2F144B9336E9703D7B0E0933A739739B3F`.
+The previous guest probe was deleted only after that verification. The guest
+now retains only the current probe, with no run artifacts or active probe
+process, and has 30.11 GiB free. A short Process Loopback smoke was not run:
+the guest had no real audio-producing source process or suitable source PID.
+The probe's controlled-load supervision is therefore code-tested but still
+lacks fresh native Process Loopback evidence.
