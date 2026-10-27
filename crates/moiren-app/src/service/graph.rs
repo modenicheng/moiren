@@ -3,7 +3,7 @@
 use super::{
     ExportIntent, InputSelection, RunLimit, SessionGeneration, SessionSpec, validate_exports,
 };
-use moiren_core::graph::{EdgeId, GraphError, LogicalGraph, NodeId, NodeKind, PortId, SendParams};
+use moiren_core::graph::{EdgeId, LogicalGraph, NodeId, NodeKind, PortId, SendParams};
 use moiren_core::protocol::ParamValue;
 use moiren_engine::host::ParameterTarget;
 mod builtin;
@@ -237,10 +237,29 @@ pub struct ServiceGraph {
 }
 impl Default for ServiceGraph {
     fn default() -> Self {
-        let session =
-            crate::session_graph::SessionGraph::new().expect("fixed stereo session graph");
-        let nodes = session
-            .graph
+        // The fixed stereo session graph: input -> gain -> pan -> output.
+        let mut graph = moiren_core::graph::LogicalGraph::new();
+        let chain = [
+            (NodeKind::Source, None),
+            (NodeKind::Gain, Some(0.0)),
+            (NodeKind::Pan, None),
+            (NodeKind::Sink, None),
+        ];
+        let mut chain_ids = Vec::new();
+        for (kind, _) in chain {
+            chain_ids.push(graph.create_node(kind, 2).expect("fixed stereo chain"));
+        }
+        for pair in chain_ids.windows(2) {
+            let (source, destination) = (pair[0], pair[1]);
+            graph
+                .connect(
+                    graph.get_node(source).unwrap().outputs()[0].id(),
+                    graph.get_node(destination).unwrap().inputs()[0].id(),
+                    moiren_core::graph::SendParams::default(),
+                )
+                .expect("fixed stereo chain");
+        }
+        let nodes = graph
             .nodes()
             .iter()
             .map(|node| GraphNodeState {
@@ -266,7 +285,7 @@ impl Default for ServiceGraph {
         Self {
             snapshot: GraphSnapshot {
                 exports: Vec::new(),
-                graph: session.graph,
+                graph,
                 nodes,
                 candidate_revision: 1,
                 active_revision: None,

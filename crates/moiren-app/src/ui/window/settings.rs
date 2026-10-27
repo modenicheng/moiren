@@ -294,10 +294,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             input_count = config.input_overrides.len(),
             output_count = config.output_overrides.len()
         )))
-        .when(config == &AudioSettings::default(), |view| view.child(latency_policy(shell, cx)))
-        .when(config != &AudioSettings::default(), |view| view.child(label(
-            t!("Explicit audio settings use the requested device buffers. Legacy queue/recovery profiles apply to the default WASAPI shared configuration.")
-        )))
+        .child(latency_policy(shell, cx))
 }
 
 fn language_choices(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {

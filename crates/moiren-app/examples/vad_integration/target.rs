@@ -9,7 +9,6 @@ use super::{
 use anyhow::{Context, bail, ensure};
 use moiren_app::service::{AppHandle, AppRequest, ManagedDriver, ServiceRuntime, SessionPhase};
 use moiren_core::graph::NodeKind;
-use moiren_windows_audio::engine_backend::NativeStreamKind;
 use moiren_windows_audio::vad::StableEndpointId;
 use std::{
     cell::RefCell,
@@ -404,46 +403,42 @@ impl LiveSession<'_> {
     /// control side could observe, never an inference.
     fn record_probe_trail(&self, report: &mut Report, now_ms: u64) {
         let snapshot = self.handle.try_snapshot();
-        let Some(native) = snapshot
+        #[cfg(windows)]
+        let native = snapshot
             .as_ref()
-            .and_then(|snapshot| snapshot.native_observations.as_ref())
-        else {
-            return;
-        };
-        let mut trail = ProbeTrail {
-            elapsed_ms: now_ms,
-            playback_level_frames: None,
-            microphone_level_frames: None,
-            playback_milli_ppm: None,
-            microphone_milli_ppm: None,
-            playback_xruns: None,
-            microphone_xruns: None,
-            playback_soft_events: None,
-            microphone_soft_events: None,
-        };
-        for probe in &native.observation.boundary_probes {
-            let (level, ppm, xruns, soft) = (
-                Some(probe.level_frames),
-                Some(probe.applied_milli_ppm),
-                Some(probe.xruns),
-                Some(probe.soft_events),
-            );
-            match probe.kind {
-                NativeStreamKind::VirtualPlayback => {
-                    trail.playback_level_frames = level;
-                    trail.playback_milli_ppm = ppm;
-                    trail.playback_xruns = xruns;
-                    trail.playback_soft_events = soft;
+            .and_then(|snapshot| snapshot.professional_observations.as_ref())
+            .map(|session| &session.observation);
+        #[cfg(windows)]
+        let (playback, microphone) = {
+            let mut playback = None;
+            let mut microphone = None;
+            if let Some(native) = native {
+                for stream in &native.streams {
+                    if stream.input {
+                        playback.get_or_insert(stream);
+                    } else {
+                        microphone.get_or_insert(stream);
+                    }
                 }
-                NativeStreamKind::VirtualMicrophone => {
-                    trail.microphone_level_frames = level;
-                    trail.microphone_milli_ppm = ppm;
-                    trail.microphone_xruns = xruns;
-                    trail.microphone_soft_events = soft;
-                }
-                _ => {}
             }
-        }
+            (playback, microphone)
+        };
+        #[cfg(windows)]
+        let trail = ProbeTrail {
+            elapsed_ms: now_ms,
+            playback_dropped_frames: playback.map(|stream| stream.dropped_frames),
+            microphone_silent_frames: microphone.map(|stream| stream.silent_frames),
+            playback_native_callbacks: playback.map(|stream| stream.native_callbacks),
+            microphone_native_callbacks: microphone.map(|stream| stream.native_callbacks),
+        };
+        #[cfg(not(windows))]
+        let trail = ProbeTrail {
+            elapsed_ms: now_ms,
+            playback_dropped_frames: None,
+            microphone_silent_frames: None,
+            playback_native_callbacks: None,
+            microphone_native_callbacks: None,
+        };
         report.probe_trail.push(trail);
     }
 

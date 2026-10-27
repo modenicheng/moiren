@@ -3,7 +3,6 @@
 
 mod backend;
 mod core;
-mod driver;
 mod exports;
 mod graph;
 mod jobs;
@@ -11,11 +10,8 @@ mod latency;
 mod mailbox;
 mod managed;
 mod model;
-mod parameters;
-mod recovery;
 #[cfg(test)]
 mod settings_tests;
-mod signal_preparation;
 mod signals;
 mod startup;
 #[cfg(any(test, feature = "gpui-test"))]
@@ -24,7 +20,6 @@ pub(crate) mod test_backend;
 #[cfg(windows)]
 mod windows;
 pub use backend::*;
-pub use driver::BackendDriver;
 pub use exports::*;
 pub(crate) use graph::primary_node_of;
 pub use graph::{
@@ -35,7 +30,6 @@ pub use graph::{
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;
 pub use moiren_engine::audio_config::*;
-pub use signal_preparation::{SignalPreparation, SignalPreparationError};
 pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
 #[cfg(windows)]
 pub use windows::WindowsBackend;
@@ -112,16 +106,12 @@ pub struct ServiceContext {
     pub exports: ExportService,
     pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
     #[cfg(windows)]
-    pub native_observations: Option<NativeSessionObservations>,
-    #[cfg(windows)]
     pub professional_observations: Option<ProfessionalSessionObservations>,
     pub latency_profile: AudioLatencyProfile,
     pub active_latency_profile: Option<AudioLatencyProfile>,
     pub audio_settings: AudioSettings,
     pub active_audio_settings: Option<AudioSettings>,
     pub graph: ServiceGraph,
-    pub monitor_latency: Option<MonitorLatencyStatus>,
-    pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
     pub core: ServiceCore,
     pub catalog: Arc<DeviceCatalog>,
     pub catalog_error: Option<String>,
@@ -140,16 +130,12 @@ impl Default for ServiceContext {
             exports: ExportService::default(),
             loaded_project: None,
             #[cfg(windows)]
-            native_observations: None,
-            #[cfg(windows)]
             professional_observations: None,
             latency_profile: AudioLatencyProfile::default(),
             active_latency_profile: None,
             audio_settings: AudioSettings::default(),
             active_audio_settings: None,
             graph: ServiceGraph::default(),
-            monitor_latency: None,
-            monitor_diagnostics: None,
             core: ServiceCore::default(),
             catalog: Arc::new(DeviceCatalog::default()),
             catalog_error: None,
@@ -349,11 +335,6 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         exports: c.exports.statuses(&graph),
         export_plan: c.exports.reconcile(&graph),
         #[cfg(windows)]
-        native_observations: c
-            .native_observations
-            .clone()
-            .filter(|value| c.fresh(value.generation)),
-        #[cfg(windows)]
         professional_observations: c
             .professional_observations
             .clone()
@@ -366,10 +347,6 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
             .clone()
             .filter(|_| c.fresh(c.core.generation())),
         graph: Arc::new(graph),
-        monitor_latency: c.monitor_latency.clone(),
-        monitor_diagnostics: c
-            .monitor_diagnostics
-            .filter(|diagnostics| c.fresh(diagnostics.generation)),
         consumed_request_id: RequestId::default(),
         generation: c.core.generation(),
         phase: c.core.phase(),

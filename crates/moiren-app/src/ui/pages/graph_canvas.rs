@@ -137,18 +137,6 @@ impl CanvasWorld {
             } else {
                 format!("{} ch", logical.channels())
             };
-            let format = snapshot
-                .monitor_diagnostics
-                .filter(|diagnostics| {
-                    diagnostics.generation == snapshot.generation
-                        && snapshot.phase == crate::service::SessionPhase::Running
-                })
-                .map(|diagnostics| {
-                    format!(
-                        "{}kHz {channels}",
-                        diagnostics.observation.prepared.output.sample_rate as f64 / 1000.
-                    )
-                });
             let detail = match logical.kind() {
                 NodeKind::Source if state.source.is_none() => t!("Choose a source").to_string(),
                 NodeKind::Sink if state.output_endpoint_id.is_none() => {
@@ -208,7 +196,7 @@ impl CanvasWorld {
                         }
                     },
                 ),
-                _ => format.unwrap_or(channels),
+                _ => channels,
             };
             let (icon, tint) = match logical.kind() {
                 NodeKind::Source => (

@@ -448,7 +448,11 @@ impl UiState {
             (AppRequest::Start(spec), block_frames)
         };
         preparation
-            .configured_engine_project(block_frames, &self.snapshot.audio_settings)
+            .configured_engine_project(
+                block_frames,
+                &self.snapshot.audio_settings,
+                self.snapshot.latency_profile,
+            )
             .map_err(|error| t!("Graph is not ready: %{error}", error = error).to_string())?;
         Ok(request)
     }

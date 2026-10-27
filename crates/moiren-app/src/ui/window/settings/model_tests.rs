@@ -141,23 +141,19 @@ fn failed_submission_rebase_does_not_turn_unedited_defaults_into_owned_edits() {
 }
 
 #[test]
-fn professional_restart_confirmation_expects_no_legacy_active_profile() {
+fn restart_confirmation_expects_the_saved_profile_for_every_configuration() {
     use crate::service::AudioLatencyProfile;
-    let mut audio = AudioSettings::default();
     assert_eq!(
-        expected_active_profile(&audio, AudioLatencyProfile::Low),
+        expected_active_profile(AudioLatencyProfile::Low),
         Some(AudioLatencyProfile::Low)
     );
-    audio.processing.sample_rate = 96_000;
     assert_eq!(
-        expected_active_profile(&audio, AudioLatencyProfile::Low),
-        None
+        expected_active_profile(AudioLatencyProfile::Balanced),
+        Some(AudioLatencyProfile::Balanced)
     );
-    audio = AudioSettings::default();
-    audio.backend = moiren_engine::audio_config::AudioBackend::Asio;
     assert_eq!(
-        expected_active_profile(&audio, AudioLatencyProfile::Balanced),
-        None
+        expected_active_profile(AudioLatencyProfile::Compatible),
+        Some(AudioLatencyProfile::Compatible)
     );
 }
 

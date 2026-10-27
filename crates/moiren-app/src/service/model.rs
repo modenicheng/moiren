@@ -1,4 +1,3 @@
-use crate::monitor::{MonitorLatencyConfig, MonitorObservation, MonitorRecoveryReason};
 use moiren_core::protocol::ControlReply;
 use std::{sync::Arc, time::Duration};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -151,16 +150,12 @@ pub struct AppSnapshot {
     pub exports: Vec<super::ExportStatus>,
     pub export_plan: super::ExportReconcilePlan,
     #[cfg(windows)]
-    pub native_observations: Option<NativeSessionObservations>,
-    #[cfg(windows)]
     pub professional_observations: Option<ProfessionalSessionObservations>,
     pub latency_profile: super::AudioLatencyProfile,
     pub active_latency_profile: Option<super::AudioLatencyProfile>,
     pub audio_settings: super::AudioSettings,
     pub active_audio_settings: Option<super::AudioSettings>,
     pub graph: Arc<super::GraphSnapshot>,
-    pub monitor_latency: Option<MonitorLatencyStatus>,
-    pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
     /// Consumption is published with the phase produced by those requests.
     pub consumed_request_id: RequestId,
     pub generation: SessionGeneration,
@@ -183,36 +178,7 @@ pub struct AppSnapshot {
 }
 #[cfg(windows)]
 #[derive(Debug, Clone)]
-pub struct NativeSessionObservations {
-    pub generation: SessionGeneration,
-    pub observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot,
-}
-
-#[cfg(windows)]
-#[derive(Debug, Clone)]
 pub struct ProfessionalSessionObservations {
     pub generation: SessionGeneration,
-    pub observation: moiren_windows_audio::professional::ProfessionalObservationSnapshot,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MonitorLatencyStatus {
-    pub requested: MonitorLatencyConfig,
-    /// Selected preparation policy; actual device periods remain in native diagnostics.
-    pub selected: MonitorLatencyConfig,
-    pub fallback: Option<MonitorFallback>,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MonitorFallback {
-    pub from_generation: SessionGeneration,
-    pub to_generation: SessionGeneration,
-    pub reason: MonitorRecoveryReason,
-    pub fade_timed_out: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MonitorDiagnosticsSnapshot {
-    /// Only the currently Running physical owner may publish this observation.
-    pub generation: SessionGeneration,
-    pub observation: MonitorObservation,
+    pub observation: moiren_windows_audio::engine_backend::ProfessionalObservationSnapshot,
 }

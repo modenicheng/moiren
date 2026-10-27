@@ -241,18 +241,15 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         }
         DeviceTab::Clock => {
             list = list.child(heading(t!("Active audio clocks")));
-            if let Some(diagnostic) = snapshot.monitor_diagnostics.filter(|d| {
-                d.generation == snapshot.generation && snapshot.phase == SessionPhase::Running
-            }) {
-                let obs = diagnostic.observation;
-                list=list.child(detail(&t!("Input sample rate"),format!("{} Hz",obs.prepared.input.sample_rate)))
-                    .child(detail(&t!("Output sample rate"),format!("{} Hz",obs.prepared.output.sample_rate)))
-                    .child(detail(&t!("Clock correction"),format!("{:+.2} ppm",obs.correction_ppm)))
-                    .child(detail(&t!("Input buffer fill"),format!("{} frames",obs.input_fill_frames)))
-                    .child(detail(&t!("Processed"),format!("{} frames",obs.processed_frames)))
-                    .child(label(t!("Clock correction and buffer inventory come from the active monitor. Buffer fill is not end-to-end latency.")));
+            let rows = crate::ui::presentation::native_timing_rows(snapshot);
+            if rows.is_empty() {
+                list = list.child(label(t!(
+                    "No active native timing. Start audio to inspect the actual stream clocks."
+                )));
             } else {
-                list=list.child(label(t!("No active monitor clock observation. Start a physical input or application session to inspect clock adaptation.")));
+                for (key, value) in rows {
+                    list = list.child(detail(&key, value));
+                }
             }
         }
     }

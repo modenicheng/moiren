@@ -24,28 +24,20 @@ impl AudioLatencyProfile {
 
     pub const fn description(self) -> &'static str {
         match self {
-            Self::Compatible => {
-                "Default device period and full render capacity; generous input queue."
-            }
-            Self::Balanced => {
-                "Request 10 ms periods; queues validated against actual device timing."
-            }
-            Self::Low => "Request 5 ms periods; smaller queue margins require device support.",
+            Self::Compatible => "Use each device's default period.",
+            Self::Balanced => "Request ~10 ms device buffers (512 frames at 48 kHz).",
+            Self::Low => "Request ~5 ms device buffers (256 frames at 48 kHz).",
         }
     }
 
-    #[cfg(windows)]
-    pub fn windows_backend_config(
-        self,
-    ) -> moiren_windows_audio::engine_backend::WindowsBackendConfig {
-        use moiren_windows_audio::engine_backend::{NativeLatencyProfile, WindowsBackendConfig};
-        WindowsBackendConfig {
-            latency_profile: match self {
-                Self::Compatible => NativeLatencyProfile::Compatible,
-                Self::Balanced => NativeLatencyProfile::Balanced,
-                Self::Low => NativeLatencyProfile::Low,
-            },
-            ..WindowsBackendConfig::default()
+    /// Buffer request a profile maps to when no explicit per-device or global
+    /// buffer is configured. Professional native admission only accepts
+    /// power-of-two frames, so the mapping stays on those presets.
+    pub const fn requested_buffer_frames(self) -> Option<u32> {
+        match self {
+            Self::Compatible => None,
+            Self::Balanced => Some(512),
+            Self::Low => Some(256),
         }
     }
 }
@@ -74,18 +66,19 @@ mod tests {
         assert!(serde_json::from_str::<AudioLatencyProfile>("\"turbo\"").is_err());
     }
 
-    #[cfg(windows)]
     #[test]
-    fn saved_profiles_configure_the_matching_native_preparation_policy() {
-        use moiren_windows_audio::engine_backend::NativeLatencyProfile;
-        for (profile, native) in AudioLatencyProfile::ALL.into_iter().zip([
-            NativeLatencyProfile::Compatible,
-            NativeLatencyProfile::Balanced,
-            NativeLatencyProfile::Low,
-        ]) {
-            let config = profile.windows_backend_config();
-            assert_eq!(config.latency_profile, native);
-            config.validate().unwrap();
-        }
+    fn profiles_map_to_power_of_two_buffer_requests() {
+        assert_eq!(
+            AudioLatencyProfile::Compatible.requested_buffer_frames(),
+            None
+        );
+        assert_eq!(
+            AudioLatencyProfile::Balanced.requested_buffer_frames(),
+            Some(512)
+        );
+        assert_eq!(
+            AudioLatencyProfile::Low.requested_buffer_frames(),
+            Some(256)
+        );
     }
 }

@@ -18,10 +18,6 @@ impl ManagedDriver {
         c.active_audio_settings = None;
         #[cfg(windows)]
         {
-            if let Some(observations) = &self.observations {
-                *observations.lock().unwrap_or_else(|p| p.into_inner()) = None;
-            }
-            c.native_observations = None;
             if let Some(observations) = &self.professional_observations {
                 *observations.lock().unwrap_or_else(|p| p.into_inner()) = None;
             }
@@ -79,17 +75,18 @@ impl ManagedDriver {
             .expect("Apply captures the requested audio configuration")
             .clone();
         let block = settings.processing.block_frames as usize;
-        let project = match preparation.configured_engine_project(block, &settings) {
-            Ok(project) => project,
-            Err(error) => {
-                if self.owner.is_none() && self.cleaning == 0 {
-                    c.core.failed(c.core.generation(), error.clone());
+        let project =
+            match preparation.configured_engine_project(block, &settings, c.latency_profile) {
+                Ok(project) => project,
+                Err(error) => {
+                    if self.owner.is_none() && self.cleaning == 0 {
+                        c.core.failed(c.core.generation(), error.clone());
+                    }
+                    c.graph.record_error(error);
+                    self.apply = false;
+                    return;
                 }
-                c.graph.record_error(error);
-                self.apply = false;
-                return;
-            }
-        };
+            };
         // A failed PCM worker can drain while its PDO stays healthy/Present.
         // Waiting for transport admission before replacing that host would
         // strand Apply: only a fresh preparation can create its PCM session.
@@ -106,7 +103,7 @@ impl ManagedDriver {
         });
         if self.owner.as_ref().is_some_and(|o| {
             o.document != self.document
-                || (settings == AudioSettings::default() && o.profile != c.latency_profile)
+                || o.profile != c.latency_profile
                 || o.audio_settings != settings
                 || o.exports != preparation.exports
                 || stranded_virtual_transport

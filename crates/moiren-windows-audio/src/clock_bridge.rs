@@ -7,6 +7,7 @@ use thiserror::Error;
 
 mod ingress;
 mod rate;
+pub use rate::RateClock;
 mod source;
 mod telemetry;
 mod timing;

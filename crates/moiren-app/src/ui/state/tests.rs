@@ -239,9 +239,10 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
         SessionGeneration,
     };
     use moiren_engine::node::DeviceOptions;
-    use moiren_windows_audio::professional::{
-        ProfessionalObservationSnapshot, ProfessionalStreamObservation, native::NativeStreamInfo,
+    use moiren_windows_audio::engine_backend::{
+        ProfessionalObservationSnapshot, ProfessionalStreamObservation,
     };
+    use moiren_windows_audio::native::NativeStreamInfo;
     let runtime = spawn_service();
     let handle = runtime.handle();
     let mut state = UiState::new(handle.clone(), initial_projection(&handle));
@@ -279,7 +280,7 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
                 native_callbacks: 100,
                 native_dropped_frames: 3,
                 native_silent_frames: 5,
-                driver_latency: Some(moiren_windows_audio::professional::native::NativeLatency {
+                driver_latency: Some(moiren_windows_audio::native::NativeLatency {
                     input_frames: 32,
                     output_frames: 64,
                 }),
@@ -351,7 +352,7 @@ fn restored_audio_settings_sync_block_size_without_starting_audio() {
     assert_eq!(state.snapshot.phase, SessionPhase::Idle);
     assert_eq!(
         crate::ui::presentation::latency_apply_text(&state.snapshot),
-        "Explicit stream buffers control professional audio latency"
+        "Selected profile activates on the next audio start"
     );
     finish_service(runtime);
 }
@@ -409,90 +410,6 @@ fn restored_latency_preference_selects_next_start_without_starting_audio() {
     assert_eq!(
         crate::ui::presentation::latency_apply_text(&state.snapshot),
         "Active profile matches selection"
-    );
-    finish_service(runtime);
-}
-
-#[cfg(windows)]
-#[test]
-fn native_timing_projection_hides_stopped_and_stale_owner_observations() {
-    use crate::service::{NativeSessionObservations, SessionGeneration};
-    use moiren_windows_audio::{
-        engine_backend::{
-            NativeBridgeObservation, NativeObservationSnapshot, NativeStreamKind,
-            NativeStreamObservation,
-        },
-        latency::NativeStreamTiming,
-    };
-    let runtime = spawn_service();
-    let handle = runtime.handle();
-    let mut snapshot = (*initial_projection(&handle)).clone();
-    snapshot.phase = SessionPhase::Running;
-    snapshot.generation = SessionGeneration(8);
-    let node = snapshot.graph.graph.nodes()[0].id();
-    snapshot.native_observations = Some(NativeSessionObservations {
-        generation: SessionGeneration(8),
-        observation: NativeObservationSnapshot {
-            owner_generation: 3,
-            running: true,
-            streams: vec![NativeStreamObservation {
-                node,
-                kind: NativeStreamKind::MasterOutput,
-                timing: Some(NativeStreamTiming {
-                    sample_rate: 48_000,
-                    period_frames: Some(336),
-                    capacity_frames: 960,
-                }),
-                shared_period: Some(moiren_windows_audio::shared_stream::SharedPeriodReport {
-                    desired_period_ms: Some(5.0),
-                    actual_period_frames: Some(336),
-                    ..Default::default()
-                }),
-                render_queue: None,
-                input_queue: None,
-            }],
-            boundary_probes: vec![],
-            bridges: vec![NativeBridgeObservation {
-                node,
-                counters: moiren_windows_audio::clock_bridge::BridgeSnapshot {
-                    underrun_frames: 4,
-                    dropped_frames: 8,
-                    resets: 1,
-                    backlog_recoveries: 1,
-                    ..Default::default()
-                },
-            }],
-        },
-    });
-    let mut state = UiState::new(handle.clone(), Arc::new(snapshot));
-    assert!(
-        crate::ui::presentation::native_timing_rows(&state.snapshot)[0]
-            .1
-            .contains("336 frames (7.00 ms)")
-    );
-    assert!(
-        crate::ui::presentation::native_timing_rows(&state.snapshot)
-            .iter()
-            .any(|(_, value)| value == "5.00 ms requested")
-    );
-    assert!(
-        crate::ui::presentation::native_timing_rows(&state.snapshot)
-            .iter()
-            .any(|(label, value)| {
-                label == "Stream 1: faults / recovery"
-                    && value == "Underrun 4 / dropped 8 frames; resets 1 / backlog recoveries 1"
-            })
-    );
-    Arc::make_mut(&mut state.snapshot).generation = SessionGeneration(9);
-    assert_eq!(
-        crate::ui::presentation::native_timing_rows(&state.snapshot),
-        vec![("Actual native timing".into(), "—".into())]
-    );
-    Arc::make_mut(&mut state.snapshot).generation = SessionGeneration(8);
-    Arc::make_mut(&mut state.snapshot).phase = SessionPhase::Idle;
-    assert_eq!(
-        crate::ui::presentation::native_timing_rows(&state.snapshot)[0].1,
-        "—"
     );
     finish_service(runtime);
 }

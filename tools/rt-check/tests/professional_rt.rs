@@ -12,11 +12,11 @@ use moiren_engine::{
     runtime::EngineConfig,
     sample::ProcessingSample,
 };
-#[cfg(windows)]
 use moiren_windows_audio::clock_bridge;
+use moiren_windows_audio::latency;
 #[cfg(windows)]
 use moiren_windows_audio::process_loopback;
-use moiren_windows_audio::professional::native;
+use moiren_windows_audio::native;
 use moiren_windows_audio::virtual_owner;
 use std::{
     marker::PhantomData,
@@ -29,19 +29,25 @@ use std::{
     time::{Duration, Instant},
 };
 #[cfg(windows)]
-#[path = "../../../crates/moiren-windows-audio/src/professional/asio_rt_tests.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/asio_rt_tests.rs"]
 mod asio_rt;
-#[path = "../../../crates/moiren-windows-audio/src/professional/bridge.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/bridge.rs"]
 mod bridge;
-#[path = "../../../crates/moiren-windows-audio/src/professional/codec.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/codec.rs"]
 mod codec;
-#[path = "../../../crates/moiren-windows-audio/src/professional/observations.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/engine_backend/observations.rs"]
 mod observations;
-#[path = "../../../crates/moiren-windows-audio/src/professional/owner.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/engine_backend/owner.rs"]
 mod professional_owner;
 #[cfg(windows)]
 #[path = "../../../crates/moiren-windows-audio/src/owner.rs"]
 mod windows_owner;
+// The library's bridge references engine_backend::observations; mirror the
+// module path so the shadow-compiled file compiles unchanged.
+mod engine_backend {
+    pub(crate) use super::observations;
+}
+
 // Mirror the library's shared native helpers without replacing the workers
 // whose private realtime paths this harness measures.
 mod owner {
@@ -49,13 +55,13 @@ mod owner {
     #[cfg(windows)]
     pub(crate) use super::windows_owner::Mmcss;
 }
-#[path = "../../../crates/moiren-windows-audio/src/professional/recovery.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/engine_backend/recovery.rs"]
 mod recovery;
-#[path = "../../../crates/moiren-windows-audio/src/professional/recovery_host_tests.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/engine_backend/recovery_host_tests.rs"]
 mod recovery_host_tests;
-#[path = "../../../crates/moiren-windows-audio/src/professional/resample.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/resample.rs"]
 mod resample;
-#[path = "../../../crates/moiren-windows-audio/src/professional/servo.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/servo.rs"]
 mod servo;
 use bridge::{RingSink, RingSource, Tone};
 use native::{NativeStream, NativeStreamInfo, StereoFrame};
@@ -384,7 +390,7 @@ fn measure_renderer<S: ProcessingSample>() {
         },
         false,
     );
-    let mut pump = Pump::new(None, Some(rx), info(), 96000, 4096, counters, true).unwrap();
+    let mut pump = Pump::new(None, None, Some(rx), info(), 96000, 4096, counters, true).unwrap();
     let probe = Arc::new(Probe::default());
     let mut native = FakeNative {
         info: info(),
@@ -414,7 +420,16 @@ fn master_renderer_and_graph_sink_are_allocation_free_in_both_precisions_with_pa
 fn measure_capture<S: ProcessingSample>() {
     let counters = Arc::new(Counters::default());
     let (mut tx, rx) = rtrb::RingBuffer::new(4096);
-    let mut source = RingSource::<S>::new(rx, 44100, 96000, 128, 4096, counters.clone()).unwrap();
+    let mut source = RingSource::<S>::new(
+        rx,
+        44100,
+        96000,
+        128,
+        4096,
+        counters.clone(),
+        std::sync::Arc::new(bridge::CaptureWriteClock::new()),
+    )
+    .unwrap();
     let mut arena = BufferArena::<S>::new(
         &[BufferSlotLayout {
             channels: 2,
@@ -546,6 +561,7 @@ fn transport_with_recovery<S: ProcessingSample>(
                 }))
             }),
             capture: None,
+            capture_clock: None,
             render: Some(rx),
             counters,
             state: transport.state.clone(),
@@ -569,11 +585,18 @@ fn recoverable_notifications_are_published_only_after_owner_cleanup() {
     let mut graph = LogicalGraph::new();
     let node = graph.create_node(NodeKind::Sink, 2).unwrap();
     let config = moiren_engine::host::NodeConfig::Output(
-        moiren_windows_audio::engine_backend::physical_output(
-            moiren_engine::node::EndpointSelector::FollowDefault(
-                moiren_engine::node::DefaultDeviceRole::Multimedia,
-            ),
-        ),
+        moiren_engine::node::OutputConfig {
+                target: moiren_engine::node::OutputTarget::Physical(
+                    moiren_engine::node::EndpointSelector::FollowDefault(
+                        moiren_engine::node::DefaultDeviceRole::Multimedia,
+                    ),
+                ),
+                channels: 2,
+                device: moiren_engine::node::DeviceOptions {
+                    clock_role: moiren_engine::boundary::ClockRole::Master,
+                    ..Default::default()
+                },
+        },
     );
     for failure in [
         Failure::Recover,
@@ -639,11 +662,18 @@ fn deferred_recovery_respects_explicit_cancellation_and_rejected_tickets() {
             let mut graph = LogicalGraph::new();
             let node = graph.create_node(NodeKind::Sink, 2).unwrap();
             let config = moiren_engine::host::NodeConfig::Output(
-                moiren_windows_audio::engine_backend::physical_output(
-                    moiren_engine::node::EndpointSelector::FollowDefault(
-                        moiren_engine::node::DefaultDeviceRole::Multimedia,
-                    ),
-                ),
+                moiren_engine::node::OutputConfig {
+                        target: moiren_engine::node::OutputTarget::Physical(
+                            moiren_engine::node::EndpointSelector::FollowDefault(
+                                moiren_engine::node::DefaultDeviceRole::Multimedia,
+                            ),
+                        ),
+                        channels: 2,
+                        device: moiren_engine::node::DeviceOptions {
+                            clock_role: moiren_engine::boundary::ClockRole::Master,
+                            ..Default::default()
+                        },
+                },
             );
             let monitor = recovery::RecoveryMonitor::default();
             let ticket = monitor.register(3, vec![(node, config)], 96000);
@@ -828,11 +858,18 @@ fn assert_combined_faults(faults: Faults, dsp_panic: bool) {
     let mut graph = LogicalGraph::new();
     let node = graph.create_node(NodeKind::Sink, 2).unwrap();
     let config = moiren_engine::host::NodeConfig::Output(
-        moiren_windows_audio::engine_backend::physical_output(
-            moiren_engine::node::EndpointSelector::FollowDefault(
-                moiren_engine::node::DefaultDeviceRole::Multimedia,
-            ),
-        ),
+        moiren_engine::node::OutputConfig {
+                target: moiren_engine::node::OutputTarget::Physical(
+                    moiren_engine::node::EndpointSelector::FollowDefault(
+                        moiren_engine::node::DefaultDeviceRole::Multimedia,
+                    ),
+                ),
+                channels: 2,
+                device: moiren_engine::node::DeviceOptions {
+                    clock_role: moiren_engine::boundary::ClockRole::Master,
+                    ..Default::default()
+                },
+        },
     );
     let monitor = recovery::RecoveryMonitor::default();
     let ticket = monitor.register(3, vec![(node, config)], 96000);

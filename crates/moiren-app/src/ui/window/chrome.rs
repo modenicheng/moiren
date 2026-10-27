@@ -182,25 +182,7 @@ pub(super) fn statusbar(state: &UiState) -> Stateful<Div> {
     } else {
         theme::TEXT_FAINT
     };
-    let format = snapshot
-        .monitor_diagnostics
-        .filter(|d| d.generation == snapshot.generation && running)
-        .map(|d| {
-            let frames = d
-                .observation
-                .prepared
-                .output
-                .actual_period_frames
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "—".into());
-            t!(
-                "%{rate} Hz  ·  period %{frames} frames",
-                rate = d.observation.prepared.output.sample_rate,
-                frames = frames
-            )
-            .to_string()
-        })
-        .unwrap_or_default();
+    let format = String::new();
     div()
         .id("engine-statusbar")
         .flex()

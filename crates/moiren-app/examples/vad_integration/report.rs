@@ -34,20 +34,16 @@ pub(super) struct Report {
     pub limitations: Vec<&'static str>,
 }
 
-/// One control-side sample of the service's virtual boundary carrier probes,
-/// taken from the service snapshot during a soak. The schema stays portable
-/// even when the native coordinator is not compiled.
+/// One control-side sample of the virtual boundary stream counters, taken
+/// from the professional observation snapshot during a soak. The schema
+/// stays portable even when the native coordinator is not compiled.
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct ProbeTrail {
     pub elapsed_ms: u64,
-    pub playback_level_frames: Option<u32>,
-    pub microphone_level_frames: Option<u32>,
-    pub playback_milli_ppm: Option<i32>,
-    pub microphone_milli_ppm: Option<i32>,
-    pub playback_xruns: Option<u64>,
-    pub microphone_xruns: Option<u64>,
-    pub playback_soft_events: Option<u64>,
-    pub microphone_soft_events: Option<u64>,
+    pub playback_dropped_frames: Option<u64>,
+    pub microphone_silent_frames: Option<u64>,
+    pub playback_native_callbacks: Option<u64>,
+    pub microphone_native_callbacks: Option<u64>,
 }
 
 impl Default for Report {
