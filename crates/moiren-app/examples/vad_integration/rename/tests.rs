@@ -44,7 +44,90 @@ fn name(direction: &str) -> NativeName {
         device_interface_friendly_name: PropertyReadback::Value {
             value: "Adapter label".into(),
         },
+        topology: None,
     }
+}
+
+#[test]
+fn opaque_topology_and_setup_rejection_are_optional_diagnostics_not_gate_authority() {
+    let opaque = r"{2}.\\?\Mixed#Opaque Adapter ";
+    let diagnostic = TopologyEvidence {
+        adapter_id: TopologyRead::Value {
+            value: opaque.into(),
+        },
+        setup_interface: Some(SetupInterfaceEvidence::Rejected {
+            hresult: -2147024809,
+        }),
+    };
+    let mut before = name("Playback");
+    before.topology = Some(diagnostic.clone());
+    let mut after = name("Playback");
+    after.topology = Some(TopologyEvidence {
+        adapter_id: TopologyRead::Error {
+            error: TopologyReadError::Hresult {
+                stage: "GetDeviceIdConnectedTo",
+                hresult: -2147467259,
+            },
+        },
+        setup_interface: None,
+    });
+    same_held_device(&before, &after).unwrap();
+    assert!(windows_name(&before, &after, "new").is_err());
+    after.windows_friendly_name = "new".into();
+    windows_name(&before, &after, "new").unwrap();
+    let json = serde_json::to_value(diagnostic).unwrap();
+    assert_eq!(json["adapter_id"]["value"], opaque);
+    assert_eq!(json["setup_interface"]["status"], "rejected");
+    assert_eq!(json["setup_interface"]["hresult"], -2147024809i32);
+    let json = serde_json::to_value(after).unwrap();
+    assert_eq!(
+        json["topology"]["adapter_id"]["error"]["stage"],
+        "GetDeviceIdConnectedTo"
+    );
+    assert_eq!(
+        json["topology"]["adapter_id"]["error"]["hresult"],
+        -2147467259i32
+    );
+    assert!(json["topology"]["setup_interface"].is_null());
+    assert!(
+        serde_json::to_value(name("Playback"))
+            .unwrap()
+            .get("topology")
+            .is_none()
+    );
+}
+
+#[test]
+fn setup_interface_metadata_retains_independent_read_errors_and_raw_property_shape() {
+    let evidence = SetupInterfaceEvidence::Opened {
+        interface_class: "6994ad04-93ef-11d0-a3cc-00a0c9223196".into(),
+        pdo_instance: TopologyRead::Value {
+            value: r"MOIREN\VAD_RAW\owned".into(),
+        },
+        parent_instance: TopologyRead::Error {
+            error: TopologyReadError::ConfigRet {
+                stage: "CM_Get_Parent",
+                code: 13,
+            },
+        },
+        friendly_name: TypedInterfaceName {
+            property_type: Some(25),
+            required_bytes: Some(20),
+            readback: TopologyRead::Error {
+                error: TopologyReadError::PropertyType { property_type: 25 },
+            },
+        },
+    };
+    let json = serde_json::to_value(evidence).unwrap();
+    assert_eq!(json["status"], "opened");
+    assert_eq!(json["pdo_instance"]["value"], r"MOIREN\VAD_RAW\owned");
+    assert_eq!(json["parent_instance"]["error"]["code"], 13);
+    assert_eq!(json["friendly_name"]["property_type"], 25);
+    assert_eq!(json["friendly_name"]["required_bytes"], 20);
+    assert_eq!(
+        json["friendly_name"]["readback"]["error"]["kind"],
+        "property_type"
+    );
 }
 
 #[test]

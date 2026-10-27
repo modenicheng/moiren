@@ -74,6 +74,83 @@ pub(super) enum PropertyReadback {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(super) enum TopologyReadError {
+    Hresult {
+        stage: &'static str,
+        hresult: i32,
+    },
+    ConfigRet {
+        stage: &'static str,
+        code: u32,
+    },
+    ConnectorCount {
+        count: u32,
+    },
+    NullString {
+        field: &'static str,
+    },
+    UnterminatedString {
+        field: &'static str,
+        max_units: usize,
+    },
+    InvalidUtf16 {
+        field: &'static str,
+    },
+    PropertyType {
+        property_type: u32,
+    },
+    PropertyBytes {
+        bytes: u32,
+        capacity_bytes: usize,
+    },
+    PropertyTermination,
+    UnexpectedDetailSuccess,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(super) enum TopologyRead<T> {
+    Value { value: T },
+    Error { error: TopologyReadError },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct TypedInterfaceName {
+    /// Unavailable DDI output is unknown, never a fabricated type/byte count.
+    pub property_type: Option<u32>,
+    pub required_bytes: Option<u32>,
+    pub readback: TopologyRead<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(super) enum SetupInterfaceEvidence {
+    /// The opaque topology ID is not guaranteed to be a SetupAPI path.
+    /// This HRESULT comes only from SetupDiOpenDeviceInterfaceW(exact ID).
+    Rejected {
+        hresult: i32,
+    },
+    Error {
+        error: TopologyReadError,
+    },
+    Opened {
+        interface_class: String,
+        pdo_instance: TopologyRead<String>,
+        parent_instance: TopologyRead<String>,
+        friendly_name: TypedInterfaceName,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct TopologyEvidence {
+    /// Exact GetDeviceIdConnectedTo output: no prefix removal/path guessing.
+    pub adapter_id: TopologyRead<String>,
+    /// Not attempted if the topology ID could not be read within the bound.
+    pub setup_interface: Option<SetupInterfaceEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(super) struct NativeName {
     pub root_instance: String,
     pub stable_id: String,
@@ -85,6 +162,9 @@ pub(super) struct NativeName {
     /// Optional actual MMDevice diagnostics; never acceptance substitutes.
     pub device_desc: PropertyReadback,
     pub device_interface_friendly_name: PropertyReadback,
+    /// Collected once per HeldClient, in baseline/fresh first observation only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topology: Option<TopologyEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize)]

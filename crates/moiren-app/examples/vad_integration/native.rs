@@ -11,6 +11,7 @@ use moiren_windows_audio::vad::{
 };
 use serde::Serialize;
 use std::{
+    cell::Cell,
     marker::PhantomData,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     rc::Rc,
@@ -40,6 +41,9 @@ use windows::{
     },
     core::{GUID, HSTRING, Interface},
 };
+
+#[path = "native/topology.rs"]
+mod topology;
 
 struct Apartment(PhantomData<Rc<()>>);
 impl Apartment {
@@ -90,6 +94,7 @@ pub(super) struct HeldClient {
     stream: Stream,
     device: IMMDevice,
     identity: super::rename::NativeName,
+    topology_pending: Cell<bool>,
     // All COM references above must be released before CoUninitialize.
     _apartment: Apartment,
 }
@@ -146,7 +151,9 @@ impl HeldClient {
                 windows_friendly_name,
                 device_desc,
                 device_interface_friendly_name,
+                topology: None,
             },
+            topology_pending: Cell::new(true),
             _apartment: apartment,
         })
     }
@@ -160,6 +167,11 @@ impl HeldClient {
         observed.device_desc = optional_property(&self.device, &PKEY_Device_DeviceDesc);
         observed.device_interface_friendly_name =
             optional_property(&self.device, &PKEY_DeviceInterface_FriendlyName);
+        // Collect only for baseline/fresh first observations. No topology/COM
+        // reference survives this call; while-held polls do not repeat it or
+        // misrepresent a saved baseline as a current topology observation.
+        observed.topology =
+            topology::collect_once(&self.topology_pending, || topology::collect(&self.device));
         Ok(observed)
     }
 

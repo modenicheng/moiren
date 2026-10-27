@@ -1,0 +1,471 @@
+//! Optional bounded evidence, never rename/ownership admission authority.
+use super::super::rename::{
+    SetupInterfaceEvidence, TopologyEvidence, TopologyRead, TopologyReadError, TypedInterfaceName,
+};
+use windows::{
+    Win32::{
+        Devices::{
+            DeviceAndDriverInstallation::{
+                CM_Get_Device_IDW, CM_Get_Parent, CR_SUCCESS, HDEVINFO, SP_DEVICE_INTERFACE_DATA,
+                SP_DEVINFO_DATA, SetupDiCreateDeviceInfoList, SetupDiDestroyDeviceInfoList,
+                SetupDiGetDeviceInterfaceDetailW, SetupDiGetDeviceInterfacePropertyW,
+                SetupDiOpenDeviceInterfaceW,
+            },
+            Properties::{DEVPKEY_DeviceInterface_FriendlyName, DEVPROP_TYPE_STRING, DEVPROPTYPE},
+        },
+        Foundation::ERROR_INSUFFICIENT_BUFFER,
+        Media::Audio::{IDeviceTopology, IMMDevice},
+        System::Com::{CLSCTX_ALL, CoTaskMemFree},
+    },
+    core::{Error, HSTRING, PWSTR},
+};
+
+const MAX_UNITS: usize = 4096;
+const PROPERTY_BYTES: usize = (MAX_UNITS + 1) * 2;
+
+fn bounded_utf16(
+    field: &'static str,
+    mut read: impl FnMut(usize) -> Option<u16>,
+) -> Result<String, TopologyReadError> {
+    let mut units = Vec::with_capacity(MAX_UNITS);
+    for index in 0..=MAX_UNITS {
+        match read(index) {
+            Some(0) => {
+                return String::from_utf16(&units)
+                    .map_err(|_| TopologyReadError::InvalidUtf16 { field });
+            }
+            Some(unit) if index < MAX_UNITS => units.push(unit),
+            None if index == 0 => return Err(TopologyReadError::NullString { field }),
+            _ => break,
+        }
+    }
+    Err(TopologyReadError::UnterminatedString {
+        field,
+        max_units: MAX_UNITS,
+    })
+}
+
+fn collect_with(
+    read: impl FnOnce() -> Result<String, TopologyReadError>,
+    setup: impl FnOnce(&str) -> SetupInterfaceEvidence,
+) -> TopologyEvidence {
+    match read() {
+        Ok(value) => {
+            let setup_interface = Some(setup(&value));
+            TopologyEvidence {
+                adapter_id: TopologyRead::Value { value },
+                setup_interface,
+            }
+        }
+        Err(error) => TopologyEvidence {
+            adapter_id: TopologyRead::Error { error },
+            setup_interface: None,
+        },
+    }
+}
+
+fn property_text(kind: u32, bytes: u32, buffer: &[u8]) -> Result<String, TopologyReadError> {
+    if kind != DEVPROP_TYPE_STRING.0 {
+        return Err(TopologyReadError::PropertyType {
+            property_type: kind,
+        });
+    }
+    let capacity_bytes = buffer.len().min(PROPERTY_BYTES);
+    let length = bytes as usize;
+    if length < 2 || !length.is_multiple_of(2) || length > capacity_bytes {
+        return Err(TopologyReadError::PropertyBytes {
+            bytes,
+            capacity_bytes,
+        });
+    }
+    let units: Vec<_> = buffer[..length]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    if units.last() != Some(&0) || units[..units.len() - 1].contains(&0) {
+        return Err(TopologyReadError::PropertyTermination);
+    }
+    bounded_utf16("interface_friendly_name", |index| units.get(index).copied())
+}
+
+fn readback<T>(result: Result<T, TopologyReadError>) -> TopologyRead<T> {
+    match result {
+        Ok(value) => TopologyRead::Value { value },
+        Err(error) => TopologyRead::Error { error },
+    }
+}
+
+fn hresult(stage: &'static str, error: Error) -> TopologyReadError {
+    TopologyReadError::Hresult {
+        stage,
+        hresult: error.code().0,
+    }
+}
+
+struct TaskString(PWSTR);
+impl Drop for TaskString {
+    fn drop(&mut self) {
+        // Exactly this call's COM allocation, freed even on bounds/UTF-16 error.
+        unsafe { CoTaskMemFree(Some(self.0.0.cast())) };
+    }
+}
+
+fn adapter_id(device: &IMMDevice) -> Result<String, TopologyReadError> {
+    // Apartment-local activation obtains metadata only, never starts a stream.
+    // All topology/connector references are dropped before returning this value.
+    let topology: IDeviceTopology = unsafe { device.Activate(CLSCTX_ALL, None) }
+        .map_err(|error| hresult("Activate(IDeviceTopology)", error))?;
+    let count = unsafe { topology.GetConnectorCount() }
+        .map_err(|error| hresult("GetConnectorCount", error))?;
+    if count != 1 {
+        return Err(TopologyReadError::ConnectorCount { count });
+    }
+    let connector =
+        unsafe { topology.GetConnector(0) }.map_err(|error| hresult("GetConnector(0)", error))?;
+    let owned = TaskString(
+        unsafe { connector.GetDeviceIdConnectedTo() }
+            .map_err(|error| hresult("GetDeviceIdConnectedTo", error))?,
+    );
+    // A successful COM result is a readable NUL-terminated string. Stop at NUL
+    // or the explicit 4096-unit payload bound; never call unbounded as_wide().
+    bounded_utf16("adapter_id", |index| {
+        if owned.0.is_null() {
+            None
+        } else {
+            Some(unsafe { *owned.0.0.add(index) })
+        }
+    })
+}
+
+struct DeviceSet(HDEVINFO);
+impl Drop for DeviceSet {
+    fn drop(&mut self) {
+        // Local enumeration container only: no device removal or registry writes.
+        let _ = unsafe { SetupDiDestroyDeviceInfoList(self.0) };
+    }
+}
+
+fn instance(node: u32, field: &'static str) -> Result<String, TopologyReadError> {
+    let mut units = [0u16; MAX_UNITS + 1];
+    let status = unsafe { CM_Get_Device_IDW(node, &mut units, 0) };
+    if status != CR_SUCCESS {
+        return Err(TopologyReadError::ConfigRet {
+            stage: "CM_Get_Device_IDW",
+            code: status.0,
+        });
+    }
+    bounded_utf16(field, |index| units.get(index).copied())
+}
+
+fn typed_name(set: HDEVINFO, interface: &SP_DEVICE_INTERFACE_DATA) -> TypedInterfaceName {
+    // Fixed, UTF-16-aligned buffer; no size probe, second read or fallback.
+    let mut units = [0u16; MAX_UNITS + 1];
+    let mut kind = DEVPROPTYPE::default();
+    let mut required = 0;
+    // SAFETY: the byte view covers exactly this exclusive fixed output buffer.
+    let buffer =
+        unsafe { std::slice::from_raw_parts_mut(units.as_mut_ptr().cast::<u8>(), PROPERTY_BYTES) };
+    let result = unsafe {
+        SetupDiGetDeviceInterfacePropertyW(
+            set,
+            interface,
+            &DEVPKEY_DeviceInterface_FriendlyName,
+            &mut kind,
+            Some(&mut *buffer),
+            Some(&mut required),
+            0,
+        )
+    };
+    typed_name_result(result, kind.0, required, buffer)
+}
+
+fn typed_name_result(
+    result: windows::core::Result<()>,
+    kind: u32,
+    required: u32,
+    buffer: &[u8],
+) -> TypedInterfaceName {
+    match result {
+        Ok(()) => TypedInterfaceName {
+            property_type: Some(kind),
+            required_bytes: Some(required),
+            readback: readback(property_text(kind, required, buffer)),
+        },
+        Err(error) => TypedInterfaceName {
+            property_type: None,
+            required_bytes: (error.code() == ERROR_INSUFFICIENT_BUFFER.to_hresult())
+                .then_some(required),
+            readback: readback(Err(hresult("SetupDiGetDeviceInterfacePropertyW", error))),
+        },
+    }
+}
+
+fn setup_interface(exact_id: &str) -> SetupInterfaceEvidence {
+    let set = match unsafe { SetupDiCreateDeviceInfoList(None, None) } {
+        Ok(set) => DeviceSet(set),
+        Err(error) => {
+            return SetupInterfaceEvidence::Error {
+                error: hresult("SetupDiCreateDeviceInfoList", error),
+            };
+        }
+    };
+    let mut interface = SP_DEVICE_INTERFACE_DATA {
+        cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
+        ..Default::default()
+    };
+    // GetDeviceIdConnectedTo guarantees an opaque MMDevice ID, not a SetupAPI
+    // path. Rejection is an expected diagnostic result. No trimming, splitting,
+    // case folding, prefix stripping or second attempt is allowed here.
+    if let Err(error) = unsafe {
+        SetupDiOpenDeviceInterfaceW(set.0, &HSTRING::from(exact_id), 0, Some(&mut interface))
+    } {
+        return SetupInterfaceEvidence::Rejected {
+            hresult: error.code().0,
+        };
+    }
+    let mut info = SP_DEVINFO_DATA {
+        cbSize: size_of::<SP_DEVINFO_DATA>() as u32,
+        ..Default::default()
+    };
+    // The documented NULL-detail form fills DeviceInfoData and returns
+    // ERROR_INSUFFICIENT_BUFFER. This is one identity query, not a sizing retry.
+    let detail = unsafe {
+        SetupDiGetDeviceInterfaceDetailW(set.0, &interface, None, 0, None, Some(&mut info))
+    };
+    let identity = match detail {
+        Err(error) if error.code() == ERROR_INSUFFICIENT_BUFFER.to_hresult() => Ok(info.DevInst),
+        Err(error) => Err(hresult("SetupDiGetDeviceInterfaceDetailW", error)),
+        Ok(()) => Err(TopologyReadError::UnexpectedDetailSuccess),
+    };
+    let pdo = identity
+        .clone()
+        .and_then(|node| instance(node, "pdo_instance"));
+    let parent = identity.and_then(|node| {
+        let mut parent = 0;
+        let status = unsafe { CM_Get_Parent(&mut parent, node, 0) };
+        if status != CR_SUCCESS {
+            return Err(TopologyReadError::ConfigRet {
+                stage: "CM_Get_Parent",
+                code: status.0,
+            });
+        }
+        instance(parent, "parent_instance")
+    });
+    SetupInterfaceEvidence::Opened {
+        interface_class: format!("{:?}", interface.InterfaceClassGuid),
+        pdo_instance: readback(pdo),
+        parent_instance: readback(parent),
+        friendly_name: typed_name(set.0, &interface),
+    }
+}
+
+pub(super) fn collect(device: &IMMDevice) -> TopologyEvidence {
+    collect_with(|| adapter_id(device), setup_interface)
+}
+
+pub(super) fn collect_once(
+    pending: &std::cell::Cell<bool>,
+    collect: impl FnOnce() -> TopologyEvidence,
+) -> Option<TopologyEvidence> {
+    pending.replace(false).then(collect)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_utf16_preserves_exact_text_and_never_scans_beyond_limit() {
+        let exact = r"{2}.\\?\Mixed#Opaque Adapter ";
+        let units: Vec<_> = exact.encode_utf16().chain([0]).collect();
+        assert_eq!(
+            bounded_utf16("adapter_id", |i| units.get(i).copied()).unwrap(),
+            exact
+        );
+        let mut units = vec![b'X' as u16; MAX_UNITS];
+        units.push(0);
+        assert_eq!(
+            bounded_utf16("adapter_id", |i| units.get(i).copied())
+                .unwrap()
+                .len(),
+            MAX_UNITS
+        );
+        let mut max_index = 0;
+        let error = bounded_utf16("adapter_id", |i| {
+            max_index = i;
+            Some(88)
+        })
+        .unwrap_err();
+        assert_eq!(max_index, MAX_UNITS);
+        assert_eq!(
+            error,
+            TopologyReadError::UnterminatedString {
+                field: "adapter_id",
+                max_units: MAX_UNITS
+            }
+        );
+        assert_eq!(
+            bounded_utf16("adapter_id", |i| [0xd800, 0].get(i).copied()),
+            Err(TopologyReadError::InvalidUtf16 {
+                field: "adapter_id"
+            })
+        );
+        assert_eq!(
+            bounded_utf16("adapter_id", |_| None),
+            Err(TopologyReadError::NullString {
+                field: "adapter_id"
+            })
+        );
+    }
+
+    #[test]
+    fn actual_collection_helper_never_normalizes_or_retries_opaque_setup_rejection() {
+        let opaque = r"{2}.\\?\Mixed#Opaque Adapter ";
+        let mut calls = 0;
+        let result = collect_with(
+            || Ok(opaque.into()),
+            |actual| {
+                calls += 1;
+                assert_eq!(actual, opaque);
+                SetupInterfaceEvidence::Rejected {
+                    hresult: -2147024809,
+                }
+            },
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(
+            result.adapter_id,
+            TopologyRead::Value {
+                value: opaque.into()
+            }
+        );
+        assert_eq!(
+            result.setup_interface,
+            Some(SetupInterfaceEvidence::Rejected {
+                hresult: -2147024809
+            })
+        );
+        let error = TopologyReadError::Hresult {
+            stage: "GetDeviceIdConnectedTo",
+            hresult: -2147467259,
+        };
+        let result = collect_with(
+            || Err(error.clone()),
+            |_| panic!("no ID, no SetupAPI attempt"),
+        );
+        assert_eq!(result.adapter_id, TopologyRead::Error { error });
+        assert!(result.setup_interface.is_none());
+    }
+
+    #[test]
+    fn typed_property_decoder_rejects_wrong_type_size_termination_and_invalid_utf16() {
+        let bytes: Vec<_> = "Requested "
+            .encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(
+            property_text(18, bytes.len() as u32, &bytes).unwrap(),
+            "Requested "
+        );
+        assert_eq!(property_text(18, 2, &[0, 0]).unwrap(), "");
+        assert_eq!(
+            property_text(25, bytes.len() as u32, &bytes),
+            Err(TopologyReadError::PropertyType { property_type: 25 })
+        );
+        for size in [0, 1, 3, PROPERTY_BYTES as u32 + 2] {
+            assert!(matches!(
+                property_text(18, size, &bytes),
+                Err(TopologyReadError::PropertyBytes { .. })
+            ));
+        }
+        assert_eq!(
+            property_text(18, 2, &[88, 0]),
+            Err(TopologyReadError::PropertyTermination)
+        );
+        assert_eq!(
+            property_text(18, 4, &[0, 0, 0, 0]),
+            Err(TopologyReadError::PropertyTermination)
+        );
+        assert_eq!(
+            property_text(18, 4, &[0, 0xd8, 0, 0]),
+            Err(TopologyReadError::InvalidUtf16 {
+                field: "interface_friendly_name"
+            })
+        );
+        let mut maximum = [0x58, 0].repeat(MAX_UNITS);
+        maximum.extend([0, 0]);
+        assert_eq!(
+            property_text(18, PROPERTY_BYTES as u32, &maximum)
+                .unwrap()
+                .len(),
+            MAX_UNITS
+        );
+        maximum.extend([0, 0]);
+        assert!(matches!(
+            property_text(18, maximum.len() as u32, &maximum),
+            Err(TopologyReadError::PropertyBytes { .. })
+        ));
+    }
+
+    #[test]
+    fn optional_failure_is_retained_once_not_retried_or_cloned_into_held_observation() {
+        let pending = std::cell::Cell::new(true);
+        let result = collect_once(&pending, || {
+            collect_with(
+                || {
+                    Err(hresult(
+                        "Activate(IDeviceTopology)",
+                        Error::from_hresult(windows::core::HRESULT(-2147467259)),
+                    ))
+                },
+                |_| panic!("failed adapter read must not call SetupAPI"),
+            )
+        })
+        .unwrap();
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(
+            json["adapter_id"]["error"]["stage"],
+            "Activate(IDeviceTopology)"
+        );
+        assert_eq!(json["adapter_id"]["error"]["hresult"], -2147467259i32);
+        assert!(collect_once(&pending, || panic!("while-held must not recollect")).is_none());
+    }
+
+    #[test]
+    fn actual_property_result_helper_preserves_hresult_and_never_invents_ddi_outputs() {
+        let denied = windows::core::HRESULT(-2147024891);
+        let result = typed_name_result(Err(Error::from_hresult(denied)), 18, 0, &[0; 2]);
+        assert!(result.property_type.is_none());
+        assert!(result.required_bytes.is_none());
+        assert_eq!(
+            result.readback,
+            TopologyRead::Error {
+                error: TopologyReadError::Hresult {
+                    stage: "SetupDiGetDeviceInterfacePropertyW",
+                    hresult: denied.0,
+                },
+            }
+        );
+        let result = typed_name_result(
+            Err(Error::from_hresult(ERROR_INSUFFICIENT_BUFFER.to_hresult())),
+            18,
+            PROPERTY_BYTES as u32 + 2,
+            &[0; 2],
+        );
+        assert!(result.property_type.is_none());
+        assert_eq!(result.required_bytes, Some(PROPERTY_BYTES as u32 + 2));
+        assert!(matches!(result.readback, TopologyRead::Error { .. }));
+        let result = typed_name_result(Ok(()), 25, 2, &[0; 2]);
+        assert_eq!(result.property_type, Some(25));
+        assert_eq!(result.required_bytes, Some(2));
+        assert_eq!(
+            result.readback,
+            TopologyRead::Error {
+                error: TopologyReadError::PropertyType { property_type: 25 },
+            }
+        );
+    }
+}
