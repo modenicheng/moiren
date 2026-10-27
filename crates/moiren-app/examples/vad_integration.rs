@@ -50,10 +50,12 @@ const HELP: &str = "vad_integration --exercise [--pcm | --rename] [--timeout-sec
     --pcm defaults to a 90s overall watchdog and requires at least 60s if set.\n\
     --rename: real service/native Playback then Microphone remove/recreate.\n\
     Hold an initialized exclusive client (no Start/PCM), Stop the Engine, request\n\
-    rename and require pending Removing, unchanged native identity and Windows\n\
-    FriendlyName; release every client, then require a fresh initialized native\n\
-    replacement, newer PDO/endpoint identity, Engine confirmation and an exact\n\
-    PKEY_Device_FriendlyName match. Provider/DTO names alone never pass.\n\
+    rename and retain the historical strict Removing/unchanged identity/name\n\
+    expectation. Holding a native client is NOT a driver guarantee to defer\n\
+    removal. Any strict failure remains failed/unqualified (exit 1), while bounded\n\
+    diagnostics continue: release, record direct old Removed, fresh native init,\n\
+    exact PKEY_Device_FriendlyName readback, then Engine confirmation.\n\
+    Missing direct Removed, Absent or DTO/name success can never pass acceptance.\n\
     --rename is exclusive with --pcm and all soak options; defaults to 90s and\n\
     requires at least 60s if set. Failed readbacks and cleanup errors are retained.\n\
     Soak: one persisted graph, one App owner. Idle observes actual frame_end\n\

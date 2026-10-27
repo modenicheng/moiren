@@ -158,10 +158,12 @@ fn run(directory: &Path, started: Instant, options: &Options, shared: &Shared) -
         report.stage = "real_service_native_rename";
         report.limitations = vec![
             "Playback and Microphone are tested sequentially with initialized exclusive 48kHz stereo Float32 WASAPI clients; no Start or PCM quality claim.",
-            "Held rename completion refusal means production Removing plus rename_pending with the old provider name and closed gate; the service accepts the desired intent, without a synchronous Rejected response.",
+            "The historical strict held gate expects Removing/rename_pending with old provider identity/name and closed gate; this is NOT a driver held-must-remain contract or a synchronous Rejected response.",
+            "A strict held failure is retained in acceptance_failures and keeps this run failed/unqualified even when bounded release/replacement/native readback diagnostics complete; it does not justify changing driver deletion semantics.",
             "Windows FriendlyName is read from the actual MMDevice property store; provider actual_name alone cannot pass.",
             "Fresh replacement requires a new PDO token, newer endpoint generation, same control session, fresh service observation and Engine-confirmed open gates.",
-            "The service does not expose a direct old-Removed tombstone; recreation evidence is retained separately and is not called a direct Removed observation.",
+            "Direct old Removed requires the production adapter's retained actual QUERY tombstone: same baseline PDO/session/endpoint, newer observation generation, non-regressing stream/gate epochs; the adapter guarantees Removed with closed gate. Absent or a new token never substitutes.",
+            "The direct Removed checkpoint is recorded before fresh replacement/native init. Missing/invalid retirement evidence remains a separate failure while name diagnostics may continue; diagnostic_completed is not an acceptance pass.",
             "Native/control calls and teardown share the existing overall process watchdog; a forced exit never confirms graceful cleanup.",
             "No physical latency, PCM, long-run qualification, driver installation or default-device changes.",
             "Service Exited plus join proves control-file release, not final PDO absence.",

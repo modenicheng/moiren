@@ -15,6 +15,7 @@ fn baseline(direction: &str) -> RuntimeEvidence {
         resource: "present".into(),
         observation_generation: Some(40),
         native_stamp: Some([10, 7, 11, 3, 5]),
+        native_retirement: None,
         gate_open: false,
         allow_default: false,
         export_active_revision: None,
@@ -158,6 +159,7 @@ fn actual_windows_property_must_match_requested_name_exactly() {
         for wrong in [
             "requested new name",
             "Requested new name ",
+            "Requested new name (Moiren virtual audio endpoint)",
             "Generic speakers",
             "",
         ] {
@@ -179,6 +181,12 @@ fn completed_case() -> Case {
     case.held_completion_refused = true;
     case.fresh_replacement_confirmed = true;
     case.windows_name_verified = true;
+    case.direct_removed_verified = true;
+    case.old_removed = Some(RetirementEvidence {
+        generation: 41,
+        native_stamp: [10, 7, 11, 3, 5],
+    });
+    case.diagnostic_completed = true;
     case
 }
 
@@ -195,6 +203,9 @@ fn case_completion_requires_every_native_owner_released_and_all_evidence_gates()
         |e| e.held_completion_refused = false,
         |e| e.fresh_replacement_confirmed = false,
         |e| e.windows_name_verified = false,
+        |e| e.direct_removed_verified = false,
+        |e| e.old_removed = None,
+        |e| e.diagnostic_completed = false,
     ];
     for mutate in mutations {
         let mut invalid = completed_case();
@@ -225,4 +236,273 @@ fn cleanup_failures_are_retained_separately_from_the_primary_failure() {
     // The existing default report schema acquires no rename result/claim.
     let default_report = serde_json::to_value(crate::report::Report::default()).unwrap();
     assert!(default_report.get("rename").is_none());
+}
+
+#[test]
+fn diagnostic_continuation_keeps_strict_failure_and_still_releases_initializes_and_reads_name() {
+    for direction in ["Playback", "Microphone"] {
+        let mut case = Case::new(direction.into(), "new".into());
+        case.held_client_initialized = true;
+        let mut emit = |_: &Case| {};
+        let old = baseline(direction);
+        let mut absent = old.clone();
+        absent.requested_name = "new".into();
+        absent.resource = "absent".into();
+        absent.provider_name = None;
+        absent.rename_pending = true;
+        absent.candidate_revision = 9;
+        absent.consumed_request_id = 4;
+        absent.observation_generation = None;
+        absent.native_stamp = None;
+        step(&mut case, Phase::StrictHeld, &mut emit, |case, _| {
+            case.held = Some(absent.clone());
+            held(&old, &absent, "new", 4)
+        });
+        assert_eq!(
+            case.error.as_deref(),
+            Some("missing current observation generation")
+        );
+        continue_after_held(
+            &mut case,
+            &mut emit,
+            |case, _| {
+                case.held_client_released = true;
+                Ok(())
+            },
+            |case, emit| {
+                assert!(case.held_client_released);
+                step(case, Phase::ReplacementNativeInit, emit, |case, _| {
+                    case.replacement_client_initialized = true;
+                    case.after = Some(name(direction));
+                    Ok(())
+                });
+                step(case, Phase::ExactWindowsName, emit, |case, _| {
+                    windows_name(&name(direction), case.after.as_ref().unwrap(), "new")
+                });
+                Ok(())
+            },
+        );
+        assert!(case.held_client_released && case.replacement_client_initialized);
+        assert!(case.diagnostic_completed);
+        assert!(case.after.is_some());
+        assert_eq!(
+            case.error.as_deref(),
+            Some("missing current observation generation")
+        );
+        assert_eq!(case.acceptance_failures.len(), 2);
+        assert_eq!(case.acceptance_failures[0].phase, Phase::StrictHeld);
+        assert_eq!(case.acceptance_failures[1].phase, Phase::ExactWindowsName);
+        assert!(!case.qualified && case.status == "unqualified");
+        // Even all later successful evidence/cleanup cannot upgrade this run.
+        case.direct_removed_verified = true;
+        case.old_removed = Some(RetirementEvidence {
+            generation: 41,
+            native_stamp: [10, 7, 11, 3, 5],
+        });
+        case.replacement_client_released = true;
+        case.fresh_replacement_confirmed = true;
+        case.windows_name_verified = true;
+        case.finish();
+        let json = serde_json::to_value(&case).unwrap();
+        assert!(!case.completed && !case.qualified);
+        assert_eq!(json["status"], "unqualified");
+        assert_eq!(json["acceptance_failures"][0]["phase"], "strict_held");
+        assert_eq!(
+            case.error.as_deref(),
+            Some("missing current observation generation")
+        );
+    }
+}
+
+#[test]
+fn diagnostic_progress_is_bounded_and_cannot_erase_the_first_failure_for_a_phase() {
+    let mut case = Case::new("Playback".into(), "new".into());
+    let mut emit = |_: &Case| {};
+    step(
+        &mut case,
+        Phase::StrictHeld,
+        &mut emit,
+        |_, _| -> anyhow::Result<()> { anyhow::bail!("original strict failure") },
+    );
+    for _ in 0..100 {
+        step(&mut case, Phase::StrictHeld, &mut emit, |_, _| Ok(()));
+        step(
+            &mut case,
+            Phase::StrictHeld,
+            &mut emit,
+            |_, _| -> anyhow::Result<()> { anyhow::bail!("later failure") },
+        );
+    }
+    assert_eq!(case.error.as_deref(), Some("original strict failure"));
+    assert_eq!(case.acceptance_failures.len(), 1);
+    assert_eq!(case.acceptance_failures[0].error, "original strict failure");
+    assert_eq!(case.progress.len(), 1);
+    assert_eq!(case.progress[0].status, "failed");
+}
+
+#[test]
+fn native_release_error_is_retained_but_continuation_requires_actual_release() {
+    for released in [false, true] {
+        let mut case = Case::new("Microphone".into(), "new".into());
+        case.held_client_initialized = true;
+        let mut emit = |_: &Case| {};
+        continue_after_held(
+            &mut case,
+            &mut emit,
+            |case, _| {
+                case.held_client_released = released;
+                case.cleanup_errors.push("native release error".into());
+                anyhow::bail!("native release error")
+            },
+            |case, _| {
+                case.replacement_client_initialized = true;
+                Ok(())
+            },
+        );
+        assert_eq!(case.replacement_client_initialized, released);
+        assert_eq!(case.cleanup_errors, ["native release error"]);
+        assert_eq!(case.error.as_deref(), Some("native release error"));
+    }
+}
+
+#[test]
+fn successful_diagnostic_replacement_never_substitutes_for_direct_old_removed() {
+    let mut case = completed_case();
+    case.direct_removed_verified = false;
+    case.old_removed = None;
+    case.finish();
+    assert!(!case.completed && !case.qualified);
+    assert_eq!(case.status, "unqualified");
+    assert!(!case.direct_removed_verified);
+    assert!(
+        case.acceptance_failures
+            .iter()
+            .any(|f| f.phase == Phase::DirectRemoved)
+    );
+    assert!(
+        case.error
+            .as_deref()
+            .is_some_and(|e| e.contains("direct old-Removed"))
+    );
+}
+
+#[test]
+fn direct_removed_requires_exact_old_identity_fresh_generation_and_nonregressing_epochs() {
+    for direction in ["Playback", "Microphone"] {
+        let old = baseline(direction);
+        let valid = RetirementEvidence {
+            generation: 41,
+            native_stamp: [10, 7, 11, 3, 5],
+        };
+        direct_removed(&old, Some(&valid)).unwrap();
+        assert!(direct_removed(&old, None).is_err());
+        let mutations: &[fn(&mut RetirementEvidence)] = &[
+            |e| e.generation = 40,
+            |e| e.generation = 39,
+            |e| e.native_stamp[0] = 12,
+            |e| e.native_stamp[1] = 8,
+            |e| e.native_stamp[2] = 13,
+            |e| e.native_stamp[3] = 2,
+            |e| e.native_stamp[4] = 4,
+        ];
+        for mutate in mutations {
+            let mut invalid = valid;
+            mutate(&mut invalid);
+            assert!(direct_removed(&old, Some(&invalid)).is_err(), "{invalid:?}");
+        }
+        let advanced = RetirementEvidence {
+            generation: 45,
+            native_stamp: [10, 7, 11, 9, 10],
+        };
+        direct_removed(&old, Some(&advanced)).unwrap();
+        let mut missing_baseline = old.clone();
+        missing_baseline.native_stamp = None;
+        assert!(direct_removed(&missing_baseline, Some(&valid)).is_err());
+        missing_baseline = old.clone();
+        missing_baseline.observation_generation = None;
+        assert!(direct_removed(&missing_baseline, Some(&valid)).is_err());
+        missing_baseline = old.clone();
+        missing_baseline.native_stamp = Some([0, 7, 11, 3, 5]);
+        assert!(direct_removed(&missing_baseline, Some(&valid)).is_err());
+    }
+}
+
+#[test]
+fn absent_and_fresh_replacement_stamp_are_not_direct_removed_evidence() {
+    let old = baseline("Playback");
+    let mut current = old.clone();
+    current.resource = "absent".into();
+    current.native_stamp = None;
+    current.observation_generation = None;
+    assert!(direct_removed(&old, current.native_retirement.as_ref()).is_err());
+    current.resource = "present".into();
+    current.native_stamp = Some([12, 7, 13, 9, 10]);
+    current.observation_generation = Some(45);
+    assert!(direct_removed(&old, current.native_retirement.as_ref()).is_err());
+}
+
+#[test]
+fn service_retirement_maps_verbatim_to_serialized_example_evidence() {
+    let native = moiren_app::service::ExportRetirementEvidence {
+        generation: 43,
+        native_stamp: [10, 7, 11, 4, 6],
+    };
+    let mut runtime = baseline("Microphone");
+    runtime.native_retirement = Some(native.into());
+    let json = serde_json::to_value(runtime).unwrap();
+    assert_eq!(json["native_retirement"]["generation"], 43);
+    assert_eq!(
+        json["native_retirement"]["native_stamp"],
+        serde_json::json!([10, 7, 11, 4, 6])
+    );
+}
+
+#[test]
+fn direction_budget_reserves_half_of_remaining_work_for_the_second_direction() {
+    let started = Instant::now();
+    for timeout in [60, 90, 120] {
+        let work = Duration::from_secs(timeout).mul_f64(2.0 / 3.0);
+        let global_deadline = started + work;
+        let now = started + Duration::from_secs(2);
+        let first_deadline = shared_deadline(now, global_deadline, 2);
+        assert_eq!(first_deadline - now, (global_deadline - now) / 2);
+        assert!(global_deadline - first_deadline >= Duration::from_secs(19));
+        assert_eq!(
+            shared_deadline(first_deadline, global_deadline, 1),
+            global_deadline
+        );
+    }
+}
+
+#[test]
+fn missing_direct_removed_wait_preserves_native_readback_and_second_direction_budget() {
+    let now = Instant::now();
+    for remaining in [
+        Duration::from_secs(2),
+        Duration::from_secs(20),
+        Duration::from_secs(60),
+    ] {
+        let global_deadline = now + remaining;
+        let first_deadline = shared_deadline(now, global_deadline, 2);
+        let retired_at = retirement_deadline(now, first_deadline);
+        assert!(retired_at - now <= Duration::from_millis(500));
+        assert!(retired_at - now <= (first_deadline - now) / 4);
+        // Simulate every asynchronous wait using its whole allotted share.
+        // A missing tombstone stays failed, but cannot spend later phases' time.
+        let present_at = shared_deadline(retired_at, first_deadline, 3);
+        let initialized_at = shared_deadline(present_at, first_deadline, 2);
+        assert!(now < retired_at && retired_at < present_at);
+        assert!(present_at < initialized_at && initialized_at < first_deadline);
+        assert!(first_deadline < global_deadline);
+        assert!(first_deadline - initialized_at >= (first_deadline - retired_at) / 3);
+    }
+}
+
+#[test]
+fn exhausted_diagnostic_budget_never_extends_its_parent_deadline() {
+    let deadline = Instant::now();
+    for now in [deadline, deadline + Duration::from_secs(1)] {
+        assert_eq!(shared_deadline(now, deadline, 2), deadline);
+        assert_eq!(retirement_deadline(now, deadline), deadline);
+    }
 }

@@ -80,7 +80,8 @@ pub(super) struct Pair {
 }
 
 /// One initialized exclusive WASAPI client. It deliberately never calls Start:
-/// pin/client ownership, independent of PCM quality, is the rename precondition.
+/// it observes native ownership independently of PCM quality. COM ownership is
+/// not a driver guarantee to defer PDO removal; the driver may revoke a stream.
 /// Only this opt-in path retains an MMDevice for Windows property readback.
 pub(super) struct HeldClient {
     stream: Stream,

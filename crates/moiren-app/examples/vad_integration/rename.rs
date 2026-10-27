@@ -1,6 +1,7 @@
 //! Independent service, native lifecycle and Windows property evidence.
 use anyhow::{Context, ensure};
 use serde::Serialize;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 #[path = "rename/target.rs"]
@@ -15,6 +16,22 @@ pub(super) struct IntentEvidence {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(super) struct RetirementEvidence {
+    pub generation: u64,
+    /// Only the production adapter's actual fresh Removed QUERY supplies this.
+    pub native_stamp: [u64; 5],
+}
+
+impl From<moiren_app::service::ExportRetirementEvidence> for RetirementEvidence {
+    fn from(value: moiren_app::service::ExportRetirementEvidence) -> Self {
+        Self {
+            generation: value.generation,
+            native_stamp: value.native_stamp,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct RuntimeEvidence {
     pub intent: IntentEvidence,
@@ -25,6 +42,7 @@ pub(super) struct RuntimeEvidence {
     pub observation_generation: Option<u64>,
     /// Fresh provider QUERY [pdo, session, endpoint, stream, gate].
     pub native_stamp: Option<[u64; 5]>,
+    pub native_retirement: Option<RetirementEvidence>,
     pub gate_open: bool,
     pub allow_default: bool,
     pub export_active_revision: Option<u64>,
@@ -61,11 +79,19 @@ pub(super) struct Case {
     pub before: Option<NativeName>,
     pub held: Option<RuntimeEvidence>,
     pub while_held: Option<NativeName>,
+    pub old_removed: Option<RetirementEvidence>,
     pub replacement: Option<RuntimeEvidence>,
     pub after: Option<NativeName>,
     pub held_completion_refused: bool,
     pub fresh_replacement_confirmed: bool,
     pub windows_name_verified: bool,
+    pub direct_removed_verified: bool,
+    /// The bounded diagnostic sequence reached its end, not an acceptance pass.
+    pub diagnostic_completed: bool,
+    pub qualified: bool,
+    pub status: &'static str,
+    pub progress: Vec<DiagnosticProgress>,
+    pub acceptance_failures: Vec<AcceptanceFailure>,
     pub completed: bool,
     pub error: Option<String>,
     pub cleanup_errors: Vec<String>,
@@ -84,11 +110,18 @@ impl Case {
             before: None,
             held: None,
             while_held: None,
+            old_removed: None,
             replacement: None,
             after: None,
             held_completion_refused: false,
             fresh_replacement_confirmed: false,
             windows_name_verified: false,
+            direct_removed_verified: false,
+            diagnostic_completed: false,
+            qualified: false,
+            status: "unqualified",
+            progress: Vec::new(),
+            acceptance_failures: Vec::new(),
             completed: false,
             error: None,
             cleanup_errors: Vec::new(),
@@ -96,13 +129,22 @@ impl Case {
     }
 
     pub fn finish(&mut self) {
+        if !self.direct_removed_verified || self.old_removed.is_none() {
+            self.fail(
+                Phase::DirectRemoved,
+                "missing validated direct old-Removed evidence before fresh replacement".into(),
+            );
+        }
         let lifecycle_complete = self.held_client_initialized
             && self.held_client_released
             && self.replacement_client_initialized
             && self.replacement_client_released
             && self.held_completion_refused
             && self.fresh_replacement_confirmed
-            && self.windows_name_verified;
+            && self.windows_name_verified
+            && self.direct_removed_verified
+            && self.old_removed.is_some()
+            && self.diagnostic_completed;
         if self.error.is_none() {
             if !self.cleanup_errors.is_empty() {
                 self.error = Some("native cleanup failed; see cleanup_errors".into());
@@ -110,9 +152,147 @@ impl Case {
                 self.error = Some("native rename lifecycle/evidence incomplete".into());
             }
         }
-        self.completed =
-            self.error.is_none() && self.cleanup_errors.is_empty() && lifecycle_complete;
+        self.completed = self.error.is_none()
+            && self.acceptance_failures.is_empty()
+            && self.cleanup_errors.is_empty()
+            && lifecycle_complete;
+        self.qualified = self.completed;
+        self.status = if self.qualified {
+            "passed"
+        } else {
+            "unqualified"
+        };
     }
+
+    fn progress(&mut self, phase: Phase, status: &'static str) {
+        if let Some(entry) = self.progress.iter_mut().find(|entry| entry.phase == phase) {
+            // A later retry/success cannot erase a previously failed checkpoint.
+            if entry.status != "failed" {
+                entry.status = status;
+            }
+        } else {
+            self.progress.push(DiagnosticProgress { phase, status });
+        }
+    }
+
+    fn fail(&mut self, phase: Phase, error: String) {
+        self.progress(phase, "failed");
+        self.error.get_or_insert_with(|| error.clone());
+        // One checkpoint/failure per finite enum variant bounds report growth.
+        if !self
+            .acceptance_failures
+            .iter()
+            .any(|entry| entry.phase == phase)
+        {
+            self.acceptance_failures
+                .push(AcceptanceFailure { phase, error });
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Phase {
+    Baseline,
+    StrictHeld,
+    HeldRelease,
+    DirectRemoved,
+    ReplacementPresent,
+    ReplacementNativeInit,
+    ExactWindowsName,
+    EngineConfirmation,
+    DiagnosticContinuation,
+    ReplacementRelease,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct DiagnosticProgress {
+    pub phase: Phase,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct AcceptanceFailure {
+    pub phase: Phase,
+    pub error: String,
+}
+
+fn step<T, E: FnMut(&Case)>(
+    case: &mut Case,
+    phase: Phase,
+    emit: &mut E,
+    action: impl FnOnce(&mut Case, &mut E) -> anyhow::Result<T>,
+) -> Option<T> {
+    case.progress(phase, "running");
+    emit(case);
+    let result = match action(case, emit) {
+        Ok(value) => {
+            case.progress(phase, "passed");
+            Some(value)
+        }
+        Err(error) => {
+            case.fail(phase, format!("{error:#}"));
+            None
+        }
+    };
+    emit(case);
+    result
+}
+
+fn continue_after_held<E: FnMut(&Case)>(
+    case: &mut Case,
+    emit: &mut E,
+    release: impl FnOnce(&mut Case, &mut E) -> anyhow::Result<()>,
+    continuation: impl FnOnce(&mut Case, &mut E) -> anyhow::Result<()>,
+) {
+    step(case, Phase::HeldRelease, emit, release);
+    // release consumes the native owner even if Stop fails. Continue only when
+    // the owner was actually dropped, never merely because a DTO says Absent.
+    if case.held_client_released {
+        case.diagnostic_completed =
+            step(case, Phase::DiagnosticContinuation, emit, continuation).is_some();
+        emit(case);
+    }
+}
+
+fn shared_deadline(now: Instant, deadline: Instant, shares: u32) -> Instant {
+    // An expired parent stays expired. Splitting the remaining time, rather
+    // than restarting a fixed phase timeout, leaves later diagnostics a turn.
+    deadline.min(now + deadline.saturating_duration_since(now) / shares)
+}
+
+fn retirement_deadline(now: Instant, deadline: Instant) -> Instant {
+    // This independent acceptance gate must not consume native/name readback
+    // time when evidence is missing. Failure remains sticky after continuation.
+    shared_deadline(now, deadline, 4).min(now + Duration::from_millis(500))
+}
+
+fn direct_removed(
+    baseline: &RuntimeEvidence,
+    retirement: Option<&RetirementEvidence>,
+) -> anyhow::Result<()> {
+    let retirement = retirement.context("missing direct old-Removed native QUERY evidence")?;
+    let old = baseline
+        .native_stamp
+        .context("missing baseline native QUERY stamp")?;
+    let generation = baseline
+        .observation_generation
+        .context("missing baseline observation generation")?;
+    ensure!(
+        old[..3].iter().all(|value| *value > 0) && retirement.native_stamp[..3] == old[..3],
+        "direct old-Removed identity does not match baseline PDO/session/endpoint"
+    );
+    ensure!(
+        retirement.generation > generation,
+        "stale direct old-Removed generation"
+    );
+    ensure!(
+        retirement.native_stamp[3] >= old[3] && retirement.native_stamp[4] >= old[4],
+        "direct old-Removed stream/gate epoch regressed"
+    );
+    // The production adapter guarantees fresh QUERY Removed and a closed gate.
+    // A historical gate epoch, Absent DTO or replacement token proves neither.
+    Ok(())
 }
 
 fn held(
