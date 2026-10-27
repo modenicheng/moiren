@@ -25,6 +25,7 @@ type BoxSelectFn = dyn Fn(Option<Bounds<f32>>, &mut Window, &mut App);
 type PreparedFrame = Rc<RefCell<Option<Rc<CanvasFrame>>>>;
 
 pub struct CanvasCallbacks {
+    pub viewport: Option<Size<f32>>,
     pub focus: FocusHandle,
     pub connection: Option<(PortTarget, (f32, f32))>,
     /// Active rubber-band selection in window coordinates (anchor, current).
@@ -246,6 +247,7 @@ pub(in crate::ui) fn node_drag_preview(
 
 fn overview(prepared: PreparedFrame) -> impl IntoElement {
     div()
+        .id("graph-overview")
         .absolute()
         .bottom(px(12.))
         .right(px(12.))
@@ -300,6 +302,65 @@ fn overview(prepared: PreparedFrame) -> impl IntoElement {
             .w_full()
             .h(px(64.)),
         )
+        .gpui_test_observe()
+}
+
+/// A minimap is secondary navigation, never an overlay over live controls.
+/// Hide it when its reserved corner intersects a projected card; do not move
+/// the graph camera or shrink readable controls just to make the minimap fit.
+fn overview_clear(world: &CanvasWorld, camera: Camera, viewport: Option<Size<f32>>) -> bool {
+    let Some(viewport) = viewport else {
+        return false;
+    };
+    let reserved = Bounds::new(
+        point(viewport.width - 184., viewport.height - 120.),
+        size(176., 112.),
+    );
+    !world.nodes.iter().any(|node| {
+        camera
+            .project_rect(super::graph_canvas::NodeLayout::new(node).card)
+            .intersects(&reserved)
+    })
+}
+
+#[cfg(test)]
+mod overview_tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn minimap_yields_to_tall_cards_and_reappears_in_clear_corner() {
+        let mut card = super::super::graph_canvas::CanvasWorld::new(vec![], vec![]);
+        let camera = Camera {
+            adjusted: true,
+            ..Default::default()
+        };
+        assert!(!overview_clear(&card, camera, None));
+        assert!(overview_clear(&card, camera, Some(size(700., 650.))));
+        card.nodes.push(CanvasNode {
+            node_id: None,
+            id: "rack".into(),
+            name: "Rack".into(),
+            detail: String::new(),
+            icon: None,
+            x: 130.,
+            y: 72.,
+            wide: false,
+            input_count: 1,
+            input_ports: vec![],
+            output_port: None,
+            has_output: false,
+            tint: None,
+            gain: 1.,
+            balance: None,
+            peaks: None,
+            kind: moiren_core::graph::NodeKind::Rack,
+            measured_height: Some(560.),
+            content_width: 440.,
+        });
+        assert!(!overview_clear(&card, camera, Some(size(700., 650.))));
+        card.nodes[0].measured_height = Some(250.);
+        assert!(overview_clear(&card, camera, Some(size(700., 650.))));
+    }
 }
 
 pub fn graph_canvas_view(
@@ -311,6 +372,7 @@ pub fn graph_canvas_view(
     node_controls: Vec<(String, AnyElement)>,
 ) -> impl IntoElement {
     let CanvasCallbacks {
+        viewport,
         on_drop_node,
         on_background_down,
         on_canvas_mouse_move,
@@ -329,6 +391,7 @@ pub fn graph_canvas_view(
         on_delete,
         on_cancel,
     } = callbacks;
+    let show_overview = overview_clear(&world, camera, viewport);
     let prepared: PreparedFrame = Rc::new(RefCell::new(None));
     let selected_nodes = selected_nodes.to_vec();
     let selected_wire = selected_wire.map(str::to_owned);
@@ -707,7 +770,7 @@ pub fn graph_canvas_view(
                 .children(node_layers)
                 .gpui_test_observe(),
         )
-        .child(overview(prepared))
+        .when(show_overview, |view| view.child(overview(prepared)))
 }
 
 fn scroll_canvas(

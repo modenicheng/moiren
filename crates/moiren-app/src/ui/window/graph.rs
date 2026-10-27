@@ -410,6 +410,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
         &selected_ids,
         selected_wire.as_deref(),
         pages::graph_canvas_view::CanvasCallbacks {
+            viewport: shell.canvas_size.map(|(width, height)| size(width, height)),
             focus: shell.graph_focus.clone(),
             connection: shell.connection_drag.map(|drag| (drag.port, drag.cursor)),
             selection_box: shell
