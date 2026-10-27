@@ -4,18 +4,16 @@
 use moiren_core::graph::{NodeKind, SendParams};
 use moiren_engine::{
     audio_config::{AudioBackend, SampleFormat},
+    boundary::ClockRole,
     host::{
         EngineHost, EngineProject, ExecutionState, HostConfig, HostState, NodeConfig, UpdateState,
     },
-    node::EndpointSelector,
+    node::{DeviceOptions, EndpointSelector, InputConfig, InputSource, OutputConfig, OutputTarget},
     sample::ProcessingSample,
 };
-use moiren_windows_audio::{
-    engine_backend::{physical_input, physical_output},
-    professional::{
-        ProfessionalBackend,
-        asio::{AsioCapabilities, query_capabilities},
-    },
+use moiren_windows_audio::professional::{
+    ProfessionalBackend,
+    asio::{AsioCapabilities, query_capabilities},
 };
 use std::time::{Duration, Instant};
 
@@ -41,8 +39,19 @@ fn silent_host<S: ProcessingSample>(capabilities: &AsioCapabilities) {
         endpoint_id: format!("asio:{FL_ASIO}"),
         stable_id: None,
     };
-    let mut source = physical_input(endpoint.clone());
-    let mut sink = physical_output(endpoint);
+    let mut source = InputConfig {
+        source: InputSource::Physical(endpoint.clone()),
+        channels: 2,
+        device: DeviceOptions::default(),
+    };
+    let mut sink = OutputConfig {
+        target: OutputTarget::Physical(endpoint),
+        channels: 2,
+        device: DeviceOptions {
+            clock_role: ClockRole::Master,
+            ..DeviceOptions::default()
+        },
+    };
     for device in [&mut source.device, &mut sink.device] {
         device.backend = AudioBackend::Asio;
         device.hardware_sample_rate = Some(rate);

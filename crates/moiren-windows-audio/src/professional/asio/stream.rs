@@ -8,9 +8,6 @@ use windows::Win32::{
     },
 };
 
-use super::super::native::{
-    NativeLatency, NativeRecoveryRequest, NativeStream, NativeStreamInfo, NativeStreamStats,
-};
 use super::{
     AsioOptions, BackendError, abi,
     buffer::{BufferSizes, validate_options},
@@ -18,6 +15,9 @@ use super::{
     driver::{Apartment, Driver},
     registry,
     sample::{Encoding, Frame},
+};
+use crate::native::{
+    NativeLatency, NativeRecoveryRequest, NativeStream, NativeStreamInfo, NativeStreamStats,
 };
 
 struct Event(HANDLE);

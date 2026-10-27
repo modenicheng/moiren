@@ -1,5 +1,5 @@
 //! Occupancy-only follower control, shared by native and virtual FIR bridges.
-use super::resample::CORRECTION_PPM_LIMIT;
+use crate::resample::CORRECTION_PPM_LIMIT;
 
 /// Gain per unit of relative occupancy error. Carrier geometry bounds
 /// |(queued - target) / target| to about one at the empty/full rails, so the

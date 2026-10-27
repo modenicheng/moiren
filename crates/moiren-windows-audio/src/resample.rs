@@ -2,7 +2,7 @@
 //! No allocation, trigonometry or reclamation occurs while moving samples.
 use std::f64::consts::PI;
 
-use super::{codec::finite, native::StereoFrame};
+use crate::{codec::finite, native::StereoFrame};
 use thiserror::Error;
 
 const TAPS: usize = 32;

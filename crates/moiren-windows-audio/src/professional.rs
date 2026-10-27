@@ -1,9 +1,6 @@
 //! Configurable native audio. Preparation and reclamation stay on control;
 //! native interfaces never leave the thread that opened them.
-pub(crate) mod codec;
-pub mod native;
-pub(crate) mod resample;
-pub(crate) mod servo;
+pub use crate::native;
 
 #[cfg(windows)]
 pub mod asio;

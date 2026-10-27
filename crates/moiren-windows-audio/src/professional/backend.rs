@@ -2,13 +2,13 @@
 use super::{
     asio::{AsioOptions, AsioStream},
     bridge::{CaptureWriteClock, ProcessSource, RingSink, RingSource, Tone, unsupported},
-    native::{NativeStreamInfo, canonical_asio_driver_id},
     observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
     owner::{AuxiliaryOwner, StreamFactory, Transport, WorkerRequest, spawn},
     recovery::RecoveryMonitor,
-    resample::StereoResampler,
     wasapi::{WasapiOptions, WasapiStream, resolve_endpoint},
 };
+use crate::native::{NativeStreamInfo, canonical_asio_driver_id};
+use crate::resample::StereoResampler;
 use crate::virtual_owner::{
     ProjectClock, QpcClockFactory, VirtualBoundaryProvider, VirtualClockFactory,
     VirtualPreparedTransport,

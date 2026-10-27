@@ -1,6 +1,6 @@
 //! Exercise the real native owner without a device or a wall-clock audio run.
-use super::super::native::NativeStreamStats;
 use super::*;
+use crate::native::NativeStreamStats;
 use moiren_core::graph::LogicalGraph;
 use moiren_engine::{
     audio_config::SampleFormat,

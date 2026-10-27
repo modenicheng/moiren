@@ -88,8 +88,8 @@ impl AsioStream {
 // The uninhabited-in-practice fallback keeps dispatch portable. `open` always
 // returns Unsupported, so an inactive Windows backend cannot masquerade as IO.
 #[cfg(not(all(windows, target_pointer_width = "64")))]
-impl super::native::NativeStream for AsioStream {
-    fn info(&self) -> super::native::NativeStreamInfo {
+impl crate::native::NativeStream for AsioStream {
+    fn info(&self) -> crate::native::NativeStreamInfo {
         unreachable!("ASIO cannot open on this platform")
     }
     fn start(&mut self) -> Result<(), BackendError> {

@@ -7,8 +7,8 @@ use std::sync::{
 };
 
 #[cfg(any(windows, test))]
-use super::native::NativeStreamStats;
-use super::native::{NativeLatency, NativeStreamInfo};
+use crate::native::NativeStreamStats;
+use crate::native::{NativeLatency, NativeStreamInfo};
 
 #[derive(Debug, Clone)]
 pub struct ProfessionalStreamObservation {

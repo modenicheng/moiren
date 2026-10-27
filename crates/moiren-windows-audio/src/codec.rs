@@ -5,7 +5,7 @@ use moiren_engine::audio_config::SampleFormat;
 use thiserror::Error;
 
 #[cfg(any(windows, test))]
-use super::native::StereoFrame;
+use crate::native::StereoFrame;
 
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]

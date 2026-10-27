@@ -10,8 +10,8 @@ use std::{
 };
 use windows::Win32::Foundation::HANDLE;
 
-use super::super::native::{NativeRecoveryRequest, NativeStreamStats};
 use super::{BackendError, abi, sample::Frame};
+use crate::native::{NativeRecoveryRequest, NativeStreamStats};
 
 static EXCLUSIVE: AtomicBool = AtomicBool::new(false);
 static CONTEXT: AtomicPtr<Context> = AtomicPtr::new(ptr::null_mut());
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn notification_recovery_is_typed_and_latency_support_is_advertised() {
-        use super::super::super::native::NativeRecoveryRequest;
+        use crate::native::NativeRecoveryRequest;
         let event = unsafe { CreateEventW(None, false, false, None) }.unwrap();
         let mut context = Context::new(
             Data {

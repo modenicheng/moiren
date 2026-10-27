@@ -455,14 +455,7 @@ impl WindowsBackend {
                         gate,
                         clock,
                     )
-                    .with_captures(std::mem::take(&mut group.captures))
-                    .with_native_observations(
-                        self.observations.clone(),
-                        request.owner_generation,
-                        streams,
-                        bridges,
-                        probes,
-                    ),
+                    .with_captures(std::mem::take(&mut group.captures)),
                 )),
             });
         }

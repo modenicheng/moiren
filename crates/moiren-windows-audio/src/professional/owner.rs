@@ -1,12 +1,13 @@
 //! Native workers park before activation. The master borrows Engine during the
 //! unwind boundary, then returns it through a control-only handoff after Stop.
 use super::{
-    bridge::{CaptureWriteClock, FollowerServo, refill, unsupported},
-    native::{NativeStream, NativeStreamInfo, StereoFrame},
+    bridge::{CaptureWriteClock, refill, unsupported},
     observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
     recovery::RecoveryTicket,
-    resample::StereoResampler,
 };
+use crate::native::{NativeStream, NativeStreamInfo, StereoFrame};
+use crate::resample::StereoResampler;
+use crate::servo::FollowerServo;
 use crate::virtual_owner::VirtualResourceSession;
 use moiren_core::graph::NodeId;
 use moiren_engine::{

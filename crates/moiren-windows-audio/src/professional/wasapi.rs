@@ -2,10 +2,10 @@
 //! on the creating worker, including alignment retry and final Release.
 use super::{
     bridge::unsupported,
-    codec::SampleCodec,
     native::{NativeStream, NativeStreamInfo, NativeStreamStats, StereoFrame},
 };
 use crate::capture_packet::borrow_capture_packet;
+use crate::codec::SampleCodec;
 use crate::negotiation::{
     EnginePeriodicityPolicy, EnginePeriods, LegacySharedInit, SUBFORMAT_FLOAT, SUBFORMAT_PCM,
     StageError, client3_rejects_format, exclusive_format_supported, exclusive_frames_duration,

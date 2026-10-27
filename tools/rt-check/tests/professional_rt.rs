@@ -34,7 +34,7 @@ use std::{
 mod asio_rt;
 #[path = "../../../crates/moiren-windows-audio/src/professional/bridge.rs"]
 mod bridge;
-#[path = "../../../crates/moiren-windows-audio/src/professional/codec.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/codec.rs"]
 mod codec;
 #[path = "../../../crates/moiren-windows-audio/src/professional/observations.rs"]
 mod observations;
@@ -54,9 +54,9 @@ mod owner {
 mod recovery;
 #[path = "../../../crates/moiren-windows-audio/src/professional/recovery_host_tests.rs"]
 mod recovery_host_tests;
-#[path = "../../../crates/moiren-windows-audio/src/professional/resample.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/resample.rs"]
 mod resample;
-#[path = "../../../crates/moiren-windows-audio/src/professional/servo.rs"]
+#[path = "../../../crates/moiren-windows-audio/src/servo.rs"]
 mod servo;
 use bridge::{RingSink, RingSource, Tone};
 use native::{NativeStream, NativeStreamInfo, StereoFrame};

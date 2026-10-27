@@ -1,12 +1,5 @@
-use super::{BoundaryProbe, ClockSchedule, ClockWake, VirtualRealtimeClock, VirtualSessions};
-use crate::{
-    Activation, ActivationGate, StopSignal,
-    capture::CaptureSession,
-    clock_bridge::BridgeObserver,
-    engine_backend::{
-        NativeObservations, NativeStreamKind, NativeStreamObservation, ObservationLease,
-    },
-};
+use super::{ClockSchedule, ClockWake, VirtualRealtimeClock, VirtualSessions};
+use crate::{Activation, ActivationGate, StopSignal, capture::CaptureSession};
 use moiren_core::graph::NodeId;
 use moiren_engine::{
     compiler::CompiledBindings,
@@ -43,11 +36,6 @@ pub struct VirtualPreparedTransport {
     stop: StopSignal,
     gate: ActivationGate,
     clock: Option<Box<dyn VirtualRealtimeClock>>,
-    observations: Option<NativeObservations>,
-    observation_generation: u64,
-    streams: Vec<NativeStreamObservation>,
-    bridges: Vec<(NodeId, BridgeObserver)>,
-    probes: Vec<(NodeId, NativeStreamKind, Arc<BoundaryProbe>)>,
 }
 
 impl VirtualPreparedTransport {
@@ -65,35 +53,11 @@ impl VirtualPreparedTransport {
             stop,
             gate,
             clock: Some(clock),
-            observations: None,
-            observation_generation: 0,
-            streams: Vec::new(),
-            bridges: Vec::new(),
-            probes: Vec::new(),
         }
     }
 
     pub fn with_captures(mut self, captures: Vec<CaptureSession>) -> Self {
         self.captures = captures;
-        self
-    }
-
-    /// Publish the owner-generation observation set on attach, mirroring the
-    /// physical transport. Without this, virtual-only projects leave the
-    /// service snapshot's probe trail empty.
-    pub fn with_native_observations(
-        mut self,
-        observations: NativeObservations,
-        generation: u64,
-        streams: Vec<NativeStreamObservation>,
-        bridges: Vec<(NodeId, BridgeObserver)>,
-        probes: Vec<(NodeId, NativeStreamKind, Arc<BoundaryProbe>)>,
-    ) -> Self {
-        self.observations = Some(observations);
-        self.observation_generation = generation;
-        self.streams = streams;
-        self.bridges = bridges;
-        self.probes = probes;
         self
     }
 }
@@ -291,17 +255,6 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
                 }));
             }
         };
-        let observations = self.observations.take();
-        // Publish only after every failure path is past: a rejected attach
-        // must leave the service snapshot free of this generation's probes.
-        if let Some(observations) = observations.as_ref() {
-            observations.publish(
-                self.observation_generation,
-                std::mem::take(&mut self.streams),
-                std::mem::take(&mut self.bridges),
-                std::mem::take(&mut self.probes),
-            );
-        }
         Ok(Box::new(VirtualOwner {
             worker: Some(worker),
             sessions: std::mem::take(&mut self.sessions),
@@ -310,10 +263,6 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
             gate: self.gate.clone(),
             published,
             cancel,
-            observations: observations.clone(),
-            observation_generation: self.observation_generation,
-            _observation_lease: observations
-                .map(|observations| observations.lease(self.observation_generation)),
         }))
     }
 }
@@ -439,9 +388,6 @@ struct VirtualOwner<S: ProcessingSample> {
     gate: ActivationGate,
     published: Arc<Published>,
     cancel: CancellationToken,
-    observations: Option<NativeObservations>,
-    observation_generation: u64,
-    _observation_lease: Option<ObservationLease>,
 }
 
 impl<S: ProcessingSample> BackendOwner<S> for VirtualOwner<S> {
@@ -464,9 +410,6 @@ impl<S: ProcessingSample> BackendOwner<S> for VirtualOwner<S> {
         Ok(())
     }
     fn cancel(&self) {
-        if let Some(observations) = &self.observations {
-            observations.clear(self.observation_generation);
-        }
         self.sessions.cancel();
         let _ = self.stop.request_stop();
     }
@@ -486,9 +429,6 @@ impl<S: ProcessingSample> BackendOwner<S> for VirtualOwner<S> {
             1 if self.sessions.status() == OwnerStatus::Running
                 && self.captures.iter().all(CaptureSession::has_started) =>
             {
-                if let Some(observations) = &self.observations {
-                    observations.running(self.observation_generation);
-                }
                 OwnerStatus::Running
             }
             1 => OwnerStatus::Starting,

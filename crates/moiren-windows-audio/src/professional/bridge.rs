@@ -1,8 +1,9 @@
 //! Complete stereo frames cross bounded SPSC rings. Only graph boundaries cast S.
-pub(super) use super::servo::FollowerServo;
-use super::{native::StereoFrame, observations::Counters, resample::StereoResampler};
+use super::observations::Counters;
 use crate::clock_bridge::RateClock;
 use crate::latency::QpcClock;
+pub(super) use crate::servo::FollowerServo;
+use crate::{native::StereoFrame, resample::StereoResampler};
 use moiren_engine::{
     boundary::{BoundaryReport, RtAudioSink, RtAudioSource},
     buffer::{AudioBlock, AudioBlockMut},

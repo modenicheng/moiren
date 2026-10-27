@@ -433,7 +433,7 @@ fn registered_driver_discovery_is_registry_only_and_returns_stable_unique_clsids
 
 #[test]
 fn notifications_preserve_request_until_teardown_and_stop_errors_are_terminal() {
-    use super::super::super::native::{NativeLatency, NativeRecoveryRequest};
+    use crate::native::{NativeLatency, NativeRecoveryRequest};
     let _serial = callback::TEST_SERIAL.lock().unwrap();
     for (selector, expected) in [
         (3, NativeRecoveryRequest::Reset),
