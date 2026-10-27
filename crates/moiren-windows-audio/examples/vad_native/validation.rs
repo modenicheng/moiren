@@ -286,12 +286,76 @@ pub(super) struct FailureObservation {
     pub progress_validation_error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(super) struct MicrophoneCompletionIdentity {
+    // Names the actual PcmCompletion variant, not an NTSTATUS or the reason
+    // for a driver's freshness rejection.
+    status: &'static str,
+    // One-based capture completion collection order within this case, not a
+    // native packet index. Unknown after the diagnostic counter overflows.
+    ordinal: Option<u64>,
+    // Capture completion stamps are the original user-side WRITE submission
+    // identity, not driver consumption time. Both QPC fields are raw ticks,
+    // unlike PositionSample's qpc_100ns; unavailable collection QPC stays null.
+    stamp_sequence: u64,
+    stamp_qpc: u64,
+    collected_qpc: Option<u64>,
+}
+
+#[derive(Clone, Copy, Default, Debug, Serialize)]
+pub(super) struct MicrophoneCompletionDiagnostics {
+    completion_count: u64,
+    ordinal_overflow: bool,
+    first_completion: Option<MicrophoneCompletionIdentity>,
+    first_dropped_completion: Option<MicrophoneCompletionIdentity>,
+}
+
+impl MicrophoneCompletionDiagnostics {
+    #[cfg(windows)]
+    pub fn observe(
+        &mut self,
+        completion: &moiren_windows_audio::vad::PcmCompletion<'_>,
+        collected_qpc: impl FnOnce() -> Option<u64>,
+    ) {
+        use moiren_windows_audio::vad::PcmCompletion;
+
+        let (status, stamp, dropped) = match completion {
+            PcmCompletion::Capture { stamp, .. } => ("capture", stamp, false),
+            PcmCompletion::CaptureDropped { stamp } => ("capture_dropped", stamp, true),
+            PcmCompletion::Render { .. } => return,
+        };
+        match self.completion_count.checked_add(1) {
+            Some(count) => self.completion_count = count,
+            None => self.ordinal_overflow = true,
+        }
+        if self.first_completion.is_some() && (!dropped || self.first_dropped_completion.is_some())
+        {
+            return;
+        }
+        // Exactly two fixed records, with at most one QPC sample per retained
+        // completion. A first completion that drops fills both with one sample.
+        // Counter/sample failure is diagnostic only: never change PCM handling.
+        let identity = MicrophoneCompletionIdentity {
+            status,
+            ordinal: (!self.ordinal_overflow).then_some(self.completion_count),
+            stamp_sequence: stamp.sequence,
+            stamp_qpc: stamp.qpc,
+            collected_qpc: collected_qpc(),
+        };
+        self.first_completion.get_or_insert(identity);
+        if dropped {
+            self.first_dropped_completion.get_or_insert(identity);
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub(super) struct FailureCounters {
     pub mode: crate::NativeMode,
     pub signal_frames: u64,
     pub silent_frames: u64,
     pub microphone_dropped_packets: u64,
+    pub microphone_completion_diagnostics: MicrophoneCompletionDiagnostics,
     pub native_buffer_frames: u32,
     pub driver_packet_frames: u32,
     pub stream_generation: u64,
@@ -448,6 +512,7 @@ mod tests {
             signal_frames: 36_960,
             silent_frames: 9_600,
             microphone_dropped_packets: 2,
+            microphone_completion_diagnostics: Default::default(),
             native_buffer_frames: 480,
             driver_packet_frames: 480,
             stream_generation: 11,
@@ -457,6 +522,113 @@ mod tests {
             admitted_pcm_shape: Some(endpoint_fixture(|_| {}).into()),
             failure_observation: None,
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn first_dropped_capture_identity_survives_phase_and_cleanup_failures() {
+        use moiren_windows_audio::vad::PcmCompletion;
+
+        let mut counters = failure_counters();
+        counters.microphone_completion_diagnostics.observe(
+            &PcmCompletion::CaptureDropped {
+                stamp: PcmPacketStamp {
+                    sequence: 42,
+                    qpc: 91_000,
+                },
+            },
+            || None, // QPC sampling failure must not change the PCM outcome.
+        );
+        counters.microphone_completion_diagnostics.observe(
+            &PcmCompletion::Capture {
+                stamp: PcmPacketStamp {
+                    sequence: 43,
+                    qpc: 92_000,
+                },
+                bytes: 960,
+            },
+            || panic!("first drop already filled both records"),
+        );
+        let original = anyhow::Error::new(std::io::Error::from_raw_os_error(5))
+            .context("original phase failure");
+        let identity = original.downcast_ref::<std::io::Error>().unwrap() as *const _;
+        let outcome = revoke_and_drain::<()>(
+            Err(original),
+            || anyhow::bail!("revoke failed"),
+            || anyhow::bail!("drain failed"),
+        );
+        let mut line = String::new();
+        let error =
+            diagnose_failure(outcome, &counters, |message| line = message.into()).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap() as *const _,
+            identity
+        );
+        let json: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let diagnostics = &json["counters"]["microphone_completion_diagnostics"];
+        let expected = serde_json::json!({
+            "status": "capture_dropped", "ordinal": 1, "stamp_sequence": 42,
+            "stamp_qpc": 91_000, "collected_qpc": null,
+        });
+        assert_eq!(diagnostics["first_completion"], expected);
+        assert_eq!(diagnostics["first_dropped_completion"], expected);
+        assert_eq!(diagnostics["completion_count"], 2);
+        assert_eq!(diagnostics["ordinal_overflow"], false);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn capture_completion_ordinal_overflow_is_explicit_and_never_wraps() {
+        use moiren_windows_audio::vad::PcmCompletion;
+
+        let mut diagnostics = MicrophoneCompletionDiagnostics::default();
+        diagnostics.observe(
+            &PcmCompletion::Capture {
+                stamp: PcmPacketStamp {
+                    sequence: 7,
+                    qpc: 100,
+                },
+                bytes: 960,
+            },
+            || Some(110),
+        );
+        diagnostics.completion_count = u64::MAX - 1;
+        diagnostics.observe(
+            &PcmCompletion::Capture {
+                stamp: PcmPacketStamp {
+                    sequence: 8,
+                    qpc: 200,
+                },
+                bytes: 960,
+            },
+            || panic!("the first record is already retained"),
+        );
+        assert_eq!(diagnostics.completion_count, u64::MAX);
+        assert!(!diagnostics.ordinal_overflow);
+        diagnostics.observe(
+            &PcmCompletion::CaptureDropped {
+                stamp: PcmPacketStamp {
+                    sequence: 9,
+                    qpc: 300,
+                },
+            },
+            || Some(310),
+        );
+        diagnostics.observe(
+            &PcmCompletion::CaptureDropped {
+                stamp: PcmPacketStamp {
+                    sequence: 10,
+                    qpc: 400,
+                },
+            },
+            || panic!("overflow cannot replace either retained record"),
+        );
+        let json = serde_json::to_value(diagnostics).unwrap();
+        assert_eq!(json["completion_count"], u64::MAX);
+        assert_eq!(json["ordinal_overflow"], true);
+        assert_eq!(json["first_completion"]["ordinal"], 1);
+        assert_eq!(json["first_dropped_completion"]["stamp_sequence"], 9);
+        assert!(json["first_dropped_completion"]["ordinal"].is_null());
     }
 
     #[test]
@@ -950,6 +1122,7 @@ mod tests {
             signal_frames: 0,
             silent_frames: 0,
             microphone_dropped_packets: 0,
+            microphone_completion_diagnostics: Default::default(),
             native_buffer_frames: 0,
             driver_packet_frames: 0,
             stream_generation: 0,
@@ -986,6 +1159,7 @@ mod tests {
             signal_frames: 23_136,
             silent_frames: 25_344,
             microphone_dropped_packets: 27,
+            microphone_completion_diagnostics: Default::default(),
             native_buffer_frames: 2048,
             driver_packet_frames: 480,
             stream_generation: 7,
@@ -1049,6 +1223,7 @@ mod tests {
             signal_frames: 47_520,
             silent_frames: 0,
             microphone_dropped_packets: 0,
+            microphone_completion_diagnostics: Default::default(),
             native_buffer_frames: 480,
             driver_packet_frames: 480,
             stream_generation: 9,
@@ -1077,6 +1252,7 @@ mod tests {
             signal_frames: seen.signal_frames,
             silent_frames: seen.silent_frames,
             microphone_dropped_packets: 31,
+            microphone_completion_diagnostics: Default::default(),
             native_buffer_frames: 480,
             driver_packet_frames: 480,
             stream_generation: 9,
@@ -1104,6 +1280,7 @@ mod tests {
             signal_frames: 47_520,
             silent_frames: 0,
             microphone_dropped_packets: 0,
+            microphone_completion_diagnostics: Default::default(),
             native_buffer_frames: 480,
             driver_packet_frames: 480,
             stream_generation: 9,

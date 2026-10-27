@@ -26,6 +26,7 @@ use windows::{
         System::Com::{
             CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
         },
+        System::Performance::QueryPerformanceCounter,
     },
     core::HSTRING,
 };
@@ -41,6 +42,7 @@ const CONTROL_DEADLINE: Duration = Duration::from_secs(15);
 struct TransferProgress {
     playback: PacketProgress,
     microphone_drops: u64,
+    microphone_completion_diagnostics: validation::MicrophoneCompletionDiagnostics,
     next_mic_submit: Option<Instant>,
 }
 
@@ -88,6 +90,7 @@ struct CaseReport {
     closed_gate_before: Option<Observation>,
     closed_gate_after: Option<Observation>,
     microphone_dropped_packets: u64,
+    microphone_completion_diagnostics: validation::MicrophoneCompletionDiagnostics,
     native_discontinuities: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     native_position: Option<validation::PositionProgress>,
@@ -313,6 +316,7 @@ fn exercise_case(
         signal_frames: 0,
         silent_frames: 0,
         microphone_dropped_packets: 0,
+        microphone_completion_diagnostics: Default::default(),
         native_buffer_frames: 0,
         driver_packet_frames: endpoint.packet_frames(),
         stream_generation: endpoint.stream_generation(),
@@ -499,6 +503,7 @@ fn exercise_case_inner(
         counters.signal_frames = seen.signal_frames;
         counters.silent_frames = seen.silent_frames;
         counters.microphone_dropped_packets = progress.microphone_drops;
+        counters.microphone_completion_diagnostics = progress.microphone_completion_diagnostics;
         // Observe only a failed signal phase, before revocation changes its
         // admission epoch or the native stream is stopped. Never use this later
         // diagnostic snapshot to rebind the owner or authorize more PCM.
@@ -547,6 +552,7 @@ fn exercise_case_inner(
             closed_gate_before: before,
             closed_gate_after: after,
             microphone_dropped_packets: progress.microphone_drops,
+            microphone_completion_diagnostics: progress.microphone_completion_diagnostics,
             native_discontinuities: native.discontinuities,
             native_position: position,
         })
@@ -593,6 +599,9 @@ fn pump_pcm(
         let Some(completed) = pcm.try_complete(ticket)? else {
             break;
         };
+        progress
+            .microphone_completion_diagnostics
+            .observe(&completed, collection_qpc);
         match completed {
             PcmCompletion::Render { stamp, pcm } => {
                 progress.playback.observe(stamp)?;
@@ -620,9 +629,142 @@ fn pump_pcm(
     Ok(())
 }
 
+fn collection_qpc() -> Option<u64> {
+    let mut qpc = 0;
+    // SAFETY: writable stack output on the control-side probe thread. Missing
+    // diagnostic timing must not turn an otherwise valid completion into error.
+    unsafe { QueryPerformanceCounter(&mut qpc) }.ok()?;
+    u64::try_from(qpc).ok().filter(|&qpc| qpc != 0)
+}
+
 #[cfg(test)]
 mod pacing_tests {
     use super::*;
+
+    #[test]
+    fn successful_report_retains_first_capture_and_first_drop_without_packet_history() {
+        use moiren_windows_audio::vad::PcmPacketStamp;
+
+        let mut diagnostics = validation::MicrophoneCompletionDiagnostics::default();
+        diagnostics.observe(
+            &PcmCompletion::Render {
+                stamp: PcmPacketStamp {
+                    sequence: 999,
+                    qpc: 999,
+                },
+                pcm: &[],
+            },
+            || panic!("render is not a microphone completion"),
+        );
+        let qpc = (1_u64 << 53) + 17;
+        diagnostics.observe(
+            &PcmCompletion::Capture {
+                stamp: PcmPacketStamp { sequence: 73, qpc },
+                bytes: 960,
+            },
+            || Some(qpc + 101),
+        );
+        diagnostics.observe(
+            &PcmCompletion::Capture {
+                stamp: PcmPacketStamp {
+                    sequence: 74,
+                    qpc: qpc + 10,
+                },
+                bytes: 960,
+            },
+            || panic!("a later successful completion needs no QPC sample"),
+        );
+        let before_drop = serde_json::to_value(diagnostics).unwrap();
+        assert_eq!(before_drop["completion_count"], 2);
+        assert_eq!(before_drop["first_completion"]["ordinal"], 1);
+        assert!(before_drop["first_dropped_completion"].is_null());
+        diagnostics.observe(
+            &PcmCompletion::CaptureDropped {
+                stamp: PcmPacketStamp {
+                    sequence: 80,
+                    qpc: qpc + 20,
+                },
+            },
+            || Some(qpc + 202),
+        );
+        for sequence in 81..4_177 {
+            diagnostics.observe(
+                &PcmCompletion::CaptureDropped {
+                    stamp: PcmPacketStamp {
+                        sequence,
+                        qpc: qpc + sequence,
+                    },
+                },
+                || panic!("the two retained records must never be replaced"),
+            );
+        }
+        let report = CaseReport {
+            stable_id: "owned endpoint".into(),
+            mmdevice_id: "opaque MMDevice".into(),
+            adapter_instance: "owned adapter".into(),
+            intent: "Microphone".into(),
+            channels: 1,
+            format: "Pcm16".into(),
+            native_buffer_frames: 480,
+            driver_packet_frames: 480,
+            stream_generation: 7,
+            signal_seconds: 1,
+            observation: Observation {
+                signal_frames: 47_040,
+                silent_frames: 480,
+            },
+            closed_gate_before: None,
+            closed_gate_after: None,
+            microphone_dropped_packets: 4_097,
+            microphone_completion_diagnostics: diagnostics,
+            native_discontinuities: 0,
+            native_position: None,
+        };
+        let outcome = validation::diagnose_failure(
+            Ok(report),
+            &validation::FailureCounters {
+                mode: NativeMode::Event,
+                signal_frames: 0,
+                silent_frames: 0,
+                microphone_dropped_packets: 0,
+                microphone_completion_diagnostics: Default::default(),
+                native_buffer_frames: 0,
+                driver_packet_frames: 0,
+                stream_generation: 0,
+                native_discontinuities: 0,
+                native_position: None,
+                admitted_opened: None,
+                admitted_pcm_shape: None,
+                failure_observation: None,
+            },
+            |_| panic!("success must retain diagnostics in the report, not emit failure logging"),
+        )
+        .unwrap();
+        let json = serde_json::to_value(outcome).unwrap();
+        let diagnostics = &json["microphone_completion_diagnostics"];
+        assert_eq!(diagnostics["completion_count"], 4_099);
+        assert_eq!(diagnostics["ordinal_overflow"], false);
+        assert_eq!(
+            diagnostics["first_completion"],
+            serde_json::json!({
+                "status": "capture", "ordinal": 1, "stamp_sequence": 73,
+                "stamp_qpc": qpc, "collected_qpc": qpc + 101,
+            })
+        );
+        assert_eq!(
+            diagnostics["first_dropped_completion"],
+            serde_json::json!({
+                "status": "capture_dropped", "ordinal": 3, "stamp_sequence": 80,
+                "stamp_qpc": qpc + 20, "collected_qpc": qpc + 202,
+            })
+        );
+        // A fresh case cannot inherit either identity or the previous ordinal.
+        let fresh =
+            serde_json::to_value(validation::MicrophoneCompletionDiagnostics::default()).unwrap();
+        assert!(fresh["first_completion"].is_null());
+        assert!(fresh["first_dropped_completion"].is_null());
+        assert_eq!(fresh["completion_count"], 0);
+    }
 
     #[test]
     fn microphone_first_write_is_immediate_then_waits_half_a_period() {
