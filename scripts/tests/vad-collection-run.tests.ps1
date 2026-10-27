@@ -70,6 +70,23 @@ using System.Diagnostics;
 using System.Threading;
 class FastExit {
     static int Main(string[] args) {
+        if (args.Length == 1 && args[0] == "flood") {
+            var bytes = new byte[4096];
+            for (int i = 0; i < bytes.Length; i++) bytes[i] = (byte)'F';
+            using (var output = Console.OpenStandardOutput())
+            using (var error = Console.OpenStandardError()) {
+                // Each stream alone is below the default cap; only their sum
+                // crosses it. Stay alive so the runner must stop its own child.
+                for (int i = 0; i < 2560; i++) {
+                    output.Write(bytes, 0, bytes.Length);
+                    error.Write(bytes, 0, bytes.Length);
+                }
+                output.Flush();
+                error.Flush();
+                Thread.Sleep(30000);
+            }
+            return 37;
+        }
         if (args.Length == 4 && args[0] == "hold-pipes") {
             using (var release = EventWaitHandle.OpenExisting(args[1]))
             using (var ready = EventWaitHandle.OpenExisting(args[2]))
@@ -183,6 +200,58 @@ foreach ($index in 1..12) {
 }
 Write-Output 'PASS: twelve genuine fast native .exe exit-37 children preserve code and both streams'
 
+function Invoke-FloodCase([string]$Name, [long]$Cap, [bool]$ExplicitCap) {
+    $output = Join-Path $testRoot $Name
+    $parameters = $nativeCommon.Clone()
+    $parameters.TimeoutSeconds = 5
+    if ($ExplicitCap) { $parameters.MaxLogBytes = $Cap }
+    $failure = $null
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    try { $null = & $Runner @parameters -OutputDirectory $output -ArgumentList @('flood') }
+    catch { $failure = $_.Exception.Message }
+    $clock.Stop()
+    $stdoutBytes = (Get-Item -LiteralPath (Join-Path $output 'stdout.log')).Length
+    $stderrBytes = (Get-Item -LiteralPath (Join-Path $output 'stderr.log')).Length
+    Require ($stdoutBytes + $stderrBytes -le $Cap) 'Flood child exceeded combined stdout/stderr storage cap'
+    Require ($stdoutBytes -gt 0 -and $stderrBytes -gt 0 -and
+        $stdoutBytes -lt $Cap -and $stderrBytes -lt $Cap) 'Flood must exercise the shared budget across both output streams'
+    Require ($stdoutBytes + $stderrBytes -eq $Cap) 'Bounded sink must retain the permitted prefix before refusing overflow'
+    $receipt = Read-Json (Join-Path $output 'receipt.json')
+    Require ($receipt.child_exit_code -is [int] -and $receipt.child_exit_code -ne 0 -and
+        $receipt.termination_confirmed -and $receipt.forced_termination) 'Flood lost actual owned-child termination or numeric exit code'
+    Require ($receipt.status -eq 'log_limit_exceeded' -and $receipt.log_limit_exceeded -and
+        -not $receipt.timed_out -and $receipt.max_log_bytes -eq $Cap) 'Storage limit must remain distinct from timeout'
+    Require ($failure -like '*MaxLogBytes*' -and $clock.Elapsed.TotalSeconds -lt 5) 'Copy fault did not stop the owned flood child before its deadline'
+    Require ($receipt.output_state -eq 'unavailable' -and $receipt.artifact_manifest_state -eq 'unavailable' -and
+        -not (Test-Path -LiteralPath (Join-Path $output 'artifact-manifest.json'))) 'Incomplete flood output must not receive a manifest'
+}
+Invoke-FloodCase 'default combined log cap' 16777216 $false
+Invoke-FloodCase 'configured combined log cap' 65537 $true
+Write-Output 'PASS: real two-stream floods respect default and configured combined caps, preserve receipt and stop only the owned child'
+
+$output = Join-Path $testRoot 'minimum combined log cap'
+$failure = $null
+try { $null = & $Runner @nativeCommon -MaxLogBytes 1 -OutputDirectory $output -ArgumentList @('flood') }
+catch { $failure = $_.Exception.Message }
+$receipt = Read-Json (Join-Path $output 'receipt.json')
+$logBytes = (Get-Item -LiteralPath (Join-Path $output 'stdout.log')).Length +
+    (Get-Item -LiteralPath (Join-Path $output 'stderr.log')).Length
+Require ($logBytes -eq 1 -and $receipt.log_limit_exceeded -and
+    $receipt.termination_confirmed -and $failure -like '*MaxLogBytes*') 'Minimum positive cap must bound even the first output write'
+
+$output = Join-Path $testRoot 'exact combined log cap'
+$failure = $null
+try { $null = & $Runner @nativeCommon -MaxLogBytes 48 -OutputDirectory $output -ArgumentList @() }
+catch { $failure = $_.Exception.Message }
+$receipt = Read-Json (Join-Path $output 'receipt.json')
+$logBytes = (Get-Item -LiteralPath (Join-Path $output 'stdout.log')).Length +
+    (Get-Item -LiteralPath (Join-Path $output 'stderr.log')).Length
+Require ($logBytes -eq 48 -and -not $receipt.log_limit_exceeded -and
+    $receipt.status -eq 'child_failed' -and $receipt.child_exit_code -eq 37 -and
+    $receipt.output_state -eq 'stable' -and $failure -like '*37*' -and
+    (Test-Path -LiteralPath (Join-Path $output 'artifact-manifest.json') -PathType Leaf)) 'Exactly-at-cap output must preserve the true child failure and remain hashable'
+Write-Output 'PASS: one-byte cap rejects the first excess write; exact-cap completed output remains stable'
+
 $eventPrefix = 'Local\MoirenRunnerDrain-' + [Guid]::NewGuid().ToString('N')
 $releaseName = $eventPrefix + '-release'
 $readyName = $eventPrefix + '-ready'
@@ -266,7 +335,7 @@ Require ($failure -like '*already exists*') 'Existing evidence directory was not
 Require ((Get-FileHash -LiteralPath (Join-Path $zero.Output 'receipt.json')).Hash -eq $before) 'Existing receipt was overwritten'
 Write-Output 'PASS: existing evidence is immutable; no automatic deletion or reconfiguration'
 
-foreach ($guard in @('computer', 'digest', 'argument')) {
+foreach ($guard in @('computer', 'digest', 'argument', 'zero-cap', 'negative-cap', 'excessive-cap')) {
     $parameters = $common.Clone()
     $output = Join-Path $testRoot ("refused-$guard")
     $arguments = @()
@@ -274,11 +343,14 @@ foreach ($guard in @('computer', 'digest', 'argument')) {
         'computer' { $parameters.ExpectedComputer = 'not-this-computer' }
         'digest' { $parameters.ExpectedSha256 = '0' * 64 }
         'argument' { $arguments = @("invalid`0argument") }
+        'zero-cap' { $parameters.MaxLogBytes = 0 }
+        'negative-cap' { $parameters.MaxLogBytes = -1 }
+        'excessive-cap' { $parameters.MaxLogBytes = 67108865 }
     }
     $failure = $null
     try { $null = & $Runner @parameters -OutputDirectory $output -ArgumentList $arguments }
     catch { $failure = $_.Exception.Message }
     Require ($null -ne $failure -and -not (Test-Path -LiteralPath $output)) "$guard launched or changed output after refused preflight"
 }
-Write-Output 'PASS: wrong computer/hash and invalid arguments are refused before launch or directory creation'
+Write-Output 'PASS: wrong computer/hash, invalid arguments and out-of-range log caps are refused before launch or directory creation'
 Write-Output "PASS: Windows PowerShell $($PSVersionTable.PSVersion); all real-child regressions; evidence retained: $testRoot"

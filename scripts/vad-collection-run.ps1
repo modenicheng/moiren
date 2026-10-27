@@ -10,6 +10,7 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [AllowEmptyCollection()][AllowEmptyString()][string[]]$ArgumentList = @(),
     [ValidateRange(1, 86400)][int]$TimeoutSeconds = 90,
+    [ValidateRange(1, 67108864)][long]$MaxLogBytes = 16777216,
     [string]$ExpectedComputer = 'DRIVER-TEST'
 )
 $ErrorActionPreference = 'Stop'
@@ -59,6 +60,73 @@ $quoted = foreach ($argument in $ArgumentList) {
 }
 $commandLine = $quoted -join ' '
 if ($commandLine.Length + $Executable.Length + 3 -gt 32766) { throw 'Windows command line exceeds its length limit' }
+if (-not ('Moiren.CollectionLogCapV1.Budget' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Moiren.CollectionLogCapV1 {
+    public sealed class Budget {
+        private readonly object gate = new object();
+        private readonly long limit;
+        private long reserved;
+        private volatile bool exceeded;
+        public Budget(long limit) { this.limit = limit; }
+        public bool Exceeded { get { return exceeded; } }
+        internal int Reserve(int count) {
+            lock (gate) {
+                if (exceeded) throw Overflow();
+                int allowed = (int)Math.Min((long)count, limit - reserved);
+                reserved += allowed;
+                if (allowed != count) exceeded = true;
+                return allowed;
+            }
+        }
+        internal static IOException Overflow() {
+            return new IOException("Combined redirected output exceeded MaxLogBytes");
+        }
+    }
+
+    // Reserve from one shared budget before either file write is issued.
+    // Reservations are never refunded after IO failure. This bounds physical
+    // output even when the two CopyToAsync continuations run concurrently.
+    public sealed class Sink : Stream {
+        private readonly Stream destination;
+        private readonly Budget budget;
+        public Sink(Stream destination, Budget budget) {
+            this.destination = destination;
+            this.budget = budget;
+        }
+        public override bool CanRead { get { return false; } }
+        public override bool CanSeek { get { return false; } }
+        public override bool CanWrite { get { return true; } }
+        public override long Length { get { throw new NotSupportedException(); } }
+        public override long Position {
+            get { throw new NotSupportedException(); }
+            set { throw new NotSupportedException(); }
+        }
+        public override void Flush() { destination.Flush(); }
+        public override int Read(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
+        public override long Seek(long offset, SeekOrigin origin) { throw new NotSupportedException(); }
+        public override void SetLength(long value) { throw new NotSupportedException(); }
+        public override void Write(byte[] buffer, int offset, int count) {
+            int allowed = budget.Reserve(count);
+            if (allowed != 0) destination.Write(buffer, offset, allowed);
+            if (allowed != count) throw Budget.Overflow();
+        }
+        public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken token) {
+            int allowed = budget.Reserve(count);
+            if (allowed != 0) await destination.WriteAsync(buffer, offset, allowed, token).ConfigureAwait(false);
+            if (allowed != count) throw Budget.Overflow();
+        }
+        // The runner owns and closes the underlying files after bounded drains.
+    }
+}
+'@
+}
+$logBudget = [Moiren.CollectionLogCapV1.Budget]::new($MaxLogBytes)
 $null = New-Item -ItemType Directory -Path $OutputDirectory
 $process = $null
 $stdoutFile = $null
@@ -69,6 +137,7 @@ $childPid = $null
 $exitCode = $null
 $failure = $null
 $timedOut = $false
+$logLimitExceeded = $false
 $forced = $false
 $confirmed = $false
 $outputStable = $false
@@ -97,10 +166,19 @@ try {
     # never reacquire the child by PID after a fast exit.
     $null = $process.Handle
     $childPid = $process.Id
-    $stdoutCopy = $process.StandardOutput.BaseStream.CopyToAsync($stdoutFile)
-    $stderrCopy = $process.StandardError.BaseStream.CopyToAsync($stderrFile)
-    $remaining = [int][Math]::Max(0, $TimeoutSeconds * 1000 - $clock.ElapsedMilliseconds)
-    $timedOut = -not $process.WaitForExit($remaining)
+    $stdoutCopy = $process.StandardOutput.BaseStream.CopyToAsync(
+        [Moiren.CollectionLogCapV1.Sink]::new($stdoutFile, $logBudget))
+    $stderrCopy = $process.StandardError.BaseStream.CopyToAsync(
+        [Moiren.CollectionLogCapV1.Sink]::new($stderrFile, $logBudget))
+    while ($true) {
+        if ($logBudget.Exceeded) { break }
+        foreach ($copy in @($stdoutCopy, $stderrCopy)) {
+            if ($copy.IsFaulted -or $copy.IsCanceled) { $copy.GetAwaiter().GetResult() }
+        }
+        $remaining = [int][Math]::Max(0, $TimeoutSeconds * 1000 - $clock.ElapsedMilliseconds)
+        if ($remaining -eq 0) { $timedOut = -not $process.WaitForExit(0); break }
+        if ($process.WaitForExit([int][Math]::Min(50, $remaining))) { break }
+    }
 } catch {
     $failure = $_.Exception.Message
 } finally {
@@ -133,10 +211,13 @@ try {
             try { $stream.Dispose() } catch { $outputStable = $false; $cleanupErrors.Add($_.Exception.Message) }
         }
     }
+    $logLimitExceeded = $logBudget.Exceeded
+    if ($logLimitExceeded) { $outputStable = $false }
     $clock.Stop()
 }
 $status = 'child_exited'
 if ($timedOut) { $status = 'timed_out'; $failure = 'Owned child exceeded TimeoutSeconds' }
+elseif ($logLimitExceeded) { $status = 'log_limit_exceeded'; $failure = 'Combined redirected output exceeded MaxLogBytes' }
 elseif ($failure -or $cleanupErrors.Count) { $status = 'runner_failed' }
 elseif ($exitCode -ne 0) { $status = 'child_failed'; $failure = "Child exited with code $exitCode" }
 $receipt = [ordered]@{
@@ -145,6 +226,7 @@ $receipt = [ordered]@{
     arguments = @($ArgumentList); timeout_seconds = $TimeoutSeconds; runner_pid = $PID; child_pid = $childPid
     started_utc = $started; finished_utc = [DateTime]::UtcNow.ToString('o'); elapsed_seconds = $clock.Elapsed.TotalSeconds
     child_exit_code = $exitCode; timed_out = $timedOut; forced_termination = $forced
+    max_log_bytes = $MaxLogBytes; log_limit_exceeded = $logLimitExceeded
     termination_confirmed = $confirmed; error = $failure; cleanup_errors = $cleanupErrors.ToArray()
     output_state = $(if ($outputStable) { 'stable' } else { 'unavailable' })
     artifact_manifest_state = $(if ($outputStable) { 'eligible' } else { 'unavailable' })
