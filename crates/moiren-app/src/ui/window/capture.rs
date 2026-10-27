@@ -169,13 +169,33 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             shell.inspector_open = false;
                             cx.notify();
                         });
+                        // Exclude resize and inspector spring settling from steady-state
+                        // cadence. Keep the historical three-second default reproducible.
+                        cx.background_executor().timer(Duration::from_secs(1)).await;
                         #[cfg(feature = "ui-profiler")]
-                        let mut frames = profiler::FrameTimingCollector::new();
-                        cx.background_executor().timer(Duration::from_secs(3)).await;
+                        let mut frames = cx.update(|cx| mixer::performance::PlatformTrace::new(cx, window.window_id()));
+                        let before = shell.read_with(cx, |shell, _| {
+                            let mut trace = shell.mixer.trace.borrow_mut();
+                            trace.start_sample();
+                            (trace.strip_renders, trace.meter_paints)
+                        });
+                        let seconds = std::env::var("MOIREN_CAPTURE_SECONDS").ok()
+                            .and_then(|value| value.parse::<u64>().ok()).unwrap_or(3).clamp(1, 60);
+                        for _ in 0..seconds * 4 {
+                            cx.background_executor().timer(Duration::from_millis(250)).await;
+                            // Drain the bounded journal regularly; serialize only after
+                            // measurement so JSON work cannot masquerade as render cost.
+                            #[cfg(feature = "ui-profiler")]
+                            frames.collect();
+                        }
                         #[cfg(feature = "ui-profiler")]
-                        mixer::performance::write_platform_frames(
-                            &mut frames, &directory.join(format!("platform-{name}.json")),
-                        ).unwrap();
+                        frames.write(&directory.join(format!("platform-{name}.json"))).unwrap();
+                        shell.read_with(cx, |shell, _| {
+                            let trace = shell.mixer.trace.borrow();
+                            eprintln!("Steady {name}: strip renders={}, meter paints={}",
+                                trace.strip_renders - before.0, trace.meter_paints - before.1);
+                            trace.write(&directory.join(format!("meter-{name}.json"))).unwrap();
+                        });
                         capture(cx, directory.join(format!("mixer-{name}.png")));
                     }
                     shell.update(cx, |shell, cx| {
@@ -183,7 +203,6 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                         eprintln!("Native capture: phase={:?}, live={}, visible={}, nodes={}", snapshot.phase,
                             snapshot.graph.nodes.iter().filter(|node| shell.node_meters.channel_levels(node.id).is_some()).count(),
                             shell.node_meter_points.borrow().len(), snapshot.graph.nodes.len());
-                        shell.mixer.trace.borrow().write(&directory.join("meter-frames.json")).unwrap();
                     });
                     if std::env::var_os("MOIREN_CAPTURE_STATES").is_some() {
                         mixer_states::capture(window, &shell, &directory, &capture, cx)
