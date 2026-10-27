@@ -45,6 +45,11 @@ impl Gain {
     }
 }
 impl<S: ProcessingSample> RtProcessor<S> for Gain {
+    fn transport_interchangeable(&self) -> bool {
+        // Stateless per-sample multiply: both transports produce the same
+        // samples and leave no persistent state.
+        true
+    }
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
         if io.input_count() != 1
             || io.output_count() != 1

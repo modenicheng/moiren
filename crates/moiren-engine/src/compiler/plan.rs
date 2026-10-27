@@ -117,6 +117,14 @@ impl<S: ProcessingSample> Builder<S> {
         self.params.extend(specs);
         Ok(id)
     }
+
+    /// Single source for "the storage optimizer may fold this op in place at
+    /// last use": the op's own kernel declares both transports equivalent.
+    fn transport_interchangeable(&self, id: ProcessorId) -> bool {
+        self.instances
+            .get(usize::try_from(id.0).unwrap_or(usize::MAX))
+            .is_some_and(|instance| instance.transport_interchangeable())
+    }
     fn node_processor(
         &mut self,
         node: NodeId,
@@ -391,7 +399,7 @@ pub(super) fn build<S: ProcessingSample>(
             } else {
                 None
             },
-            in_place_candidate: !use_mix && matches!(node.kind(), NodeKind::Gain | NodeKind::Pan),
+            in_place_candidate: !use_mix && builder.transport_interchangeable(processor),
             in_place: false,
         });
         // A strip is a node control shared across its output streams, but each

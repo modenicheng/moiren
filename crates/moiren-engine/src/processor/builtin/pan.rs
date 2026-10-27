@@ -119,6 +119,11 @@ impl Pan {
 }
 
 impl<S: ProcessingSample> RtProcessor<S> for Pan {
+    fn transport_interchangeable(&self) -> bool {
+        // Stateless per-frame balance: both transports produce the same
+        // samples and leave no persistent state.
+        true
+    }
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
         if io.input_count() != 1
             || io.output_count() != 1

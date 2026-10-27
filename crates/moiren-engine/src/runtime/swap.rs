@@ -541,12 +541,11 @@ impl PlanSnapshot {
                         }
                         _ => {
                             let mut schema = IoSchema::from_io(&op.io);
-                            // Gain/Pan accept both transports with identical
-                            // state. Last-use changes may switch storage mode
-                            // without invalidating their parameter ramps.
-                            if instance.state_type == TypeId::of::<crate::processor::Gain>()
-                                || instance.state_type == TypeId::of::<crate::processor::Pan>()
-                            {
+                            // Transport-interchangeable kernels accept both
+                            // transports with identical state. Last-use
+                            // changes may switch storage mode without
+                            // invalidating their parameter ramps.
+                            if instance.transport_interchangeable() {
                                 schema.mode = IoMode::Separate;
                             }
                             schema
