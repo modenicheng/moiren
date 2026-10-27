@@ -17,11 +17,12 @@ use std::sync::{Arc, atomic::Ordering};
 
 mod rack_editing;
 mod recording_formats;
+mod spectrum_live;
 mod wav_validation;
 
 const ISOLATED_CONFIG: &str = "MOIREN_CAPTURE_NODES_CONFIG";
 const NODE_FILTER: &str = "MOIREN_CAPTURE_NODE";
-const SCENARIOS: [&str; 8] = [
+const SCENARIOS: [&str; 9] = [
     "rack-populated",
     "rack-editing",
     "recording-states",
@@ -30,6 +31,7 @@ const SCENARIOS: [&str; 8] = [
     "overview",
     "meter32",
     "input-long",
+    "spectrum-live",
 ];
 const LONG_INPUT_NAME: &str = "Capture studio interface - multichannel USB audio input with an intentionally long selected device name (test backend)";
 const OVERVIEW_ZOOM: f32 = 0.5;
@@ -206,17 +208,24 @@ fn run_native(directory: &Path, filter: Option<&'static str>) -> anyhow::Result<
         // No stereo-only processors: 32 real constant-source channels pass
         // through the managed engine and its ordinary meter subscriptions.
         chain_fixture(&[NodeKind::Source, NodeKind::Meter, NodeKind::Sink], 32)?
+    } else if filter == Some("spectrum-live") {
+        spectrum_live::fixture()?
     } else {
         fixture()?
     };
     let backend = meter_backend::FakeBackend::default();
     backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
     let service = ServiceRuntime::spawn_with_driver(
-        ManagedDriver::new(move |_| Ok(Box::new(backend.clone()))).with_catalog(Arc::new(
-            CaptureCatalog {
-                long_names: filter == Some("input-long"),
-            },
-        )),
+        ManagedDriver::new(move |_| {
+            if filter == Some("spectrum-live") {
+                Ok(Box::new(spectrum_live::ToneBackend(backend.clone())))
+            } else {
+                Ok(Box::new(backend.clone()))
+            }
+        })
+        .with_catalog(Arc::new(CaptureCatalog {
+            long_names: filter == Some("input-long"),
+        })),
     )?;
     let handle = service.handle();
     let mut owned = OwnedService(Some(service));
@@ -351,7 +360,8 @@ async fn wait_for(
 }
 
 /// Small sequential groups preserve visible signal flow. Larger windows show
-/// three cards; compact windows show two. Inspector captures focus one card.
+/// up to three cards; compact windows show up to two. Wide cards split into
+/// smaller groups using the actual canvas width. Inspector captures focus one card.
 /// A single-node filter saves its card and Inspector at both densities; the
 /// scrolling and long-name scenarios add one interaction frame per density.
 async fn capture(
@@ -411,8 +421,14 @@ async fn capture(
     dispatch(
         shell,
         AppRequest::Start(SessionSpec {
-            source: InputSelection::Physical {
-                endpoint_id: INPUT.into(),
+            source: if filter == Some("spectrum-live") {
+                InputSelection::Tone {
+                    frequency_hz: spectrum_live::TONE_HZ,
+                }
+            } else {
+                InputSelection::Physical {
+                    endpoint_id: INPUT.into(),
+                }
             },
             output_endpoint_id: OUTPUT.into(),
             limit: RunLimit::UntilStopped,
@@ -442,6 +458,9 @@ async fn capture(
     if filter == Some("rack-editing") {
         return rack_editing::capture_rack(window, shell, directory, cx).await;
     }
+    if filter == Some("spectrum-live") {
+        return spectrum_live::capture_live(window, shell, directory, cx).await;
+    }
     if filter == Some("overview") {
         return capture_overviews(window, shell, directory, cx).await;
     }
@@ -460,7 +479,22 @@ async fn capture(
         cx.background_executor()
             .timer(Duration::from_millis(250))
             .await;
-        for (index, kinds) in kinds.chunks(count).enumerate() {
+        let groups = if let Some(first) = kinds.first() {
+            // Settle the real panel/canvas before packing; window dimensions
+            // alone do not include rails and reserved capture margins.
+            let (_, measured) = prepare_group(window, shell, &[*first], false, true, cx).await?;
+            shell.update(cx, |shell, cx| {
+                capture_groups(
+                    &shell.state.read(cx).snapshot,
+                    &kinds,
+                    measured.viewport,
+                    count,
+                )
+            })?
+        } else {
+            Vec::new()
+        };
+        for (index, kinds) in groups.into_iter().enumerate() {
             let name = if let Some(selected) = filter {
                 format!("nodes-{density}-card-{selected}")
             } else {
@@ -1117,6 +1151,33 @@ struct FocusLayout {
     ids: Vec<NodeId>,
 }
 
+/// Preserve order and 1:1 geometry; only group membership may shrink when a
+/// workstation's intrinsic width grows. The same strict layout checks apply.
+fn capture_groups<'a>(
+    snapshot: &AppSnapshot,
+    kinds: &'a [NodeKind],
+    viewport: (f32, f32),
+    maximum: usize,
+) -> anyhow::Result<Vec<&'a [NodeKind]>> {
+    anyhow::ensure!(maximum > 0, "capture group limit must be positive");
+    let world = CanvasWorld::positioned(snapshot, &HashMap::new());
+    let mut groups = Vec::new();
+    let mut start = 0;
+    while start < kinds.len() {
+        let mut end = start + 1;
+        focus_world_layout(&world, &kinds[start..end], viewport)?;
+        while end < kinds.len()
+            && end - start < maximum
+            && focus_world_layout(&world, &kinds[start..=end], viewport).is_ok()
+        {
+            end += 1;
+        }
+        groups.push(&kinds[start..end]);
+        start = end;
+    }
+    Ok(groups)
+}
+
 /// Bootstrap visibility only: positioned nodes have placeholder heights until
 /// their native controls have painted. Never save this provisional layout.
 fn focus_layout(
@@ -1680,8 +1741,11 @@ fn verify_native_bounds(
             .node(*id)
             .and_then(|node| node.builtin.rack())
             .map(|rack| rack.slots.len());
-        let vertical_meter = matches!(node.kind, NodeKind::Bus | NodeKind::Recorder)
-            || (node.kind == NodeKind::Rack && rack_stages.is_some_and(|stages| stages > 0));
+        let vertical_meter = matches!(
+            node.kind,
+            NodeKind::Bus | NodeKind::Recorder | NodeKind::SpectrumAnalyzer
+        ) || (node.kind == NodeKind::Rack
+            && rack_stages.is_some_and(|stages| stages > 0));
         let meter = measured.meters.get(id);
         let channels = snapshot
             .graph
@@ -2015,10 +2079,10 @@ async fn capture_group(
 mod tests {
     use super::{
         CaptureCatalog, FocusLayout, KINDS, LONG_INPUT_NAME, NativeMeasurements,
-        OverviewMeasurements, SCENARIOS, capture_filter, chain_fixture, expansion_edits,
-        filtered_kind, fixture, focus_layout, measured_focus_layout, overview_focus_layout,
-        populated_rack, slug, source_variants, verify_meter_scroll_end, verify_native_bounds,
-        verify_overview_bounds, verify_wav_header,
+        OverviewMeasurements, SCENARIOS, capture_filter, capture_groups, chain_fixture,
+        expansion_edits, filtered_kind, fixture, focus_layout, measured_focus_layout,
+        overview_focus_layout, populated_rack, slug, source_variants, verify_meter_scroll_end,
+        verify_native_bounds, verify_overview_bounds, verify_wav_header,
     };
     use crate::service::{AppSnapshot, CatalogBackend, ServiceGraph};
     use crate::ui::pages::graph_canvas::{CanvasWorld, NodeLayout};
@@ -2250,7 +2314,7 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn expanded_rack_bus_and_recorder_require_meters_to_follow_measured_content() {
+    fn expanded_rack_bus_recorder_and_spectrum_require_meters_to_follow_measured_content() {
         let runtime = spawn_service();
         let mut snapshot = (*initial_projection(&runtime.handle())).clone();
         let initial = fixture().unwrap();
@@ -2260,6 +2324,7 @@ mod tests {
             ("rack-populated", NodeKind::Rack, Some(4)),
             ("bus-expanded", NodeKind::Bus, None),
             ("recorder", NodeKind::Recorder, None),
+            ("spectrum", NodeKind::SpectrumAnalyzer, None),
         ] {
             let mut graph = ServiceGraph::default();
             graph
@@ -2569,7 +2634,9 @@ mod tests {
         let mut snapshot = (*initial_projection(&runtime.handle())).clone();
         snapshot.graph = std::sync::Arc::new(fixture().unwrap());
         for (viewport, count) in [((1396., 800.), 3), ((980., 620.), 2), ((700., 620.), 1)] {
-            for kinds in KINDS.chunks(count) {
+            let groups = capture_groups(&snapshot, &KINDS, viewport, count).unwrap();
+            assert_eq!(groups.concat(), KINDS);
+            for kinds in groups {
                 let FocusLayout {
                     positions,
                     camera,
@@ -2590,6 +2657,20 @@ mod tests {
                 }
             }
         }
+        let wide = [
+            NodeKind::SpectrumAnalyzer,
+            NodeKind::Recorder,
+            NodeKind::Sink,
+        ];
+        assert!(focus_layout(&snapshot, &wide, (1396., 800.)).is_err());
+        let groups = capture_groups(&snapshot, &wide, (1396., 800.), 3).unwrap();
+        assert_eq!(
+            groups.iter().map(|group| group.len()).collect::<Vec<_>>(),
+            [2, 1]
+        );
+        assert_eq!(groups.concat(), wide);
+        assert!(capture_groups(&snapshot, &KINDS, (100., 100.), 3).is_err());
+        assert!(capture_groups(&snapshot, &KINDS, (1396., 800.), 0).is_err());
         assert!(focus_layout(&snapshot, &KINDS, (1396., 800.)).is_err());
         assert!(focus_layout(&snapshot, &KINDS[..1], (100., 100.)).is_err());
         finish_service(runtime);
