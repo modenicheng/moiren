@@ -183,6 +183,31 @@ PowerShell target scripts, and the existing offline qualification evaluator.
   transfer only the required executable and runner. Keep the rename probe and
   current input plans on the 64 GB guest disk and remove command helpers after
   execution.
+- `778c964` retains a bounded paired device-clock sample in every render
+  trace record (latency schema 2 / render schema 10). Its two-second output
+  control retained 224 callbacks: the device-clock slope converts to about
+  52,933 frames/s and the subsequent submissions to 53,168 frames/s, both
+  above nominal 48 kHz. This narrows the diagnostic evidence without proving
+  a native-device versus VM/QPC cause. The matched 15-second-ceiling VAD
+  collection still fails with one boundary xrun / 33 soft events, a
+  459.8513 ms render wake interval, independent capture discontinuities and
+  cancelled PCM I/O during cleanup. The three runner-owned artifacts were
+  guest-hash verified; seven copied probe files lack an independently
+  retained guest hash inventory before deletion, so this run cannot qualify.
+  The runaway inventory helper was still active during that collection;
+  uncontrolled diagnostic memory/CPU pressure also prevents a no-load or
+  same-condition comparison and attribution of the wake gap to baseline behavior.
+  Raw files and host integrity limitations are recorded in the validation
+  ledger. The 5/6-second attempts were parser rejections, not native tests.
+- `cb5d5df` restores the prior padding-before-device-clock query order and
+  covers clock-bearing trace overflow under the allocation/free guard.
+  Eleven latency and 28 render tests, strict crate Clippy and formatting
+  pass; this follow-up has not been deployed to the VM. All completed guest
+  runs, temporary probes and staging copies are removed. A runaway
+  inventory helper was stopped; Windows shrank its pagefile to 512 MiB.
+  Latest inventory has five retained files, no test processes/dynamic VAD
+  children and 30.070 GiB free. Keep future inventories to scalar fields
+  and verify every guest payload hash before cleanup.
 
 ### Ordered Work and Atomic Checkpoints
 

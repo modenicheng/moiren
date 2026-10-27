@@ -2276,32 +2276,31 @@ not qualify the reference graph or physical latency.
 Commit `778c964` retains the paired `IAudioClock` device position/QPC and
 HRESULT in each bounded render trace record, while preserving the existing
 `CallbackObservation` construction API. The latency trace schema is now 2 and
-the WASAPI render report schema is 10. The Windows audio crate passes all
-479 tests (2 ignored), strict Clippy, formatting and diff checks. A fresh
+the WASAPI render report schema is 10. The Windows audio crate's full test run
+passed (479 library tests / 2 ignored, plus integration suites), along with
+strict Clippy, formatting and diff checks. A fresh
 two-second output-only control on `DRIVER-TEST` used the release
 `routing_probe` from this commit (`BF10761710B99D24993983A25D3CCE79C798BF73EA34E93DCEB2BBE24BE775C5`)
 and exited 0 without timeout or forced termination. Its 224 callbacks retain
 successful 48 kHz client/native format and a 480-frame period. Across the
-device-clock QPC span of 2.01325 seconds, the native position advanced 852,536
+device-clock QPC span of 2.0132517 seconds, the native position advanced 852,536
 units at the reported 384,000-unit frequency: approximately 52,933 frames/s
 after conversion to 48 kHz frames. Subsequent render submissions advanced
-107,040 frames over the same trace span, approximately 53,168 frames/s. Device
-position and submitted-frame rates agree within this short diagnostic, but
-both exceed nominal 48 kHz by about 10.3%. This does not identify whether the
+107,040 frames over the wake-QPC span of 2.01325 seconds, approximately 53,168
+frames/s. The device-position and submitted-frame rates exceed nominal 48 kHz
+by approximately 10.28% and 10.77%, respectively. This does not identify whether the
 cause is the VM/native clock or its QPC time base, is not physical latency,
 and does not qualify the unmuted `Input -> Bus -> Output` path. The receipt,
 runner artifacts, compact cleanup inventory and analysis are in
 `target/vad-target-archive/20261027-778c964-render-control-2s/`; each
 runner-owned file's guest-manifest length and SHA-256 matched before the
 guest run directory and temporary probe were deleted. The VM returned to five
-retained input/probe files and approximately 30.09 GiB free.
+retained input/probe files and approximately 30.08 GiB free.
 
-The next diagnostic should run the same matched render with longer bounded
-trace windows and correlate device-position/QPC slopes against an independent
-host QPC observation, then compare default and queried-minimum native periods.
-Do not interpret the returned VAD-only endpoint enumeration as a device clock;
-keep hardware, VM and software loopback clocks explicitly separated. Stage 7,
-source comparison and calibrated physical latency remain unqualified.
+Device-position/QPC slopes still need comparison with an independently timed
+native control; distinguish device advancement from VM time-base behavior
+before assigning a cause. Stage 7, source comparison and calibrated physical
+latency remain unqualified.
 
 The host archives retain the executed scripts, input provenance, raw payloads,
 guest inventories and derived analysis:
@@ -2321,7 +2320,7 @@ failure. The same cleanup logic was transferred as a hash-checked script,
 executed, and removed. The temporary routing probe and all command helpers
 were removed too.
 
-Final `C:\MoirenVadTest` inventory is five files: current collector,
+The `d64250f` checkpoint's `C:\MoirenVadTest` inventory was five files: current collector,
 `vad_integration-b7896f3.exe`, runner and two JSON input plans; no test
 processes or present dynamic VAD children, and 30.081 GiB free. The guest
 retains no run directories or superseded collector. Driver/package, device
@@ -2331,3 +2330,66 @@ integrated repeat; keep capture qualification separate and do not enlarge
 buffers or weaken quality gates to mask the VM behavior. Physical calibration,
 same-condition Process comparison and the sustained qualification windows
 remain open; the 10 ms target is not achieved.
+
+### Device-clock trace follow-up and guest cleanup
+
+Independent review of `778c964` found no RT allocation or audio correctness
+blocker, and identified two follow-ups. Commit `cb5d5df` restores
+`GetPosition` after the padding query, matching the documented preexisting
+order, and exercises `Some(device_clock)` under the allocation/free guard
+through all 256 slots and 17 overflow observations. Saved clocks and raw
+HRESULTs must remain unchanged. All 11 latency tests, 28 Windows render
+tests, strict all-target crate Clippy, formatting and diff checks pass.
+These changes have host verification only; the following guest binaries
+were built from `778c964`, before this sampling-order correction.
+The schema-2 public `TraceRecord` adds `device_clock`, so Rust consumers
+using exhaustive construction or patterns must add that field or use
+`..Default::default()` / `..`. The input `CallbackObservation` and
+`LatencyRecorder::record()` interfaces retain their existing shape.
+
+The matching collector is 5,786,624 bytes, SHA-256
+`23B9661CC8BF09BE593E128127CDBC24C87FBE1550FFA0B92302473424A9A38E`.
+Two attempted 5/6-second collection ceilings were rejected before native
+startup with `collection phase budget exceeds --seconds`; both returned
+actual exit 2 and are parser failures, not audio results. For the current
+one-second source plan the code reserves 13,320 ms, so an integer ceiling of
+at least 14 seconds is required. Reusing the prior 15-second ceiling entered
+the production path and returned actual exit 1 after 4.5701648 seconds,
+without timeout or forced termination. It retained 55 startup samples,
+one boundary xrun / 33 soft events, 53 completed VAD packets and zero
+provider drops, silent frames, epoch resets or recovery events. Render trace
+retains 91 callbacks and a 459.8513 ms maximum wake interval. Cleanup reported
+`GetOverlappedResult(VAD PCM)` cancellation `0x800703E3`; its cause is not
+established. The independent capture retained 106 packets / 29,530 frames,
+105 position mismatches / 3,211 absolute position differences and four
+discontinuity flags, with zero tap drops, silent frames, overflow packets or
+timestamp errors. The collection remains incomplete and unqualified.
+The inventory helper described below was still running during this collection.
+Its uncontrolled memory/CPU pressure invalidates a no-load or same-condition
+comparison; the 459.8513 ms wake interval cannot be assigned solely to baseline
+VM, native driver or VAD behavior.
+
+Raw diagnostics are in
+`target/vad-target-archive/20261027-778c964-live-vad-trace-15s/`.
+The three runner-owned receipt/stdout/stderr files match the guest manifest
+in length and SHA-256. Seven probe files (including raw PCM and packet
+metadata) were copied before cleanup, but the guest directory was deleted
+before a separate guest hash inventory was retained for those seven files.
+Host hashes are recorded as such; full cross-machine integrity verification
+cannot be claimed for this run, and it must not be used for qualification.
+The two parser-failure receipts and stderr files are retained separately.
+The old 5,784,576-byte collector was copied to the host and its original
+length/SHA-256 verified before its guest copy was removed.
+
+A read-only inventory helper accidentally serialized PowerShell's attached
+provider metadata and reached about 9.59 GB private memory, causing the
+system-managed pagefile to expand. It overlapped the 15-second-ceiling VAD
+collection and was stopped only afterward. The exact helper PID/encoded command was
+verified and stopped; Windows subsequently reduced its pagefile from
+4,421 MiB to 512 MiB. The final live inventory reports 30.070 GiB free,
+no probe processes or present dynamic VAD children, and exactly five files:
+the `778c964` collector, the rename integration probe, runner and two JSON
+inputs. All completed guest run directories, superseded probe and staging
+copies are gone. Keep remote inventories to explicitly selected scalar
+fields; obtain a guest length/hash inventory for every payload before
+deletion and preserve raw receipt bytes during host verification.
