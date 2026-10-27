@@ -2273,6 +2273,36 @@ reproduces independently of VAD. Its native-device, format or QPC cause
 remains unproven. This diagnostic graph and its successful control exit do
 not qualify the reference graph or physical latency.
 
+Commit `778c964` retains the paired `IAudioClock` device position/QPC and
+HRESULT in each bounded render trace record, while preserving the existing
+`CallbackObservation` construction API. The latency trace schema is now 2 and
+the WASAPI render report schema is 10. The Windows audio crate passes all
+479 tests (2 ignored), strict Clippy, formatting and diff checks. A fresh
+two-second output-only control on `DRIVER-TEST` used the release
+`routing_probe` from this commit (`BF10761710B99D24993983A25D3CCE79C798BF73EA34E93DCEB2BBE24BE775C5`)
+and exited 0 without timeout or forced termination. Its 224 callbacks retain
+successful 48 kHz client/native format and a 480-frame period. Across the
+device-clock QPC span of 2.01325 seconds, the native position advanced 852,536
+units at the reported 384,000-unit frequency: approximately 52,933 frames/s
+after conversion to 48 kHz frames. Subsequent render submissions advanced
+107,040 frames over the same trace span, approximately 53,168 frames/s. Device
+position and submitted-frame rates agree within this short diagnostic, but
+both exceed nominal 48 kHz by about 10.3%. This does not identify whether the
+cause is the VM/native clock or its QPC time base, is not physical latency,
+and does not qualify the unmuted `Input -> Bus -> Output` path. The receipt,
+runner artifacts, compact cleanup inventory and analysis are in
+`target/vad-target-archive/20261027-778c964-render-control-2s/`; each
+runner-owned file's guest-manifest length and SHA-256 matched before the
+guest run directory and temporary probe were deleted. The VM returned to five
+retained input/probe files and approximately 30.09 GiB free.
+
+The next diagnostic should run the same matched render with longer bounded
+trace windows and correlate device-position/QPC slopes against an independent
+host QPC observation, then compare default and queried-minimum native periods.
+Do not interpret the returned VAD-only endpoint enumeration as a device clock;
+keep hardware, VM and software loopback clocks explicitly separated. Stage 7,
+source comparison and calibrated physical latency remain unqualified.
+
 The host archives retain the executed scripts, input provenance, raw payloads,
 guest inventories and derived analysis:
 
