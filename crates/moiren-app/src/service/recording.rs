@@ -6,7 +6,7 @@ use std::{
 };
 
 use moiren_core::graph::{NodeId, NodeKind};
-use moiren_engine::recorder::RecorderStats;
+use moiren_engine::recorder::{RecorderStats, WavFormat};
 
 use super::GraphSnapshot;
 
@@ -18,15 +18,36 @@ pub(crate) use runtime::Runtime;
 #[cfg(test)]
 mod tests;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RecordingFormat {
+    #[default]
     WavFloat32,
+    WavPcm24,
+    WavPcm16,
 }
 
 impl RecordingFormat {
     pub fn label(self) -> &'static str {
         match self {
             Self::WavFloat32 => "WAV (RIFF, float32)",
+            Self::WavPcm24 => "WAV (RIFF, PCM24)",
+            Self::WavPcm16 => "WAV (RIFF, PCM16)",
+        }
+    }
+
+    pub const fn bytes_per_sample(self) -> u16 {
+        self.wav_format().bytes_per_sample()
+    }
+
+    pub const fn header_bytes(self) -> u32 {
+        self.wav_format().header_bytes()
+    }
+
+    pub(crate) const fn wav_format(self) -> WavFormat {
+        match self {
+            Self::WavFloat32 => WavFormat::Float32,
+            Self::WavPcm24 => WavFormat::Pcm24,
+            Self::WavPcm16 => WavFormat::Pcm16,
         }
     }
 }
@@ -103,6 +124,22 @@ impl RecordingEstimate {
         written_frames: u64,
         free_disk_bytes: Option<u64>,
     ) -> Self {
+        Self::wav(
+            RecordingFormat::WavFloat32,
+            sample_rate,
+            channels,
+            written_frames,
+            free_disk_bytes,
+        )
+    }
+
+    pub fn wav(
+        format: RecordingFormat,
+        sample_rate: u32,
+        channels: usize,
+        written_frames: u64,
+        free_disk_bytes: Option<u64>,
+    ) -> Self {
         let mut estimate = Self {
             free_disk_bytes,
             ..Self::default()
@@ -111,15 +148,17 @@ impl RecordingEstimate {
         if sample_rate == 0 || !(1..=256).contains(&channels) {
             return estimate;
         }
-        let frame_bytes = channels as u64 * 4;
+        let frame_bytes = channels as u64 * u64::from(format.bytes_per_sample());
         let byte_rate = u64::from(sample_rate) * frame_bytes;
         if byte_rate > u64::from(u32::MAX) {
             return estimate;
         }
-        // Engine WavRecording writes a 58-byte float WAVEFORMATEX/fact header;
-        // RIFF's u32 size excludes the initial eight bytes. Keep this contract
-        // covered by real header tests rather than assuming a 44-byte PCM WAV.
-        let max_frames = (u64::from(u32::MAX) - 50) / frame_bytes;
+        // Reuse the writer's header/padding bound, including mono PCM24's odd
+        // data sizes. Estimates and file admission must agree at the RIFF edge.
+        let max_frames = format
+            .wav_format()
+            .max_frames(channels)
+            .expect("validated channels");
         let frames = max_frames.saturating_sub(written_frames);
         let riff_seconds = frames as f64 / f64::from(sample_rate);
         estimate.bytes_per_second = Some(byte_rate);
@@ -156,6 +195,9 @@ impl RecordingEstimate {
 pub struct RecordingSnapshot {
     pub node: NodeId,
     pub path: Option<PathBuf>,
+    /// Selected intent while Idle; fixed for the admitted attempt thereafter.
+    /// Changing it after a terminal state creates fresh Idle intent, not a
+    /// relabeling of the previous file or its statistics. PCM has no dither.
     pub format: RecordingFormat,
     pub phase: RecordingPhase,
     /// The confirmed graph processing format used to open this file, never
@@ -197,7 +239,7 @@ pub(crate) fn validate_destination(path: &Path) -> Result<(), String> {
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("wav"))
     {
-        return Err("Choose a .wav destination; only WAV (RIFF, float32) is supported".into());
+        return Err("Choose a .wav destination for RIFF float32, PCM24 or PCM16".into());
     }
     Ok(())
 }
@@ -244,8 +286,37 @@ impl RecordingService {
         // the process's current directory has changed. This does not open files.
         let path = std::path::absolute(path).map_err(|error| error.to_string())?;
         let mut entry = RecordingSnapshot::idle(node);
+        entry.format = self
+            .entries
+            .get(&node)
+            .map_or(RecordingFormat::default(), |entry| entry.format);
         entry.path = Some(path);
         self.entries.insert(node, entry);
+        Ok(())
+    }
+
+    pub(crate) fn set_format(
+        &mut self,
+        graph: &GraphSnapshot,
+        node: NodeId,
+        format: RecordingFormat,
+    ) -> Result<(), String> {
+        if graph.kind_of(node) != Some(NodeKind::Recorder) {
+            return Err("Recording format requires a Recorder node".into());
+        }
+        let entry = self
+            .entries
+            .entry(node)
+            .or_insert_with(|| RecordingSnapshot::idle(node));
+        if entry.phase.is_busy() {
+            return Err("Stop and finalize this recording before changing its format".into());
+        }
+        if entry.format != format {
+            let path = entry.path.clone();
+            *entry = RecordingSnapshot::idle(node);
+            entry.path = path;
+            entry.format = format;
+        }
         Ok(())
     }
 

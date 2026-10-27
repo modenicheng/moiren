@@ -134,3 +134,34 @@ fn rejected_start_cancels_blocked_preflight_without_replacing_failure() {
     assert!(preflight.worker.is_none());
     assert_eq!(service.entries[&node], failure);
 }
+
+#[test]
+fn stale_encoding_preflight_cannot_publish_into_new_format() {
+    let (mut preflight, mut service, node, stale) = fixture();
+    service.entries.get_mut(&node).unwrap().format = RecordingFormat::WavPcm24;
+    preflight.request(&mut service, node, 48_000, 2).unwrap();
+    let current = preflight.requests[&node].clone();
+    assert_ne!(current.ticket, stale.ticket);
+    preflight.complete(
+        &mut service,
+        &stale,
+        Some(disk::Observation {
+            available: 1,
+            volume: None,
+        }),
+    );
+    assert!(service.entries[&node].estimate.preflight_pending);
+    assert_eq!(
+        service.entries[&node].estimate.bytes_per_second,
+        Some(288_000)
+    );
+    assert_eq!(service.entries[&node].estimate.free_disk_bytes, None);
+    preflight.complete(&mut service, &current, None);
+    assert_eq!(service.entries[&node].format, RecordingFormat::WavPcm24);
+    assert_eq!(
+        service.entries[&node].estimate.bytes_per_second,
+        Some(288_000)
+    );
+    assert!(!service.entries[&node].estimate.preflight_pending);
+    assert_eq!(service.entries[&node].sample_rate, None);
+}

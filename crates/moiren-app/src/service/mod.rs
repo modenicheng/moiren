@@ -298,6 +298,12 @@ impl ServiceDriver for CoreDriver {
                         .record_error_with_subject(GraphSubject::Node(node), &error);
                 }
             }
+            AppRequest::SetRecordingFormat { node, format } => {
+                if let Err(error) = c.recordings.set_format(&c.graph.snapshot(), node, format) {
+                    c.graph
+                        .record_error_with_subject(GraphSubject::Node(node), &error);
+                }
+            }
             AppRequest::StartRecording { node } => {
                 if c.graph.snapshot().kind_of(node) == Some(moiren_core::graph::NodeKind::Recorder)
                 {

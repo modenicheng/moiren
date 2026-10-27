@@ -31,6 +31,9 @@ impl ServiceDriver for ManagedDriver {
                 }
             }
             AppRequest::StartRecording { node } => self.start_recording(c, node),
+            AppRequest::SetRecordingFormat { node, format } => {
+                self.set_recording_format(c, node, format)
+            }
             AppRequest::StopRecording { node } => self.recordings.stop(&mut c.recordings, node),
             AppRequest::SetExportAuthorizations(values) => {
                 let previous = c.exports.authorizations.clone();

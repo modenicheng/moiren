@@ -10,6 +10,7 @@ struct Request {
     path: PathBuf,
     rate: u32,
     channels: usize,
+    format: RecordingFormat,
 }
 
 struct Worker {
@@ -55,7 +56,7 @@ impl Preflights {
             .checked_add(1)
             .ok_or("Recording preflight identity exhausted")?;
         self.next_ticket = ticket;
-        entry.estimate = RecordingEstimate::float_wav(rate, channels, 0, None);
+        entry.estimate = RecordingEstimate::wav(entry.format, rate, channels, 0, None);
         entry.estimate.proposed_sample_rate = Some(rate);
         entry.estimate.proposed_channels = Some(channels);
         entry.estimate.preflight_pending = true;
@@ -67,6 +68,7 @@ impl Preflights {
                 path,
                 rate,
                 channels,
+                format: entry.format,
             },
         );
         Ok(())
@@ -98,6 +100,7 @@ impl Preflights {
             service.entries.get(node).is_some_and(|entry| {
                 entry.phase == RecordingPhase::Idle
                     && entry.path.as_ref() == Some(&request.path)
+                    && entry.format == request.format
                     && graph.kind_of(*node) == Some(NodeKind::Recorder)
             })
         });
@@ -177,12 +180,14 @@ impl Preflights {
         };
         if entry.phase != RecordingPhase::Idle
             || entry.path.as_ref() != Some(&request.path)
+            || entry.format != request.format
             || entry.estimate.proposed_sample_rate != Some(request.rate)
             || entry.estimate.proposed_channels != Some(request.channels)
         {
             return;
         }
-        let mut estimate = RecordingEstimate::float_wav(
+        let mut estimate = RecordingEstimate::wav(
+            request.format,
             request.rate,
             request.channels,
             0,

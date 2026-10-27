@@ -130,11 +130,12 @@ impl Runtime {
             .and_then(|entry| entry.path.clone())
             .ok_or("Choose a .wav destination before starting recording")?;
         let mut snapshot = RecordingSnapshot::idle(node);
+        snapshot.format = service.entries[&node].format;
         snapshot.path = Some(path);
         snapshot.phase = RecordingPhase::Starting;
         snapshot.sample_rate = Some(sample_rate);
         snapshot.channels = Some(channels);
-        snapshot.estimate = RecordingEstimate::float_wav(sample_rate, channels, 0, None);
+        snapshot.estimate = RecordingEstimate::wav(snapshot.format, sample_rate, channels, 0, None);
         let shared = Arc::new(Shared {
             stop: AtomicBool::new(false),
             snapshot: Mutex::new(snapshot.clone()),
@@ -333,7 +334,8 @@ fn publish(shared: &Shared, status: RecordingStatus, rate: u32, channels: usize)
     snapshot.written_frames = status.written_frames;
     snapshot.stats = Some(status.stats);
     snapshot.error = status.error.map(|error| error.message);
-    snapshot.estimate = RecordingEstimate::float_wav(rate, channels, status.written_frames, None);
+    snapshot.estimate =
+        RecordingEstimate::wav(snapshot.format, rate, channels, status.written_frames, None);
 }
 
 fn aggregate_estimates(service: &mut RecordingService, writers: &[&RecordingSnapshot]) {
@@ -404,6 +406,12 @@ fn run(
     let Some(file) = open_destination(shared)? else {
         return Ok(());
     };
+    let format = shared
+        .snapshot
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .format
+        .wav_format();
     // Claim/drain the original endpoint, never look up a node on a newer host.
     // The discard session proves quiescence, including an in-flight RT block;
     // until the actual file session starts, the returned reader stays stopped.
@@ -411,10 +419,11 @@ fn run(
     if shared.stop.load(Ordering::Acquire) {
         // Cancellation during open/discard must not re-arm capture. Preserve the
         // exclusively-created path as a valid empty WAV rather than a partial file.
-        moiren_engine::recorder::WavRecording::from_writer(
+        moiren_engine::recorder::WavRecording::from_writer_with_format(
             BufWriter::new(file),
             channels,
             sample_rate,
+            format,
         )?
         .finish()?;
         shared
@@ -424,7 +433,7 @@ fn run(
             .phase = RecordingPhase::Finished;
         return Ok(());
     }
-    let session = reader.record_with_writer(BufWriter::new(file), sample_rate)?;
+    let session = reader.record_with_writer_format(BufWriter::new(file), sample_rate, format)?;
     loop {
         if shared.stop.load(Ordering::Acquire) {
             session.stop();

@@ -23,6 +23,62 @@ impl Destination {
         self.assert_finished_with_sample(written_frames, 1.0);
     }
 
+    fn assert_selected_format(&self, written_frames: u64, format: RecordingFormat) {
+        if format == RecordingFormat::WavFloat32 {
+            self.assert_finished(written_frames);
+            return;
+        }
+        let bytes = fs::read(&self.0).unwrap();
+        let width = format.bytes_per_sample() as usize;
+        assert_eq!(format.header_bytes(), 68);
+        assert_eq!(&bytes[..4], b"RIFF");
+        assert_eq!(&bytes[8..16], b"WAVEfmt ");
+        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 40);
+        assert_eq!(
+            u16::from_le_bytes(bytes[20..22].try_into().unwrap()),
+            0xfffe
+        );
+        assert_eq!(u16::from_le_bytes(bytes[22..24].try_into().unwrap()), 2);
+        assert_eq!(
+            u32::from_le_bytes(bytes[24..28].try_into().unwrap()),
+            48_000
+        );
+        assert_eq!(
+            u16::from_le_bytes(bytes[32..34].try_into().unwrap()),
+            2 * width as u16
+        );
+        assert_eq!(
+            u16::from_le_bytes(bytes[34..36].try_into().unwrap()),
+            8 * width as u16
+        );
+        assert_eq!(u16::from_le_bytes(bytes[36..38].try_into().unwrap()), 22);
+        assert_eq!(
+            u16::from_le_bytes(bytes[38..40].try_into().unwrap()),
+            8 * width as u16
+        );
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 0);
+        assert_eq!(
+            &bytes[44..60],
+            &[1, 0, 0, 0, 0, 0, 16, 0, 128, 0, 0, 170, 0, 56, 155, 113]
+        );
+        assert_eq!(&bytes[60..64], b"data");
+        assert_eq!(
+            u32::from_le_bytes(bytes[64..68].try_into().unwrap()) as u64,
+            written_frames * 2 * width as u64
+        );
+        assert_eq!(bytes.len() as u64, 68 + written_frames * 2 * width as u64);
+        assert_eq!(
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize,
+            bytes.len() - 8
+        );
+        let full_scale = ((1i32 << (8 * width - 1)) - 1).to_le_bytes();
+        assert!(
+            bytes[68..]
+                .chunks_exact(width)
+                .all(|sample| sample == &full_scale[..width])
+        );
+    }
+
     fn assert_finished_with_sample(&self, written_frames: u64, expected_sample: f32) {
         let bytes = fs::read(&self.0).unwrap();
         assert_eq!(&bytes[..4], b"RIFF");
@@ -121,6 +177,90 @@ fn recording_writes_real_float_wav_and_stop_keeps_audio_running() {
     rig.wait(|rig| status(rig, node).phase == RecordingPhase::Finished);
     assert_eq!(rig.c.core.phase(), SessionPhase::Running);
     destination.assert_finished(status(&rig, node).written_frames);
+}
+
+#[test]
+fn selected_pcm_formats_write_real_files_and_reject_busy_changes_and_overwrite() {
+    for format in [RecordingFormat::WavPcm24, RecordingFormat::WavPcm16] {
+        let destination = Destination::new();
+        let (mut rig, node) = recording_rig(&destination);
+        rig.request(AppRequest::SetRecordingFormat { node, format });
+        rig.request(AppRequest::SetRecordingDestination {
+            node,
+            path: destination.0.clone(),
+        });
+        let idle = status(&rig, node);
+        assert_eq!(idle.format, format, "choosing a path preserves encoding");
+        assert_eq!(idle.sample_rate, None);
+        assert_eq!(
+            idle.estimate.bytes_per_second,
+            Some(48_000 * 2 * u64::from(format.bytes_per_sample()))
+        );
+        rig.request(AppRequest::StartRecording { node });
+        assert_eq!(status(&rig, node).format, format);
+        rig.request(AppRequest::SetRecordingFormat {
+            node,
+            format: RecordingFormat::WavFloat32,
+        });
+        assert_eq!(status(&rig, node).format, format);
+        rig.wait(|rig| status(rig, node).written_frames > 0);
+        rig.request(AppRequest::SetRecordingFormat {
+            node,
+            format: RecordingFormat::WavFloat32,
+        });
+        assert_eq!(status(&rig, node).format, format);
+        rig.request(AppRequest::StopRecording { node });
+        rig.request(AppRequest::SetRecordingFormat {
+            node,
+            format: RecordingFormat::WavFloat32,
+        });
+        assert_eq!(status(&rig, node).format, format);
+        rig.wait(|rig| status(rig, node).phase == RecordingPhase::Finished);
+        destination.assert_selected_format(status(&rig, node).written_frames, format);
+        let saved = fs::read(&destination.0).unwrap();
+        rig.request(AppRequest::SetRecordingFormat {
+            node,
+            format: RecordingFormat::WavFloat32,
+        });
+        let next = status(&rig, node);
+        assert_eq!(next.phase, RecordingPhase::Idle);
+        assert_eq!(next.written_frames, 0);
+        assert_eq!(next.sample_rate, None);
+        assert_eq!(next.channels, None);
+        assert_eq!(next.stats, None);
+        rig.request(AppRequest::StartRecording { node });
+        rig.wait(|rig| status(rig, node).phase == RecordingPhase::Failed);
+        assert_eq!(fs::read(&destination.0).unwrap(), saved);
+    }
+}
+
+#[test]
+fn pcm24_is_encoded_from_f64_graph_without_changing_processing_precision() {
+    let destination = Destination::new();
+    let (mut rig, node) = recording_rig(&destination);
+    let backend = FakeBackend(rig.state.clone());
+    rig.driver.f64_factory = Some(Arc::new(move |_, _| Ok(Box::new(backend.clone()))));
+    let mut settings = rig.c.audio_settings.clone();
+    settings.processing.precision = ProcessingPrecision::F64;
+    rig.request(AppRequest::SetAudioSettings(settings));
+    rig.request(AppRequest::ApplyGraph);
+    rig.wait(|rig| {
+        rig.c.core.phase() == SessionPhase::Running
+            && rig
+                .c
+                .active_audio_settings
+                .as_ref()
+                .is_some_and(|settings| settings.processing.precision == ProcessingPrecision::F64)
+    });
+    rig.request(AppRequest::SetRecordingFormat {
+        node,
+        format: RecordingFormat::WavPcm24,
+    });
+    start_recording(&mut rig, node);
+    rig.request(AppRequest::StopRecording { node });
+    rig.wait(|rig| status(rig, node).phase == RecordingPhase::Finished);
+    destination
+        .assert_selected_format(status(&rig, node).written_frames, RecordingFormat::WavPcm24);
 }
 
 const BLOCKED_DISK_OBSERVATION: u64 = 123_456;

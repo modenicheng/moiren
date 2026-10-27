@@ -3,6 +3,47 @@ use super::*;
 use moiren_core::graph::NodeKind;
 
 impl ManagedDriver {
+    pub(super) fn set_recording_format(
+        &mut self,
+        c: &mut ServiceContext,
+        node: NodeId,
+        format: RecordingFormat,
+    ) {
+        if self.recordings.is_busy(node) {
+            c.graph.record_error_with_subject(
+                GraphSubject::Node(node),
+                "Recording is active or finalizing",
+            );
+            return;
+        }
+        let graph = c.graph.snapshot();
+        if let Err(error) = c.recordings.set_format(&graph, node, format) {
+            c.graph
+                .record_error_with_subject(GraphSubject::Node(node), &error);
+            return;
+        }
+        // Re-selecting an unchanged terminal format preserves the completed
+        // file's status. A changed format is fresh Idle intent and new preflight.
+        if c.recordings.snapshots(&graph).iter().any(|entry| {
+            entry.node == node && entry.phase == RecordingPhase::Idle && entry.path.is_some()
+        }) {
+            let channels = graph
+                .graph
+                .get_node(node)
+                .expect("validated recorder")
+                .channels();
+            if let Err(error) = self.recordings.preflight(
+                &mut c.recordings,
+                node,
+                c.audio_settings.processing.sample_rate,
+                channels,
+            ) {
+                c.graph
+                    .record_error_with_subject(GraphSubject::Node(node), &error);
+            }
+        }
+    }
+
     pub(super) fn start_recording(&mut self, c: &mut ServiceContext, node: NodeId) {
         if c.graph.snapshot().kind_of(node) != Some(NodeKind::Recorder) {
             c.graph.record_error_with_subject(

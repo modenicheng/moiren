@@ -90,6 +90,11 @@ pub enum AppRequest {
         node: moiren_core::graph::NodeId,
         path: std::path::PathBuf,
     },
+    /// Session-local encoding intent, immutable while starting/recording/stopping.
+    SetRecordingFormat {
+        node: moiren_core::graph::NodeId,
+        format: super::RecordingFormat,
+    },
     StartRecording {
         node: moiren_core::graph::NodeId,
     },
