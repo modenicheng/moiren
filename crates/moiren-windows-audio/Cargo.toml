@@ -15,6 +15,7 @@ serde_json = "1.0"
 thiserror = { workspace = true }
 
 [dev-dependencies]
+flexi_logger = { workspace = true }
 moiren-signal = { path = "../moiren-signal" }
 
 [features]

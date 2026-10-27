@@ -4566,6 +4566,7 @@ name = "moiren-windows-audio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flexi_logger",
  "log",
  "moiren-core",
  "moiren-engine",

@@ -12,17 +12,26 @@ mod measurement;
 mod measurement_sink;
 #[path = "e2e_latency_probe/pcm.rs"]
 mod pcm;
+#[path = "e2e_latency_probe/probe_logging.rs"]
+mod probe_logging;
 
 #[cfg(test)]
 #[path = "e2e_latency_probe/tests.rs"]
 mod tests;
 
 fn main() {
-    match cli::run(std::env::args().skip(1).collect()) {
-        Ok(code) => std::process::exit(code),
+    std::process::exit(run_cli(std::env::args().skip(1).collect()));
+}
+
+fn run_cli(arguments: Vec<String>) -> i32 {
+    // Keep the handle through CLI teardown (including owner joins), then drop
+    // it before main exits the process.
+    let result = probe_logging::initialize().and_then(|_logger| cli::run(arguments));
+    match result {
+        Ok(code) => code,
         Err(error) => {
             eprintln!("{error:#}");
-            std::process::exit(2);
+            2
         }
     }
 }
