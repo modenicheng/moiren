@@ -100,6 +100,8 @@ pub struct DeviceClockObservation {
     pub hresult: i32,
 }
 
+/// Schema-2 diagnostic output. Rust consumers constructing or destructuring
+/// this record must account for the optional `device_clock` field.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct TraceRecord {
     pub wake_qpc_100ns: u64,

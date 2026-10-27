@@ -369,10 +369,6 @@ pub(super) fn run_stream(
                 Wake::Audio => report.stats.audio_wakes += 1,
             }
             let wake_qpc_100ns = clock.as_ref().and_then(QpcClock::now);
-            // Query the native device clock on the same bounded trace sample.
-            let device_clock = trace
-                .then(|| native_clock.as_ref().map(clock_sample))
-                .flatten();
             let padding = api("GetCurrentPadding", unsafe { client.GetCurrentPadding() })?;
             writable_frames(capacity, padding)?;
             if let Some(owner) = padding_observation.0.as_mut() {
@@ -387,7 +383,9 @@ pub(super) fn run_stream(
                 wake_qpc_100ns,
                 padding_before_frames: padding,
                 submitted_frames_before: report.stats.submitted_frames,
-                native_clock: device_clock,
+                native_clock: trace
+                    .then(|| native_clock.as_ref().map(clock_sample))
+                    .flatten(),
                 bridge_before: trace.then(|| renderer.bridge_snapshot()).flatten(),
             };
             let writable = writable_frames(capacity, padding)?;

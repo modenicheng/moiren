@@ -212,13 +212,31 @@ fn trace_overflow_keeps_audio_complete_without_allocation_or_deallocation() {
                     .transferred_frames,
                 4
             );
-            recorder.record(callback(100 + index as u64 * 100, 20));
+            recorder.record_with_device_clock(
+                callback(100 + index as u64 * 100, 20),
+                Some(DeviceClockObservation {
+                    position_units: index as u64 * 4,
+                    qpc_100ns: 100 + index as u64 * 100,
+                    hresult: if index % 2 == 0 { 0 } else { -1 },
+                }),
+            );
         }
     });
     // Snapshot ownership is finalized off the audio path, after recording ends.
     let snapshot = recorder.snapshot();
     assert_eq!(snapshot.trace.records().len(), TRACE_CAPACITY);
     assert_eq!(snapshot.trace_dropped, 17);
+    for (index, record) in snapshot.trace.records().iter().enumerate() {
+        assert_eq!(
+            record.device_clock,
+            Some(DeviceClockObservation {
+                position_units: index as u64 * 4,
+                qpc_100ns: 100 + index as u64 * 100,
+                hresult: if index % 2 == 0 { 0 } else { -1 },
+            }),
+            "overflow must retain the original clock sample at {index}"
+        );
+    }
     assert_eq!(
         snapshot.callback_duration_100ns.samples,
         (TRACE_CAPACITY + 17) as u64
