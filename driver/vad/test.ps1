@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [CmdletBinding()]
 param(
-    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics')]
+    [ValidateSet('all', 'lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name')]
     [string]$Test = 'all'
 )
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,36 @@ $version = (Get-Content -LiteralPath "$vs\VC\Auxiliary\Build\Microsoft.VCToolsVe
 $tools = Join-Path $vs "VC\Tools\MSVC\$version"
 $sdk = "${env:ProgramFiles(x86)}\Windows Kits\10"
 $compiler = Join-Path $tools 'bin\Hostx64\x64\cl.exe'
-foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics') } else { @($Test) })) {
+foreach ($testName in $(if ($Test -eq 'all') { @('lifecycle', 'audio', 'ownership', 'timer', 'cleanup', 'removal', 'diagnostics', 'clock_diagnostics', 'unserved_diagnostics', 'interface_name') } else { @($Test) })) {
+    if ($testName -eq 'interface_name') {
+        # Compile publication/rollback from Policy.cpp, stubbing only DDI edges.
+        @'
+import importlib.util
+from pathlib import Path
+import re
+import sys
+sys.dont_write_bytecode = True
+root, output = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location('extract', root / 'tests/extract-cleanup.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+source = root / 'src/Policy.cpp'
+text = source.read_text(encoding='utf-8')
+parts = re.findall(r'static const GUID \w+Category\s*=\s*\{[^;]+;', text)
+header = root / 'src/InterfaceName.h'
+if header.exists():
+    parts.append('#include "' + header.as_posix() + '"')
+functions = ['SnapshotPolicy', 'CreateKey', 'SetValue']
+if re.search(r'\bStageInterfaceName\s*\(', text):
+    functions.append('StageInterfaceName')
+functions += ['StageInterface', 'VadReleasePolicy', 'PreparePolicy', 'VadPreparePolicy']
+patterns = tuple((name, r'(?:static\s+)?(?:NTSTATUS|void)\s+' + name +
+    r'\s*\([^;{}]*\)\s*\{') for name in functions)
+parts.append(module.extract(text, source.as_posix(), patterns))
+(output / 'interface-name-production.inc').write_text('\n'.join(parts), encoding='utf-8')
+'@ | & python - $PSScriptRoot $buildRoot
+        if ($LASTEXITCODE -ne 0) { throw "Interface-name source extraction failed ($LASTEXITCODE)." }
+    }
     if ($testName -eq 'clock_diagnostics' -and
         (Test-Path (Join-Path $PSScriptRoot 'src\audio\ClockDiagnostic.h'))) {
         # Reuse the brace-aware extractor; test the actual callback/epoch glue.

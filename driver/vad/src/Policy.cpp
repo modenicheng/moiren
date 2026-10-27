@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT
 #include "Driver.h"
+#include "InterfaceName.h"
+// Instantiate the SDK property key in this translation unit, not a private GUID.
+#include <initguid.h>
+#include <devpkey.h>
 #include "Policy.tmh"
 
 VAD_PAGE static EVT_WDF_WORKITEM PreparePolicy;
@@ -56,15 +60,51 @@ static NTSTATUS SetValue(HANDLE key, PCWSTR name, ULONG type,
     return ZwSetValueKey(key, &path, 0, type, const_cast<void*>(value), size);
 }
 
+static NTSTATUS StageInterfaceName(const GUID& category, UNICODE_STRING* link,
+    const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS], ULONG nameBytes)
+{
+    // Only PreparePolicy's passive system worker calls this. Use the actual
+    // owned link before ACX enables it; this is not a final MMDevice rename.
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    NTSTATUS status = IoSetDeviceInterfacePropertyData(link,
+        &DEVPKEY_DeviceInterface_FriendlyName, LOCALE_NEUTRAL,
+        PLUGPLAY_PROPERTY_PERSISTENT, DEVPROP_TYPE_STRING, nameBytes,
+        const_cast<WCHAR*>(name));
+    WCHAR readback[MOIREN_VAD_MAX_NAME_UNITS] = {};
+    ULONG returnedBytes = 0;
+    DEVPROPTYPE type = DEVPROP_TYPE_EMPTY;
+    if (NT_SUCCESS(status)) {
+        // Getter Flags is reserved (zero), not the setter's persistent flag.
+        // Oversized/malformed results fail closed; never allocate or retry.
+        status = IoGetDeviceInterfacePropertyData(link,
+            &DEVPKEY_DeviceInterface_FriendlyName, LOCALE_NEUTRAL, 0,
+            sizeof(readback), readback, &returnedBytes, &type);
+    }
+    const bool matches = NT_SUCCESS(status) && type == DEVPROP_TYPE_STRING &&
+        vad::InterfaceNameMatches(name, readback, returnedBytes);
+    if (NT_SUCCESS(status) && !matches) {
+        status = STATUS_DATA_ERROR;
+    }
+    // One passive record per staged category; never log user-provided text.
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
+        "Policy typed interface name category=%!GUID! bytes=%lu type=%lu returned=%lu match=%u status=%!STATUS!",
+        &category, nameBytes, type, returnedBytes, matches ? 1u : 0u, status);
+    return status;
+}
+
 // The interface registration is deliberately retained for the child
 // lifetime. IoRegisterDeviceInterface documents that registrations are
 // persistent devnode state and need not be manually deleted; only the opaque
 // returned allocation is owned by this driver.
 static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
     PCWSTR association, ULONG associationBytes, ULONG neverDefault,
-    PCWSTR name, UNICODE_STRING* link)
+    const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS], UNICODE_STRING* link)
 {
     *link = {};
+    const ULONG nameBytes = vad::InterfaceNameBytes(name);
+    if (nameBytes == 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
     UNICODE_STRING reference;
     RtlInitUnicodeString(&reference, VadAudioReference);
     // Registration alone leaves the interface DISABLED. Never call
@@ -79,7 +119,6 @@ static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
     HANDLE endpointKey = nullptr;
     status = IoOpenDeviceInterfaceRegistryKey(link,
         KEY_CREATE_SUB_KEY | KEY_SET_VALUE, &interfaceKey);
-    const ULONG nameBytes = static_cast<ULONG>((wcslen(name) + 1) * sizeof(WCHAR));
     static const WCHAR proxy[] = L"{17CCA71B-ECD7-11D0-B908-00A0C9223196}";
     if (NT_SUCCESS(status)) {
         // Dynamic raw PDOs have no per-endpoint AddInterface INF section.
@@ -128,12 +167,18 @@ static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
     if (interfaceKey != nullptr) {
         ZwClose(interfaceKey);
     }
+    if (NT_SUCCESS(status)) {
+        // Preserve ordinary FriendlyName/EP0 metadata. Typed publication and
+        // its strict readback are the final gate, before ACX sees any link.
+        status = StageInterfaceName(category, link, name, nameBytes);
+    }
     if (!NT_SUCCESS(status)) {
         // The interface may have been registered before a registry write
         // failed. It is never enabled, but explicitly disable it here and
         // release the symbolic-link allocation.
         (void)IoSetDeviceInterfaceState(link, FALSE);
         RtlFreeUnicodeString(link);
+        *link = {};
     }
     return status;
 }
