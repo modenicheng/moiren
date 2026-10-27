@@ -10,12 +10,13 @@
 use rust_i18n::t;
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::controls::{button, db, heading, label};
+use super::controls::{button, heading, label};
 use super::desktop::Desktop;
 use super::mixer::{SliderSlot, fader_rows, node_kind_color, sync_faders};
 use super::*;
 use crate::service::{GraphNodeState, GraphSnapshot, MixerState};
 use crate::ui::monitoring::NodeMeters;
+use crate::ui::presentation::db_text;
 use crate::ui::widgets::fader::fader;
 use moiren_core::graph::{NodeId, NodeKind};
 
@@ -324,7 +325,7 @@ fn strip(
                         .font_family(theme::FONT_MONO)
                         .text_size(px(11.))
                         .text_color(theme::TEXT_MUTED)
-                        .child(db(entry.mixer.gain)),
+                        .child(db_text(entry.mixer.gain)),
                 )
                 .gpui_test_observe(),
         )

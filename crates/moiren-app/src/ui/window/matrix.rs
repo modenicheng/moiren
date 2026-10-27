@@ -3,6 +3,7 @@ use rust_i18n::t;
 
 use super::*;
 use crate::service::GraphEdit;
+use crate::ui::presentation::{db_text, step_db};
 use controls::*;
 use moiren_core::graph::{PortId, SendParams};
 
@@ -93,7 +94,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     if e.params().mute {
                         t!("Muted").into()
                     } else {
-                        db(e.params().gain)
+                        db_text(e.params().gain)
                     }
                 })
                 .unwrap_or_else(|| if forbidden { "×".into() } else { "—".into() });
@@ -258,7 +259,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 let params = *edge.params();
                 view = view
                     .child(badge(t!("Connected"), theme::PRIMARY))
-                    .child(detail(&t!("Route gain"), db(params.gain)))
+                    .child(detail(&t!("Route gain"), db_text(params.gain)))
                     .child(detail(&t!("Route balance"), format!("{:+.2}", params.pan)))
                     .child(detail(
                         &t!("Tap"),
@@ -296,12 +297,15 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                         div()
                             .flex()
                             .gap(px(6.))
+                            // Route sends have no upper gain limit by design
+                            // (SendParams deliberately accepts any finite
+                            // headroom), so the +1 dB step never clamps.
                             .child(button("route-down", "−1 dB").on_click(edit(
                                 cx.entity(),
                                 GraphEdit::SetSend {
                                     edge: id,
                                     params: SendParams {
-                                        gain: params.gain * 10f64.powf(-1. / 20.),
+                                        gain: step_db(params.gain, -1., 0., f64::INFINITY),
                                         ..params
                                     },
                                 },
@@ -311,7 +315,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                                 GraphEdit::SetSend {
                                     edge: id,
                                     params: SendParams {
-                                        gain: params.gain * 10f64.powf(1. / 20.),
+                                        gain: step_db(params.gain, 1., 0., f64::INFINITY),
                                         ..params
                                     },
                                 },
