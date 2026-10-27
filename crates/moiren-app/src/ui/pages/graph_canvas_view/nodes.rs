@@ -110,45 +110,6 @@ fn rounded(bounds: Bounds<Pixels>, color: Hsla, radius: f32, window: &mut Window
     });
 }
 
-fn paint_track(
-    frame: &CanvasFrame,
-    bounds: Bounds<f32>,
-    value: Option<f32>,
-    centered: bool,
-    window: &mut Window,
-) {
-    let bounds = frame.window_rect(bounds);
-    rounded(bounds, theme::WINDOW_BG, 2. * frame.camera.zoom, window);
-    let Some(value) = value else { return };
-    let value = value.clamp(0., 1.);
-    let start = if centered { value.min(0.5) } else { 0. };
-    let width = if centered { (value - 0.5).abs() } else { value };
-    rounded(
-        Bounds {
-            origin: bounds.origin + point(bounds.size.width * start, px(0.)),
-            size: size(bounds.size.width * width, bounds.size.height),
-        },
-        theme::card::TRACK_FILL,
-        2. * frame.camera.zoom,
-        window,
-    );
-    let thumb_width = px(4. * frame.camera.zoom);
-    rounded(
-        Bounds {
-            origin: bounds.origin
-                + point(
-                    (bounds.size.width * value - thumb_width / 2.)
-                        .clamp(px(0.), bounds.size.width - thumb_width),
-                    px(-2. * frame.camera.zoom),
-                ),
-            size: size(thumb_width, px(8. * frame.camera.zoom)),
-        },
-        theme::card::THUMB,
-        2. * frame.camera.zoom,
-        window,
-    );
-}
-
 pub(super) fn paint_node(
     frame: &CanvasFrame,
     node: &CanvasNode,
@@ -243,68 +204,10 @@ pub(super) fn paint_node(
             theme::TEXT_MUTED,
             cx,
         );
-        for channel in 0..2 {
-            let mut meter = layout.meter;
-            meter.origin.y += channel as f32 * 3. * layout.scale;
-            rounded(
-                frame.window_rect(meter),
-                theme::WINDOW_BG,
-                layout.scale,
-                window,
-            );
-            if let Some(peaks) = node.peaks {
-                meter.size.width *= crate::ui::widgets::meters::meter_height(peaks[channel]);
-                rounded(frame.window_rect(meter), tint, layout.scale, window);
-            }
-        }
-        let gain_db = if node.gain <= 0. {
-            -60.
-        } else {
-            (20. * node.gain.log10()) as f32
-        };
-        paint_track(
-            frame,
-            layout.fader,
-            Some((gain_db + 60.) / 72.),
-            false,
-            window,
-        );
-        paint_track(
-            frame,
-            layout.balance,
-            node.balance.map(|value| (value as f32 + 1.) / 2.),
-            true,
-            window,
-        );
-        let gain = if node.gain <= 0. {
-            "-inf".into()
-        } else {
-            format!("{gain_db:.1}")
-        };
-        let balance = match node.balance {
-            Some(value) if value < -0.005 => format!("L {:.0}", -value * 100.),
-            Some(value) if value > 0.005 => format!("R {:.0}", value * 100.),
-            Some(_) => "C".into(),
-            None => "\u{2014}".into(),
-        };
-        for (bounds, text) in [
-            (&layout.gain_value, gain.as_str()),
-            (&layout.balance_value, balance.as_str()),
-        ] {
-            paint_label(
-                frame,
-                bounds,
-                Label {
-                    text,
-                    family: theme::FONT_MONO,
-                    color: theme::TEXT_MUTED,
-                    right_aligned: true,
-                    weight: FontWeight::NORMAL,
-                },
-                window,
-                cx,
-            );
-        }
+        let mut divider = card;
+        divider.origin.y += px(53. * layout.scale);
+        divider.size.height = px(1.);
+        rounded(divider, theme::BORDER, 0., window);
     });
     let radius = 4. * layout.scale;
     for (anchor, asset) in layout

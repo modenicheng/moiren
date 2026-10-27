@@ -548,3 +548,133 @@ The input/output device configuration is invalid	-	服务层消息；中文即�
 Choose another device, or check the sample rate/precision settings	-	服务层消息；中文即迁移前原文
 Channel parameters are outside their valid range	-	服务层消息；中文即迁移前原文
 Parameters are outside their valid range	-	服务层消息；中文即迁移前原文
+Sine generator · digital level	-	node_controls.rs；音调输入卡片说明，note 动态键
+Digital trim · post-fader meter	-	node_controls.rs；设备输入卡片说明，note 动态键
+Mute	-	node_controls.rs；节点静音按钮
+Details	-	node_controls.rs；打开节点检查器
+WAV · 32-bit float	-	node_controls.rs / recording.rs；总览说明与格式值，后者仍需 t! 包装
+Parametric response	-	node_controls.rs；均衡器总览
+Linked peak compressor	-	node_controls.rs；压缩器总览
+Audio workstation	-	node_controls.rs；通用总览说明
+Edit node	-	node_controls.rs；总览聚焦按钮
+Digital trim	-	node_controls.rs；物理设备与应用输入增益标签
+Choose a device	-	node_controls.rs；资源选择器空值
+No available devices. Refresh to discover.	-	node_controls.rs；资源列表空状态
+Refresh	-	node_controls.rs；刷新资源列表
+Input device	-	node_controls.rs；设备选择标签
+No live signal	-	node_controls.rs；电平表空状态
+Record input	-	node_controls.rs；录音节点电平标签
+Post-fader · Peak / RMS	-	node_controls.rs；电平表说明
+Level	-	node_controls/parameter.rs；主电平参数，note 动态键
+Band gain	-	node_controls/parameter.rs；均衡器参数，note 动态键
+EQ response · 20 Hz — 20 kHz	-	node_controls/plots.rs；静态均衡响应图标签
+Transfer curve · input / output dB	-	node_controls/plots.rs；压缩器静态传输曲线标签
+Destination	-	node_controls/recording.rs；录音文件目录标签
+Choose output file	-	node_controls/recording.rs；录音文件选择按钮
+Choose a new .wav file; existing files are never overwritten	-	node_controls/recording.rs；文件选择提示
+No file selected	-	node_controls/recording.rs；文件名回退，仍需 t! 包装
+Format	-	node_controls/recording.rs；detail_line 字段标签
+Format fixed · graph sample rate and channels	-	node_controls/recording.rs；录音格式说明
+Graph rate	-	node_controls/recording.rs；采样率回退，仍需 t! 包装
+Graph channels	-	node_controls/recording.rs；声道数回退，仍需 t! 包装
+Ready	-	node_controls/recording.rs；空闲状态，t!(status)
+Recording	-	node_controls/recording.rs；录音状态，t!(status)
+Finalizing file	-	node_controls/recording.rs；停止并完成文件状态
+Saved	-	node_controls/recording.rs；录音完成状态
+Recording failed	-	node_controls/recording.rs；失败状态
+Remaining	-	node_controls/recording.rs；剩余录音容量字段
+Free disk	-	node_controls/recording.rs；剩余磁盘容量字段
+Stop recording	-	node_controls/recording.rs；录音传输按钮
+Start recording	-	node_controls/recording.rs；录音传输按钮
+Start audio before recording	-	node_controls/recording.rs；录音前置条件提示
+Recording transport does not stop the audio graph	-	node_controls/recording.rs；录音传输说明
+Unknown until prepared	-	node_controls/recording.rs；容量回退，仍需 t! 包装
+Swap 1/2	-	node_controls/utility.rs；映射预设按钮，choice 仍需翻译标签
+Identity and swap require equal input/output widths	-	node_controls/utility.rs；映射预设提示，仍需 t! 包装
+Swap channels 1 and 2; preserve all remaining channels	-	node_controls/utility.rs；交换预设提示，仍需 t! 包装
+Route each input to the corresponding output	-	node_controls/utility.rs；恒等映射提示，仍需 t! 包装
+Routing weights	-	node_controls/utility.rs；映射卡片字段标签
+Invalid channel mapping; inspect the node settings.	-	node_controls/utility.rs；无效映射状态
+Silent	-	node_controls/utility.rs；全零矩阵输出说明，拼接前仍需 t! 包装
+Inline matrix editing supports up to 8 x 8 channels.	-	node_controls/utility.rs；大矩阵只读说明
+Signed linear weight; 0 disconnects this cell.	-	node_controls/utility.rs；权重编辑弹出框说明
+No stages. The configured routes pass through.	-	node_controls/utility.rs；空机架说明
+On	-	node_controls/utility.rs；处理级启用状态，choice 仍需翻译标签
+Toggle stage bypass	-	node_controls/utility.rs；旁路按钮提示，拼接槽位前仍需 t! 包装
+Move earlier within this route	-	node_controls/utility.rs；排序按钮提示，拼接槽位前仍需 t! 包装
+Move later within this route	-	node_controls/utility.rs；排序按钮提示，拼接槽位前仍需 t! 包装
+Remove this stage	-	node_controls/utility.rs；移除按钮提示，拼接槽位前仍需 t! 包装
+Add builtin defaults to this route; incompatible widths are disabled	-	node_controls/utility.rs；预设菜单提示，仍需 t! 包装
++ Add stage	-	node_controls/utility.rs；机架添加按钮，仍需 t! 包装
+Invalid rack layout; inspect its stream routes.	-	node_controls/utility.rs；机架布局错误
+EQ	-	node_controls/utility.rs；处理级名称，拼接前或菜单标签仍需 t! 包装
+Mapper	-	node_controls/utility.rs；处理级名称，拼接前或菜单标签仍需 t! 包装
+Start audio to observe this node	-	node_controls/utility.rs；电平卡片未运行状态，无句号键
+No level publisher for this node	-	node_controls/utility.rs；电平数据不可用状态
+Sample peak / RMS (display ballistics)	-	node_controls/utility.rs；真实电平显示类型说明
+FFT / hop	-	node_controls/utility.rs；分析窗口设置标签
+Spectrum unavailable	-	node_controls/utility.rs；无频谱订阅状态
+No spectrum subscription in this view	-	node_controls/utility.rs；不可用频谱说明
+No input streams. Add one, then connect a source.	-	node_controls/utility.rs；空总线说明
+Unavailable source	-	node_controls/utility.rs；连接音源回退，拼接前仍需 t! 包装
+ (muted)	-	node_controls/utility.rs；总线连接静音后缀，仍需 t! 包装
+Inspect this connection	-	node_controls/utility.rs；总线路由按钮提示，仍需 t! 包装
+Input streams	-	node_controls/utility.rs；总线实际输入数标签
++ Add input	-	node_controls/utility.rs；添加总线输入按钮，仍需 t! 包装
+Resource binding	-	node_inspector/binding.rs；资源分区标题
+Input devices	-	node_inspector/binding.rs；设备列表标题
+No input devices available	-	node_inspector/binding.rs；输入列表空状态
+Selected	-	node_inspector/binding.rs；当前绑定状态
+No application sources available	-	node_inspector/binding.rs；应用列表空状态
+Output devices	-	node_inspector/binding.rs；设备列表标题
+No output devices available	-	node_inspector/binding.rs；输出列表空状态
+Resource refresh failed; showing the last available list.	-	node_inspector/binding.rs；刷新错误提示
+One peaking band	-	node_inspector/builtin/mod.rs；均衡器说明
+Add 48,000 frames	-	node_inspector/builtin/utility.rs；录音缓冲扩容按钮
+Remove 48,000 frames	-	node_inspector/builtin/utility.rs；录音缓冲缩容按钮
+%{points} points	points=调用方提供	node_inspector/builtin/utility.rs；FFT 点数
+No live level data is available for this node.	-	node_inspector/diagnostics.rs；缺少实时数据说明
+Channel %{index}	index=调用方提供	node_inspector/diagnostics.rs；逐声道电平标签
+Peak	-	node_inspector/diagnostics.rs；峰值读数标签
+RMS	-	node_inspector/diagnostics.rs；均方根读数，保留标准缩写
+Peak / RMS	-	node_inspector/diagnostics.rs；未知读数字段
+Advanced parameters	-	node_inspector/parameters.rs；参数分区标题
+Dynamics	-	node_inspector/parameters.rs；压缩器分组，t!(title)
+Timing	-	node_inspector/parameters.rs；压缩器分组，t!(title)
+Gain staging	-	node_inspector/parameters.rs；压缩器分组，t!(title)
+Ports and routing	-	node_inspector/routing.rs；路由分区标题
+Inspect connection	-	node_inspector/routing.rs；路由按钮提示
+%{inputs} in / %{outputs} out	inputs=调用方提供|outputs=调用方提供	待 Rust 包装；node_controls/utility.rs 映射宽度，使用 t! 命名参数替换 format!
+Out %{output} / In %{input}	output=调用方提供|input=调用方提供	待 Rust 包装；node_controls/utility.rs 权重编辑弹出框标题
+Out %{output} <- %{sources}	output=调用方提供|sources=调用方提供	待 Rust 包装；node_controls/utility.rs 大矩阵只读映射行，sources 也需先本地化
+%{weight} * In %{input}	weight=调用方提供|input=调用方提供	待 Rust 包装；node_controls/utility.rs 加权源说明，weight 保留带符号数值
+Edit Out %{output} from In %{input} weight	output=调用方提供|input=调用方提供	待 Rust 包装；node_controls/utility.rs 矩阵单元格提示
+%{index}. %{name}	index=调用方提供|name=调用方提供	待 Rust 包装；node_controls/utility.rs 处理级顺序标题，name 需先翻译
+%{index}. %{name} / R%{route}	index=调用方提供|name=调用方提供|route=调用方提供	待 Rust 包装；node_controls/utility.rs 多路机架处理级标题，name 需先翻译
+%{tooltip} (slot %{slot})	tooltip=调用方提供|slot=调用方提供	待 Rust 包装；node_controls/utility.rs 处理级按钮提示，tooltip 需先翻译
+R%{route}: Input %{input} -> Output %{output}	route=调用方提供|input=调用方提供|output=调用方提供	待 Rust 包装；node_controls/utility.rs 预设菜单路由标题
+Ch %{channel} / held peak	channel=调用方提供	待 Rust 包装；node_controls/utility.rs 大电平读数标签
+RMS %{value}	value=调用方提供	待 Rust 包装；node_controls/utility.rs 逐声道均方根读数，Unknown 回退需先翻译
+%{fft} / %{hop} frames	fft=调用方提供|hop=调用方提供	待 Rust 包装；node_controls/utility.rs FFT 与帧移字段值
+Input %{index} / %{channels} ch	index=调用方提供|channels=调用方提供	待 Rust 包装；node_controls/utility.rs 总线输入行
+%{name} / Out %{output}%{muted}	name=调用方提供|output=调用方提供|muted=调用方提供	待 Rust 包装；node_controls/utility.rs 总线连接标题，muted 使用已翻译后缀
+%{channels} ch	channels=调用方提供	待 Rust 包装；node_inspector/identity.rs、routing.rs 与 node_controls/recording.rs 声道数
+%{frames} dropped frames (endpoint total)	frames=调用方提供	待 Rust 包装；node_controls/recording.rs 丢帧提示
+~%{duration} (disk / RIFF)	duration=调用方提供	待 Rust 包装；node_controls/recording.rs 剩余时长
+%{duration} RIFF limit · disk unknown	duration=调用方提供	待 Rust 包装；node_controls/recording.rs 磁盘容量未知时的剩余时长
+Open output folder	-	node_controls/recording.rs；打开录音输出目录
+The graph changed. Choose the recording destination again.	-	node_controls/recording.rs；文件选择期间音频图变更提示
+%{count} dropped frames (endpoint total)	count=stats.dropped_frames	node_controls/recording.rs；实际丢帧提示键，使用 count 占位符
+%{time} RIFF limit · disk unknown	time=duration(seconds)	node_controls/recording.rs；实际剩余时长键，使用 time 占位符
+Capacity unknown	-	service/recording.rs；RecordingEstimateBasis::Unknown，经卡片 note 动态翻译
+RIFF only (disk space unknown)	-	service/recording.rs；RecordingEstimateBasis::RiffOnly，经卡片 note 动态翻译
+Disk reserve and RIFF limits	-	service/recording.rs；RecordingEstimateBasis::DiskAndRiff，经卡片 note 动态翻译
+Static transfer · input / output dB	-	node_controls/plots.rs；更新后的静态传输曲线标签
+Edits pending; meters show the running graph	-	node_controls；待集成的候选修改与运行中音频图读数区分提示
+Drag vertically · Shift for fine adjustment · double-click to reset	-	node_controls；旋钮垂直拖动、Shift 精调与双击重置提示
+Drag band: frequency / gain · wheel: Q · Shift: fine	-	node_controls/plots.rs；交互式均衡曲线的频率、增益与 Q 值调节提示
+Drag curve: threshold / ratio · Shift: fine	-	node_controls/plots.rs；交互式压缩曲线的阈值与压缩比调节提示
+Proposed format	-	node_controls/recording.rs；录音预检的拟用格式字段
+Checking disk space	-	node_controls/recording.rs；录音预检的磁盘空间检查状态
+Graph monitor · post-fader	-	node_controls；录音卡片电平来自音频图推子后监测，并非精确的录音输入
+Canceled before opening file	-	node_controls/recording.rs；文件创建前取消不能显示为保存成功

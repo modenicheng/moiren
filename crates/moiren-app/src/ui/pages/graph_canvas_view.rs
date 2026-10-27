@@ -81,6 +81,7 @@ fn paint_canvas_layer(
     selected_nodes: &[String],
     selected_wire: Option<&str>,
     selection_box: Option<((f32, f32), (f32, f32))>,
+    paint_nodes: bool,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -122,7 +123,7 @@ fn paint_canvas_layer(
                 }
             }
             for (node, layout) in frame.world.nodes.iter().zip(&frame.nodes) {
-                if layout.card.intersects(&frame.viewport()) {
+                if paint_nodes && layout.card.intersects(&frame.viewport()) {
                     nodes::paint_node(
                         frame,
                         node,
@@ -206,6 +207,11 @@ pub(in crate::ui) fn node_drag_preview(
         gain: 1.,
         balance: None,
         peaks: None,
+        kind: template
+            .kind()
+            .unwrap_or(moiren_core::graph::NodeKind::Source),
+        content_width: 270.,
+        measured_height: Some(112.),
     };
     let size = (
         node.width() + PREVIEW_PORT_PAD * 2.,
@@ -302,6 +308,7 @@ pub fn graph_canvas_view(
     selected_nodes: &[String],
     selected_wire: Option<&str>,
     callbacks: CanvasCallbacks,
+    node_controls: Vec<(String, AnyElement)>,
 ) -> impl IntoElement {
     let CanvasCallbacks {
         on_drop_node,
@@ -330,12 +337,157 @@ pub fn graph_canvas_view(
     let right_focus = focus.clone();
     let input_move: Rc<WindowAppCallback<(Point<Pixels>, Option<MouseButton>)>> =
         Rc::from(on_canvas_mouse_move);
+    let on_pan: Rc<WindowAppCallback<(f32, f32)>> = Rc::from(on_pan);
+    let separate_nodes = !node_controls.is_empty();
+    let mut controls: std::collections::HashMap<_, _> = node_controls.into_iter().collect();
+    let mut node_layers = Vec::new();
+    if separate_nodes {
+        for (index, node) in world.nodes.iter().enumerate() {
+            let painted = prepared.clone();
+            let selected = selected_nodes.iter().any(|id| id == &node.id);
+            node_layers.push(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, cx| {
+                        if let Some(frame) = painted.borrow().as_ref() {
+                            let layout = &frame.nodes[index];
+                            if layout.card.intersects(&frame.viewport()) {
+                                nodes::paint_node(
+                                    frame,
+                                    &frame.world.nodes[index],
+                                    layout,
+                                    selected,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }
+                    },
+                )
+                .absolute()
+                .size_full()
+                .into_any_element(),
+            );
+            let card = camera.project_rect(super::graph_canvas::NodeLayout::new(node).card);
+            let hit_frame = prepared.clone();
+            let card_focus = focus.clone();
+            let select = on_select_node.clone();
+            let port_down = on_port_down.clone();
+            let pan_down = on_background_down.clone();
+            let right_pan_down = on_background_down.clone();
+            let middle_frame = prepared.clone();
+            let right_frame = prepared.clone();
+            let wheel_frame = prepared.clone();
+            let zoom = on_zoom.clone();
+            let pan = on_pan.clone();
+            let pinch_frame = prepared.clone();
+            let pinch_zoom = on_zoom.clone();
+            let release_move = input_move.clone();
+            let release_port = on_port_up.clone();
+            let move_card = input_move.clone();
+            // Occlusion also shields ancestor hitboxes in GPUI. Forward header
+            // gestures explicitly through the same prepared-frame callbacks.
+            node_layers.push(
+                div()
+                    .absolute()
+                    .left(px(card.left()))
+                    .top(px(card.top()))
+                    .w(px(card.size.width))
+                    .h(px(card.size.height))
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                        window.focus(&card_focus, cx);
+                        if let Some(frame) = hit_frame.borrow().as_ref() {
+                            match frame.hit_test((
+                                f32::from(event.position.x),
+                                f32::from(event.position.y),
+                            )) {
+                                Some(HitTarget::Port(port)) => port_down(
+                                    (
+                                        port,
+                                        frame.camera.canvas_to_world(frame.local_position((
+                                            f32::from(event.position.x),
+                                            f32::from(event.position.y),
+                                        ))),
+                                    ),
+                                    window,
+                                    cx,
+                                ),
+                                Some(HitTarget::Node(id)) => select(id, window, cx),
+                                _ => {}
+                            }
+                        }
+                        cx.stop_propagation();
+                    })
+                    .on_mouse_down(MouseButton::Middle, move |event, window, cx| {
+                        if let Some(frame) = middle_frame.borrow().as_ref() {
+                            pan_down((event.clone(), frame.bounds), window, cx);
+                        }
+                        cx.stop_propagation();
+                    })
+                    .on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                        if let Some(frame) = right_frame.borrow().as_ref() {
+                            right_pan_down((event.clone(), frame.bounds), window, cx);
+                        }
+                        cx.stop_propagation();
+                    })
+                    .on_scroll_wheel(move |event, window, cx| {
+                        if let Some(frame) = wheel_frame.borrow().as_ref() {
+                            scroll_canvas(event, frame, &zoom, &pan, window, cx);
+                        }
+                        cx.stop_propagation();
+                    })
+                    .on_pinch(move |event, window, cx| {
+                        if let Some(frame) = pinch_frame.borrow().as_ref() {
+                            let anchor = frame.local_position((
+                                f32::from(event.position.x),
+                                f32::from(event.position.y),
+                            ));
+                            pinch_zoom(
+                                (
+                                    crate::ui::scroll_policy::pinch_zoom_factor(event.delta),
+                                    point(px(anchor.0), px(anchor.1)),
+                                ),
+                                window,
+                                cx,
+                            );
+                        }
+                        cx.stop_propagation();
+                    })
+                    .on_mouse_move(move |event, window, cx| {
+                        move_card((event.position, event.pressed_button), window, cx);
+                    })
+                    .on_mouse_up(MouseButton::Left, move |event, window, cx| {
+                        release_port(None, window, cx);
+                        release_move((event.position, None), window, cx);
+                        cx.stop_propagation();
+                    })
+                    .into_any_element(),
+            );
+            if let Some(body) = controls.remove(&node.id) {
+                node_layers.push(body);
+            }
+        }
+    }
     div()
         .id("graph-canvas")
         .relative()
         .size_full()
         .bg(theme::WINDOW_BG)
         .overflow_hidden()
+        // The entire graph is a library drop surface, including native card
+        // children layered above the canvas input hitbox.
+        .on_drop({
+            let prepared = prepared.clone();
+            move |template: &super::node_catalog::NodeTemplate, window, cx| {
+                if let Some(frame) = prepared.borrow().as_ref() {
+                    let position = window.mouse_position();
+                    let local =
+                        frame.local_position((f32::from(position.x), f32::from(position.y)));
+                    on_drop_node((*template, frame.camera.canvas_to_world(local)), window, cx);
+                }
+            }
+        })
         .child(
             canvas(
                 {
@@ -369,6 +521,7 @@ pub fn graph_canvas_view(
                         &selected_nodes,
                         selected_wire.as_deref(),
                         selection_box,
+                        !separate_nodes,
                         window,
                         cx,
                     );
@@ -421,21 +574,6 @@ pub fn graph_canvas_view(
                         _ => return,
                     }
                     cx.stop_propagation();
-                })
-                .on_drop({
-                    let prepared = prepared.clone();
-                    move |template: &super::node_catalog::NodeTemplate, window, cx| {
-                        if let Some(frame) = prepared.borrow().as_ref() {
-                            let position = window.mouse_position();
-                            let local = frame
-                                .local_position((f32::from(position.x), f32::from(position.y)));
-                            on_drop_node(
-                                (*template, frame.camera.canvas_to_world(local)),
-                                window,
-                                cx,
-                            );
-                        }
-                    }
                 })
                 .on_mouse_down(MouseButton::Left, {
                     let prepared = prepared.clone();
@@ -549,31 +687,7 @@ pub fn graph_canvas_view(
                         let Some(frame) = frame else {
                             return;
                         };
-                        #[cfg(windows)]
-                        let control =
-                            event.modifiers.control || crate::ui::touchpad::wheel_control();
-                        #[cfg(not(windows))]
-                        let control = event.modifiers.control;
-                        let (delta_x, delta_y, continuous) = match event.delta {
-                            ScrollDelta::Pixels(delta) => {
-                                (f32::from(delta.x), f32::from(delta.y), true)
-                            }
-                            ScrollDelta::Lines(lines) => (lines.x * 60., lines.y * 60., false),
-                        };
-                        let anchor = frame.local_position((
-                            f32::from(event.position.x),
-                            f32::from(event.position.y),
-                        ));
-                        match crate::ui::scroll_policy::scroll_action(
-                            delta_x, delta_y, continuous, control,
-                        ) {
-                            crate::ui::scroll_policy::ScrollAction::Pan(delta_x, delta_y) => {
-                                on_pan((delta_x, delta_y), window, cx)
-                            }
-                            crate::ui::scroll_policy::ScrollAction::Zoom(factor) => {
-                                on_zoom((factor, point(px(anchor.0), px(anchor.1))), window, cx)
-                            }
-                        }
+                        scroll_canvas(event, &frame, &on_zoom, &on_pan, window, cx);
                     }
                 })
                 .on_pinch({
@@ -590,7 +704,33 @@ pub fn graph_canvas_view(
                         }
                     }
                 })
+                .children(node_layers)
                 .gpui_test_observe(),
         )
         .child(overview(prepared))
+}
+
+fn scroll_canvas(
+    event: &ScrollWheelEvent,
+    frame: &CanvasFrame,
+    zoom: &Rc<ZoomFn>,
+    pan: &Rc<WindowAppCallback<(f32, f32)>>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    #[cfg(windows)]
+    let control = event.modifiers.control || crate::ui::touchpad::wheel_control();
+    #[cfg(not(windows))]
+    let control = event.modifiers.control;
+    let (dx, dy, continuous) = match event.delta {
+        ScrollDelta::Pixels(delta) => (f32::from(delta.x), f32::from(delta.y), true),
+        ScrollDelta::Lines(lines) => (lines.x * 60., lines.y * 60., false),
+    };
+    let anchor = frame.local_position((f32::from(event.position.x), f32::from(event.position.y)));
+    match crate::ui::scroll_policy::scroll_action(dx, dy, continuous, control) {
+        crate::ui::scroll_policy::ScrollAction::Pan(dx, dy) => pan((dx, dy), window, cx),
+        crate::ui::scroll_policy::ScrollAction::Zoom(factor) => {
+            zoom((factor, point(px(anchor.0), px(anchor.1))), window, cx)
+        }
+    }
 }

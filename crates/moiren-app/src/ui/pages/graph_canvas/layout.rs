@@ -54,9 +54,9 @@ impl NodeLayout {
         let width = node.width();
         let icon_size = theme::card::ICON_SIZE;
         let text_left = node.x + padding + icon_size + 4.;
-        let text_width = theme::card::TITLE_WIDTH;
+        let text_width = width - padding * 2. - icon_size - 40.;
         let title_top = node.y + theme::card::DECO_HEIGHT + padding + 2.;
-        let port_y = node.y + theme::card::PORT_Y;
+        let port_y = node.y + 80.;
         let inputs = (0..node.input_count)
             .map(|index| (node.x, port_y + index as f32 * 18.))
             .collect::<Vec<_>>();

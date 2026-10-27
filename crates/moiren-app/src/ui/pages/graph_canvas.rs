@@ -38,22 +38,19 @@ pub struct CanvasNode {
     pub gain: f64,
     pub balance: Option<f64>,
     pub peaks: Option<[f32; 2]>,
+    pub kind: moiren_core::graph::NodeKind,
+    /// Native body layout is presentation state, never graph topology.
+    pub measured_height: Option<f32>,
+    pub content_width: f32,
 }
 
 impl CanvasNode {
     pub fn width(&self) -> f32 {
-        if self.wide {
-            theme::NODE_WIDE_WIDTH
-        } else {
-            theme::NODE_WIDTH
-        }
+        self.content_width
     }
     pub fn height(&self) -> f32 {
-        theme::NODE_HEIGHT.max(
-            theme::card::PORT_Y
-                + self.input_count.saturating_sub(1) as f32 * 18.
-                + theme::card::PADDING,
-        )
+        let height = self.measured_height.unwrap_or(200.);
+        height.max(80. + self.input_count.saturating_sub(1) as f32 * 18. + theme::card::PADDING)
     }
     pub fn tint(&self) -> Hsla {
         self.tint.unwrap_or(theme::PRIMARY)
@@ -79,6 +76,9 @@ fn node(id: &str, name: &str, detail: impl Into<String>) -> CanvasNode {
         gain: 1.,
         balance: None,
         peaks: None,
+        kind: moiren_core::graph::NodeKind::Source,
+        measured_height: None,
+        content_width: 320.,
     }
 }
 
@@ -102,15 +102,25 @@ pub struct CanvasWorld {
 
 impl CanvasWorld {
     /// The service snapshot is the only topology authority. Positions are presentation only.
+    #[cfg(feature = "gpui-test")]
     pub fn positioned(
         snapshot: &AppSnapshot,
         positions: &std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
+    ) -> Self {
+        Self::measured(snapshot, positions, &std::collections::BTreeMap::new())
+    }
+
+    pub fn measured(
+        snapshot: &AppSnapshot,
+        positions: &std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
+        heights: &std::collections::BTreeMap<moiren_core::graph::NodeId, f32>,
     ) -> Self {
         use moiren_core::graph::NodeKind;
         let graph = &snapshot.graph;
         let order = graph.graph.topological_order().unwrap_or_default();
         let mut depth = std::collections::HashMap::new();
-        let mut rows = std::collections::HashMap::new();
+        let mut column_bottoms = std::collections::HashMap::new();
+        let mut column_widths = std::collections::BTreeMap::<usize, f32>::new();
         let mut nodes = Vec::new();
         for id in order {
             let logical = graph.graph.get_node(id).expect("validated snapshot node");
@@ -125,13 +135,12 @@ impl CanvasWorld {
                 .max()
                 .map_or(0, |n: usize| n + 1);
             depth.insert(id, level);
-            let row = rows.entry(level).or_insert(0usize);
+            let column_bottom = column_bottoms.entry(level).or_insert(80.);
             let key = format!("{id:?}");
             let position = positions
                 .get(&id)
                 .copied()
-                .unwrap_or((32. + level as f32 * 330., 80. + *row as f32 * 170.));
-            *row += 1;
+                .unwrap_or((32. + level as f32 * 380., *column_bottom));
             let channels = if logical.channels() == 2 {
                 "L/R".into()
             } else {
@@ -229,6 +238,60 @@ impl CanvasWorld {
             .with_tint(tint);
             card.input_count = logical.inputs().len();
             card.node_id = Some(id);
+            card.kind = logical.kind();
+            card.measured_height = heights.get(&id).copied();
+            // Width follows the number of control columns or routing channels;
+            // height comes from native layout, including wrapping and errors.
+            card.content_width = match logical.kind() {
+                NodeKind::Source
+                    if matches!(
+                        state.source,
+                        Some(crate::service::InputSelection::Tone { .. })
+                    ) =>
+                {
+                    244.
+                }
+                NodeKind::Source | NodeKind::Sink => {
+                    268. + crate::ui::widgets::meters::node_meter_width(logical.channels())
+                }
+                NodeKind::Gain => 244.,
+                NodeKind::Pan => {
+                    148. + crate::ui::widgets::meters::node_meter_width(logical.channels()) + 20.
+                }
+                NodeKind::Eq | NodeKind::Compressor | NodeKind::Gate => {
+                    3. * 94.
+                        + 16.
+                        + 20.
+                        + crate::ui::widgets::meters::node_meter_width(logical.channels())
+                }
+                NodeKind::Limiter | NodeKind::Delay => 3. * 92. + 20.,
+                NodeKind::ChannelMapper => (logical.channels().min(8) as f32 * 68. + 76.).max(296.),
+                NodeKind::Rack => {
+                    348. + if state
+                        .builtin
+                        .rack()
+                        .is_some_and(|rack| rack.slots.len() >= 3)
+                    {
+                        crate::ui::widgets::meters::node_meter_width(logical.channels()) + 16.
+                    } else {
+                        0.
+                    }
+                }
+                NodeKind::Bus => {
+                    248. + crate::ui::widgets::meters::node_meter_width(logical.channels()) + 20.
+                }
+                NodeKind::Recorder => {
+                    368. + crate::ui::widgets::meters::node_meter_width(logical.channels()) + 16.
+                }
+                NodeKind::Meter => {
+                    184. + crate::ui::widgets::meters::node_meter_width(logical.channels()) + 20.
+                }
+                _ => 320.,
+            };
+            column_widths
+                .entry(level)
+                .and_modify(|w| *w = w.max(card.width()))
+                .or_insert(card.width());
             card.gain = if logical.kind() == NodeKind::Gain {
                 state.gain
             } else {
@@ -237,7 +300,23 @@ impl CanvasWorld {
             card.balance = (logical.kind() == NodeKind::Pan).then_some(state.pan);
             card.input_ports = logical.inputs().iter().map(|port| port.id()).collect();
             card.output_port = logical.outputs().first().map(|port| port.id());
+            // Different workstations have different heights; fixed row strides
+            // would place a second processor inside a tall compressor card.
+            *column_bottom = (*column_bottom).max(card.y + card.height() + 40.);
             nodes.push(card);
+        }
+        let mut column_x = std::collections::HashMap::new();
+        let mut x = 32.;
+        for (level, width) in column_widths {
+            column_x.insert(level, x);
+            x += width + 60.;
+        }
+        for card in &mut nodes {
+            if let Some(id) = card.node_id
+                && !positions.contains_key(&id)
+            {
+                card.x = column_x[&depth[&id]];
+            }
         }
         let wires = graph
             .graph

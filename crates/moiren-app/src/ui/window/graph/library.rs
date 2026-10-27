@@ -340,10 +340,7 @@ impl StudioShell {
         // follows the bound device; other kinds pin the template title.
         let follows_binding = matches!(
             pending.template,
-            NodeTemplate::Input
-                | NodeTemplate::Application
-                | NodeTemplate::Tone
-                | NodeTemplate::Output
+            NodeTemplate::Input | NodeTemplate::Tone | NodeTemplate::Output
         );
         self.state.update(cx, |state, _| {
             if !follows_binding {

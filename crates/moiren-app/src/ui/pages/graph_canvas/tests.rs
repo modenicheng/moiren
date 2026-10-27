@@ -7,6 +7,18 @@ fn assert_close(actual: f32, expected: f32) {
     assert!((actual - expected).abs() < 0.001, "{actual} != {expected}");
 }
 
+#[test]
+fn workstation_geometry_follows_native_content_measurements() {
+    let mut card = node("input", "Physical input", "Device").ports(false, true);
+    card.content_width = 356.;
+    card.measured_height = Some(246.);
+    assert_eq!(card.width(), 356.);
+    assert_eq!(card.height(), 246.);
+    card.measured_height = Some(318.);
+    assert_eq!(NodeLayout::new(&card).card.size.height, 318.);
+    assert_eq!(NodeLayout::new(&card).output.unwrap().0, 356.);
+}
+
 fn assert_position(actual: (f32, f32), expected: (f32, f32)) {
     assert_close(actual.0, expected.0);
     assert_close(actual.1, expected.1);
@@ -287,10 +299,11 @@ fn layout_scales_fonts_ports_and_card_together_without_font_floors() {
 }
 
 #[test]
-fn node_layout_matches_figma_header_body_and_edge_port_measurements() {
-    let card = node("input", "Physical Input", "48kHz L/R").ports(false, true);
+fn node_layout_keeps_shared_header_and_ports_above_workstation_body() {
+    let mut card = node("input", "Physical Input", "48kHz L/R").ports(false, true);
+    card.measured_height = Some(287.);
     let layout = NodeLayout::new(&card);
-    assert_eq!(layout.card.size, size(270., 112.));
+    assert_eq!(layout.card.size, size(320., 287.));
     assert_eq!(
         layout.icon,
         Bounds {
@@ -320,7 +333,7 @@ fn node_layout_matches_figma_header_body_and_edge_port_measurements() {
             size: size(211., 4.)
         }
     );
-    assert_position(layout.output.unwrap(), (270., 80.));
+    assert_position(layout.output.unwrap(), (320., 80.));
     assert_eq!(layout.gain_value.bounds.size, size(25., 12.));
 }
 

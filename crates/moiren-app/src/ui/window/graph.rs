@@ -5,9 +5,11 @@ use super::*;
 mod compressor;
 mod library;
 pub(super) use compressor::CompressorControls;
+mod node_controls;
 mod node_inspector;
 pub(super) use library::PendingNodeSpawn;
 pub(in crate::ui::window) use library::{library, library_rail};
+pub(super) use node_controls::NodeControls;
 pub(in crate::ui::window) use node_inspector::inspector;
 
 #[cfg(all(test, feature = "gpui-test"))]
@@ -107,8 +109,11 @@ impl StudioShell {
 
 pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShell>) -> AnyElement {
     let state = shell.state.read(cx);
-    let mut projected =
-        pages::graph_canvas::CanvasWorld::positioned(&state.snapshot, &shell.node_positions);
+    let mut projected = pages::graph_canvas::CanvasWorld::measured(
+        &state.snapshot,
+        &shell.node_positions,
+        &shell.node_controls.heights,
+    );
     for node in &mut projected.nodes {
         node.peaks = node
             .node_id
@@ -479,6 +484,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                 let this = this.clone();
                 move |(), _, cx| {
                     this.update(cx, |shell, cx| {
+                        shell.node_controls.resource_popup = None;
                         shell.connection_drag = None;
                         shell.node_drag = None;
                         shell.pan_grab = None;
@@ -531,6 +537,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
             }),
             on_camera_fit: std::rc::Rc::new(on_camera_fit),
         },
+        node_controls::overlay(shell, &world, cx),
     );
 
     div()

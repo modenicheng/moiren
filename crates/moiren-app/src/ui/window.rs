@@ -169,6 +169,7 @@ pub struct StudioShell {
     mixer_controls: Entity<mixer::meter_frame::MixerControls>,
     mixer_frame: Entity<mixer::meter_frame::MixerMeterFrame>,
     compressor: graph::CompressorControls,
+    node_controls: graph::NodeControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     observation_nodes: Option<(
         crate::service::SessionGeneration,
@@ -357,6 +358,7 @@ impl StudioShell {
             mixer_controls,
             mixer_frame,
             compressor: graph::CompressorControls::default(),
+            node_controls: graph::NodeControls::default(),
             meter_points: Default::default(),
             observation_nodes: None,
             canvas_size: None,
@@ -599,6 +601,7 @@ impl Render for StudioShell {
         self.sync_export_controls(window, cx);
         self.sync_mixer_controls(window, cx);
         self.sync_compressor_controls(window, cx);
+        self.sync_node_controls(window, cx);
         #[cfg(feature = "gpui-test")]
         if let Some(page) = &self.test_page {
             self.presentation.page = page.read(cx).page;
@@ -889,6 +892,7 @@ impl StudioShell {
                 .values()
                 .any(|input| input.read(cx).focus_handle(cx) == *focused)
             || self.export_controls.owns_focus(focused, cx)
+            || self.node_controls.owns_focus(focused, cx)
     }
 
     /// Ctrl+Z / Ctrl+Y: step the service graph journal. Typing focus and

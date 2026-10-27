@@ -430,6 +430,7 @@ impl StudioShell {
         self.pending_node_spawn = None;
         self.node_name_editing = None;
         self.compressor = graph::CompressorControls::default();
+        self.node_controls = graph::NodeControls::default();
         self.mixer.order.clear();
         if let Some(graph) = &document.graph {
             let restored = graph.to_graph()?;

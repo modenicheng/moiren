@@ -22,9 +22,18 @@ fn render(cx: &mut VisualTestContext) -> Bounds<Pixels> {
 }
 
 fn canvas_frame(view: &Entity<StudioShell>, cx: &mut VisualTestContext) -> CanvasFrame {
+    // Native bodies publish intrinsic heights after paint; hit-test probes must
+    // use the settled world that the actual canvas and controls share.
+    for _ in 0..4 {
+        render(cx);
+    }
     let bounds = render(cx);
     view.update(cx, |shell, cx| {
-        let world = CanvasWorld::positioned(&shell.state.read(cx).snapshot, &shell.node_positions);
+        let world = CanvasWorld::measured(
+            &shell.state.read(cx).snapshot,
+            &shell.node_positions,
+            &shell.node_controls.heights,
+        );
         CanvasFrame::new(std::sync::Arc::new(world), shell.camera, bounds)
     })
 }
@@ -815,7 +824,7 @@ fn graph_curved_wire_click_after_fit_selects_real_edge_without_changing_topology
             shell.node_positions.insert(
                 *id,
                 (
-                    80. + index as f32 * 230.,
+                    80. + index as f32 * 420.,
                     if index % 2 == 0 { 50. } else { 520. },
                 ),
             );

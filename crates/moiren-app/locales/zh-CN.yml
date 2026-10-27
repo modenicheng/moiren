@@ -1653,3 +1653,393 @@ _version: 2
 "Parameters are outside their valid range":
   en: "Parameters are outside their valid range"
   zh-CN: "参数超出有效范围"
+"Sine generator · digital level":
+  en: "Sine generator · digital level"
+  zh-CN: "正弦波发生器 · 数字电平"
+"Digital trim · post-fader meter":
+  en: "Digital trim · post-fader meter"
+  zh-CN: "数字微调 · 推子后电平表"
+"Mute":
+  en: "Mute"
+  zh-CN: "静音"
+"Details":
+  en: "Details"
+  zh-CN: "详情"
+"WAV · 32-bit float":
+  en: "WAV · 32-bit float"
+  zh-CN: "WAV · 32 位浮点"
+"Parametric response":
+  en: "Parametric response"
+  zh-CN: "参数均衡响应"
+"Linked peak compressor":
+  en: "Linked peak compressor"
+  zh-CN: "联动峰值压缩器"
+"Audio workstation":
+  en: "Audio workstation"
+  zh-CN: "音频工作站"
+"Edit node":
+  en: "Edit node"
+  zh-CN: "编辑节点"
+"Digital trim":
+  en: "Digital trim"
+  zh-CN: "数字微调"
+"Choose a device":
+  en: "Choose a device"
+  zh-CN: "选择设备"
+"No available devices. Refresh to discover.":
+  en: "No available devices. Refresh to discover."
+  zh-CN: "暂无可用设备，请刷新列表。"
+"Refresh":
+  en: "Refresh"
+  zh-CN: "刷新"
+"Input device":
+  en: "Input device"
+  zh-CN: "输入设备"
+"No live signal":
+  en: "No live signal"
+  zh-CN: "暂无实时信号"
+"Record input":
+  en: "Record input"
+  zh-CN: "录音输入"
+"Post-fader · Peak / RMS":
+  en: "Post-fader · Peak / RMS"
+  zh-CN: "推子后 · 峰值 / RMS"
+"Level":
+  en: "Level"
+  zh-CN: "电平"
+"Band gain":
+  en: "Band gain"
+  zh-CN: "频段增益"
+"EQ response · 20 Hz — 20 kHz":
+  en: "EQ response · 20 Hz — 20 kHz"
+  zh-CN: "均衡响应 · 20 Hz — 20 kHz"
+"Transfer curve · input / output dB":
+  en: "Transfer curve · input / output dB"
+  zh-CN: "传输曲线 · 输入 / 输出 dB"
+"Destination":
+  en: "Destination"
+  zh-CN: "保存位置"
+"Choose output file":
+  en: "Choose output file"
+  zh-CN: "选择输出文件"
+"Choose a new .wav file; existing files are never overwritten":
+  en: "Choose a new .wav file; existing files are never overwritten"
+  zh-CN: "请选择新的 .wav 文件，不会覆盖已有文件"
+"No file selected":
+  en: "No file selected"
+  zh-CN: "尚未选择文件"
+"Format":
+  en: "Format"
+  zh-CN: "格式"
+"Format fixed · graph sample rate and channels":
+  en: "Format fixed · graph sample rate and channels"
+  zh-CN: "格式固定 · 采样率和声道数跟随音频图"
+"Graph rate":
+  en: "Graph rate"
+  zh-CN: "音频图采样率"
+"Graph channels":
+  en: "Graph channels"
+  zh-CN: "音频图声道数"
+"Ready":
+  en: "Ready"
+  zh-CN: "就绪"
+"Recording":
+  en: "Recording"
+  zh-CN: "正在录音"
+"Finalizing file":
+  en: "Finalizing file"
+  zh-CN: "正在完成文件写入"
+"Saved":
+  en: "Saved"
+  zh-CN: "已保存"
+"Recording failed":
+  en: "Recording failed"
+  zh-CN: "录音失败"
+"Remaining":
+  en: "Remaining"
+  zh-CN: "剩余时长"
+"Free disk":
+  en: "Free disk"
+  zh-CN: "磁盘可用空间"
+"Stop recording":
+  en: "Stop recording"
+  zh-CN: "停止录音"
+"Start recording":
+  en: "Start recording"
+  zh-CN: "开始录音"
+"Start audio before recording":
+  en: "Start audio before recording"
+  zh-CN: "请先启动音频再开始录音"
+"Recording transport does not stop the audio graph":
+  en: "Recording transport does not stop the audio graph"
+  zh-CN: "开始或停止录音不会停止音频图"
+"Unknown until prepared":
+  en: "Unknown until prepared"
+  zh-CN: "准备完成前未知"
+"Swap 1/2":
+  en: "Swap 1/2"
+  zh-CN: "交换 1/2"
+"Identity and swap require equal input/output widths":
+  en: "Identity and swap require equal input/output widths"
+  zh-CN: "恒等映射与交换要求输入、输出声道数相同"
+"Swap channels 1 and 2; preserve all remaining channels":
+  en: "Swap channels 1 and 2; preserve all remaining channels"
+  zh-CN: "交换声道 1 和 2，保留其余声道"
+"Route each input to the corresponding output":
+  en: "Route each input to the corresponding output"
+  zh-CN: "将各输入声道连接到对应输出声道"
+"Routing weights":
+  en: "Routing weights"
+  zh-CN: "路由权重"
+"Invalid channel mapping; inspect the node settings.":
+  en: "Invalid channel mapping; inspect the node settings."
+  zh-CN: "声道映射无效，请检查节点设置。"
+"Silent":
+  en: "Silent"
+  zh-CN: "静音"
+"Inline matrix editing supports up to 8 x 8 channels.":
+  en: "Inline matrix editing supports up to 8 x 8 channels."
+  zh-CN: "卡片内矩阵编辑最多支持 8 × 8 声道。"
+"Signed linear weight; 0 disconnects this cell.":
+  en: "Signed linear weight; 0 disconnects this cell."
+  zh-CN: "有符号线性权重；设为 0 可断开此映射。"
+"No stages. The configured routes pass through.":
+  en: "No stages. The configured routes pass through."
+  zh-CN: "暂无处理级，已配置的路由直接传输音频。"
+"On":
+  en: "On"
+  zh-CN: "开启"
+"Toggle stage bypass":
+  en: "Toggle stage bypass"
+  zh-CN: "切换处理级旁路"
+"Move earlier within this route":
+  en: "Move earlier within this route"
+  zh-CN: "在当前路由中前移"
+"Move later within this route":
+  en: "Move later within this route"
+  zh-CN: "在当前路由中后移"
+"Remove this stage":
+  en: "Remove this stage"
+  zh-CN: "移除此处理级"
+"Add builtin defaults to this route; incompatible widths are disabled":
+  en: "Add builtin defaults to this route; incompatible widths are disabled"
+  zh-CN: "以默认参数添加内置处理器；声道数不兼容时不可选"
+"+ Add stage":
+  en: "+ Add stage"
+  zh-CN: "+ 添加处理级"
+"Invalid rack layout; inspect its stream routes.":
+  en: "Invalid rack layout; inspect its stream routes."
+  zh-CN: "机架布局无效，请检查音频流路由。"
+"EQ":
+  en: "EQ"
+  zh-CN: "均衡器"
+"Mapper":
+  en: "Mapper"
+  zh-CN: "声道映射器"
+"Start audio to observe this node":
+  en: "Start audio to observe this node"
+  zh-CN: "请启动音频以查看此节点的读数"
+"No level publisher for this node":
+  en: "No level publisher for this node"
+  zh-CN: "此节点没有电平数据源"
+"Sample peak / RMS (display ballistics)":
+  en: "Sample peak / RMS (display ballistics)"
+  zh-CN: "采样峰值 / RMS（表头动态响应）"
+"FFT / hop":
+  en: "FFT / hop"
+  zh-CN: "FFT / 帧移"
+"Spectrum unavailable":
+  en: "Spectrum unavailable"
+  zh-CN: "频谱不可用"
+"No spectrum subscription in this view":
+  en: "No spectrum subscription in this view"
+  zh-CN: "此视图尚未订阅频谱数据"
+"No input streams. Add one, then connect a source.":
+  en: "No input streams. Add one, then connect a source."
+  zh-CN: "暂无输入流，请先添加输入再连接音源。"
+"Unavailable source":
+  en: "Unavailable source"
+  zh-CN: "音源不可用"
+" (muted)":
+  en: " (muted)"
+  zh-CN: "（已静音）"
+"Inspect this connection":
+  en: "Inspect this connection"
+  zh-CN: "查看此连接"
+"Input streams":
+  en: "Input streams"
+  zh-CN: "输入流"
+"+ Add input":
+  en: "+ Add input"
+  zh-CN: "+ 添加输入"
+"Resource binding":
+  en: "Resource binding"
+  zh-CN: "资源绑定"
+"Input devices":
+  en: "Input devices"
+  zh-CN: "输入设备"
+"No input devices available":
+  en: "No input devices available"
+  zh-CN: "暂无可用输入设备"
+"Selected":
+  en: "Selected"
+  zh-CN: "已选择"
+"No application sources available":
+  en: "No application sources available"
+  zh-CN: "暂无可用应用音源"
+"Output devices":
+  en: "Output devices"
+  zh-CN: "输出设备"
+"No output devices available":
+  en: "No output devices available"
+  zh-CN: "暂无可用输出设备"
+"Resource refresh failed; showing the last available list.":
+  en: "Resource refresh failed; showing the last available list."
+  zh-CN: "资源刷新失败，显示上次可用列表。"
+"One peaking band":
+  en: "One peaking band"
+  zh-CN: "单段峰形均衡"
+"Add 48,000 frames":
+  en: "Add 48,000 frames"
+  zh-CN: "增加 48,000 帧"
+"Remove 48,000 frames":
+  en: "Remove 48,000 frames"
+  zh-CN: "减少 48,000 帧"
+"%{points} points":
+  en: "%{points} points"
+  zh-CN: "%{points} 点"
+"No live level data is available for this node.":
+  en: "No live level data is available for this node."
+  zh-CN: "此节点暂无实时电平数据。"
+"Channel %{index}":
+  en: "Channel %{index}"
+  zh-CN: "声道 %{index}"
+"Peak":
+  en: "Peak"
+  zh-CN: "峰值"
+"RMS":
+  en: "RMS"
+  zh-CN: "RMS"
+"Peak / RMS":
+  en: "Peak / RMS"
+  zh-CN: "峰值 / RMS"
+"Advanced parameters":
+  en: "Advanced parameters"
+  zh-CN: "高级参数"
+"Dynamics":
+  en: "Dynamics"
+  zh-CN: "动态处理"
+"Timing":
+  en: "Timing"
+  zh-CN: "时间参数"
+"Gain staging":
+  en: "Gain staging"
+  zh-CN: "增益配置"
+"Ports and routing":
+  en: "Ports and routing"
+  zh-CN: "端口与路由"
+"Inspect connection":
+  en: "Inspect connection"
+  zh-CN: "查看连接"
+"%{inputs} in / %{outputs} out":
+  en: "%{inputs} in / %{outputs} out"
+  zh-CN: "%{inputs} 输入 / %{outputs} 输出"
+"Out %{output} / In %{input}":
+  en: "Out %{output} / In %{input}"
+  zh-CN: "输出 %{output} / 输入 %{input}"
+"Out %{output} <- %{sources}":
+  en: "Out %{output} <- %{sources}"
+  zh-CN: "输出 %{output} ← %{sources}"
+"%{weight} * In %{input}":
+  en: "%{weight} * In %{input}"
+  zh-CN: "%{weight} × 输入 %{input}"
+"Edit Out %{output} from In %{input} weight":
+  en: "Edit Out %{output} from In %{input} weight"
+  zh-CN: "编辑输入 %{input} 到输出 %{output} 的权重"
+"%{index}. %{name}":
+  en: "%{index}. %{name}"
+  zh-CN: "%{index}. %{name}"
+"%{index}. %{name} / R%{route}":
+  en: "%{index}. %{name} / R%{route}"
+  zh-CN: "%{index}. %{name} / 路由 %{route}"
+"%{tooltip} (slot %{slot})":
+  en: "%{tooltip} (slot %{slot})"
+  zh-CN: "%{tooltip}（槽位 %{slot}）"
+"R%{route}: Input %{input} -> Output %{output}":
+  en: "R%{route}: Input %{input} -> Output %{output}"
+  zh-CN: "路由 %{route}：输入 %{input} → 输出 %{output}"
+"Ch %{channel} / held peak":
+  en: "Ch %{channel} / held peak"
+  zh-CN: "声道 %{channel} / 保持峰值"
+"RMS %{value}":
+  en: "RMS %{value}"
+  zh-CN: "RMS %{value}"
+"%{fft} / %{hop} frames":
+  en: "%{fft} / %{hop} frames"
+  zh-CN: "%{fft} / %{hop} 帧"
+"Input %{index} / %{channels} ch":
+  en: "Input %{index} / %{channels} ch"
+  zh-CN: "输入 %{index} / %{channels} 声道"
+"%{name} / Out %{output}%{muted}":
+  en: "%{name} / Out %{output}%{muted}"
+  zh-CN: "%{name} / 输出 %{output}%{muted}"
+"%{channels} ch":
+  en: "%{channels} ch"
+  zh-CN: "%{channels} 声道"
+"%{frames} dropped frames (endpoint total)":
+  en: "%{frames} dropped frames (endpoint total)"
+  zh-CN: "已丢失 %{frames} 帧（端点累计）"
+"~%{duration} (disk / RIFF)":
+  en: "~%{duration} (disk / RIFF)"
+  zh-CN: "约 %{duration}（磁盘 / RIFF 限制）"
+"%{duration} RIFF limit · disk unknown":
+  en: "%{duration} RIFF limit · disk unknown"
+  zh-CN: "%{duration}（RIFF 限制）· 磁盘容量未知"
+"Open output folder":
+  en: "Open output folder"
+  zh-CN: "打开输出文件夹"
+"The graph changed. Choose the recording destination again.":
+  en: "The graph changed. Choose the recording destination again."
+  zh-CN: "音频图已更改，请重新选择录音保存位置。"
+"%{count} dropped frames (endpoint total)":
+  en: "%{count} dropped frames (endpoint total)"
+  zh-CN: "已丢失 %{count} 帧（端点累计）"
+"%{time} RIFF limit · disk unknown":
+  en: "%{time} RIFF limit · disk unknown"
+  zh-CN: "%{time}（RIFF 限制）· 磁盘容量未知"
+"Capacity unknown":
+  en: "Capacity unknown"
+  zh-CN: "容量未知"
+"RIFF only (disk space unknown)":
+  en: "RIFF only (disk space unknown)"
+  zh-CN: "仅 RIFF 限制（磁盘空间未知）"
+"Disk reserve and RIFF limits":
+  en: "Disk reserve and RIFF limits"
+  zh-CN: "磁盘预留空间与 RIFF 限制"
+"Static transfer · input / output dB":
+  en: "Static transfer · input / output dB"
+  zh-CN: "静态传输曲线 · 输入 / 输出 dB"
+"Edits pending; meters show the running graph":
+  en: "Edits pending; meters show the running graph"
+  zh-CN: "修改待应用；电平表显示运行中音频图的读数"
+"Drag vertically · Shift for fine adjustment · double-click to reset":
+  en: "Drag vertically · Shift for fine adjustment · double-click to reset"
+  zh-CN: "上下拖动调节 · 按住 Shift 精细调整 · 双击重置"
+"Drag band: frequency / gain · wheel: Q · Shift: fine":
+  en: "Drag band: frequency / gain · wheel: Q · Shift: fine"
+  zh-CN: "拖动频段：频率 / 增益 · 滚轮：Q 值 · 按住 Shift：精细调整"
+"Drag curve: threshold / ratio · Shift: fine":
+  en: "Drag curve: threshold / ratio · Shift: fine"
+  zh-CN: "拖动曲线：阈值 / 压缩比 · 按住 Shift：精细调整"
+"Proposed format":
+  en: "Proposed format"
+  zh-CN: "拟用格式"
+"Checking disk space":
+  en: "Checking disk space"
+  zh-CN: "正在检查磁盘空间"
+"Graph monitor · post-fader":
+  en: "Graph monitor · post-fader"
+  zh-CN: "音频图监测 · 推子后"
+"Canceled before opening file":
+  en: "Canceled before opening file"
+  zh-CN: "已取消，尚未创建录音文件"
