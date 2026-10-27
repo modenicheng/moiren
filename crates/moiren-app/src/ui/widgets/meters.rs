@@ -11,95 +11,97 @@ use gpui_kit::*;
 /// Main Mixer bars fill exactly the shared fader track; there is no second
 /// ruler or independent dB interpolation here. Channel count is never inferred
 /// from a stereo projection of mono/multichannel data.
-pub fn channel_meter(levels: Option<&[DisplayLevel]>, channels: usize, clips: &[bool]) -> Div {
-    use super::fader::{FaderScale, paint_text};
-    let levels = levels.map(<[DisplayLevel]>::to_vec);
-    let clips = clips.to_vec();
+pub(crate) fn channel_meter_width(channels: usize) -> f32 {
     let count = channels.max(1) as f32;
     let gap = (8. / count).min(3.);
     let width = (28. / count)
         .clamp(2., 10.)
         .min((40. - gap * (count - 1.)) / count);
-    let total_width = width * count + gap * (count - 1.);
-    // All changing bars share one canvas. This avoids rebuilding a separate
-    // layout tree for every color segment of every channel at display rate.
-    div().h_full().flex_none().w(px(total_width)).child(
-        canvas(
-            |_, _, _| {},
-            move |bounds, _, window, cx| {
-                for index in 0..channels {
-                    let left = bounds.left() + px(index as f32 * (width + gap));
-                    let track = Bounds::new(
-                        point(left, bounds.top()),
-                        size(px(width), bounds.size.height),
-                    );
-                    window.paint_quad(fill(track, theme::BORDER));
-                    let level = levels.as_deref().and_then(|levels| levels.get(index));
-                    if let Some(level) = level {
-                        // The zone segmentation, the dark peak tail and their
-                        // colors are the DOM bars' [`meter_spans`]; only the
-                        // painting surface differs here.
-                        for span in meter_spans(*level) {
-                            window.paint_quad(fill(
-                                Bounds::new(
-                                    point(
-                                        left,
-                                        bounds.bottom()
-                                            - bounds.size.height * (span.bottom + span.height),
-                                    ),
-                                    size(px(width), bounds.size.height * span.height),
-                                ),
-                                span.color,
-                            ));
-                        }
-                        let y = bounds.top()
-                            + bounds.size.height * FaderScale::position(f64::from(level.marker));
-                        window.paint_quad(fill(
-                            Bounds::new(point(left, y - px(1.)), size(px(width), px(2.)))
-                                .intersect(&track),
-                            theme::TEXT,
-                        ));
-                    }
-                    // A held display marker is not a new overload. Trust the
-                    // raw-window latch so clicking reset clears it immediately.
-                    let clip = clips.get(index).copied().unwrap_or(false);
-                    window.paint_quad(fill(
-                        Bounds::new(point(left, bounds.top() - px(10.)), size(px(width), px(3.))),
-                        if clip { theme::DANGER } else { theme::BORDER },
-                    ));
-                    if width + gap >= 5. {
-                        let label = if channels == 2 {
-                            ["L", "R"][index].to_owned()
-                        } else {
-                            (index + 1).to_string()
-                        };
-                        paint_text(
-                            &label,
-                            point(left, bounds.bottom() + px(6.)),
-                            8.,
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        );
-                    }
-                }
-                if width + gap < 5. {
-                    paint_text(
-                        &format!("{channels} ch"),
-                        point(bounds.left(), bounds.bottom() + px(6.)),
-                        8.,
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
-                }
-            },
-        )
-        .size_full(),
-    )
+    width * count + gap * (count - 1.)
 }
+
+pub(crate) fn paint_channel_meter(
+    bounds: Bounds<Pixels>,
+    levels: Option<&[DisplayLevel]>,
+    channels: usize,
+    clips: &[bool],
+    window: &mut Window,
+    cx: &mut App,
+) {
+    use super::fader::{FaderScale, paint_text};
+    let count = channels.max(1) as f32;
+    let gap = (8. / count).min(3.);
+    let width = (28. / count)
+        .clamp(2., 10.)
+        .min((40. - gap * (count - 1.)) / count);
+    for index in 0..channels {
+        let left = bounds.left() + px(index as f32 * (width + gap));
+        let track = Bounds::new(
+            point(left, bounds.top()),
+            size(px(width), bounds.size.height),
+        );
+        window.paint_quad(fill(track, theme::BORDER));
+        let level = levels.and_then(|levels| levels.get(index));
+        if let Some(level) = level {
+            // The zone segmentation, the dark peak tail and their
+            // colors are the DOM bars' [`meter_spans`]; only the
+            // painting surface differs here.
+            for span in meter_spans(*level) {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(
+                            left,
+                            bounds.bottom() - bounds.size.height * (span.bottom + span.height),
+                        ),
+                        size(px(width), bounds.size.height * span.height),
+                    ),
+                    span.color,
+                ));
+            }
+            let y =
+                bounds.top() + bounds.size.height * FaderScale::position(f64::from(level.marker));
+            window.paint_quad(fill(
+                Bounds::new(point(left, y - px(1.)), size(px(width), px(2.))).intersect(&track),
+                theme::TEXT,
+            ));
+        }
+        // A held display marker is not a new overload. Trust the
+        // raw-window latch so clicking reset clears it immediately.
+        let clip = clips.get(index).copied().unwrap_or(false);
+        window.paint_quad(fill(
+            Bounds::new(point(left, bounds.top() - px(10.)), size(px(width), px(3.))),
+            if clip { theme::DANGER } else { theme::BORDER },
+        ));
+        if width + gap >= 5. {
+            let label = if channels == 2 {
+                ["L", "R"][index].to_owned()
+            } else {
+                (index + 1).to_string()
+            };
+            paint_text(
+                &label,
+                point(left, bounds.bottom() + px(6.)),
+                8.,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+    }
+    if width + gap < 5. {
+        paint_text(
+            &format!("{channels} ch"),
+            point(bounds.left(), bounds.bottom() + px(6.)),
+            8.,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
+}
+
 pub(crate) fn meter_height(value: f32) -> f32 {
     if value <= 0. {
         0.

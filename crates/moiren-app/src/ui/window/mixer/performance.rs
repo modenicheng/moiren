@@ -36,6 +36,8 @@ pub(in crate::ui::window) fn write_platform_frames(
 
 #[derive(Default)]
 pub(in crate::ui::window) struct MeterTrace {
+    pub meter_paints: usize,
+    pub strip_renders: usize,
     previous: Option<Instant>,
     cpu: Duration,
     gap: Duration,

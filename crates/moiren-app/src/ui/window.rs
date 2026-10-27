@@ -165,6 +165,9 @@ pub struct StudioShell {
     matrix_scroll: ScrollHandle,
     mixer_scroll: ScrollHandle,
     mixer: mixer::MixerPresentation,
+    mixer_geometry: mixer::meter_frame::Geometry,
+    mixer_controls: Entity<mixer::meter_frame::MixerControls>,
+    mixer_frame: Entity<mixer::meter_frame::MixerMeterFrame>,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     observation_nodes: Option<(
@@ -289,6 +292,21 @@ impl StudioShell {
         };
         let settings = settings::SettingsEditor::new(&preferences, cx);
         let export_controls = devices::ExportControls::new(window, cx);
+        let mixer_geometry = mixer::meter_frame::Geometry::default();
+        let shell_entity = cx.entity();
+        let mixer_controls = cx.new(|child_cx| {
+            mixer::meter_frame::MixerControls::new(
+                shell_entity.clone(),
+                mixer_geometry.clone(),
+                child_cx,
+            )
+        });
+        let mixer_frame = cx.new(|_| {
+            mixer::meter_frame::MixerMeterFrame::new(
+                shell_entity.downgrade(),
+                mixer_geometry.clone(),
+            )
+        });
         let mut shell = Self {
             state,
             settings_open: false,
@@ -335,6 +353,9 @@ impl StudioShell {
             matrix_scroll: ScrollHandle::new(),
             mixer_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPresentation::default(),
+            mixer_geometry,
+            mixer_controls,
+            mixer_frame,
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
             observation_nodes: None,
@@ -570,13 +591,6 @@ mod tray_mixer;
 
 impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(feature = "gpui-test")]
-        self.mixer
-            .trace
-            .borrow_mut()
-            .begin(self.presentation.page == Page::Mixer);
-        #[cfg(feature = "gpui-test")]
-        let visible_meter_count = self.node_meter_points.borrow().len();
         self.finish_settings_save(cx);
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
@@ -597,21 +611,19 @@ impl Render for StudioShell {
         self.compact = compact;
         let visible =
             window.is_visible() && matches!(self.presentation.page, Page::Graph | Page::Mixer);
-        if self.meters_frame_active(cx) {
-            #[cfg(feature = "gpui-test")]
-            let meter_began = std::time::Instant::now();
-            // Frame-driven meters: advance observations every display frame
-            // (this frame builds from the pumped state) and keep the
-            // vsync loop running. Must run before the per-frame reset of
-            // `meter_points` below so visibility comes from the last frame.
+        if self.meters_frame_active(cx) && self.presentation.page == Page::Graph {
+            // Mixer owns a separate animation canvas; Graph keeps its existing
+            // frame-driven path. Never pump the same subscriptions twice.
             self.pump_meters(cx);
-            #[cfg(feature = "gpui-test")]
-            self.mixer.trace.borrow_mut().add(meter_began.elapsed());
             window.request_animation_frame();
         }
         self.refresh_observation_nodes(cx);
-        self.meter_points.set((false, false));
-        self.node_meter_points.borrow_mut().clear();
+        // Mixer demand is retained with its cached controls. Clearing it on
+        // an animation-only frame would unsubscribe meters that remain visible.
+        if self.presentation.page != Page::Mixer {
+            self.meter_points.set((false, false));
+            self.node_meter_points.borrow_mut().clear();
+        }
         if !visible {
             self.meters.update(&self.state.read(cx).snapshot, false);
             self.update_node_meters(false, cx);
@@ -771,7 +783,7 @@ impl Render for StudioShell {
                 .gpui_test_observe()
             })
         };
-        let view = div()
+        div()
             .id("studio-shell")
             .relative()
             .size_full()
@@ -793,7 +805,7 @@ impl Render for StudioShell {
                     .min_w_0()
                     .child(match self.presentation.page {
                         Page::Graph => graph::render_graph_page(self, cx),
-                        Page::Mixer => mixer::page(self, cx),
+                        Page::Mixer => mixer::meter_frame::page(self),
                         Page::Matrix => matrix::page(self, cx),
                         Page::Devices => devices::page(self, cx),
                     })
@@ -825,10 +837,7 @@ impl Render for StudioShell {
             }))
             .on_action(cx.listener(|shell, _: &app_view::Redo, window, cx| {
                 shell.undo_redo_graph(true, window, cx);
-            }));
-        #[cfg(feature = "gpui-test")]
-        self.mixer.trace.borrow_mut().finish(visible_meter_count);
-        view
+            }))
     }
 }
 

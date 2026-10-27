@@ -5,6 +5,7 @@ use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
 use rust_i18n::t;
 
+pub(super) mod meter_frame;
 mod model;
 #[cfg(feature = "gpui-test")]
 pub(super) mod performance;
@@ -98,6 +99,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
     }
     div()
         .id("mixer-page")
+        .size_full()
         .flex()
         .flex_col()
         .flex_1()
@@ -132,6 +134,10 @@ fn strip(
     channels: usize,
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
+    #[cfg(feature = "gpui-test")]
+    {
+        shell.mixer.trace.borrow_mut().strip_renders += 1;
+    }
     let id = entry.id;
     let selected = shell.selected_node == Some(id);
     let color = node_kind_color(kind);
@@ -337,8 +343,6 @@ fn meter(
     channels: usize,
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
-    #[cfg(feature = "gpui-test")]
-    let began = std::time::Instant::now();
     let state = shell.state.read(cx);
     let input = kind == NodeKind::Source;
     let eligible = matches!(kind, NodeKind::Source | NodeKind::Sink)
@@ -355,23 +359,12 @@ fn meter(
                 entry.output_endpoint_id.as_ref() == Some(&active.output_endpoint_id)
             }
         });
-    let levels = eligible
-        .then_some(if input {
-            shell.meters.display_input()
-        } else {
-            shell.meters.display_output()
-        })
-        .flatten();
-    let levels = shell.node_meters.levels(entry.id).or(levels);
-    let clips = shell.node_meters.channel_clips(entry.id);
     let managed = state
         .snapshot
         .signal_topics
         .node_levels
         .contains_key(&entry.id);
-    let raw = shell.node_meters.raw_levels(entry.id);
-    let readout = raw.map(|levels| levels.iter().map(|level| level.peak).fold(0f32, f32::max));
-    let view = div()
+    div()
         .h_full()
         .flex_none()
         .id(SharedString::from(format!("meter-reset-{:?}", entry.id)))
@@ -408,14 +401,11 @@ fn meter(
         .when(eligible, |view| {
             view.child(meter_probe(shell.meter_points.clone(), input))
         })
-        .child(crate::ui::widgets::meters::channel_meter(
-            shell.node_meters.channel_levels(entry.id).or_else(|| levels.as_ref().map(|levels| levels.as_slice())), channels, clips,
-        ))
+        .child(meter_frame::track(shell, entry.id, channels, eligible.then_some(input)))
         .child(div().id(SharedString::from(format!("meter-readout-{:?}", entry.id)))
             .absolute().bottom(px(-28.)).left(px(-10.)).w(px(48.)).h(px(12.)).line_height(px(12.))
             .text_center().font_family(theme::FONT_MONO).text_size(px(8.)).text_color(theme::TEXT_MUTED)
-            .child(readout.map(|peak| if peak == 0. { "−∞".into() }
-                else { format!("{:.1}", 20. * peak.log10()) }).unwrap_or_else(|| "—".into()))
+            .child(meter_frame::readout(shell, entry.id))
             .gpui_test_observe())
         .tooltip(|window, cx| component::tooltip::Tooltip::new(
             t!("Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.").into_owned()
@@ -452,10 +442,7 @@ fn meter(
                 }
                 menu
             }
-        });
-    #[cfg(feature = "gpui-test")]
-    shell.mixer.trace.borrow_mut().add(began.elapsed());
-    view
+        })
 }
 
 fn meter_probe(

@@ -1,10 +1,12 @@
 use super::{Duration, NodeId, NodeKind, Page, StudioShell, reorder};
 use crate::ui::widgets::fader::FaderScale;
-use crate::ui::window::test_harness::{finish_service, test_shell, wait_until};
+use crate::ui::window::test_harness::{
+    finish_service, initial_projection, shell_with_state, spawn_service, test_shell, wait_until,
+};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    Entity, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, SharedString, TestAppContext,
-    VisualTestContext, point, px, size,
+    AppContext, Entity, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, SharedString,
+    TestAppContext, VisualTestContext, point, px, size,
 };
 
 fn poll(view: &Entity<StudioShell>, cx: &mut VisualTestContext) {
@@ -236,6 +238,290 @@ fn compact_mixer_keeps_send_controls_and_fixed_width_meters_unclipped(cx: &mut T
             "actual multichannel bars overflowed the narrow strip"
         );
     });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn mixer_meter_animation_does_not_rebuild_strips(cx: &mut TestAppContext) {
+    let runtime = spawn_service();
+    let handle = runtime.handle();
+    let mut snapshot = (*initial_projection(&handle)).clone();
+    snapshot.phase = crate::service::SessionPhase::Running;
+    let node = snapshot.graph.graph.nodes()[0].id();
+    snapshot
+        .signal_topics
+        .node_levels
+        .insert(node, snapshot.signal_topics.tone_output.clone());
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, std::sync::Arc::new(snapshot)));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        shell.state.update(cx, |state, _| {
+            std::sync::Arc::make_mut(&mut state.snapshot).phase =
+                crate::service::SessionPhase::Running;
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    // The inspector's closing spring is a real layout change, not a meter
+    // invalidation. Let it finish before measuring steady-state frames.
+    std::thread::sleep(Duration::from_millis(900));
+    for _ in 0..3 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    let before = view.read_with(cx, |shell, _| {
+        let trace = shell.mixer.trace.borrow();
+        (trace.strip_renders, trace.meter_paints)
+    });
+    for _ in 0..10 {
+        cx.update(|window, cx| {
+            assert!(window.simulate_next_frame(cx) > 0);
+            window.draw(cx).clear(cx);
+        });
+    }
+    let after = view.read_with(cx, |shell, _| {
+        let trace = shell.mixer.trace.borrow();
+        assert!(
+            shell.node_meter_points.borrow().contains(&node),
+            "cached meter demand must survive"
+        );
+        (trace.strip_renders, trace.meter_paints)
+    });
+    assert_eq!(
+        after.0, before.0,
+        "meter animation should only redraw meters"
+    );
+    assert!(
+        after.1 >= before.1 + 10,
+        "the meter canvas must actually paint"
+    );
+
+    // Service elapsed-time publications notify the shell, not Mixer controls.
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            std::sync::Arc::make_mut(&mut state.snapshot).elapsed += Duration::from_secs(1);
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders),
+        after.0,
+        "control polling must not invalidate unchanged strips"
+    );
+
+    // A real control edit invalidates the cache without a forced refresh.
+    view.update(cx, |shell, cx| {
+        shell.selected_node = Some(node);
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders) > after.0);
+
+    let controls_before = view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders);
+    let fader = view.read_with(cx, |shell, _| shell.mixer.faders[&node].state.clone());
+    cx.update(|window, cx| fader.update(cx, |slider, cx| slider.set_value(0.25, window, cx)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(
+        view.read_with(cx, |shell, _| shell.mixer.trace.borrow().strip_renders) > controls_before,
+        "slider state notifications must invalidate cached thumb geometry"
+    );
+
+    view.update(cx, |shell, cx| {
+        shell.settings_open = true;
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    cx.update(|window, cx| {
+        assert_eq!(
+            window.simulate_next_frame(cx),
+            0,
+            "settings must stop the meter frame loop"
+        );
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn mixer_phase_only_start_restores_legacy_meter_probes(cx: &mut TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.simulate_resize(size(px(1440.), px(900.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        shell.state.update(cx, |state, _| {
+            let snapshot = std::sync::Arc::make_mut(&mut state.snapshot);
+            snapshot.desired = Some(crate::service::SessionSpec {
+                source: crate::service::InputSelection::Tone { frequency_hz: 440. },
+                output_endpoint_id: "output".into(),
+                limit: crate::service::RunLimit::UntilStopped,
+                gain: 1.,
+                pan: 0.,
+                max_block_frames: 256,
+            });
+            let graph = std::sync::Arc::make_mut(&mut snapshot.graph);
+            for entry in &mut graph.nodes {
+                if graph.graph.get_node(entry.id).unwrap().kind() == NodeKind::Source {
+                    entry.source = snapshot.desired.as_ref().map(|spec| spec.source.clone());
+                }
+                if graph.graph.get_node(entry.id).unwrap().kind() == NodeKind::Sink {
+                    entry.output_endpoint_id = Some("output".into());
+                }
+            }
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    std::thread::sleep(Duration::from_millis(900));
+    for _ in 0..3 {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+    }
+    assert_eq!(
+        view.read_with(cx, |shell, _| shell.meter_points.get()),
+        (false, false)
+    );
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            std::sync::Arc::make_mut(&mut state.snapshot).phase =
+                crate::service::SessionPhase::Running
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        view.read_with(cx, |shell, _| shell.meter_points.get()),
+        (true, true)
+    );
+    finish_service(runtime);
+}
+
+/// Exercise a real managed publisher: painting cannot pass just by reusing
+/// frozen levels or silently dropping visibility/subscription demand.
+#[gpui_kit::test]
+fn mixer_cached_controls_keep_live_levels_clip_reset_and_scroll_geometry(cx: &mut TestAppContext) {
+    use crate::service::{
+        AppRequest, GraphEdit, InputSelection, ManagedDriver, RunLimit, ServiceRuntime,
+        SessionPhase, SessionSpec,
+    };
+    use std::sync::{Arc, atomic::Ordering};
+    let backend = crate::service::test_backend::FakeBackend::default();
+    backend.0.timed_meter_frames.store(96, Ordering::Relaxed);
+    let backend_state = backend.0.clone();
+    let runtime = ServiceRuntime::spawn_with_driver(ManagedDriver::new(move |_| {
+        Ok(Box::new(backend.clone()))
+    }))
+    .unwrap();
+    let handle = runtime.handle();
+    handle
+        .try_request(AppRequest::Start(SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "input".into(),
+            },
+            output_endpoint_id: "output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.,
+            pan: 0.,
+            max_block_frames: 256,
+        }))
+        .unwrap();
+    let snapshot = crate::ui::window::test_harness::wait_for(Duration::from_secs(3), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == SessionPhase::Running)
+    });
+    let node = snapshot.graph.graph.nodes()[0].id();
+    cx.update(gpui_kit::init);
+    let state = cx.new(|_| crate::ui::state::UiState::new(handle, snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    cx.simulate_resize(size(px(1024.), px(720.)));
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    wait_until(Duration::from_secs(3), || {
+        cx.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        view.read_with(cx, |shell, _| shell.node_meters.raw_levels(node).is_some())
+    });
+    let levels = view.read_with(cx, |shell, _| {
+        shell.node_meters.raw_levels(node).unwrap().to_vec()
+    });
+    assert!(
+        levels[0].peak >= 1.,
+        "the fake physical source is full scale"
+    );
+    assert!(view.read_with(cx, |shell, _| shell.node_meters.channel_clips(node)[0]));
+    backend_state.pause_audio.store(true, Ordering::SeqCst);
+    // Drain any already-published windows before resetting the clip latch.
+    std::thread::sleep(Duration::from_millis(20));
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    cx.update(|window, cx| window.click(SharedString::from(format!("meter-reset-{node:?}")), cx));
+    assert!(view.read_with(cx, |shell, _| {
+        shell.node_meters.channel_clips(node).is_empty()
+    }));
+
+    // Add enough strips to overflow. Both the cache and overlay geometry must
+    // follow an ordinary notified edit; no test-only forced refresh here.
+    for _ in 0..5 {
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                    kind: NodeKind::Gain,
+                    channels: 2,
+                }))
+            })
+        });
+        poll(&view, cx);
+    }
+    let before = view.read_with(cx, |shell, _| {
+        shell.mixer_geometry.track_bounds(node).unwrap()
+    });
+    view.update(cx, |shell, cx| {
+        shell.mixer_scroll.set_offset(point(px(-160.), px(0.)));
+        cx.notify();
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let after = view.read_with(cx, |shell, _| {
+        shell.mixer_geometry.track_bounds(node).unwrap()
+    });
+    assert_eq!(after.left(), before.left() - px(160.));
+    assert!(
+        !view.read_with(cx, |shell, _| shell
+            .node_meter_points
+            .borrow()
+            .contains(&node)),
+        "offscreen strips must not remain demanded"
+    );
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            Arc::make_mut(&mut state.snapshot).phase = SessionPhase::Idle
+        });
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    });
+    assert!(view.read_with(cx, |shell, _| shell.node_meters.raw_levels(node).is_none()));
     finish_service(runtime);
 }
 
