@@ -29,14 +29,14 @@ fn export() -> ExportStatus {
             native_stamp: Some([1, 2, 3, 0, 5]),
             transport_prepared: true,
             telemetry: Some(VadPcmTelemetrySnapshot {
-                schema_version: 1,
+                schema_version: 2,
                 packet_frames: 128,
                 max_packet_frames: 256,
                 submission_attempts: u64::MAX,
                 submitted_packets: (1 << 53) + 1,
                 completed_packets: (1 << 32) + 3,
-                completion_gaps: 7,
-                max_completion_gap_100ns: 123_456,
+                completion_interval_observations: 7,
+                max_completion_interval_100ns: 123_456,
                 completion_clock_regressions: 11,
                 dropped_packets: 13,
                 driver_dropped_packets: 17,
@@ -71,7 +71,10 @@ fn provider_diagnostics_preserve_all_counters_and_observed_timing_units() {
     for (key, expected) in [
         ("Observed packet", "128 frames"),
         ("Maximum observed packet", "256 frames"),
-        ("Completion gaps", "7 observations; max 123456 x 100 ns"),
+        (
+            "Completion interval observations",
+            "7 observations; max 123456 x 100 ns",
+        ),
         (
             "Cumulative submissions",
             "18446744073709551615 attempts / 9007199254740993 submitted packets",
@@ -117,7 +120,7 @@ fn provider_diagnostics_identify_requested_actual_and_pending_names_with_exact_e
 }
 
 #[test]
-fn provider_diagnostics_zero_packet_and_unobserved_gaps_are_unknown_timing() {
+fn provider_diagnostics_zero_packet_and_unobserved_intervals_are_unknown_timing() {
     let mut status = export();
     let telemetry = status
         .diagnostics
@@ -128,14 +131,14 @@ fn provider_diagnostics_zero_packet_and_unobserved_gaps_are_unknown_timing() {
         .unwrap();
     telemetry.packet_frames = 0;
     telemetry.max_packet_frames = 0;
-    telemetry.completion_gaps = 0;
-    // No gap count means no timing evidence, even with a retained maximum.
-    telemetry.max_completion_gap_100ns = 123_456;
+    telemetry.completion_interval_observations = 0;
+    // No interval samples means no timing evidence, even with a retained maximum.
+    telemetry.max_completion_interval_100ns = 123_456;
     let rows = export_diagnostic_rows(&status);
     assert_eq!(value(&rows, "Observed packet"), "Unknown");
     assert_eq!(value(&rows, "Maximum observed packet"), "Unknown");
     assert_eq!(
-        value(&rows, "Completion gaps"),
+        value(&rows, "Completion interval observations"),
         "0 observations; timing unknown"
     );
     assert_eq!(value(&rows, "Cumulative completions"), "4294967299 packets");

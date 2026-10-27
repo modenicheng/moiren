@@ -4,22 +4,26 @@
 //! reads a copy after the worker has drained, so no audio callback, file IO,
 //! JSON serialization, or growing collection is involved in the hot path.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
-const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
 pub struct VadPcmTelemetrySnapshot {
+    #[serde(deserialize_with = "deserialize_current_schema_version")]
     pub schema_version: u32,
     pub packet_frames: u32,
     pub max_packet_frames: u32,
     pub submission_attempts: u64,
     pub submitted_packets: u64,
     pub completed_packets: u64,
-    pub completion_gaps: u64,
-    pub max_completion_gap_100ns: u64,
+    #[serde(alias = "completion_gaps")]
+    pub completion_interval_observations: u64,
+    #[serde(alias = "max_completion_gap_100ns")]
+    pub max_completion_interval_100ns: u64,
     pub completion_clock_regressions: u64,
     pub dropped_packets: u64,
     pub driver_dropped_packets: u64,
@@ -32,14 +36,21 @@ pub struct VadPcmTelemetrySnapshot {
     pub recovery_events: u64,
 }
 
+fn deserialize_current_schema_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(u32::deserialize(deserializer)?.max(SNAPSHOT_SCHEMA_VERSION))
+}
+
 struct Counters {
     packet_frames: AtomicU32,
     max_packet_frames: AtomicU32,
     submission_attempts: AtomicU64,
     submitted_packets: AtomicU64,
     completed_packets: AtomicU64,
-    completion_gaps: AtomicU64,
-    max_completion_gap_100ns: AtomicU64,
+    completion_intervals: AtomicU64,
+    max_completion_interval_100ns: AtomicU64,
     completion_clock_regressions: AtomicU64,
     dropped_packets: AtomicU64,
     driver_dropped_packets: AtomicU64,
@@ -62,8 +73,8 @@ impl Default for Counters {
             submission_attempts: AtomicU64::new(0),
             submitted_packets: AtomicU64::new(0),
             completed_packets: AtomicU64::new(0),
-            completion_gaps: AtomicU64::new(0),
-            max_completion_gap_100ns: AtomicU64::new(0),
+            completion_intervals: AtomicU64::new(0),
+            max_completion_interval_100ns: AtomicU64::new(0),
             completion_clock_regressions: AtomicU64::new(0),
             dropped_packets: AtomicU64::new(0),
             driver_dropped_packets: AtomicU64::new(0),
@@ -141,8 +152,8 @@ impl PcmTelemetry {
             return;
         }
         if let Some(gap) = now_100ns.checked_sub(previous) {
-            saturating_add(&self.counters.completion_gaps, 1);
-            max_u64(&self.counters.max_completion_gap_100ns, gap);
+            saturating_add(&self.counters.completion_intervals, 1);
+            max_u64(&self.counters.max_completion_interval_100ns, gap);
         } else {
             saturating_add(&self.counters.completion_clock_regressions, 1);
         }
@@ -203,10 +214,13 @@ impl PcmTelemetry {
             submission_attempts: self.counters.submission_attempts.load(Ordering::Relaxed),
             submitted_packets: self.counters.submitted_packets.load(Ordering::Relaxed),
             completed_packets: self.counters.completed_packets.load(Ordering::Relaxed),
-            completion_gaps: self.counters.completion_gaps.load(Ordering::Relaxed),
-            max_completion_gap_100ns: self
+            completion_interval_observations: self
                 .counters
-                .max_completion_gap_100ns
+                .completion_intervals
+                .load(Ordering::Relaxed),
+            max_completion_interval_100ns: self
+                .counters
+                .max_completion_interval_100ns
                 .load(Ordering::Relaxed),
             completion_clock_regressions: self
                 .counters
@@ -272,7 +286,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_records_packet_gap_drop_silence_epoch_and_recovery_without_storage_growth() {
+    fn snapshot_records_packet_intervals_drop_silence_epoch_and_recovery_without_storage_growth() {
         let telemetry = PcmTelemetry::default();
         telemetry.submission_attempt(480, 32);
         telemetry.submission_accepted();
@@ -296,8 +310,8 @@ mod tests {
                 submission_attempts: 1,
                 submitted_packets: 1,
                 completed_packets: 2,
-                completion_gaps: 1,
-                max_completion_gap_100ns: 1_250,
+                completion_interval_observations: 1,
+                max_completion_interval_100ns: 1_250,
                 completion_clock_regressions: 0,
                 dropped_packets: 3,
                 driver_dropped_packets: 1,
@@ -313,14 +327,34 @@ mod tests {
     }
 
     #[test]
-    fn regressed_completion_clock_is_counted_and_does_not_fabricate_a_gap() {
+    fn regressed_completion_clock_is_counted_without_an_interval_observation() {
         let telemetry = PcmTelemetry::default();
         telemetry.completion_at(64, 2_000);
         telemetry.completion_at(64, 1_999);
         let snapshot = telemetry.snapshot();
 
-        assert_eq!(snapshot.completion_gaps, 0);
-        assert_eq!(snapshot.max_completion_gap_100ns, 0);
+        assert_eq!(snapshot.completion_interval_observations, 0);
+        assert_eq!(snapshot.max_completion_interval_100ns, 0);
         assert_eq!(snapshot.completion_clock_regressions, 1);
+    }
+
+    #[test]
+    fn legacy_completion_gaps_json_deserializes_with_the_corrected_field() {
+        let legacy = serde_json::json!({
+            "schema_version": 1,
+            "completion_gaps": 40,
+            "max_completion_gap_100ns": 110_118
+        });
+        let snapshot: VadPcmTelemetrySnapshot = serde_json::from_value(legacy).unwrap();
+        assert_eq!(snapshot.schema_version, SNAPSHOT_SCHEMA_VERSION);
+        assert_eq!(snapshot.completion_interval_observations, 40);
+        assert_eq!(snapshot.max_completion_interval_100ns, 110_118);
+
+        let serialized = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(serialized["schema_version"], SNAPSHOT_SCHEMA_VERSION);
+        assert_eq!(serialized["completion_interval_observations"], 40);
+        assert_eq!(serialized["max_completion_interval_100ns"], 110_118);
+        assert!(serialized.get("completion_gaps").is_none());
+        assert!(serialized.get("max_completion_gap_100ns").is_none());
     }
 }

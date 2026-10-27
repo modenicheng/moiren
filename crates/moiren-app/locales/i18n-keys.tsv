@@ -515,7 +515,7 @@ Native export diagnostics	-	crates/moiren-app/src/ui/presentation/export_diagnos
 Provider telemetry schema	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	提供方遥测版本
 Observed packet	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	观测到的数据包
 Maximum observed packet	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	观测到的最大数据包
-Completion gaps	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	完成间隔
+Completion interval observations	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	完成间隔观测数
 0 observations; timing unknown	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	无完成间隔观测时序未知
 %{count} observations; max %{ticks} x 100 ns	count,ticks	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	完成间隔保持 100 ns 原生单位
 Cumulative submissions	-	crates/moiren-app/src/ui/presentation/export_diagnostics.rs	累计提交

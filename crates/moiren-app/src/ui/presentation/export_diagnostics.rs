@@ -144,16 +144,16 @@ fn telemetry_rows(
             frames(telemetry.max_packet_frames),
         ),
         (
-            t!("Completion gaps").into(),
-            if telemetry.completion_gaps == 0 {
+            t!("Completion interval observations").into(),
+            if telemetry.completion_interval_observations == 0 {
                 t!("0 observations; timing unknown").into()
             } else {
                 // Preserve native 100 ns units and all integer digits. These
                 // delivery observations are not physical latency measurements.
                 t!(
                     "%{count} observations; max %{ticks} x 100 ns",
-                    count = telemetry.completion_gaps,
-                    ticks = telemetry.max_completion_gap_100ns,
+                    count = telemetry.completion_interval_observations,
+                    ticks = telemetry.max_completion_interval_100ns,
                 )
                 .into()
             },

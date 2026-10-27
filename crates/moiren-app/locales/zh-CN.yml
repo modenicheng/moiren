@@ -1552,9 +1552,9 @@ _version: 2
 "Maximum observed packet":
   en: Maximum observed packet
   zh-CN: 观测到的最大数据包
-"Completion gaps":
-  en: Completion gaps
-  zh-CN: 完成间隔
+"Completion interval observations":
+  en: Completion interval observations
+  zh-CN: 完成间隔观测数
 "0 observations; timing unknown":
   en: 0 observations; timing unknown
   zh-CN: 0 次观测；时序未知

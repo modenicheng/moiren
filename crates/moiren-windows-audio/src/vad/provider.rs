@@ -1096,7 +1096,7 @@ mod tests {
             error: Some("CREATE timeout".into()),
             transport_prepared: false,
             telemetry: Some(VadPcmTelemetrySnapshot {
-                schema_version: 1,
+                schema_version: 2,
                 submission_attempts: 3,
                 ..VadPcmTelemetrySnapshot::default()
             }),

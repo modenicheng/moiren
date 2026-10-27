@@ -954,7 +954,7 @@ fn microphone_pump_records_native_submission_completion_and_silence_metrics() {
     f.collect(false);
     let completed = f.state.telemetry.snapshot();
     assert_eq!(completed.completed_packets, 1);
-    assert_eq!(completed.completion_gaps, 0);
+    assert_eq!(completed.completion_interval_observations, 0);
 }
 
 #[test]
