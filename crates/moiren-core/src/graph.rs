@@ -349,19 +349,9 @@ impl LogicalGraph {
         Ok(id)
     }
 
-    /// Advisory non-RT preflight using the complete graph and the same rules
-    /// as `connect`. This does not reserve an input or consume an identity;
-    /// the eventual edit must revalidate against its current project candidate.
-    pub fn validate_connection(
-        &self,
-        src_port: PortId,
-        dst_port: PortId,
-        params: SendParams,
-    ) -> Result<(), GraphError> {
-        self.connection_nodes(src_port, dst_port, params)
-            .map(|_| ())
-    }
-
+    /// Validates a prospective connection against the complete graph and
+    /// returns its endpoint nodes. Nothing is reserved: `connect` consumes the
+    /// edge identity only after this check passes.
     fn connection_nodes(
         &self,
         src_port: PortId,
