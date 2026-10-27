@@ -937,17 +937,11 @@ impl StudioShell {
         let graph = &snapshot.graph;
         if snapshot.phase == SessionPhase::Running {
             let source = graph
-                .graph
-                .nodes()
-                .iter()
-                .find(|n| n.kind() == NodeKind::Source)
-                .map(|n| n.id());
+                .node_of_kind(NodeKind::Source)
+                .map(|(node, _)| node.id());
             let sink = graph
-                .graph
-                .nodes()
-                .iter()
-                .find(|n| n.kind() == NodeKind::Sink)
-                .map(|n| n.id());
+                .node_of_kind(NodeKind::Sink)
+                .map(|(node, _)| node.id());
             self.observation_nodes = source
                 .zip(sink)
                 .map(|(source, sink)| (snapshot.generation, source, sink));

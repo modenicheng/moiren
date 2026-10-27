@@ -297,19 +297,13 @@ impl UiState {
         let gain = self
             .snapshot
             .graph
-            .graph
-            .nodes()
-            .iter()
-            .find(|n| n.kind() == NodeKind::Gain)
-            .map(|n| n.id());
+            .node_of_kind(NodeKind::Gain)
+            .map(|(node, _)| node.id());
         let pan = self
             .snapshot
             .graph
-            .graph
-            .nodes()
-            .iter()
-            .find(|n| n.kind() == NodeKind::Pan)
-            .map(|n| n.id());
+            .node_of_kind(NodeKind::Pan)
+            .map(|(node, _)| node.id());
         if let Some(node) = gain {
             self.dispatch(AppRequest::EditGraph(crate::service::GraphEdit::SetGain {
                 node,
@@ -477,19 +471,11 @@ impl UiState {
         use moiren_core::graph::NodeKind;
         let graph = &self.snapshot.graph;
         let source = graph
-            .graph
-            .nodes()
-            .iter()
-            .find(|n| n.kind() == NodeKind::Source)
-            .and_then(|n| graph.node(n.id()))
-            .and_then(|n| n.source.clone());
+            .node_of_kind(NodeKind::Source)
+            .and_then(|(_, state)| state.source.clone());
         let output = graph
-            .graph
-            .nodes()
-            .iter()
-            .find(|n| n.kind() == NodeKind::Sink)
-            .and_then(|n| graph.node(n.id()))
-            .and_then(|n| n.output_endpoint_id.clone());
+            .node_of_kind(NodeKind::Sink)
+            .and_then(|(_, state)| state.output_endpoint_id.clone());
         self.selection.input_id = None;
         self.selection.process_key = None;
         self.selection.input_initialized = true;
@@ -541,19 +527,13 @@ impl UiState {
         let input = self
             .snapshot
             .graph
-            .graph
-            .nodes()
-            .iter()
-            .find(|n| n.kind() == NodeKind::Source)
-            .map(|n| n.id());
+            .node_of_kind(NodeKind::Source)
+            .map(|(node, _)| node.id());
         let output = self
             .snapshot
             .graph
-            .graph
-            .nodes()
-            .iter()
-            .find(|n| n.kind() == NodeKind::Sink)
-            .map(|n| n.id());
+            .node_of_kind(NodeKind::Sink)
+            .map(|(node, _)| node.id());
         if let Some((node, source)) = input.zip(source) {
             self.dispatch(AppRequest::EditGraph(
                 crate::service::GraphEdit::BindSource { node, source },
@@ -571,20 +551,12 @@ fn graph_resources(snapshot: &AppSnapshot) -> (Option<InputSelection>, Option<St
     use moiren_core::graph::NodeKind;
     let source = snapshot
         .graph
-        .graph
-        .nodes()
-        .iter()
-        .find(|n| n.kind() == NodeKind::Source)
-        .and_then(|n| snapshot.graph.node(n.id()))
-        .and_then(|n| n.source.clone());
+        .node_of_kind(NodeKind::Source)
+        .and_then(|(_, state)| state.source.clone());
     let output = snapshot
         .graph
-        .graph
-        .nodes()
-        .iter()
-        .find(|n| n.kind() == NodeKind::Sink)
-        .and_then(|n| snapshot.graph.node(n.id()))
-        .and_then(|n| n.output_endpoint_id.clone());
+        .node_of_kind(NodeKind::Sink)
+        .and_then(|(_, state)| state.output_endpoint_id.clone());
     (source, output)
 }
 
@@ -592,20 +564,12 @@ fn primary_parameters(snapshot: &AppSnapshot) -> (f64, f64) {
     use moiren_core::graph::NodeKind;
     let gain = snapshot
         .graph
-        .graph
-        .nodes()
-        .iter()
-        .find(|n| n.kind() == NodeKind::Gain)
-        .and_then(|n| snapshot.graph.node(n.id()))
-        .map_or(0., |n| n.gain);
+        .node_of_kind(NodeKind::Gain)
+        .map_or(0., |(_, state)| state.gain);
     let pan = snapshot
         .graph
-        .graph
-        .nodes()
-        .iter()
-        .find(|n| n.kind() == NodeKind::Pan)
-        .and_then(|n| snapshot.graph.node(n.id()))
-        .map_or(0., |n| n.pan);
+        .node_of_kind(NodeKind::Pan)
+        .map_or(0., |(_, state)| state.pan);
     (gain, pan)
 }
 

@@ -26,6 +26,7 @@ mod windows;
 pub use backend::*;
 pub use driver::BackendDriver;
 pub use exports::*;
+pub(crate) use graph::primary_node_of;
 pub use graph::{
     BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphFault, GraphNodeState,
     GraphPreparation, GraphSnapshot, GraphSubject, MixerState, ServiceGraph, default_label,

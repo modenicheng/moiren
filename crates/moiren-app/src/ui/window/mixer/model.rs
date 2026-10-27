@@ -739,7 +739,7 @@ impl StudioShell {
         // /Pan node fields only for their kind, mirroring the surfaces that
         // render them.
         let channels_of = |id: NodeId| graph.graph.get_node(id).ok().map(|node| node.channels());
-        let kind_of = |id: NodeId| graph.graph.get_node(id).ok().map(|node| node.kind());
+        let kind_of = |id: NodeId| graph.kind_of(id);
         self.mixer
             .value_inputs
             .retain(|id, _| graph.node(*id).is_some());

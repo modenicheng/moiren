@@ -113,14 +113,7 @@ pub(super) async fn capture(
         })
         .map_err(anyhow::Error::msg)?;
     let snapshot = graph.snapshot();
-    let source = snapshot
-        .graph
-        .nodes()
-        .iter()
-        .find(|node| node.kind() == NodeKind::Source)
-        .unwrap()
-        .outputs()[0]
-        .id();
+    let source = snapshot.node_of_kind(NodeKind::Source).unwrap().0.outputs()[0].id();
     for port in snapshot.graph.get_node(bus)?.inputs() {
         graph
             .edit(GraphEdit::Connect {

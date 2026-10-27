@@ -70,6 +70,34 @@ impl GraphSnapshot {
     pub fn node(&self, id: NodeId) -> Option<&GraphNodeState> {
         self.nodes.iter().find(|node| node.id == id)
     }
+
+    /// Node kind of `id`, for surfaces that degrade gracefully when the
+    /// topology row behind a state entry has already vanished.
+    pub fn kind_of(&self, id: NodeId) -> Option<NodeKind> {
+        self.graph.get_node(id).ok().map(|node| node.kind())
+    }
+
+    /// The primary node of `kind` paired with its state. Every layer that
+    /// needs "the one Source/Sink/Gain/Pan" (UI selection, observation
+    /// targets, meter wiring, preparation) must agree on this choice; see
+    /// [`primary_node_of`] and [`GraphPreparation::primary_io_nodes`].
+    pub fn node_of_kind(
+        &self,
+        kind: NodeKind,
+    ) -> Option<(&moiren_core::graph::Node, &GraphNodeState)> {
+        let node = primary_node_of(&self.graph, kind)?;
+        Some((node, self.node(node.id())?))
+    }
+}
+
+/// The primary node of `kind`: the first match in graph order. Node ids are
+/// only ever appended, so this is also the lowest id — the same node the
+/// meter bridge's former `min_by_key` scan and preparation's `min` resolved.
+pub(crate) fn primary_node_of(
+    graph: &LogicalGraph,
+    kind: NodeKind,
+) -> Option<&moiren_core::graph::Node> {
+    graph.nodes().iter().find(|node| node.kind() == kind)
 }
 
 #[derive(Debug, Clone, PartialEq)]

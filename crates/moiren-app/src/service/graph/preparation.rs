@@ -226,21 +226,11 @@ impl GraphPreparation {
     }
     pub fn primary_io_nodes(&self) -> Result<(NodeId, NodeId), String> {
         self.validate_state()?;
-        let source = self
-            .graph
-            .nodes()
-            .iter()
-            .filter(|n| n.kind() == NodeKind::Source)
+        let source = primary_node_of(&self.graph, NodeKind::Source)
             .map(|n| n.id())
-            .min()
             .ok_or("图需要输入节点")?;
-        let sink = self
-            .graph
-            .nodes()
-            .iter()
-            .filter(|n| n.kind() == NodeKind::Sink)
+        let sink = primary_node_of(&self.graph, NodeKind::Sink)
             .map(|n| n.id())
-            .min()
             .ok_or("图需要输出节点")?;
         Ok((source, sink))
     }
@@ -305,16 +295,8 @@ impl GraphPreparation {
     }
     pub fn gain_pan_nodes(&self) -> Option<(NodeId, NodeId)> {
         Some((
-            self.graph
-                .nodes()
-                .iter()
-                .find(|n| n.kind() == NodeKind::Gain)?
-                .id(),
-            self.graph
-                .nodes()
-                .iter()
-                .find(|n| n.kind() == NodeKind::Pan)?
-                .id(),
+            primary_node_of(&self.graph, NodeKind::Gain)?.id(),
+            primary_node_of(&self.graph, NodeKind::Pan)?.id(),
         ))
     }
     #[cfg_attr(not(windows), allow(dead_code))]
