@@ -272,7 +272,11 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
         RtlZeroMemory(buffer, bytes);
     }
     if (slot.State == MOIREN_VAD_STATE_PRESENT && slot.AudioReady != 0) {
-        for (ULONG count = 0; count < MOIREN_VAD_REQUEST_SLOTS; ++count) {
+        // A native packet can satisfy only one request. Stale requests at the
+        // head are completed with the epoch mismatch, but once the first
+        // current request is found, leave remaining current requests queued
+        // for later native packets.
+        for (ULONG count = 0; count < MOIREN_VAD_REQUEST_SLOTS && !copied; ++count) {
             WDFREQUEST request = nullptr;
             if (!NT_SUCCESS(WdfIoQueueRetrieveNextRequest(shared->PcmQueues[index],
                 &request))) {
@@ -312,7 +316,6 @@ void VadPcmTransferLocked(VAD_SHARED* shared, ULONG index, PVOID buffer,
             }
             completion.Status = STATUS_SUCCESS;
             copied = true;
-            break; // One native packet, never drain multiple current packets.
         }
         if (!copied) {
             if (capture) {
