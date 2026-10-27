@@ -71,6 +71,8 @@ fn provider_diagnostics_render_last_observations_and_missing_evidence(
         }),
         #[cfg(feature = "vad-integration-probe")]
         native_stamp: None,
+        #[cfg(feature = "vad-integration-probe")]
+        native_retirement: None,
     };
     snapshot.exports.push(status.clone());
     status.intent.endpoint_id = VirtualEndpointId::from_bytes([8; 16]);

@@ -52,6 +52,8 @@ fn export() -> ExportStatus {
         }),
         #[cfg(feature = "vad-integration-probe")]
         native_stamp: None,
+        #[cfg(feature = "vad-integration-probe")]
+        native_retirement: None,
     }
 }
 

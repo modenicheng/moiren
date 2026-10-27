@@ -64,6 +64,9 @@ pub struct ExportStatus {
     /// Read-only probe evidence; it grants no readiness or gate authority.
     #[cfg(feature = "vad-integration-probe")]
     pub native_stamp: Option<[u64; 5]>,
+    /// Last confirmed native removal, not a current lifecycle observation.
+    #[cfg(feature = "vad-integration-probe")]
+    pub native_retirement: Option<ExportRetirementEvidence>,
 }
 
 pub(super) fn same_resource(a: &ExportIntent, b: &ExportIntent) -> bool {
@@ -212,6 +215,8 @@ impl ExportService {
                         .cloned(),
                     #[cfg(feature = "vad-integration-probe")]
                     native_stamp: self.native_stamps.get(&intent.endpoint_id).copied(),
+                    #[cfg(feature = "vad-integration-probe")]
+                    native_retirement: self.native_retirements.get(&intent.endpoint_id).copied(),
                     intent,
                 }
             })

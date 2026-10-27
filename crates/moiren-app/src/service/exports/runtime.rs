@@ -27,6 +27,9 @@ pub(crate) struct Work {
 pub(crate) struct NativeObservation {
     pub intent: ExportIntent,
     pub snapshot: Option<DriverStamp>,
+    /// Set only by the native adapter for a fresh, closed Removed snapshot.
+    #[cfg(feature = "vad-integration-probe")]
+    pub native_removed: Option<DriverStamp>,
     pub resource: ExportResourceState,
     pub gate_open: bool,
     pub allow_default: bool,
@@ -182,6 +185,54 @@ impl Runtime {
         let mut errors = batch.errors;
         for native in batch.observations {
             let id = native.intent.endpoint_id;
+            #[cfg(feature = "vad-integration-probe")]
+            if service.available
+                && native.error.is_none()
+                && native.intent.validate().is_ok()
+                && let Some(stamp) = native.snapshot
+                && stamp[..3].iter().all(|value| *value != 0)
+            {
+                // Historical evidence stays separate from current observations.
+                // A new control session cannot inherit the previous tombstone.
+                if service
+                    .native_retirements
+                    .values()
+                    .any(|old| old.native_stamp[1] != stamp[1])
+                {
+                    service.native_retirements.clear();
+                }
+                if native.resource == ExportResourceState::Absent
+                    && !native.gate_open
+                    && !native.can_open
+                    && native.native_removed == Some(stamp)
+                    && service
+                        .native_retirements
+                        .get(&id)
+                        .is_none_or(|old| old.native_stamp != stamp)
+                {
+                    self.sequence = self
+                        .sequence
+                        .checked_add(1)
+                        .expect("export observation sequence exhausted");
+                    if service.native_retirements.len() >= MAX_EXPORTS
+                        && !service.native_retirements.contains_key(&id)
+                        && let Some(oldest) = service
+                            .native_retirements
+                            .iter()
+                            .min_by_key(|(_, evidence)| evidence.generation)
+                            .map(|(id, _)| *id)
+                    {
+                        service.native_retirements.remove(&oldest);
+                    }
+                    service.native_retirements.insert(
+                        id,
+                        ExportRetirementEvidence {
+                            generation: self.sequence,
+                            native_stamp: stamp,
+                        },
+                    );
+                }
+            }
             if native.resource == ExportResourceState::Absent {
                 // Confirmed absence needs no tombstone on the app side. A
                 // future desired export is reconciled as a fresh CREATE.
@@ -515,6 +566,17 @@ impl From<moiren_windows_audio::vad::VadExportObservation> for NativeObservation
                 binding: None,
             },
             snapshot: view.snapshot.map(snapshot_stamp),
+            #[cfg(feature = "vad-integration-probe")]
+            native_removed: view
+                .snapshot
+                .filter(|snapshot| {
+                    snapshot.state() == PdoState::Removed
+                        && !snapshot.gate_open()
+                        && view.error.is_none()
+                        && view.diagnostic_provenance
+                            == moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh
+                })
+                .map(snapshot_stamp),
             resource,
             gate_open: view.snapshot.is_some_and(|s| s.gate_open()),
             allow_default: view.allow_default,

@@ -465,3 +465,33 @@ fn service_observation_replacement_clears_diagnostics_only_after_acceptance() {
     service.observe(observation).unwrap();
     assert_eq!(service.statuses(&graph)[0].diagnostics, None);
 }
+
+#[cfg(feature = "vad-integration-probe")]
+#[test]
+fn direct_retirement_mapping_requires_a_fresh_real_removed_snapshot() {
+    let (_, intent) = runtime_graph();
+    for state in [PdoState::Present, PdoState::Removing, PdoState::Removed] {
+        for fresh in [false, true] {
+            for failed in [false, true] {
+                let mut view = provider_view(&intent);
+                view.snapshot = Some(native_snapshot(state, StreamState::Closed, false, false));
+                if !fresh {
+                    view.diagnostic_provenance =
+                        VadExportDiagnosticProvenance::CachedAfterQueryFailure;
+                }
+                if failed {
+                    view.error = Some("QUERY failed".into());
+                }
+                let stamp = view.snapshot.map(snapshot_stamp);
+                assert_eq!(
+                    NativeObservation::from(view).native_removed,
+                    if state == PdoState::Removed && fresh && !failed {
+                        stamp
+                    } else {
+                        None
+                    }
+                );
+            }
+        }
+    }
+}

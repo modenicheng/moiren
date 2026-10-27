@@ -17,6 +17,15 @@ mod tests;
 
 pub const MAX_EXPORTS: usize = 64;
 
+/// Historical probe evidence from an actual native Removed observation.
+/// It never supplies current presence, action authority or audio admission.
+#[cfg(feature = "vad-integration-probe")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportRetirementEvidence {
+    pub generation: u64,
+    pub native_stamp: [u64; 5],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportDirection {
@@ -115,6 +124,8 @@ pub struct ExportService {
     /// Probe-only observations, never consulted for native action authority.
     #[cfg(feature = "vad-integration-probe")]
     pub(super) native_stamps: BTreeMap<VirtualEndpointId, [u64; 5]>,
+    #[cfg(feature = "vad-integration-probe")]
+    pub(super) native_retirements: BTreeMap<VirtualEndpointId, ExportRetirementEvidence>,
 }
 
 impl ExportService {
@@ -139,6 +150,8 @@ impl ExportService {
             self.diagnostics.clear();
             #[cfg(feature = "vad-integration-probe")]
             self.native_stamps.clear();
+            #[cfg(feature = "vad-integration-probe")]
+            self.native_retirements.clear();
             for observation in self.observations.values_mut() {
                 // Keep actual resource/gate observations until the adapter
                 // closes them, but recovery must establish fresh admission.
