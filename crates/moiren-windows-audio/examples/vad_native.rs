@@ -1,5 +1,6 @@
 //! Explicit target-only PCM validation. Ordinary tests never open audio devices.
 
+use moiren_windows_audio::vad::Intent;
 use std::ffi::OsString;
 
 #[cfg(any(windows, test))]
@@ -20,6 +21,7 @@ struct Options {
     seconds: u32,
     help: bool,
     mode: NativeMode,
+    intent_filter: Option<Intent>,
 }
 
 impl Options {
@@ -29,6 +31,7 @@ impl Options {
             seconds: 2,
             help: false,
             mode: NativeMode::Event,
+            intent_filter: None,
         };
         let mut seconds_seen = false;
         for argument in arguments {
@@ -39,6 +42,13 @@ impl Options {
                 "--exercise" if !options.exercise => options.exercise = true,
                 "--help" | "-h" => options.help = true,
                 "--timer" if options.mode == NativeMode::Event => options.mode = NativeMode::Timer,
+                value if value.starts_with("--intent=") && options.intent_filter.is_none() => {
+                    options.intent_filter = Some(match &value["--intent=".len()..] {
+                        "playback" => Intent::Playback,
+                        "microphone" => Intent::Microphone,
+                        _ => anyhow::bail!("--intent must be playback or microphone"),
+                    });
+                }
                 value if value.starts_with("--seconds=") && !seconds_seen => {
                     options.seconds = value["--seconds=".len()..].parse()?;
                     anyhow::ensure!(
@@ -58,6 +68,10 @@ impl Options {
             options.mode != NativeMode::Timer || options.exercise || options.help,
             "--timer requires --exercise"
         );
+        anyhow::ensure!(
+            options.intent_filter.is_none() || options.exercise || options.help,
+            "--intent requires --exercise"
+        );
         Ok(options)
     }
 }
@@ -66,11 +80,12 @@ fn main() -> anyhow::Result<()> {
     let options = Options::parse(std::env::args_os().skip(1))?;
     if options.help || !options.exercise {
         println!(
-            "vad_native --exercise [--seconds=2] [--timer]\n\
+            "vad_native --exercise [--seconds=2] [--timer] [--intent=playback|microphone]\n\
              Explicit installed-driver probe: four owned virtual endpoints,\n\
              MMDevice/adapter identity, exclusive 48 kHz PCM16/Float32,\n\
              mono/stereo in both directions and microphone gate-close silence.\n\
              --seconds: signal duration per case, 1..=60; eight cases total.\n\
+             --intent: diagnostic subset of four cases; report identifies the selected direction.\n\
              Default: exclusive event-driven; --timer: exclusive no-event,\n\
              padding/position-driven probe with no fallback if unsupported.\n\
              No arguments or --help: display this help without contacting a driver.\n\
@@ -88,7 +103,7 @@ fn run(_options: Options) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn run(options: Options) -> anyhow::Result<()> {
-    target::exercise(options.seconds, options.mode)
+    target::exercise(options.seconds, options.mode, options.intent_filter)
 }
 
 #[cfg(windows)]
@@ -107,6 +122,7 @@ mod tests {
     fn default_and_help_do_not_contact_a_driver() {
         assert!(!parse(&[]).unwrap().exercise);
         assert_eq!(parse(&[]).unwrap().mode, NativeMode::Event);
+        assert_eq!(parse(&["--exercise"]).unwrap().intent_filter, None);
         assert_eq!(parse(&["--exercise"]).unwrap().mode, NativeMode::Event);
         assert!(parse(&["--help"]).unwrap().help);
         assert!(parse(&["-h"]).unwrap().help);
@@ -140,5 +156,24 @@ mod tests {
         assert!(parse(&["--timer", "--help"]).unwrap().help);
         assert!(parse(&["--timer"]).is_err());
         assert!(parse(&["--exercise", "--timer", "--timer"]).is_err());
+    }
+
+    #[test]
+    fn intent_selection_is_explicit_bounded_and_requires_exercise() {
+        for (intent, expected) in [
+            ("playback", Intent::Playback),
+            ("microphone", Intent::Microphone),
+        ] {
+            let argument = format!("--intent={intent}");
+            assert_eq!(
+                parse(&["--exercise", &argument]).unwrap().intent_filter,
+                Some(expected)
+            );
+            assert!(parse(&["--help", &argument]).is_ok());
+            assert!(parse(&[&argument]).is_err());
+            assert!(parse(&["--exercise", &argument, &argument]).is_err());
+        }
+        assert!(parse(&["--exercise", "--intent=other"]).is_err());
+        assert!(parse(&["--exercise", "--intent=microphone", "--intent=playback"]).is_err());
     }
 }

@@ -100,13 +100,19 @@ struct CaseReport {
 struct Report {
     schema_version: u32,
     native_mode: NativeMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    intent_filter: Option<&'static str>,
     root_instance: String,
     defaults_before: Vec<Option<String>>,
     defaults_after: Vec<Option<String>>,
     cases: Vec<CaseReport>,
 }
 
-pub(super) fn exercise(seconds: u32, mode: NativeMode) -> anyhow::Result<()> {
+pub(super) fn exercise(
+    seconds: u32,
+    mode: NativeMode,
+    intent_filter: Option<Intent>,
+) -> anyhow::Result<()> {
     let interfaces = discover_present_interfaces()?;
     ensure!(
         interfaces.len() == 1,
@@ -143,6 +149,9 @@ pub(super) fn exercise(seconds: u32, mode: NativeMode) -> anyhow::Result<()> {
         require_never_default(&enumerator, &mappings)?;
         let mut cases = Vec::with_capacity(8);
         for (index, (endpoint, mapping)) in endpoints.iter_mut().zip(&mappings).enumerate() {
+            if intent_filter.is_some_and(|intent| endpoint.intent() != intent) {
+                continue;
+            }
             for format in [SampleFormat::Pcm16, SampleFormat::Float32] {
                 eprintln!(
                     "native case mode={mode:?} intent={:?} channels={:?} format={format:?} id={}",
@@ -177,6 +186,10 @@ pub(super) fn exercise(seconds: u32, mode: NativeMode) -> anyhow::Result<()> {
         Ok(Report {
             schema_version: 2,
             native_mode: mode,
+            intent_filter: intent_filter.map(|intent| match intent {
+                Intent::Playback => "Playback",
+                Intent::Microphone => "Microphone",
+            }),
             root_instance: root,
             defaults_before: before,
             defaults_after: after,
