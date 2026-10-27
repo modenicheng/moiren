@@ -193,6 +193,19 @@ pub(in super::super) fn footer(
     } else {
         "device-settings"
     };
+    let feedback = draft
+        .error
+        .clone()
+        .or_else(|| draft.message.clone())
+        .unwrap_or_else(|| {
+            if draft.dirty() {
+                t!("Unsaved changes").into()
+            } else if running {
+                t!("Saved requests and active audio are shown separately in Diagnostics.").into()
+            } else {
+                t!("Audio is stopped. Save keeps it stopped.").into()
+            }
+        });
     let this = cx.entity();
     let restart_this = this.clone();
     div()
@@ -207,40 +220,66 @@ pub(in super::super) fn footer(
         .child(
             div()
                 .id(SharedString::from(format!("{prefix}-feedback")))
+                .aria_label(feedback.clone())
                 .text_size(px(theme::TEXT_SM))
-                .text_color(if draft.error.is_some() { theme::DANGER } else { theme::TEXT_MUTED })
-                .child(draft.error.clone().or_else(|| draft.message.clone()).unwrap_or_else(|| {
-                    if draft.dirty() { t!("Unsaved changes").into() }
-                    else if running { t!("Saved requests and active audio are shown separately in Diagnostics.").into() }
-                    else { t!("Audio is stopped. Save keeps it stopped.").into() }
-                }))
+                .text_color(if draft.error.is_some() {
+                    theme::DANGER
+                } else {
+                    theme::TEXT_MUTED
+                })
+                .child(feedback)
                 .gpui_test_observe(),
         )
         .child(
-            div().flex().flex_wrap().gap(px(8.)).justify_end()
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(8.))
+                .justify_end()
                 .child(
-                    button(SharedString::from(format!("{prefix}-discard")), t!("Discard changes"))
-                        .disabled(busy || !draft.dirty())
-                        .on_click(move |_, _, cx| this.update(cx, |shell, cx| {
+                    button(
+                        SharedString::from(format!("{prefix}-discard")),
+                        t!("Discard changes"),
+                    )
+                    .disabled(busy || !draft.dirty())
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |shell, cx| {
                             *shell.settings.draft_mut(editor) = shell.current_settings_draft(cx);
                             cx.notify();
-                        })),
+                        })
+                    }),
                 )
                 .child(
                     button(SharedString::from(format!("{prefix}-save")), t!("Save"))
-                        .variant(if running { ButtonVariant::Secondary } else { ButtonVariant::Primary })
+                        .variant(if running {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Primary
+                        })
                         .disabled(busy || !draft.dirty())
                         .on_click({
                             let this = cx.entity();
-                            move |_, _, cx| this.update(cx, |shell, cx| shell.save_audio_settings(editor, false, cx))
+                            move |_, _, cx| {
+                                this.update(cx, |shell, cx| {
+                                    shell.save_audio_settings(editor, false, cx)
+                                })
+                            }
                         }),
                 )
-                .when(running, |view| view.child(
-                    button(SharedString::from(format!("{prefix}-restart")), t!("Restart Audio"))
+                .when(running, |view| {
+                    view.child(
+                        button(
+                            SharedString::from(format!("{prefix}-restart")),
+                            t!("Restart Audio"),
+                        )
                         .variant(ButtonVariant::Primary)
                         .disabled(busy || !needs_restart)
-                        .on_click(move |_, _, cx| restart_this.update(cx, |shell, cx| shell.save_audio_settings(editor, true, cx))),
-                )),
+                        .on_click(move |_, _, cx| {
+                            restart_this
+                                .update(cx, |shell, cx| shell.save_audio_settings(editor, true, cx))
+                        }),
+                    )
+                }),
         )
 }
 

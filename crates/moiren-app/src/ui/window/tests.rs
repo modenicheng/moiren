@@ -665,6 +665,7 @@ struct SettingsConfirmationDriver {
     log: std::sync::Arc<std::sync::Mutex<Vec<crate::service::AppRequest>>>,
     confirm: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    fail_session: bool,
     initialized: bool,
     awaiting: bool,
 }
@@ -682,12 +683,22 @@ impl crate::service::ServiceDriver for SettingsConfirmationDriver {
             AppRequest::SetAudioSettings(settings) => {
                 context.set_audio_settings(settings);
             }
+            AppRequest::SetTransportLatency(settings) => {
+                context.set_transport_latency(settings);
+            }
             AppRequest::SetLatencyProfile(profile) => context.latency_profile = profile,
             AppRequest::ApplyGraph => {
                 if self.fail.load(std::sync::atomic::Ordering::Acquire) {
-                    context
-                        .graph
-                        .record_error("Device format rejected by test driver");
+                    let error = "Device format rejected by test driver";
+                    context.graph.record_error(error);
+                    if self.fail_session {
+                        let generation = context.core.generation();
+                        context.core.failed(generation, error.into());
+                        context.core.owner_reaped(generation);
+                        context.active_audio_settings = None;
+                        context.active_transport_latency = None;
+                        context.active_latency_profile = None;
+                    }
                 } else {
                     let revision = context.graph.snapshot().candidate_revision;
                     context.graph.preparing(context.core.generation(), revision);
@@ -777,6 +788,7 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
         log: log.clone(),
         confirm: confirm.clone(),
         fail: fail.clone(),
+        fail_session: false,
         initialized: false,
         awaiting: false,
     })
@@ -910,6 +922,94 @@ fn running_settings_save_and_restart_wait_for_confirmation_and_keep_failed_draft
             .processing
             .sample_rate,
         44_100
+    );
+    finish_service(runtime);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[gpui_kit::test]
+fn rejected_transport_restart_keeps_draft_and_saved_preferences_unchanged(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use std::sync::{Arc, Mutex, atomic::AtomicBool};
+
+    cx.update(gpui_kit::init);
+    let confirm = Arc::new(AtomicBool::new(false));
+    let fail = Arc::new(AtomicBool::new(true));
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let runtime = ServiceRuntime::spawn_with_driver(SettingsConfirmationDriver {
+        log: log.clone(),
+        confirm: confirm.clone(),
+        fail: fail.clone(),
+        fail_session: true,
+        initialized: false,
+        awaiting: false,
+    })
+    .unwrap();
+    let handle = runtime.handle();
+    let snapshot = wait_for(Duration::from_secs(2), || {
+        handle
+            .try_snapshot()
+            .filter(|snapshot| snapshot.phase == crate::service::SessionPhase::Running)
+    });
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = shell_with_state(cx, state);
+    let path = settings_test_path("transport-rejection");
+    crate::project::save_preferences_at(&path, &crate::project::AppPreferences::default()).unwrap();
+    view.update(cx, |shell, cx| {
+        shell.preferences = crate::project::AppPreferences::default();
+        shell.settings.global = shell.current_settings_draft(cx);
+        shell.settings.device = shell.current_settings_draft(cx);
+        shell.preferences_path = Some(path.clone());
+    });
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+        window.render_frame(cx);
+    });
+
+    view.update(cx, |shell, cx| {
+        shell.settings.global.transport.process = Some(crate::service::ExpertInputBuffer {
+            target_frames: 1024,
+            ..Default::default()
+        });
+        shell.save_audio_settings(super::settings::Editor::Global, true, cx);
+        assert!(shell.settings.global.pending.is_some());
+        assert!(shell.settings.global.pending.as_ref().unwrap().restart);
+    });
+    settle_settings(&view, cx);
+
+    assert!(
+        log.lock()
+            .unwrap()
+            .iter()
+            .any(|request| matches!(request, crate::service::AppRequest::ApplyGraph)),
+        "restart request was not dispatched: {:?}",
+        *log.lock().unwrap()
+    );
+    view.update(cx, |shell, cx| {
+        let draft = &shell.settings.global;
+        let state = shell.state.read(cx);
+        assert!(draft.dirty());
+        assert!(draft.transport.process.is_some());
+        assert!(draft.error.is_some());
+        assert_eq!(state.snapshot.phase, crate::service::SessionPhase::Failed);
+        assert_eq!(state.snapshot.active_transport_latency, None);
+        assert_eq!(state.snapshot.transport_latency, draft.transport);
+        assert_eq!(shell.preferences.transport_latency, Default::default());
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let feedback = window.find("settings-feedback");
+        assert!(feedback.visible());
+        assert!(feedback.label().unwrap().contains("Device format rejected"));
+    });
+    assert_eq!(
+        crate::project::load_preferences_at(&path)
+            .unwrap()
+            .transport_latency,
+        Default::default()
     );
     finish_service(runtime);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
