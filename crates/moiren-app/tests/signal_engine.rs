@@ -8,12 +8,13 @@ use moiren_engine::{
     meter::signal::{AudioWindow, ChannelLevel},
     runtime::Engine,
 };
-use moiren_signal::{BlockInit, Bus, BusConfig, PublisherStatus, PumpBudget, Topic};
+use moiren_signal::{BlockInit, Bus, BusConfig, PublisherStatus, PumpBudget, Subscriber, Topic};
 
 const UI_WINDOW_FRAMES: usize = 200;
+const LEVEL_STREAM_DEPTH: usize = 16;
 
 fn register(bus: &mut Bus, name: &str) -> Topic<LevelTopic> {
-    bus.register_latest_block(
+    bus.register_stream_block(
         name,
         BlockInit {
             header: AudioWindow {
@@ -28,8 +29,25 @@ fn register(bus: &mut Bus, name: &str) -> Topic<LevelTopic> {
             },
             capacity: 2,
         },
+        LEVEL_STREAM_DEPTH,
     )
     .unwrap()
+}
+
+/// Drains the stream FIFO and returns the newest window's sequence, header,
+/// and levels.
+fn newest_window(
+    subscriber: &mut Subscriber<LevelTopic>,
+) -> Option<(u64, AudioWindow, Vec<ChannelLevel>)> {
+    let mut newest = None;
+    while let Some(window) = subscriber.next() {
+        newest = Some((
+            window.meta().sequence,
+            *window.header(),
+            window.elements().to_vec(),
+        ));
+    }
+    newest
 }
 
 fn render(engine: &mut Engine<f32>, output: &mut AudioReader<f32>, blocks: usize) {
@@ -92,12 +110,12 @@ fn tone_publishes_only_complete_demanded_windows_and_rebind_keeps_sequence() {
         UI_WINDOW_FRAMES - 1,
     );
     pump(&mut bus);
-    assert!(subscriber.read_latest().is_none());
+    assert!(subscriber.next().is_none());
     render_frames(&mut tone.compiled.engine, &mut tone.output, 1);
     assert_eq!(topic.stats().attempts, 1, "complete window must publish");
     pump(&mut bus);
     let first_sequence = {
-        let window = subscriber.read_latest().unwrap();
+        let window = subscriber.next().unwrap();
         assert_eq!(
             window.header().frame_end - window.header().frame_start,
             UI_WINDOW_FRAMES as u64
@@ -136,7 +154,7 @@ fn tone_publishes_only_complete_demanded_windows_and_rebind_keeps_sequence() {
     let mut tone = prepare_tone_with_signals(config, &mut preparation).unwrap();
     let mut subscriber = bus.subscribe(&topic, Default::default()).unwrap();
     pump(&mut bus);
-    assert!(subscriber.read_latest().is_none());
+    assert!(subscriber.next().is_none());
     // One complete window publishes; the sequence continues from before
     // the rebind instead of resetting.
     render_frames(
@@ -146,7 +164,7 @@ fn tone_publishes_only_complete_demanded_windows_and_rebind_keeps_sequence() {
     );
     pump(&mut bus);
     assert_eq!(
-        subscriber.read_latest().unwrap().meta().sequence,
+        subscriber.next().unwrap().meta().sequence,
         first_sequence + 1
     );
 }
@@ -189,18 +207,18 @@ fn monitor_observes_source_and_final_pan_output_without_changing_audio() {
         );
     }
     pump(&mut bus);
-    let source = input_subscription.read_latest().unwrap();
-    let destination = output_subscription.read_latest().unwrap();
-    assert_eq!(source.header(), destination.header());
+    let source = newest_window(&mut input_subscription).unwrap();
+    let destination = newest_window(&mut output_subscription).unwrap();
+    assert_eq!(source.1, destination.1);
     assert_eq!(
-        source.elements(),
+        source.2,
         &[ChannelLevel {
             peak: 0.25,
             rms: 0.25
         }; 2]
     );
     assert_eq!(
-        destination.elements(),
+        destination.2,
         &[
             ChannelLevel {
                 peak: 0.0,
@@ -242,21 +260,22 @@ fn retained_subscriber_distinguishes_restarted_tone_and_monitor_timelines() {
             .unwrap();
             (monitor.compiled, monitor.output)
         };
-        // Two callbacks complete two UI windows. Latest returns the second;
-        // the remaining 112 frames are still a partial third window.
+        // Two callbacks complete two UI windows. The stream hands both to the
+        // reader; the newest is the second, and the remaining 112 frames are
+        // still a partial third window.
         render(&mut compiled.engine, &mut output, 2);
         pump(&mut bus);
         {
-            let window = subscriber.read_latest().unwrap();
-            assert_eq!(window.header().frame_start, UI_WINDOW_FRAMES as u64);
-            assert_eq!(window.header().frame_end, 2 * UI_WINDOW_FRAMES as u64);
-            assert_ne!(window.header().timeline_epoch, 0);
+            let (sequence, header, _) = newest_window(&mut subscriber).unwrap();
+            assert_eq!(header.frame_start, UI_WINDOW_FRAMES as u64);
+            assert_eq!(header.frame_end, 2 * UI_WINDOW_FRAMES as u64);
+            assert_ne!(header.timeline_epoch, 0);
             if let Some(epoch) = previous_epoch {
-                assert_ne!(window.header().timeline_epoch, epoch);
+                assert_ne!(header.timeline_epoch, epoch);
             }
-            assert!(window.meta().sequence > previous_sequence);
-            previous_epoch = Some(window.header().timeline_epoch);
-            previous_sequence = window.meta().sequence;
+            assert!(sequence > previous_sequence);
+            previous_epoch = Some(header.timeline_epoch);
+            previous_sequence = sequence;
         }
         drop(compiled);
         drop(preparation);

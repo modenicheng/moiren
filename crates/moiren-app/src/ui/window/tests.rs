@@ -958,6 +958,61 @@ fn sidebar_edge_handles_toggle_panels_without_the_old_buttons(cx: &mut gpui_kit:
 }
 
 #[gpui_kit::test]
+fn switching_language_retranslates_the_state_stored_search_placeholder(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (view, cx, runtime) = test_shell(cx);
+    // The shell loads the developer's real preference file at construction,
+    // so pin the baseline to English before exercising the runtime switch.
+    view.update(cx, |shell, cx| {
+        shell.preferences.language = crate::i18n::UiLanguage::English;
+        crate::i18n::apply(crate::i18n::UiLanguage::English);
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+        window.render_frame(cx);
+        window.click("settings-appearance", cx);
+        window.render_frame(cx);
+        window.click("language-1", cx);
+    });
+    view.update(cx, |shell, cx| {
+        assert_eq!(
+            shell.preferences.language,
+            crate::i18n::UiLanguage::SimplifiedChinese
+        );
+        assert_eq!(
+            shell
+                .node_search
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            "搜索节点",
+            "strings stored in component state follow the locale switch"
+        );
+        assert_eq!(shell.project_name, "未命名会话");
+    });
+    // The locale is process-global; restore it so parallel suites stay English.
+    cx.update(|window, cx| {
+        window.click("language-0", cx);
+    });
+    view.update(cx, |shell, cx| {
+        assert_eq!(
+            shell
+                .node_search
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .as_ref(),
+            "Search nodes"
+        );
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
 fn single_matrix_click_selects_and_double_click_opens_the_inspector(
     cx: &mut gpui_kit::TestAppContext,
 ) {

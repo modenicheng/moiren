@@ -1039,12 +1039,17 @@ fn each_strip_publishes_its_own_post_fader_level_only_on_demand() {
     loop {
         rig.tick();
         rig.c.signals.pump_if_due(Instant::now());
-        if let Some(window) = subscriber.read_latest()
-            && window.header().frame_end > window.header().frame_start
-            && window.elements().iter().all(|level| {
-                (level.peak - 0.5).abs() < 0.00001 && (level.rms - 0.5).abs() < 0.00001
-            })
-        {
+        let mut matched = false;
+        while let Some(window) = subscriber.next() {
+            if window.header().frame_end > window.header().frame_start
+                && window.elements().iter().all(|level| {
+                    (level.peak - 0.5).abs() < 0.00001 && (level.rms - 0.5).abs() < 0.00001
+                })
+            {
+                matched = true;
+            }
+        }
+        if matched {
             break;
         }
         assert!(
@@ -1675,10 +1680,14 @@ fn legacy_meter_subscription_receives_managed_host_audio_windows() {
     loop {
         r.tick();
         r.c.signals.pump_if_due(Instant::now());
-        if let Some(window) = subscriber.read_latest() {
+        let mut delivered = false;
+        while let Some(window) = subscriber.next() {
             assert_eq!(window.elements()[0].peak, 1.0);
             assert_eq!(window.elements()[0].rms, 1.0);
             assert!(window.header().frame_end > window.header().frame_start);
+            delivered = true;
+        }
+        if delivered {
             break;
         }
         assert!(Instant::now() < deadline, "managed meter did not publish");
@@ -1931,7 +1940,7 @@ fn run_meter_delivery_benchmark(callback_frames: usize, require_frame_age: bool)
         std::thread::sleep(next.saturating_duration_since(Instant::now()));
         next += period;
         let mut received = false;
-        if let Some(window) = subscriber.read_latest() {
+        while let Some(window) = subscriber.next() {
             received = true;
             observed_windows += 1;
             assert_eq!(window.header().frame_end - window.header().frame_start, 200);

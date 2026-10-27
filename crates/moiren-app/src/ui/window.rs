@@ -516,6 +516,8 @@ pub fn shell_for_tests(
 ) -> StudioShell {
     let mut shell = StudioShell::new(state, window, cx, None);
     shell.test_page = Some(page);
+    // Headless tests must never write the developer's real configuration.
+    shell.preferences_path = None;
     shell
 }
 
@@ -562,7 +564,7 @@ mod test_harness;
 #[cfg(any(test, feature = "gpui-test"))]
 pub use test_harness::{finish_service, initial_projection, spawn_service, wait_for, wait_until};
 #[cfg(feature = "gpui-test")]
-pub use test_harness::{shell_with_state, test_shell};
+pub use test_harness::{settle_panels, shell_with_state, test_shell};
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
 mod tray_mixer;

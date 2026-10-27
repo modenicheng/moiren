@@ -186,10 +186,7 @@ pub(super) fn send_edit(
                 if let Ok(edge) = state.snapshot.graph.graph.get_edge(id) {
                     let mut params = *edge.params();
                     change(&mut params);
-                    state.edit_graph(GraphEdit::SetSend {
-                        edge: id,
-                        params,
-                    });
+                    state.edit_graph(GraphEdit::SetSend { edge: id, params });
                 }
             });
             cx.notify();

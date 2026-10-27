@@ -171,7 +171,7 @@ fn production_navigation_opens_every_workspace_and_settings_overlays_matrix(
 }
 
 #[gpui_kit::test]
-fn compact_shell_keeps_navigation_and_opens_session_drawer(cx: &mut gpui_kit::TestAppContext) {
+fn compact_shell_keeps_navigation_and_exclusive_panels(cx: &mut gpui_kit::TestAppContext) {
     let runtime = common::service();
     let handle = runtime.handle();
     let snapshot = common::wait_snapshot(&handle);
@@ -193,7 +193,14 @@ fn compact_shell_keeps_navigation_and_opens_session_drawer(cx: &mut gpui_kit::Te
     });
     cx.update_window(window.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find("session-io-panel").is_none());
+        // Retired per-page toggles stay gone; compact shells use the same
+        // edge handles, starting with both panels closed.
+        assert!(window.try_find("toggle-library").is_none());
+        assert!(window.try_find("toggle-inspector").is_none());
+        assert!(
+            !window.find("session-io-panel").visible(),
+            "compact shells start with the library clipped away"
+        );
         for tab in [
             "tab-graph",
             "tab-mixer",
@@ -203,12 +210,21 @@ fn compact_shell_keeps_navigation_and_opens_session_drawer(cx: &mut gpui_kit::Te
         ] {
             assert!(window.find(tab).visible());
         }
-        window.click("toggle-library", cx);
+        window.click("library-toggle", cx);
+    })
+    .unwrap();
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    moiren_app::ui::settle_panels(&mut visual);
+    cx.update_window(window.into(), |_, window, cx| {
         assert!(window.find("session-io-panel").visible());
-        window.click("toggle-inspector", cx);
+        window.click("inspector-toggle", cx);
+    })
+    .unwrap();
+    moiren_app::ui::settle_panels(&mut visual);
+    cx.update_window(window.into(), |_, window, cx| {
         assert!(
-            window.try_find("session-io-panel").is_none(),
-            "compact drawers are exclusive"
+            !window.find("session-io-panel").visible(),
+            "compact panels are exclusive"
         );
         window.click("tab-devices", cx);
         assert!(window.find("devices-page").visible());

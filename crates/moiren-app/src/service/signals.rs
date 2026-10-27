@@ -1,6 +1,6 @@
 use moiren_engine::meter::signal::{AudioWindow, ChannelLevel};
 use moiren_signal::{
-    BlockInit, Bus, BusConfig, LatestBlock, PumpBudget, PumpReport, RegisterError, Shape,
+    BlockInit, Bus, BusConfig, PumpBudget, PumpReport, RegisterError, Shape, StreamBlock,
     SubscribeError, Subscriber, SubscriptionOptions, Topic,
 };
 use std::sync::{
@@ -10,7 +10,12 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-pub type LevelTopic = LatestBlock<AudioWindow, ChannelLevel>;
+/// Level windows stream FIFO: superseding delivery would drop the three of
+/// four windows published at 240 Hz that a 60 Hz display never reads, losing
+/// their peaks. Sixteen queued slots hold ~67 ms of backlog for slower readers.
+const LEVEL_STREAM_DEPTH: usize = 16;
+
+pub type LevelTopic = StreamBlock<AudioWindow, ChannelLevel>;
 
 #[derive(Debug, Clone)]
 pub struct SignalTopics {
@@ -111,9 +116,21 @@ impl SignalTopics {
         };
         Ok(Self {
             node_levels: Default::default(),
-            monitor_input: bus.register_latest_block("monitor/input/output/level", initial)?,
-            monitor_output: bus.register_latest_block("monitor/output/level", initial)?,
-            tone_output: bus.register_latest_block("tone/output/level", initial)?,
+            monitor_input: bus.register_stream_block(
+                "monitor/input/output/level",
+                initial,
+                LEVEL_STREAM_DEPTH,
+            )?,
+            monitor_output: bus.register_stream_block(
+                "monitor/output/level",
+                initial,
+                LEVEL_STREAM_DEPTH,
+            )?,
+            tone_output: bus.register_stream_block(
+                "tone/output/level",
+                initial,
+                LEVEL_STREAM_DEPTH,
+            )?,
         })
     }
 }
@@ -146,7 +163,7 @@ impl SignalService {
             }
             let topic = self
                 .bus
-                .register_latest_block(
+                .register_stream_block(
                     &format!("node/{:?}/level", node.id()),
                     BlockInit {
                         header: AudioWindow {
@@ -158,6 +175,7 @@ impl SignalService {
                         element: ChannelLevel { peak: 0., rms: 0. },
                         capacity: node.channels(),
                     },
+                    LEVEL_STREAM_DEPTH,
                 )
                 .map_err(|error| error.to_string())?;
             self.topics.node_levels.insert(node.id(), topic);
@@ -505,6 +523,36 @@ mod tests {
         assert_eq!(subscriber.next().unwrap().value, 4);
     }
 
+    /// Drains a level stream FIFO and returns the newest window's sequence,
+    /// activation generation, header, and per-channel levels.
+    fn drain_newest(
+        subscriber: &mut Subscriber<LevelTopic>,
+    ) -> Option<(u64, u64, AudioWindow, Vec<ChannelLevel>)> {
+        let mut newest = None;
+        while let Some(window) = subscriber.next() {
+            newest = Some((
+                window.meta().sequence,
+                window.meta().activation_generation,
+                *window.header(),
+                window.elements().to_vec(),
+            ));
+        }
+        newest
+    }
+
+    /// One pump advances a stream topic only a few dispatch steps, so a queue
+    /// of level windows takes several 1 ms polls to drain, as on the service
+    /// thread.
+    fn pump_settled(service: &mut SignalService, now: &mut Instant) {
+        for _ in 0..64 {
+            *now += Duration::from_millis(1);
+            match service.pump_if_due(*now) {
+                Some(report) if report.has_pending => {}
+                _ => return,
+            }
+        }
+    }
+
     #[test]
     fn analysis_receives_real_audio_windows_after_ui_hide_without_generation_reset() {
         use crate::ui::signals::{PresentationDemand, VisibleSignal};
@@ -515,7 +563,13 @@ mod tests {
         snapshot.signal_topics = service.topics.clone();
         let (handle, mailbox) =
             super::super::ServiceMailbox::with_snapshot(std::thread::current(), snapshot);
-        let mut ui = VisibleSignal::new(handle, topic.clone(), Default::default());
+        let mut ui = VisibleSignal::new(
+            handle,
+            topic.clone(),
+            SubscriptionOptions {
+                stream_depth: Some(LEVEL_STREAM_DEPTH),
+            },
+        );
         let mut demand = PresentationDemand {
             window_visible: true,
             minimized: false,
@@ -541,21 +595,15 @@ mod tests {
             &mut preparation,
         )
         .unwrap();
-        let now = Instant::now();
+        let mut now = Instant::now();
         for _ in 0..6 {
             tone.compiled.engine.render(256).unwrap();
             tone.output.read_interleaved(&mut [0.0; 512]).unwrap();
         }
-        service.pump_if_due(now).unwrap();
-        let first_sequence = analysis.read_latest().unwrap().meta().sequence;
+        pump_settled(&mut service, &mut now);
+        let first_sequence = drain_newest(&mut analysis).unwrap().0;
         assert_eq!(
-            ui.subscriber()
-                .unwrap()
-                .unwrap()
-                .read_latest()
-                .unwrap()
-                .meta()
-                .sequence,
+            ui.subscriber().unwrap().and_then(drain_newest).unwrap().0,
             first_sequence
         );
         demand.window_visible = false;
@@ -564,19 +612,33 @@ mod tests {
         assert!(ui.subscriber().unwrap().is_none());
         assert_eq!(topic.business_subscribers(), 1);
         assert_eq!(topic.demand_snapshot().generation, generation);
-        // Two 256-frame blocks complete three more 200-frame windows. Latest
-        // keeps the newest window; skipped windows cannot contribute peaks.
+        // Two 256-frame blocks complete three more 200-frame windows; the
+        // stream FIFO hands every one of them to the reader in order, with
+        // no drops between the first and the newest.
         for _ in 0..2 {
             tone.compiled.engine.render(256).unwrap();
             tone.output.read_interleaved(&mut [0.0; 512]).unwrap();
         }
-        service.pump_if_due(now + Duration::from_millis(5)).unwrap();
+        pump_settled(&mut service, &mut now);
         {
-            let window = analysis.read_latest().unwrap();
-            assert_eq!(window.meta().sequence, first_sequence + 3);
-            assert_eq!(window.meta().activation_generation, generation);
-            assert_eq!(window.header().frame_start, 1800);
-            assert_eq!(window.header().frame_end, 2000);
+            let mut drained = Vec::new();
+            while let Some(window) = analysis.next() {
+                drained.push((
+                    window.meta().sequence,
+                    window.meta().activation_generation,
+                    *window.header(),
+                    window.elements().to_vec(),
+                ));
+            }
+            let sequences: Vec<u64> = drained.iter().map(|window| window.0).collect();
+            assert_eq!(
+                sequences,
+                [first_sequence + 1, first_sequence + 2, first_sequence + 3]
+            );
+            let (_, activation_generation, header, levels) = drained.pop().unwrap();
+            assert_eq!(activation_generation, generation);
+            assert_eq!(header.frame_start, 1800);
+            assert_eq!(header.frame_end, 2000);
             let expected_rms = ((1800..2000)
                 .map(|frame| {
                     (std::f64::consts::TAU * 440.0 * frame as f64 / 48_000.0)
@@ -587,7 +649,7 @@ mod tests {
                 / 200.0)
                 .sqrt()
                 * 0.01;
-            for level in window.elements() {
+            for level in levels {
                 assert!((level.peak - 0.01).abs() < 0.00001);
                 assert!((f64::from(level.rms) - expected_rms).abs() < 0.00001);
             }
@@ -612,8 +674,10 @@ mod tests {
     #[test]
     fn subscribe_error_and_service_disconnection_are_distinct() {
         let (mut bus, topics) = fixture();
+        // Latest topics still reject stream-only subscription options.
+        let latest = bus.register_latest_value("err/latest", 0_u32).unwrap();
         let (mut ticket, request) = subscription_request(
-            topics.tone_output.clone(),
+            latest,
             SubscriptionOptions {
                 stream_depth: Some(1),
             },

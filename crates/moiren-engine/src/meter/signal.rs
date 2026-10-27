@@ -8,7 +8,7 @@ use crate::{
     sample::ProcessingSample,
     signal::ProcessSignals,
 };
-use moiren_signal::{ErasedBinding, LatestBlock, PreparedPublisher, PublisherHandle};
+use moiren_signal::{BlockShape, ErasedBinding, LatestBlock, PreparedPublisher, PublisherHandle};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,7 +47,16 @@ pub enum MeterError {
 }
 
 /// Read-only per-channel measurement with all accumulation storage prepared off RT.
-pub struct SignalLevelMeter {
+///
+/// The publisher shape is generic over block transports so the same observer
+/// serves superseding latest topics (host-owned relays) and FIFO stream topics
+/// (direct UI delivery, where every window must survive until read).
+pub struct SignalLevelMeter<
+    P: BlockShape<Header = AudioWindow, Element = ChannelLevel> = LatestBlock<
+        AudioWindow,
+        ChannelLevel,
+    >,
+> {
     channels: usize,
     window_frames: usize,
     accumulated_frames: usize,
@@ -55,16 +64,16 @@ pub struct SignalLevelMeter {
     continuity: WindowContinuity,
     peaks: Box<[f64]>,
     squares: Box<[f64]>,
-    publisher: PublisherHandle<LatestBlock<AudioWindow, ChannelLevel>>,
+    publisher: PublisherHandle<P>,
     bindings: Box<[ErasedBinding]>,
 }
 
-impl SignalLevelMeter {
+impl<P: BlockShape<Header = AudioWindow, Element = ChannelLevel>> SignalLevelMeter<P> {
     /// Requires a nonzero window and a topic with exactly one element per channel.
     pub fn new(
         channels: usize,
         window_frames: usize,
-        publisher: PreparedPublisher<LatestBlock<AudioWindow, ChannelLevel>>,
+        publisher: PreparedPublisher<P>,
     ) -> Result<Self, MeterError> {
         if channels == 0 {
             return Err(MeterError::InvalidChannels);
@@ -95,7 +104,9 @@ impl SignalLevelMeter {
     }
 }
 
-impl<S: ProcessingSample> RtObserver<S> for SignalLevelMeter {
+impl<S: ProcessingSample, P: BlockShape<Header = AudioWindow, Element = ChannelLevel>> RtObserver<S>
+    for SignalLevelMeter<P>
+{
     fn validate_inputs(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
         validate_single_input(self.channels, io)
     }

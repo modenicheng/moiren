@@ -1156,10 +1156,7 @@ impl StudioShell {
         let label = self.node_name.read(cx).value().trim().to_string();
         if !label.is_empty() {
             self.state.update(cx, |state, _| {
-                state.edit_graph(GraphEdit::SetLabel {
-                    node: id,
-                    label,
-                })
+                state.edit_graph(GraphEdit::SetLabel { node: id, label })
             });
         }
         cx.notify();

@@ -315,8 +315,8 @@ fn language_choices(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                 ButtonVariant::Secondary
             })
             .disabled(shell.settings.busy())
-            .on_click(move |_, _, cx| {
-                this.update(cx, |shell, cx| shell.set_language(language, cx));
+            .on_click(move |_, window, cx| {
+                this.update(cx, |shell, cx| shell.set_language(language, window, cx));
             }),
         );
     }
