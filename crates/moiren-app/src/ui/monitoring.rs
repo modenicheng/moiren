@@ -16,7 +16,8 @@ use crate::service::{
 use super::signals::{PresentationDemand, VisibleSignal};
 
 /// A complete window must keep arriving; a retained value is not proof that
-/// the audio thread or publisher is still advancing.
+/// the audio thread or publisher is still advancing. This is the minimum;
+/// explicit long integrations use the last validated publication's duration.
 const STALE_AFTER: Duration = Duration::from_millis(500);
 
 /// Keep brief visibility changes from recreating subscriptions and fencing
@@ -29,6 +30,8 @@ const SUBSCRIPTION_GRACE: Duration = Duration::from_millis(750);
 const LEVEL_WINDOW_DEPTH: usize = 16;
 
 mod ballistics;
+#[cfg(test)]
+mod freshness_tests;
 use crate::project::MeterDisplayPreferences;
 use ballistics::ChannelBallistics;
 #[cfg(test)]
@@ -282,6 +285,7 @@ struct MeterSubscription {
     visible: VisibleSignal<LevelTopic>,
     sequence_fence: u64,
     last_delivery: Option<Instant>,
+    freshness_timeout: Duration,
     last_window: Option<(u64, u64)>,
     levels: Option<Box<[ChannelLevel]>>,
     channels: usize,
@@ -463,6 +467,7 @@ impl MeterSubscription {
             ),
             topic,
             last_delivery: None,
+            freshness_timeout: STALE_AFTER,
             last_window: None,
             levels: None,
             channels,
@@ -503,6 +508,7 @@ impl MeterSubscription {
         {
             self.levels = None;
             self.last_delivery = None;
+            self.freshness_timeout = STALE_AFTER;
             self.sequence_fence = self.topic.stats().attempts;
             self.status = MeterStatus::NoPublisher;
             return false;
@@ -536,9 +542,15 @@ impl MeterSubscription {
             ) {
                 continue;
             }
+            let Some((duration, timeout)) = window_timing(header) else {
+                continue;
+            };
             self.sequence_fence = meta.sequence;
             self.last_window = Some((header.timeline_epoch, header.frame_end));
             self.last_delivery = Some(now);
+            // Candidate Meter settings cannot extend freshness. Only a complete,
+            // sequence-fenced publication proves the actual integration cadence.
+            self.freshness_timeout = timeout;
             self.status = MeterStatus::Live;
             published = true;
             match self.levels.as_deref_mut() {
@@ -550,7 +562,6 @@ impl MeterSubscription {
                 }
                 None => self.levels = Some(elements.to_vec().into_boxed_slice()),
             }
-            let duration = window_secs(header);
             sync_ballistics(&mut self.ballistics, &mut self.display, self.channels);
             for (channel, element) in self.ballistics.iter_mut().zip(elements) {
                 channel.ingest(*element, duration, now);
@@ -559,16 +570,20 @@ impl MeterSubscription {
         if published {
             return true;
         }
+        self.expire_if_stale(now);
+        false
+    }
+
+    fn expire_if_stale(&mut self, now: Instant) {
         if self
             .last_delivery
-            .is_some_and(|last| now.saturating_duration_since(last) >= STALE_AFTER)
+            .is_some_and(|last| now.saturating_duration_since(last) >= self.freshness_timeout)
         {
             self.levels = None;
             self.status = MeterStatus::Stale;
         } else if self.last_delivery.is_none() {
             self.status = MeterStatus::Waiting;
         }
-        false
     }
 
     /// Step the display ballistics. Runs on every pump (display frame or
@@ -616,9 +631,21 @@ fn sync_ballistics(
     }
 }
 
-/// True window duration; validation guarantees positive frames and rate.
-fn window_secs(header: AudioWindow) -> Duration {
-    Duration::from_secs_f64((header.frame_end - header.frame_start) as f64 / header.sample_rate)
+/// Real integration duration and its freshness allowance. Reject malformed or
+/// unrepresentable times before changing delivery fences or display ballistics.
+fn window_timing(header: AudioWindow) -> Option<(Duration, Duration)> {
+    if header.timeline_epoch == 0 || !header.sample_rate.is_finite() || header.sample_rate <= 0. {
+        return None;
+    }
+    let frames = header.frame_end.checked_sub(header.frame_start)?;
+    let duration = Duration::try_from_secs_f64(frames as f64 / header.sample_rate).ok()?;
+    if duration.is_zero() {
+        return None;
+    }
+    let timeout = duration
+        .checked_mul(2)?
+        .checked_add(Duration::from_millis(100))?;
+    Some((duration, timeout.max(STALE_AFTER)))
 }
 
 fn valid_level_window(
@@ -631,10 +658,7 @@ fn valid_level_window(
 ) -> bool {
     sequence > sequence_fence
         && channels > 0
-        && header.timeline_epoch != 0
-        && header.frame_end > header.frame_start
-        && header.sample_rate.is_finite()
-        && header.sample_rate > 0.0
+        && window_timing(header).is_some()
         && levels.len() == channels
         && levels.iter().all(|level| {
             level.peak.is_finite() && level.peak >= 0.0 && level.rms.is_finite() && level.rms >= 0.0
