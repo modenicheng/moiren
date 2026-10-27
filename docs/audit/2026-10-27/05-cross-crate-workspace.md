@@ -74,7 +74,7 @@
 - **证据**：FRONTEND.md:4 更新日期 2026-10-16；此后 main 合入 undo/redo（PR#10）、全局 Inspector 侧栏（PR#11）、canvas 工具栏图标（PR#15），文中均未提及。README 引用与命令全部可解析，无漂移。
 
 ### X-9 (P3) docs/designs 序号 12 复用
-- **证据**：`12-gpui-ready-action-components.md` 与 `12-unified-topology-backend-contract.md` 并存。建议下次触碰 designs 时择一改号。
+- **证据**：`12-gpui-ready-action-components.md` 与 `12-unified-topology-backend-contract.md` 并存（前者已改号为 15）。
 
 ### X-10 (P3, 记录在案) .worktrees/ 排除仅本地生效
 - **证据**：10 个活动 git worktree，靠 `.git/info/exclude:7` 忽略而非 tracked .gitignore。可考虑入 .gitignore（一行 `/\.worktrees/`），避免他人 clone 后 worktree 噪声。
