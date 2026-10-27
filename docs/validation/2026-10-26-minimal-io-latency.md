@@ -2712,3 +2712,57 @@ test process or present dynamic VAD child, bus `OK`, unchanged SYS hash, and
 32,224,735,232 bytes free (about 30.01 GiB). DriverStore, system, debugging
 infrastructure and rollback files were not removed. Rename and all physical
 latency/quality/long-duration gates remain open.
+
+### 2026-10-28 strict log storage cap and immediate VM cleanup
+
+`46241c8` adds a combined raw stdout/stderr byte budget to the native collection
+runner: default 16,777,216 bytes, explicitly configurable from 1 to 67,108,864.
+Both asynchronous destinations reserve from the same lock-protected counter
+before writing. Overflow fails the run, terminates only the retained owned
+child, preserves its actual exit and partial logs, and withholds the manifest
+when output was not proven stable. It does not cap arbitrary child-created
+artifacts, reserve filesystem space or prove audio quality.
+
+Independent spec/quality review passes. The parent reran the full Windows
+PowerShell 5.1 real-child suite: all 11 behavior groups pass, including combined
+flood, one-byte and exact-boundary tests, inherited pipes, timeout isolation,
+actual fast-exit codes and immutable existing evidence. Parent log:
+`target/20261028-owned-process/runner-cap-parent.log`. The real-time ownership
+harness also passes 86 tests, and all ten driver host suites pass; neither is
+native audio qualification.
+
+One guest-only non-audio smoke tested the committed runner on `DRIVER-TEST`:
+an explicitly owned PowerShell child floods both streams with a 1,024-byte
+combined allowance. The runner returns `log_limit_exceeded`, actual child exit
+`-1`, forced termination confirmed, `timed_out=false`, elapsed 0.5376634 seconds,
+and exactly 1,024 retained log bytes. Both failed copy-task errors remain in the
+receipt, output/manifest are `unavailable`, and no runner manifest is fabricated.
+The outer helper initially failed its manifest construction because PS5.1
+`Measure-Object` did not project its dictionary `bytes` key. A separate bounded
+recovery command created a manifest from PSCustomObject entries without rerunning
+the child; the original helper and failure are retained, not silently replaced.
+
+Archive:
+`target/vad-target-archive/logcap-46241c8-20261028-012110/`.
+All seven payloads (21,837 bytes) were copied and verified by length/SHA-256 on
+the host, then rechecked on the guest before explicit file/empty-directory
+deletion. The guest-manifest SHA-256 is
+`175935E3780D61B301794E505F86DFDA8CB9C8B733F749A5C03C6EA841F5836C`.
+At 01:22:12 +08:00, the test root is empty, no Moiren/probe process remains,
+bus is `OK`, and C: has 32,222,277,632 bytes free (about 30.01 GiB). This is a
+free-space observation, not a claim that file lengths equal reclaimed space.
+No audio endpoint, installed driver, DriverStore, Windows/debugging infrastructure
+or rollback package was changed. Host-only builds and verified per-run cleanup
+remain mandatory for the 64 GB-class guest.
+
+### 2026-10-28 portable probe cfg repair
+
+`bdfe6e3` gates only Windows-native controlled-load supervision and its two
+Windows-only import sites. The CLI worker remains portable and pure evidence
+validation remains compiled in tests; no runtime body or lint allowance changes.
+An isolated `521334c` archive with exactly these three candidate files, excluding
+concurrent owned-source work, passes Linux strict example/test Clippy and all
+126 Windows probe tests. Parent Windows strict example/test Clippy and scoped
+format checks pass too. Independent spec/quality review passes. Logs and exact
+export provenance are under `target/20261028-owned-process/`; these checks are
+not a claim that the concurrent source precursor or Stage 7 is complete.
