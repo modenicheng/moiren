@@ -20,6 +20,8 @@ mod control_io;
 #[cfg(windows)]
 mod discovery;
 #[cfg(windows)]
+mod endpoint_name;
+#[cfg(windows)]
 mod pcm;
 #[cfg(windows)]
 mod provider;
@@ -28,6 +30,8 @@ mod provider;
 pub use client::{ClientError, ControlClient};
 #[cfg(windows)]
 pub use discovery::{CONTROL_INTERFACE_GUID, DeviceInterface, discover_present_interfaces};
+#[cfg(windows)]
+pub use endpoint_name::VadEndpointNameObservation;
 pub use format::{PcmFormatError, decode_interleaved, encode_interleaved};
 #[cfg(windows)]
 pub use pcm::{PcmCompletion, PcmOwner, ResidualPcm};
