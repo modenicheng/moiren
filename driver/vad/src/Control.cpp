@@ -47,6 +47,48 @@ static void TracePendingPcmDiagnostics(VAD_SHARED* shared,
     }
 }
 
+static void TracePendingClockDiagnostic(VAD_SHARED* shared,
+    const MOIREN_VAD_ENDPOINT_SNAPSHOT& snapshot)
+{
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    if (!WPP_LEVEL_FLAGS_ENABLED(TRACE_LEVEL_INFORMATION, VAD_CONTROL)) {
+        return;
+    }
+    vad::audio::ClockDiagnostic diagnostic = {};
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    for (ULONG i = 0; i < MOIREN_VAD_MAX_ENDPOINTS; ++i) {
+        const auto& slot = shared->Slots[i];
+        if (slot.Id == snapshot.EndpointId && slot.Session == snapshot.SessionEpoch &&
+            slot.StreamGeneration == snapshot.StreamGeneration) {
+            diagnostic = shared->ClockDiagnostics[i].TakeUnreported();
+            break;
+        }
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+    if (!diagnostic.ReportFirst) {
+        return;
+    }
+    const auto& item = diagnostic.First;
+    const auto& before = diagnostic.EndpointBefore;
+    const auto& after = diagnostic.EndpointAfter;
+    // Fixed first observation only, emitted after releasing Shared->Lock.
+    // QPC ticks/frequency are evidence, not wall time or physical audio latency.
+    VadTrace(TRACE_LEVEL_INFORMATION, VAD_CONTROL,
+        "Clock rebase endpoint=%I64u session=%I64u stream=%I64u generation=%I64u reason=%u callback_qpc=%I64u deadline_frame=%I64u deadline_qpc=%I64u late_ticks=%I64u frames=%u packets=%u completed=%I64u presented=%I64u before_gen=%I64u after_gen=%I64u before_gate=%I64u after_gate=%I64u before_open=%u after_open=%u before_state=%u after_state=%u before_freq=%I64u after_freq=%I64u before_epoch=%I64u after_epoch=%I64u before_base=%I64u after_base=%I64u before_limit=%I64u after_limit=%I64u before_running=%u after_running=%u",
+        snapshot.EndpointId, snapshot.SessionEpoch, diagnostic.Stream,
+        diagnostic.Generation, static_cast<ULONG>(item.Reason), item.CallbackQpc,
+        item.DeadlineFrame, item.DeadlineQpc, item.LatenessTicks, item.PacketFrames,
+        item.PacketCount, item.CompletedPackets, item.PresentedFrames,
+        before.Generation, after.Generation, before.GateEpoch, after.GateEpoch,
+        before.GateOpen, after.GateOpen, before.StreamState, after.StreamState,
+        item.Before.Frequency, item.After.Frequency,
+        item.Before.EpochQpc, item.After.EpochQpc,
+        item.Before.BaseFrames, item.After.BaseFrames,
+        item.Before.LimitFrames, item.After.LimitFrames,
+        static_cast<ULONG>(item.Before.Running), static_cast<ULONG>(item.After.Running));
+}
+
 VAD_PAGE NTSTATUS VadControlInitialize(WDFDEVICE device)
 {
     PAGED_CODE();
@@ -168,6 +210,7 @@ static NTSTATUS Dispatch(WDFDEVICE device, WDFREQUEST request, size_t* informati
         if (code == IOCTL_MOIREN_VAD_QUERY ||
             (code == IOCTL_MOIREN_VAD_SET_GATE && local.Gate.Open == 0)) {
             TracePendingPcmDiagnostics(shared, snapshot);
+            TracePendingClockDiagnostic(shared, snapshot);
         }
         RtlCopyMemory(output, &snapshot, sizeof(snapshot));
         *information = sizeof(snapshot);

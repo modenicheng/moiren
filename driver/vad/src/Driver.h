@@ -8,6 +8,7 @@
 #include "Lifecycle.h"
 #include "Ownership.h"
 #include "PcmDiagnostics.h"
+#include "audio/ClockDiagnostic.h"
 
 extern const GUID VadControlInterface;
 
@@ -23,6 +24,7 @@ struct VAD_SHARED {
     volatile LONG References;
     vad::Slot Slots[MOIREN_VAD_MAX_ENDPOINTS];
     vad::PcmDiagnostics PcmDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
+    vad::audio::ClockDiagnostic ClockDiagnostics[MOIREN_VAD_MAX_ENDPOINTS];
     WDFDEVICE Children[MOIREN_VAD_MAX_ENDPOINTS]; // Owns one WDF reference.
     WDFQUEUE PcmQueues[MOIREN_VAD_MAX_ENDPOINTS];
     EX_RUNDOWN_REF PcmRundown;

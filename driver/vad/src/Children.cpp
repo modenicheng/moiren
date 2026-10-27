@@ -85,6 +85,7 @@ NTSTATUS VadCreateChild(WDFDEVICE device, const MOIREN_VAD_CREATE_REQUEST& reque
     if (reserved >= 0) {
         auto& slot = shared->Slots[reserved];
         shared->PcmDiagnostics[reserved].Reset(0);
+        shared->ClockDiagnostics[reserved].Reset(0);
         slot.StableId = request.StableId;
         slot.AllowDefault = request.AllowDefault;
         RtlCopyMemory(slot.Name, request.Name, sizeof(request.Name));
@@ -403,6 +404,7 @@ NTSTATUS VadAudioAcquireStream(WDFDEVICE child, uint64_t* generation)
         } else if (InterlockedCompareExchange(&context->ActiveStreams, 1, 0) == 0) {
             *generation = ++slot.StreamGeneration;
             shared->PcmDiagnostics[context->Index].Reset(*generation);
+            shared->ClockDiagnostics[context->Index].Reset(*generation);
             slot.SampleFormat = 0;
             slot.PacketFrames = 0;
             slot.StreamState = MOIREN_VAD_STREAM_PAUSED;
@@ -482,6 +484,26 @@ void VadAudioDescribeStream(WDFDEVICE child, uint64_t generation,
             MOIREN_VAD_FORMAT_PCM16 : MOIREN_VAD_FORMAT_FLOAT32;
         slot.PacketFrames = frames;
         slot.StreamState = state;
+    }
+    KeReleaseSpinLock(&shared->Lock, irql);
+}
+
+void VadAudioRebaseDiscontinuity(WDFDEVICE child, uint64_t generation,
+    uint64_t stream, const vad::audio::ClockRebaseObservation& observation)
+{
+    auto context = VadChild(child);
+    auto shared = context->Shared;
+    KIRQL irql;
+    KeAcquireSpinLock(&shared->Lock, &irql);
+    auto& slot = shared->Slots[context->Index];
+    if (slot.Id == context->Id && slot.StreamGeneration == generation) {
+        const auto before = vad::audio::ObserveClockEndpoint(slot);
+        // Exactly the same transition as VadPcmDiscontinuity(pauseStream=false).
+        // Observe its actual result atomically; two lock acquisitions could
+        // misattribute a concurrent gate close/open to this callback's rebase.
+        vad::InvalidatePcmEpoch(slot);
+        shared->ClockDiagnostics[context->Index].Record(stream, before,
+            vad::audio::ObserveClockEndpoint(slot), observation);
     }
     KeReleaseSpinLock(&shared->Lock, irql);
 }

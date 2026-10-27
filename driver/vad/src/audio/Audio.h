@@ -16,3 +16,8 @@ VAD_PAGE NTSTATUS VadAudioInitialize(WDFDEVICE child, uint32_t intent, uint32_t 
 // Shared->Lock is held; the stream lifecycle owns the mapped packet storage.
 _IRQL_requires_(PASSIVE_LEVEL)
 void VadAudioClearGateBuffers(WDFDEVICE child);
+
+// Caller holds stream State, never Shared->Lock. Retains a first rebase while
+// performing the same PCM epoch invalidation under the existing shared lock.
+void VadAudioRebaseDiscontinuity(WDFDEVICE child, uint64_t generation,
+    uint64_t stream, const vad::audio::ClockRebaseObservation& observation);

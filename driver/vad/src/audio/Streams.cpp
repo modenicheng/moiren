@@ -260,6 +260,7 @@ _IRQL_requires_(DISPATCH_LEVEL)
 static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
     VAD_PCM_BATCH* batch)
 {
+    const auto clockBefore = stream->Clock;
     const auto schedule = vad::audio::PlanTimerDrivenStep(
         stream->Clock, stream->TimerRing, now);
     if (!schedule.Valid) {
@@ -268,7 +269,12 @@ static void TimerDrivenTick(VAD_AUDIO_STREAM* stream, uint64_t now,
         return;
     }
     if (schedule.Rebased) {
-        VadPcmDiscontinuity(stream->Device, stream->Generation);
+        const auto observation = vad::audio::ObserveClockRebase(
+            vad::audio::ClockRebaseReason::TimerStall, clockBefore,
+            stream->Clock, now, stream->PacketFrames, stream->PacketCount,
+            stream->CompletedPackets, stream->TimerRing.PresentedFrames);
+        VadAudioRebaseDiscontinuity(stream->Device, stream->Generation,
+            reinterpret_cast<uint64_t>(stream->Stream), observation);
         QuiesceStreamBuffers(stream);
     }
     ULONG remaining = schedule.Frames;
@@ -330,12 +336,18 @@ VOID VadAudioTimer(WDFTIMER timer)
     const ULONG index = static_cast<ULONG>(stream->CompletedPackets % stream->PacketCount);
     const auto packet = stream->CompletedPackets;
     ++stream->CompletedPackets;
+    const auto clockBefore = stream->Clock;
     const auto schedule = vad::audio::SchedulePacket(stream->Clock,
         stream->CompletedPackets, stream->PacketFrames, now);
     stream->LastCaptureStart = schedule.CompletedStartQpc;
     if (schedule.Rebased) {
         // Invalidate queued old-epoch PCM before it can reach a resumed packet.
-        VadPcmDiscontinuity(stream->Device, stream->Generation);
+        const auto observation = vad::audio::ObserveClockRebase(
+            vad::audio::ClockRebaseReason::EventDeadline, clockBefore,
+            stream->Clock, now, stream->PacketFrames, stream->PacketCount,
+            stream->CompletedPackets, stream->TimerRing.PresentedFrames);
+        VadAudioRebaseDiscontinuity(stream->Device, stream->Generation,
+            reinterpret_cast<uint64_t>(stream->Stream), observation);
         stream->RenderReadyMask = 0;
         ZeroPackets(stream);
     }
