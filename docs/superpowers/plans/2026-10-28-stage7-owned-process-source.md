@@ -129,8 +129,9 @@ Stage 7.
   virtual-owner transient Running wait. The same failure reproduces in pristine
   `bdfe6e3` and the candidate under a bounded child-only single-CPU experiment;
   keep the failure and its triage rather than claiming a full parallel pass.
-  The final serial retry passes 510 library tests with two ignored; integrations
-  are still running. No overall final-candidate full-suite pass is claimed.
+  The final serial retry now terminates successfully: 510 library and 221
+  integration tests pass, five ignored across 28 suites. The earlier parallel
+  failure remains recorded; serial success does not rewrite that outcome.
 - B integration is dispatched against `6660ee1`, using the exact four-file
   brief and the accepted source/load/library interfaces. Removing only newly
   unfulfilled example-local dead-code expectations is permitted as consumption

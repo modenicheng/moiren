@@ -2838,11 +2838,15 @@ also reproduces in pristine `bdfe6e3` under the same bounded child-only CPU
 affinity experiment; normal focused repetitions pass 100/100 for each binary.
 This establishes a baseline failure mode, not the exact scheduling history of
 the initial failure. No production code or test assertion was weakened to
-obtain these results. Its serial final-candidate retry passes 510 library tests
-with two ignored; full integrations remain running at this checkpoint. Retain
-both attempts, and do not substitute older pre-final tests or partial serial
-results for an overall terminal pass. A separate test-fixture handshake repair
-is being developed; it is not part of `6660ee1`.
+obtain these results. Its serial final-candidate retry now terminates with exit
+0: 510 library tests and 221 integration tests pass, five ignored across 28
+suites. The long clock tests retain their default durations (clock_control
+160.32 s, clock_faults 400.60 s, clock_startup 238.78 s). Log SHA-256 is
+`6AE975FE3C58F139E905BFD6AE2AAC0F901B0570768D9451FAFB5DE58FF35817`.
+Retain both attempts: serial success is not a parallel-suite pass, and this run
+used the frozen candidate binaries, not later B or test-fixture changes. A
+separate fixture handshake repair is being developed; it is not part of
+`6660ee1`.
 
 ### 2026-10-28 clean-pin host source-only native smoke
 
@@ -2876,3 +2880,48 @@ the worker directly, not ProcessSourceSession or the B collector; its final
 identity was independently checked from raw evidence. These observations are
 submission/cleanup evidence only: no independent PCM, audible playback proof,
 source-to-recorder mapping, physical latency or stability qualification follows.
+
+The same clean binary was also run against explicit non-default virtual CABLE
+Input, `{0.0.0.00000000}.{3543a63a-4a4d-48ae-ba27-f2155d619370}`, whose mix is
+96 kHz stereo. This is a retained negative diagnostic: the worker exits 1 before
+Ready/Start with `shared source requires exact 48 kHz stereo mix format`.
+Actual PID is 65444, creation FILETIME 134375981705982298; no Ready/Running/
+Submitted receipt or activation token exists. All source/submission counters
+are zero, worker_joined is true, and native Stop is unknown rather than claimed
+successful. The wrapper remains passed=false with child-exited-before-ready;
+the expected refusal is not relabeled a passing collection.
+
+Refusal archive:
+`target/20261028-owned-process/source-refusal-6464581-20261028-020930/`.
+All five payloads (6,116 bytes) match manifest lengths/SHA-256. Its 823-byte
+manifest hash is
+`F8E02218033B689B7036FDDE7BFDEA8DC22DE08011B9F77F38FE5CD5B162A9CE`.
+Independent evidence QA passes; no source parent, recorder, physical latency or
+stability qualification is implied by this exact-format refusal.
+
+### 2026-10-28 deterministic observation fixture and harness cfg
+
+`0c47980` repairs only the existing virtual-observation test's lifetime: after
+its original four fake wakes, a test-local clock acknowledges startup and waits
+on the owner's real StopSignal. The test checks actual OwnerStatus::Running,
+the published running flag and teardown clearing as before. Neither the shared
+fake clock, production owner nor one-second bounds change. Genuine single-CPU
+prepatch assertion failure is retained; the repaired exact test passes 100/100
+forced single-CPU and 100/100 normal runs. Independent spec/quality review
+passes. Parent reruns all six fixture tests and explicit library-test-profile
+strict Clippy successfully. This is a deterministic test repair, not a change
+to native scheduling or audio quality.
+
+`950f5b8` separately gates five Windows-only probe leaves and replaces two
+equivalent complete-frame chunk loops in tests. No portable test or assertion
+is removed and no blanket lint allowance is added. Independent four-file
+spec/quality review passes. An isolated pristine `bdfe6e3` archive plus exactly
+those files passes 126 probe tests (also freshly rerun by the parent), Windows
+strict metadata and actual Linux test-harness compile with warnings denied.
+Its overall strict Clippy intentionally still fails on three Windows/two Linux
+unchanged live.rs diagnostics; those belong to the concurrent B integration.
+These isolated checks are not a coherent combined-tree pass. The retained
+failed Linux metadata/link attempt is distinct from later compile-only success.
+Logs: `target/task7-virtual-observation-fix/`,
+`target/task7-probe-harness-hygiene/`, and parent logs under
+`target/20261028-owned-process/`.
