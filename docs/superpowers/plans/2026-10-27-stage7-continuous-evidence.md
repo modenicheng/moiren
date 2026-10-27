@@ -312,3 +312,27 @@ failure, add a Process Loopback supervisor using the same evidence contract,
 and run a matched VAD/Process sweep over target, render queue, engine block,
 period and CPU-load settings. Only then proceed to calibrated physical
 Input-to-Bus-to-Output measurements and the 10 ms gate.
+
+### 2026-10-27 Process Loopback controlled-load supervision
+
+Commit `6f18fd5` extends the same controlled-load contract to Process Loopback.
+The worker now starts only after both native capture and render owners report
+started, uses an `UntilStopped` session while supervised, has a bounded startup
+deadline, detects early exit during polling, and must cover the requested
+window. Result identity, exit code, stop acknowledgement, timeout and cleanup
+are validated and retained under `native.controlled_load`; missing start,
+short coverage, timeout or cleanup failure keep the run failed/unqualified.
+Native owner stop is requested before the capture/render owners are joined.
+
+The focused probe tests (115 passed), strict example Clippy, format, diff
+checks and the host release build pass. No new native Process Loopback smoke
+is claimed by this commit. The current VM still contains only the previous
+probe binary; deploy and verify the new binary before collecting a short smoke.
+Stage 7 and the physical qualification gates remain open.
+
+The acceptance target is unchanged: for an `Input -> Bus -> Output` graph with
+no extra DSP nodes, achieve stable continuous physical output with calibrated
+end-to-end p95 latency below 10 ms, measurement uncertainty at most 10 ms,
+continuous marker evidence and zero quality failures. Do not promote smaller
+defaults or claim VAD/Process superiority until matched, calibrated runs pass;
+VM measurements are diagnostic only.
