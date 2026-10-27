@@ -146,6 +146,7 @@ pub(in crate::ui::window) fn library(
         .flex()
         .flex_col()
         .flex_none()
+        .h_full()
         .w(px(theme::LIBRARY_WIDTH))
         .bg(theme::SURFACE)
         .border_r_1()
@@ -174,7 +175,8 @@ pub(in crate::ui::window) fn library(
                 .overflow_y_scroll()
                 .px(px(12.))
                 .child(items)
-                .child(session),
+                .child(session)
+                .gpui_test_observe(),
         )
         .child(
             div()

@@ -1098,3 +1098,75 @@ fn statusbar_shows_the_configured_format_and_hides_route_and_clock_when_idle(
     });
     finish_service(runtime);
 }
+
+#[gpui_kit::test]
+fn expanded_library_bounds_its_scroll_area_and_scrolls_to_lower_templates(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::{Bounds, WindowBounds, WindowOptions};
+    cx.update(gpui_kit::init);
+    let runtime = spawn_service();
+    let handle = runtime.handle();
+    let snapshot = initial_projection(&handle);
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let page = cx.new(|_| super::PageCell::default());
+    // Wide enough for the expanded sidebar, short enough that the template
+    // list must scroll. Test windows open maximized by default, so the short
+    // bounds have to be requested at open time.
+    let window = cx.update(|cx| {
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    gpui_kit::point(px(0.), px(0.)),
+                    gpui_kit::size(px(1440.), px(480.)),
+                ))),
+                ..Default::default()
+            },
+            |window, cx| {
+                cx.new(|cx| {
+                    let mut shell = super::StudioShell::new(state, window, cx, None);
+                    shell.test_page = Some(page);
+                    shell.preferences_path = None;
+                    shell
+                })
+            },
+        )
+        .unwrap()
+    });
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    super::settle_panels(&mut visual);
+    let probe = cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.find("session-io-panel").visible(),
+            "the expanded sidebar is mounted"
+        );
+        let panel = window.find("session-io-panel").bounds();
+        let scroll = window.find("node-library-scroll").bounds();
+        assert!(
+            f32::from(scroll.size.height) < f32::from(panel.size.height),
+            "the list is bounded by the panel, not by its own content"
+        );
+        assert!(
+            f32::from(panel.size.height) <= 480.,
+            "the panel cannot overflow the window height ({}px)",
+            f32::from(panel.size.height)
+        );
+        assert!(
+            !window.find("library-Recorder").visible(),
+            "the last template starts below the fold"
+        );
+        window.scroll(
+            "node-library-scroll",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-800.))),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(
+            window.find("library-Recorder").visible(),
+            "scrolling reaches the lower templates for dragging"
+        );
+    });
+    assert!(probe.is_ok(), "the probe window stays open");
+    finish_service(runtime);
+}
