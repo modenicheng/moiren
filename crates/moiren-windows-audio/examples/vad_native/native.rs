@@ -196,13 +196,16 @@ impl Stream {
             channels,
         )
         .map_err(|error| anyhow::anyhow!("native pattern encoding: {error:?}"))?;
-        if let Service::Render(service) = &result.service {
-            result.render(service, frames)?;
-        }
         Ok(result)
     }
 
     pub fn start(&mut self) -> anyhow::Result<()> {
+        if let Service::Render(service) = &self.service {
+            // Gate admission clears native storage. Prime only after that
+            // transaction, immediately before Start, or timer mode consumes
+            // an erased first buffer despite having PCM reads already queued.
+            self.render(service, self.frames)?;
+        }
         // SAFETY: fully initialized client; Drop stops on every later error.
         unsafe { self.client.Start() }.context("Start(exclusive)")?;
         self.active = true;
