@@ -1518,3 +1518,68 @@ hash recorded above), with 30.099 GiB free, no probe processes and no present
 dynamic children. Builds and archived evidence remain on the host. Subsequent
 runs must keep the same archive/length/SHA-256/recheck/delete sequence and
 replace the old binary rather than accumulating probes on the 64 GB guest.
+
+### 2026-10-27 bounded rename continuation and exact-name failure
+
+`a660865` preserves the historical strict-held failure and adds separately
+bounded retirement/replacement diagnostics. Both directions receive a share
+of the work deadline; a missing direct Removed checkpoint can consume at most
+500 ms or one quarter of its remaining direction budget. Replacement presence
+and native initialization reserve time for actual name readback before Engine
+confirmation. Budget regressions were observed RED, then all 77 example tests,
+strict example/test Clippy, formatting, release build and independent review
+passed. A diagnostic sequence reaching its end is not an acceptance pass.
+
+The 7,608,320-byte probe has SHA-256
+`1689819A556A0DD75FAF90C8E65EF124EB1684A09D9EFB3009326FE8661C5234`.
+Its first VM repeat, still using the unchanged `1d30d78` driver, exits 1 with
+3,297 ms of reported work and no watchdog/storage-cap timeout. Both Playback
+and Microphone retain the original `missing current observation generation`
+strict-held failure, but now complete the diagnostic continuation:
+
+- Direct old Removed is observed at accepted sequences 58 and 127, newer than
+  baseline sequences 44 and 123, with exact old PDO/session/endpoint identity.
+- Fresh native initialization succeeds. PDO/endpoint generations advance from
+  44 to 46 and 45 to 47 under the same control session. Engine confirmation
+  succeeds at fresh observation sequences 110 and 179.
+- Both old and replacement clients are released; service join and control
+  session release succeed with no cleanup errors.
+- Exact Windows name readback fails in both directions. Playback remains
+  `扬声器 (7- Moiren virtual audio endpoint)` rather than
+  `Moiren rename Playback 11460`; Microphone remains
+  `Moiren integration microphone (6- Moiren virtual audio endpoint)` rather
+  than `Moiren rename Microphone 11460`. Textual MMDevice/adapter IDs are reused;
+  the native generations, not those strings, establish recreation.
+
+These observations separate a real Windows naming defect from the earlier
+incorrect lifetime assumption. They do not establish whether Windows cache,
+pin/category selection or device/interface property composition causes it.
+Neither run nor native rename acceptance qualifies; exact-name checks remain
+unchanged. Eight original files (68,720 bytes) are retained under host
+`target/vad-target-archive/20261027-rename-a660865-r1`. Host length/SHA-256
+verification and a second guest recheck preceded deletion of all run files
+and helpers. At `2026-10-27T12:43:51+08:00`, only the current integration probe
+remains and the guest has 30.099 GiB free; system/rollback files are untouched.
+
+The full workspace repeat now passes 1,625 tests with eight ignored across
+71 suites (`target/20261027-parent-workspace-repeat.log`). The earlier failed
+Running-deadline run remains recorded; its cause is still not established.
+
+### 2026-10-27 bounded clock-rebase instrumentation, not yet deployed
+
+`f53f6c7` adds a 216-byte first-rebase record per endpoint/stream generation,
+capturing actual event/timer cause, callback/deadline/lateness, clock pre/post
+and the atomic PCM epoch transition. The RT path records fixed data only;
+QUERY/gate-close emits at PASSIVE_LEVEL after unlocking. Eight host C++ suites,
+WDK Analyze, InfVerif and independent review pass; freshness, buffers,
+scheduling and invalidation behavior are unchanged.
+
+Host packaging found a new tooling failure before VM deployment: tracepdb
+reports `Event too complex` for the original combined Clock rebase event and
+omits its decoding data from TMF. Therefore that package is not installed and
+no live clock-cause claim is made. A follow-up must split the bounded passive
+payload into correlated decodable fragments, verify generated TMF, then sign
+and verify the package on the already-trusted guest. Host signature trust
+verification also correctly rejects the test root, which is intentionally
+not added to the host trust store; guest chain/catalog verification remains
+mandatory before installation.
