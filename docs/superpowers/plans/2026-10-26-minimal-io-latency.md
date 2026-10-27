@@ -260,3 +260,37 @@ git diff --check
   Moiren VAD endpoint, the target VM is unavailable, and no calibrated physical
   measurement chain has run. No VAD-vs-Process latency winner or `<10 ms`
   qualification claim is allowed.
+- 2026-10-27: the target VM is available again. The current branch is pushed
+  through `744f596`; service/UI name reporting and exact MMDevice readback are
+  implemented, but the target still reports the old/composed Windows name
+  after a rename and the strict-held probe lacks a current observation
+  generation. The VM can validate driver lifecycle and properties, not
+  calibrated physical latency.
+
+### Follow-up order from the 2026-10-27 target run
+
+1. Repair the rename probe's strict-held observation contract so a genuine
+   provider-removal interval is represented with a current accepted
+   observation generation. Keep the historical failure and exact-name gate;
+   do not convert absent/stale data into a pass.
+2. Trace Windows endpoint naming from the exact recreated PDO and registered
+   KS interfaces to the MMDevice properties consumed by EndpointBuilder.
+   Current observations show that requested/provider names change, while
+   Playback resolves to the old synthesized speaker name and Microphone keeps
+   its seed name. Do not add more property setters until the consumed interface
+   is identified. Require exact `PKEY_Device_FriendlyName` equality for both
+   flows on a fresh stable ID.
+3. Re-establish a zero-quality-fault short gate before latency sweeps. Explain
+   the repeated VAD boundary xruns and independent capture continuity failures;
+   separately characterize the VMware output device-clock/QPC rate mismatch.
+   Do not hide these failures by increasing buffer targets or weakening gates.
+4. Sweep one configurable queue target at a time, keeping capacity, normal
+   residency, native period, packet cadence and measured age separate. Compare
+   VAD and Process Loopback on the same source, output, graph and load; smaller
+   capacity alone is not evidence of lower steady-state latency.
+5. On a calibrated physical loopback/recording setup, qualify the exact
+   48 kHz `Input -> Bus -> Output` graph with zero unexpected drops, silence,
+   underruns, discontinuities or recovery resets: first 30 minutes, then two
+   independent two-hour runs for each viable candidate. Report latency
+   distributions and keep the p95 <= 10 ms target explicitly unqualified until
+   those gates pass.
