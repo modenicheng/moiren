@@ -10,7 +10,7 @@ use rust_i18n::t;
 
 use crate::service::{
     AppHandle, AppRequest, AppSnapshot, AudioBackend, DeviceCatalog, DeviceRow, GraphPreparation,
-    InputSelection, RequestId, RunLimit, SessionPhase, SessionSpec,
+    InputSelection, MixerState, RequestId, RunLimit, SessionPhase, SessionSpec,
 };
 
 pub(crate) fn input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> &[DeviceRow] {
@@ -228,6 +228,22 @@ impl UiState {
 
     pub fn dispatch(&mut self, request: AppRequest) {
         let _ = self.try_dispatch(request);
+    }
+
+    /// One channel-strip edit: read the requested strip state from the live
+    /// snapshot, apply `change`, and dispatch `SetMixer`. A node that vanished
+    /// since the surface was rendered simply skips. Callers own the repaint
+    /// notification, because the edited surface differs (mixer page, tray
+    /// flyout, inspector editor).
+    pub fn edit_mixer(&mut self, id: moiren_core::graph::NodeId, change: impl Fn(&mut MixerState)) {
+        if let Some(node) = self.snapshot.graph.node(id) {
+            let mut requested = node.mixer;
+            change(&mut requested);
+            self.dispatch(AppRequest::EditGraph(crate::service::GraphEdit::SetMixer {
+                node: id,
+                state: requested,
+            }));
+        }
     }
 
     pub fn try_dispatch(

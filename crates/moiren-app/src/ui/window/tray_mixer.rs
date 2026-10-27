@@ -14,7 +14,7 @@ use super::controls::{button, db, heading, label};
 use super::desktop::Desktop;
 use super::mixer::{SliderSlot, fader_rows, node_kind_color, sync_faders};
 use super::*;
-use crate::service::{AppRequest, GraphEdit, GraphNodeState, GraphSnapshot, MixerState};
+use crate::service::{GraphNodeState, GraphSnapshot, MixerState};
 use crate::ui::monitoring::NodeMeters;
 use crate::ui::widgets::fader::fader;
 use moiren_core::graph::{NodeId, NodeKind};
@@ -339,16 +339,7 @@ fn mixer_edit(
     change: impl Fn(&mut MixerState) + 'static,
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
     move |_, _, cx| {
-        state.update(cx, |state, _| {
-            if let Some(node) = state.snapshot.graph.node(id) {
-                let mut requested = node.mixer;
-                change(&mut requested);
-                state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
-                    node: id,
-                    state: requested,
-                }));
-            }
-        });
+        state.update(cx, |state, _| state.edit_mixer(id, &change));
         this.update(cx, |_, cx| cx.notify());
     }
 }

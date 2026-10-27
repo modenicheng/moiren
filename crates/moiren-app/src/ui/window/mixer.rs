@@ -1,5 +1,5 @@
 use super::*;
-use crate::service::{GraphEdit, GraphNodeState, MixerState};
+use crate::service::{GraphNodeState, MixerState};
 use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
 use rust_i18n::t;
@@ -321,16 +321,9 @@ fn mixer_edit(
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
     move |_, _, cx| {
         this.update(cx, |shell, cx| {
-            shell.state.update(cx, |state, _| {
-                if let Some(node) = state.snapshot.graph.node(id) {
-                    let mut requested = node.mixer;
-                    change(&mut requested);
-                    state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
-                        node: id,
-                        state: requested,
-                    }));
-                }
-            });
+            shell
+                .state
+                .update(cx, |state, _| state.edit_mixer(id, &change));
             cx.notify();
         })
     }
