@@ -2450,7 +2450,11 @@ or present dynamic VAD PDOs. A separate read-only inventory found 40 historical
 nodes alone were removed with PnPUtil; a fresh inventory reports zero remaining
 children. The installed `ROOT\MEDIA\0000` control bus remains present; its
 driver package, DriverStore, Windows files, audio defaults, and rollback
-packages were not touched.
+packages were not touched. A separate inventory identified 35
+`SWD\MMDEVAPI` AudioEndpoint records whose FriendlyName identifies the Moiren
+virtual endpoint; each was `Unknown` and non-present. Those stale endpoint
+devnodes were removed with PnPUtil as well. The post-cleanup inventory reports
+no stale RAW children or Moiren MMDevice AudioEndpoint devnodes.
 
 The VM is sufficient for lifecycle, property, and driver debugging, but cannot
 qualify calibrated physical audio latency. The `Input -> Bus -> Output` target
