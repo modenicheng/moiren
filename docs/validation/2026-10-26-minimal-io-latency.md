@@ -1636,3 +1636,38 @@ and rechecked on the guest before deletion. Archives are named
 At `2026-10-27T12:52:11+08:00`, the guest test root contains only the current
 401,920-byte native probe, has 30.103 GiB free, and has no probe processes or
 present dynamic children. Stage 7 remains open.
+
+### 2026-10-27 actual MMDevice naming metadata
+
+`58ed492` adds read-only MMDevice DeviceDesc and DeviceInterface FriendlyName
+observations to before/held/after evidence, preserving typed HRESULT/type/null/
+UTF-16 errors instead of substituting provider values. Optional metadata cannot
+change the existing exact FriendlyName or topology gates. All 82 example tests,
+strict example/test Clippy, formatting, release build and independent review
+pass. The 7,618,560-byte probe has SHA-256
+`63411B800419085428E528662C106D26EE092036899DEA01754A633AF2CB02BB`.
+
+The repeat on installed `78e0e34` again exits 1 without watchdog/storage-cap
+timeout, with 3,621 ms reported work. Both directions retain the strict-held
+and exact-name failures while direct old Removed, fresh native initialization,
+fresh replacement/Engine confirmation and all releases succeed. Actual
+property-store values are unchanged before and after recreation:
+
+| Direction | DeviceDesc | DeviceInterface FriendlyName | Final FriendlyName |
+| --- | --- | --- | --- |
+| Playback | `扬声器` | `7- Moiren virtual audio endpoint` | `扬声器 (7- Moiren virtual audio endpoint)` |
+| Microphone | `Moiren integration microphone` | `6- Moiren virtual audio endpoint` | `Moiren integration microphone (6- Moiren virtual audio endpoint)` |
+
+All three values are directly read from the actual MMDevice, not inferred
+from the final-name string. They expose which descriptive values remain old,
+but do not by themselves prove a registry/cache or pin-category root cause.
+A fresh diagnostic identity with a distinct initial CREATE name can separate
+initial name publication from same-ID re-enumeration behavior; this must not
+change product stable IDs or bypass exact-name acceptance.
+
+Eight original files (74,694 bytes) are archived at
+`target/vad-target-archive/20261027-rename-58ed492-r1`; host and guest length/
+SHA-256 checks precede deletion. At `2026-10-27T12:55:19+08:00`, the guest
+contains only the current 7,618,560-byte integration probe, with 30.096 GiB
+free and no active test processes or present dynamic children. System,
+DriverStore and rollback files are unchanged by cleanup.
