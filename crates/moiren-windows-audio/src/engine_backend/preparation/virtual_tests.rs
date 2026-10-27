@@ -446,6 +446,59 @@ fn virtual_qpc_owner_adapts_packet_phase_without_a_physical_master() {
 
 #[test]
 fn virtual_only_owner_publishes_native_observations_with_boundary_probes() {
+    use crate::owner::{WaitOutcome, wait_for_handles};
+    use std::{os::windows::io::AsRawHandle, sync::mpsc, time::Duration};
+    use windows::Win32::Foundation::HANDLE;
+
+    struct ObservationClock {
+        clock: FakeClock,
+        started: mpsc::SyncSender<()>,
+        stop: StopSignal,
+    }
+    impl VirtualRealtimeClock for ObservationClock {
+        fn frequency(&self) -> u64 {
+            self.clock.frequency()
+        }
+
+        fn now_ticks(&mut self) -> Result<u64, BackendError> {
+            self.clock.now_ticks()
+        }
+
+        fn wait_ticks(&mut self, ticks: u64) -> Result<ClockWake, BackendError> {
+            if self.clock.render_wakes < 4 {
+                return self.clock.wait_ticks(ticks);
+            }
+            // Keep Running observable until the test stops the actual owner;
+            // four immediate fake wakes can otherwise finish before it polls.
+            self.started
+                .try_send(())
+                .map_err(|error| BackendError::Failed(error.to_string()))?;
+            match wait_for_handles(&[HANDLE(self.stop.event.as_raw_handle())], 1000)
+                .map_err(|error| BackendError::Failed(error.to_string()))?
+            {
+                WaitOutcome::Signaled(0) => Ok(ClockWake::Stopped),
+                _ => Err(BackendError::Failed(
+                    "observation test did not stop the virtual owner".into(),
+                )),
+            }
+        }
+    }
+    struct ObservationClockFactory(mpsc::SyncSender<()>);
+    impl VirtualClockFactory for ObservationClockFactory {
+        fn prepare(&self, stop: StopSignal) -> Result<Box<dyn VirtualRealtimeClock>, BackendError> {
+            Ok(Box::new(ObservationClock {
+                clock: FakeClock {
+                    now: 0,
+                    waits: 0,
+                    render_wakes: 0,
+                },
+                started: self.0.clone(),
+                stop,
+            }))
+        }
+    }
+
+    let (started, running) = mpsc::sync_channel(1);
     let project = virtual_project();
     let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
     let (signal_host, _rt_host) = bus.create_host(8).unwrap();
@@ -454,7 +507,7 @@ fn virtual_only_owner_publishes_native_observations_with_boundary_probes() {
         .with_virtual_provider(Arc::new(FakeProvider {
             state: Arc::new(SessionState::default()),
         }))
-        .with_virtual_clock_factory(Arc::new(FakeClockFactory));
+        .with_virtual_clock_factory(Arc::new(ObservationClockFactory(started)));
 
     let prepared = backend
         .prepare(
@@ -502,14 +555,10 @@ fn virtual_only_owner_publishes_native_observations_with_boundary_probes() {
     assert!(probe_kinds.contains(&NativeStreamKind::VirtualMicrophone));
 
     owner.activate().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while owner.status() != OwnerStatus::Running {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "virtual backend owner did not reach Running"
-        );
-        std::thread::yield_now();
-    }
+    running
+        .recv_timeout(Duration::from_secs(1))
+        .expect("virtual backend owner did not reach Running");
+    assert_eq!(owner.status(), OwnerStatus::Running);
     assert!(
         backend.observations().snapshot().unwrap().running,
         "Running status publishes the running flag"
