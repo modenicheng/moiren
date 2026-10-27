@@ -3021,3 +3021,43 @@ does not clear the helper hold. No B native run or guest file change has occurre
 at this checkpoint. Raw collection always remains unqualified; physical
 calibration, matched path comparison, short clean VAD gates, 30-minute candidate
 and two independent two-hour qualifications remain outstanding.
+
+### 2026-10-28 HOST Process first-failure QA and current matrix
+
+One HOST Process B diagnostic was subsequently run from the pinned clean
+release build. It exited 1 after 0.5346783 seconds, before activation, at
+`render_prepare`: `Initialize(Shared compatibility)` returned raw HRESULT
+`0x8889000A`. Source child PID 26240, creation FILETIME
+`134376016976182781`, exited 0 and was joined without forced termination, but
+never reached Running/Submitted and acknowledged 0 source frames. No recorder
+or graph capture/render activated; there are no PCM or latency measurements.
+The collection remains incomplete and unqualified; cleanup completed. This is
+not a measured VAD-vs-Process result, speaker/driver diagnosis, or latency
+qualification. The endpoint initialized in a separate routing preflight with
+a different path/configuration, so do not generalize the failure to endpoint
+availability or infer the HRESULT's meaning.
+
+Independent evidence QA passes in
+`.superpowers/sdd/task7-process-native-first-review.md`; native diagnosis stays
+OPEN. Its evidence integrity, child lifecycle, stop/join, no-activation state,
+and conservative manifest-unavailable status were checked. No retry is
+recommended. Once the currently running complete matrix is finalized and a
+separate explicit authorization/review permits it, the smallest useful next
+diagnostic is one bounded pre-activation comparison of routing-control shared
+render against B's legacy `AUTOCONVERTPCM` setup, preserving raw HRESULTs and
+remaining unqualified. Do not repeat the full collection.
+
+The accepted `4811362` immutable-snapshot matrix currently has workspace
+build/check/tests/fmt/strict Clippy complete: 1,662 passed, 0 failed, 8
+ignored, across 71 suites. GPUI tests are active; feature/harness Clippy, probe
+and app VAD tests, RT checks/fmt, and driver host/analyzed builds remain. The
+matrix is not complete until its terminal summary and any failures are
+retained.
+
+A fresh pinned-key SSH inventory finds `C:\MoirenVadTest` empty, no matching
+Moiren/VAD/probe process and 32,219,500,544 guest free bytes (about 30.01 GiB).
+`C:\DriverTest` is a 316,666,881-byte installed test/tool tree and is
+intentionally preserved. No old owned guest artifacts exist to remove; no
+guest files were changed. Continue to keep builds/caches on the host and
+preserve Windows, DriverStore, current/rollback driver packages and generic
+temporary directories.

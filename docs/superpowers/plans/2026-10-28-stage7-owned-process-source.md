@@ -159,3 +159,24 @@ Stage 7.
   running in that isolated snapshot; no result is claimed while commands run.
   A separate host smoke helper has its own provenance/partial-evidence review
   findings under repair and must pass re-review before native execution.
+- Final pre-collection diagnosis, 2026-10-28: the one permitted HOST B attempt
+  is a genuine pre-activation shared-render initialization failure at
+  `Initialize(Shared compatibility)`, raw HRESULT `0x8889000A`. Its retained
+  evidence is internally consistent and independently QA-reviewed PASS, but
+  native diagnosis remains OPEN. No endpoint-wide failure or latency cause is
+  inferred. The different routing-control path initialized on the same
+  endpoint, so after the matrix and a reviewed, explicit authorization, the
+  smallest next step is one bounded pre-activation shared-render comparison
+  (routing path vs B's legacy AUTOCONVERTPCM path), not a full collection retry.
+  It must preserve raw HRESULTs and remain unqualified.
+- The complete pinned snapshot matrix is still running. At this checkpoint,
+  workspace build/check/tests/fmt/strict Clippy passed (1662 passed, 0 failed,
+  8 ignored); GPUI tests are active, followed by feature/harness Clippy, probe
+  and app VAD tests, RT checks/fmt, and driver host/analyzed builds. Do not
+  claim the matrix complete until its final summary and retained failures exist.
+- Latest read-only SSH inventory (2026-10-28): `C:\MoirenVadTest` is empty;
+  no matching Moiren/VAD/probe process exists; free space is 32,219,500,544
+  bytes (about 30.01 GiB). `C:\DriverTest` is a preserved 316,666,881-byte
+  installed test/tool tree and must not be cleaned. There are no obsolete
+  owned artifacts to delete. Windows, DriverStore, installed/current/rollback
+  driver material and generic temp trees remain out of scope for cleanup.
