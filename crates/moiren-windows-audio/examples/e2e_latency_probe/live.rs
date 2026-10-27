@@ -35,6 +35,10 @@ mod source;
 #[path = "vad_collection.rs"]
 mod vad_collection;
 
+#[cfg(any(windows, test))]
+#[path = "control_observation.rs"]
+mod control_observation;
+
 #[cfg(windows)]
 #[path = "vad.rs"]
 mod vad;
@@ -1874,6 +1878,7 @@ mod native {
             backend_diagnostics: None,
             playback_info: None,
             startup_samples: Vec::with_capacity(STARTUP_SAMPLE_LIMIT),
+            observation_clock: control_observation::ControlObservationClock::prepare(),
             report: native_report,
             playback_outcome: None,
             admission: None,
@@ -1949,13 +1954,20 @@ mod native {
                         next_observation = elapsed.saturating_add(observation_interval);
                     }
                     if cleanup.startup_samples.len() < STARTUP_SAMPLE_LIMIT {
-                        let runtime = provider
-                            .export_observations()
-                            .into_iter()
-                            .find(|view| view.endpoint_id == endpoint_id);
-                        let native = observations.snapshot();
+                        let ((runtime, engine, native), control_observation) =
+                            cleanup.observation_clock.observe(|| {
+                                let runtime = provider
+                                    .export_observations()
+                                    .into_iter()
+                                    .find(|view| view.endpoint_id == endpoint_id);
+                                let engine = observer.snapshot();
+                                let native = observations.snapshot();
+                                (runtime, engine, native)
+                            });
                         cleanup.startup_samples.push(serde_json::json!({
                             "elapsed_seconds": elapsed.as_secs_f64(),
+                            "control_observation": control_observation,
+                            "timeline": engine_timeline_value(engine.timeline),
                             "provider": runtime.as_ref().map(vad_observation_json),
                             "boundary_probes": native.map(|snapshot| snapshot.boundary_probes),
                         }));
@@ -1980,6 +1992,7 @@ mod native {
         backend_diagnostics: Option<Arc<Mutex<Option<String>>>>,
         playback_info: Option<Value>,
         startup_samples: Vec<Value>,
+        observation_clock: control_observation::ControlObservationClock,
         pub(super) report: &'a mut NativeReport,
         pub(super) playback_outcome: Option<vad::PlaybackOutcome>,
         pub(super) admission: Option<vad_collection::Admission>,
@@ -1989,16 +2002,20 @@ mod native {
     impl VadCleanup<'_> {
         pub(super) fn current_health(&mut self) -> Result<vad_collection::Health> {
             use moiren_windows_audio::engine_backend::NativeStreamKind;
-            let runtime = self
-                .provider
-                .export_observations()
-                .into_iter()
-                .find(|view| view.endpoint_id == self.endpoint_id);
-            let engine = self.observer.as_ref().map(|observer| observer.snapshot());
-            let native = self
-                .observations
-                .as_ref()
-                .and_then(|observations| observations.snapshot());
+            let ((runtime, engine, native), control_observation) =
+                self.observation_clock.observe(|| {
+                    let runtime = self
+                        .provider
+                        .export_observations()
+                        .into_iter()
+                        .find(|view| view.endpoint_id == self.endpoint_id);
+                    let engine = self.observer.as_ref().map(|observer| observer.snapshot());
+                    let native = self
+                        .observations
+                        .as_ref()
+                        .and_then(|observations| observations.snapshot());
+                    (runtime, engine, native)
+                });
             let snapshot = runtime.as_ref().and_then(|view| view.snapshot);
             let telemetry = runtime.as_ref().and_then(|view| view.telemetry);
             let mut faults = 0u64;
@@ -2094,7 +2111,13 @@ mod native {
                 self.report.engine = Some(value);
             }
             if self.startup_samples.len() < STARTUP_SAMPLE_LIMIT {
-                self.startup_samples.push(serde_json::json!({"health": health, "provider": self.report.vad_provider, "native_observations": native}));
+                self.startup_samples.push(serde_json::json!({
+                    "control_observation": control_observation,
+                    "timeline": engine_timeline_value(engine.as_ref().and_then(|engine| engine.timeline)),
+                    "health": health,
+                    "provider": self.report.vad_provider,
+                    "native_observations": native,
+                }));
             }
             self.last_health = Some(health.clone());
             Ok(health)
@@ -2235,6 +2258,7 @@ mod native {
                     "sample_limit": STARTUP_SAMPLE_LIMIT,
                     "sample_interval_ms": STARTUP_SAMPLE_INTERVAL.as_millis(),
                     "scope": "bounded startup diagnostics; final counters cover the full run",
+                    "timestamp_scope": control_observation::SCOPE,
                     "samples": self.startup_samples,
                 });
                 self.report.engine = Some(engine);
@@ -2431,6 +2455,14 @@ mod native {
         })
     }
 
+    fn engine_timeline_value(timeline: Option<moiren_engine::host::OwnerTimeline>) -> Value {
+        serde_json::json!(timeline.map(|timeline| serde_json::json!({
+            "epoch": timeline.epoch,
+            "revision": timeline.revision,
+            "frame": timeline.frame,
+        })))
+    }
+
     fn engine_snapshot_value(snapshot: &moiren_engine::host::HostSnapshot) -> Value {
         serde_json::json!({
             "host": format!("{:?}", snapshot.host),
@@ -2440,11 +2472,7 @@ mod native {
             "plan_revision": snapshot.plan_revision,
             "owner_generation": snapshot.owner_generation,
             "resource_generation": snapshot.resource_generation,
-            "timeline": snapshot.timeline.map(|timeline| serde_json::json!({
-                "epoch": timeline.epoch,
-                "revision": timeline.revision,
-                "frame": timeline.frame,
-            })),
+            "timeline": engine_timeline_value(snapshot.timeline),
             "update": format!("{:?}", snapshot.update),
             "fault": format!("{:?}", snapshot.fault),
             "cleanup_error": format!("{:?}", snapshot.cleanup_error),
@@ -2505,6 +2533,20 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn startup_timeline_keeps_epoch_revision_and_frame_or_explicitly_unknown() {
+            let timeline = engine_timeline_value(Some(moiren_engine::host::OwnerTimeline {
+                epoch: 3,
+                revision: 7,
+                frame: 480,
+            }));
+            assert_eq!(
+                timeline,
+                serde_json::json!({"epoch": 3, "revision": 7, "frame": 480})
+            );
+            assert!(engine_timeline_value(None).is_null());
+        }
 
         #[test]
         fn minimal_vad_project_declares_physical_output_master() {
