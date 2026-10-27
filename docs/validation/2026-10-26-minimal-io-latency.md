@@ -1007,3 +1007,45 @@ conditions, then sweep configurable buffer targets from larger to smaller and
 retain the smallest stable candidate before the 30-minute and two-hour gates.
 No VAD-versus-Process latency winner can be claimed before a calibrated common
 physical boundary is available.
+
+### 2026-10-27 gate-before-start probe retest
+
+The native probe ordering repair is split into two pushed atomic commits:
+`76cbf9b` admits the prepared VAD gate before native WASAPI `Start`, and
+`617af1d` binds `PcmOwner` and cleanup diagnostics to the final `Running`
+snapshot rather than the intermediate `Paused` snapshot returned by gate
+admission. The latter was required after the first retest exposed a probe-side
+stale-snapshot error; it was not driver evidence. The focused `vad_native`
+suite passes 33/33, and format/diff checks pass.
+
+The host release probe is 391,680 bytes with SHA-256
+`D8B49717C9DB7C1139BAD6FC85D9E06F9B301411612A93F1B7DB21A49E03842A`. The
+same hash was verified on the VM. Synchronous SSH execution avoids shell
+wrapper exit-code ambiguity; both one-second matrices report exit `0`:
+
+- Event mode: all four Playback cases report 47,040 signal frames, zero silent
+  frames and zero native discontinuities. Microphone PCM16 mono reports one
+  dropped packet and 480 silent frames; the other three Microphone cases report
+  47,520 signal frames with zero silent frames and zero native
+  discontinuities. This is an improvement for Playback startup, but not a
+  zero-quality-failure pass.
+- Timer mode: Playback retains 2,048/1,024/1,024/512 silent frames for mono
+  PCM16, mono Float32, stereo PCM16 and stereo Float32. Microphone reports no
+  silent frames or dropped packets, but stereo Float32 reports 45,600 signal
+  frames rather than the expected one-second rate. This remains diagnostic,
+  not a stable timer qualification.
+
+The verified artifacts and manifest are retained at
+`target/vad-target-archive/20261027-native-617af1d-event1/`,
+`target/vad-target-archive/20261027-native-617af1d-timer1/` and
+`target/vad-target-archive/20261027-native-617af1d-manifest.json`. The VM was
+cleaned after verification and now retains only `vad_native-617af1d.exe`, the
+existing `e2e_latency_probe-a085841.exe` and `driver-a085841`; no test process,
+dynamic endpoint, `C:\DriverTest`, DriverStore rollback package or system file
+was removed. Approximately 30.1 GiB remains free.
+
+This probe result narrows the remaining startup issue: admitting the gate
+before native Start removes the previous Playback startup-silence pattern in
+event mode, while timer Playback and Microphone delivery still need work. No
+production `live-vad` rerun or long qualification follows from this bounded
+matrix until the native zero-quality gate passes.
