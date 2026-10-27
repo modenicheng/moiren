@@ -33,7 +33,7 @@ pub struct ProfessionalObservationSnapshot {
 }
 
 #[derive(Default)]
-pub(super) struct Counters {
+pub(crate) struct Counters {
     pub dropped: AtomicU64,
     pub silent: AtomicU64,
     native_callbacks: AtomicU64,

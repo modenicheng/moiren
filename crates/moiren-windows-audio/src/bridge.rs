@@ -1,6 +1,6 @@
 //! Complete stereo frames cross bounded SPSC rings. Only graph boundaries cast S.
-use super::observations::Counters;
 use crate::clock_bridge::RateClock;
+use crate::engine_backend::observations::Counters;
 use crate::latency::QpcClock;
 pub(super) use crate::servo::FollowerServo;
 use crate::{native::StereoFrame, resample::StereoResampler};

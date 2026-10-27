@@ -11,10 +11,8 @@ use moiren_engine::{
     node::{DeviceOptions, EndpointSelector, InputConfig, InputSource, OutputConfig, OutputTarget},
     sample::ProcessingSample,
 };
-use moiren_windows_audio::professional::{
-    ProfessionalBackend,
-    asio::{AsioCapabilities, query_capabilities},
-};
+use moiren_windows_audio::asio::{AsioCapabilities, query_capabilities};
+use moiren_windows_audio::engine_backend::ProfessionalBackend;
 use std::time::{Duration, Instant};
 
 const FL_ASIO: &str = "{188135E1-7171-3434-854F-01A3C71F3DF9}";

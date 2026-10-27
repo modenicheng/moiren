@@ -11,10 +11,7 @@ impl CatalogBackend for WindowsBackend {
         let native = moiren_windows_audio::catalog_snapshot()
             .map_err(|e| BackendError::new("catalog", e))?;
         let mut result = DeviceCatalog::default();
-        update_asio_catalog(
-            &mut result,
-            moiren_windows_audio::professional::asio::list_drivers(),
-        );
+        update_asio_catalog(&mut result, moiren_windows_audio::asio::list_drivers());
         let mut pids = BTreeSet::new();
         for endpoint in native.endpoints {
             for process in endpoint.sessions {
@@ -61,10 +58,7 @@ impl CatalogBackend for WindowsBackend {
 
 fn update_asio_catalog(
     catalog: &mut DeviceCatalog,
-    result: Result<
-        Vec<moiren_windows_audio::professional::asio::AsioDriver>,
-        moiren_engine::host::BackendError,
-    >,
+    result: Result<Vec<moiren_windows_audio::asio::AsioDriver>, moiren_engine::host::BackendError>,
 ) {
     match result {
         Ok(drivers) => {
@@ -122,7 +116,7 @@ mod catalog_tests {
         };
         update_asio_catalog(
             &mut catalog,
-            Ok(vec![moiren_windows_audio::professional::asio::AsioDriver {
+            Ok(vec![moiren_windows_audio::asio::AsioDriver {
                 id: "{stable-clsid}".into(),
                 name: "Driver".into(),
             }]),

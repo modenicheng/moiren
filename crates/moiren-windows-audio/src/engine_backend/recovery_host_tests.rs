@@ -1,11 +1,11 @@
 //! End-to-end recovery with the real supervisor, native owner and rendering pump.
 //! Only NativeStream is fake: this harness must never activate ASIO or WASAPI.
+use crate::bridge::{RingSink, Tone};
+use crate::native::{
+    NativeLatency, NativeRecoveryRequest, NativeStream, NativeStreamInfo, NativeStreamStats,
+    StereoFrame,
+};
 use super::{
-    bridge::{RingSink, Tone},
-    native::{
-        NativeLatency, NativeRecoveryRequest, NativeStream, NativeStreamInfo, NativeStreamStats,
-        StereoFrame,
-    },
     observations::{
         Counters, ProfessionalObservationSnapshot, ProfessionalObservations,
         ProfessionalStreamObservation,

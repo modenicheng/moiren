@@ -1,5 +1,5 @@
 use super::*;
-use crate::professional::native::{NativeRecoveryRequest, NativeStream, StereoFrame};
+use crate::native::{NativeRecoveryRequest, NativeStream, StereoFrame};
 use crate::virtual_owner::{
     BoundaryProbe, ClockWake, PreparedVirtualMicrophone, PreparedVirtualPlayback,
     VirtualBoundaryRequest, VirtualRealtimeClock, VirtualResourceSession,

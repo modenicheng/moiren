@@ -174,5 +174,5 @@ pub struct AppSnapshot {
 #[derive(Debug, Clone)]
 pub struct ProfessionalSessionObservations {
     pub generation: SessionGeneration,
-    pub observation: moiren_windows_audio::professional::ProfessionalObservationSnapshot,
+    pub observation: moiren_windows_audio::engine_backend::ProfessionalObservationSnapshot,
 }

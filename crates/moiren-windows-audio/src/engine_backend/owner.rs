@@ -1,10 +1,10 @@
 //! Native workers park before activation. The master borrows Engine during the
 //! unwind boundary, then returns it through a control-only handoff after Stop.
 use super::{
-    bridge::{CaptureWriteClock, refill, unsupported},
     observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
     recovery::RecoveryTicket,
 };
+use crate::bridge::{CaptureWriteClock, refill, unsupported};
 use crate::native::{NativeStream, NativeStreamInfo, StereoFrame};
 use crate::resample::StereoResampler;
 use crate::servo::FollowerServo;

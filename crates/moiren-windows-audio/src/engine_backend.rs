@@ -1,18 +1,24 @@
 //! Resolve intent on control, then negotiate every native stream on its owner.
-use super::{
-    asio::{AsioOptions, AsioStream},
-    bridge::{CaptureWriteClock, ProcessSource, RingSink, RingSource, Tone, unsupported},
-    observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
-    owner::{AuxiliaryOwner, StreamFactory, Transport, WorkerRequest, spawn},
-    recovery::RecoveryMonitor,
-    wasapi::{WasapiOptions, WasapiStream, resolve_endpoint},
+pub(crate) mod observations;
+#[cfg(windows)]
+mod owner;
+#[cfg(any(windows, test))]
+mod recovery;
+
+#[cfg(windows)]
+pub use observations::{
+    ProfessionalObservationSnapshot, ProfessionalObservations, ProfessionalStreamObservation,
 };
+
+use crate::asio::{AsioOptions, AsioStream};
+use crate::bridge::{CaptureWriteClock, ProcessSource, RingSink, RingSource, Tone, unsupported};
 use crate::native::{NativeStreamInfo, canonical_asio_driver_id};
 use crate::resample::StereoResampler;
 use crate::virtual_owner::{
     ProjectClock, QpcClockFactory, VirtualBoundaryProvider, VirtualClockFactory,
     VirtualPreparedTransport,
 };
+use crate::wasapi::{WasapiOptions, WasapiStream, resolve_endpoint};
 use moiren_core::graph::NodeId;
 use moiren_engine::{
     audio_config::{AudioBackend, SAMPLE_RATES, SampleFormat},
@@ -25,16 +31,17 @@ use moiren_engine::{
     node::{DeviceMode, DeviceOptions, EndpointSelector, InputSource, OutputTarget},
     sample::ProcessingSample,
 };
+use observations::Counters;
+use owner::{AuxiliaryOwner, StreamFactory, Transport, WorkerRequest, spawn};
+use recovery::RecoveryMonitor;
 use rtrb::RingBuffer;
 use std::{marker::PhantomData, sync::Arc};
 
 #[cfg(test)]
-#[path = "backend/tests.rs"]
+#[path = "engine_backend/tests.rs"]
 mod virtual_tests;
 
-#[path = "backend/validation.rs"]
 mod validation;
-#[path = "backend/virtual_io.rs"]
 mod virtual_io;
 use validation::validate;
 

@@ -119,7 +119,11 @@ pub struct ManagedDriver {
     meters: Option<meters::MeterBridge>,
     #[cfg(windows)]
     professional_observations: Option<
-        Arc<std::sync::Mutex<Option<moiren_windows_audio::professional::ProfessionalObservations>>>,
+        Arc<
+            std::sync::Mutex<
+                Option<moiren_windows_audio::engine_backend::ProfessionalObservations>,
+            >,
+        >,
     >,
     #[cfg(windows)]
     virtual_provider: Option<Arc<moiren_windows_audio::vad::WindowsVadProvider>>,
@@ -202,7 +206,7 @@ impl ManagedDriver {
         let mut driver = Self::new(|_| unreachable!("Windows factory replaced before use"))
             .with_catalog(Arc::new(WindowsBackend));
         driver.factory = Arc::new(move |_, _| {
-            let backend = moiren_windows_audio::professional::ProfessionalBackend::<f32>::new()?;
+            let backend = moiren_windows_audio::engine_backend::ProfessionalBackend::<f32>::new()?;
             let backend = if let Some(provider) = provider_for_factory.as_ref() {
                 backend.with_virtual_provider(provider.clone())
             } else {
@@ -214,7 +218,7 @@ impl ManagedDriver {
             Ok(Box::new(backend))
         });
         driver.f64_factory = Some(Arc::new(move |_, _| {
-            let backend = moiren_windows_audio::professional::ProfessionalBackend::<f64>::new()?;
+            let backend = moiren_windows_audio::engine_backend::ProfessionalBackend::<f64>::new()?;
             let backend = if let Some(provider) = provider_for_f64.as_ref() {
                 backend.with_virtual_provider(provider.clone())
             } else {

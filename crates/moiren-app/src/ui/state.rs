@@ -905,10 +905,10 @@ mod tests {
             SessionGeneration,
         };
         use moiren_engine::node::DeviceOptions;
-        use moiren_windows_audio::professional::{
+        use moiren_windows_audio::engine_backend::{
             ProfessionalObservationSnapshot, ProfessionalStreamObservation,
-            native::NativeStreamInfo,
         };
+        use moiren_windows_audio::native::NativeStreamInfo;
         let runtime = spawn_service();
         let handle = runtime.handle();
         let mut state = UiState::new(handle.clone(), initial_projection(&handle));
@@ -946,12 +946,10 @@ mod tests {
                     native_callbacks: 100,
                     native_dropped_frames: 3,
                     native_silent_frames: 5,
-                    driver_latency: Some(
-                        moiren_windows_audio::professional::native::NativeLatency {
-                            input_frames: 32,
-                            output_frames: 64,
-                        },
-                    ),
+                    driver_latency: Some(moiren_windows_audio::native::NativeLatency {
+                        input_frames: 32,
+                        output_frames: 64,
+                    }),
                 }],
             },
         });

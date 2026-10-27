@@ -1,7 +1,7 @@
 //! Exercise production preparation without a native device or a second Engine.
 use super::super::{Group, NativeDevices, ProfessionalBackend};
 use super::{request, virtual_project};
-use crate::professional::owner::StreamFactory;
+use crate::engine_backend::owner::StreamFactory;
 use crate::virtual_owner::{
     BoundaryProbe, ClockWake, PreparedVirtualMicrophone, PreparedVirtualPlayback,
     VirtualBoundaryProvider, VirtualBoundaryRequest, VirtualClockFactory, VirtualRealtimeClock,

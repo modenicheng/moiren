@@ -5,7 +5,7 @@
 //! win64 stream-driving `run` wrapper.
 
 use super::{AsioCapabilities, AsioOptions};
-use crate::professional::native::NativeStream;
+use crate::native::NativeStream;
 use anyhow::{Context, Result, ensure};
 use moiren_engine::host::BackendError;
 use serde::Serialize;
@@ -298,10 +298,10 @@ pub fn stream_options(capabilities: &AsioCapabilities) -> Result<AsioOptions> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::professional::asio::{
+    use crate::asio::{
         AsioBufferCapabilities, AsioChannel, AsioDriver, AsioRateSupport, AsioSampleType,
     };
-    use crate::professional::native::{NativeStreamInfo, NativeStreamStats};
+    use crate::native::{NativeStreamInfo, NativeStreamStats};
     use moiren_engine::audio_config::SampleFormat;
     use std::sync::{Arc, Mutex};
 

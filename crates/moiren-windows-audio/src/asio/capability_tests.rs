@@ -1,7 +1,7 @@
 //! Independent fake IASIO metadata driver; these tests never activate COM.
 
 use super::*;
-use crate::professional::asio::{abi, callback};
+use crate::asio::{abi, callback};
 use std::{
     ffi::c_void,
     ptr,
