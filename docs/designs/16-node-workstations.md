@@ -29,7 +29,7 @@
 | ChannelMapper | 输出到输入映射，或有符号线性权重矩阵 | 显示真实宽度；等宽时 Identity / Swap；点矩阵格弹出 ±0.25 调整 | 映射与矩阵详情；内联编辑最多 8 × 8，较大矩阵只读展示实际映射；0 表示该格无贡献 |
 | Recorder | 会话内目标路径、WAV 编码、录音启停、队列容量 | 选文件、32-bit float / 24-bit PCM / 16-bit PCM 三选一、打开输出目录、开始 / 停止、状态 / 时长 / 剩余容量与错误 | 共享同一编码选择与队列容量 ±48,000 frames；不提供其他容器或独立采样率；详见录音约束 |
 | Meter | 观测窗口帧数 | 128 / 480 / 2048 / 8192 选择；逐通道大号 held peak 与 RMS、真实订阅状态 | 2048 帧快捷设置、运行状态及逐通道读数；不是 LUFS / true-peak 仪表 |
-| SpectrumAnalyzer | FFT 点数、hop 帧数 | FFT 512 / 1024 / 2048 / 4096 / 8192；hop 为 FFT 的 1/4、1/2、1 倍 | 显示 FFT / hop，提供 2048 / 1024 快捷设置；本视图没有频谱订阅，明确显示不可用 |
+| SpectrumAnalyzer | FFT 点数、hop 帧数、显示通道、dBFS 下限 | 真实单通道对数频谱、峰值频点、分辨率 / 窗长；FFT 与 hop 快捷选择、通道切换、−60 / −90 / −120 dBFS 显示下限、竖表 | 同一观测与快捷控制，另有完整引擎范围精确输入：FFT 16～8192 的 2 的幂，hop 1～FFT；候选配置与运行配置分开显示 |
 | Rack | 路由内阶段顺序、bypass、阶段集合 | 按实际执行顺序显示，旁通 / 移除 / 上下移动；按路由加入内置默认处理器 | 阶段数、增加 Gain、清空阶段；尚无完整的槽内 DSP 参数编辑器，也不是插件宿主 |
 | Application（Source 模式） | 应用绑定、数字微调 | 应用列表、刷新、微调、Mute、图电平 | 清除 / 更换来源；绑定使用 PID 与创建时间标识实例；选中条目不等于已经收到音频 |
 | Tone（Source 模式） | 正弦频率、数字 Level | Frequency 旋钮与数值、Level、Mute、图电平 | 440 Hz 快捷绑定与 ±10 Hz 步进；不是波形选择器，仍依赖图启动与实际路由 |
@@ -59,7 +59,7 @@ Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、D
 | Meter 窗口选择 | `MeterSettings.window_frames`；引擎节点观测使用该配置，其他隐式 UI 观测使用其默认窗口 | 候选窗口设置不证明运行图已切换；held peak 不是未经显示处理的瞬时采样 |
 | EQ 响应曲线 | 当前 EQ 设置与图处理采样率计算的 peaking biquad 静态幅频响应 | 不是实时 FFT、输入频谱或测量到的声学响应 |
 | Compressor 曲线 | 当前输入 / 补偿 / 输出增益、阈值、比率、Knee、干湿比计算的静态传输曲线 | 不模拟当前包络；Attack / Hold / Release 的动态过程与实时增益衰减（GR）未显示 |
-| Spectrum 面板 | 真实 `SpectrumSettings` 配置；当前窗口未建立频谱订阅 | **实时 FFT 视图未接入**；引擎有频谱能力，不代表 UI 已显示频谱；不得拿电平生成假频谱 |
+| Spectrum 面板 | 引擎 Hann 窗、相干和归一化、单边峰值幅度，逐通道 channel-major FFT，经活动所有者与配置感知的 service topic、可见性订阅传递 | 显示 `20 log10` 幅度 / bin，不是 PSD、RMS 或 LUFS；曲线排除 DC，峰值读数可含 DC；压缩到像素保留最强频点，不伪造平均或冻结；停止、过期、无发布者时清空曲线 |
 | LUFS / GR | 当前卡片无对应观测展示 | **LUFS 和实时 GR 未实现于此 UI**；不能把 RMS 改名为 LUFS，也不能从静态压缩曲线伪造 GR |
 | Recorder 电平 | 同一套 post-fader 图观测，标签为 `Graph monitor · post-fader` | 不是录音器精确的 pre-strip 录入采样；亮柱不证明文件已经写入 |
 | 录音状态、时间、丢帧 | service 的 `RecordingSnapshot`、WAV writer 已接收帧数 / 确认采样率、端点统计 | `written_frames` 不是 fsync 保证；丢帧计数是端点累计值，不是本文件独立累计 |
@@ -99,7 +99,7 @@ Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、D
 | Source、Application、Tone、Sink | 长资源名、未绑定 / 无资源、停止 / 运行、候选未应用；单 / 双声道，数字微调与实际电平分离 |
 | Gain、Pan、EQ、Compressor、Gate、Limiter、Delay | 主参数与单位不截断，旋钮 / 数值 / 曲线可操作，Inspector 可滚动；EQ 双「−12.0」分隔；静态图说明、Mute 与实际读数 |
 | Mapper、Bus、Rack | 等宽 / 异宽、矩阵滚动、空输入 / 空阶段、有真实连接、非法宽度操作禁用；长列表不挤掉主操作，无内部 slot ID |
-| Meter、Spectrum、Recorder | 无订阅 / 过期 / 运行读数；FFT 明确不可用；录音未选路径、预检、录制、停止收尾、失败与磁盘未知，不用模拟实时数据填图 |
+| Meter、Spectrum、Recorder | 无订阅 / 过期 / 运行读数；FFT 验证真实音调频点及配置切换；录音未选路径、预检、录制、停止收尾、失败与磁盘未知，不用模拟实时数据填图 |
 | 每一个节点 | Comfortable / Compact 密度、正常 / 概览缩放、卡片与 Inspector；文本、焦点、tooltip、按钮可达性；适用时检查多声道与短高 |
 
 截图目录为 `docs/designs/screenshots/node-workstations/`。逐节点捕获使用真实 gpui 渲染、真实引擎处理和受管电平订阅，音频 I/O 使用测试后端，不代表物理设备验证。每个节点分别捕获 1440×900 与 1024×720 下的卡片和 Inspector，并验证原生控件位于实测卡片边界内。扩展场景覆盖多输入 Bus、有阶段 Rack、录音准备/录制/封尾、50% 概览、32 声道滚动以及长资源名。录音场景先核对真实 WAV 文件头、帧数与文件大小，再删除测试 WAV，仅保留截图和清单证据。纯几何测试不代替真实字体与布局检查。
@@ -167,3 +167,16 @@ Compact 下空 Rack 高 228 px；四阶段 Rack 选 Gain 高 392 px、竖表 324
 限制仍然明确：Rack 参数沿现有 prepared-structure / 自动 Apply 路径，不冒充无重建实时调参；没有每阶段 GR 或 FFT 观测，不绘制假表。实时频谱、Tone / 独立 Mapper 参数域一致性和其他节点 Inspector 的完整精确输入仍属于后续工作。
 
 验收结果：app GPUI 全套 540 passed / 0 failed / 3 ignored；Rack 定向回归 64 passed；Overview 模块调整后定向回归 1 passed。默认与 gpui-test feature 的 workspace / all-targets Clippy 均以 `-D warnings` 通过，rustfmt 与 diff 空白检查通过。共享输入组件额外重新捕获 Input、Gain、EQ、Compressor 的卡片与 Inspector、两种密度，共 16 张 PNG / 四份清单，保存在本地 `rack-editing/shared-fields/`，同样未入库。
+
+## Spectrum 实时工作站（2026-10-28）
+
+此增量替代前文“实时频谱尚不可用”的阶段性记录，其他未完成项不因此消失。卡片与 Inspector 直接显示引擎已激活的 Hann FFT；UI 不另算 FFT，也不生成假曲线。数值为单边 coherent-Hann 校正后的每 bin 峰值幅度，经 `20*log10` 转成 dBFS，不是 RMS、PSD 或 LUFS；观察位置为节点 strip 之后。
+
+- 卡片提供对数频率图、实际 Nyquist 上限、声道切换、峰值 bin、频率分辨率 / 窗时长、显示下限、FFT 与 hop 预设。Inspector 额外提供 FFT / hop 整数精确输入；字段级请求合并最新候选状态，连续修改不会用旧快照覆盖其他字段。
+- 图卡片与可见 Inspector 驱动订阅；仅 Mixer 可见不维持 Spectrum 订阅。隐藏即清除显示，释放有 750 ms 宽限；重新出现须等到新发布，不能将保留帧显示为实时。session / owner / topic / settings 及 source-frame 边界约束陈旧数据。
+- 引擎泵按完整 payload 预留预算，FFT8192 在 64 / 256 声道实测可交付；最大一次复制为 4,195,400 字节，配置预算 4,195,456 字节。level host 保持 131 slots，service directory 为 263；不宣称可同时观察全部 4096 节点。
+- 卡片宽度由图控件与声道表预算组成，高度由原生内容决定。Spectrum 使用贴合 body 的竖表；停止、等待、过期分别呈现，不把旧曲线当作运行数据。
+
+最终原生捕获 `MOIREN_CAPTURE_NODE=spectrum-live` 完成 16 张 PNG / 一份 JSON：两种密度、卡片与 Inspector、实时 / 配置生效 / 第二声道 / 停止状态。937.5 Hz、48 kHz、峰值幅度 0.1 的真实引擎测试音产生预期 −20 dBFS 峰值。所有竖表 bounds 验证为 true，精确输入未越界；Compact Inspector 与停止卡片已重新目视复核。生成物只在本地 `docs/designs/screenshots/node-workstations/spectrum-live/`，不入库；不代表物理设备验收。
+
+验证：app GPUI 全套 577 passed / 0 failed / 3 ignored；engine 351 passed、八个套件；默认及 gpui-test workspace/all-targets strict Clippy、fmt 和 diff 检查通过。回归覆盖无效输入恢复、尚未收到快照时的 FFT/hop 连续修改、快速切回已选预设、隐藏/重启/换形后的数据边界。Tone / 独立 Mapper 一致性与其余 Inspector 精确输入仍待完成。

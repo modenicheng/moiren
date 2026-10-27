@@ -102,3 +102,17 @@ Rack validation: 540 app GPUI tests passed, zero failed, three ignored; targeted
 Focused commits: `e29b2b3` service contracts, `2e25355` Rack card/Inspector editor, `b5edddc` minimap occlusion and `e369d48` native capture acceptance. The broader redesign remains active: real spectrum observation, Tone / independent Mapper consistency and complete non-Rack Inspector precision input are not claimed finished.
 
 Final checks: default and gpui-test workspace/all-targets strict Clippy, rustfmt and diff checks passed. Shared Input/Gain/EQ/Compressor fields were recaptured in 16 local PNGs/four manifests; these are separate from the 28 Rack frames. Overview test relocation is `dacc302`; its targeted regression passed after relocation.
+
+## Spectrum Workstation (2026-10-28)
+
+Complete this node before moving to another card. Use the existing engine Hann-window FFT publication, not a synthetic trace or another FFT on the UI thread. Retain explicit stopped, waiting and stale states; current candidate settings are not evidence of active analyzer settings.
+
+- [x] Relay active, demand-gated engine spectra through capacity/owner-aware application topics; test source peak, shape changes, restarts and demand release.
+- [x] Add presentation subscriptions with freshness and identity fences. Keep all preparation/copying off the audio thread and bound maximum-channel payloads.
+- [x] Replace the placeholder with a log-frequency magnitude plot and real per-channel selection, peak/bin readout, FFT/hop choices and measured resolution. Use the same controls in Inspector; merge settings edits against the latest candidate.
+- [x] Capture real tone spectra and stopped/active/settings-change states at both densities; inspect plot labels, control geometry and adaptive meter layout before acceptance.
+- [ ] Run focused and integrated tests, strict Clippy/fmt, then atomic commits/push/update PR #23. Keep every generated PNG/JSON local and do not merge.
+
+Verification: 577 app GPUI tests passed, zero failed, three ignored; 351 engine tests passed across eight suites. Default and gpui-test workspace/all-targets strict Clippy, rustfmt and diff checks passed. The final native run completed 16 frames, with every vertical-meter check true and exact FFT/hop fields inside Inspector bounds. Real 937.5 Hz stereo input at 48 kHz produced the expected -20 dBFS peak amplitude. The first full app run exposed old fixed capture grouping; width-aware grouping fixed that failure without shrinking the viewport or weakening bounds.
+
+Review regressions cover invalid-input recovery, queued FFT/hop edits, fast preset reversal and stale-source fences. This completes real Spectrum observation, superseding earlier pending-FFT notes. Tone / independent Mapper domain consistency and remaining Inspector precision input are still open.
