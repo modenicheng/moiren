@@ -79,7 +79,7 @@ Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、D
 | 原则 | 当前实现与验证要求 |
 | --- | --- |
 | 内容决定高度 | 原生控件实测高度回写卡片布局，不再给所有种类统一固定 body 高度。绑定选择器、主参数、操作按钮优先可见；矩阵、阶段列表、多通道读数可局部滚动 |
-| 按职责选布局 | I/O 将绑定放在整行，下方参数与竖表并排；当前 EQ / Compressor / Gate 使用侧表。Pan / Bus / Recorder / Meter 与至少三个阶段的 Rack 采用竖表；Gain / Tone / Limiter / Delay 和空 Rack 保持紧凑横表 |
+| 按职责选布局 | I/O 将绑定放在整行，下方参数与竖表并排；当前 EQ / Compressor / Gate 使用侧表。Pan / Bus / Recorder / Meter 与非空 Rack 采用竖表；Gain / Tone / Limiter / Delay 和空 Rack 保持紧凑横表 |
 | 侧表只拉伸 | `node_vertical_meter(levels, channels, clips)` 使用 `h_full`，外层 `absolute top_0 bottom_0` 随相邻内容拉伸；竖表不反过来决定卡片高度 |
 | 共用宽度接口 | 外层与组件都用 `node_meter_width(channels)`：单 / 双声道 100 px，之后每声道加 38 px，外层最多占八声道的 328 px；更多声道在内部横向滚动，保留自然字宽及逐声道 Clip，不压缩成不可读的柱 |
 | bounds 内分区 | 从实际 canvas bounds 划出顶部短 CLIP 标识及逐声道锁存条、有效 track、底部 L/R 或声道编号与 held peak 数值。Clip 不画到 bounds 外；外层点击重置锁存 |
@@ -148,3 +148,22 @@ Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、D
 验证：app GPUI 全套 488 passed / 0 failed / 3 ignored；最终捕获工具回归 17 passed；engine 全套 350 passed，8 个套件；默认及 GPUI-feature workspace strict Clippy、rustfmt 与 diff 空白检查通过。音频来自测试后端，不宣称物理设备录音验收。原有 98 张截图和更早的 workspace 测试结果仍属于前述基线，不混称为本次重新执行。
 
 Rack 阶段参数内联编辑、实时频谱、Tone / Mapper 参数域一致性与 Inspector 完整精确输入仍是后续任务；此补全不代表整个节点重设计目标完成。
+
+
+## Rack 阶段工作站（2026-10-28）
+
+Rack 采用可滚动的双列阶段选择器，一次只展开当前阶段，不把整个处理链展开为旋钮墙。卡片与 Inspector 共享稳定槽位选择，但输入实体、草稿、错误与拖动所有权分离；选择阶段不编辑图，也不自动打开 Inspector。
+
+- Gain、Balance、EQ、Compressor、Gate、Limiter、Delay 均有卡片旋钮和精确数值输入。Compressor 卡片显示六项常用参数，Inspector 以双列精确输入补全十项；Balance 的 Mono / Swap 与阶段旁通、路由内上下移动、移除直接可达。
+- Mapper 使用 4×4 分页带符号权重矩阵，可访问全部 256 通道，不把合法负数或大于 1 的值限制成概率。Identity / Swap 只在真实宽度允许时启用；旁通 Mapper 编辑的是配置宽度，不是旁通后的有效宽度。
+- `EditRack` 只提交字段级意图，由 service 合并最新候选状态；实际输入输出端口参与校验。服务所有的 epoch 防止替换、删除重建、undo / redo、加载后旧控件回调修改新阶段。旁通 / Mono / Swap 使用服务端 toggle 语义，快速连续点击不会因渲染快照滞后丢失第二次操作。
+- 无效草稿与错误可跨阶段 / 分页保留，导航时提交有效修改；清洁的隐藏输入、拖动状态与失效 epoch 及时回收。保留草稿不抢占当前键盘焦点，隐藏 Inspector 的错误也不锁死卡片导航。
+- Rack 宽度按已配置阶段的信息预算计算，切换阶段不移动连接口；高度来自当前原生内容测量。空 Rack 使用紧凑横表，所有非空 Rack 使用贴合实际 body 高度的竖表。共享旋钮输入修正了单行高度调用和数值水平中心；Overview 如会覆盖节点则隐藏，不能挡住电平表读数。
+
+本轮按 `rack`、`rack-populated`、`rack-editing` 分别验证：空 Rack / 四阶段 Rack 各四张，八类阶段卡片各两种密度，Compressor / Mapper Inspector 各两种密度，共 28 张 PNG、3 份 JSON。生成物仅保存在本地 `docs/designs/screenshots/node-workstations/rack-editing/`，不进入 Git。`rack-editing` 验证真实选择按钮、共享选择、相机不移动、原生输入数量、控件边界与 Overview 无遮挡；其清单明确不声称原生捕获程序执行了参数输入，精确输入及手势由 GPUI 接受测试单独覆盖。
+
+Compact 下空 Rack 高 228 px；四阶段 Rack 选 Gain 高 392 px、竖表 324 px；八阶段 Rack 选 Gain / EQ / Limiter / Delay 高 428 px、竖表 360 px，选 Compressor 高 562 px、竖表 493.6 px，选 Mapper 高 468 px、竖表 400 px。不同高度均来自内容，不是统一卡片高度。
+
+限制仍然明确：Rack 参数沿现有 prepared-structure / 自动 Apply 路径，不冒充无重建实时调参；没有每阶段 GR 或 FFT 观测，不绘制假表。实时频谱、Tone / 独立 Mapper 参数域一致性和其他节点 Inspector 的完整精确输入仍属于后续工作。
+
+验收结果：app GPUI 全套 540 passed / 0 failed / 3 ignored；Rack 定向回归 64 passed；Overview 模块调整后定向回归 1 passed。默认与 gpui-test feature 的 workspace / all-targets Clippy 均以 `-D warnings` 通过，rustfmt 与 diff 空白检查通过。共享输入组件额外重新捕获 Input、Gain、EQ、Compressor 的卡片与 Inspector、两种密度，共 16 张 PNG / 四份清单，保存在本地 `rack-editing/shared-fields/`，同样未入库。

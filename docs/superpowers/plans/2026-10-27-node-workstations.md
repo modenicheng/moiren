@@ -71,7 +71,7 @@ The PR diff contains no screenshots, generated capture manifests or binary files
 
 ## Follow-up Audit
 
-The full redesign goal remains open beyond this verified milestone. Pre-recording format selection is completed in the increment below. Useful Rack-stage parameter editing and appropriate analyzer visualization remain: Rack stages still use default parameters, and realtime spectrum is explicitly unavailable. Tone/Mapper parameter-domain consistency and complete Inspector precision editing also remain follow-up work. They must not be represented as complete merely because the baseline tests pass.
+The full redesign goal remains open beyond this verified milestone. Pre-recording format selection is completed in the increment below. Rack-stage parameter editing is completed in the increment below. Appropriate analyzer visualization remains: realtime spectrum is explicitly unavailable. Tone/Mapper parameter-domain consistency and complete Inspector precision editing also remain follow-up work. They must not be represented as complete merely because the baseline tests pass.
 
 ## Recorder Completion (2026-10-28)
 
@@ -85,3 +85,20 @@ Keep this increment limited to the Recorder node, then capture and inspect it be
 - [x] Deliver focused engine, service, UI and acceptance commits to PR #23, excluding every generated capture artifact. Commits `10a8ae6`, `9ee0e6c`, `b491624`, `bc33e6b` and documentation `175a3aa` are pushed; PR remains open, not merged.
 
 Validation: 488 app GPUI tests passed (three ignored); 350 engine tests passed across eight suites; final capture regression 17 passed; strict workspace Clippy with default and gpui-test features, fmt and diff checks passed. Review caught a render-time selected-state race; a failing rapid-click test reproduced it, and always dispatching the final enabled click made it pass. Native capture also exposed unsupported disabled metadata and hover-tooltip obstruction; acceptance now uses real busy clicks and moves the pointer before screenshotting. Recorder vertical bounds are explicitly verified against each measured card body.
+
+## Rack Stage Workstation (2026-10-28)
+
+Continue one node at a time. A compact ordered stage list selects one inline editor; do not expand every stage into a wall of knobs. Card shows useful primary controls, Inspector adds the full parameter set. Share selected stable slot identity, but never mount one InputState on both surfaces. Reuse existing theme, relative-drag dials and exact numeric fields. Mapper uses a paged signed-weight matrix instead of rotary controls. No fake stage meters or GR.
+
+- [x] Add field-level Rack service intents that merge with latest candidate state, validate actual stream widths and preserve parameter-specific undo. A service-owned epoch rejects stale editor callbacks after stage replacement, undo or project load.
+- [x] Reuse parameter/dial rendering through explicit keys. Keep stage selection presentation-only, and separate card/Inspector inputs, error text and drag ownership.
+- [x] Render selected stage parameters inline for all eight leaf processor types; Pan toggles and paged Mapper weights remain directly accessible. Replace Inspector's add-Gain-only stub with the shared stage view.
+- [x] Verify queued independent edits, stale identity rejection, undo granularity, focus/typing/drag behavior, route order, signed weights and invalid input.
+- [x] Capture empty, selected Gain/EQ/Compressor/Mapper and populated Rack at both densities, inspect and iterate before moving to another node. Keep PNG/JSON local, then commit/push focused changes to PR #23.
+
+
+Rack validation: 540 app GPUI tests passed, zero failed, three ignored; targeted Rack regression 64 passed. Native capture completed 28 local PNGs / three manifests (eight leaf stages, empty/populated Rack, both densities), followed by a fresh 20-frame sweep after the Overview occlusion fix. No screenshot or JSON manifest is staged. Review-driven RED/GREEN checks cover logarithmic/feedback endpoints, draft loss across selection/page changes, and rapid Bypass/Mono/Swap clicks. Geometry tests cover actual Input bounds and dial centers at 0.85 / 1.0 / 1.25 zoom. Service changes validate real multi-route ports and retain route membership on clear. All capture observations are backed by the running test engine, not physical-device verification.
+
+Focused commits: `e29b2b3` service contracts, `2e25355` Rack card/Inspector editor, `b5edddc` minimap occlusion and `e369d48` native capture acceptance. The broader redesign remains active: real spectrum observation, Tone / independent Mapper consistency and complete non-Rack Inspector precision input are not claimed finished.
+
+Final checks: default and gpui-test workspace/all-targets strict Clippy, rustfmt and diff checks passed. Shared Input/Gain/EQ/Compressor fields were recaptured in 16 local PNGs/four manifests; these are separate from the 28 Rack frames. Overview test relocation is `dacc302`; its targeted regression passed after relocation.
