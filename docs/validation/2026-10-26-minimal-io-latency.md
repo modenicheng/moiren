@@ -883,3 +883,57 @@ are in `host-sha256.txt` and the condensed result is in `summary.json`. The VM
 was cleaned to only the current probe binary, with 30.12 GiB free. No driver,
 DriverStore or system files were removed. This is controlled-load failure
 evidence, not latency qualification.
+
+### 2026-10-27 `a085841` target retest and production lifecycle smoke
+
+The `a085841` release probe was built on the development host and verified on
+the target at 3,843,584 bytes with SHA-256
+`C5CC1A01A98952BD3F75CF2AE8BC6E2F144B9336E9703D7B0E0933A739739B3F`.
+The matching `vad_native` probe was 391,168 bytes with SHA-256
+`413004345D0B004AE6BB3A10702F2EA197479FE5D8AE5CB4A49CE388505FD8FA`.
+After the run, the target retained only these two current probes in
+`C:\MoirenVadTest`; old probes and logs were removed only after evidence was
+copied to the host and checked. `C:\DriverTest`, the installed driver package,
+and system files were not touched.
+
+The one-second native event matrix completed with exit code 0. All four
+playback cases reported 47,040 signal frames, zero silent frames and zero
+native discontinuities. Microphone cases still contained 480 silent frames;
+microphone stereo Float32 also reported one dropped packet and 1,440 silent
+frames. The one-second timer matrix completed with exit code 0 and no dropped
+packets or native discontinuities, but it still reported initial silent frames:
+2,048 for playback Pcm16, 1,024 for playback Float32/stereo Pcm16, 512 for
+playback stereo Float32, 768 for the microphone mono cases and 370 for
+microphone stereo Float32. These matrices are retained as failed quality
+diagnostics, not as a zero-silence driver pass:
+
+- `target/vad-target-archive/20261027-native-a085841-event1/`
+- `target/vad-target-archive/20261027-native-a085841-timer1/`
+
+A three-second production `live-vad` smoke then exercised the target path
+`VAD MMDevice -> native PCM -> VirtualPlayback -> Engine -> Bus -> physical
+Output`. It exited 0, observed 3.011021 seconds, and retired the endpoint
+cleanly to `Removed`. The requested name was `Moiren-VAD-a085841`; Windows
+MMDevice readback was `扬声器 (21- Moiren virtual audio endpoint)`, so the
+name propagation gap remains visible and is not treated as a rename pass.
+The report retained stable ID
+`00000000000000000000000000000012` and the physical output endpoint
+`{0.0.0.00000000}.{71789a68-9934-4137-9E1A-BA0A5730AA68}`.
+
+This production smoke is still unqualified. The VAD provider submitted 304
+packets and completed 300 with 299 completion gaps; the virtual boundary
+reported 7 xruns and 135 soft events. Provider driver/carrier/stale/silence/
+epoch/recovery counters were zero, but those counters do not override the
+completion and boundary failures. The run used diagnostic pulses without a
+source schedule, retained no marker-bearing measurement PCM, and used the
+internal boundary without calibration, so it provides no physical latency
+result:
+
+- `target/vad-target-archive/20261027-live-vad-a085841-3s-r2/`
+
+The empty artifact-directory invocation from the first attempt was a harness
+error and is not audio evidence; it was cleaned separately. The target now
+holds only the two current probe binaries and no active probe, run directory,
+or dynamic VAD endpoint. Stage 7, native zero-quality qualification, live
+rename acceptance, calibrated Process/VAD comparison, and the `<=10 ms`
+physical gate remain open.
