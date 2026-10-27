@@ -27,7 +27,7 @@
 | Bus | 输出 Level、动态输入端口 | 按实际输入列出来源与声道宽度，点击连接进入路由详情，增加输入 | 全部端口 / 连接、增加 / 删除末尾输入；删除已连接端口须先断开，不能凭空生成路由 |
 | Pan（Balance） | 双声道平衡、Mono、Swap L/R | Balance 旋钮与数值、Mono / Swap、Mute | 精确平衡与 Left / Center / Right 步进；这是 stereo balance，不是任意多声道声像器 |
 | ChannelMapper | 输出到输入映射，或有符号线性权重矩阵 | 显示真实宽度；等宽时 Identity / Swap；点矩阵格弹出 ±0.25 调整 | 映射与矩阵详情；内联编辑最多 8 × 8，较大矩阵只读展示实际映射；0 表示该格无贡献 |
-| Recorder | 会话内目标路径、录音启停、队列容量 | 选文件、打开输出目录、开始 / 停止、状态 / 时长 / 剩余容量与错误 | 队列容量 ±48,000 frames；编码固定，不能选其他位深、容器或采样率；详见录音约束 |
+| Recorder | 会话内目标路径、WAV 编码、录音启停、队列容量 | 选文件、32-bit float / 24-bit PCM / 16-bit PCM 三选一、打开输出目录、开始 / 停止、状态 / 时长 / 剩余容量与错误 | 共享同一编码选择与队列容量 ±48,000 frames；不提供其他容器或独立采样率；详见录音约束 |
 | Meter | 观测窗口帧数 | 128 / 480 / 2048 / 8192 选择；逐通道大号 held peak 与 RMS、真实订阅状态 | 2048 帧快捷设置、运行状态及逐通道读数；不是 LUFS / true-peak 仪表 |
 | SpectrumAnalyzer | FFT 点数、hop 帧数 | FFT 512 / 1024 / 2048 / 4096 / 8192；hop 为 FFT 的 1/4、1/2、1 倍 | 显示 FFT / hop，提供 2048 / 1024 快捷设置；本视图没有频谱订阅，明确显示不可用 |
 | Rack | 路由内阶段顺序、bypass、阶段集合 | 按实际执行顺序显示，旁通 / 移除 / 上下移动；按路由加入内置默认处理器 | 阶段数、增加 Gain、清空阶段；尚无完整的槽内 DSP 参数编辑器，也不是插件宿主 |
@@ -66,7 +66,9 @@ Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、D
 
 ### 录音约束
 
-- 当前唯一格式为 **WAV（RIFF，32-bit float）**。文件采样率与声道数来自启动时确认的图处理格式，不来自设备混音格式，也不由卡片另设。
+- 当前支持 **WAV（RIFF，32-bit float / 24-bit PCM / 16-bit PCM）**，默认仍为 float32。编码在录制前通过卡片或 Inspector 选择；Starting / Recording / Stopping 时 UI 与 service 均拒绝修改。文件采样率与声道数来自启动时确认的图处理格式，不来自设备混音格式，也不由卡片另设。
+- PCM 在文件 worker 中转换：最近值舍入，半 LSB 向远离零方向取整，超范围饱和，非有限值写为静音；不加抖动或噪声整形。浮点保留原有数字余量与位模式。PCM 使用 WAVEFORMATEXTENSIBLE，不为图声道虚构扬声器位置；奇数长度数据只在封尾时补齐 WORD，data 长度不含 padding。
+- 切换目标路径保留编码；切换已完成文件的编码会建立新的 Idle 意图，清除旧时长 / 观测并重新预检，不能把旧文件重新标为另一种格式。连续快速点击以最后一次请求为准，不因渲染快照滞后丢弃选择。
 - 目标路径由 service 在**本次会话内**保存，不写入项目文件。要求新的 `.wav` 路径，拒绝覆盖已有文件；文件选择器返回时若图版本或项目已改变，须重新选择。
 - 录音启停独立于图的启停；必须先启动音频。关闭卡片 / Inspector 不停止 service 持有的录音；Stopping 表示正在完成文件，不允许重复开始；Canceled 明确表示创建文件前取消，不能显示“已保存”。
 - `Proposed format` 仅是录音前基于候选配置的预估；`Checking disk space` 是异步预检状态，不能冒充已打开文件的确认格式。
@@ -136,3 +138,13 @@ Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、D
 | 实际电平与几何 | `crates/moiren-app/src/service/managed/meters.rs`；`crates/moiren-engine/src/host/signals.rs`；`crates/moiren-app/src/ui/monitoring/`；`ui/widgets/meters.rs`、`ui/widgets/meters/` |
 
 后续新增能力须同步参数入口、订阅来源和单节点证据；没有真实数据源的观测继续明确标为不可用，不用示意动画替代。
+
+## Recorder 格式补全（2026-10-28）
+
+在 PR #23 的已验证节点基线上单独完成 Recorder，再继续其他节点。新增 `MOIREN_CAPTURE_NODE=recording-formats`：真实点击三种编码，各自在 Comfortable / Compact 下捕获准备和保存状态，共 12 张图；逐个完成六个真实短 WAV，遍历 RIFF chunks 校验编码、有效位数、帧数、字节数、padding 与非零有限采样，校验后删除本次测试文件。忙碌状态通过真实点击验证无请求派发，不依赖原生按钮未提供的 disabled 测试元数据。
+
+本次重新运行 `recorder`、`recording-states`、`recording-formats`，共 22 张 PNG、3 份清单，均仅存在于本地 `docs/designs/screenshots/node-workstations/recorder-formats/`，不进入 Git。截图前将指针移到非交互标题栏区域，避免先前按钮的 tooltip 遮住正文。未选文件卡片高 415 px、竖表高 346.4 px；已配置路径与容量信息时卡片高 500 px、竖表高 431.2 px，均为内容实测，不是新增固定高度。布局校验覆盖每张图的卡片边界和竖表上下对齐。
+
+验证：app GPUI 全套 488 passed / 0 failed / 3 ignored；最终捕获工具回归 17 passed；engine 全套 350 passed，8 个套件；默认及 GPUI-feature workspace strict Clippy、rustfmt 与 diff 空白检查通过。音频来自测试后端，不宣称物理设备录音验收。原有 98 张截图和更早的 workspace 测试结果仍属于前述基线，不混称为本次重新执行。
+
+Rack 阶段参数内联编辑、实时频谱、Tone / Mapper 参数域一致性与 Inspector 完整精确输入仍是后续任务；此补全不代表整个节点重设计目标完成。

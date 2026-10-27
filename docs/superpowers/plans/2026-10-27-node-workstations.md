@@ -59,7 +59,7 @@ All commands ran in the isolated worktree with `CARGO_TARGET_DIR=D:\coding\moire
 
 The startup-import test previously unwrapped an intentionally nonblocking snapshot read while service publication could own its lock. It now uses the existing bounded test wait helper; first-driver-poll assertions and the production snapshot contract are unchanged.
 
-Ignored tests require explicit hardware, machine-specific registry, native-window or idle-host benchmark conditions. Native screenshot audio uses the test backend, not physical hardware. WAV float32 is the only current recording format; realtime FFT, GR and LUFS observations remain explicitly unavailable. Destinations are session-local. Existing Tone and Mapper Inspector/card domain differences are recorded in the design document rather than silently presented as unified.
+Ignored tests require explicit hardware, machine-specific registry, native-window or idle-host benchmark conditions. Native screenshot audio uses the test backend, not physical hardware. At this baseline WAV float32 was the only recording format; the Recorder completion below supersedes that limitation. Realtime FFT, GR and LUFS observations remain explicitly unavailable. Destinations are session-local. Existing Tone and Mapper Inspector/card domain differences are recorded in the design document rather than silently presented as unified.
 
 This verified milestone is being delivered as responsibility-scoped commits and a PR at the user's request. Capture source is versioned; PNGs and generated JSON manifests remain local and are excluded through Git's local exclude file. No Figma master or original-workspace source edits were performed.
 
@@ -71,4 +71,17 @@ The PR diff contains no screenshots, generated capture manifests or binary files
 
 ## Follow-up Audit
 
-The full redesign goal remains open beyond this verified milestone. The original workflow calls for pre-recording format selection, useful Rack-stage parameter editing and appropriate analyzer visualization. This milestone still has fixed float32 WAV output, default-only Rack stages, and an explicitly unavailable realtime spectrum display. Tone/Mapper parameter-domain consistency and complete Inspector precision editing also remain follow-up work. They must not be represented as complete merely because the baseline tests pass.
+The full redesign goal remains open beyond this verified milestone. Pre-recording format selection is completed in the increment below. Useful Rack-stage parameter editing and appropriate analyzer visualization remain: Rack stages still use default parameters, and realtime spectrum is explicitly unavailable. Tone/Mapper parameter-domain consistency and complete Inspector precision editing also remain follow-up work. They must not be represented as complete merely because the baseline tests pass.
+
+## Recorder Completion (2026-10-28)
+
+Keep this increment limited to the Recorder node, then capture and inspect it before proceeding to another node. Preserve the existing float32 default and service ownership. Do not commit screenshots or generated capture manifests.
+
+- [x] Add real float32 / PCM24 / PCM16 WAV encodings, off the realtime thread, with tested frame sizes, headers, RIFF padding/limits, saturation and non-finite handling.
+- [x] Expose service-owned format intent; allow edits before recording, reject changes while starting/recording/finalizing, preserve the selected format when changing destination and invalidate stale capacity estimates.
+- [x] Put three explicit encoding choices on the card, with concise conversion/headroom information and shared format state in Inspector. Do not expose unsupported containers or editable rate/channel controls.
+- [x] Verify UI selection with Inspector closed, busy-state input suppression, selected-format capacity calculations and real recordings for all formats.
+- [x] Capture each encoding in both densities and inspect layout/adaptive meter height: 22 fresh local PNGs and three manifests; six format-test WAVs verified and removed.
+- [ ] Deliver focused engine, service, UI and acceptance commits to PR #23, excluding every generated capture artifact.
+
+Validation: 488 app GPUI tests passed (three ignored); 350 engine tests passed across eight suites; final capture regression 17 passed; strict workspace Clippy with default and gpui-test features, fmt and diff checks passed. Review caught a render-time selected-state race; a failing rapid-click test reproduced it, and always dispatching the final enabled click made it pass. Native capture also exposed unsupported disabled metadata and hover-tooltip obstruction; acceptance now uses real busy clicks and moves the pointer before screenshotting. Recorder vertical bounds are explicitly verified against each measured card body.
