@@ -113,3 +113,21 @@ same-condition VAD/Process comparison; qualified 30-minute candidate and two
 independent two-hour repetitions. Compatible remains default. No VM/internal
 timestamp, source receipt, passing software test or this precursor completes
 Stage 7.
+
+## Checkpoint, 2026-10-28
+
+- A accepted and pushed as `6464581`: exact eight-file frozen snapshot,
+  independent spec/quality PASS, parent 159 example / 18 owned / two shared
+  tests and selected strict Windows lint PASS. Actual test-profile strict
+  lint gaps remain explicitly recorded in the validation document.
+- Signal-only controlled-load stop prerequisite accepted/pushed as `2a0561d`.
+- The nine-file production preparation-abort prerequisite is frozen for
+  independent review, not yet accepted. Its final full library test attempt
+  failed at the virtual-owner Running wait; investigate and retain
+  that failure before claiming a full-candidate pass.
+- B integration remains pending both prerequisite acceptance and the exact
+  implementation brief. No collection, physical qualification or default
+  promotion follows from A.
+- Read-only VM inventory at 01:55 +08:00 finds the test root empty, no test
+  processes, bus OK and 32,221,892,608 bytes free; no old owned files exist
+  to remove. Keep builds and caches on the host.

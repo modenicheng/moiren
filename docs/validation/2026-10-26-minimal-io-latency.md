@@ -2766,3 +2766,48 @@ concurrent owned-source work, passes Linux strict example/test Clippy and all
 format checks pass too. Independent spec/quality review passes. Logs and exact
 export provenance are under `target/20261028-owned-process/`; these checks are
 not a claim that the concurrent source precursor or Stage 7 is complete.
+
+### 2026-10-28 owned Process source precursor and stop separation
+
+`6464581` adds the bounded owned Process source precursor only. It reuses the
+existing marker schedule/cursor and native playback owner, preserving VAD's
+stable/root-selected exclusive path. Its separate explicit-MMDevice shared
+path requires exactly 48 kHz stereo Float32/PCM16, uses current-padding-sized
+packets and commits source progress only after successful ReleaseBuffer.
+Successful submission is not physical playback or independent measurement.
+
+The retained Child handle pins the actual PID and creation time. Four immutable
+bounded receipts and two one-byte tokens use completed-file create-new
+publication. Source input is capped at 1 MiB, each receipt at 512 KiB, and the
+child's finite 1..600 second lifetime includes never-activated time. Retirement
+polls before/after an owned-handle kill attempt without Child::wait; refused or
+unconfirmed termination retains actual PID, unknown exit and joined=false.
+Filesystem/COM calls are not hard OS watchdogs and destruction does not claim
+continued handle ownership. The callback form stops peers before failed-prepare
+retirement; actual Process/recorder integration is still pending.
+
+Independent spec and quality review passes against the eight frozen files.
+Parent verification in a separate Cargo target records 159 example tests,
+18 owned-source tests and two shared-source tests passing, plus selected Windows
+example/test strict Clippy. The owner additionally checked the actual Windows
+test-profile metadata harness. Explicit test-profile Clippy still exposes five
+non-A Windows diagnostics (test-module ordering, two default-field reassignments
+and two chunk lints); Linux has its separately recorded non-A harness warnings.
+Selected-target lint success is not a claim that the full strict harness matrix
+passes. Logs: `target/20261028-owned-process/parent-source-*.log`.
+
+The separate `2a0561d` load-supervisor change exposes signal-only request_stop,
+latches token-write failure and still retires the child. Bounded receipt reads
+validate the retained child's PID and preserve failed raw evidence. Independent
+review and 17 focused regressions pass; the parent 159-test example run includes
+this slice. Its legacy kill/wait and Drop can block: STOP_GRACE bounds graceful
+polling, not OS termination. Collection must broadcast every stop before joining.
+
+A fresh read-only guest inventory at 01:55:26 +08:00 reports an empty
+`C:\MoirenVadTest`, no Moiren/probe process, bus OK and 32,221,892,608 bytes free.
+There are no obsolete owned test artifacts to delete. Receipt:
+`target/vad-target-archive/20261028-storage-0156/inventory.json`, SHA-256
+`03E1DF06BD65F2A0902B96AFC4C4445BC1424C95558EB84C6E59E7F6B2AA1F9C`.
+No guest file, installed/rollback driver, audio endpoint or system setting was
+changed. Builds remain host-only. Stage 7 and all physical/long-run gates remain
+open; these source/tests/storage observations do not qualify latency.
