@@ -133,6 +133,7 @@ struct TransferProgress {
     microphone_drops: u64,
     microphone_completion_diagnostics: validation::MicrophoneCompletionDiagnostics,
     next_mic_submit: Option<Instant>,
+    last_mic_phase: Option<Instant>,
 }
 
 impl TransferProgress {
@@ -152,10 +153,31 @@ impl TransferProgress {
         now + half_period
     }
 
-    fn microphone_completed(&mut self, now: Instant, frames: u32) {
-        // Probe policy: keep one write pending and shift its replacement by
-        // half a period after completion; driver freshness stays unchanged.
-        self.next_mic_submit = Some(Self::microphone_deadline(now, frames));
+    fn microphone_period(frames: u32) -> Duration {
+        Duration::from_nanos(u64::from(frames) * 1_000_000_000 / 48_000)
+    }
+
+    fn microphone_completed(&mut self, now: Instant, frames: u32, dropped: bool) {
+        // Successful collection can lag the native boundary. Advance the prior
+        // intended phase, not collection time; overdue means one WRITE now,
+        // never a catch-up burst. First/unanchored and dropped completions keep
+        // the old collection-relative halfway re-arm, without relaxing freshness.
+        let cadence = self
+            .last_mic_phase
+            .take()
+            .filter(|_| !dropped)
+            .and_then(|phase| phase.checked_add(Self::microphone_period(frames)))
+            .map(|phase| phase.max(now));
+        self.next_mic_submit =
+            Some(cadence.unwrap_or_else(|| Self::microphone_deadline(now, frames)));
+    }
+
+    fn microphone_submitted(&mut self, now: Instant, frames: u32) {
+        // Match the production worker's late-skip rule: an accepted WRITE a
+        // whole period late cannot carry an arbitrarily old intended phase.
+        self.last_mic_phase = self.next_mic_submit.take().filter(|&phase| {
+            now.saturating_duration_since(phase) < Self::microphone_period(frames)
+        });
     }
 
     fn microphone_ready(&self, now: Instant, pending: usize) -> bool {
@@ -765,15 +787,15 @@ fn pump_pcm(
                 seen.observe(decoded, pattern)?;
             }
             PcmCompletion::Capture { .. } => {
-                progress.microphone_completed(Instant::now(), shape.frames());
+                progress.microphone_completed(Instant::now(), shape.frames(), false);
             }
             PcmCompletion::CaptureDropped { .. } => {
                 progress.microphone_drops += 1;
-                progress.microphone_completed(Instant::now(), shape.frames());
+                progress.microphone_completed(Instant::now(), shape.frames(), true);
             }
         }
-        // Keep the existing completion-relative re-arm above; recording cannot
-        // choose a later pacing origin or turn a drop into another PCM result.
+        // Recording cannot choose a later pacing origin or turn a drop into
+        // another PCM result.
         record_microphone_completion(submit_diagnostics, entry, &completed);
         pending.pop_front();
     }
@@ -785,17 +807,20 @@ fn pump_pcm(
             });
         }
     } else if progress.microphone_ready(Instant::now(), pending.len()) {
-        pending.push_back(submit_microphone(
+        let submitted_at = Instant::now();
+        let entry = submit_microphone(
             submit_diagnostics,
             WriteTiming {
                 origin: submit_origin,
                 deadline: progress.next_mic_submit,
                 pending: pending.len(),
             },
-            Instant::now,
+            || submitted_at,
             collection_qpc,
             || pcm.submit_write(encoded).map_err(anyhow::Error::from),
-        )?);
+        )?;
+        progress.microphone_submitted(submitted_at, shape.frames());
+        pending.push_back(entry);
     }
     Ok(())
 }
@@ -811,6 +836,170 @@ fn collection_qpc() -> Option<u64> {
 #[cfg(test)]
 mod pacing_tests {
     use super::*;
+
+    #[test]
+    fn successful_completion_retains_intended_halfway_phase_after_delayed_collection() {
+        let origin = Instant::now();
+        let mut progress =
+            TransferProgress::native_started(origin, 480, Intent::Microphone, NativeMode::Event);
+        progress.microphone_submitted(origin + Duration::from_millis(5), 480);
+        progress.microphone_completed(origin + Duration::from_millis(13), 480, false);
+        assert_eq!(
+            progress.next_mic_submit,
+            Some(origin + Duration::from_millis(15))
+        );
+        assert!(!progress.microphone_ready(origin + Duration::from_millis(14), 0));
+        assert!(progress.microphone_ready(origin + Duration::from_millis(15), 0));
+    }
+
+    #[test]
+    fn intended_phase_survives_injected_lateness_before_the_native_boundary() {
+        let origin = Instant::now();
+        let mut progress =
+            TransferProgress::native_started(origin, 480, Intent::Microphone, NativeMode::Event);
+        progress.microphone_submitted(origin + Duration::from_millis(5), 480);
+        progress.microphone_completed(origin + Duration::from_millis(13), 480, false);
+        let late_entry = progress.next_mic_submit.unwrap() + Duration::from_micros(2_395);
+        let boundary = origin + Duration::from_nanos(20_378_700);
+        assert!(
+            late_entry < boundary,
+            "collection-relative phase misses this boundary"
+        );
+        assert!(progress.microphone_ready(late_entry, 0));
+        let mut diagnostics = validation::MicrophoneSubmitDiagnostics::default();
+        let mut qpcs = [Some(173_950), Some(173_970)].into_iter();
+        let pending = submit_microphone(
+            &mut diagnostics,
+            WriteTiming {
+                origin,
+                deadline: progress.next_mic_submit,
+                pending: 0,
+            },
+            || late_entry,
+            || qpcs.next().unwrap(),
+            || Ok::<_, anyhow::Error>("one opaque WRITE"),
+        )
+        .unwrap();
+        progress.microphone_submitted(late_entry, 480);
+        assert!(!progress.microphone_ready(boundary, 1));
+        record_microphone_completion(
+            &mut diagnostics,
+            &pending,
+            &PcmCompletion::Capture {
+                stamp: moiren_windows_audio::vad::PcmPacketStamp {
+                    sequence: 1553,
+                    qpc: 173_960,
+                },
+                bytes: 960,
+            },
+        );
+        let json = serde_json::to_value(diagnostics).unwrap();
+        let record = &json["first_completion"];
+        assert_eq!(record["target_deadline_elapsed_ns"], 15_000_000);
+        assert_eq!(record["submit_entry_lateness_ns"], 2_395_000);
+        // Injected header QPC is distinct from both wrapper samples. At the
+        // 20.3787 ms callback it is 2.9827 ms old, below unchanged 10 ms.
+        assert_eq!(record["completion"]["header_qpc"], 173_960);
+        assert!(203_787u64 - record["completion"]["header_qpc"].as_u64().unwrap() <= 100_000);
+    }
+
+    #[test]
+    fn overdue_success_is_due_now_once_then_advances_without_catch_up() {
+        let origin = Instant::now();
+        let mut progress =
+            TransferProgress::native_started(origin, 480, Intent::Microphone, NativeMode::Event);
+        progress.microphone_submitted(origin + Duration::from_millis(5), 480);
+        let collected = origin + Duration::from_millis(38);
+        progress.microphone_completed(collected, 480, false);
+        assert_eq!(progress.next_mic_submit, Some(collected));
+        let mut pending = 0;
+        let mut writes = 0;
+        for _ in 0..4 {
+            if progress.microphone_ready(collected, pending) {
+                progress.microphone_submitted(collected, 480);
+                pending += 1;
+                writes += 1;
+            }
+        }
+        assert_eq!((writes, pending), (1, 1));
+        progress.microphone_completed(collected + Duration::from_millis(1), 480, false);
+        assert_eq!(
+            progress.next_mic_submit,
+            Some(collected + Duration::from_millis(10))
+        );
+    }
+
+    #[test]
+    fn submission_one_full_period_late_cannot_carry_a_stale_phase() {
+        for late_ms in [10, 25] {
+            let origin = Instant::now();
+            let mut progress = TransferProgress::native_started(
+                origin,
+                480,
+                Intent::Microphone,
+                NativeMode::Event,
+            );
+            let submitted = origin + Duration::from_millis(5 + late_ms);
+            progress.microphone_submitted(submitted, 480);
+            let collected = submitted + Duration::from_millis(1);
+            progress.microphone_completed(collected, 480, false);
+            assert_eq!(
+                progress.next_mic_submit,
+                Some(collected + Duration::from_millis(5))
+            );
+        }
+    }
+
+    #[test]
+    fn submission_retains_phase_only_while_less_than_one_period_late() {
+        for (late_micros, retained) in [(9_999, true), (10_000, false), (25_000, false)] {
+            let origin = Instant::now();
+            let mut progress = TransferProgress::native_started(
+                origin,
+                480,
+                Intent::Microphone,
+                NativeMode::Event,
+            );
+            let phase = origin + Duration::from_millis(5);
+            progress.microphone_submitted(phase + Duration::from_micros(late_micros), 480);
+            assert_eq!(progress.last_mic_phase, retained.then_some(phase));
+            assert_eq!(progress.next_mic_submit, None);
+        }
+    }
+
+    #[test]
+    fn dropped_completion_discards_phase_and_keeps_collection_relative_half_period_rearm() {
+        let origin = Instant::now();
+        let mut progress =
+            TransferProgress::native_started(origin, 480, Intent::Microphone, NativeMode::Event);
+        progress.microphone_submitted(origin + Duration::from_millis(5), 480);
+        let dropped_at = origin + Duration::from_millis(13);
+        progress.microphone_completed(dropped_at, 480, true);
+        assert_eq!(progress.last_mic_phase, None);
+        assert_eq!(
+            progress.next_mic_submit,
+            Some(origin + Duration::from_millis(18))
+        );
+        assert!(!progress.microphone_ready(origin + Duration::from_millis(15), 0));
+        assert!(progress.microphone_ready(origin + Duration::from_millis(18), 0));
+        progress.microphone_submitted(origin + Duration::from_millis(18), 480);
+        progress.microphone_completed(origin + Duration::from_millis(21), 480, false);
+        assert_eq!(
+            progress.next_mic_submit,
+            Some(origin + Duration::from_millis(28))
+        );
+
+        // Timer's pre-Start WRITE has no intended phase. Its first successful
+        // completion still establishes the old halfway phase after collection.
+        let mut timer =
+            TransferProgress::native_started(origin, 480, Intent::Microphone, NativeMode::Timer);
+        assert!(timer.microphone_ready(origin, 0));
+        timer.microphone_completed(origin + Duration::from_millis(2), 480, false);
+        assert_eq!(
+            timer.next_mic_submit,
+            Some(origin + Duration::from_millis(7))
+        );
+    }
 
     #[test]
     fn submission_helper_correlates_fifo_record_with_real_completion_not_opaque_ticket() {
@@ -1181,7 +1370,7 @@ mod pacing_tests {
         assert!(!progress.microphone_ready(now, 0));
         assert!(progress.microphone_ready(now + Duration::from_millis(5), 0));
         let completed = now + Duration::from_millis(10);
-        progress.microphone_completed(completed, 480);
+        progress.microphone_completed(completed, 480, false);
         let deadline = now + Duration::from_millis(15);
         assert_eq!(progress.next_mic_submit, Some(deadline));
         for milliseconds in 10..15 {
@@ -1196,13 +1385,13 @@ mod pacing_tests {
     fn microphone_each_completion_rearms_from_collection_time_without_catch_up() {
         let now = Instant::now();
         let mut progress = TransferProgress::default();
-        progress.microphone_completed(now, 49);
+        progress.microphone_completed(now, 49, false);
         let half_period = Duration::from_nanos(510_416);
         assert_eq!(progress.next_mic_submit, Some(now + half_period));
         assert!(!progress.microphone_ready(now + half_period - Duration::from_nanos(1), 0));
         assert!(progress.microphone_ready(now + half_period, 0));
         let later = now + Duration::from_secs(1);
-        progress.microphone_completed(later, 4800);
+        progress.microphone_completed(later, 4800, false);
         assert_eq!(
             progress.next_mic_submit,
             Some(later + Duration::from_millis(50))
