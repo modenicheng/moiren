@@ -2022,3 +2022,69 @@ _version: 2
 "Closed prefix available; not latency qualification.":
   en: "Closed prefix available; not latency qualification."
   zh-CN: "闭合历史前缀可用；不代表延迟验收。"
+"Evaluate closed Process prefix":
+  en: "Evaluate closed Process prefix"
+  zh-CN: "评估已闭合的进程历史前缀"
+"Back to measured input":
+  en: "Back to measured input"
+  zh-CN: "返回实测输入设置"
+"Closed Process prefix evaluation":
+  en: "Closed Process prefix evaluation"
+  zh-CN: "闭合进程历史前缀评估"
+"Diagnostic replay only. Declared packet/gap assumptions do not bound native drains, future delivery or sample age. Live Apply still requires independent whole-wake admission.":
+  en: "Diagnostic replay only. Declared packet/gap assumptions do not bound native drains, future delivery or sample age. Live Apply still requires independent whole-wake admission."
+  zh-CN: "仅供诊断回放。声明的包大小与间隔假设不能约束原生整批传输、后续传输或样本年龄。实际应用仍须独立校验整次唤醒需求。"
+"Capacity / target / jitter (frames)":
+  en: "Capacity / target / jitter (frames)"
+  zh-CN: "容量 / 运行目标 / 抖动余量（帧）"
+"Retained origin":
+  en: "Retained origin"
+  zh-CN: "保留历史的原始身份"
+"Maximum initial unserved (output frames)":
+  en: "Maximum initial unserved (output frames)"
+  zh-CN: "初始未提供输出的帧数上限"
+"Maximum initial prime discard (input frames)":
+  en: "Maximum initial prime discard (input frames)"
+  zh-CN: "初始预填丢弃的输入帧数上限"
+"Minimum output frames":
+  en: "Minimum output frames"
+  zh-CN: "最少输出帧数"
+"Minimum output reads":
+  en: "Minimum output reads"
+  zh-CN: "最少有效输出读取次数"
+"Minimum output span (ms)":
+  en: "Minimum output span (ms)"
+  zh-CN: "最短输出跨度（毫秒）"
+"Observed violation":
+  en: "Observed violation"
+  zh-CN: "发现违规"
+"Insufficient exposure":
+  en: "Insufficient exposure"
+  zh-CN: "有效输出证据不足"
+"No violation in this window":
+  en: "No violation in this window"
+  zh-CN: "本窗口内未发现违规"
+"Not qualified: no sustained, waveform, sample-age or physical latency proof":
+  en: "Not qualified: no sustained, waveform, sample-age or physical latency proof"
+  zh-CN: "未通过验收：不能证明持续运行、波形正确性、样本年龄或物理延迟"
+"Evaluating one bounded prefix on a background worker.":
+  en: "Evaluating one bounded prefix on a background worker."
+  zh-CN: "正在后台评估一个有界历史前缀。"
+"Ready to evaluate; audio will not change.":
+  en: "Ready to evaluate; audio will not change."
+  zh-CN: "可以开始评估；不会更改音频运行状态。"
+"Evaluate candidate window":
+  en: "Evaluate candidate window"
+  zh-CN: "评估候选配置窗口"
+"Stop a collected Process session to evaluate its closed prefix.":
+  en: "Stop a collected Process session to evaluate its closed prefix."
+  zh-CN: "请先停止已采集历史的进程会话，再评估其闭合前缀。"
+"The selected source is not the retained Process source.":
+  en: "The selected source is not the retained Process source."
+  zh-CN: "所选输入源不是保留历史所属的进程输入源。"
+"A finite-window evaluation is already running.":
+  en: "A finite-window evaluation is already running."
+  zh-CN: "已有一个有限窗口评估正在运行。"
+"Evaluation discarded: predecessor, candidate or policy changed.":
+  en: "Evaluation discarded: predecessor, candidate or policy changed."
+  zh-CN: "评估结果已丢弃：前序会话、候选配置或评估策略已更改。"

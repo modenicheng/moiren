@@ -46,6 +46,7 @@ enum Confirmation {
 struct Control {
     reject: bool,
     clear_active: bool,
+    retain_prefix: bool,
     confirmation: Option<Confirmation>,
 }
 
@@ -182,6 +183,29 @@ impl ServiceDriver for MeasuredDriver {
             self.initialized = true;
             self.initialize(context);
         }
+        if self.control.lock().unwrap().retain_prefix && context.last_cleanup.is_none() {
+            let node = context
+                .graph
+                .snapshot()
+                .nodes
+                .iter()
+                .find(|node| matches!(node.source, Some(InputSelection::Process { .. })))
+                .unwrap()
+                .id;
+            let evidence = crate::service::process_trace::tests::evidence(node);
+            context.last_cleanup = Some(crate::service::SessionCleanupObservation {
+                generation: evidence.origin().generation,
+                state: super::measured::window_tests::cleanup_state(),
+                process_trace: Some(Arc::new(evidence)),
+            });
+            let owner = context.core.owner_generation().unwrap();
+            context.core.stop().unwrap();
+            assert!(context.core.owner_reaped(owner));
+            context.native_observations = None;
+            context.active_audio_settings = None;
+            context.active_transport_latency = None;
+            context.active_latency_profile = None;
+        }
         let (clear_active, confirmation) = {
             let mut control = self.control.lock().unwrap();
             (
@@ -206,6 +230,60 @@ impl ServiceDriver for MeasuredDriver {
     fn is_drained(&self) -> bool {
         true
     }
+}
+
+#[gpui_kit::test]
+fn process_window_settings_click_evaluates_retained_prefix_without_audio_requests(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(Evidence::Current, false);
+    fixture.control.lock().unwrap().retain_prefix = true;
+    let (view, cx) = fixture.shell(cx);
+    wait_snapshot(&view, cx, |snapshot| snapshot.last_cleanup.is_some());
+    select_target(cx);
+    cx.update(|window, cx| {
+        window.click("process-window-open", cx);
+        window.render_frame(cx);
+        assert!(window.find("process-window-policy-0-1").visible());
+        assert!(window.find("process-window-evaluate").visible());
+        window.click("process-window-evaluate", cx);
+    });
+    wait_until(Duration::from_secs(3), || {
+        poll(&view, cx);
+        row(cx, "process-window-feedback").contains("No violation in this window")
+    });
+    let feedback = row(cx, "process-window-feedback");
+    assert!(feedback.contains("CallerSupplied"), "{feedback}");
+    assert!(feedback.contains("Not qualified"), "{feedback}");
+    assert!(feedback.contains("Declared"), "{feedback}");
+    assert!(feedback.contains("2048 / 256 / 0"), "{feedback}");
+    assert!(
+        fixture.requests().is_empty(),
+        "diagnostic replay must never restart audio"
+    );
+    cx.update(|window, cx| window.click("process-window-policy-0-0", cx));
+    assert!(!row(cx, "process-window-feedback").contains("No violation in this window"));
+    cx.update(|window, cx| window.click("process-window-evaluate", cx));
+    wait_until(Duration::from_secs(3), || {
+        poll(&view, cx);
+        row(cx, "process-window-feedback").contains("Observed violation")
+    });
+    assert!(fixture.requests().is_empty());
+    fixture.finish();
+}
+
+#[gpui_kit::test]
+fn process_window_settings_missing_prefix_is_a_visible_refusal(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(Evidence::Current, false);
+    let (_, cx) = fixture.shell(cx);
+    cx.update(|window, cx| {
+        window.click("process-window-open", cx);
+        window.render_frame(cx);
+        window.click("process-window-evaluate", cx);
+    });
+    assert!(row(cx, "process-window-feedback").contains("Stop a collected Process session"));
+    assert!(fixture.requests().is_empty());
+    fixture.finish();
 }
 
 struct Fixture {

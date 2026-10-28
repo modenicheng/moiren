@@ -4,7 +4,7 @@ use crate::service::{InputSelection, NativeSessionObservations, SessionGeneratio
 use moiren_core::graph::NodeKind;
 use moiren_windows_audio::engine_backend::NativeObservationSnapshot;
 
-fn fixture() -> (crate::service::AppSnapshot, MeasuredDraft) {
+pub(super) fn fixture() -> (crate::service::AppSnapshot, MeasuredDraft) {
     let mut context = crate::service::ServiceContext::default();
     let spec = crate::service::SessionSpec {
         source: InputSelection::Process {

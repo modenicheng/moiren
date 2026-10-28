@@ -676,3 +676,25 @@ Process trace prefix	-	保留的历史事件数量与上限
 %{packets} packets / %{reads} reads retained; limit 8192 per writer	packets,reads	有界事件数量
 Process trace result	-	前序会话历史采集结果
 Closed prefix available; not latency qualification.	-	闭合历史可用但不代表延迟验收
+Evaluate closed Process prefix	-	打开有界历史评估
+Back to measured input	-	返回输入设置
+Closed Process prefix evaluation	-	有限窗口诊断标题
+Diagnostic replay only. Declared packet/gap assumptions do not bound native drains, future delivery or sample age. Live Apply still requires independent whole-wake admission.	-	诊断假设不替代实际准入
+Capacity / target / jitter (frames)	-	三个独立候选帧数
+Retained origin	-	历史所属会话身份
+Maximum initial unserved (output frames)	-	初始输出不足上限
+Maximum initial prime discard (input frames)	-	初始输入丢弃上限
+Minimum output frames	-	有效输出帧数下限
+Minimum output reads	-	有效输出读取下限
+Minimum output span (ms)	-	有效输出跨度下限
+Observed violation	-	已发现队列违规
+Insufficient exposure	-	证据不足而非通过
+No violation in this window	-	仅限已观测窗口
+Not qualified: no sustained, waveform, sample-age or physical latency proof	-	始终未验收
+Evaluating one bounded prefix on a background worker.	-	单后台评估
+Ready to evaluate; audio will not change.	-	诊断不修改音频
+Evaluate candidate window	-	开始有限回放
+Stop a collected Process session to evaluate its closed prefix.	-	缺少闭合历史
+The selected source is not the retained Process source.	-	选择与历史不符
+A finite-window evaluation is already running.	-	禁止并发评估
+Evaluation discarded: predecessor, candidate or policy changed.	-	过期结果已丢弃

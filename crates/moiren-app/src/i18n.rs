@@ -113,4 +113,26 @@ mod tests {
             "实测预算已生效；物理端到端延迟仍未验收。"
         );
     }
+
+    #[test]
+    fn process_window_actions_translate_without_promising_admission_or_latency() {
+        assert_eq!(
+            rust_i18n::t!(
+                "Evaluate closed Process prefix",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "评估已闭合的进程历史前缀"
+        );
+        assert_eq!(
+            rust_i18n::t!("No violation in this window", locale = SIMPLIFIED_CHINESE),
+            "本窗口内未发现违规"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Not qualified: no sustained, waveform, sample-age or physical latency proof",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "未通过验收：不能证明持续运行、波形正确性、样本年龄或物理延迟"
+        );
+    }
 }

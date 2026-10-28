@@ -12,7 +12,7 @@ mod managed;
 pub(crate) mod measured_process;
 mod model;
 #[cfg(windows)]
-mod process_trace;
+pub(crate) mod process_trace;
 #[cfg(windows)]
 pub use process_trace::*;
 #[cfg(test)]

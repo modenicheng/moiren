@@ -114,6 +114,10 @@ pub(in crate::ui::window::settings) struct MeasuredEditor {
     pub draft: MeasuredDraft,
     pub error: Option<String>,
     pub message: Option<String>,
+    #[cfg(windows)]
+    pub(super) window_open: bool,
+    #[cfg(windows)]
+    pub(super) window: super::window_state::WindowEditor,
     pending: Option<Pending>,
     confirmed: Option<(crate::service::SessionGeneration, u64)>,
 }
@@ -134,6 +138,8 @@ impl MeasuredEditor {
     }
 
     pub(super) fn changed(&mut self) {
+        #[cfg(windows)]
+        self.window.changed();
         self.error = None;
         self.message = None;
         self.confirmed = None;

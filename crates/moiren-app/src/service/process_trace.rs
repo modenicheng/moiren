@@ -5,6 +5,10 @@ use moiren_windows_audio::process_loopback::{
     ObservedProcessTrace, ProcessIdentity, ProcessTraceArchive,
 };
 
+mod evaluation;
+#[cfg(test)]
+pub(crate) mod tests;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProcessTraceSessionOrigin {
     pub generation: SessionGeneration,

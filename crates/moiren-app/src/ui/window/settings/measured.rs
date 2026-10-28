@@ -4,9 +4,20 @@ use crate::service::{AppSnapshot, InputSelection, MeasuredProcessRequest, Reques
 use moiren_core::graph::NodeId;
 
 mod state;
+#[cfg(windows)]
+mod window;
+#[cfg(windows)]
+mod window_state;
 pub(super) use state::MeasuredEditor;
 
+#[cfg(all(test, windows))]
+pub(super) mod window_tests;
+
 pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
+    #[cfg(windows)]
+    if shell.settings.measured.window_open {
+        return window::editor(shell, cx);
+    }
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
     let measured = &shell.settings.measured;
@@ -115,48 +126,54 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         }
         view = view.child(field(&t!(title), row));
     }
-    view.child(
-        button(
-            "measured-process-apply",
-            t!("Apply measured budget and restart"),
+    let view = view
+        .child(
+            button(
+                "measured-process-apply",
+                t!("Apply measured budget and restart"),
+            )
+            .variant(ButtonVariant::Primary)
+            .disabled(blocked.is_some() || preflight.is_err())
+            .on_click(move |_, _, cx| {
+                this.update(cx, |shell, cx| shell.apply_measured_process(cx))
+            }),
         )
-        .variant(ButtonVariant::Primary)
-        .disabled(blocked.is_some() || preflight.is_err())
-        .on_click(move |_, _, cx| this.update(cx, |shell, cx| shell.apply_measured_process(cx))),
-    )
-    .child(
-        div()
-            .id("measured-process-feedback")
-            .aria_label(feedback.clone())
-            .text_size(px(theme::TEXT_SM))
-            .text_color(if measured.error.is_some() {
-                theme::DANGER
+        .child(
+            div()
+                .id("measured-process-feedback")
+                .aria_label(feedback.clone())
+                .text_size(px(theme::TEXT_SM))
+                .text_color(if measured.error.is_some() {
+                    theme::DANGER
+                } else {
+                    theme::TEXT_MUTED
+                })
+                .child(feedback)
+                .gpui_test_observe(),
+        )
+        .child(summary(
+            "measured-process-requested",
+            &t!("Requested process input"),
+            process_input_summary(
+                snapshot.transport_latency.process,
+                snapshot.measured_process.as_ref(),
+            ),
+        ))
+        .child(summary(
+            "measured-process-active",
+            &t!("Active process request"),
+            if snapshot.phase == SessionPhase::Running {
+                snapshot.active_transport_latency.map(|v| {
+                    process_input_summary(v.process, snapshot.active_measured_process.as_ref())
+                })
             } else {
-                theme::TEXT_MUTED
-            })
-            .child(feedback)
-            .gpui_test_observe(),
-    )
-    .child(summary(
-        "measured-process-requested",
-        &t!("Requested process input"),
-        process_input_summary(
-            snapshot.transport_latency.process,
-            snapshot.measured_process.as_ref(),
-        ),
-    ))
-    .child(summary(
-        "measured-process-active",
-        &t!("Active process request"),
-        if snapshot.phase == SessionPhase::Running {
-            snapshot.active_transport_latency.map(|v| {
-                process_input_summary(v.process, snapshot.active_measured_process.as_ref())
-            })
-        } else {
-            None
-        }
-        .unwrap_or_else(|| t!("No active audio configuration").into()),
-    ))
+                None
+            }
+            .unwrap_or_else(|| t!("No active audio configuration").into()),
+        ));
+    #[cfg(windows)]
+    let view = view.child(window::open_button(cx));
+    view
 }
 
 fn summary(id: &'static str, title: &str, value: String) -> AnyElement {
