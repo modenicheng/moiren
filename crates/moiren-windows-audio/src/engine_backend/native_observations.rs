@@ -4,7 +4,7 @@ use crate::{
     clock_bridge::{BridgeObserver, BridgeSnapshot},
     latency::shared_period::SharedPeriodReport,
     latency::{NativeStreamTiming, PreparedInputQueue, PreparedRenderQueue},
-    virtual_owner::BoundaryProbeSample,
+    virtual_owner::{BoundaryProbeSample, PreparedVirtualBudget},
 };
 use moiren_core::graph::NodeId;
 use serde::Serialize;
@@ -33,6 +33,10 @@ pub struct NativeStreamObservation {
     pub shared_period: Option<SharedPeriodReport>,
     pub render_queue: Option<PreparedRenderQueue>,
     pub input_queue: Option<PreparedInputQueue>,
+    /// Immutable VAD preparation evidence, for playback and microphone alike.
+    /// Declared delivery bounds do not establish a negotiated native packet.
+    /// None for physical and Process Loopback streams.
+    pub virtual_budget: Option<PreparedVirtualBudget>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct NativeBridgeObservation {
@@ -224,13 +228,94 @@ impl NativeObservations {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::virtual_owner::{BoundaryProbe, VirtualMicrophoneSink};
+    use crate::{
+        latency::transport::{DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy},
+        virtual_owner::{BoundaryProbe, VirtualBufferOptions, VirtualMicrophoneSink},
+    };
     use moiren_core::graph::{LogicalGraph, NodeKind};
     use moiren_engine::{
         boundary::{RtAudioSink, audio_bridge},
         buffer::{BufferArena, BufferSlotLayout, PortAccess, ProcessIo},
         processor::ProcessContext,
     };
+
+    #[test]
+    fn virtual_budget_survives_snapshot_serialization_without_native_packet_inference() {
+        let mut graph = LogicalGraph::new();
+        let playback = graph.create_node(NodeKind::Source, 2).unwrap();
+        let microphone = graph.create_node(NodeKind::Sink, 2).unwrap();
+        let physical = graph.create_node(NodeKind::Source, 2).unwrap();
+        let target = VirtualBufferOptions {
+            input: TransportInputPolicy::Target {
+                capacity_frames: 1024,
+                target_frames: 321,
+                jitter_frames: 32,
+            },
+            delivery: Some(InputDeliveryTiming {
+                sample_rate: 48_000,
+                max_packet_frames: 128,
+                max_gap_frames: 128,
+                source: DeliveryTimingSource::Declared,
+            }),
+            recovery_cap_periods: Some(1),
+        };
+        for options in [VirtualBufferOptions::default(), target] {
+            let budget = options.prepare_recovery(48_000, 128).unwrap();
+            let streams = [
+                (playback, NativeStreamKind::VirtualPlayback, Some(budget)),
+                (
+                    microphone,
+                    NativeStreamKind::VirtualMicrophone,
+                    Some(budget),
+                ),
+                (physical, NativeStreamKind::PhysicalInput, None),
+            ]
+            .into_iter()
+            .map(|(node, kind, virtual_budget)| NativeStreamObservation {
+                node,
+                kind,
+                timing: None,
+                shared_period: None,
+                render_queue: None,
+                input_queue: virtual_budget.and_then(|budget| budget.queue),
+                virtual_budget,
+            })
+            .collect();
+            let observations = NativeObservations::default();
+            observations.publish(7, streams, Vec::new(), Vec::new());
+            let mut snapshot = observations.snapshot().unwrap();
+            let json = serde_json::to_value(&snapshot).unwrap();
+            for (index, kind) in [
+                NativeStreamKind::VirtualPlayback,
+                NativeStreamKind::VirtualMicrophone,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let stream = &snapshot.streams[index];
+                assert_eq!(stream.kind, kind);
+                assert_eq!(stream.virtual_budget, Some(budget));
+                assert_eq!(stream.input_queue, budget.queue);
+                let published = &json["streams"][index]["virtual_budget"];
+                assert_eq!(published, &serde_json::to_value(budget).unwrap());
+                assert!(
+                    published
+                        .as_object()
+                        .unwrap()
+                        .contains_key("native_packet_frames")
+                );
+                assert!(published["native_packet_frames"].is_null());
+            }
+            assert_eq!(snapshot.streams[2].virtual_budget, None);
+            assert!(json["streams"][2]["virtual_budget"].is_null());
+            // A caller's owned snapshot cannot modify the session's admission.
+            snapshot.streams[0].virtual_budget = None;
+            assert_eq!(
+                observations.snapshot().unwrap().streams[0].virtual_budget,
+                Some(budget)
+            );
+        }
+    }
 
     fn sampled_boundary(
         adapted: bool,

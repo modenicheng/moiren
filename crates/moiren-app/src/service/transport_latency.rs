@@ -99,6 +99,7 @@ impl TransportLatencySettings {
         moiren_windows_audio::virtual_owner::VirtualBufferOptions {
             input: policy(self.vad),
             delivery: delivery(self.vad),
+            ..Default::default()
         }
     }
 }

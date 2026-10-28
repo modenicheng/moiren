@@ -605,6 +605,7 @@ fn native_timing_projection_hides_stopped_and_stale_owner_observations() {
                     deadline_budget_frames: Some(96),
                 }),
                 input_queue: Some(PreparedInputQueue::compatible()),
+                virtual_budget: None,
             }],
             boundary_probes: vec![],
             bridges: vec![NativeBridgeObservation {

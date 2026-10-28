@@ -21,6 +21,18 @@ pub struct VirtualBoundaryRequest {
     pub owner_generation: u64,
 }
 
+impl VirtualBoundaryRequest {
+    /// Preparation evidence keeps requested policy separate from admitted
+    /// transfer/recovery demand and leaves unnegotiated packet timing unknown.
+    pub fn prepared_budget(self) -> Result<super::PreparedVirtualBudget, BackendError> {
+        let block = u32::try_from(self.max_block_frames)
+            .map_err(|_| BackendError::Unsupported("virtual block demand overflow".into()))?;
+        self.buffer
+            .prepare_budget(self.engine_sample_rate, block, self.max_demand_frames)
+            .map_err(|error| BackendError::Unsupported(error.to_string()))
+    }
+}
+
 /// A prepared transport worker's control-side lifetime, independent of clients.
 ///
 /// `Running` means the transport is alive, including when zero external clients
@@ -85,10 +97,9 @@ pub fn bind_playback_source(
     cancel: &CancellationToken,
     sessions: &mut VirtualSessions,
 ) -> Result<(VirtualPlaybackSource, Arc<BoundaryProbe>), BackendError> {
-    let queue = request
-        .buffer
-        .prepare(request.engine_sample_rate, request.max_demand_frames)
-        .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+    let budget = request.prepared_budget()?;
+    let queue = budget.queue;
+    log::debug!(target: "moiren::audio::vad", "event=virtual_budget direction=playback admitted={budget:?}");
     let prepared = provider.prepare_playback(request, cancel)?;
     sessions.push_with_reset_epoch(prepared.session, prepared.reset_epoch.clone());
     if queue.is_some_and(|q| prepared.carrier.capacity_frames() != q.capacity_frames as usize) {
@@ -127,10 +138,9 @@ pub fn bind_microphone_sink(
     cancel: &CancellationToken,
     sessions: &mut VirtualSessions,
 ) -> Result<(VirtualMicrophoneSink, Arc<BoundaryProbe>), BackendError> {
-    let queue = request
-        .buffer
-        .prepare(request.engine_sample_rate, request.max_demand_frames)
-        .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+    let budget = request.prepared_budget()?;
+    let queue = budget.queue;
+    log::debug!(target: "moiren::audio::vad", "event=virtual_budget direction=microphone admitted={budget:?}");
     let prepared = provider.prepare_microphone(request, cancel)?;
     sessions.push_with_reset_epoch(prepared.session, prepared.reset_epoch.clone());
     if queue.is_some_and(|q| prepared.carrier.capacity_frames() != q.capacity_frames as usize) {

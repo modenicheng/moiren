@@ -78,6 +78,114 @@ fn virtual_mono_does_not_require_a_physical_master() {
     );
 }
 
+#[test]
+fn small_virtual_target_prepares_and_repays_only_the_configured_recovery_burst() {
+    use crate::latency::transport::{
+        DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy,
+    };
+    use crate::virtual_owner::{ClockWake, VirtualBufferOptions, VirtualRealtimeClock};
+
+    struct LateClock {
+        now: u64,
+    }
+    impl VirtualRealtimeClock for LateClock {
+        fn frequency(&self) -> u64 {
+            48_000
+        }
+        fn now_ticks(&mut self) -> Result<u64, BackendError> {
+            Ok(self.now)
+        }
+        fn wait_ticks(&mut self, _: u64) -> Result<ClockWake, BackendError> {
+            if self.now != 0 {
+                return Ok(ClockWake::Stopped);
+            }
+            self.now = 10 * 256;
+            Ok(ClockWake::Timer)
+        }
+    }
+    struct LateFactory;
+    impl VirtualClockFactory for LateFactory {
+        fn prepare(
+            &self,
+            _: crate::StopSignal,
+        ) -> Result<Box<dyn VirtualRealtimeClock>, BackendError> {
+            Ok(Box::new(LateClock { now: 0 }))
+        }
+    }
+
+    let project = virtual_project(2, 48_000);
+    assert_eq!(project.processing.engine.max_block_frames, 256);
+    let probe = Arc::new(Probe::default());
+    let buffer = VirtualBufferOptions {
+        input: TransportInputPolicy::Target {
+            capacity_frames: 16_384,
+            target_frames: 480,
+            jitter_frames: 32,
+        },
+        delivery: Some(InputDeliveryTiming {
+            sample_rate: 48_000,
+            max_packet_frames: 128,
+            max_gap_frames: 128,
+            source: DeliveryTimingSource::Declared,
+        }),
+        recovery_cap_periods: Some(1),
+    };
+    let backend = backend::<f32>(&probe)
+        .with_virtual_clock_factory(Arc::new(LateFactory))
+        .with_virtual_buffer(buffer)
+        .unwrap();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(
+            request(&project, &host),
+            &cancel,
+            &native_devices(Default::default()),
+        )
+        .expect("the one-period burst fits without silently reserving eight periods");
+    for boundary in probe.requests.lock().unwrap().iter() {
+        assert_eq!(boundary.max_demand_frames, 256);
+        assert_eq!(boundary.buffer.recovery_cap_periods, Some(1));
+        let admitted = boundary.prepared_budget().unwrap();
+        assert_eq!(admitted.engine_burst_frames, 256);
+        assert_eq!(admitted.queue.unwrap().prime_frames, 480);
+        assert_eq!(admitted.queue.unwrap().modeled_minimum_frames, Some(449));
+        assert_eq!(admitted.native_packet_frames, None);
+    }
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    let snapshot = backend.native_observations().snapshot().unwrap();
+    assert_eq!(snapshot.streams.len(), 2);
+    for kind in [
+        NativeStreamKind::VirtualPlayback,
+        NativeStreamKind::VirtualMicrophone,
+    ] {
+        let stream = snapshot
+            .streams
+            .iter()
+            .find(|stream| stream.kind == kind)
+            .unwrap();
+        let budget = stream.virtual_budget.expect("published VAD admission");
+        assert_eq!(budget, buffer.prepare_recovery(48_000, 256).unwrap());
+        assert_eq!(stream.input_queue, budget.queue);
+        assert_eq!(budget.native_packet_frames, None);
+    }
+    wait_until(|| {
+        owner
+            .timeline()
+            .is_some_and(|timeline| timeline.frame >= 256)
+    });
+    let returned = owner.stop_and_join();
+    assert_eq!(returned.error, None);
+    assert_eq!(
+        returned.engine.timeline(),
+        256,
+        "nine clamped periods are not repaid"
+    );
+    assert_sessions_joined(&probe, 2);
+}
+
 fn backend<S: ProcessingSample>(probe: &Arc<Probe>) -> ProfessionalBackend<S> {
     ProfessionalBackend::new()
         .unwrap()
@@ -145,6 +253,82 @@ fn replace_with_physical_capture(project: &mut EngineProject) -> NodeId {
         }),
     );
     source
+}
+
+#[test]
+fn virtual_budget_observations_preserve_whole_physical_master_demand() {
+    use crate::latency::transport::{
+        DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy,
+    };
+    use crate::virtual_owner::VirtualBufferOptions;
+
+    let mut project = virtual_project(2, 48_000);
+    let physical = add_physical_output(&mut project, 2);
+    let buffer = VirtualBufferOptions {
+        input: TransportInputPolicy::Target {
+            capacity_frames: 16_384,
+            target_frames: 1024,
+            jitter_frames: 32,
+        },
+        delivery: Some(InputDeliveryTiming {
+            sample_rate: 48_000,
+            max_packet_frames: 128,
+            max_gap_frames: 128,
+            source: DeliveryTimingSource::Declared,
+        }),
+        recovery_cap_periods: Some(1),
+    };
+    let probe = Arc::new(Probe::default());
+    let backend = backend::<f32>(&probe).with_virtual_buffer(buffer).unwrap();
+    let mut bus = moiren_signal::Bus::new(Default::default()).unwrap();
+    let (host, _rt) = bus.create_host(8).unwrap();
+    let cancel = CancellationToken::default();
+    let prepared = backend
+        .prepare_with_native(
+            request(&project, &host),
+            &cancel,
+            &native_devices(Default::default()),
+        )
+        .unwrap();
+    // The 96 kHz master's 128-frame period needs 64 Engine frames, plus
+    // the existing 64-frame FIR allowance and two Graph256 rounding blocks.
+    let budget = buffer.prepare_budget(48_000, 256, 640).unwrap();
+    let requests = probe.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests.iter() {
+        assert_eq!(request.prepared_budget().unwrap(), budget);
+    }
+    drop(requests);
+    let owner = attach(&project, prepared, cancel);
+    owner.activate().unwrap();
+    let snapshot = backend.native_observations().snapshot().unwrap();
+    assert_eq!(snapshot.streams.len(), 3);
+    for kind in [
+        NativeStreamKind::VirtualPlayback,
+        NativeStreamKind::VirtualMicrophone,
+    ] {
+        let stream = snapshot
+            .streams
+            .iter()
+            .find(|stream| stream.kind == kind)
+            .unwrap();
+        assert_eq!(stream.virtual_budget, Some(budget));
+        assert_eq!(stream.input_queue, budget.queue);
+        assert_eq!(stream.virtual_budget.unwrap().native_packet_frames, None);
+    }
+    assert_eq!(
+        snapshot
+            .streams
+            .iter()
+            .find(|stream| stream.node == physical)
+            .unwrap()
+            .virtual_budget,
+        None
+    );
+    owner.cancel();
+    assert_eq!(owner.stop_and_join().error, None);
+    assert!(backend.native_observations().snapshot().is_none());
+    assert_sessions_joined(&probe, 2);
 }
 
 #[test]
@@ -838,6 +1022,14 @@ fn virtual_endpoints_publish_stream_observations() {
     assert_eq!(native.boundary_probes.len(), 2);
     assert!(native.streams.iter().any(|stream| stream.node == source && stream.kind == NativeStreamKind::VirtualPlayback));
     assert!(native.streams.iter().any(|stream| stream.node == sink && stream.kind == NativeStreamKind::VirtualMicrophone));
+    let budget = crate::virtual_owner::VirtualBufferOptions::default()
+        .prepare_recovery(48_000, 256)
+        .unwrap();
+    for stream in &native.streams {
+        assert_eq!(stream.virtual_budget, Some(budget));
+        assert_eq!(stream.input_queue, None);
+        assert_eq!(stream.virtual_budget.unwrap().native_packet_frames, None);
+    }
     owner.cancel();
     assert_eq!(owner.stop_and_join().error, None);
     assert!(backend.observations().snapshot().is_none());

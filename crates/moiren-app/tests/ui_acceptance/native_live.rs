@@ -95,6 +95,7 @@ fn live_snapshot(mut snapshot: AppSnapshot) -> AppSnapshot {
         shared_period: None,
         render_queue: None,
         input_queue: None,
+        virtual_budget: None,
     };
     snapshot.native_observations = Some(NativeSessionObservations {
         generation: SessionGeneration(8),

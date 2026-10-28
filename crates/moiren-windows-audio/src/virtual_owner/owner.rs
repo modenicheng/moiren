@@ -36,6 +36,7 @@ pub struct VirtualPreparedTransport {
     stop: StopSignal,
     gate: ActivationGate,
     clock: Option<Box<dyn VirtualRealtimeClock>>,
+    recovery_cap_periods: u64,
 }
 
 impl VirtualPreparedTransport {
@@ -53,7 +54,19 @@ impl VirtualPreparedTransport {
             stop,
             gate,
             clock: Some(clock),
+            recovery_cap_periods: super::DEBT_CAP_PERIODS,
         }
+    }
+
+    /// Set only from preparation-side admission; no budget work runs on RT.
+    pub fn with_recovery_cap(mut self, periods: u64) -> Result<Self, BackendError> {
+        self.recovery_cap_periods = super::VirtualBufferOptions {
+            recovery_cap_periods: Some(periods),
+            ..Default::default()
+        }
+        .admitted_recovery_cap_periods()
+        .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+        Ok(self)
     }
 
     pub fn with_captures(mut self, captures: Vec<CaptureSession>) -> Self {
@@ -194,6 +207,7 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
         let stop = self.stop.clone();
         let timeline_resets = self.sessions.timeline_resets();
         let mut clock = self.clock.take().expect("prepared virtual clock");
+        let recovery_cap_periods = self.recovery_cap_periods;
         let mut clock_trace = ClockTrace::default();
         let worker = thread::Builder::new()
             .name("moiren-virtual-owner".into())
@@ -215,13 +229,14 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
                         Activation::Cancelled => return Ok(()),
                         Activation::Start => {}
                     }
-                    run(
+                    run_with_recovery_cap(
                         &mut engine,
                         &mut *clock,
                         &worker_published,
                         &timeline_resets,
                         &stop,
                         &mut clock_trace,
+                        recovery_cap_periods,
                     )
                 })) {
                     Ok(result) => result.err(),
@@ -278,6 +293,7 @@ impl<S: ProcessingSample> PreparedTransport<S> for VirtualPreparedTransport {
 /// stall and escalates to the full reset handshake.
 const STALL_CLAMPED_WAKE_STREAK: u32 = 3;
 
+#[cfg(test)]
 fn run<S: ProcessingSample>(
     engine: &mut Engine<S>,
     clock: &mut dyn VirtualRealtimeClock,
@@ -286,15 +302,36 @@ fn run<S: ProcessingSample>(
     stop: &StopSignal,
     clock_trace: &mut ClockTrace,
 ) -> Result<(), BackendError> {
+    run_with_recovery_cap(
+        engine,
+        clock,
+        published,
+        timeline_resets,
+        stop,
+        clock_trace,
+        super::DEBT_CAP_PERIODS,
+    )
+}
+
+fn run_with_recovery_cap<S: ProcessingSample>(
+    engine: &mut Engine<S>,
+    clock: &mut dyn VirtualRealtimeClock,
+    published: &Published,
+    timeline_resets: &[Arc<AtomicU64>],
+    stop: &StopSignal,
+    clock_trace: &mut ClockTrace,
+    recovery_cap_periods: u64,
+) -> Result<(), BackendError> {
     let origin = clock.now_ticks()?;
     let frequency = clock.frequency();
     clock_trace.start(origin, frequency);
     let sample_rate = engine.config().processing_sr as u64;
-    let mut schedule = ClockSchedule::new(
+    let mut schedule = ClockSchedule::with_recovery_cap(
         frequency,
         engine.config().max_block_frames,
         sample_rate,
         origin,
+        recovery_cap_periods,
     )
     .map_err(|error| BackendError::Failed(error.to_string()))?;
     published.state.store(1, Ordering::Release);

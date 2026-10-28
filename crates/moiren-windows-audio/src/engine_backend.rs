@@ -382,10 +382,23 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             self.observations.clone(),
         ));
         transport.native_observations = self.native_observations.clone();
-        let virtual_demand = u32::try_from(request.project.processing.engine.max_block_frames)
-            .ok()
-            .and_then(|block| block.checked_mul(crate::virtual_owner::DEBT_CAP_PERIODS as u32))
-            .ok_or_else(|| unsupported("virtual burst demand overflow"))?;
+        let block_demand = u32::try_from(request.project.processing.engine.max_block_frames)
+            .map_err(|_| unsupported("virtual block demand overflow"))?;
+        let recovery_cap_periods = self
+            .virtual_buffer
+            .admitted_recovery_cap_periods()
+            .map_err(unsupported)?;
+        let virtual_demand = if clock == ProjectClock::VirtualRealtime {
+            self.virtual_buffer
+                .prepare_recovery(rate, block_demand)
+                .map_err(unsupported)?
+                .engine_burst_frames
+        } else {
+            // Replaced with the physical master's negotiated whole wake below.
+            block_demand
+                .checked_mul(recovery_cap_periods as u32)
+                .ok_or_else(|| unsupported("virtual burst demand overflow"))?
+        };
         // Compatible resources keep their existing preparation/cleanup order.
         // Explicit targets wait for the physical master's negotiated demand.
         let virtual_prepared = if self.virtual_buffer == Default::default() {
@@ -516,8 +529,6 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         let recovery = self
             .recovery
             .register(request.owner_generation, asio_configurations, rate);
-        let block_demand = u32::try_from(request.project.processing.engine.max_block_frames)
-            .map_err(|_| unsupported("process demand overflow"))?;
         let mut process_demand = virtual_demand;
         // Custom input admission depends on the master's actual negotiated
         // period, so open that group before any physical capture followers.
@@ -706,6 +717,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                     shared_period,
                     render_queue: None,
                     input_queue: queue,
+                    virtual_budget: None,
                 });
                 transport
                     .streams
@@ -723,6 +735,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                     shared_period,
                     render_queue,
                     input_queue: None,
+                    virtual_budget: None,
                 });
                 if let Some(padding) = padding {
                     transport.native_renders.push((output.node, padding));
@@ -761,6 +774,10 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             )?,
         };
         for (stream, _) in &virtual_observations {
+            let virtual_budget = self
+                .virtual_buffer
+                .prepare_budget(rate, block_demand, process_demand)
+                .map_err(unsupported)?;
             transport.native_streams.push(NativeStreamObservation {
                 node: stream.node,
                 kind: if stream.input {
@@ -771,10 +788,8 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 timing: None,
                 shared_period: None,
                 render_queue: None,
-                input_queue: self
-                    .virtual_buffer
-                    .prepare(rate, process_demand)
-                    .map_err(unsupported)?,
+                input_queue: virtual_budget.queue,
+                virtual_budget: Some(virtual_budget),
             });
         }
         transport.native_probes.extend(virtual_probes);
@@ -821,13 +836,16 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             }
             return Ok(PreparedBackend {
                 bindings,
-                transport: Some(Box::new(VirtualPreparedTransport::new(
-                    virtual_sinks,
-                    virtual_sessions,
-                    stop,
-                    gate,
-                    clock,
-                ))),
+                transport: Some(Box::new(
+                    VirtualPreparedTransport::new(
+                        virtual_sinks,
+                        virtual_sessions,
+                        stop,
+                        gate,
+                        clock,
+                    )
+                    .with_recovery_cap(recovery_cap_periods)?,
+                )),
             });
         }
         Ok(PreparedBackend {
@@ -967,6 +985,7 @@ fn prepare_process<S: ProcessingSample>(
         shared_period: None,
         render_queue: None,
         input_queue: Some(bridge.prepare().map_err(unsupported)?),
+        virtual_budget: None,
     });
     transport
         .native_bridges

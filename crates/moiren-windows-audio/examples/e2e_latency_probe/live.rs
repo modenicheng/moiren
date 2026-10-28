@@ -2651,6 +2651,7 @@ mod native {
         Ok(VirtualBufferOptions {
             input: bridge.input,
             delivery: bridge.delivery,
+            ..Default::default()
         })
     }
 

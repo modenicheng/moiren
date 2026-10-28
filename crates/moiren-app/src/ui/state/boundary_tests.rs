@@ -23,6 +23,7 @@ fn boundary_snapshot(target_frames: Option<u32>) -> AppSnapshot {
         shared_period: None,
         render_queue: None,
         input_queue: None,
+        virtual_budget: None,
     };
     snapshot.native_observations = Some(NativeSessionObservations {
         generation: SessionGeneration(8),
