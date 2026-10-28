@@ -30,23 +30,23 @@ whole-wake contract. Neither is part of this diagnostic implementation.
 
 ## Tasks
 
-- [ ] Add service candidate regressions using actual software bridge histories:
+- [x] Add service candidate regressions using actual software bridge histories:
   exact independent options and conservative declared gap, original rate/wake,
   refusal/invalid policy, lost output, insufficient exposure and no qualification.
   Run focused app tests to observe RED, then implement the minimal evaluator in
   `crates/moiren-app/src/service/process_trace/evaluation.rs`.
-- [ ] Add editor-state tests for one in-flight worker, stale predecessor/draft/
+- [x] Add editor-state tests for one in-flight worker, stale predecessor/draft/
   policy results and retained error feedback. Implement the state in
   `ui/window/settings/measured/window_state.rs` and background dispatch/view in
   `ui/window/settings/measured/window.rs`, reusing existing candidate controls.
-- [ ] Add actual Settings click tests for stopped retained evidence and absent
+- [x] Add actual Settings click tests for stopped retained evidence and absent
   evidence. Verify evaluation dispatches no audio requests, shows explicit
   policy/status/provenance/assumptions and leaves live measured Apply unchanged.
   Add locale keys using the actual English/Simplified Chinese catalog.
-- [ ] Run full app library and relevant CLI/transport/UI integration tests,
+- [x] Run full app library and relevant CLI/transport/UI integration tests,
   strict all-target app Clippy, fmt and diff checks. Request independent review,
   resolve findings, commit/push scoped changes and verify full remote SHA.
-- [ ] Record exact results and remaining production evaluated-apply/physical
+- [x] Record exact results and remaining production evaluated-apply/physical
   gates in the validation ledger. Full S1-S3 remains active.
 
 ## Verification Commands
@@ -60,3 +60,20 @@ cargo clippy --locked -p moiren-app --all-targets --features gpui-test -- -D war
 cargo fmt --all -- --check
 git diff --check
 ```
+
+## Completion Receipt
+
+Plan `f00095b` and implementation `6c33267` are pushed with full remote-SHA
+verification. App library 495 passed / 3 ignored; focused window tests 11 passed;
+CLI 2, transport settings 6 and UI acceptance 13 passed. Strict app all-target
+Clippy, fmt and diff checks pass. Two independent source reviews find no
+remaining Important/Critical issue. Their review is not a separate test run.
+
+A review-detected stale failure message is now fenced on the same predecessor
+Arc/candidate/policy as success. Deliberately removing that fence fails its
+assertion; restoring original bytes gives all 11 focused tests green.
+
+See `docs/validation/2026-10-29-desktop-process-window.md` for command evidence,
+corrected failed attempts and open gates. This is closed-prefix diagnostic
+evaluation, not production evaluated Apply or physical qualification. The
+whole S1-S3 goal remains active.
