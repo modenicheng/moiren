@@ -1330,6 +1330,7 @@ struct NativeMeasurements {
     heights: BTreeMap<NodeId, f32>,
     bodies: BTreeMap<NodeId, Bounds<f32>>,
     meters: BTreeMap<NodeId, Bounds<f32>>,
+    meter_readouts: BTreeMap<NodeId, Bounds<f32>>,
 }
 
 /// Reconstruct full heights only at 1:1. Compact overlays have a fixed clipped
@@ -1364,6 +1365,7 @@ fn observed_native_geometry(window: &Window, ids: &[NodeId]) -> anyhow::Result<N
         heights: BTreeMap::new(),
         bodies: BTreeMap::new(),
         meters: BTreeMap::new(),
+        meter_readouts: BTreeMap::new(),
     };
     for id in ids {
         let body = window
@@ -1396,6 +1398,23 @@ fn observed_native_geometry(window: &Window, ids: &[NodeId]) -> anyhow::Result<N
                         f32::from(meter.top() - bounds.top()),
                     ),
                     size: size(f32::from(meter.size.width), f32::from(meter.size.height)),
+                },
+            );
+        }
+        if let Some(readout) = window.try_find(format!("card-meter-readout-region-{id:?}")) {
+            anyhow::ensure!(readout.visible(), "Meter readout region is not visible");
+            let readout = readout.bounds();
+            measurements.meter_readouts.insert(
+                *id,
+                Bounds {
+                    origin: point(
+                        f32::from(readout.left() - bounds.left()),
+                        f32::from(readout.top() - bounds.top()),
+                    ),
+                    size: size(
+                        f32::from(readout.size.width),
+                        f32::from(readout.size.height),
+                    ),
                 },
             );
         }
@@ -1779,7 +1798,7 @@ fn verify_native_bounds(
             .node(*id)
             .and_then(|node| node.builtin.rack())
             .map(|rack| rack.slots.len());
-        let vertical_meter = requires_side_meter(node.kind, rack_stages);
+        let mut vertical_meter = requires_side_meter(node.kind, rack_stages);
         let meter = measured.meters.get(id);
         let channels = snapshot
             .graph
@@ -1787,15 +1806,6 @@ fn verify_native_bounds(
             .get_node(*id)
             .map_err(|error| anyhow::anyhow!("capture node: {error:?}"))?
             .channels();
-        if node.kind == NodeKind::Meter && channels == 32 {
-            let meter =
-                meter.ok_or_else(|| anyhow::anyhow!("32-channel meter viewport did not paint"))?;
-            anyhow::ensure!(
-                contains_native_bounds(*body, *meter)
-                    && meter.size.width <= crate::ui::widgets::meters::node_meter_width(8) + 1.,
-                "32-channel meter viewport exceeds the eight-channel cap or its body"
-            );
-        }
         if vertical_meter {
             let meter = meter.ok_or_else(|| {
                 anyhow::anyhow!("{} vertical meter did not paint", slug(node.kind))
@@ -1811,12 +1821,36 @@ fn verify_native_bounds(
                 slug(node.kind)
             );
         }
+        let meter_readout = measured.meter_readouts.get(id);
+        if node.kind == NodeKind::Meter {
+            let meter =
+                meter.ok_or_else(|| anyhow::anyhow!("Meter vertical viewport did not paint"))?;
+            let readout = meter_readout
+                .ok_or_else(|| anyhow::anyhow!("Meter readings/status region did not paint"))?;
+            // Unlike side-meter cards, Meter's preset row sits above both
+            // columns. Verify against its observed readings/status sibling.
+            anyhow::ensure!(
+                contains_native_bounds(*body, *readout)
+                    && contains_native_bounds(*body, *meter)
+                    && readout.top() > body.top() + 1.
+                    && (meter.top() - readout.top()).abs() <= 1.
+                    && (meter.bottom() - readout.bottom()).abs() <= 1.
+                    && (meter.left() - readout.right() - 16.).abs() <= 1.
+                    && (meter.size.width - crate::ui::widgets::meters::node_meter_width(channels))
+                        .abs()
+                        <= 1.,
+                "Meter viewport does not follow its readings/status sibling or channel width: \
+                 meter {meter:?}, readout {readout:?}, body {body:?}"
+            );
+            vertical_meter = true;
+        }
         geometry.push(serde_json::json!({
             "node": slug(node.kind),
             "card": [card.left(), card.top(), card.size.width, card.size.height],
             "native_body": [body.left(), body.top(), body.size.width, body.size.height],
             "meter": meter.map(|meter| [meter.left(), meter.top(), meter.size.width, meter.size.height]),
             "vertical_meter_verified": vertical_meter,
+            "meter_readout_region": meter_readout.map(|readout| [readout.left(), readout.top(), readout.size.width, readout.size.height]),
             "input_streams": node.input_count,
             "rack_stages": rack_stages,
             "channels": channels,
@@ -2253,6 +2287,7 @@ mod tests {
                         heights: full.heights.clone(),
                         bodies: BTreeMap::from([(id, body)]),
                         meters: BTreeMap::new(),
+                        meter_readouts: BTreeMap::new(),
                     },
                     focus: Bounds {
                         origin: body.origin,
@@ -2309,15 +2344,6 @@ mod tests {
         let layout =
             measured_focus_layout(&snapshot, &[NodeKind::Meter], viewport, &heights).unwrap();
         let mut measured = measurement_fixture(&snapshot, &layout, viewport, heights);
-        let body = measured.bodies[&id];
-        let cap = crate::ui::widgets::meters::node_meter_width(8);
-        measured.meters.insert(
-            id,
-            Bounds {
-                origin: point(body.right() - cap, body.top()),
-                size: size(cap, body.size.height),
-            },
-        );
         let verify = |measured: &NativeMeasurements| {
             verify_native_bounds(
                 &snapshot,
@@ -2331,6 +2357,88 @@ mod tests {
         measured.meters.get_mut(&id).unwrap().size.width += 10.;
         assert!(verify(&measured).is_err());
         finish_service(runtime);
+    }
+
+    fn verify_meter_readout_region(channels: usize) {
+        let runtime = spawn_service();
+        let mut snapshot = (*initial_projection(&runtime.handle())).clone();
+        snapshot.graph = std::sync::Arc::new(
+            chain_fixture(
+                &[NodeKind::Source, NodeKind::Meter, NodeKind::Sink],
+                channels,
+            )
+            .unwrap(),
+        );
+        let id = snapshot.graph.node_of_kind(NodeKind::Meter).unwrap().0.id();
+        let viewport = (2000., 800.);
+        let heights = BTreeMap::from([(id, 500.)]);
+        let layout =
+            measured_focus_layout(&snapshot, &[NodeKind::Meter], viewport, &heights).unwrap();
+        let measured = measurement_fixture(&snapshot, &layout, viewport, heights);
+        let verify = |measured: &NativeMeasurements| {
+            verify_native_bounds(
+                &snapshot,
+                &layout.positions,
+                layout.camera,
+                &layout.ids,
+                measured,
+            )
+        };
+        let body = measured.bodies[&id];
+        let meter = measured.meters[&id];
+        let readout = measured.meter_readouts[&id];
+        assert!(meter.top() > body.top(), "presets sit above the meter");
+        assert_eq!(meter.top(), readout.top());
+        assert_eq!(meter.bottom(), readout.bottom());
+        let verified = verify(&measured).unwrap();
+        assert_eq!(verified[0]["vertical_meter_verified"], true);
+        assert_eq!(verified[0]["channels"], channels);
+        assert!(verified[0]["meter_readout_region"].is_array());
+        for missing_readout in [false, true] {
+            let mut missing = measured.clone();
+            if missing_readout {
+                missing.meter_readouts.remove(&id);
+            } else {
+                missing.meters.remove(&id);
+            }
+            assert!(verify(&missing).is_err());
+        }
+        for invalid in [
+            Bounds {
+                origin: point(meter.left(), body.top()),
+                size: size(meter.size.width, body.size.height),
+            },
+            Bounds {
+                size: size(meter.size.width, meter.size.height - 12.),
+                ..meter
+            },
+            Bounds {
+                origin: point(readout.right() - 4., meter.top()),
+                ..meter
+            },
+            Bounds {
+                size: size(meter.size.width - 10., meter.size.height),
+                ..meter
+            },
+        ] {
+            let mut wrong = measured.clone();
+            wrong.meters.insert(id, invalid);
+            assert!(verify(&wrong).is_err(), "{channels} channels: {invalid:?}");
+        }
+        let mut clipped = measured.clone();
+        clipped.meter_readouts.get_mut(&id).unwrap().origin.x = body.left() - 2.;
+        assert!(verify(&clipped).is_err());
+        finish_service(runtime);
+    }
+
+    #[::core::prelude::v1::test]
+    fn meter_stereo_validator_matches_readings_and_status_not_whole_body() {
+        verify_meter_readout_region(2);
+    }
+
+    #[::core::prelude::v1::test]
+    fn meter32_validator_matches_readings_and_status_not_whole_body() {
+        verify_meter_readout_region(32);
     }
 
     #[::core::prelude::v1::test]
@@ -2572,11 +2680,41 @@ mod tests {
                 ))
             })
             .collect();
+        let meter_readouts: BTreeMap<_, _> = layout
+            .ids
+            .iter()
+            .filter_map(|id| {
+                let node = snapshot.graph.graph.get_node(*id).ok()?;
+                (node.kind() == NodeKind::Meter).then(|| {
+                    let body = bodies[id];
+                    let width = crate::ui::widgets::meters::node_meter_width(node.channels());
+                    (
+                        *id,
+                        Bounds {
+                            origin: point(body.left(), body.top() + 60.),
+                            size: size(body.size.width - width - 16., body.size.height - 60.),
+                        },
+                    )
+                })
+            })
+            .collect();
         let meters = layout
             .ids
             .iter()
             .filter_map(|id| {
                 let node = snapshot.graph.graph.get_node(*id).ok()?;
+                if let Some(readout) = meter_readouts.get(id) {
+                    return Some((
+                        *id,
+                        Bounds {
+                            origin: point(readout.right() + 16., readout.top()),
+                            size: size(
+                                crate::ui::widgets::meters::node_meter_width(node.channels()),
+                                readout.size.height,
+                            ),
+                        },
+                    ));
+                }
                 let stages = snapshot
                     .graph
                     .node(*id)
@@ -2599,6 +2737,7 @@ mod tests {
             heights,
             bodies,
             meters,
+            meter_readouts,
         }
     }
 

@@ -109,6 +109,7 @@ pub(super) fn content(
     };
     let meter_width = crate::ui::widgets::meters::node_meter_width(channels);
     let readout = div()
+        .id(format!("card-meter-readout-region-{:?}", node.id))
         .flex()
         .flex_col()
         .gap(px(6.))
@@ -118,7 +119,8 @@ pub(super) fn content(
         } else {
             theme::TEXT_MUTED
         }))
-        .child(note("Sample peak / RMS (display ballistics)"));
+        .child(note("Sample peak / RMS (display ballistics)"))
+        .gpui_test_observe();
     Some(
         div()
             .flex()
