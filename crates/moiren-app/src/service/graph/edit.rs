@@ -53,6 +53,18 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             field_edit::set_builtin_parameter(next, node, parameter, value)?;
             validate_edited_node(next, node)?;
         }
+        GraphEdit::SetEqBand {
+            node,
+            frequency_hz,
+            gain_db,
+        } => {
+            field_edit::set_eq_band(next, node, frequency_hz, gain_db)?;
+            validate_edited_node(next, node)?;
+        }
+        GraphEdit::AdjustEqQ { node, factor } => {
+            field_edit::adjust_eq_q(next, node, factor)?;
+            validate_edited_node(next, node)?;
+        }
         GraphEdit::SetSpectrumFft { node, fft_size } => {
             edit_spectrum(next, node, |settings| {
                 settings.fft_size = fft_size;

@@ -137,6 +137,21 @@ pub enum GraphEdit {
         parameter: RackParameter,
         value: f64,
     },
+    /// Set one independent EQ band position (Hz, dB), preserving the latest Q.
+    /// Rapid samples share one band undo key under the existing coalescing window.
+    /// Like other NodeId-only edits, stale callbacks must be retired on load.
+    SetEqBand {
+        node: NodeId,
+        frequency_hz: f64,
+        gain_db: f64,
+    },
+    /// Multiply the latest independent EQ Q by a finite positive factor, then
+    /// clamp to 0.1..=20. Shares undo identity with exact EqQ field edits.
+    /// This prepared-plan edit has no guard against NodeId reuse on load.
+    AdjustEqQ {
+        node: NodeId,
+        factor: f64,
+    },
     SetSpectrumFft {
         node: NodeId,
         fft_size: usize,
@@ -221,6 +236,15 @@ impl GraphEdit {
                 output,
                 ..
             } => Some(format!("mapper:{node:?}:{output}:{input}")),
+            Self::SetEqBand { node, .. } => Some(format!("builtin:{node:?}:band")),
+            Self::SetBuiltinParameter {
+                node,
+                parameter: RackParameter::EqQ,
+                ..
+            }
+            | Self::AdjustEqQ { node, .. } => {
+                Some(format!("builtin:{node:?}:{:?}", RackParameter::EqQ))
+            }
             Self::SetBuiltinParameter {
                 node, parameter, ..
             } => Some(format!("builtin:{node:?}:{parameter:?}")),
@@ -455,6 +479,8 @@ pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubje
         | GraphEdit::SetMapperWeight { node: id, .. }
         | GraphEdit::MapperPreset { node: id, .. }
         | GraphEdit::SetBuiltinParameter { node: id, .. }
+        | GraphEdit::SetEqBand { node: id, .. }
+        | GraphEdit::AdjustEqQ { node: id, .. }
         | GraphEdit::SetSpectrumFft { node: id, .. }
         | GraphEdit::SetSpectrumHop { node: id, .. }
         | GraphEdit::EditRack { node: id, .. }
@@ -521,6 +547,8 @@ pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &Logic
         | GraphEdit::SetMapperWeight { .. }
         | GraphEdit::MapperPreset { .. }
         | GraphEdit::SetBuiltinParameter { .. }
+        | GraphEdit::SetEqBand { .. }
+        | GraphEdit::AdjustEqQ { .. }
         | GraphEdit::SetSpectrumFft { .. }
         | GraphEdit::SetSpectrumHop { .. }
         | GraphEdit::EditRack { .. }

@@ -2,7 +2,10 @@
 //! the drivers rebuild prepared plans through the existing structural edit path.
 use super::{BuiltinState, GraphSnapshot, NodeId, NodeKind, RackParameter};
 use moiren_core::graph::Node;
-use moiren_engine::{processor::ChannelMapperSettings, rack::RackProcessor};
+use moiren_engine::{
+    processor::{ChannelMapperSettings, EqSettings},
+    rack::RackProcessor,
+};
 
 pub(super) fn set_mapper_weight(
     next: &mut GraphSnapshot,
@@ -100,6 +103,47 @@ pub(super) fn set_builtin_parameter(
             RackProcessor::Delay(settings) => BuiltinState::Delay(settings),
             _ => unreachable!("setting a scalar does not change the processor kind"),
         })
+    })
+}
+
+pub(super) fn set_eq_band(
+    next: &mut GraphSnapshot,
+    node: NodeId,
+    frequency_hz: f64,
+    gain_db: f64,
+) -> Result<(), String> {
+    edit_eq(next, node, |settings| {
+        settings.frequency_hz = frequency_hz;
+        settings.gain_db = gain_db;
+    })
+}
+
+pub(super) fn adjust_eq_q(
+    next: &mut GraphSnapshot,
+    node: NodeId,
+    factor: f64,
+) -> Result<(), String> {
+    if !factor.is_finite() || factor <= 0. {
+        return Err("EQ Q adjustment factor must be finite and positive".into());
+    }
+    edit_eq(next, node, |settings| {
+        // The current Q is validated first. A finite positive factor can still
+        // overflow/underflow the product; saturate to the requested Q bounds.
+        settings.q = (settings.q * factor).clamp(0.1, 20.);
+    })
+}
+
+fn edit_eq(
+    next: &mut GraphSnapshot,
+    node: NodeId,
+    edit: impl FnOnce(&mut EqSettings),
+) -> Result<(), String> {
+    edit_builtin(next, node, |builtin, _| {
+        let BuiltinState::Eq(mut settings) = builtin else {
+            return Err("EQ band and Q edits only apply to Eq nodes".into());
+        };
+        edit(&mut settings);
+        Ok(BuiltinState::Eq(settings))
     })
 }
 

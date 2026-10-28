@@ -1,6 +1,7 @@
 use super::super::*;
 use moiren_engine::processor::{ChannelMapperSettings, DelaySettings, EqSettings};
 
+mod eq;
 mod mapper;
 mod scalar;
 
@@ -72,6 +73,12 @@ fn field_edits_have_node_subjects_and_rebuild_without_inventing_live_parameters(
             parameter: RackParameter::EqGain,
             value: 3.,
         },
+        GraphEdit::SetEqBand {
+            node,
+            frequency_hz: 2000.,
+            gain_db: 3.,
+        },
+        GraphEdit::AdjustEqQ { node, factor: 1.5 },
     ] {
         assert_eq!(
             edit_subject(&edit, &service.snapshot().graph),
@@ -102,6 +109,12 @@ fn field_edits_reject_missing_nodes_without_creating_replacement_state() {
             parameter: RackParameter::EqQ,
             value: 1.,
         },
+        GraphEdit::SetEqBand {
+            node,
+            frequency_hz: 2000.,
+            gain_db: 3.,
+        },
+        GraphEdit::AdjustEqQ { node, factor: 1.5 },
     ] {
         assert_rejected(&mut service, edit);
     }
