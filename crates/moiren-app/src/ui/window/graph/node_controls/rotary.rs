@@ -1,10 +1,245 @@
 //! Relative vertical gestures for continuous DSP parameters, not angle chasing.
 use super::*;
+use crate::service::RequestId;
+use crate::ui::widgets::fader::SliderBehavior;
 use std::cell::Cell;
+use std::time::{Duration, Instant};
+
+type Key = (NodeId, Parameter);
+
+/// Only admitted intent owns the dial until its receipt is published. Keeping
+/// the value too lets a rejected later gesture fall back to the last admission.
+pub(super) struct Pending {
+    request: RequestId,
+    position: f32,
+}
+
+/// Call only after a validated numeric edit was admitted. This changes future
+/// gesture presentation, not the exact submitted value or the editor's text.
+pub(super) fn remember_input_admission(
+    shell: &mut StudioShell,
+    id: NodeId,
+    parameter: Parameter,
+    value: f64,
+    request: RequestId,
+    cx: &Context<StudioShell>,
+) {
+    let key = (id, parameter);
+    if shell.pending_project.is_some()
+        || !shell.node_controls.sliders.contains_key(&key)
+        || (!value.is_finite() && !(parameter == Parameter::Level && value == f64::NEG_INFINITY))
+        || shell
+            .node_controls
+            .rotary_pending
+            .get(&key)
+            .is_some_and(|pending| pending.request >= request)
+    {
+        return;
+    }
+    let position = {
+        let state = shell.state.read(cx);
+        if request <= state.snapshot.consumed_request_id {
+            return;
+        }
+        let graph = &state.snapshot.graph;
+        let Some(node) = graph.node(id) else { return };
+        let Some(kind) = graph.kind_of(id) else {
+            return;
+        };
+        if !Parameter::primary(kind, node).contains(&parameter) {
+            return;
+        }
+        let (min, max) = parameter.range(node);
+        let offset = value.clamp(min, max) - min;
+        // Mirror Parameter::position without cloning GraphNodeState: a Level
+        // field can belong to a Mapper carrying a large routing matrix.
+        if matches!(
+            parameter,
+            Parameter::Frequency
+                | Parameter::EqFrequency
+                | Parameter::EqQ
+                | Parameter::GateAttack
+                | Parameter::GateHold
+                | Parameter::GateRelease
+                | Parameter::LimitRelease
+                | Parameter::DelayTime
+                | Parameter::Compressor(
+                    crate::service::CompressorParameter::Attack
+                        | crate::service::CompressorParameter::Release
+                        | crate::service::CompressorParameter::Ratio
+                )
+        ) {
+            (offset.ln_1p() / (max - min).ln_1p()) as f32
+        } else {
+            (offset / (max - min).max(f64::EPSILON)) as f32
+        }
+    };
+    if position.is_finite() {
+        shell
+            .node_controls
+            .rotary_pending
+            .insert(key, Pending { request, position });
+    }
+}
+
+pub(super) fn sync(shell: &mut StudioShell, window: &mut Window, cx: &mut Context<StudioShell>) {
+    let graph = shell.state.read(cx).snapshot.graph.clone();
+    let consumed = shell.state.read(cx).snapshot.consumed_request_id;
+    let controls = &mut shell.node_controls;
+    controls
+        .rotary_pending
+        .retain(|key, pending| pending.request > consumed && controls.sliders.contains_key(key));
+    for node in &graph.nodes {
+        let Some(kind) = graph.kind_of(node.id) else {
+            continue;
+        };
+        for parameter in Parameter::primary(kind, node) {
+            let key = (node.id, parameter);
+            let position = parameter.position(kind, node);
+            let slot = controls.sliders.entry(key).or_insert_with(|| {
+                new_slot(key, position, parameter.default_position(kind, node), cx)
+            });
+            // Delay's prepared capacity can change while this entity survives.
+            if parameter == Parameter::DelayTime {
+                slot.behavior.reset = parameter.default_position(kind, node);
+            }
+            if !slot.dragging.get() {
+                let position = controls
+                    .rotary_pending
+                    .get(&key)
+                    .map_or(position, |pending| pending.position);
+                if slot.state.read(cx).value().end() != position {
+                    slot.state
+                        .update(cx, |state, cx| state.set_value(position, window, cx));
+                }
+            }
+        }
+    }
+}
+
+fn new_slot(key: Key, position: f32, reset: f32, cx: &mut Context<StudioShell>) -> SliderSlot {
+    let slider = cx.new(|_| {
+        base::slider::SliderState::new()
+            .min(0.)
+            .max(1.)
+            .step(0.001)
+            .default_value(position)
+    });
+    let identity = slider.entity_id();
+    let dragging = Rc::new(Cell::new(false));
+    let drag_flag = dragging.clone();
+    let mut last_sent: Option<Instant> = None;
+    cx.subscribe(
+        &slider,
+        move |shell, slider, event: &base::slider::SliderEvent, cx| {
+            if !is_current(shell, key, identity) {
+                drag_flag.set(false);
+                last_sent = None;
+                return;
+            }
+            match event {
+                base::slider::SliderEvent::Change(value) => {
+                    drag_flag.set(true);
+                    let now = Instant::now();
+                    // Match the existing 33 ms drag budget; release always
+                    // submits the latest thumb, without a deferred timer.
+                    if last_sent
+                        .is_none_or(|sent| now.duration_since(sent) >= Duration::from_millis(33))
+                        && dispatch(shell, key, identity, value.end(), cx)
+                    {
+                        last_sent = Some(now);
+                    }
+                }
+                base::slider::SliderEvent::Release(value) => {
+                    drag_flag.set(false);
+                    last_sent = None;
+                    // A wheel/reset may have superseded a queued release.
+                    if slider.read(cx).value().end() == value.end() {
+                        dispatch(shell, key, identity, value.end(), cx);
+                    }
+                }
+            }
+            cx.notify();
+        },
+    )
+    .detach();
+    // The shell owns this callback via SliderSlot. A weak owner and an opaque
+    // entity identity avoid a shell -> callback -> shell ownership cycle.
+    let owner = cx.entity().downgrade();
+    SliderSlot {
+        state: slider,
+        dragging,
+        behavior: SliderBehavior {
+            step: Rc::new(|value, direction| (value + direction as f32 * 0.001).clamp(0., 1.)),
+            reset,
+            commit: Rc::new(move |position, window, cx| {
+                let _ = owner.update(cx, |shell, cx| {
+                    if dispatch(shell, key, identity, position, cx) {
+                        shell.node_controls.sliders[&key]
+                            .state
+                            .update(cx, |state, cx| state.set_value(position, window, cx));
+                    }
+                });
+            }),
+        },
+    }
+}
+
+fn is_current(shell: &StudioShell, key: Key, identity: EntityId) -> bool {
+    shell.pending_project.is_none()
+        && shell
+            .node_controls
+            .sliders
+            .get(&key)
+            .is_some_and(|slot| slot.state.entity_id() == identity)
+}
+
+fn dispatch(
+    shell: &mut StudioShell,
+    key: Key,
+    identity: EntityId,
+    position: f32,
+    cx: &mut Context<StudioShell>,
+) -> bool {
+    if !position.is_finite() || !is_current(shell, key, identity) {
+        return false;
+    }
+    let graph = shell.state.read(cx).snapshot.graph.clone();
+    let Some(node) = graph.node(key.0) else {
+        return false;
+    };
+    let Some(kind) = graph.kind_of(key.0) else {
+        return false;
+    };
+    if !Parameter::primary(kind, node).contains(&key.1) {
+        return false;
+    }
+    let Some(edit) = key
+        .1
+        .edit(key.1.value_at_position(position, node), kind, node)
+    else {
+        return false;
+    };
+    let admitted = shell.state.update(cx, |state, _| {
+        state.try_dispatch(AppRequest::EditGraph(edit))
+    });
+    let accepted = if let Ok(request) = admitted {
+        shell
+            .node_controls
+            .rotary_pending
+            .insert(key, Pending { request, position });
+        true
+    } else {
+        false
+    };
+    cx.notify();
+    accepted
+}
 
 #[derive(Clone)]
 struct KnobDrag {
     key: String,
+    slider: EntityId,
     cursor: Rc<Cell<f32>>,
     position: Rc<Cell<f32>>,
 }
@@ -42,6 +277,7 @@ pub(super) fn keyed_knob(key: String, slot: &SliderSlot, cx: &Context<StudioShel
     let outside_dragging = slot.dragging.clone();
     let drag = KnobDrag {
         key: key.clone(),
+        slider: slider.entity_id(),
         cursor: Rc::new(Cell::new(0.)),
         position: Rc::new(Cell::new(value)),
     };
@@ -59,7 +295,7 @@ pub(super) fn keyed_knob(key: String, slot: &SliderSlot, cx: &Context<StudioShel
         })
         .on_drag_move(move |event: &DragMoveEvent<KnobDrag>, window, cx| {
             let drag = event.drag(cx);
-            if drag.key != key {
+            if drag.key != key || drag.slider != drag_slider.entity_id() {
                 return;
             }
             let y = f32::from(event.event.position.y);

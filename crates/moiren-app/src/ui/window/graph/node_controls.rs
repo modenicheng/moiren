@@ -3,9 +3,9 @@
 use super::*;
 use crate::service::{GraphEdit, GraphNodeState, InputSelection};
 use crate::ui::pages::graph_canvas::{CanvasNode, CanvasWorld};
-use crate::ui::widgets::fader::{SliderBehavior, hslider};
+use crate::ui::widgets::fader::hslider;
 use crate::ui::widgets::meters::compact_horizontal_meter;
-use crate::ui::window::mixer::{SliderEdit, SliderSlot, commit_closure, sync_slider_range};
+use crate::ui::window::mixer::SliderSlot;
 use moiren_core::graph::{NodeId, NodeKind};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -24,9 +24,13 @@ mod mapper_editor;
 mod parameter;
 mod plots;
 mod precision;
+#[cfg(all(test, feature = "gpui-test"))]
+mod precision_intent_tests;
 mod rack_editor;
 mod recording;
 mod rotary;
+#[cfg(all(test, feature = "gpui-test"))]
+mod rotary_lifecycle_tests;
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
 #[cfg(all(test, feature = "gpui-test"))]
@@ -47,8 +51,11 @@ pub(super) use utility::spectrum::inspector as spectrum_inspector;
 pub(in crate::ui::window) struct NodeControls {
     pub(in crate::ui::window) heights: BTreeMap<NodeId, f32>,
     sliders: BTreeMap<(NodeId, Parameter), SliderSlot>,
+    rotary_pending: BTreeMap<(NodeId, Parameter), rotary::Pending>,
     inputs: BTreeMap<(NodeId, Parameter), Entity<component::input::InputState>>,
     input_baselines: BTreeMap<(NodeId, Parameter), String>,
+    input_observed: BTreeMap<(NodeId, Parameter), String>,
+    input_edited: BTreeSet<(NodeId, Parameter)>,
     input_pending: BTreeMap<(NodeId, Parameter), crate::service::RequestId>,
     errors: BTreeMap<(NodeId, Parameter), String>,
     precision: precision::Editors,
@@ -108,12 +115,17 @@ impl StudioShell {
             .input_baselines
             .retain(|key, _| applicable.contains(key));
         self.node_controls
+            .input_observed
+            .retain(|key, _| applicable.contains(key));
+        self.node_controls
+            .input_edited
+            .retain(|key| applicable.contains(key));
+        self.node_controls
             .input_pending
             .retain(|key, request| applicable.contains(key) && *request > consumed);
         self.node_controls
             .errors
             .retain(|key, _| applicable.contains(key));
-        let mut rows = Vec::new();
         for node in &graph.nodes {
             let Some(kind) = graph.kind_of(node.id) else {
                 continue;
@@ -131,6 +143,10 @@ impl StudioShell {
                     .input_baselines
                     .entry(key)
                     .or_insert_with(|| text.clone());
+                self.node_controls
+                    .input_observed
+                    .entry(key)
+                    .or_insert_with(|| text.clone());
                 let input = self.node_controls.inputs.entry(key).or_insert_with(|| {
                     let input = cx.new(|cx| {
                         component::input::InputState::new(window, cx).default_value(text.clone())
@@ -140,7 +156,8 @@ impl StudioShell {
                         move |shell, input, event: &component::input::InputEvent, cx| {
                             if !matches!(
                                 event,
-                                component::input::InputEvent::PressEnter { .. }
+                                component::input::InputEvent::Change
+                                    | component::input::InputEvent::PressEnter { .. }
                                     | component::input::InputEvent::Blur
                             ) {
                                 return;
@@ -167,17 +184,28 @@ impl StudioShell {
                                 return;
                             }
                             let text = input.read(cx).value().to_string();
-                            // A knob can change the graph while this field keeps
-                            // focus. Only submit edits to the displayed text, not
-                            // its difference from the newest graph snapshot.
-                            if shell.node_controls.input_baselines.get(&key) == Some(&text) {
+                            if matches!(event, component::input::InputEvent::Change) {
+                                // Change can follow a no-op replacement. Only a
+                                // text transition carries new intent; deleting
+                                // then retyping a baseline still counts as edited.
+                                if shell.node_controls.input_observed.get(&key) != Some(&text) {
+                                    shell.node_controls.input_observed.insert(key, text);
+                                    shell.node_controls.input_edited.insert(key);
+                                }
+                                return;
+                            }
+                            // Untouched Enter/Blur must not submit rounded text
+                            // or undo another surface's newer pending request.
+                            if !shell.node_controls.input_edited.contains(&key)
+                                && shell.node_controls.input_baselines.get(&key) == Some(&text)
+                            {
                                 shell.node_controls.errors.remove(&key);
                                 cx.notify();
                                 return;
                             }
                             let value = parameter::parse(&text, parameter.unit());
                             let edit = value.and_then(|v| parameter.edit_precision(v, kind, node));
-                            if let Some(edit) = edit {
+                            if let (Some(value), Some(edit)) = (value, edit) {
                                 // Changed text is ordered intent, even when it
                                 // equals an older snapshot ahead of publication.
                                 match shell.state.update(cx, |state, _| {
@@ -185,8 +213,16 @@ impl StudioShell {
                                 }) {
                                     Ok(request) => {
                                         shell.node_controls.errors.remove(&key);
-                                        shell.node_controls.input_baselines.insert(key, text);
+                                        shell
+                                            .node_controls
+                                            .input_baselines
+                                            .insert(key, text.clone());
+                                        shell.node_controls.input_observed.insert(key, text);
+                                        shell.node_controls.input_edited.remove(&key);
                                         shell.node_controls.input_pending.insert(key, request);
+                                        rotary::remember_input_admission(
+                                            shell, id, parameter, value, request, cx,
+                                        );
                                     }
                                     Err(_) => {
                                         // Busy leaves the draft dirty and retryable;
@@ -210,6 +246,7 @@ impl StudioShell {
                     input
                 });
                 if !input.read(cx).focus_handle(cx).is_focused(window)
+                    && !self.node_controls.input_edited.contains(&key)
                     && !self.node_controls.errors.contains_key(&key)
                     && !self.node_controls.input_pending.contains_key(&key)
                     && self
@@ -224,40 +261,12 @@ impl StudioShell {
                     if input.read(cx).value().as_str() != text {
                         input.update(cx, |s, cx| s.set_value(text.clone(), window, cx));
                     }
-                    self.node_controls.input_baselines.insert(key, text);
+                    self.node_controls.input_baselines.insert(key, text.clone());
+                    self.node_controls.input_observed.insert(key, text);
                 }
-                rows.push((
-                    key,
-                    parameter.position(kind, node),
-                    Box::new(move |position, graph: &crate::service::GraphSnapshot| {
-                        let node = graph.node(id)?;
-                        let kind = graph.kind_of(id)?;
-                        if !Parameter::primary(kind, node).contains(&parameter) {
-                            return None;
-                        }
-                        parameter
-                            .edit(parameter.value_at_position(position, node), kind, node)
-                            .map(AppRequest::EditGraph)
-                    }) as SliderEdit,
-                ));
             }
         }
-        sync_slider_range(
-            window,
-            cx,
-            &self.state,
-            &mut self.node_controls.sliders,
-            rows,
-            [0., 1., 0.001],
-            |(id, p), ui, edit, slider| SliderBehavior {
-                step: Rc::new(|v, dir| (v + dir as f32 * 0.001).clamp(0., 1.)),
-                reset: graph
-                    .node(*id)
-                    .and_then(|n| graph.kind_of(*id).map(|k| p.default_position(k, n)))
-                    .unwrap_or(0.),
-                commit: commit_closure(&ui, &edit, &slider),
-            },
-        );
+        rotary::sync(self, window, cx);
         rack_editor::sync(self, window, cx);
         utility::spectrum::editor::sync(self, window, cx);
         precision::sync(self, window, cx);

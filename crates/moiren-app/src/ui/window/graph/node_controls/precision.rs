@@ -12,6 +12,8 @@ type Key = (NodeId, Parameter);
 pub(super) struct Editors {
     pub(super) inputs: BTreeMap<Key, Entity<InputState>>,
     baselines: BTreeMap<Key, String>,
+    observed: BTreeMap<Key, String>,
+    edited: BTreeSet<Key>,
     pub(super) errors: BTreeMap<Key, String>,
     pending: BTreeMap<Key, crate::service::RequestId>,
 }
@@ -75,6 +77,12 @@ pub(super) fn sync(shell: &mut StudioShell, window: &mut Window, cx: &mut Contex
         .baselines
         .retain(|key, _| editors.inputs.contains_key(key));
     editors
+        .observed
+        .retain(|key, _| editors.inputs.contains_key(key));
+    editors
+        .edited
+        .retain(|key| editors.inputs.contains_key(key));
+    editors
         .errors
         .retain(|key, _| editors.inputs.contains_key(key));
     editors
@@ -90,11 +98,15 @@ pub(super) fn sync(shell: &mut StudioShell, window: &mut Window, cx: &mut Contex
             // even when a separate card dial is clamped to ergonomic travel.
             let text = parameter.value(kind, node).to_string();
             editors.baselines.entry(key).or_insert_with(|| text.clone());
+            editors.observed.entry(key).or_insert_with(|| text.clone());
             let input = editors.inputs.entry(key).or_insert_with(|| {
                 let input = cx.new(|cx| InputState::new(window, cx).default_value(text.clone()));
                 cx.subscribe(&input, move |shell, input, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                        commit(shell, input, key, cx);
+                    if matches!(
+                        event,
+                        InputEvent::Change | InputEvent::Blur | InputEvent::PressEnter { .. }
+                    ) {
+                        commit(shell, input, key, event, cx);
                     }
                 })
                 .detach();
@@ -103,6 +115,7 @@ pub(super) fn sync(shell: &mut StudioShell, window: &mut Window, cx: &mut Contex
             let clean = editors.baselines.get(&key).map(String::as_str)
                 == Some(input.read(cx).value().as_str());
             if clean
+                && !editors.edited.contains(&key)
                 && !input.read(cx).focus_handle(cx).is_focused(window)
                 && !editors.errors.contains_key(&key)
                 && !editors.pending.contains_key(&key)
@@ -110,7 +123,8 @@ pub(super) fn sync(shell: &mut StudioShell, window: &mut Window, cx: &mut Contex
                 if input.read(cx).value().as_str() != text {
                     input.update(cx, |input, cx| input.set_value(text.clone(), window, cx));
                 }
-                editors.baselines.insert(key, text);
+                editors.baselines.insert(key, text.clone());
+                editors.observed.insert(key, text);
             }
         }
     }
@@ -120,6 +134,7 @@ fn commit(
     shell: &mut StudioShell,
     input: Entity<InputState>,
     key: Key,
+    event: &InputEvent,
     cx: &mut Context<StudioShell>,
 ) {
     // Load may reuse this NodeId before the old input entity is retired.
@@ -142,16 +157,27 @@ fn commit(
         return;
     };
     let text = input.read(cx).value().to_string();
-    // Compare against what this surface displayed, not the newest graph value:
-    // an untouched Inspector Blur must never undo an intervening card edit.
-    if shell.node_controls.precision.baselines.get(&key) == Some(&text) {
+    if matches!(event, InputEvent::Change) {
+        // Change is also emitted for no-op replacements; only a transition
+        // marks intent, including delete/retype back to the original baseline.
+        let editors = &mut shell.node_controls.precision;
+        if editors.observed.get(&key) != Some(&text) {
+            editors.observed.insert(key, text);
+            editors.edited.insert(key);
+        }
+        return;
+    }
+    // Untouched Enter and Blur preserve exact values and newer card intent.
+    if !shell.node_controls.precision.edited.contains(&key)
+        && shell.node_controls.precision.baselines.get(&key) == Some(&text)
+    {
         shell.node_controls.precision.errors.remove(&key);
         cx.notify();
         return;
     }
-    let edit = parameter::parse(&text, key.1.unit())
-        .and_then(|value| key.1.edit_precision(value, kind, node));
-    let Some(edit) = edit else {
+    let value = parameter::parse(&text, key.1.unit());
+    let edit = value.and_then(|value| key.1.edit_precision(value, kind, node));
+    let (Some(value), Some(edit)) = (value, edit) else {
         shell
             .node_controls
             .precision
@@ -165,11 +191,14 @@ fn commit(
     }) {
         Ok(request) => {
             let editors = &mut shell.node_controls.precision;
-            editors.baselines.insert(key, text);
+            editors.baselines.insert(key, text.clone());
+            editors.observed.insert(key, text);
+            editors.edited.remove(&key);
             editors.errors.remove(&key);
             // Do not repaint a successfully submitted draft with the older
             // snapshot during the gap before the service consumes its request.
             editors.pending.insert(key, request);
+            rotary::remember_input_admission(shell, key.0, key.1, value, request, cx);
         }
         Err(_) => {
             shell
