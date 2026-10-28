@@ -25,7 +25,7 @@ pub use exports::*;
 pub(crate) use graph::primary_node_of;
 pub use graph::{
     BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphFault, GraphNodeState,
-    GraphPreparation, GraphSnapshot, GraphSubject, MixerState, RackEdit, RackParameter,
+    GraphPreparation, GraphSnapshot, GraphSubject, MixerEdit, MixerState, RackEdit, RackParameter,
     ServiceGraph, default_label, validate_node_state,
 };
 pub use latency::AudioLatencyProfile;

@@ -17,7 +17,7 @@ mod rack;
 pub use builtin::BuiltinState;
 pub use compressor::{CompressorParameter, CompressorState};
 use edit::edit_candidate;
-pub use mixer::MixerState;
+pub use mixer::{MixerEdit, MixerState};
 pub use rack::{RackEdit, RackParameter};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,6 +175,12 @@ pub enum GraphEdit {
         node: NodeId,
         state: MixerState,
     },
+    /// Edit only the named strip field on the latest candidate. Relative and
+    /// toggle intents are resolved here, never against a published UI snapshot.
+    EditMixer {
+        node: NodeId,
+        edit: MixerEdit,
+    },
     AddNode {
         kind: NodeKind,
         channels: usize,
@@ -214,6 +220,12 @@ pub enum GraphEdit {
         node: NodeId,
         swap: bool,
     },
+    ToggleMono {
+        node: NodeId,
+    },
+    ToggleSwap {
+        node: NodeId,
+    },
     BindSource {
         node: NodeId,
         source: InputSelection,
@@ -226,8 +238,8 @@ pub enum GraphEdit {
 
 impl GraphEdit {
     /// Undo coalescing identity: rapid edits of the same control collapse
-    /// into one undo step. `None` marks structural edits, which never
-    /// coalesce with anything.
+    /// into one undo step. `None` marks discrete actions, including structural
+    /// edits and toggles, which never coalesce with anything.
     fn undo_key(&self) -> Option<String> {
         match self {
             Self::SetMapperWeight {
@@ -262,6 +274,9 @@ impl GraphEdit {
             Self::SetSwap { node, .. } => Some(format!("swap:{node:?}")),
             Self::SetSend { edge, .. } => Some(format!("send:{edge:?}")),
             Self::SetMixer { node, .. } => Some(format!("mixer:{node:?}")),
+            Self::EditMixer { node, edit } => {
+                edit.undo_key().map(|key| format!("mixer:{node:?}:{key}"))
+            }
             Self::SetBuiltin { node, .. } => Some(format!("builtin:{node:?}")),
             Self::SetLabel { node, .. } => Some(format!("label:{node:?}")),
             _ => None,
@@ -403,11 +418,9 @@ pub fn default_label(kind: NodeKind) -> &'static str {
         NodeKind::Rack => "Rack",
     }
 }
-/// Real-time parameter intent derived from a graph edit. This mapping is the
-/// single canonical source for every driver: the managed driver submits all
-/// values through engine control, while the legacy driver admits only the
-/// single node-addressed values its fixed session chain can address and must
-/// explicitly ignore the edge- and strip-targeted values.
+/// Canonical real-time mapping for absolute graph edits. Drivers use
+/// [`ServiceGraph::accepted_parameter_values`] after admission to resolve
+/// relative and toggle intents without applying them a second time.
 pub(crate) fn edit_parameter_values(edit: &GraphEdit) -> Vec<(ParameterTarget, ParamValue)> {
     use moiren_engine::{
         host::{SendParameter, StripParameter},
@@ -487,12 +500,15 @@ pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubje
         | GraphEdit::SetCompressor { node: id, .. }
         | GraphEdit::ClearBinding(id)
         | GraphEdit::SetMixer { node: id, .. }
+        | GraphEdit::EditMixer { node: id, .. }
         | GraphEdit::RemoveNode(id)
         | GraphEdit::SetLabel { node: id, .. }
         | GraphEdit::SetGain { node: id, .. }
         | GraphEdit::SetPan { node: id, .. }
         | GraphEdit::SetMono { node: id, .. }
         | GraphEdit::SetSwap { node: id, .. }
+        | GraphEdit::ToggleMono { node: id }
+        | GraphEdit::ToggleSwap { node: id }
         | GraphEdit::BindSource { node: id, .. }
         | GraphEdit::BindOutput { node: id, .. }
         | GraphEdit::AddBusInput(id)
@@ -532,8 +548,8 @@ fn edit_hint(error: &str) -> Option<&'static str> {
 /// parameters with live mappings (gain/pan/mono/swap/compressor, sends,
 /// strips) route through engine control instead; a send tap change always
 /// rebuilds because it rewires prepared routing. `previous` is the graph
-/// before the edit. Drivers whose backend lacks the live strip mapping
-/// (the legacy fixed session chain) treat `SetMixer` as structural.
+/// before the edit. The managed driver also synchronizes effective strip
+/// gain/mute, including graph-wide solo audibility, after admission.
 pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &LogicalGraph) -> bool {
     match edit {
         GraphEdit::AddNode { .. }
@@ -559,11 +575,14 @@ pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &Logic
             .get_edge(*edge)
             .is_ok_and(|edge| edge.params().tap != params.tap),
         GraphEdit::SetMixer { .. }
+        | GraphEdit::EditMixer { .. }
         | GraphEdit::SetCompressor { .. }
         | GraphEdit::SetGain { .. }
         | GraphEdit::SetPan { .. }
         | GraphEdit::SetMono { .. }
         | GraphEdit::SetSwap { .. }
+        | GraphEdit::ToggleMono { .. }
+        | GraphEdit::ToggleSwap { .. }
         | GraphEdit::SetLabel { .. } => false,
     }
 }
@@ -630,6 +649,46 @@ fn validate_node_fields(
 impl ServiceGraph {
     pub fn snapshot(&self) -> GraphSnapshot {
         self.snapshot.clone()
+    }
+    /// Resolve live values immediately after this edit was successfully admitted.
+    /// Keep the original intent for validation, fault subjects and undo; only
+    /// this RT projection becomes absolute. Borrowing the accepted state avoids
+    /// copying a graph that may contain large Mapper or Rack matrices.
+    pub(crate) fn accepted_parameter_values(
+        &self,
+        edit: &GraphEdit,
+    ) -> Vec<(ParameterTarget, ParamValue)> {
+        let resolved = match edit {
+            GraphEdit::EditMixer { node, .. } => {
+                let Some(state) = self.snapshot.node(*node) else {
+                    return Vec::new();
+                };
+                GraphEdit::SetMixer {
+                    node: *node,
+                    state: state.mixer,
+                }
+            }
+            GraphEdit::ToggleMono { node } => {
+                let Some(state) = self.snapshot.node(*node) else {
+                    return Vec::new();
+                };
+                GraphEdit::SetMono {
+                    node: *node,
+                    mono: state.mono,
+                }
+            }
+            GraphEdit::ToggleSwap { node } => {
+                let Some(state) = self.snapshot.node(*node) else {
+                    return Vec::new();
+                };
+                GraphEdit::SetSwap {
+                    node: *node,
+                    swap: state.swap,
+                }
+            }
+            _ => return edit_parameter_values(edit),
+        };
+        edit_parameter_values(&resolved)
     }
     pub fn preparation(&self) -> GraphPreparation {
         GraphPreparation {
@@ -970,5 +1029,7 @@ impl ServiceGraph {
         }
     }
 }
+#[cfg(test)]
+mod mixer_intent_tests;
 #[cfg(test)]
 mod tests;

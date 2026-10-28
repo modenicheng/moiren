@@ -3,7 +3,50 @@ use std::collections::BTreeSet;
 use moiren_engine::processor::{ChannelMode, StripConfig};
 use serde::{Deserialize, Serialize};
 
-use super::{GraphPreparation, NodeId};
+use super::{GraphNodeState, GraphPreparation, LogicalGraph, NodeId, ServiceGraph};
+
+/// One strip control intent, resolved against the service's latest candidate.
+/// Absolute values use linear gain and signed balance, not dB or slider units.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MixerEdit {
+    SetGain(f64),
+    SetBalance(f64),
+    AdjustBalance(f64),
+    ToggleMute,
+    ToggleSolo,
+    ToggleDim,
+    CycleMode,
+}
+
+impl MixerEdit {
+    pub(super) fn apply(self, state: &mut MixerState, channels: usize) -> Result<(), String> {
+        match self {
+            Self::SetGain(value) => state.gain = value,
+            Self::SetBalance(value) => state.balance = value,
+            Self::AdjustBalance(delta) => {
+                // Reject infinities before clamping; otherwise an invalid intent
+                // would silently become a valid endpoint and enter undo history.
+                if !delta.is_finite() {
+                    return Err("Mixer balance adjustment must be finite".into());
+                }
+                state.balance = (state.balance + delta).clamp(-1.0, 1.0);
+            }
+            Self::ToggleMute => state.muted = !state.muted,
+            Self::ToggleSolo => state.solo = !state.solo,
+            Self::ToggleDim => state.dimmed = !state.dimmed,
+            Self::CycleMode => *state = state.next_mode(channels),
+        }
+        Ok(())
+    }
+
+    pub(super) fn undo_key(self) -> Option<&'static str> {
+        match self {
+            Self::SetGain(_) => Some("gain"),
+            Self::SetBalance(_) | Self::AdjustBalance(_) => Some("balance"),
+            Self::ToggleMute | Self::ToggleSolo | Self::ToggleDim | Self::CycleMode => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -78,50 +121,59 @@ impl MixerState {
 
 impl GraphPreparation {
     pub(crate) fn mixer_configs(&self) -> Vec<(NodeId, StripConfig)> {
-        let solos: BTreeSet<_> = self
-            .nodes
-            .iter()
-            .filter(|state| state.mixer.solo)
-            .map(|state| state.id)
-            .collect();
-        let reachable = |upstream: bool| {
-            let mut included = solos.clone();
-            let mut pending: Vec<_> = solos.iter().copied().collect();
-            while let Some(node) = pending.pop() {
-                for edge in self.graph.edges() {
-                    let (from, to) = if upstream {
-                        (edge.dst(), edge.src())
-                    } else {
-                        (edge.src(), edge.dst())
-                    };
-                    if from == node && included.insert(to) {
-                        pending.push(to);
-                    }
+        mixer_configs(&self.graph, &self.nodes)
+    }
+}
+
+impl ServiceGraph {
+    /// Project only effective strip values; do not clone unrelated DSP payloads.
+    pub(crate) fn mixer_configs(&self) -> Vec<(NodeId, StripConfig)> {
+        mixer_configs(&self.snapshot.graph, &self.snapshot.nodes)
+    }
+}
+
+fn mixer_configs(graph: &LogicalGraph, nodes: &[GraphNodeState]) -> Vec<(NodeId, StripConfig)> {
+    let solos: BTreeSet<_> = nodes
+        .iter()
+        .filter(|state| state.mixer.solo)
+        .map(|state| state.id)
+        .collect();
+    let reachable = |upstream: bool| {
+        let mut included = solos.clone();
+        let mut pending: Vec<_> = solos.iter().copied().collect();
+        while let Some(node) = pending.pop() {
+            for edge in graph.edges() {
+                let (from, to) = if upstream {
+                    (edge.dst(), edge.src())
+                } else {
+                    (edge.src(), edge.dst())
+                };
+                if from == node && included.insert(to) {
+                    pending.push(to);
                 }
             }
-            included
-        };
-        let mut audible = reachable(true);
-        audible.extend(reachable(false));
-        self.graph
-            .nodes()
-            .iter()
-            .map(|node| {
-                let state = self
-                    .nodes
-                    .iter()
-                    .find(|state| state.id == node.id())
-                    .expect("validated mixer state");
-                (
-                    node.id(),
-                    state.mixer.config(
-                        node.channels(),
-                        solos.is_empty() || audible.contains(&node.id()),
-                    ),
-                )
-            })
-            .collect()
-    }
+        }
+        included
+    };
+    let mut audible = reachable(true);
+    audible.extend(reachable(false));
+    graph
+        .nodes()
+        .iter()
+        .map(|node| {
+            let state = nodes
+                .iter()
+                .find(|state| state.id == node.id())
+                .expect("validated mixer state");
+            (
+                node.id(),
+                state.mixer.config(
+                    node.channels(),
+                    solos.is_empty() || audible.contains(&node.id()),
+                ),
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]

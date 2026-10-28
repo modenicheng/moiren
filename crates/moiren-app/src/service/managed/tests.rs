@@ -9,6 +9,9 @@ mod recording;
 #[path = "spectrum_tests.rs"]
 mod spectrum;
 
+#[path = "mixer_intent_tests.rs"]
+mod mixer_intents;
+
 struct Rig {
     driver: ManagedDriver,
     c: ServiceContext,

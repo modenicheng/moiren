@@ -42,14 +42,14 @@ impl ManagedDriver {
     }
 
     /// Submit the effective strip values (dim-folded gain, solo-audible mute)
-    /// that differ from what this owner last received. `edited` names the node
-    /// whose mixer state just changed; every other node whose audibility moved
-    /// with a solo change is picked up by the diff. A node absent from the
-    /// cache was compiled from the candidate, so it seeds silently.
+    /// changed by this transaction. `edited` always submits; solo changes fan
+    /// out by comparing against the pre-edit candidate. The diagnostic cache
+    /// may be empty after startup or stale after Apply, so it is not a baseline.
     pub(super) fn sync_effective_strip_parameters(
         &mut self,
         c: &mut ServiceContext,
         edited: NodeId,
+        before: &BTreeMap<NodeId, (f64, bool)>,
     ) {
         if self
             .owner
@@ -59,14 +59,10 @@ impl ManagedDriver {
             return;
         }
         let configs: BTreeMap<NodeId, moiren_engine::processor::StripConfig> =
-            c.graph.preparation().mixer_configs().into_iter().collect();
+            c.graph.mixer_configs().into_iter().collect();
         for (node, config) in &configs {
             let desired = (config.gain, config.muted);
-            let changed = *node == edited
-                || self
-                    .strip_live
-                    .get(node)
-                    .is_some_and(|live| *live != desired);
+            let changed = *node == edited || before.get(node) != Some(&desired);
             if changed {
                 for (parameter, value) in [
                     (StripParameter::Gain, ParamValue::Float(config.gain)),

@@ -154,6 +154,20 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .mixer = state;
             validate_edited_node(next, node)?;
         }
+        GraphEdit::EditMixer { node, edit } => {
+            let channels = next
+                .graph
+                .get_node(node)
+                .map_err(|e| e.to_string())?
+                .channels();
+            let state = next
+                .nodes
+                .iter_mut()
+                .find(|entry| entry.id == node)
+                .ok_or("The node does not exist")?;
+            edit.apply(&mut state.mixer, channels)?;
+            validate_edited_node(next, node)?;
+        }
         GraphEdit::ClearBinding(node) => {
             let entry = next
                 .nodes
@@ -255,6 +269,22 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .find(|state| state.id == node)
                 .ok_or("The node does not exist")?
                 .swap = swap;
+            validate_edited_node(next, node)?;
+        }
+        GraphEdit::ToggleMono { node } | GraphEdit::ToggleSwap { node } => {
+            if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Pan {
+                return Err("Mono and Swap only apply to Balance nodes".into());
+            }
+            let state = next
+                .nodes
+                .iter_mut()
+                .find(|state| state.id == node)
+                .ok_or("The node does not exist")?;
+            if matches!(edit, GraphEdit::ToggleMono { .. }) {
+                state.mono = !state.mono;
+            } else {
+                state.swap = !state.swap;
+            }
             validate_edited_node(next, node)?;
         }
         GraphEdit::BindOutput { node, endpoint_id } => {

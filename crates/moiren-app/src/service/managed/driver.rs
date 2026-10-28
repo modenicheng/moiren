@@ -139,19 +139,48 @@ impl ServiceDriver for ManagedDriver {
                     );
                     return;
                 }
-                let values = graph::edit_parameter_values(&edit);
                 let edited_strip = match &edit {
-                    GraphEdit::SetMixer { node, .. } => Some(*node),
+                    GraphEdit::SetMixer { node, .. } | GraphEdit::EditMixer { node, .. } => {
+                        Some(*node)
+                    }
                     _ => None,
                 };
+                // Solo changes other nodes too. Compare accepted values with
+                // this transaction's prior state, not a possibly empty cache.
+                let strip_before = edited_strip.map(|_| {
+                    c.graph
+                        .mixer_configs()
+                        .into_iter()
+                        .map(|(node, config)| (node, (config.gain, config.muted)))
+                        .collect()
+                });
+                // Only relative/toggle intents need the accepted candidate.
+                // Do not retain another copy of unrelated Rack/Mapper payloads.
+                let accepted_intent = matches!(
+                    &edit,
+                    GraphEdit::EditMixer { .. }
+                        | GraphEdit::ToggleMono { .. }
+                        | GraphEdit::ToggleSwap { .. }
+                )
+                .then(|| edit.clone());
+                let values = if accepted_intent.is_none() {
+                    graph::edit_parameter_values(&edit)
+                } else {
+                    Vec::new()
+                };
                 if let Ok(structural) = c.graph.edit(edit) {
+                    let values = accepted_intent
+                        .as_ref()
+                        .map_or(values, |intent| c.graph.accepted_parameter_values(intent));
                     self.recordings
                         .reconcile(&mut c.recordings, &c.graph.snapshot());
                     for (target, value) in values {
                         self.submit_parameter(c, target, value);
                     }
-                    if let Some(node) = edited_strip {
-                        self.sync_effective_strip_parameters(c, node);
+                    if let Some(node) = edited_strip
+                        && let Some(before) = strip_before.as_ref()
+                    {
+                        self.sync_effective_strip_parameters(c, node, before);
                     }
                     if structural && self.owner.is_some() {
                         self.auto_apply_deadline = Some(Instant::now() + super::AUTO_APPLY_DELAY);
