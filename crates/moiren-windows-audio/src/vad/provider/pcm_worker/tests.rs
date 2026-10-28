@@ -961,6 +961,8 @@ fn microphone_pump_records_native_submission_completion_and_silence_metrics() {
     let completed = f.state.telemetry.snapshot();
     assert_eq!(completed.completed_packets, 1);
     assert_eq!(completed.completion_interval_observations, 0);
+    assert_eq!(completed.microphone_submission_service.observations, 1);
+    assert_eq!(completed.playback_transfer_service.observations, 0);
 }
 
 #[test]
@@ -1519,6 +1521,10 @@ fn microphone_dropped_completion_rearms_from_collection_without_catch_up() {
     }
     let collected = f.clock.now();
     f.collect(true);
+    let dropped = f.state.telemetry.snapshot();
+    assert_eq!(dropped.driver_dropped_packets, 1);
+    assert_eq!(dropped.microphone_submission_service.observations, 1);
+    assert_eq!(dropped.playback_transfer_service.observations, 0);
     assert_eq!(
         f.pump.next_submit,
         Some(collected + Duration::from_millis(5))
@@ -1541,6 +1547,14 @@ fn microphone_dropped_completion_rearms_from_collection_without_catch_up() {
     assert_eq!(
         f.pump.next_submit,
         Some(f.clock.now() + Duration::from_millis(5))
+    );
+    assert_eq!(
+        f.state
+            .telemetry
+            .snapshot()
+            .microphone_submission_service
+            .observations,
+        2
     );
 }
 

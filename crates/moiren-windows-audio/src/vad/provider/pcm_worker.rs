@@ -1,6 +1,7 @@
 //! Ordered PCM pumping: four playback reads, one just-in-time microphone write.
 //! IO is injectable so completion ordering and resets are tested without a driver.
 use super::*;
+use crate::latency::packet_service::PacketStampOrigin;
 use crate::vad::{PcmPacketStamp, SAMPLE_RATE};
 use std::time::Instant;
 
@@ -260,6 +261,12 @@ pub(super) fn playback<C: PcmIo>(
         };
         match completion {
             Some(PcmCompletion::Render { stamp, pcm }) => {
+                // Existing ABI READ stamp is the driver's transfer callback,
+                // not this packet's first audio sample. Observe collection
+                // before decode/order handling, including stale completions.
+                state
+                    .telemetry
+                    .service_stamp(PacketStampOrigin::DriverTransfer, stamp.qpc);
                 if state.reset_epoch.load(Ordering::Acquire) != epoch {
                     return Ok(PumpState::Reset);
                 }
@@ -359,10 +366,18 @@ pub(super) fn microphone<C: PcmIo>(
         };
         let (stamp, dropped) = match completion {
             Some(PcmCompletion::Capture { stamp, bytes }) if bytes == bridge.packet_bytes() => {
+                state
+                    .telemetry
+                    .service_stamp(PacketStampOrigin::HostSubmission, stamp.qpc);
                 state.telemetry.completion(bridge.packet_frames());
                 (stamp, false)
             }
             Some(PcmCompletion::CaptureDropped { stamp }) => {
+                // Echoed host submission stamp; a discarded WRITE still has
+                // a service interval, never successful PCM delivery evidence.
+                state
+                    .telemetry
+                    .service_stamp(PacketStampOrigin::HostSubmission, stamp.qpc);
                 state.telemetry.completion(bridge.packet_frames());
                 state.telemetry.driver_drop();
                 log::debug!(

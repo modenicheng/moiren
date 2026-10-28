@@ -50,6 +50,9 @@ mod codec;
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/native_observations.rs"]
 #[allow(dead_code)]
 mod native_observations;
+#[path = "../../../crates/moiren-windows-audio/src/latency/packet_service.rs"]
+#[allow(dead_code)]
+mod packet_service;
 #[path = "../../../crates/moiren-windows-audio/src/process_loopback/bridge.rs"]
 #[allow(dead_code)]
 mod process_bridge;
@@ -119,6 +122,25 @@ mod alloc_guard;
 
 fn measured<T>(f: impl FnOnce() -> T) -> T {
     alloc_guard::assert_allocates_nothing(f)
+}
+
+#[test]
+fn vad_stamp_service_summaries_allocate_and_free_nothing_at_completion_boundaries() {
+    use packet_service::{PacketServiceRecorder, PacketStampOrigin};
+    let playback = PacketServiceRecorder::new(PacketStampOrigin::DriverTransfer, Some(3_000_001));
+    let microphone =
+        PacketServiceRecorder::new(PacketStampOrigin::HostSubmission, Some(10_000_000));
+    measured(|| {
+        for n in 1..=1024 {
+            playback.record(n, Some(n + 100));
+            microphone.record(n, Some(n + 10));
+            playback.record(0, None);
+            microphone.record(n + 1, Some(n));
+            let _ = (playback.snapshot(), microphone.snapshot());
+        }
+    });
+    assert_eq!(playback.snapshot().observations, 1024);
+    assert_eq!(microphone.snapshot().future_stamps, 1024);
 }
 
 #[test]

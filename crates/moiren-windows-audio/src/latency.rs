@@ -5,6 +5,7 @@ mod budget;
 mod delivery;
 pub mod events;
 mod marker;
+pub mod packet_service;
 pub mod packets;
 pub mod qualification;
 pub mod queue;

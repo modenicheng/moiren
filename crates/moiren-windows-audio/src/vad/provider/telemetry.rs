@@ -4,11 +4,15 @@
 //! reads a copy after the worker has drained, so no audio callback, file IO,
 //! JSON serialization, or growing collection is involved in the hot path.
 
+use crate::latency::{
+    QpcClock,
+    packet_service::{PacketServiceRecorder, PacketServiceSnapshot, PacketStampOrigin},
+};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
-const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
+const SNAPSHOT_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
@@ -43,6 +47,11 @@ pub struct VadPcmTelemetrySnapshot {
     pub silence_frames: u64,
     pub epoch_resets: u64,
     pub recovery_events: u64,
+    /// Native driver transfer callback -> owner collection. Not sample age.
+    pub playback_transfer_service: PacketServiceSnapshot,
+    /// Host WRITE submission -> owner collection, including dropped WRITE.
+    /// Echoed submission stamp, never a microphone driver's transfer stamp.
+    pub microphone_submission_service: PacketServiceSnapshot,
 }
 
 fn current_schema_version() -> u32 {
@@ -113,18 +122,51 @@ impl Default for Counters {
 pub(super) struct PcmTelemetry {
     counters: Counters,
     clock_origin: Instant,
+    service_clock: Option<QpcClock>,
+    playback_service: PacketServiceRecorder,
+    microphone_service: PacketServiceRecorder,
 }
 
 impl Default for PcmTelemetry {
     fn default() -> Self {
-        Self {
-            counters: Counters::default(),
-            clock_origin: Instant::now(),
-        }
+        let clock = QpcClock::new();
+        Self::with_service_clock(clock, clock.and_then(|clock| clock.frequency_hz()))
     }
 }
 
 impl PcmTelemetry {
+    fn with_service_clock(clock: Option<QpcClock>, frequency: Option<u64>) -> Self {
+        Self {
+            counters: Counters::default(),
+            clock_origin: Instant::now(),
+            service_clock: clock,
+            playback_service: PacketServiceRecorder::new(
+                PacketStampOrigin::DriverTransfer,
+                frequency,
+            ),
+            microphone_service: PacketServiceRecorder::new(
+                PacketStampOrigin::HostSubmission,
+                frequency,
+            ),
+        }
+    }
+
+    pub(super) fn service_stamp(&self, origin: PacketStampOrigin, stamp_ticks: u64) {
+        let collected = self.service_clock.as_ref().and_then(QpcClock::now_ticks);
+        self.service_at(origin, stamp_ticks, collected);
+    }
+
+    fn service_at(&self, origin: PacketStampOrigin, stamp_ticks: u64, collected: Option<u64>) {
+        match origin {
+            PacketStampOrigin::DriverTransfer => {
+                self.playback_service.record(stamp_ticks, collected)
+            }
+            PacketStampOrigin::HostSubmission => {
+                self.microphone_service.record(stamp_ticks, collected)
+            }
+            PacketStampOrigin::Unknown => {}
+        }
+    }
     pub(super) fn packet(&self, frames: u32) {
         if frames == 0 {
             return;
@@ -271,6 +313,8 @@ impl PcmTelemetry {
             silence_frames: self.counters.silence_frames.load(Ordering::Relaxed),
             epoch_resets: self.counters.epoch_resets.load(Ordering::Relaxed),
             recovery_events: self.counters.recovery_events.load(Ordering::Relaxed),
+            playback_transfer_service: self.playback_service.snapshot(),
+            microphone_submission_service: self.microphone_service.snapshot(),
         }
     }
 
@@ -319,6 +363,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn completion_stamp_summaries_keep_directions_separate_and_legacy_data_unknown() {
+        use crate::latency::packet_service::PacketStampOrigin;
+        let telemetry = PcmTelemetry::with_service_clock(None, Some(3_000_001));
+        telemetry.service_at(PacketStampOrigin::DriverTransfer, 1000, Some(1030));
+        telemetry.service_at(PacketStampOrigin::HostSubmission, 2000, Some(2003));
+        telemetry.service_at(PacketStampOrigin::DriverTransfer, 1001, Some(1000));
+        let s = telemetry.snapshot();
+        assert_eq!(s.playback_transfer_service.observations, 1);
+        assert_eq!(s.playback_transfer_service.min_delay_100ns, Some(99));
+        assert_eq!(s.playback_transfer_service.max_delay_100ns, Some(100));
+        assert_eq!(s.playback_transfer_service.future_stamps, 1);
+        assert_eq!(s.microphone_submission_service.observations, 1);
+        assert_eq!(s.microphone_submission_service.max_delay_100ns, Some(10));
+        assert_eq!(s.completed_packets, 0);
+        let legacy: VadPcmTelemetrySnapshot =
+            serde_json::from_str(r#"{"schema_version":3,"completed_packets":1}"#).unwrap();
+        assert_eq!(
+            legacy.playback_transfer_service.origin,
+            PacketStampOrigin::Unknown
+        );
+        assert_eq!(legacy.playback_transfer_service.observations, 0);
+        assert_eq!(legacy.playback_transfer_service.max_delay_100ns, None);
+        assert_eq!(
+            legacy.microphone_submission_service.origin,
+            PacketStampOrigin::Unknown
+        );
+    }
+
+    #[test]
     fn snapshot_records_packet_intervals_drop_silence_epoch_and_recovery_without_storage_growth() {
         let telemetry = PcmTelemetry::default();
         telemetry.submission_attempt(480, 32);
@@ -357,6 +430,8 @@ mod tests {
                 silence_frames: 32,
                 epoch_resets: 2,
                 recovery_events: 1,
+                playback_transfer_service: telemetry.playback_service.snapshot(),
+                microphone_submission_service: telemetry.microphone_service.snapshot(),
             }
         );
     }
@@ -403,13 +478,13 @@ mod tests {
         ] {
             let snapshot: VadPcmTelemetrySnapshot = serde_json::from_value(legacy).unwrap();
             let serialized = serde_json::to_value(snapshot).unwrap();
-            assert_eq!(serialized["schema_version"], 3);
+            assert_eq!(serialized["schema_version"], SNAPSHOT_SCHEMA_VERSION);
             assert_eq!(serialized["sequence_gap_observations"], 0);
             assert_eq!(serialized["missing_sequence_slots"], 0);
             assert!(serialized.get("completion_gaps").is_none());
         }
         let serialized = serde_json::to_value(PcmTelemetry::default().snapshot()).unwrap();
-        assert_eq!(serialized["schema_version"], 3);
+        assert_eq!(serialized["schema_version"], SNAPSHOT_SCHEMA_VERSION);
         assert_eq!(serialized["sequence_gap_observations"], 0);
         assert_eq!(serialized["missing_sequence_slots"], 0);
     }

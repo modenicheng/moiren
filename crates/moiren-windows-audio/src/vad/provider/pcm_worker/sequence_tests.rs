@@ -72,6 +72,12 @@ fn playback_sequence_gaps_continue_without_reset_or_invented_signal_drops() {
     assert_gaps(&state, 2, 5);
     let snapshot = state.telemetry.snapshot();
     assert_eq!(snapshot.completed_packets, 4);
+    assert_eq!(snapshot.playback_transfer_service.observations, 4);
+    assert_eq!(snapshot.microphone_submission_service.observations, 0);
+    assert_eq!(
+        snapshot.playback_transfer_service.origin,
+        crate::latency::packet_service::PacketStampOrigin::DriverTransfer
+    );
     assert_eq!(snapshot.dropped_packets, 0);
     assert_eq!(snapshot.stale_packets, 0);
     assert_eq!(state.reset_epoch.load(Ordering::Acquire), 0);
@@ -110,6 +116,15 @@ fn playback_sequence_stale_stamps_do_not_poison_the_accepted_frontier() {
     .unwrap();
     assert_gaps(&state, 1, 2);
     assert_eq!(state.telemetry.snapshot().stale_packets, 2);
+    assert_eq!(
+        state
+            .telemetry
+            .snapshot()
+            .playback_transfer_service
+            .observations,
+        4,
+        "all collected stamps remain service observations, including stale PCM"
+    );
 }
 
 #[test]
