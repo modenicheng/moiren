@@ -19,11 +19,16 @@ const HELP: &str = "Offline evidence analysis plus an explicitly qualified live 
 evaluate --reports FILE --expectation FILE --level experimental|default --max-input-bytes N --max-runs N --output FILE
 analyze-pcm --pcm FILE --schedule FILE --max-input-bytes N --output FILE [--packets FILE --max-packets N]
 replay-process --trace FILE --candidates FILE --process-pid PID --process-created-100ns N
-    --owner-generation N --max-input-bytes 1..16777216 --output NEWFILE
+    --owner-generation N --max-input-bytes 1..16777216 --output NEWFILE [--window-policy FILE]
 Offline finite Process queue replay only, not qualification: no safe/stability/latency or source-age claim.
 Trace document: schema 1 or 2; input hard cap 16 MiB per file, output hard cap 1 MiB independently.
 Candidates: schema_version=1, candidates:[explicit ProcessBridgeOptions], 1..16 entries; no defaults.
 Replay exits 0=completed candidate sweep (quality/refusals retained), 1=trace refused, 2=invalid input/IO.
+Optional window policy: schema_version=1, policy:{max_initial_unserved_frames,max_initial_prime_discarded_frames,
+    min_output_frames,min_output_reads,min_output_span_100ns}; all thresholds explicit; min frames/span >0, reads >=2.
+With --window-policy, exit 0 requires every candidate replayed with no_violation_in_window;
+    refused, observed_violation or inconclusive candidates exit 1 with raw reports/refusals retained; invalid policy/IO exits 2.
+Window acceptance is finite caller-supplied queue evidence only; qualified remains false, not safety/stability/latency qualification.
 live-process-loopback --source-pid PID --output ENDPOINT --artifact-dir DIR [--seconds 1..600]
 live-vad --stable-endpoint-id ID --name NAME --output ENDPOINT --artifact-dir DIR [--seconds 1..600]
 record-measurement --input ENDPOINT --artifact-dir NEW_DIR --seconds 1..7200

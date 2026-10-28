@@ -136,6 +136,350 @@ fn set_option(arguments: &mut [String], name: &str, value: impl ToString) {
     arguments[index + 1] = value.to_string();
 }
 
+fn window_policy() -> Value {
+    json!({
+        "schema_version": 1,
+        "policy": {
+            "max_initial_unserved_frames": 1000,
+            "max_initial_prime_discarded_frames": 1000,
+            "min_output_frames": 8,
+            "min_output_reads": 2,
+            "min_output_span_100ns": 1
+        }
+    })
+}
+
+fn window_arguments(fixture: &Fixture) -> Vec<String> {
+    let mut arguments = fixture.arguments();
+    arguments.extend([
+        "--window-policy".into(),
+        fixture.path("window.json").to_string_lossy().into_owned(),
+    ]);
+    arguments
+}
+
+#[test]
+fn window_policy_accepts_actual_replay_without_promoting_qualification_or_origin() {
+    let baseline = Fixture::new();
+    baseline.inputs();
+    assert_eq!(crate::run_cli(baseline.arguments()), 0);
+    let raw = baseline.output();
+    assert!(raw.get("window_policy").is_none());
+    assert!(raw.get("window_accepted").is_none());
+    assert!(raw["candidates"][0].get("assessment").is_none());
+
+    let fixture = Fixture::new();
+    fixture.inputs();
+    fixture.json("window.json", &window_policy());
+    assert_eq!(super::super::run(window_arguments(&fixture)).unwrap(), 0);
+    let output = fixture.output();
+    assert_eq!(output["window_policy"], window_policy()["policy"]);
+    assert_eq!(output["window_accepted"], true);
+    assert_eq!(output["qualified"], false);
+    assert_eq!(output["trace_origin"], "caller_supplied");
+    assert_eq!(output["candidates"][0]["status"], "replayed");
+    assert_eq!(
+        output["candidates"][0]["report"],
+        raw["candidates"][0]["report"]
+    );
+    let assessment = &output["candidates"][0]["assessment"];
+    assert_eq!(assessment["status"], "no_violation_in_window");
+    assert_eq!(assessment["policy"], output["window_policy"]);
+    assert_eq!(assessment["violations"], json!([]));
+}
+
+#[test]
+fn window_policy_violation_and_inconclusive_results_keep_raw_reports_and_exit_one() {
+    for (field, threshold, expected) in [
+        ("max_initial_unserved_frames", 0, "observed_violation"),
+        ("min_output_frames", 1000, "inconclusive"),
+        ("min_output_reads", 1000, "inconclusive"),
+        ("min_output_span_100ns", 1000, "inconclusive"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.inputs();
+        let mut policy = window_policy();
+        policy["policy"][field] = json!(threshold);
+        fixture.json("window.json", &policy);
+        assert_eq!(crate::run_cli(window_arguments(&fixture)), 1, "{field}");
+        let output = fixture.output();
+        assert_eq!(output["status"], "completed");
+        assert_eq!(output["window_accepted"], false);
+        assert_eq!(output["qualified"], false);
+        let result = &output["candidates"][0];
+        assert_eq!(result["status"], "replayed");
+        assert_eq!(result["assessment"]["status"], expected, "{field}");
+        assert_eq!(result["report"]["requested_frames"], 32);
+        assert_eq!(result["report"]["qualified"], false);
+        assert!(result.get("error").is_none());
+        if expected == "observed_violation" {
+            assert_eq!(
+                result["assessment"]["violations"],
+                json!(["initial_unserved"])
+            );
+        }
+    }
+}
+
+#[test]
+fn window_policy_requires_every_candidate_and_does_not_hide_refusals() {
+    for values in [
+        vec![candidate(12, 32), candidate(128, 256)],
+        vec![candidate(12, 32), candidate(2, 32)],
+        vec![candidate(2, 32), candidate(12, 16)],
+    ] {
+        let fixture = Fixture::new();
+        fixture.inputs();
+        fixture.json("candidates.json", &candidates(values.clone()));
+        fixture.json("window.json", &window_policy());
+        assert_eq!(crate::run_cli(window_arguments(&fixture)), 1);
+        let output = fixture.output();
+        assert_eq!(output["status"], "completed");
+        assert_eq!(output["window_accepted"], false);
+        for (index, options) in values.iter().enumerate() {
+            let result = &output["candidates"][index];
+            assert_eq!(result["options"], *options);
+            if options["input"]["target_frames"] == 12 && options["input"]["capacity_frames"] == 32
+            {
+                assert_eq!(result["assessment"]["status"], "no_violation_in_window");
+            } else if options["input"]["target_frames"] == 128 {
+                assert_eq!(result["assessment"]["status"], "inconclusive");
+                assert!(result["report"]["candidate"]["output_frames"] == 0);
+            } else {
+                assert_eq!(result["status"], "refused");
+                assert_eq!(result["error"]["stage"], "candidate_replay");
+                assert!(result.get("assessment").is_none());
+                assert!(result.get("report").is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn window_policy_trace_refusal_retains_policy_and_per_candidate_errors() {
+    let fixture = Fixture::new();
+    fixture.inputs();
+    fixture.json("window.json", &window_policy());
+    let mut trace = artifact();
+    trace["packet_history"]["writer_finished"] = json!(false);
+    fixture.json("trace.json", &trace);
+    assert_eq!(crate::run_cli(window_arguments(&fixture)), 1);
+    let output = fixture.output();
+    assert_eq!(output["status"], "refused");
+    assert_eq!(output["window_policy"], window_policy()["policy"]);
+    assert_eq!(output["window_accepted"], false);
+    assert_eq!(output["error"]["code"], "incomplete_history");
+    assert_eq!(
+        output["candidates"][0]["error"]["stage"],
+        "trace_validation"
+    );
+    assert!(output["candidates"][0].get("assessment").is_none());
+    assert!(output["candidates"][0].get("report").is_none());
+}
+
+#[test]
+fn window_policy_preserves_all_u64_digits_in_policy_and_assessment() {
+    let fixture = Fixture::new();
+    fixture.inputs();
+    let mut policy = window_policy();
+    for field in [
+        "max_initial_unserved_frames",
+        "max_initial_prime_discarded_frames",
+    ] {
+        policy["policy"][field] = json!(9_007_199_254_741_115_u64);
+    }
+    for field in [
+        "min_output_frames",
+        "min_output_reads",
+        "min_output_span_100ns",
+    ] {
+        policy["policy"][field] = json!(u64::MAX);
+    }
+    fixture.json("window.json", &policy);
+    assert_eq!(crate::run_cli(window_arguments(&fixture)), 1);
+    let output = fixture.output();
+    assert_eq!(output["window_policy"], policy["policy"]);
+    assert_eq!(
+        output["candidates"][0]["assessment"]["policy"],
+        policy["policy"]
+    );
+    assert_eq!(
+        output["candidates"][0]["assessment"]["status"],
+        "inconclusive"
+    );
+}
+
+#[test]
+fn window_policy_schema_fields_and_thresholds_are_strict_before_creating_output() {
+    for fault in [
+        "schema",
+        "missing_schema",
+        "missing_policy",
+        "unknown_envelope",
+        "unknown_policy",
+        "missing_allowance",
+        "missing_frames",
+        "missing_reads",
+        "missing_span",
+        "zero_frames",
+        "one_read",
+        "zero_span",
+        "negative",
+        "overflow",
+    ] {
+        let fixture = Fixture::new();
+        fixture.inputs();
+        let mut policy = window_policy();
+        match fault {
+            "schema" => policy["schema_version"] = json!(2),
+            "missing_schema" => {
+                policy.as_object_mut().unwrap().remove("schema_version");
+            }
+            "missing_policy" => {
+                policy.as_object_mut().unwrap().remove("policy");
+            }
+            "unknown_envelope" => policy["fallback"] = json!(true),
+            "unknown_policy" => policy["policy"]["fallback"] = json!(true),
+            "missing_allowance" => {
+                policy["policy"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("max_initial_prime_discarded_frames");
+            }
+            "missing_frames" => {
+                policy["policy"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("min_output_frames");
+            }
+            "missing_reads" => {
+                policy["policy"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("min_output_reads");
+            }
+            "missing_span" => {
+                policy["policy"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("min_output_span_100ns");
+            }
+            "zero_frames" => policy["policy"]["min_output_frames"] = json!(0),
+            "one_read" => policy["policy"]["min_output_reads"] = json!(1),
+            "zero_span" => policy["policy"]["min_output_span_100ns"] = json!(0),
+            "negative" => policy["policy"]["max_initial_unserved_frames"] = json!(-1),
+            "overflow" => policy["policy"]["min_output_frames"] = json!("18446744073709551616"),
+            _ => unreachable!(),
+        }
+        fixture.json("window.json", &policy);
+        let error = super::super::run(window_arguments(&fixture)).unwrap_err();
+        assert!(
+            !error.to_string().contains("unknown option"),
+            "{fault}: {error:#}"
+        );
+        assert_eq!(crate::run_cli(window_arguments(&fixture)), 2, "{fault}");
+        assert!(!fixture.path("output.json").exists());
+    }
+}
+
+#[test]
+fn window_policy_duplicate_json_fields_and_duplicate_or_missing_flag_values_are_errors() {
+    let policy = window_policy();
+    let nested = serde_json::to_string(&policy["policy"]).unwrap();
+    let duplicated_nested = nested.replacen(
+        "\"min_output_reads\":2",
+        "\"min_output_reads\":2,\"min_output_reads\":2",
+        1,
+    );
+    for text in [
+        format!(r#"{{"schema_version":1,"schema_version":1,"policy":{nested}}}"#),
+        format!(r#"{{"schema_version":1,"policy":{nested},"policy":{nested}}}"#),
+        format!(r#"{{"schema_version":1,"policy":{duplicated_nested}}}"#),
+        "{".into(),
+    ] {
+        let fixture = Fixture::new();
+        fixture.inputs();
+        fs::write(fixture.path("window.json"), text).unwrap();
+        let error = super::super::run(window_arguments(&fixture)).unwrap_err();
+        assert!(!error.to_string().contains("unknown option"), "{error:#}");
+        assert!(!fixture.path("output.json").exists());
+    }
+    let fixture = Fixture::new();
+    let mut arguments = window_arguments(&fixture);
+    arguments.extend(["--window-policy".into(), "duplicate.json".into()]);
+    assert!(
+        super::super::run(arguments)
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate option --window-policy")
+    );
+    let mut arguments = fixture.arguments();
+    arguments.push("--window-policy".into());
+    assert!(
+        super::super::run(arguments)
+            .unwrap_err()
+            .to_string()
+            .contains("separate values")
+    );
+}
+
+#[test]
+fn window_policy_uses_input_cap_and_preserves_create_new_and_output_cap() {
+    let fixture = Fixture::new();
+    fixture.inputs();
+    fixture.json("window.json", &window_policy());
+    let largest_input = ["trace.json", "candidates.json"]
+        .into_iter()
+        .map(|name| fs::metadata(fixture.path(name)).unwrap().len())
+        .max()
+        .unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.path("window.json"))
+        .unwrap()
+        .set_len(largest_input + 1)
+        .unwrap();
+    let mut arguments = window_arguments(&fixture);
+    set_option(&mut arguments, "--max-input-bytes", largest_input);
+    let error = super::super::run(arguments).unwrap_err();
+    assert!(format!("{error:#}").contains("cap"), "{error:#}");
+    assert!(!fixture.path("output.json").exists());
+
+    fixture.json("window.json", &window_policy());
+    fs::write(fixture.path("output.json"), b"keep-existing-evidence").unwrap();
+    assert!(super::super::run(window_arguments(&fixture)).is_err());
+    assert_eq!(
+        fs::read(fixture.path("output.json")).unwrap(),
+        b"keep-existing-evidence"
+    );
+
+    let fixture = Fixture::new();
+    fixture.inputs();
+    fixture.json("window.json", &window_policy());
+    let mut trace = artifact();
+    trace["process"]["executable_name"] = json!("x".repeat(600_000));
+    fixture.json("trace.json", &trace);
+    let error = super::super::run(window_arguments(&fixture)).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("replay output exceeds 1 MiB"),
+        "{error:#}"
+    );
+    assert!(!fixture.path("output.json").exists());
+}
+
+#[test]
+fn window_policy_file_is_not_ignored_and_help_explains_opt_in_gate() {
+    let fixture = Fixture::new();
+    fixture.inputs();
+    let error = super::super::run(window_arguments(&fixture)).unwrap_err();
+    assert!(!error.to_string().contains("unknown option"), "{error:#}");
+    assert_eq!(crate::run_cli(window_arguments(&fixture)), 2);
+    assert!(!fixture.path("output.json").exists());
+    assert!(super::super::HELP.contains("[--window-policy FILE]"));
+    assert!(super::super::HELP.contains("no_violation_in_window"));
+    assert!(super::super::HELP.contains("inconclusive"));
+}
+
 #[test]
 fn actual_cli_retains_queue_results_and_never_qualifies_even_poor_quality() {
     let fixture = Fixture::new();

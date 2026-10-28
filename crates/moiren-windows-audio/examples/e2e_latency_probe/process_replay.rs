@@ -4,7 +4,8 @@ use moiren_windows_audio::{
     latency::transport::{DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy},
     process_loopback::{
         ProcessBridgeOptions, ProcessIdentity, ProcessReplayError, ProcessReplayReport,
-        ProcessTraceDocument, ProcessTraceOrigin,
+        ProcessTraceDocument, ProcessTraceOrigin, ReplayWindowAssessment, ReplayWindowPolicy,
+        ReplayWindowStatus,
     },
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
@@ -52,6 +53,13 @@ const OPTIONS: [&str; 7] = [
     "--max-input-bytes",
     "--output",
 ];
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowPolicyRequest {
+    schema_version: u32,
+    policy: ReplayWindowPolicy,
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -180,6 +188,8 @@ struct CandidateResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     report: Option<ProcessReplayReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    assessment: Option<ReplayWindowAssessment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<Refusal>,
 }
 
@@ -195,6 +205,10 @@ struct ReplayOutput {
     expected_process_pid: u32,
     expected_process_created_100ns: u64,
     expected_owner_generation: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window_policy: Option<ReplayWindowPolicy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window_accepted: Option<bool>,
     candidates: Vec<CandidateResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<Refusal>,
@@ -210,7 +224,10 @@ pub(super) fn run(arguments: Vec<String>) -> Result<i32> {
     ensure!(remainder.is_empty(), "options require separate values");
     let mut options = BTreeMap::new();
     for [name, value] in pairs {
-        ensure!(OPTIONS.contains(&name.as_str()), "unknown option {name}");
+        ensure!(
+            OPTIONS.contains(&name.as_str()) || name == "--window-policy",
+            "unknown option {name}"
+        );
         ensure!(
             options.insert(name.as_str(), value.as_str()).is_none(),
             "duplicate option {name}"
@@ -244,7 +261,19 @@ pub(super) fn run(arguments: Vec<String>) -> Result<i32> {
         request.schema_version == 1,
         "candidate schema_version must be 1"
     );
-    // Both files are byte-bounded before serde allocation. The document
+    let window_policy = options
+        .get("--window-policy")
+        .map(|path| -> Result<ReplayWindowPolicy> {
+            let request: WindowPolicyRequest = super::read_json(path, limit)?;
+            ensure!(
+                request.schema_version == 1,
+                "window policy schema_version must be 1"
+            );
+            request.policy.validate().context("invalid window policy")?;
+            Ok(request.policy)
+        })
+        .transpose()?;
+    // Every input is byte-bounded before serde allocation. The document
     // validates schema-specific history caps; labels remain caller-supplied.
     let document: ProcessTraceDocument = super::read_json(options["--trace"], limit)?;
     let expected = ProcessIdentity {
@@ -258,15 +287,23 @@ pub(super) fn run(arguments: Vec<String>) -> Result<i32> {
     for (index, candidate) in request.candidates.into_iter().enumerate() {
         let options = ProcessBridgeOptions::from(candidate);
         let result = match &trace {
-            Ok(trace) => trace.replay(&expected, generation, options),
+            Ok(trace) => match window_policy {
+                Some(policy) => trace
+                    .replay_window(&expected, generation, options, policy)
+                    .map(|result| (result.report, Some(result.assessment))),
+                None => trace
+                    .replay(&expected, generation, options)
+                    .map(|report| (report, None)),
+            },
             Err(error) => Err(*error),
         };
         candidates.push(match result {
-            Ok(report) => CandidateResult {
+            Ok((report, assessment)) => CandidateResult {
                 index,
                 options,
                 status: "replayed",
                 report: Some(report),
+                assessment,
                 error: None,
             },
             Err(error) => CandidateResult {
@@ -274,6 +311,7 @@ pub(super) fn run(arguments: Vec<String>) -> Result<i32> {
                 options,
                 status: "refused",
                 report: None,
+                assessment: None,
                 error: Some(Refusal::new(
                     if trace_error.is_some() {
                         "trace_validation"
@@ -285,6 +323,16 @@ pub(super) fn run(arguments: Vec<String>) -> Result<i32> {
             },
         });
     }
+    // A refusal has no assessment and cannot satisfy the explicit window gate.
+    // The assessment comes from replay_window's actual replay, never a separately
+    // reinterpreted mutable report or a native/provenance qualification upgrade.
+    let window_accepted = window_policy.map(|_| {
+        candidates.iter().all(|candidate| {
+            candidate.assessment.as_ref().is_some_and(|assessment| {
+                assessment.status == ReplayWindowStatus::NoViolationInWindow
+            })
+        })
+    });
     let output = ReplayOutput {
         schema_version: 1,
         mode: "offline_process_queue_replay",
@@ -300,6 +348,8 @@ pub(super) fn run(arguments: Vec<String>) -> Result<i32> {
         expected_process_pid: pid,
         expected_process_created_100ns: creation_time_100ns,
         expected_owner_generation: generation,
+        window_policy,
+        window_accepted,
         candidates,
         error: trace_error.map(|error| Refusal::new("trace_validation", error)),
         limitations: [
@@ -310,9 +360,11 @@ pub(super) fn run(arguments: Vec<String>) -> Result<i32> {
         ],
     };
     write_output(Path::new(options["--output"]), &output)?;
-    // A completed experiment sweep is not a quality gate. Candidate refusals
-    // stay explicit, and only trace refusal changes a well-formed run to exit 1.
-    Ok(i32::from(trace_error.is_some()))
+    // Without an explicit policy, preserve the ungated experiment semantics:
+    // candidate quality/refusals do not change a completed sweep's exit code.
+    Ok(i32::from(
+        trace_error.is_some() || window_accepted == Some(false),
+    ))
 }
 
 #[cfg(test)]
