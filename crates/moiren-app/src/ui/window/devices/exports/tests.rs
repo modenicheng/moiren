@@ -1,6 +1,5 @@
-use super::{IntentEdit, binding_candidate, create_export, edit_export};
-use crate::service::{ExportDirection, ExportIntent, ServiceGraph};
-use moiren_core::graph::NodeKind;
+use super::{IntentEdit, create_export, edit_export};
+use crate::service::{ExportDirection, ServiceGraph};
 use moiren_engine::node::VirtualEndpointId;
 
 fn id(value: u8) -> VirtualEndpointId {
@@ -61,34 +60,6 @@ fn edits_preserve_other_intents_identity_and_channel_shape() {
 }
 
 #[test]
-fn binding_requires_matching_direction_shape_and_exclusive_graph_io() {
-    let mut graph = ServiceGraph::default().snapshot();
-    let source = graph.graph.create_node(NodeKind::Source, 2).unwrap();
-    let sink = graph.graph.create_node(NodeKind::Sink, 2).unwrap();
-    let mono = graph.graph.create_node(NodeKind::Source, 1).unwrap();
-    let gain = graph.graph.create_node(NodeKind::Gain, 2).unwrap();
-    graph.exports = create_export(&graph, id(1), ExportDirection::Playback, "Playback", 2).unwrap();
-    assert_eq!(binding_candidate(&graph, id(1), Some(source)), Some(source));
-    for selection in [None, Some(sink), Some(mono), Some(gain)] {
-        assert_eq!(binding_candidate(&graph, id(1), selection), None);
-    }
-    assert!(edit_export(&graph, id(1), IntentEdit::Binding(Some(sink))).is_err());
-    graph.exports = edit_export(&graph, id(1), IntentEdit::Binding(Some(source))).unwrap();
-    graph.exports.push(ExportIntent {
-        endpoint_id: id(2),
-        name: "Other".into(),
-        binding: None,
-        ..graph.exports[0].clone()
-    });
-    assert_eq!(binding_candidate(&graph, id(2), Some(source)), None);
-    assert!(edit_export(&graph, id(2), IntentEdit::Binding(Some(source))).is_err());
-    graph.exports = edit_export(&graph, id(1), IntentEdit::Binding(None)).unwrap();
-    assert_eq!(binding_candidate(&graph, id(2), Some(source)), Some(source));
-    graph.exports[1].direction = ExportDirection::Microphone;
-    assert_eq!(binding_candidate(&graph, id(2), Some(sink)), Some(sink));
-}
-
-#[test]
 fn create_enforces_service_export_limit() {
     let mut graph = ServiceGraph::default().snapshot();
     for value in 0..crate::service::MAX_EXPORTS as u8 {
@@ -99,38 +70,29 @@ fn create_enforces_service_export_limit() {
 }
 
 #[test]
-fn shape_edits_reject_incompatible_binding_then_allow_unbind_and_rebind() {
+fn shape_edits_reject_invalid_channel_counts() {
     for direction in [ExportDirection::Playback, ExportDirection::Microphone] {
         let mut graph = ServiceGraph::default().snapshot();
-        let stereo = graph.graph.create_node(direction.node_kind(), 2).unwrap();
-        let mono = graph.graph.create_node(direction.node_kind(), 1).unwrap();
         graph.exports = create_export(&graph, id(1), direction, "Endpoint", 2).unwrap();
-        graph.exports = edit_export(&graph, id(1), IntentEdit::Binding(Some(stereo))).unwrap();
-        assert!(edit_export(&graph, id(1), IntentEdit::Channels(1)).is_err());
-        assert_eq!(graph.exports[0].binding, Some(stereo));
-        assert_eq!(graph.exports[0].channels, 2);
-        graph.exports = edit_export(&graph, id(1), IntentEdit::Binding(None)).unwrap();
         graph.exports = edit_export(&graph, id(1), IntentEdit::Channels(1)).unwrap();
         assert_eq!(graph.exports[0].endpoint_id, id(1));
         assert_eq!(graph.exports[0].name, "Endpoint");
         assert_eq!(graph.exports[0].direction, direction);
         assert!(graph.exports[0].enabled);
-        assert_eq!(binding_candidate(&graph, id(1), Some(stereo)), None);
-        assert_eq!(binding_candidate(&graph, id(1), Some(mono)), Some(mono));
-        graph.exports = edit_export(&graph, id(1), IntentEdit::Binding(Some(mono))).unwrap();
-        assert!(edit_export(&graph, id(1), IntentEdit::Channels(2)).is_err());
+        graph.exports = edit_export(&graph, id(1), IntentEdit::Channels(2)).unwrap();
+        assert!(edit_export(&graph, id(1), IntentEdit::Channels(2)).is_ok());
         assert!(edit_export(&graph, id(1), IntentEdit::Channels(0)).is_err());
         assert!(edit_export(&graph, id(1), IntentEdit::Channels(3)).is_err());
-        graph.exports = edit_export(&graph, id(1), IntentEdit::Binding(None)).unwrap();
-        graph.exports = edit_export(&graph, id(1), IntentEdit::Channels(2)).unwrap();
-        assert_eq!(binding_candidate(&graph, id(1), Some(stereo)), Some(stereo));
     }
 }
 
 #[cfg(feature = "gpui-test")]
 mod headless {
     use super::super::super::super::{StudioShell, UiState, devices, pages};
-    use crate::service::{AppSnapshot, ExportDirection, GraphSnapshot, ServiceRuntime};
+    use crate::service::{
+        AppRequest, AppSnapshot, ExportDirection, ExportIntent, GraphEdit, GraphSnapshot,
+        ServiceRuntime,
+    };
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
         AppContext, Entity, ScrollDelta, SharedString, VisualTestContext, point, px, size,
@@ -408,6 +370,7 @@ mod headless {
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].binding == Some(source)
         });
+        assert_eq!(candidate(&view, cx).node(source).unwrap().source, None);
         assert_eq!(
             candidate(&view, cx).active_revision,
             None,
@@ -426,6 +389,11 @@ mod headless {
         wait_for(&view, cx, |snapshot| {
             snapshot.graph.exports[0].binding.is_none()
         });
+        assert_eq!(
+            candidate(&view, cx).node(source).unwrap().source,
+            None,
+            "unbinding a virtual endpoint does not invent a physical source"
+        );
         scroll_to_control(cx, key("mono"));
         cx.update(|window, cx| window.click(key("mono"), cx));
         wait_for(&view, cx, |snapshot| {
@@ -517,6 +485,147 @@ mod headless {
         assert_eq!(microphone.direction, ExportDirection::Microphone);
         assert_eq!(microphone.channels, 1);
         assert_eq!(microphone.name, "My Microphone");
+        handle.request_exit();
+        runtime.join().unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn input_tab_binds_vad_playback_to_graph_source(cx: &mut gpui_kit::TestAppContext) {
+        use moiren_core::graph::NodeKind;
+
+        cx.update(gpui_kit::init);
+        let runtime = ServiceRuntime::spawn().unwrap();
+        let handle = runtime.handle();
+        let initial = crate::ui::state::initial_snapshot(&handle).unwrap();
+        let graph = &initial.graph;
+        let source = graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Source)
+            .unwrap()
+            .id();
+        let playback = moiren_engine::node::VirtualEndpointId::from_bytes([0xc1; 16]);
+        let microphone = moiren_engine::node::VirtualEndpointId::from_bytes([0xc2; 16]);
+        handle
+            .try_request_tracked(AppRequest::EditGraph(GraphEdit::SetExports(vec![
+                ExportIntent {
+                    endpoint_id: playback,
+                    direction: ExportDirection::Playback,
+                    name: "VAD Speaker".into(),
+                    channels: 2,
+                    enabled: true,
+                    binding: None,
+                },
+                ExportIntent {
+                    endpoint_id: microphone,
+                    direction: ExportDirection::Microphone,
+                    name: "VAD MIC".into(),
+                    channels: 2,
+                    enabled: true,
+                    binding: None,
+                },
+            ])))
+            .unwrap();
+        let state = cx.new(|_| UiState::new(handle.clone(), initial));
+        let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+        view.update(cx, |shell, cx| {
+            shell.preferences_path = None;
+            shell.presentation.page = pages::Page::Devices;
+            shell.device_tab = devices::DeviceTab::Inputs;
+            shell.inspector_open = false;
+            shell.sidebar_open = false;
+            cx.notify();
+        });
+        wait_for(&view, cx, |snapshot| snapshot.graph.exports.len() == 2);
+        cx.update(|window, cx| {
+            window.resize(size(px(1440.), px(900.)));
+            window.render_frame(cx);
+            assert!(window.find(format!("choose-{playback}")).visible());
+            window.click(format!("choose-{playback}"), cx);
+        });
+        wait_for(&view, cx, |snapshot| {
+            snapshot
+                .graph
+                .exports
+                .iter()
+                .any(|export| export.endpoint_id == playback && export.binding == Some(source))
+        });
+        let candidate = candidate(&view, cx);
+        assert_eq!(candidate.node(source).unwrap().source, None);
+        assert!(
+            candidate
+                .exports
+                .iter()
+                .any(|export| export.endpoint_id == microphone && export.binding.is_none())
+        );
+        handle.request_exit();
+        runtime.join().unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn output_tab_binds_vad_microphone_to_graph_sink(cx: &mut gpui_kit::TestAppContext) {
+        use moiren_core::graph::NodeKind;
+
+        cx.update(gpui_kit::init);
+        let runtime = ServiceRuntime::spawn().unwrap();
+        let handle = runtime.handle();
+        let initial = crate::ui::state::initial_snapshot(&handle).unwrap();
+        let graph = &initial.graph;
+        let sink = graph
+            .graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Sink)
+            .unwrap()
+            .id();
+        let playback = moiren_engine::node::VirtualEndpointId::from_bytes([0xd1; 16]);
+        let microphone = moiren_engine::node::VirtualEndpointId::from_bytes([0xd2; 16]);
+        handle
+            .try_request_tracked(AppRequest::EditGraph(GraphEdit::SetExports(vec![
+                ExportIntent {
+                    endpoint_id: playback,
+                    direction: ExportDirection::Playback,
+                    name: "VAD Speaker".into(),
+                    channels: 2,
+                    enabled: true,
+                    binding: None,
+                },
+                ExportIntent {
+                    endpoint_id: microphone,
+                    direction: ExportDirection::Microphone,
+                    name: "VAD MIC".into(),
+                    channels: 2,
+                    enabled: true,
+                    binding: None,
+                },
+            ])))
+            .unwrap();
+        let state = cx.new(|_| UiState::new(handle.clone(), initial));
+        let (view, cx) = cx.add_window_view(|window, cx| StudioShell::new(state, window, cx, None));
+        view.update(cx, |shell, cx| {
+            shell.preferences_path = None;
+            shell.presentation.page = pages::Page::Devices;
+            shell.inspector_open = false;
+            shell.sidebar_open = false;
+            cx.notify();
+        });
+        wait_for(&view, cx, |snapshot| snapshot.graph.exports.len() == 2);
+        cx.update(|window, cx| {
+            window.resize(size(px(1440.), px(900.)));
+            window.render_frame(cx);
+            assert!(window.find(format!("choose-{microphone}")).visible());
+            window.click(format!("choose-{microphone}"), cx);
+        });
+        wait_for(&view, cx, |snapshot| {
+            snapshot
+                .graph
+                .exports
+                .iter()
+                .any(|export| export.endpoint_id == microphone && export.binding == Some(sink))
+        });
+        let candidate = candidate(&view, cx);
+        assert_eq!(candidate.node(sink).unwrap().output_endpoint_id, None);
         handle.request_exit();
         runtime.join().unwrap();
     }

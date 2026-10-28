@@ -98,6 +98,11 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .ok_or("Node missing")?;
             entry.source = None;
             entry.output_endpoint_id = None;
+            for export in &mut next.exports {
+                if export.binding == Some(node) {
+                    export.binding = None;
+                }
+            }
         }
         GraphEdit::RemoveNode(node) => {
             next.graph.remove_node(node).map_err(|e| e.to_string())?;
@@ -170,6 +175,14 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             validate_edited_node(next, node)?;
         }
         GraphEdit::BindSource { node, source } => {
+            if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Source {
+                return Err("只有输入节点可以绑定音源".into());
+            }
+            for export in &mut next.exports {
+                if export.binding == Some(node) {
+                    export.binding = None;
+                }
+            }
             next.nodes
                 .iter_mut()
                 .find(|s| s.id == node)
@@ -194,12 +207,63 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             validate_edited_node(next, node)?;
         }
         GraphEdit::BindOutput { node, endpoint_id } => {
+            if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Sink {
+                return Err("只有输出节点可以绑定设备".into());
+            }
+            for export in &mut next.exports {
+                if export.binding == Some(node) {
+                    export.binding = None;
+                }
+            }
             next.nodes
                 .iter_mut()
                 .find(|s| s.id == node)
                 .ok_or("节点不存在")?
                 .output_endpoint_id = Some(endpoint_id);
             validate_edited_node(next, node)?;
+        }
+        GraphEdit::BindExport { endpoint_id, node } => {
+            let (direction, channels) = next
+                .exports
+                .iter()
+                .find(|export| export.endpoint_id == endpoint_id)
+                .map(|export| (export.direction, export.channels))
+                .ok_or("虚拟设备不存在")?;
+            if let Some(node) = node {
+                let topology = next.graph.get_node(node).map_err(|e| e.to_string())?;
+                if topology.kind() != direction.node_kind() {
+                    return Err(match direction {
+                        super::super::ExportDirection::Playback => {
+                            "Playback 只能绑定输入节点".into()
+                        }
+                        super::super::ExportDirection::Microphone => {
+                            "Microphone 只能绑定输出节点".into()
+                        }
+                    });
+                }
+                if topology.channels() != channels {
+                    return Err("虚拟设备与图节点声道数不一致".into());
+                }
+                for other in &mut next.exports {
+                    if other.endpoint_id != endpoint_id && other.binding == Some(node) {
+                        other.binding = None;
+                    }
+                }
+                let state = next
+                    .nodes
+                    .iter_mut()
+                    .find(|state| state.id == node)
+                    .ok_or("节点不存在")?;
+                match direction {
+                    super::super::ExportDirection::Playback => state.source = None,
+                    super::super::ExportDirection::Microphone => state.output_endpoint_id = None,
+                }
+            }
+            next.exports
+                .iter_mut()
+                .find(|export| export.endpoint_id == endpoint_id)
+                .expect("export validated above")
+                .binding = node;
         }
     }
     Ok(())

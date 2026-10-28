@@ -120,6 +120,8 @@ pub struct ProcessRow {
 pub struct DeviceCatalog {
     pub inputs: Vec<DeviceRow>,
     pub outputs: Vec<DeviceRow>,
+    /// Exact MMDevice IDs currently owned by VAD; do not infer ownership by name.
+    pub vad_endpoint_ids: Vec<String>,
     /// Native ASIO drivers use stable IDs accepted by the professional backend.
     pub asio_drivers: Vec<DeviceRow>,
     /// ASIO discovery can fail independently of usable WASAPI endpoints.

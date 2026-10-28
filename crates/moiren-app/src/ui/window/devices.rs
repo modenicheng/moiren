@@ -62,12 +62,28 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         }
         DeviceTab::Inputs | DeviceTab::Outputs => {
             let input = shell.device_tab == DeviceTab::Inputs;
-            let available = if input {
+            let mut available = if input {
                 input_rows(catalog, snapshot.audio_settings.backend)
             } else {
                 output_rows(catalog, snapshot.audio_settings.backend)
             };
-            let mut rows = available.to_vec();
+            let direction = if input {
+                crate::service::ExportDirection::Playback
+            } else {
+                crate::service::ExportDirection::Microphone
+            };
+            let vad_rows = snapshot
+                .graph
+                .exports
+                .iter()
+                .filter(|export| export.enabled && export.direction == direction)
+                .map(|export| crate::service::DeviceRow {
+                    endpoint_id: export.endpoint_id.to_string(),
+                    name: export.name.clone(),
+                })
+                .collect::<Vec<_>>();
+            available.extend(vad_rows.iter().cloned());
+            let mut rows = available.clone();
             let saved = if input {
                 &shell.settings.device.audio.input_overrides
             } else {
@@ -95,7 +111,28 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     .iter()
                     .any(|entry| entry.endpoint_id == row.endpoint_id);
                 let inspected = shell.selected_device.as_ref() == Some(&row.endpoint_id);
-                let selected = if input {
+                let vad_export = snapshot
+                    .graph
+                    .exports
+                    .iter()
+                    .find(|export| export.endpoint_id.to_string() == row.endpoint_id);
+                let node = snapshot
+                    .graph
+                    .graph
+                    .nodes()
+                    .iter()
+                    .find(|node| {
+                        node.kind()
+                            == if input {
+                                moiren_core::graph::NodeKind::Source
+                            } else {
+                                moiren_core::graph::NodeKind::Sink
+                            }
+                    })
+                    .map(|node| node.id());
+                let selected = if let Some(export) = vad_export {
+                    node.is_some_and(|node| export.binding == Some(node))
+                } else if input {
                     state.selection.input_id.as_ref() == Some(&row.endpoint_id)
                 } else {
                     state.selection.output_id.as_ref() == Some(&row.endpoint_id)
@@ -105,7 +142,21 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 } else {
                     catalog.default_output_endpoint_id.as_ref() == Some(&row.endpoint_id)
                 };
-                let active=snapshot.phase==SessionPhase::Running&&snapshot.desired.as_ref().is_some_and(|s|if input{matches!(&s.source,crate::service::InputSelection::Physical{endpoint_id} if endpoint_id==&row.endpoint_id)}else{s.output_endpoint_id==row.endpoint_id});
+                let active = if let Some(export) = vad_export {
+                    snapshot.exports.iter().any(|status| {
+                        status.intent.endpoint_id == export.endpoint_id
+                            && status.active_revision.is_some()
+                    })
+                } else {
+                    snapshot.phase == SessionPhase::Running
+                        && snapshot.desired.as_ref().is_some_and(|s| {
+                            if input {
+                                matches!(&s.source,crate::service::InputSelection::Physical{endpoint_id} if endpoint_id==&row.endpoint_id)
+                            } else {
+                                s.output_endpoint_id == row.endpoint_id
+                            }
+                        })
+                };
                 let this = cx.entity();
                 let id = row.endpoint_id.clone();
                 list = list.child(
@@ -142,8 +193,12 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                         .when(default && !asio, |v| {
                             v.child(badge(t!("Default"), theme::TEXT_MUTED))
                         })
-                        .child(
-                            button(SharedString::from(format!("inspect-{id}")), t!("Configure"))
+                        .when(vad_export.is_none(), |row| {
+                            row.child(
+                                button(
+                                    SharedString::from(format!("inspect-{id}")),
+                                    t!("Configure"),
+                                )
                                 .on_click({
                                     let this = cx.entity();
                                     let id = id.clone();
@@ -153,20 +208,73 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                                         })
                                     }
                                 }),
-                        )
+                            )
+                        })
                         .when(active, |v| v.child(badge(t!("Active"), theme::SUCCESS)))
                         .child(
                             button(
                                 SharedString::from(format!("choose-{id}")),
                                 if selected {
-                                    t!("Next start")
+                                    if vad_export.is_some() {
+                                        t!("Bound")
+                                    } else {
+                                        t!("Next start")
+                                    }
                                 } else {
-                                    t!("Use next start")
+                                    if vad_export.is_some() {
+                                        t!("Bind")
+                                    } else {
+                                        t!("Use next start")
+                                    }
                                 },
                             )
                             .disabled(!present || state.pending_request)
                             .on_click(move |_, _, cx| {
                                 this.update(cx, |s, cx| {
+                                    let export_node = s
+                                        .state
+                                        .read(cx)
+                                        .snapshot
+                                        .graph
+                                        .graph
+                                        .nodes()
+                                        .iter()
+                                        .find(|node| {
+                                            node.kind()
+                                                == if input {
+                                                    moiren_core::graph::NodeKind::Source
+                                                } else {
+                                                    moiren_core::graph::NodeKind::Sink
+                                                }
+                                        })
+                                        .map(|node| node.id());
+                                    let export_id = s
+                                        .state
+                                        .read(cx)
+                                        .snapshot
+                                        .graph
+                                        .exports
+                                        .iter()
+                                        .find(|export| {
+                                            export.enabled
+                                                && export.direction == direction
+                                                && export.endpoint_id.to_string() == id
+                                        })
+                                        .map(|export| export.endpoint_id);
+                                    if let (Some(node), Some(endpoint_id)) =
+                                        (export_node, export_id)
+                                    {
+                                        s.state.update(cx, |state, _| {
+                                            state.dispatch(AppRequest::EditGraph(
+                                                crate::service::GraphEdit::BindExport {
+                                                    endpoint_id,
+                                                    node: Some(node),
+                                                },
+                                            ));
+                                        });
+                                        cx.notify();
+                                        return;
+                                    }
                                     s.state.update(cx, |state, _| {
                                         if input {
                                             state.selection.input_id = Some(id.clone());

@@ -3,7 +3,6 @@ use crate::service::{
     ExportAuthorization, ExportDirection, ExportIntent, ExportResourceState, ExportStatus,
     GraphEdit, GraphSnapshot, validate_exports,
 };
-use moiren_core::graph::NodeId;
 use moiren_engine::node::VirtualEndpointId;
 use rust_i18n::t;
 use std::collections::BTreeMap;
@@ -67,7 +66,6 @@ enum IntentEdit {
     Rename(String),
     Channels(usize),
     Enabled(bool),
-    Binding(Option<NodeId>),
     Remove,
 }
 
@@ -105,30 +103,10 @@ fn edit_export(
         IntentEdit::Rename(name) => export.name = name,
         IntentEdit::Channels(channels) => export.channels = channels,
         IntentEdit::Enabled(enabled) => export.enabled = enabled,
-        IntentEdit::Binding(binding) => export.binding = binding,
         IntentEdit::Remove => exports.retain(|export| export.endpoint_id != endpoint_id),
     }
     validate_exports(&exports, &graph.graph)?;
     Ok(exports)
-}
-
-fn binding_candidate(
-    graph: &GraphSnapshot,
-    endpoint_id: VirtualEndpointId,
-    selected: Option<NodeId>,
-) -> Option<NodeId> {
-    let export = graph
-        .exports
-        .iter()
-        .find(|export| export.endpoint_id == endpoint_id)?;
-    selected.filter(|id| {
-        graph.graph.get_node(*id).is_ok_and(|node| {
-            node.kind() == export.direction.node_kind() && node.channels() == export.channels
-        }) && !graph
-            .exports
-            .iter()
-            .any(|other| other.endpoint_id != endpoint_id && other.binding == Some(*id))
-    })
 }
 
 impl StudioShell {
@@ -173,6 +151,24 @@ impl StudioShell {
     ) {
         let result = edit_export(&self.state.read(cx).snapshot.graph, id, edit);
         self.dispatch_exports(result, cx);
+    }
+
+    fn submit_export_binding(
+        &mut self,
+        id: VirtualEndpointId,
+        node: Option<moiren_core::graph::NodeId>,
+        cx: &mut Context<StudioShell>,
+    ) {
+        self.state.update(cx, |state, _| {
+            if state.pending_request {
+                return;
+            }
+            state.dispatch(AppRequest::EditGraph(GraphEdit::BindExport {
+                endpoint_id: id,
+                node,
+            }));
+        });
+        cx.notify();
     }
 
     fn dispatch_exports(
@@ -489,7 +485,14 @@ fn export_row(
                     }),
                 );
         }
-        let selected = binding_candidate(graph, id, shell.selected_node);
+        let selected = shell.selected_node.filter(|node| {
+            graph.graph.get_node(*node).is_ok_and(|node| {
+                node.kind() == desired.direction.node_kind() && node.channels() == desired.channels
+            }) && !graph
+                .exports
+                .iter()
+                .any(|other| other.endpoint_id != id && other.binding == Some(*node))
+        });
         let enabled = !desired.enabled;
         let this = cx.entity();
         let bind = cx.entity();
@@ -527,13 +530,22 @@ fn export_row(
                     .on_click(move |_, _, cx| {
                         bind.update(cx, |shell, cx| {
                             // Re-resolve current selection and intent instead of replaying a stale render snapshot.
-                            let selected = binding_candidate(
-                                &shell.state.read(cx).snapshot.graph,
-                                id,
-                                shell.selected_node,
-                            );
+                            let graph = &shell.state.read(cx).snapshot.graph;
+                            let Some(intent) =
+                                graph.exports.iter().find(|export| export.endpoint_id == id)
+                            else {
+                                return;
+                            };
+                            let selected = shell.selected_node.filter(|node| {
+                                graph.graph.get_node(*node).is_ok_and(|node| {
+                                    node.kind() == intent.direction.node_kind()
+                                        && node.channels() == intent.channels
+                                }) && !graph.exports.iter().any(|other| {
+                                    other.endpoint_id != id && other.binding == Some(*node)
+                                })
+                            });
                             if let Some(node) = selected {
-                                shell.submit_export_edit(id, IntentEdit::Binding(Some(node)), cx);
+                                shell.submit_export_binding(id, Some(node), cx);
                             }
                         });
                     }),
@@ -545,9 +557,7 @@ fn export_row(
                     )
                     .disabled(state.pending_request || desired.binding.is_none())
                     .on_click(move |_, _, cx| {
-                        unbind.update(cx, |shell, cx| {
-                            shell.submit_export_edit(id, IntentEdit::Binding(None), cx)
-                        });
+                        unbind.update(cx, |shell, cx| shell.submit_export_binding(id, None, cx));
                     }),
                 )
                 .child(

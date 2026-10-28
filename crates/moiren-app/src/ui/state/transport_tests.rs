@@ -176,6 +176,34 @@ fn physical_candidate_starts_before_primary_graph_bindings_are_published() {
 }
 
 #[test]
+fn physical_row_projection_hides_only_exact_vad_mmdevice_id_matches() {
+    let row = |id: &str| crate::service::DeviceRow {
+        endpoint_id: id.into(),
+        name: id.into(),
+    };
+    let catalog = DeviceCatalog {
+        inputs: vec![row("physical-input"), row("VAD endpoint")],
+        outputs: vec![row("physical-output"), row("VAD endpoint")],
+        vad_endpoint_ids: vec!["VAD endpoint".into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        super::input_rows(&catalog, AudioBackend::Wasapi)
+            .into_iter()
+            .map(|row| row.endpoint_id)
+            .collect::<Vec<_>>(),
+        vec!["physical-input"]
+    );
+    assert_eq!(
+        super::output_rows(&catalog, AudioBackend::Wasapi)
+            .into_iter()
+            .map(|row| row.endpoint_id)
+            .collect::<Vec<_>>(),
+        vec!["physical-output"]
+    );
+}
+
+#[test]
 fn nonprimary_unbound_io_rejects_otherwise_valid_physical_start() {
     let mut graph = physical_graph();
     graph

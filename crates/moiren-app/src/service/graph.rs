@@ -136,6 +136,10 @@ pub enum GraphEdit {
         node: NodeId,
         endpoint_id: String,
     },
+    BindExport {
+        endpoint_id: moiren_engine::node::VirtualEndpointId,
+        node: Option<NodeId>,
+    },
 }
 
 impl GraphEdit {
@@ -368,7 +372,9 @@ pub(crate) fn edit_subject(edit: &GraphEdit, graph: &LogicalGraph) -> GraphSubje
             .get_edge(*edge)
             .map(|edge| GraphSubject::Route(edge.src_port(), edge.dst_port()))
             .unwrap_or(GraphSubject::Graph),
-        GraphEdit::SetExports(_) | GraphEdit::AddNode { .. } => GraphSubject::Graph,
+        GraphEdit::SetExports(_) | GraphEdit::BindExport { .. } | GraphEdit::AddNode { .. } => {
+            GraphSubject::Graph
+        }
     }
 }
 
@@ -407,6 +413,7 @@ pub(crate) fn edit_affects_prepared_structure(edit: &GraphEdit, previous: &Logic
         | GraphEdit::SetBuiltin { .. }
         | GraphEdit::BindSource { .. }
         | GraphEdit::BindOutput { .. }
+        | GraphEdit::BindExport { .. }
         | GraphEdit::ClearBinding(_) => true,
         GraphEdit::SetSend { edge, params } => previous
             .get_edge(*edge)
