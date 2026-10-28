@@ -73,3 +73,14 @@ Hardware-dependent acceptance is intentionally not rerun for this change.
 Software regressions must exercise the same injected soft fault in both modes,
 hard-fault refusal, final/cleanup reconciliation, configurable grace and total
 deadline bounds. Their results belong in the S1-S3 execution ledger.
+
+## Playback sequence diagnostics continuation
+
+`df6ea7e` adds independent playback native forward-gap observations and
+missing-sequence-slot counters. The actual health and final quality paths count
+missing slots once as delivery quality, not as proven dropped/silent frames.
+The same injected gap continues correctness collection with failed quality
+and is rejected by latency-sensitive validation. First-packet prefix remains
+unknown; a new reset epoch starts a fresh accepted frontier. Microphone host
+submission sequences are not native packet loss. Full software evidence:
+[`2026-10-29-vad-sequence-observation.md`](2026-10-29-vad-sequence-observation.md).
