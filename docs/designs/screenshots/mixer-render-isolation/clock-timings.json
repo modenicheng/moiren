@@ -1,6 +1,7 @@
 {
   "date": "2026-10-28",
-  "method": "Release ui-profiler; default production Windows frame clock; 1 s settling and 30 s requested per viewport; eight-node managed fake backend, no physical audio. Actual draw/present counts divided by measured wall time. Not scan-out verification.",
+  "status": "Historical experiment only; the dedicated native clock has been removed. Current Mixer scheduling uses GPUI request_animation_frame.",
+  "method": "Release ui-profiler; then-current production Windows frame clock (subsequently removed); 1 s settling and 30 s requested per viewport; eight-node managed fake backend, no physical audio. Actual draw/present counts divided by measured wall time. Not scan-out verification.",
   "target_hz": 240,
   "target_budget_ms": 4.166666666666667,
   "viewports": {

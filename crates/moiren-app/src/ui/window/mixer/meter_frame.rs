@@ -234,42 +234,18 @@ pub(in crate::ui::window) fn readout(shell: &StudioShell, id: NodeId) -> impl In
 }
 
 pub(in crate::ui::window) struct MixerMeterFrame {
-    pub(super) shell: WeakEntity<StudioShell>,
+    shell: WeakEntity<StudioShell>,
     geometry: Geometry,
-    pub(in crate::ui::window) clock: super::frame_clock::FrameClock,
-    _subscription: Subscription,
 }
 
 impl MixerMeterFrame {
-    pub fn new(shell: Entity<StudioShell>, geometry: Geometry, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.observe(&shell, |view, shell, cx| {
-            let shell = shell.read(cx);
-            if shell.presentation.page != Page::Mixer || !shell.meters_frame_active(cx) {
-                // This also runs while unmounted: render alone cannot stop a
-                // timer after switching tabs or hiding the native window.
-                view.clock.stop();
-            }
-        });
-        Self {
-            shell: shell.downgrade(),
-            geometry,
-            clock: Default::default(),
-            _subscription: subscription,
-        }
-    }
-
-    pub(super) fn frame_active(&self, cx: &App) -> bool {
-        self.shell.upgrade().is_some_and(|shell| {
-            let shell = shell.read(cx);
-            shell.presentation.page == Page::Mixer && shell.meters_frame_active(cx)
-        })
+    pub fn new(shell: WeakEntity<StudioShell>, geometry: Geometry) -> Self {
+        Self { shell, geometry }
     }
 }
 
 impl Render for MixerMeterFrame {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.frame_active(cx);
-        let clocked = self.clock.sync(active, window, cx);
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let shell = self.shell.clone();
         let geometry = self.geometry.clone();
         // No hitbox: faders, clip reset, tooltips and context menus continue
@@ -283,7 +259,7 @@ impl Render for MixerMeterFrame {
                     #[cfg(feature = "gpui-test")]
                     let began = std::time::Instant::now();
                     shell.pump_meters(cx);
-                    if !clocked && shell.meters_frame_active(cx) {
+                    if shell.meters_frame_active(cx) {
                         window.request_animation_frame();
                     }
                     #[cfg(feature = "gpui-test")]
@@ -388,24 +364,6 @@ impl Render for MixerMeterFrame {
 mod tests {
     use super::Placement;
     use gpui_kit::{Bounds, ContentMask, point, px, size};
-
-    #[cfg(all(windows, feature = "gpui-test"))]
-    #[gpui_kit::test]
-    fn headless_meter_view_keeps_deterministic_animation_fallback(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        let (shell, cx, runtime) = crate::ui::window::test_harness::test_shell(cx);
-        let view = shell.read_with(cx, |shell, _| shell.mixer_frame.clone());
-        cx.update(|window, cx| {
-            view.update(cx, |view, cx| {
-                assert!(
-                    !view.clock.sync(true, window, cx),
-                    "a headless window must not launch a native timer or replace simulated RAF"
-                );
-            });
-        });
-        crate::ui::window::test_harness::finish_service(runtime);
-    }
 
     #[test]
     fn vertical_culling_keeps_clip_and_channel_label_extents() {

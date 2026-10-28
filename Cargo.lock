@@ -4513,7 +4513,6 @@ name = "moiren-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-channel",
  "embed-resource",
  "flexi_logger",
  "gpui-kit",

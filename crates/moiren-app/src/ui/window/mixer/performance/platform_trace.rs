@@ -112,7 +112,6 @@ impl PlatformTrace {
                 "draws": draws, "presents": presents,
                 "render_fps": draws as f64 / elapsed.as_secs_f64(),
                 "present_fps": presents as f64 / elapsed.as_secs_f64(),
-                "target_hz": 240, "target_budget_ms": 1000. / 240.,
                 "dwm": composition_timing(),
                 "frames": frames, "journal": journal,
             }))?,
@@ -192,5 +191,7 @@ mod tests {
         assert_eq!(report["frames"].as_array().unwrap().len(), 2);
         assert!(report["frames"][0]["gap_ms"].is_null());
         assert_eq!(report["frames"][1]["gap_ms"], 4.);
+        assert!(report.get("target_hz").is_none());
+        assert!(report.get("target_budget_ms").is_none());
     }
 }

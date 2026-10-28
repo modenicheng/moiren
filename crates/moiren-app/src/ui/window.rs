@@ -303,11 +303,10 @@ impl StudioShell {
                 child_cx,
             )
         });
-        let mixer_frame = cx.new(|cx| {
+        let mixer_frame = cx.new(|_| {
             mixer::meter_frame::MixerMeterFrame::new(
-                shell_entity.clone(),
+                shell_entity.downgrade(),
                 mixer_geometry.clone(),
-                cx,
             )
         });
         let mixer_toolbar = cx.new(|cx| chrome::CachedChrome::new(shell_entity.clone(), true, cx));
