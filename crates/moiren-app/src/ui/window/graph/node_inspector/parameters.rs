@@ -257,12 +257,7 @@ pub(super) fn parameters(
             view = view.child(group);
         }
     }
-    Disclosure::new(
-        Section::Advanced,
-        id,
-        view.child(builtin::builtin_controls(id, node, &entry.builtin, cx)),
-    )
-    .into_any_element()
+    Disclosure::new(Section::Advanced, id, view).into_any_element()
 }
 
 /// Existing InputState subscriptions parse engine units. In particular wet mix
