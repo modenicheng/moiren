@@ -933,13 +933,16 @@ impl StudioShell {
         {
             return;
         }
-        self.state.update(cx, |state, _| {
-            state.dispatch(if redo {
+        let admitted = self.state.update(cx, |state, _| {
+            state.try_dispatch(if redo {
                 AppRequest::RedoGraph
             } else {
                 AppRequest::UndoGraph
-            });
+            })
         });
+        if let Ok(request) = admitted {
+            self.node_controls.retire_mapper_until(request);
+        }
         cx.notify();
     }
 

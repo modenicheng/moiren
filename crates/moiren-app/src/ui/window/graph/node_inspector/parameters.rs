@@ -8,6 +8,18 @@ pub(super) fn parameters(
     cx: &Context<StudioShell>,
 ) -> AnyElement {
     let id = node.id();
+    if node.kind() == NodeKind::ChannelMapper {
+        return Disclosure::new(
+            Section::Advanced,
+            id,
+            super::super::node_controls::mapper_inspector(shell, entry, cx),
+        )
+        .on_toggle(
+            shell.node_controls.mapper_disclosure_open(id),
+            shell.node_controls.mapper_disclosure_toggle(id, cx),
+        )
+        .into_any_element();
+    }
     if node.kind() == NodeKind::Rack {
         return Disclosure::new(
             Section::Advanced,

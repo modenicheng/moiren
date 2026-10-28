@@ -15,9 +15,12 @@ pub(super) fn content(
     node: &GraphNodeState,
     cx: &Context<StudioShell>,
 ) -> Option<AnyElement> {
+    // Paging must not clone the full routing matrix merely to paint one tile.
+    if card.kind == NodeKind::ChannelMapper {
+        return mapper::content(shell, node, cx);
+    }
     let builtin = node.builtin.resolved(card.kind);
     Some(match card.kind {
-        NodeKind::ChannelMapper => mapper::content(shell, node, builtin.channel_mapper()?, cx)?,
         NodeKind::Rack => rack::content(shell, node, builtin.rack()?, cx)?,
         NodeKind::Meter => meter::content(shell, node, *builtin.meter()?, cx)?,
         NodeKind::SpectrumAnalyzer => {
@@ -51,23 +54,5 @@ fn choice(
     match edit {
         Some(edit) => button.on_click(controls::edit(cx.entity(), edit)),
         None => button,
-    }
-}
-
-#[derive(IntoElement)]
-struct UtilityTrigger(ActionButton);
-
-impl component::Selectable for UtilityTrigger {
-    fn is_selected(&self) -> bool {
-        false
-    }
-    fn selected(self, _selected: bool) -> Self {
-        self
-    }
-}
-
-impl RenderOnce for UtilityTrigger {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        self.0
     }
 }

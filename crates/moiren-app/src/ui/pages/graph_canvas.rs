@@ -265,7 +265,7 @@ impl CanvasWorld {
                         + crate::ui::widgets::meters::node_meter_width(logical.channels())
                 }
                 NodeKind::Limiter | NodeKind::Delay => 3. * 92. + 20.,
-                NodeKind::ChannelMapper => (logical.channels().min(8) as f32 * 68. + 76.).max(296.),
+                NodeKind::ChannelMapper => 324. + mapper_meter_width(logical.channels()) + 16.,
                 NodeKind::Rack => {
                     rack_content_width(state.builtin.rack())
                         + if state
@@ -375,6 +375,12 @@ impl CanvasWorld {
             },
         }
     }
+}
+
+/// Four readable meter columns fit beside the Mapper's four-column routing tile.
+/// The meter's existing inner canvas keeps every channel at its natural width.
+pub(crate) fn mapper_meter_width(channels: usize) -> f32 {
+    crate::ui::widgets::meters::node_meter_width(channels.min(4))
 }
 
 /// Use the widest configured stage, rather than the selected stage: switching

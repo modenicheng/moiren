@@ -33,11 +33,9 @@ struct BuiltinFieldSpec<S> {
     set: fn(&mut S, f64),
 }
 
-const MAX_MATRIX_EDITOR_CHANNELS: usize = 8;
-
 pub(super) fn builtin_controls(
     id: moiren_core::graph::NodeId,
-    node: &moiren_core::graph::Node,
+    _node: &moiren_core::graph::Node,
     state: &crate::service::BuiltinState,
     cx: &Context<StudioShell>,
 ) -> AnyElement {
@@ -156,7 +154,7 @@ pub(super) fn builtin_controls(
             }
         }
         crate::service::BuiltinState::ChannelMapper(settings) => {
-            view = view.child(matrix::controls(id, node, settings, cx));
+            view = view.child(matrix::summary(settings));
         }
         crate::service::BuiltinState::Recorder(_)
         | crate::service::BuiltinState::Meter(_)

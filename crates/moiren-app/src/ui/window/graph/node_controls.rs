@@ -14,6 +14,7 @@ use std::{
 
 mod fields;
 mod io;
+mod mapper_editor;
 mod parameter;
 mod plots;
 mod precision;
@@ -27,6 +28,7 @@ mod tone_tests;
 mod utility;
 use fields::{parameter_control, parameter_row};
 use io::io_body;
+pub(super) use mapper_editor::inspector as mapper_inspector;
 use parameter::Parameter;
 pub(super) use precision::tone_inspector;
 pub(super) use rack_editor::inspector as rack_inspector;
@@ -42,6 +44,7 @@ pub(in crate::ui::window) struct NodeControls {
     input_pending: BTreeMap<(NodeId, Parameter), crate::service::RequestId>,
     errors: BTreeMap<(NodeId, Parameter), String>,
     precision: precision::Editors,
+    mapper: mapper_editor::Editors,
     pub(super) resource_popup: Option<NodeId>,
     application_picker: BTreeMap<NodeId, bool>,
     rack: rack_editor::RackEditorState,
@@ -57,6 +60,7 @@ impl NodeControls {
             || self.rack.owns_focus(focused, cx)
             || self.spectrum_editors.owns_focus(focused, cx)
             || self.precision.owns_focus(focused, cx)
+            || self.mapper.owns_focus(focused, cx)
     }
 }
 
@@ -244,6 +248,7 @@ impl StudioShell {
         rack_editor::sync(self, window, cx);
         utility::spectrum::editor::sync(self, window, cx);
         precision::sync(self, window, cx);
+        mapper_editor::sync(self, window, cx);
     }
 }
 
@@ -443,6 +448,7 @@ fn full_body(
             | NodeKind::Bus
             | NodeKind::Recorder
             | NodeKind::SpectrumAnalyzer
+            | NodeKind::ChannelMapper
     ) || (card.kind == NodeKind::Rack
         && node
             .builtin
@@ -479,7 +485,11 @@ fn full_body(
             .graph
             .get_node(id)
             .map_or(2, |n| n.channels());
-        let meter_width = crate::ui::widgets::meters::node_meter_width(channels);
+        let meter_width = if card.kind == NodeKind::ChannelMapper {
+            crate::ui::pages::graph_canvas::mapper_meter_width(channels)
+        } else {
+            crate::ui::widgets::meters::node_meter_width(channels)
+        };
         div()
             .relative()
             .w_full()
@@ -601,15 +611,27 @@ fn vertical_meter(
             component::tooltip::Tooltip::new(t!("Graph monitor · post-fader").to_string())
                 .build(window, cx)
         })
-        .child(crate::ui::widgets::meters::node_vertical_meter(
-            levels,
-            channels,
-            if levels.is_some() {
-                shell.node_meters.channel_clips(id)
-            } else {
-                &[]
-            },
-        ))
+        .child(
+            crate::ui::widgets::meters::node_vertical_meter(
+                levels,
+                channels,
+                if levels.is_some() {
+                    shell.node_meters.channel_clips(id)
+                } else {
+                    &[]
+                },
+            )
+            .when(
+                snapshot.graph.kind_of(id) == Some(NodeKind::ChannelMapper),
+                |meter| {
+                    // Bound only the viewport; all channels retain readable columns
+                    // inside the meter's existing horizontal scroll surface.
+                    meter.w(px(crate::ui::pages::graph_canvas::mapper_meter_width(
+                        channels,
+                    )))
+                },
+            ),
+        )
         .on_click(move |_, _, cx| {
             this.update(cx, |s, cx| {
                 s.node_meters.reset_clip(id);

@@ -36,14 +36,17 @@ impl Section {
     }
 }
 
-/// Window-owned disclosure state, keyed by node and responsibility. It is
-/// presentation only: toggling never edits the graph or requires shell fields.
+type ToggleHandler = Box<dyn Fn(bool, &mut Window, &mut App)>;
+
+/// Window-owned disclosure state by default. An opt-in owner can share the
+/// actual open state and flush departing editors before their inputs unmount.
 #[derive(IntoElement)]
 pub(super) struct Disclosure {
     kind: Section,
     node: moiren_core::graph::NodeId,
     summary: Option<SharedString>,
     content: AnyElement,
+    toggle: Option<(bool, ToggleHandler)>,
 }
 
 impl Disclosure {
@@ -57,11 +60,21 @@ impl Disclosure {
             node,
             summary: None,
             content: content.into_any_element(),
+            toggle: None,
         }
     }
 
     pub(super) fn summary(mut self, summary: impl Into<SharedString>) -> Self {
         self.summary = Some(summary.into());
+        self
+    }
+
+    pub(super) fn on_toggle(
+        mut self,
+        open: bool,
+        handler: impl Fn(bool, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.toggle = Some((open, Box::new(handler)));
         self
     }
 }
@@ -70,10 +83,23 @@ impl RenderOnce for Disclosure {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let id = self.kind.id();
         let default_open = self.kind.default_open();
-        let state = window.use_keyed_state(format!("{id}-open-{:?}", self.node), cx, |_, _| {
-            default_open
-        });
-        let open = *state.read(cx);
+        let (open, toggle): (bool, ToggleHandler) = if let Some(toggle) = self.toggle {
+            toggle
+        } else {
+            let state = window.use_keyed_state(format!("{id}-open-{:?}", self.node), cx, |_, _| {
+                default_open
+            });
+            let open = *state.read(cx);
+            (
+                open,
+                Box::new(move |open, _, cx| {
+                    state.update(cx, |state, cx| {
+                        *state = open;
+                        cx.notify();
+                    });
+                }),
+            )
+        };
         let header = button(format!("{id}-toggle"), t!(self.kind.title()))
             .variant(ButtonVariant::Ghost)
             .full_width()
@@ -84,11 +110,8 @@ impl RenderOnce for Disclosure {
             } else {
                 t!("Expand section")
             })
-            .on_click(move |_, _, cx| {
-                state.update(cx, |open, cx| {
-                    *open = !*open;
-                    cx.notify();
-                });
+            .on_click(move |_, window, cx| {
+                toggle(!open, window, cx);
             });
         let mut disclosure = component::collapsible::Collapsible::new()
             .open(open)
