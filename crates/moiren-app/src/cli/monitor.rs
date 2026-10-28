@@ -10,16 +10,25 @@ use std::{
 };
 
 use super::options::MonitorOptions;
+#[cfg(any(windows, test))]
+mod measured;
 #[cfg(windows)]
 use crate::service::ManagedDriver;
-use crate::service::{AudioSettings, TransportLatencySettings};
 #[cfg(any(windows, test))]
 use crate::service::{
-    BuiltinState, GraphNodeState, InputSelection, RunLimit, ServiceContext, ServiceDriver,
-    ServiceRuntime, SessionPhase, SessionSpec, default_label,
+    AppSnapshot, BuiltinState, GraphNodeState, InputSelection, RunLimit, ServiceContext,
+    ServiceDriver, ServiceRuntime, SessionPhase, SessionSpec, default_label,
 };
+use crate::service::{AudioSettings, TransportLatencySettings};
 #[cfg(any(windows, test))]
 use moiren_core::graph::{LogicalGraph, NodeKind, SendParams, edit::connect_to_new_bus_input};
+
+#[derive(Debug, Serialize)]
+pub(super) struct MeasuredTarget {
+    capacity_frames: u32,
+    target_frames: u32,
+    jitter_frames: u32,
+}
 
 #[derive(Debug, Serialize)]
 pub(super) struct MonitorReport {
@@ -35,6 +44,13 @@ pub(super) struct MonitorReport {
     pub confirmed_active_transport: Option<TransportLatencySettings>,
     pub confirmed_generation: Option<u64>,
     pub confirmed_revision: Option<u64>,
+    pub confirmed_native_generation: Option<u64>,
+    pub requested_measurement_seconds: Option<u16>,
+    pub requested_measured_target: Option<MeasuredTarget>,
+    pub measurement_generation: Option<u64>,
+    pub measurement_native_generation: Option<u64>,
+    pub observed_measurement_ms: u64,
+    pub confirmed_active_measured: Option<crate::service::MeasuredProcessSummary>,
     pub requested_seconds: u16,
     pub observed_running_ms: u64,
     pub run_complete: bool,
@@ -44,6 +60,70 @@ pub(super) struct MonitorReport {
     pub last_running_native:
         Option<moiren_windows_audio::engine_backend::NativeObservationSnapshot>,
     pub failure: Option<String>,
+}
+
+#[cfg(any(windows, test))]
+fn live_native_generation(snapshot: &AppSnapshot) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        snapshot
+            .native_observations
+            .as_ref()
+            .filter(|native| {
+                native.generation == snapshot.generation
+                    && native.observation.running
+                    && native.observation.owner_generation != 0
+            })
+            .map(|native| native.observation.owner_generation)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = snapshot;
+        None
+    }
+}
+
+#[cfg(any(windows, test))]
+fn confirmed_run_matches(snapshot: &AppSnapshot, report: &MonitorReport) -> bool {
+    let owner_matches = snapshot.phase == SessionPhase::Running
+        && Some(snapshot.generation.0) == report.confirmed_generation
+        && snapshot.graph.active_revision == report.confirmed_revision
+        && snapshot.active_audio_settings == report.confirmed_active_audio
+        && snapshot.active_transport_latency == report.confirmed_active_transport;
+    owner_matches
+        && (report.requested_measurement_seconds.is_none()
+            || (report.confirmed_active_measured.is_some()
+                && snapshot.active_measured_process == report.confirmed_active_measured
+                && report.confirmed_native_generation.is_some()
+                && live_native_generation(snapshot) == report.confirmed_native_generation))
+}
+
+#[cfg(any(windows, test))]
+fn check_confirmed_run(
+    report: &mut MonitorReport,
+    snapshot: Option<&AppSnapshot>,
+    since: Instant,
+    duration: Duration,
+) -> bool {
+    let elapsed = since.elapsed();
+    report.observed_running_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    if let Some(snapshot) = snapshot {
+        if !confirmed_run_matches(snapshot, report) {
+            report.failure =
+                Some("confirmed monitor owner/revision/profile stopped or changed".into());
+            return true;
+        }
+        if elapsed >= duration {
+            report.run_complete = true;
+            return true;
+        }
+    } else if elapsed >= duration {
+        // Request cleanup on time, but never promote absent owner evidence to
+        // a completed run. This is separate from potentially blocking joins.
+        report.failure = Some("monitor run deadline elapsed; owner observation unavailable".into());
+        return true;
+    }
+    false
 }
 
 #[cfg(any(windows, test))]
@@ -154,6 +234,17 @@ fn run_with_driver(
     duration: Duration,
 ) -> Result<MonitorReport> {
     let (context, spec) = context(&options, source)?;
+    let mut measurement = measured::Measurement::new(&options);
+    let requested_measured_target =
+        options
+            .measured_target()?
+            .map(
+                |(capacity_frames, target_frames, jitter_frames)| MeasuredTarget {
+                    capacity_frames,
+                    target_frames,
+                    jitter_frames,
+                },
+            );
     let InputSelection::Process {
         pid,
         creation_time_100ns,
@@ -174,6 +265,13 @@ fn run_with_driver(
         confirmed_active_transport: None,
         confirmed_generation: None,
         confirmed_revision: None,
+        confirmed_native_generation: None,
+        requested_measurement_seconds: options.measure_seconds,
+        requested_measured_target,
+        measurement_generation: None,
+        measurement_native_generation: None,
+        observed_measurement_ms: 0,
+        confirmed_active_measured: None,
         requested_seconds: options.seconds,
         observed_running_ms: 0,
         run_complete: false,
@@ -194,7 +292,9 @@ fn run_with_driver(
         handle.request_exit();
     }
     loop {
+        let mut received_snapshot = false;
         if let Some(snapshot) = handle.try_snapshot() {
+            received_snapshot = true;
             if let Some(cleanup) = &snapshot.last_cleanup {
                 let state = &cleanup.state;
                 if state.host != moiren_engine::host::HostState::Closed
@@ -224,20 +324,18 @@ fn run_with_driver(
             }
             if !exiting {
                 if let Some(since) = running_since {
-                    report.observed_running_ms =
-                        u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    if snapshot.phase != SessionPhase::Running
-                        || Some(snapshot.generation.0) != report.confirmed_generation
-                        || snapshot.graph.active_revision != report.confirmed_revision
-                    {
-                        report.failure =
-                            Some("confirmed monitor owner/revision stopped or changed".into());
-                        exiting = true;
-                    } else if Instant::now().duration_since(since) >= duration {
-                        report.run_complete = true;
-                        exiting = true;
-                    }
-                } else if snapshot.phase == SessionPhase::Running
+                    exiting = check_confirmed_run(&mut report, Some(&snapshot), since, duration);
+                } else if let Err(error) = measurement.observe(
+                    &snapshot,
+                    &handle,
+                    &mut report,
+                    began,
+                    options.startup_timeout_ms,
+                ) {
+                    report.failure = Some(error.to_string());
+                    exiting = true;
+                } else if measurement.ready()
+                    && snapshot.phase == SessionPhase::Running
                     && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision)
                     && snapshot.active_audio_settings.as_ref() == Some(&report.requested_audio)
                     && snapshot.active_transport_latency == Some(report.requested_transport)
@@ -246,8 +344,10 @@ fn run_with_driver(
                     report.confirmed_active_transport = snapshot.active_transport_latency;
                     report.confirmed_generation = Some(snapshot.generation.0);
                     report.confirmed_revision = snapshot.graph.active_revision;
+                    report.confirmed_native_generation = live_native_generation(&snapshot);
+                    report.confirmed_active_measured = snapshot.active_measured_process.clone();
                     running_since = Some(Instant::now());
-                } else if began.elapsed() >= Duration::from_millis(options.startup_timeout_ms) {
+                } else if measurement.startup_expired(began, options.startup_timeout_ms) {
                     report.failure = Some(
                         "monitor startup deadline elapsed before matching active confirmation"
                             .into(),
@@ -269,13 +369,19 @@ fn run_with_driver(
                 break;
             }
         }
+        if !exiting
+            && !received_snapshot
+            && let Some(since) = running_since
+        {
+            exiting = check_confirmed_run(&mut report, None, since, duration);
+        }
         if exiting {
             handle.request_exit();
         }
         // Snapshot availability is not permission to renew the start deadline.
         if !exiting
             && running_since.is_none()
-            && began.elapsed() >= Duration::from_millis(options.startup_timeout_ms)
+            && measurement.startup_expired(began, options.startup_timeout_ms)
         {
             report.failure =
                 Some("monitor startup deadline elapsed before matching active confirmation".into());

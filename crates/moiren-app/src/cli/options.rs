@@ -11,6 +11,7 @@ pub(super) struct MonitorOptions {
     pub pid: Option<u32>,
     pub output: Option<String>,
     pub seconds: u16,
+    pub measure_seconds: Option<u16>,
     pub startup_timeout_ms: u64,
     pub audio: AudioSettings,
     target: Option<u32>,
@@ -27,6 +28,7 @@ impl Default for MonitorOptions {
             pid: None,
             output: None,
             seconds: 30,
+            measure_seconds: None,
             startup_timeout_ms: 15000,
             audio: AudioSettings::default(),
             target: None,
@@ -50,6 +52,10 @@ impl MonitorOptions {
             "--process" => self.pid = Some(number()?),
             "--output" => self.output = Some(value.into()),
             "--seconds" => self.seconds = value.parse().context("invalid --seconds value")?,
+            "--measure-seconds" => {
+                self.measure_seconds =
+                    Some(value.parse().context("invalid --measure-seconds value")?)
+            }
             "--startup-timeout-ms" => {
                 self.startup_timeout_ms = value.parse().context("invalid startup timeout")?
             }
@@ -82,7 +88,47 @@ impl MonitorOptions {
         Ok(())
     }
 
+    pub fn measured_target(&self) -> Result<Option<(u32, u32, u32)>> {
+        let Some(seconds) = self.measure_seconds else {
+            return Ok(None);
+        };
+        ensure!(
+            (1..=60).contains(&seconds),
+            "--measure-seconds must be 1..60"
+        );
+        ensure!(
+            self.packet.is_none() && self.gap.is_none(),
+            "measured Process budget requires no packet/gap bounds; delivery is observed during the baseline"
+        );
+        ensure!(
+            self.age.is_none(),
+            "Process sample-age enforcement unsupported: packet timestamps do not establish sample age"
+        );
+        let (Some(capacity), Some(target), Some(jitter)) =
+            (self.capacity, self.target, self.jitter)
+        else {
+            bail!(
+                "measured Process budget requires target, capacity and jitter together with --measure-seconds"
+            );
+        };
+        ensure!(
+            (4..=262_144).contains(&capacity)
+                && target >= 2
+                && target < capacity
+                && jitter < capacity,
+            "measured Process budget requires capacity in 4..262144, 2 <= target < capacity and jitter < capacity"
+        );
+        // Only request shape is known before observation; actual delivery and
+        // complete consumer-demand admission belong to owner preparation.
+        Ok(Some((capacity, target, jitter)))
+    }
+
     pub fn transport(&self) -> Result<TransportLatencySettings> {
+        if self.measured_target()?.is_some() {
+            // Start the observation phase with the unchanged compatible policy,
+            // never guessed Empirical bounds or the unadmitted requested target.
+            return Ok(TransportLatencySettings::default());
+        }
         let fields = [
             self.target,
             self.capacity,

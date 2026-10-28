@@ -26,4 +26,9 @@ fn monitor_help_needs_no_process_or_audio_device() {
     assert!(help.contains("--target-frames"), "{help}");
     assert!(help.contains("--capacity-frames"), "{help}");
     assert!(help.contains("not a latency qualification"), "{help}");
+    assert!(help.contains("--measure-seconds 1..60"), "{help}");
+    assert!(help.contains("baseline"), "{help}");
+    assert!(help.contains("owner replacement"), "{help}");
+    assert!(help.contains("no packet/gap"), "{help}");
+    assert!(help.contains("all five required together"), "{help}");
 }

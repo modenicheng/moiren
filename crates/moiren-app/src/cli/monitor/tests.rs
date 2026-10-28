@@ -198,3 +198,138 @@ fn cleanup_failure_is_retained_even_after_the_run_duration_completes() {
     );
     assert_eq!(state.stops.load(Ordering::SeqCst), 1);
 }
+
+#[cfg(windows)]
+struct MeasuredDriver {
+    inner: ManagedDriver,
+}
+
+#[cfg(windows)]
+impl ServiceDriver for MeasuredDriver {
+    fn request(
+        &mut self,
+        c: &mut ServiceContext,
+        pool: &mut crate::service::JobPool,
+        request: crate::service::AppRequest,
+    ) {
+        self.inner.request(c, pool, request);
+    }
+    fn poll(
+        &mut self,
+        c: &mut ServiceContext,
+        pool: &mut crate::service::JobPool,
+        budget: crate::service::RoundBudget,
+    ) {
+        self.inner.poll(c, pool, budget);
+        if c.core.phase() == SessionPhase::Running {
+            let graph = c.graph.snapshot();
+            let node = graph.node_of_kind(NodeKind::Source).unwrap().0.id();
+            let mut observed = crate::service::measured_process::tests::observation(node);
+            // A newly created EngineHost starts at native owner generation 1.
+            observed.owner_generation = 1;
+            observed.process.pid = 4294967294;
+            observed.process.creation_time_100ns = 12345;
+            c.native_observations = Some(crate::service::NativeSessionObservations {
+                generation: c.core.generation(),
+                observation: moiren_windows_audio::engine_backend::NativeObservationSnapshot {
+                    owner_generation: 1,
+                    running: true,
+                    streams: Vec::new(),
+                    bridges: Vec::new(),
+                    boundary_probes: Vec::new(),
+                    render_padding: Vec::new(),
+                    process_delivery: vec![observed],
+                },
+            });
+        }
+    }
+    fn begin_exit(&mut self, c: &mut ServiceContext, pool: &mut crate::service::JobPool) {
+        self.inner.begin_exit(c, pool);
+    }
+    fn is_drained(&self) -> bool {
+        self.inner.is_drained()
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn measured_monitor_runs_baseline_then_applies_before_timing_requested_run() {
+    let state = Arc::new(State::default());
+    let f32_backend = FakeBackend(state.clone());
+    let mut driver = ManagedDriver::new(move |_| Ok(Box::new(f32_backend.clone())));
+    let selected_backend = FakeBackend(state.clone());
+    driver.set_measured_test_factory(selected_backend);
+    let mut options = options();
+    for (flag, value) in [
+        ("--measure-seconds", "1"),
+        ("--target-frames", "256"),
+        ("--capacity-frames", "2048"),
+        ("--jitter-frames", "0"),
+    ] {
+        options.set(flag, value).unwrap();
+    }
+    let report = run_with_driver(
+        options,
+        source(),
+        MeasuredDriver { inner: driver },
+        Duration::from_millis(20),
+    )
+    .unwrap();
+    assert!(report.run_complete, "{report:?}");
+    assert!(report.cleanup_complete, "{report:?}");
+    assert_eq!(report.failure, None);
+    assert!(!report.qualified);
+    let measured = report.confirmed_active_measured.as_ref().unwrap();
+    assert_eq!(
+        measured.request.session_generation.0,
+        report.measurement_generation.unwrap()
+    );
+    assert_ne!(report.confirmed_generation, report.measurement_generation);
+    assert_eq!(measured.request.target_frames, 256);
+    assert!(report.observed_measurement_ms >= 1000);
+    assert!(report.observed_running_ms >= 20);
+    assert_eq!(state.starts.load(Ordering::SeqCst), 2);
+    assert_eq!(state.stops.load(Ordering::SeqCst), 2);
+}
+
+#[cfg(windows)]
+#[test]
+fn measured_monitor_refuses_unadmitted_target_and_joins_only_baseline_owner() {
+    let state = Arc::new(State::default());
+    let backend = FakeBackend(state.clone());
+    let mut driver = ManagedDriver::new(move |_| Ok(Box::new(backend.clone())));
+    driver.set_measured_test_factory(FakeBackend(state.clone()));
+    let mut options = options();
+    for (flag, value) in [
+        ("--measure-seconds", "1"),
+        ("--target-frames", "128"),
+        ("--capacity-frames", "2048"),
+        ("--jitter-frames", "0"),
+    ] {
+        options.set(flag, value).unwrap();
+    }
+    let report = run_with_driver(
+        options,
+        source(),
+        MeasuredDriver { inner: driver },
+        Duration::from_millis(20),
+    )
+    .unwrap();
+    assert!(!report.run_complete);
+    assert!(report.cleanup_complete, "{report:?}");
+    assert!(report.confirmed_active_measured.is_none());
+    assert!(report.confirmed_generation.is_none());
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["requested_measured_target"]["capacity_frames"], 2048);
+    assert_eq!(json["requested_measured_target"]["target_frames"], 128);
+    assert_eq!(json["requested_measured_target"]["jitter_frames"], 0);
+    assert!(
+        report
+            .failure
+            .as_deref()
+            .is_some_and(|error| error.contains("input target cannot cover")),
+        "{report:?}"
+    );
+    assert_eq!(state.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(state.stops.load(Ordering::SeqCst), 1);
+}

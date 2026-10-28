@@ -27,6 +27,14 @@ Explicit Process input budget (all five required together, in 48 kHz frames):
   --max-packet-frames N --max-gap-frames N
   --age-limit-100ns N           Requested sample age; currently refused
 Delivery bounds are declared assumptions, not measured periods or latency.
+Measured Process input budget (exactly three budget fields; no packet/gap bounds):
+  --measure-seconds 1..60       Measure a compatible baseline before applying
+  --target-frames N --capacity-frames N --jitter-frames N
+Two phases: baseline measurement -> owner replacement with measured admission
+-> run for the requested --seconds. Measurement adds 1..60 seconds before that
+run; startup and cleanup are separate. Sample age remains unsupported.
+Measurement/admission is per-wake evidence, not a latency qualification or a
+queue-stability/replay guarantee. The requested target may be refused.
 No options changes saved desktop settings. Preparation may refuse unsafe
 targets against actual native output demand. Completion is operational only.";
 
