@@ -2,6 +2,7 @@ use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(not(windows), allow(dead_code))]
 enum RenderStatus {
     Stopped,
     #[cfg(test)]
@@ -15,6 +16,7 @@ struct Options {
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(not(windows), allow(dead_code))]
 struct CancellationEvidence {
     initialized: Option<bool>,
     stop_error: Option<String>,
@@ -26,6 +28,7 @@ struct CancellationEvidence {
     cleanup_complete: bool,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn cancellation_evidence(
     stop_error: Option<String>,
     join_error: Option<String>,
@@ -67,6 +70,7 @@ enum PolicySelection {
 
 enum Command {
     Help,
+    #[cfg_attr(not(windows), allow(dead_code))]
     Run(Options),
 }
 
@@ -111,6 +115,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String>
     }))
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 fn policies(
     selection: PolicySelection,
 ) -> Vec<(

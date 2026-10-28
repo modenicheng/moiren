@@ -1,10 +1,11 @@
 use super::*;
-use crate::{
-    clock_bridge::{ClockBridgeConfig, QueuedFrameStamp, capture_bridge},
-    engine_backend::NativeObservations,
-};
+use crate::clock_bridge::{ClockBridgeConfig, capture_bridge};
+#[cfg(windows)]
+use crate::{clock_bridge::QueuedFrameStamp, engine_backend::NativeObservations};
+#[cfg(windows)]
 use moiren_core::graph::{LogicalGraph, NodeKind};
 
+#[cfg(windows)]
 #[test]
 fn native_projection_replacement_never_receives_old_owner_diagnostics() {
     let mut graph = LogicalGraph::new();
