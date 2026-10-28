@@ -8,6 +8,14 @@ pub(super) fn parameters(
     cx: &Context<StudioShell>,
 ) -> AnyElement {
     let id = node.id();
+    if node.kind() == NodeKind::Eq {
+        return Disclosure::new(
+            Section::Advanced,
+            id,
+            super::super::node_controls::eq_inspector(shell, id),
+        )
+        .into_any_element();
+    }
     if node.kind() == NodeKind::ChannelMapper {
         return Disclosure::new(
             Section::Advanced,

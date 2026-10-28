@@ -1,6 +1,6 @@
 //! Shared parameters with separate gesture travel and exact-entry domains.
 use crate::service::{
-    BuiltinState, CompressorParameter, GraphEdit, GraphNodeState, InputSelection,
+    BuiltinState, CompressorParameter, GraphEdit, GraphNodeState, InputSelection, RackParameter,
 };
 use moiren_core::graph::NodeKind;
 
@@ -197,6 +197,14 @@ impl Parameter {
             return f64::NEG_INFINITY;
         }
         let (min, max) = self.range(node);
+        // Gesture endpoints must be exact: log interpolation can overshoot
+        // the validated domain by an ULP. Typed values are never normalized.
+        if position <= 0. {
+            return min;
+        }
+        if position >= 1. {
+            return max;
+        }
         let t = f64::from(position.clamp(0., 1.));
         if self.logarithmic() {
             min + (t * (max - min).ln_1p()).exp_m1()
@@ -325,15 +333,20 @@ impl Parameter {
                 });
             }
             Self::EqFrequency | Self::EqGain | Self::EqQ => {
-                if let BuiltinState::Eq(s) = &mut builtin {
-                    match self {
-                        Self::EqFrequency => s.frequency_hz = value,
-                        Self::EqGain => s.gain_db = value,
-                        _ => s.q = value,
-                    }
-                } else {
+                if kind != NodeKind::Eq || node.builtin.eq().is_none() {
                     return None;
                 }
+                // Independent field intents merge on the service's latest
+                // settings, including edits queued by the other surface.
+                return Some(GraphEdit::SetBuiltinParameter {
+                    node: id,
+                    parameter: match self {
+                        Self::EqFrequency => RackParameter::EqFrequency,
+                        Self::EqGain => RackParameter::EqGain,
+                        _ => RackParameter::EqQ,
+                    },
+                    value,
+                });
             }
             Self::GateThreshold
             | Self::GateRange

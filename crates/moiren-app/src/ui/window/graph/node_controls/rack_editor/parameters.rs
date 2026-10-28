@@ -203,12 +203,10 @@ impl Projection {
             GraphEdit::SetCompressor {
                 parameter, value, ..
             } => (RackParameter::Compressor(parameter), value),
+            GraphEdit::SetBuiltinParameter {
+                parameter, value, ..
+            } => (parameter, value),
             GraphEdit::SetBuiltin { state, .. } => match (parameter, state) {
-                (Parameter::EqFrequency, BuiltinState::Eq(s)) => {
-                    (RackParameter::EqFrequency, s.frequency_hz)
-                }
-                (Parameter::EqGain, BuiltinState::Eq(s)) => (RackParameter::EqGain, s.gain_db),
-                (Parameter::EqQ, BuiltinState::Eq(s)) => (RackParameter::EqQ, s.q),
                 (Parameter::GateThreshold, BuiltinState::Gate(s)) => {
                     (RackParameter::GateThreshold, s.threshold_db)
                 }

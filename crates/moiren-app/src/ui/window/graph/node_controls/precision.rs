@@ -2,6 +2,10 @@
 use super::*;
 use component::input::{InputEvent, InputState};
 
+#[cfg(all(test, feature = "gpui-test"))]
+#[path = "precision_tests.rs"]
+mod tests;
+
 type Key = (NodeId, Parameter);
 
 #[derive(Default)]
@@ -20,11 +24,24 @@ impl Editors {
     }
 }
 
-fn tone_node(graph: &crate::service::GraphSnapshot, id: NodeId) -> Option<&GraphNodeState> {
-    let node = graph.node(id)?;
-    (graph.kind_of(id) == Some(NodeKind::Source)
-        && matches!(node.source, Some(InputSelection::Tone { .. })))
-    .then_some(node)
+const EQ_PARAMETERS: [Parameter; 3] = [Parameter::EqFrequency, Parameter::EqGain, Parameter::EqQ];
+
+fn parameters(kind: NodeKind, node: &GraphNodeState) -> &'static [Parameter] {
+    match kind {
+        NodeKind::Source if matches!(node.source, Some(InputSelection::Tone { .. })) => {
+            &[Parameter::Frequency]
+        }
+        NodeKind::Eq if node.builtin.eq().is_some() => &EQ_PARAMETERS,
+        _ => &[],
+    }
+}
+
+fn target(graph: &crate::service::GraphSnapshot, key: Key) -> Option<(NodeKind, &GraphNodeState)> {
+    let node = graph.node(key.0)?;
+    let kind = graph.kind_of(key.0)?;
+    parameters(kind, node)
+        .contains(&key.1)
+        .then_some((kind, node))
 }
 
 pub(super) fn sync(shell: &mut StudioShell, window: &mut Window, cx: &mut Context<StudioShell>) {
@@ -33,7 +50,7 @@ pub(super) fn sync(shell: &mut StudioShell, window: &mut Window, cx: &mut Contex
     let editors = &mut shell.node_controls.precision;
     editors
         .inputs
-        .retain(|(id, _), _| tone_node(&graph, *id).is_some());
+        .retain(|key, _| target(&graph, *key).is_some());
     editors
         .baselines
         .retain(|key, _| editors.inputs.contains_key(key));
@@ -44,37 +61,37 @@ pub(super) fn sync(shell: &mut StudioShell, window: &mut Window, cx: &mut Contex
         .pending
         .retain(|key, request| *request > consumed && editors.inputs.contains_key(key));
     for node in &graph.nodes {
-        if tone_node(&graph, node.id).is_none() {
+        let Some(kind) = graph.kind_of(node.id) else {
             continue;
-        }
-        let key = (node.id, Parameter::Frequency);
-        // Shortest round-trippable text preserves tiny and fractional legal
-        // service values even when the separate dial is clamped to its travel.
-        let text = Parameter::Frequency
-            .value(NodeKind::Source, node)
-            .to_string();
-        editors.baselines.entry(key).or_insert_with(|| text.clone());
-        let input = editors.inputs.entry(key).or_insert_with(|| {
-            let input = cx.new(|cx| InputState::new(window, cx).default_value(text.clone()));
-            cx.subscribe(&input, move |shell, input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                    commit(shell, input, key, cx);
+        };
+        for &parameter in parameters(kind, node) {
+            let key = (node.id, parameter);
+            // Shortest round-trippable text preserves legal precision values
+            // even when a separate card dial is clamped to ergonomic travel.
+            let text = parameter.value(kind, node).to_string();
+            editors.baselines.entry(key).or_insert_with(|| text.clone());
+            let input = editors.inputs.entry(key).or_insert_with(|| {
+                let input = cx.new(|cx| InputState::new(window, cx).default_value(text.clone()));
+                cx.subscribe(&input, move |shell, input, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                        commit(shell, input, key, cx);
+                    }
+                })
+                .detach();
+                input
+            });
+            let clean = editors.baselines.get(&key).map(String::as_str)
+                == Some(input.read(cx).value().as_str());
+            if clean
+                && !input.read(cx).focus_handle(cx).is_focused(window)
+                && !editors.errors.contains_key(&key)
+                && !editors.pending.contains_key(&key)
+            {
+                if input.read(cx).value().as_str() != text {
+                    input.update(cx, |input, cx| input.set_value(text.clone(), window, cx));
                 }
-            })
-            .detach();
-            input
-        });
-        let clean = editors.baselines.get(&key).map(String::as_str)
-            == Some(input.read(cx).value().as_str());
-        if clean
-            && !input.read(cx).focus_handle(cx).is_focused(window)
-            && !editors.errors.contains_key(&key)
-            && !editors.pending.contains_key(&key)
-        {
-            if input.read(cx).value().as_str() != text {
-                input.update(cx, |input, cx| input.set_value(text.clone(), window, cx));
+                editors.baselines.insert(key, text);
             }
-            editors.baselines.insert(key, text);
         }
     }
 }
@@ -85,6 +102,10 @@ fn commit(
     key: Key,
     cx: &mut Context<StudioShell>,
 ) {
+    // Load may reuse this NodeId before the old input entity is retired.
+    if shell.pending_project.is_some() {
+        return;
+    }
     // Delayed Blur from a removed/rebound input must not act on its replacement.
     if shell
         .node_controls
@@ -97,7 +118,7 @@ fn commit(
         return;
     }
     let graph = shell.state.read(cx).snapshot.graph.clone();
-    let Some(node) = tone_node(&graph, key.0) else {
+    let Some((kind, node)) = target(&graph, key) else {
         return;
     };
     let text = input.read(cx).value().to_string();
@@ -109,7 +130,7 @@ fn commit(
         return;
     }
     let edit = parameter::parse(&text, key.1.unit())
-        .and_then(|value| key.1.edit_precision(value, NodeKind::Source, node));
+        .and_then(|value| key.1.edit_precision(value, kind, node));
     let Some(edit) = edit else {
         shell
             .node_controls
@@ -142,16 +163,52 @@ fn commit(
 }
 
 pub(in crate::ui::window::graph) fn tone_inspector(shell: &StudioShell, id: NodeId) -> AnyElement {
-    let key = (id, Parameter::Frequency);
+    precision_field(
+        shell,
+        (id, Parameter::Frequency),
+        [
+            format!("tone-precision-{id:?}"),
+            format!("tone-frequency-exact-{id:?}"),
+            format!("tone-frequency-error-{id:?}"),
+        ],
+    )
+}
+
+pub(in crate::ui::window::graph) fn eq_inspector(shell: &StudioShell, id: NodeId) -> AnyElement {
+    div()
+        .id(format!("eq-precision-{id:?}"))
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .w_full()
+        .gap(px(8.))
+        .children(EQ_PARAMETERS.map(|parameter| {
+            precision_field(
+                shell,
+                (id, parameter),
+                [
+                    format!("inspector-precision-{id:?}-{parameter:?}"),
+                    format!("inspector-precision-input-{id:?}-{parameter:?}"),
+                    format!("inspector-precision-error-{id:?}-{parameter:?}"),
+                ],
+            )
+        }))
+        .gpui_test_observe()
+        .into_any_element()
+}
+
+fn precision_field(shell: &StudioShell, key: Key, ids: [String; 3]) -> AnyElement {
+    let [root_id, input_id, error_id] = ids;
+    let parameter = key.1;
     let mut field = div()
-        .id(format!("tone-precision-{id:?}"))
+        .id(root_id)
         .flex()
         .flex_col()
         .flex_none()
         .min_w_0()
         .w_full()
         .gap(px(4.))
-        .child(note(Parameter::Frequency.label()));
+        .child(note(parameter.label()));
     if let Some(input) = shell.node_controls.precision.inputs.get(&key) {
         field = field.child(
             div()
@@ -163,7 +220,7 @@ pub(in crate::ui::window::graph) fn tone_inspector(shell: &StudioShell, id: Node
                 .child(
                     div().flex_1().min_w_0().child(Styled::h(
                         component::input::Input::new(input)
-                            .id(format!("tone-frequency-exact-{id:?}"))
+                            .id(input_id)
                             .font_family(theme::FONT_MONO)
                             .text_size(px(12.))
                             .px(px(6.))
@@ -177,14 +234,14 @@ pub(in crate::ui::window::graph) fn tone_inspector(shell: &StudioShell, id: Node
                         .flex_none()
                         .text_size(px(11.))
                         .text_color(theme::TEXT_MUTED)
-                        .child(Parameter::Frequency.unit()),
+                        .child(parameter.unit()),
                 ),
         );
     }
     if let Some(error) = shell.node_controls.precision.errors.get(&key) {
         field = field.child(
             note(error.clone())
-                .id(format!("tone-frequency-error-{id:?}"))
+                .id(error_id)
                 .text_color(theme::DANGER)
                 .gpui_test_observe(),
         );

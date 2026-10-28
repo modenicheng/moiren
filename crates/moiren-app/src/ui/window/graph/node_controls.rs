@@ -30,7 +30,7 @@ use fields::{parameter_control, parameter_row};
 use io::io_body;
 pub(super) use mapper_editor::inspector as mapper_inspector;
 use parameter::Parameter;
-pub(super) use precision::tone_inspector;
+pub(super) use precision::{eq_inspector, tone_inspector};
 pub(super) use rack_editor::inspector as rack_inspector;
 pub(super) use recording::format_controls as recording_format_controls;
 pub(super) use utility::spectrum::inspector as spectrum_inspector;
@@ -135,6 +135,11 @@ impl StudioShell {
                                 component::input::InputEvent::PressEnter { .. }
                                     | component::input::InputEvent::Blur
                             ) {
+                                return;
+                            }
+                            // A queued load can reuse IDs before this old surface
+                            // disappears. It must not receive outgoing drafts.
+                            if shell.pending_project.is_some() {
                                 return;
                             }
                             // A queued Blur may outlive an input removed by

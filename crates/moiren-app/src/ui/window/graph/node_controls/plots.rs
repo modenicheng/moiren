@@ -120,17 +120,19 @@ pub(super) fn response(
                             return;
                         }
                         wheel_this.update(cx, |shell, cx| {
+                            if shell.pending_project.is_some() {
+                                return;
+                            }
                             let graph = &shell.state.read(cx).snapshot.graph;
-                            if let Some(s) = graph.node(id).and_then(|n| n.builtin.eq()) {
+                            if graph.node(id).and_then(|n| n.builtin.eq()).is_some() {
                                 let step = if event.modifiers.shift { 0.01 } else { 0.1 };
-                                let mut settings = *s;
-                                settings.q = (settings.q
-                                    * f64::exp(f64::from(delta.signum()) * step))
-                                .clamp(0.1, 20.);
+                                // Apply the increment after earlier queued typed
+                                // or wheel edits, not to the displayed snapshot.
+                                let factor = f64::exp(f64::from(delta.signum()) * step);
                                 shell.state.update(cx, |state, _| {
-                                    state.dispatch(AppRequest::EditGraph(GraphEdit::SetBuiltin {
+                                    state.dispatch(AppRequest::EditGraph(GraphEdit::AdjustEqQ {
                                         node: id,
-                                        state: crate::service::BuiltinState::Eq(settings),
+                                        factor,
                                     }))
                                 });
                             }
@@ -244,17 +246,20 @@ fn edit_plot(
     cx: &mut App,
 ) {
     this.update(cx, |shell, cx| {
+        if kind == NodeKind::Eq && shell.pending_project.is_some() {
+            return;
+        }
         let graph = &shell.state.read(cx).snapshot.graph;
         let Some(node) = graph.node(id) else { return };
         let edits = if kind == NodeKind::Eq {
-            let Some(mut settings) = node.builtin.eq().copied() else {
+            if node.builtin.eq().is_none() {
                 return;
-            };
-            settings.frequency_hz = 20. * 1000f64.powf(value.0);
-            settings.gain_db = 24. - value.1 * 48.;
-            vec![GraphEdit::SetBuiltin {
+            }
+            // One admission and undo key for the band, preserving the latest Q.
+            vec![GraphEdit::SetEqBand {
                 node: id,
-                state: crate::service::BuiltinState::Eq(settings),
+                frequency_hz: 20. * 1000f64.powf(value.0),
+                gain_db: 24. - value.1 * 48.,
             }]
         } else {
             vec![
