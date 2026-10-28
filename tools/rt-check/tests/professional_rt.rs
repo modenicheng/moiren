@@ -57,7 +57,7 @@ mod process_replay;
 mod process_loopback {
     pub(crate) use super::process_bridge::ProcessBridgeOptions;
     pub(crate) use super::process_replay::{
-        ObservedProcessTrace, ProcessReplayError, ProcessTraceOrigin,
+        ObservedProcessTrace, ProcessReplayError, ProcessTraceArtifact, ProcessTraceOrigin,
     };
     pub use moiren_windows_audio::process_loopback::*;
 }

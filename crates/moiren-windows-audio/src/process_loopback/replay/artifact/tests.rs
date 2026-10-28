@@ -1,7 +1,8 @@
-use super::*;
 use crate::{
     clock_bridge::{CapturePacket, ClockBridgeConfig, capture_bridge},
-    process_loopback::{ObservedProcessTrace, ProcessBridgeOptions, ProcessTraceOrigin},
+    process_loopback::{
+        ObservedProcessTrace, ProcessBridgeOptions, ProcessTraceArtifact, ProcessTraceOrigin,
+    },
     stats::SILENT,
 };
 
