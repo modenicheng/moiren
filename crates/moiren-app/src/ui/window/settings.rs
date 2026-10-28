@@ -381,6 +381,29 @@ fn appearance(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .child(detail(&t!("Dismiss settings"), "Escape"))
 }
 
+fn process_input_summary(
+    input: Option<crate::service::ExpertInputBuffer>,
+    measured: Option<&crate::service::MeasuredProcessSummary>,
+) -> String {
+    match measured {
+        Some(measured) => t!(
+            "Measured source node %{node}; PID %{pid} (created %{created}); target %{target} / capacity %{capacity} / jitter %{jitter} frames at 48 kHz; origin session %{session} / owner %{owner} / revision %{revision}; selection %{selection}",
+            node = format!("{:?}", measured.request.node),
+            pid = measured.process_pid,
+            created = measured.process_creation_time_100ns,
+            target = measured.request.target_frames,
+            capacity = measured.request.capacity_frames,
+            jitter = measured.request.jitter_frames,
+            session = measured.request.session_generation.0,
+            owner = measured.request.native_owner_generation,
+            revision = measured.request.graph_revision,
+            selection = measured.selection_id,
+        )
+        .into(),
+        None => transport::summary(input),
+    }
+}
+
 fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
     let state = shell.state.read(cx);
     let snapshot = &state.snapshot;
@@ -409,7 +432,10 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         )))
         .child(detail(
             &t!("Requested process input"),
-            transport::summary(snapshot.transport_latency.process),
+            process_input_summary(
+                snapshot.transport_latency.process,
+                snapshot.measured_process.as_ref(),
+            ),
         ))
         .child(detail(
             &t!("Requested VAD input"),
@@ -443,7 +469,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         view = view
             .child(detail(
                 &t!("Active process request"),
-                transport::summary(active.process),
+                process_input_summary(active.process, snapshot.active_measured_process.as_ref()),
             ))
             .child(detail(
                 &t!("Active VAD request"),

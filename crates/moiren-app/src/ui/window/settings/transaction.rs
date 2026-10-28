@@ -1,6 +1,6 @@
 use rust_i18n::t;
 
-use super::model::{Pending, Stage, expected_active_profile};
+use super::model::{Pending, Stage};
 use super::*;
 
 impl StudioShell {
@@ -23,12 +23,7 @@ impl StudioShell {
             return;
         }
         let snapshot = &self.state.read(cx).snapshot;
-        let submitted = match draft.submission(
-            &snapshot.audio_settings,
-            snapshot.latency_profile,
-            self.density,
-            snapshot.transport_latency,
-        ) {
+        let submitted = match draft.capture(snapshot, self.density) {
             Ok(submitted) => submitted,
             Err(error) => {
                 draft.error = Some(error);
@@ -51,9 +46,7 @@ impl StudioShell {
         let snapshot = &self.state.read(cx).snapshot;
         let restart = restart
             && snapshot.phase == SessionPhase::Running
-            && (snapshot.active_audio_settings.as_ref() != Some(&submitted.audio)
-                || snapshot.active_transport_latency != Some(submitted.transport)
-                || snapshot.active_latency_profile != expected_active_profile(submitted.profile));
+            && !submitted.matches_active(snapshot);
         match self.state.update(cx, |state, _| {
             state.try_dispatch(AppRequest::SetAudioSettings(submitted.audio.clone()))
         }) {
@@ -106,13 +99,13 @@ impl StudioShell {
                     error =
                         Some(failure.unwrap_or_else(|| t!("Audio settings were rejected.").into()));
                 }
-                Stage::Audio if !transport_match => {
+                Stage::Audio if pending.submitted.save_transport => {
                     next = Some((
                         AppRequest::SetTransportLatency(pending.submitted.transport),
                         Stage::Transport,
                     ));
                 }
-                Stage::Transport | Stage::Profile if !transport_match => {
+                Stage::Audio | Stage::Transport | Stage::Profile if !transport_match => {
                     error = Some(
                         failure
                             .unwrap_or_else(|| t!("Input buffer settings were rejected.").into()),
@@ -128,6 +121,15 @@ impl StudioShell {
                     error =
                         Some(failure.unwrap_or_else(|| t!("Latency policy was rejected.").into()));
                 }
+                Stage::Audio | Stage::Transport | Stage::Profile
+                    if !pending.submitted.matches_requested(snapshot) =>
+                {
+                    error = Some(
+                        failure.unwrap_or_else(|| {
+                            t!("Measured Process selection changed while saving. Your draft is retained.").into()
+                        }),
+                    );
+                }
                 Stage::Audio | Stage::Transport | Stage::Profile => {
                     if pending.restart && snapshot.phase == SessionPhase::Running {
                         next = Some((AppRequest::ApplyGraph, Stage::Restart));
@@ -136,15 +138,11 @@ impl StudioShell {
                     }
                 }
                 Stage::Restart => {
-                    if !settings_match || !transport_match || !profile_match {
+                    if !pending.submitted.matches_requested(snapshot) {
                         error = Some(
                             t!("Settings changed while restarting. Your draft is retained.").into(),
                         );
-                    } else if snapshot.phase == SessionPhase::Running
-                        && snapshot.active_audio_settings.as_ref() == Some(&pending.submitted.audio)
-                        && snapshot.active_transport_latency == Some(pending.submitted.transport)
-                        && snapshot.active_latency_profile
-                            == expected_active_profile(pending.submitted.profile)
+                    } else if pending.submitted.matches_active(snapshot)
                         && snapshot.graph.pending_revision.is_none()
                         && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision)
                         && failure.is_none()

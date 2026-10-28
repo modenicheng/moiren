@@ -1,7 +1,9 @@
 use rust_i18n::t;
 
 use super::*;
-use crate::service::{AudioLatencyProfile, RequestId, TransportLatencySettings};
+use crate::service::{
+    AppSnapshot, AudioLatencyProfile, MeasuredProcessSummary, RequestId, TransportLatencySettings,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in super::super) enum Editor {
@@ -55,6 +57,8 @@ pub(in super::super) struct Submission {
     pub profile: AudioLatencyProfile,
     pub density: Density,
     pub transport: TransportLatencySettings,
+    pub measured_process: Option<MeasuredProcessSummary>,
+    pub save_transport: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -116,6 +120,20 @@ impl Draft {
         density: Density,
         transport: TransportLatencySettings,
     ) -> Result<Submission, String> {
+        let merged_transport = TransportLatencySettings {
+            process: merge_value(
+                self.original.3.process,
+                self.transport.process,
+                transport.process,
+                &t!("Process input buffer"),
+            )?,
+            vad: merge_value(
+                self.original.3.vad,
+                self.transport.vad,
+                transport.vad,
+                &t!("VAD input buffer"),
+            )?,
+        };
         Ok(Submission {
             audio: rebase_audio(&self.original.0, &self.audio, current)?,
             profile: merge_value(
@@ -125,21 +143,47 @@ impl Draft {
                 &t!("Recovery policy"),
             )?,
             density: merge_value(self.original.2, self.density, density, &t!("Density"))?,
-            transport: TransportLatencySettings {
-                process: merge_value(
-                    self.original.3.process,
-                    self.transport.process,
-                    transport.process,
-                    &t!("Process input buffer"),
-                )?,
-                vad: merge_value(
-                    self.original.3.vad,
-                    self.transport.vad,
-                    transport.vad,
-                    &t!("VAD input buffer"),
-                )?,
-            },
+            transport: merged_transport,
+            measured_process: None,
+            save_transport: merged_transport != transport,
         })
+    }
+
+    pub(super) fn capture(
+        &self,
+        snapshot: &AppSnapshot,
+        density: Density,
+    ) -> Result<Submission, String> {
+        let mut submitted = self.submission(
+            &snapshot.audio_settings,
+            snapshot.latency_profile,
+            density,
+            snapshot.transport_latency,
+        )?;
+        // SetTransportLatency intentionally clears measured intent, including
+        // VAD-only changes. Otherwise preserve the latest service selection,
+        // never a profile captured when this desktop draft was opened.
+        if !submitted.save_transport {
+            submitted.measured_process = snapshot.measured_process.clone();
+        }
+        Ok(submitted)
+    }
+}
+
+impl Submission {
+    pub(super) fn matches_requested(&self, snapshot: &AppSnapshot) -> bool {
+        snapshot.audio_settings == self.audio
+            && snapshot.transport_latency == self.transport
+            && snapshot.latency_profile == self.profile
+            && snapshot.measured_process == self.measured_process
+    }
+
+    pub(super) fn matches_active(&self, snapshot: &AppSnapshot) -> bool {
+        snapshot.phase == SessionPhase::Running
+            && snapshot.active_audio_settings.as_ref() == Some(&self.audio)
+            && snapshot.active_transport_latency == Some(self.transport)
+            && snapshot.active_latency_profile == expected_active_profile(self.profile)
+            && snapshot.active_measured_process == self.measured_process
     }
 }
 

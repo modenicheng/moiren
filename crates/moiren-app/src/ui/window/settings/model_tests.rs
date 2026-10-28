@@ -232,3 +232,112 @@ fn device_draft_does_not_overwrite_new_transport_intent_and_commit_tracks_it() {
     device.transport.process = None;
     assert!(device.dirty());
 }
+
+fn measured(selection_id: u64) -> crate::service::MeasuredProcessSummary {
+    use crate::service::{MeasuredProcessRequest, MeasuredProcessSummary, SessionGeneration};
+    let snapshot = crate::service::snapshot(&Default::default());
+    MeasuredProcessSummary {
+        selection_id,
+        request: MeasuredProcessRequest {
+            node: snapshot.graph.graph.nodes()[0].id(),
+            session_generation: SessionGeneration(7),
+            native_owner_generation: 11,
+            graph_revision: 3,
+            capacity_frames: 4096,
+            target_frames: 512,
+            jitter_frames: 96,
+        },
+        process_pid: 42,
+        process_creation_time_100ns: 123,
+        delivery: crate::service::measured_process::MeasuredDeliveryBound {
+            sample_rate: 48_000,
+            max_packet_frames: 480,
+            max_gap_frames: 480,
+        },
+    }
+}
+
+fn running_settings() -> crate::service::AppSnapshot {
+    let mut snapshot = crate::service::snapshot(&Default::default());
+    snapshot.phase = crate::service::SessionPhase::Running;
+    snapshot.active_audio_settings = Some(snapshot.audio_settings.clone());
+    snapshot.active_transport_latency = Some(snapshot.transport_latency);
+    snapshot.active_latency_profile = Some(snapshot.latency_profile);
+    snapshot
+}
+
+#[test]
+fn measured_process_summary_identifies_override_instead_of_compatible_default() {
+    let selection = measured(17);
+    let text = super::process_input_summary(None, Some(&selection));
+    for fact in [
+        "Measured",
+        "source node",
+        "PID 42",
+        "created 123",
+        "target 512",
+        "capacity 4096",
+        "jitter 96",
+        "session 7",
+        "owner 11",
+        "revision 3",
+        "selection 17",
+    ] {
+        assert!(text.contains(fact), "missing {fact:?} in {text:?}");
+    }
+    assert!(!text.contains("Compatible"));
+    assert_eq!(super::process_input_summary(None, None), "Compatible");
+}
+
+#[test]
+fn measured_capture_rebases_current_selection_not_the_old_desktop_draft() {
+    let editor = draft(AudioSettings::default());
+    let mut snapshot = running_settings();
+    snapshot.measured_process = Some(measured(17));
+    snapshot.active_measured_process = Some(measured(16));
+    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    assert_eq!(captured.measured_process, snapshot.measured_process);
+    assert!(captured.matches_requested(&snapshot));
+    assert!(!captured.matches_active(&snapshot));
+    snapshot.active_measured_process = snapshot.measured_process.clone();
+    assert!(captured.matches_active(&snapshot));
+}
+
+#[test]
+fn measured_capture_expects_transport_save_to_clear_desired_override() {
+    let mut editor = draft(AudioSettings::default());
+    editor.transport.vad = Some(crate::service::ExpertInputBuffer::default());
+    let mut snapshot = running_settings();
+    snapshot.measured_process = Some(measured(17));
+    snapshot.active_measured_process = snapshot.measured_process.clone();
+    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    assert!(captured.measured_process.is_none());
+    assert!(!captured.matches_active(&snapshot));
+    snapshot.transport_latency = captured.transport;
+    snapshot.active_transport_latency = Some(captured.transport);
+    snapshot.measured_process = None;
+    assert!(captured.matches_requested(&snapshot));
+    assert!(
+        !captured.matches_active(&snapshot),
+        "old measured owner is not the saved request"
+    );
+    snapshot.active_measured_process = None;
+    assert!(captured.matches_active(&snapshot));
+}
+
+#[test]
+fn measured_restart_cannot_confirm_a_new_selection_over_the_captured_request() {
+    let editor = draft(AudioSettings::default());
+    let mut snapshot = running_settings();
+    snapshot.measured_process = Some(measured(17));
+    snapshot.active_measured_process = snapshot.measured_process.clone();
+    let captured = editor.capture(&snapshot, editor.density).unwrap();
+    snapshot.measured_process = Some(measured(18));
+    snapshot.active_measured_process = snapshot.measured_process.clone();
+    assert!(!captured.matches_requested(&snapshot));
+    assert!(!captured.matches_active(&snapshot));
+    snapshot.measured_process = captured.measured_process.clone();
+    snapshot.active_measured_process = captured.measured_process.clone();
+    assert!(captured.matches_requested(&snapshot));
+    assert!(captured.matches_active(&snapshot));
+}

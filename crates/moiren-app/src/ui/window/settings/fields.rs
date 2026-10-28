@@ -174,10 +174,14 @@ pub(in super::super) fn footer(
     let draft = shell.settings.draft(editor);
     let state = shell.state.read(cx);
     let running = state.snapshot.phase == SessionPhase::Running;
-    let needs_restart = state.snapshot.active_audio_settings.as_ref() != Some(&draft.audio)
-        || state.snapshot.active_transport_latency != Some(draft.transport)
-        || state.snapshot.active_latency_profile
-            != super::model::expected_active_profile(draft.profile);
+    let submitted = draft.capture(&state.snapshot, shell.density);
+    let needs_restart = submitted
+        .as_ref()
+        .is_ok_and(|submitted| !submitted.matches_active(&state.snapshot));
+    let clears_measured = state.snapshot.measured_process.is_some()
+        && submitted
+            .as_ref()
+            .is_ok_and(|submitted| submitted.save_transport);
     let busy = shell.settings.busy()
         || state.pending_request
         || state.snapshot.graph.pending_revision.is_some()
@@ -230,6 +234,11 @@ pub(in super::super) fn footer(
                 .child(feedback)
                 .gpui_test_observe(),
         )
+        .when(clears_measured, |view| {
+            view.child(label(t!(
+                "Saving changed input buffers clears the requested measured Process selection. The running owner changes only on restart."
+            )))
+        })
         .child(
             div()
                 .flex()
