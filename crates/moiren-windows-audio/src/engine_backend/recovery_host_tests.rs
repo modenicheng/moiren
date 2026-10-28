@@ -1,10 +1,5 @@
 //! End-to-end recovery with the real supervisor, native owner and rendering pump.
 //! Only NativeStream is fake: this harness must never activate ASIO or WASAPI.
-use crate::bridge::{RingSink, Tone};
-use crate::native::{
-    NativeLatency, NativeRecoveryRequest, NativeStream, NativeStreamInfo, NativeStreamStats,
-    StereoFrame,
-};
 use super::{
     observations::{
         Counters, ProfessionalObservationSnapshot, ProfessionalObservations,
@@ -12,6 +7,11 @@ use super::{
     },
     owner::{self, AuxiliaryOwner, Transport, WorkerRequest},
     recovery::{RecoveryMonitor, RecoveryTicket},
+};
+use crate::bridge::{RingSink, Tone};
+use crate::native::{
+    NativeLatency, NativeRecoveryRequest, NativeStream, NativeStreamInfo, NativeStreamStats,
+    StereoFrame,
 };
 use moiren_core::graph::{NodeId, NodeKind, SendParams};
 use moiren_engine::{

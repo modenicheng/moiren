@@ -14,9 +14,9 @@ use moiren_engine::{
 };
 use moiren_windows_audio::clock_bridge;
 use moiren_windows_audio::latency;
+use moiren_windows_audio::native;
 #[cfg(windows)]
 use moiren_windows_audio::process_loopback;
-use moiren_windows_audio::native;
 use moiren_windows_audio::virtual_owner;
 use std::{
     marker::PhantomData,
@@ -28,21 +28,34 @@ use std::{
     thread::ThreadId,
     time::{Duration, Instant},
 };
+// Every `#[path]` module below mirrors a library file unchanged so the
+// harness measures the real realtime paths; not every library item is used
+// here, so the shadow copies compile with dead_code allowed instead of
+// diverging from the sources they measure.
 #[cfg(windows)]
 #[path = "../../../crates/moiren-windows-audio/src/asio_rt_tests.rs"]
+#[allow(dead_code)]
 mod asio_rt;
 #[path = "../../../crates/moiren-windows-audio/src/bridge.rs"]
+#[allow(dead_code)]
 mod bridge;
 #[path = "../../../crates/moiren-windows-audio/src/codec.rs"]
+#[allow(dead_code)]
 mod codec;
-#[path = "../../../crates/moiren-windows-audio/src/engine_backend/observations.rs"]
-mod observations;
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/native_observations.rs"]
+#[allow(dead_code)]
 mod native_observations;
+#[path = "../../../crates/moiren-windows-audio/src/engine_backend/observations.rs"]
+#[allow(dead_code)]
+mod observations;
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/owner.rs"]
+#[allow(dead_code)]
 mod professional_owner;
 #[cfg(windows)]
 #[path = "../../../crates/moiren-windows-audio/src/owner.rs"]
+// The shadow copy keeps the library cfg probes; this harness has no
+// probe-tools feature, so the unused cfg stays allowed, not rewritten.
+#[allow(dead_code, unexpected_cfgs)]
 mod windows_owner;
 // The library's bridge references engine_backend::observations; mirror the
 // module path so the shadow-compiled file compiles unchanged.
@@ -58,12 +71,16 @@ mod owner {
     pub(crate) use super::windows_owner::Mmcss;
 }
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/recovery.rs"]
+#[allow(dead_code)]
 mod recovery;
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/recovery_host_tests.rs"]
+#[allow(dead_code)]
 mod recovery_host_tests;
 #[path = "../../../crates/moiren-windows-audio/src/resample.rs"]
+#[allow(dead_code)]
 mod resample;
 #[path = "../../../crates/moiren-windows-audio/src/servo.rs"]
+#[allow(dead_code)]
 mod servo;
 use bridge::{RingSink, RingSource, Tone};
 use native::{NativeStream, NativeStreamInfo, StereoFrame};
@@ -586,20 +603,18 @@ fn transport_with_recovery<S: ProcessingSample>(
 fn recoverable_notifications_are_published_only_after_owner_cleanup() {
     let mut graph = LogicalGraph::new();
     let node = graph.create_node(NodeKind::Sink, 2).unwrap();
-    let config = moiren_engine::host::NodeConfig::Output(
-        moiren_engine::node::OutputConfig {
-                target: moiren_engine::node::OutputTarget::Physical(
-                    moiren_engine::node::EndpointSelector::FollowDefault(
-                        moiren_engine::node::DefaultDeviceRole::Multimedia,
-                    ),
-                ),
-                channels: 2,
-                device: moiren_engine::node::DeviceOptions {
-                    clock_role: moiren_engine::boundary::ClockRole::Master,
-                    ..Default::default()
-                },
+    let config = moiren_engine::host::NodeConfig::Output(moiren_engine::node::OutputConfig {
+        target: moiren_engine::node::OutputTarget::Physical(
+            moiren_engine::node::EndpointSelector::FollowDefault(
+                moiren_engine::node::DefaultDeviceRole::Multimedia,
+            ),
+        ),
+        channels: 2,
+        device: moiren_engine::node::DeviceOptions {
+            clock_role: moiren_engine::boundary::ClockRole::Master,
+            ..Default::default()
         },
-    );
+    });
     for failure in [
         Failure::Recover,
         Failure::RecoverStop,
@@ -663,20 +678,19 @@ fn deferred_recovery_respects_explicit_cancellation_and_rejected_tickets() {
         for exhaust_ticket in [false, true] {
             let mut graph = LogicalGraph::new();
             let node = graph.create_node(NodeKind::Sink, 2).unwrap();
-            let config = moiren_engine::host::NodeConfig::Output(
-                moiren_engine::node::OutputConfig {
-                        target: moiren_engine::node::OutputTarget::Physical(
-                            moiren_engine::node::EndpointSelector::FollowDefault(
-                                moiren_engine::node::DefaultDeviceRole::Multimedia,
-                            ),
+            let config =
+                moiren_engine::host::NodeConfig::Output(moiren_engine::node::OutputConfig {
+                    target: moiren_engine::node::OutputTarget::Physical(
+                        moiren_engine::node::EndpointSelector::FollowDefault(
+                            moiren_engine::node::DefaultDeviceRole::Multimedia,
                         ),
-                        channels: 2,
-                        device: moiren_engine::node::DeviceOptions {
-                            clock_role: moiren_engine::boundary::ClockRole::Master,
-                            ..Default::default()
-                        },
-                },
-            );
+                    ),
+                    channels: 2,
+                    device: moiren_engine::node::DeviceOptions {
+                        clock_role: moiren_engine::boundary::ClockRole::Master,
+                        ..Default::default()
+                    },
+                });
             let monitor = recovery::RecoveryMonitor::default();
             let ticket = monitor.register(3, vec![(node, config)], 96000);
             if exhaust_ticket {
@@ -859,20 +873,18 @@ fn combined_native_and_dsp_faults_keep_panic_dominance_and_control_side_engine_d
 fn assert_combined_faults(faults: Faults, dsp_panic: bool) {
     let mut graph = LogicalGraph::new();
     let node = graph.create_node(NodeKind::Sink, 2).unwrap();
-    let config = moiren_engine::host::NodeConfig::Output(
-        moiren_engine::node::OutputConfig {
-                target: moiren_engine::node::OutputTarget::Physical(
-                    moiren_engine::node::EndpointSelector::FollowDefault(
-                        moiren_engine::node::DefaultDeviceRole::Multimedia,
-                    ),
-                ),
-                channels: 2,
-                device: moiren_engine::node::DeviceOptions {
-                    clock_role: moiren_engine::boundary::ClockRole::Master,
-                    ..Default::default()
-                },
+    let config = moiren_engine::host::NodeConfig::Output(moiren_engine::node::OutputConfig {
+        target: moiren_engine::node::OutputTarget::Physical(
+            moiren_engine::node::EndpointSelector::FollowDefault(
+                moiren_engine::node::DefaultDeviceRole::Multimedia,
+            ),
+        ),
+        channels: 2,
+        device: moiren_engine::node::DeviceOptions {
+            clock_role: moiren_engine::boundary::ClockRole::Master,
+            ..Default::default()
         },
-    );
+    });
     let monitor = recovery::RecoveryMonitor::default();
     let ticket = monitor.register(3, vec![(node, config)], 96000);
     let (transport, compiled, released, probe) =
