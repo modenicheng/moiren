@@ -24,6 +24,14 @@ pub(super) fn parameters(
         )
         .into_any_element();
     }
+    if node.kind() == NodeKind::Limiter {
+        return Disclosure::new(
+            Section::Advanced,
+            id,
+            super::super::node_controls::limiter_inspector(shell, id),
+        )
+        .into_any_element();
+    }
     if node.kind() == NodeKind::ChannelMapper {
         return Disclosure::new(
             Section::Advanced,

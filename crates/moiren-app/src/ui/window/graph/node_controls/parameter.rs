@@ -369,15 +369,18 @@ impl Parameter {
                 });
             }
             Self::LimitInput | Self::LimitThreshold | Self::LimitRelease => {
-                if let BuiltinState::Limiter(s) = &mut builtin {
-                    match self {
-                        Self::LimitInput => s.input_gain_db = value,
-                        Self::LimitThreshold => s.threshold_db = value,
-                        _ => s.release_ms = value,
-                    }
-                } else {
+                if kind != NodeKind::Limiter || node.builtin.limiter().is_none() {
                     return None;
                 }
+                return Some(GraphEdit::SetBuiltinParameter {
+                    node: id,
+                    parameter: match self {
+                        Self::LimitInput => RackParameter::LimitInput,
+                        Self::LimitThreshold => RackParameter::LimitThreshold,
+                        _ => RackParameter::LimitRelease,
+                    },
+                    value,
+                });
             }
             Self::DelayTime | Self::DelayFeedback | Self::DelayMix => {
                 if let BuiltinState::Delay(s) = &mut builtin {

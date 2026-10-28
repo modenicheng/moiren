@@ -32,6 +32,11 @@ const GATE_PARAMETERS: [Parameter; 5] = [
     Parameter::GateHold,
     Parameter::GateRelease,
 ];
+const LIMITER_PARAMETERS: [Parameter; 3] = [
+    Parameter::LimitInput,
+    Parameter::LimitThreshold,
+    Parameter::LimitRelease,
+];
 
 fn parameters(kind: NodeKind, node: &GraphNodeState) -> &'static [Parameter] {
     match kind {
@@ -40,6 +45,7 @@ fn parameters(kind: NodeKind, node: &GraphNodeState) -> &'static [Parameter] {
         }
         NodeKind::Eq if node.builtin.eq().is_some() => &EQ_PARAMETERS,
         NodeKind::Gate if node.builtin.gate().is_some() => &GATE_PARAMETERS,
+        NodeKind::Limiter if node.builtin.limiter().is_some() => &LIMITER_PARAMETERS,
         _ => &[],
     }
 }
@@ -192,6 +198,18 @@ pub(in crate::ui::window::graph) fn gate_inspector(shell: &StudioShell, id: Node
         id,
         format!("gate-precision-{id:?}"),
         &GATE_PARAMETERS,
+    )
+}
+
+pub(in crate::ui::window::graph) fn limiter_inspector(
+    shell: &StudioShell,
+    id: NodeId,
+) -> AnyElement {
+    inspector_fields(
+        shell,
+        id,
+        format!("limiter-precision-{id:?}"),
+        &LIMITER_PARAMETERS,
     )
 }
 
