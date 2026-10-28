@@ -669,3 +669,10 @@ Measured budget was refused or replaced. Your draft is retained.	-	拒绝或其�
 Audio stopped before the measured budget became active.	-	生效前会话停止
 The graph changed while applying the measured budget.	-	请求期间图修订发生变化
 Measured budget is active; physical latency remains unqualified.	-	服务确认生效但未验收物理延迟
+Process trace collection	-	有界进程历史采集状态
+Collecting a bounded prefix; not latency qualification.	-	正在采集，不代表延迟验收
+Process trace predecessor	-	历史所属前序会话
+Process trace prefix	-	保留的历史事件数量与上限
+%{packets} packets / %{reads} reads retained; limit 8192 per writer	packets,reads	有界事件数量
+Process trace result	-	前序会话历史采集结果
+Closed prefix available; not latency qualification.	-	闭合历史可用但不代表延迟验收

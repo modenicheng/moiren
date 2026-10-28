@@ -16,6 +16,8 @@ mod lifecycle;
 mod measured;
 mod meters;
 mod parameters;
+#[cfg(windows)]
+mod process_traces;
 #[cfg(test)]
 mod tests;
 
@@ -118,6 +120,8 @@ const AUTO_APPLY_DELAY: Duration = Duration::from_millis(200);
 
 pub struct ManagedDriver {
     #[cfg(windows)]
+    process_trace: Option<process_traces::SessionTrace>,
+    #[cfg(windows)]
     measured_selection_id: u64,
     exports_runtime: super::exports::runtime::Runtime,
     factory: Arc<Factory<f32>>,
@@ -188,6 +192,8 @@ impl ManagedDriver {
         + 'static,
     ) -> Self {
         Self {
+            #[cfg(windows)]
+            process_trace: None,
             #[cfg(windows)]
             measured_selection_id: 0,
             exports_runtime: Default::default(),

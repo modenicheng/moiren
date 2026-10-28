@@ -6,6 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
 #[path = "measured_tests.rs"]
 mod measured_tests;
+#[cfg(windows)]
+#[path = "process_trace_tests.rs"]
+mod process_trace_tests;
 #[path = "rename_tests.rs"]
 mod rename_tests;
 #[path = "transport_tests.rs"]

@@ -2,6 +2,8 @@ use super::*;
 
 impl ManagedDriver {
     pub(super) fn retire(&mut self, c: &mut ServiceContext) {
+        #[cfg(windows)]
+        let process_trace = self.retiring_process_trace(c);
         self.exports_runtime.revoke();
         let generation = c.core.generation();
         log::info!(
@@ -57,6 +59,13 @@ impl ManagedDriver {
                 let cleanup = SessionCleanupObservation {
                     generation,
                     state: observer.read().state,
+                    #[cfg(windows)]
+                    process_trace: None,
+                };
+                #[cfg(windows)]
+                let cleanup = SessionCleanupObservation {
+                    process_trace: process_trace.map(|trace| trace.finish(&cleanup.state)),
+                    ..cleanup
                 };
                 completion.send_or_dispose(Completion::Reaped(cleanup), drop);
             });

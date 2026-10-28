@@ -2001,3 +2001,24 @@ _version: 2
 "Measured budget is active; physical latency remains unqualified.":
   en: "Measured budget is active; physical latency remains unqualified."
   zh-CN: "实测预算已生效；物理端到端延迟仍未验收。"
+"Process trace collection":
+  en: "Process trace collection"
+  zh-CN: "进程历史采集"
+"Collecting a bounded prefix; not latency qualification.":
+  en: "Collecting a bounded prefix; not latency qualification."
+  zh-CN: "正在采集有界历史前缀；不代表延迟验收。"
+"Process trace predecessor":
+  en: "Process trace predecessor"
+  zh-CN: "进程历史所属前序会话"
+"Process trace prefix":
+  en: "Process trace prefix"
+  zh-CN: "进程历史前缀"
+"%{packets} packets / %{reads} reads retained; limit 8192 per writer":
+  en: "%{packets} packets / %{reads} reads retained; limit 8192 per writer"
+  zh-CN: "保留 %{packets} 个包 / %{reads} 次读取；每个写入端上限为 8192 条"
+"Process trace result":
+  en: "Process trace result"
+  zh-CN: "进程历史采集结果"
+"Closed prefix available; not latency qualification.":
+  en: "Closed prefix available; not latency qualification."
+  zh-CN: "闭合历史前缀可用；不代表延迟验收。"

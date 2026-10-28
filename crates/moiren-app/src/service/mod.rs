@@ -11,6 +11,10 @@ mod mailbox;
 mod managed;
 pub(crate) mod measured_process;
 mod model;
+#[cfg(windows)]
+mod process_trace;
+#[cfg(windows)]
+pub use process_trace::*;
 #[cfg(test)]
 mod settings_tests;
 mod signals;
@@ -110,6 +114,8 @@ pub struct ServiceContext {
     pub(crate) measured_process: Option<measured_process::MeasuredProcessProfile>,
     pub active_measured_process: Option<MeasuredProcessSummary>,
     pub last_cleanup: Option<SessionCleanupObservation>,
+    #[cfg(windows)]
+    pub process_trace_status: Option<ProcessTraceCollectionStatus>,
     pub exports: ExportService,
     pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
     #[cfg(windows)]
@@ -141,6 +147,8 @@ impl Default for ServiceContext {
             measured_process: None,
             active_measured_process: None,
             last_cleanup: None,
+            #[cfg(windows)]
+            process_trace_status: None,
             exports: ExportService::default(),
             loaded_project: None,
             #[cfg(windows)]
@@ -377,6 +385,8 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
             .clone()
             .filter(|_| c.fresh(c.core.generation())),
         last_cleanup: c.last_cleanup.clone(),
+        #[cfg(windows)]
+        process_trace_status: c.process_trace_status.clone(),
         loaded_project: c.loaded_project.clone(),
         exports: c.exports.statuses(&graph),
         export_plan: c.exports.reconcile(&graph),

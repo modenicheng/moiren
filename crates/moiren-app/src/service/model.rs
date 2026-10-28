@@ -154,6 +154,8 @@ pub struct AppSnapshot {
     /// Last reaped host, kept separately from live-generation observations.
     /// A joined service thread alone does not establish successful cleanup.
     pub last_cleanup: Option<SessionCleanupObservation>,
+    #[cfg(windows)]
+    pub process_trace_status: Option<super::ProcessTraceCollectionStatus>,
     pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
     pub exports: Vec<super::ExportStatus>,
     pub export_plan: super::ExportReconcilePlan,
@@ -197,6 +199,8 @@ pub struct AppSnapshot {
 pub struct SessionCleanupObservation {
     pub generation: SessionGeneration,
     pub state: moiren_engine::host::HostSnapshot,
+    #[cfg(windows)]
+    pub process_trace: Option<Arc<super::ProcessTraceSessionEvidence>>,
 }
 #[cfg(windows)]
 #[derive(Debug, Clone)]

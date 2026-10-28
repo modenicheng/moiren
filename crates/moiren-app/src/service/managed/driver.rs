@@ -185,6 +185,8 @@ impl ServiceDriver for ManagedDriver {
         if let Some(owner) = self.owner.as_ref() {
             let snapshot = owner.observer.read();
             self.poll_observations(c, &snapshot, owner.generation);
+            #[cfg(windows)]
+            self.poll_process_trace(c, &snapshot);
             self.poll_execution(c, &snapshot);
             self.poll_edits(c);
             self.poll_parameters(c);
@@ -311,6 +313,10 @@ impl ManagedDriver {
                         self.cleaning,
                     );
                     c.core.owner_reaped(generation);
+                    #[cfg(windows)]
+                    {
+                        c.process_trace_status = None;
+                    }
                     c.last_cleanup = Some(cleanup);
                     self.reject_failed_cleanup(c, true);
                 }

@@ -483,6 +483,17 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         "Input targets are estimates. Physical end-to-end latency is unqualified."
     )));
     view = view.child(heading(t!("Actual native timing")));
+    for (index, (key, value)) in crate::ui::presentation::process_trace_rows(snapshot)
+        .into_iter()
+        .enumerate()
+    {
+        view = view.child(
+            detail(&key, value.clone())
+                .id(("process-trace-row", index))
+                .aria_label(format!("{key}: {value}"))
+                .gpui_test_observe(),
+        );
+    }
     for (index, (key, value)) in crate::ui::presentation::native_timing_rows(snapshot)
         .into_iter()
         .enumerate()
