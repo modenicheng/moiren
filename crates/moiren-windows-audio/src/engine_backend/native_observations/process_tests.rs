@@ -10,7 +10,7 @@ use moiren_core::graph::{LogicalGraph, NodeKind};
 fn retained_process_observations_keep_late_native_events_and_original_generation() {
     let mut graph = LogicalGraph::new();
     let node = graph.create_node(NodeKind::Source, 2).unwrap();
-    let (_ingress, _source, bridge) = capture_bridge(ClockBridgeConfig::default()).unwrap();
+    let (_ingress, mut source, bridge) = capture_bridge(ClockBridgeConfig::default()).unwrap();
     let (mut consumer, consumer_observer) = event_history();
     let process = ProcessIdentity {
         pid: 42,
@@ -51,6 +51,9 @@ fn retained_process_observations_keep_late_native_events_and_original_generation
     observations.publish(8, Vec::new(), Vec::new(), Vec::new());
     // A final consumption publication can arrive after registry retirement.
     consumer.record(128, Some(110));
+    source
+        .read_interleaved_at_qpc(&mut [0.0; 2], Some(120))
+        .unwrap();
     let final_snapshot = retained.snapshot();
     assert!(!final_snapshot.running);
     assert_eq!(final_snapshot.owner_generation, 7);
@@ -74,6 +77,15 @@ fn retained_process_observations_keep_late_native_events_and_original_generation
     assert_eq!(json["admitted_bridge"]["max_demand_frames"], 512);
     assert!(json["producer"]["events"].as_array().unwrap().is_empty());
     assert_eq!(json["consumer"]["events"][0]["qpc_100ns"], 110);
+    assert_eq!(json["queue_history"]["total_events"], 1);
+    assert_eq!(
+        json["queue_history"]["events"][0]["sample"]["output_frames"],
+        0
+    );
+    assert_eq!(
+        json["queue_history"]["events"][0]["sample"]["qpc_before_100ns"],
+        120
+    );
     assert!(observations.snapshot().unwrap().process_delivery.is_empty());
     assert_eq!(observations.snapshot().unwrap().owner_generation, 8);
 }
@@ -100,6 +112,7 @@ fn measured_projection_requires_complete_matching_observations() {
         delivery.callback_burst(96);
     }
     let mut observation = NativeProcessDeliveryObservation {
+        queue_history: None,
         node,
         process: process.clone(),
         owner_generation: 7,

@@ -37,6 +37,7 @@ pub(crate) fn observation(node: moiren_core::graph::NodeId) -> NativeProcessDeli
         delivery: Some(delivery.snapshot()),
         producer: producer_observer.snapshot(),
         consumer: consumer_observer.snapshot(),
+        queue_history: None,
         counters: BridgeSnapshot {
             native_delivery: Some(delivery.snapshot()),
             ..Default::default()

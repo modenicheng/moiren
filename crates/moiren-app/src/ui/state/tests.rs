@@ -613,6 +613,7 @@ fn native_timing_projection_hides_stopped_and_stale_owner_observations() {
             }],
             boundary_probes: vec![],
             bridges: vec![NativeBridgeObservation {
+                queue_history: None,
                 node,
                 counters: moiren_windows_audio::clock_bridge::BridgeSnapshot {
                     underrun_frames: 4,

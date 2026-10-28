@@ -1,6 +1,7 @@
 //! Continuous linear interpolation and a bounded fill servo on the render owner.
 use super::{ClockBridgeConfig, ClockBridgeError, Frame, telemetry::Counters};
 use crate::latency::clock::QpcClock;
+use crate::latency::queue::{QueueBoundary, QueueHistoryWriter, QueueReadSample};
 use moiren_engine::{
     boundary::{BoundaryReport, RtAudioSource},
     buffer::AudioBlockMut,
@@ -13,6 +14,10 @@ const RECOVERY_FADE_FRAMES: usize = 32;
 const SERVO_QUANTUM_FRAMES: usize = 32;
 
 pub struct ClockSource {
+    queue_events: QueueHistoryWriter,
+    removed_frames: u64,
+    reset_discarded_frames: u64,
+    reset_count: u64,
     rx: Consumer<Frame>,
     config: ClockBridgeConfig,
     counters: Arc<Counters>,
@@ -90,8 +95,13 @@ impl ClockSource {
         config: ClockBridgeConfig,
         counters: Arc<Counters>,
         age_clock: Option<QpcClock>,
+        queue_events: QueueHistoryWriter,
     ) -> Self {
         Self {
+            queue_events,
+            removed_frames: 0,
+            reset_discarded_frames: 0,
+            reset_count: 0,
             rx,
             config,
             counters,
@@ -134,7 +144,46 @@ impl ClockSource {
             }),
         )
     }
-    fn reset(&mut self) {
+    fn add_removed(&mut self, frames: usize) {
+        if let Some(total) = self.removed_frames.checked_add(frames as u64) {
+            self.removed_frames = total;
+        } else {
+            self.queue_events.mark_saturated();
+        }
+    }
+    fn pop_frame(&mut self) -> Option<Frame> {
+        let frame = self.rx.pop().ok()?;
+        self.add_removed(1);
+        Some(frame)
+    }
+    fn discard_ring(&mut self, frames: usize) {
+        self.rx
+            .read_chunk(frames)
+            .expect("capture discard snapshot")
+            .commit_all();
+        self.add_removed(frames);
+    }
+    fn queue_boundary(&self, ring_frames: usize) -> QueueBoundary {
+        QueueBoundary {
+            removed_frames: self.removed_frames,
+            ring_frames: ring_frames as u64,
+            held_frames: u64::from(self.current.is_some()) + u64::from(self.next.is_some()),
+        }
+    }
+    fn reset(&mut self, discard_held: bool) {
+        let held = u64::from(self.current.is_some()) + u64::from(self.next.is_some());
+        if let Some(total) = self.reset_count.checked_add(1) {
+            self.reset_count = total;
+        } else {
+            self.queue_events.mark_saturated();
+        }
+        if discard_held {
+            if let Some(total) = self.reset_discarded_frames.checked_add(held) {
+                self.reset_discarded_frames = total;
+            } else {
+                self.queue_events.mark_saturated();
+            }
+        }
         self.counters.oldest_frame_age.publish(None);
         self.current = None;
         self.next = None;
@@ -170,14 +219,11 @@ impl ClockSource {
         if ring_discarded > 0 {
             // Only this consumer advances the read cursor. The discard is
             // bounded by the initial snapshot, even if capture keeps writing.
-            self.rx
-                .read_chunk(ring_discarded)
-                .expect("running capture backlog snapshot")
-                .commit_all();
+            self.discard_ring(ring_discarded);
         }
-        self.reset();
-        self.current = retained.or_else(|| self.rx.pop().ok());
-        self.next = self.rx.pop().ok();
+        self.reset(false);
+        self.current = retained.or_else(|| self.pop_frame());
+        self.next = self.pop_frame();
         self.fade_remaining = RECOVERY_FADE_FRAMES;
         self.counters
             .backlog_discarded_frames
@@ -213,15 +259,12 @@ impl ClockSource {
         let held = usize::from(self.current.is_some()) + usize::from(self.next.is_some());
         let ring_discarded = desired.saturating_sub(held);
         if ring_discarded > 0 {
-            self.rx
-                .read_chunk(ring_discarded)
-                .expect("running capture age snapshot")
-                .commit_all();
+            self.discard_ring(ring_discarded);
         }
         let retained = (desired == 1).then_some(self.next).flatten();
-        self.reset();
-        self.current = retained.or_else(|| self.rx.pop().ok());
-        self.next = self.rx.pop().ok();
+        self.reset(false);
+        self.current = retained.or_else(|| self.pop_frame());
+        self.next = self.pop_frame();
         self.fade_remaining = RECOVERY_FADE_FRAMES;
         self.last_age_recovery_written_frames = Some(written_frames);
         self.counters
@@ -278,7 +321,7 @@ impl ClockSource {
         &mut self,
         frames: usize,
         now_qpc_100ns: Option<u64>,
-        mut set: impl FnMut(usize, [f32; 2]),
+        set: impl FnMut(usize, [f32; 2]),
     ) -> BoundaryReport {
         if frames == 0 {
             self.counters.oldest_frame_age.publish(None);
@@ -286,15 +329,37 @@ impl ClockSource {
         }
         let now_qpc_100ns =
             now_qpc_100ns.or_else(|| self.age_clock.as_ref().and_then(QpcClock::now));
+        let before = self.queue_boundary(self.rx.slots());
+        let mut sample = QueueReadSample {
+            requested_frames: frames as u64,
+            before,
+            qpc_before_100ns: now_qpc_100ns,
+            ..Default::default()
+        };
+        let resets = self.reset_count;
+        let reset_discarded = self.reset_discarded_frames;
+        let report = self.read_inventory(frames, now_qpc_100ns, set, &mut sample);
+        sample.after = self.queue_boundary(self.rx.slots());
+        sample.output_frames = report.transferred_frames as u64;
+        sample.resets = self.reset_count - resets;
+        sample.reset_discarded_frames = self.reset_discarded_frames - reset_discarded;
+        self.queue_events.record(sample);
+        report
+    }
+    fn read_inventory(
+        &mut self,
+        frames: usize,
+        now_qpc_100ns: Option<u64>,
+        mut set: impl FnMut(usize, [f32; 2]),
+        sample: &mut QueueReadSample,
+    ) -> BoundaryReport {
         // Sample the actual oldest pending correlation before any recovery,
         // priming trim or transfer. Never substitute the latest packet stamp
         // or fill/rate. Every read replaces prior success with known/unknown.
         self.counters
             .oldest_frame_age
             .publish(now_qpc_100ns.and_then(|now| self.oldest_frame_age(now)));
-        let mut fill = self.rx.slots()
-            + usize::from(self.current.is_some())
-            + usize::from(self.next.is_some());
+        let mut fill = (sample.before.ring_frames + sample.before.held_frames) as usize;
         let mut report = BoundaryReport::default();
         let discarded = self.recover_backlog(fill);
         let age_discarded = (discarded == 0)
@@ -303,6 +368,8 @@ impl ClockSource {
             .map(|now| self.recover_age(fill - discarded, now))
             .unwrap_or(0);
         let recovered_age = age_discarded > 0;
+        sample.backlog_discarded_frames = discarded as u64;
+        sample.age_discarded_frames = age_discarded as u64;
         if discarded + age_discarded > 0 {
             fill -= discarded + age_discarded;
             report.discontinuity = true;
@@ -324,18 +391,16 @@ impl ClockSource {
                 // Startup/Graph/device preparation can accumulate old audio.
                 // Trim exactly one initial snapshot; never chase the producer.
                 let discarded = fill - self.config.target_fill_frames;
-                self.rx
-                    .read_chunk(discarded)
-                    .expect("initial capture backlog")
-                    .commit_all();
+                self.discard_ring(discarded);
+                sample.prime_discarded_frames = discarded as u64;
                 self.counters
                     .prime_discarded_frames
                     .fetch_add(discarded as u64, Relaxed);
                 fill -= discarded;
                 self.counters.fill_frames.store(fill, Relaxed);
             }
-            self.current = self.rx.pop().ok();
-            self.next = self.rx.pop().ok();
+            self.current = self.pop_frame();
+            self.next = self.pop_frame();
         }
         self.counters.min_fill_frames.fetch_min(fill, Relaxed);
         self.counters.max_fill_frames.fetch_max(fill, Relaxed);
@@ -344,7 +409,7 @@ impl ClockSource {
             while self.phase >= 1.0 {
                 self.phase -= 1.0;
                 self.current = self.next.take();
-                self.next = self.rx.pop().ok();
+                self.next = self.pop_frame();
             }
             let (Some(a), Some(b)) = (self.current, self.next) else {
                 self.counters.last_underrun_at_output_frame.store(
@@ -357,9 +422,10 @@ impl ClockSource {
                 self.counters
                     .underrun_frames
                     .fetch_add((frames - frame) as u64, Relaxed);
+                sample.underrun_frames = (frames - frame) as u64;
                 report.discontinuity = true;
                 report.xruns = 1;
-                self.reset();
+                self.reset(true);
                 break;
             };
             if a.generation != b.generation {
@@ -367,7 +433,7 @@ impl ClockSource {
                 // never interpolate across a missing packet or overflow tail.
                 report.discontinuity = true;
                 report.xruns = 1;
-                self.reset();
+                self.reset(true);
                 break;
             }
             if self.servo_frames_remaining == 0 {

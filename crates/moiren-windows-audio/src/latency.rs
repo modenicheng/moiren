@@ -5,6 +5,7 @@ mod delivery;
 pub mod events;
 mod marker;
 pub mod qualification;
+pub mod queue;
 mod telemetry;
 
 pub use marker::{

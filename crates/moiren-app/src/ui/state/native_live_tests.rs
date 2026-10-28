@@ -41,6 +41,7 @@ fn live_snapshot() -> AppSnapshot {
             ],
             boundary_probes: Vec::new(),
             bridges: vec![NativeBridgeObservation {
+                queue_history: None,
                 node: input,
                 counters: BridgeSnapshot {
                     fill_frames: 960,

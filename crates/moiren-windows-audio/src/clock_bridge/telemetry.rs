@@ -54,6 +54,7 @@ pub struct BridgeSnapshot {
     pub correction_ppm: f64,
 }
 pub(super) struct Counters {
+    pub queue_events: crate::latency::queue::QueueHistoryObserver,
     pub delivery_events: crate::latency::events::EventHistoryObserver,
     pub native_delivery: DeliverySample,
     pub oldest_frame_age: AgeSample,
@@ -88,8 +89,10 @@ impl Counters {
     pub fn new(
         capacity: usize,
         delivery_events: crate::latency::events::EventHistoryObserver,
+        queue_events: crate::latency::queue::QueueHistoryObserver,
     ) -> Self {
         Self {
+            queue_events,
             delivery_events,
             native_delivery: DeliverySample::default(),
             oldest_frame_age: AgeSample::default(),
@@ -125,6 +128,11 @@ impl Counters {
 #[derive(Clone)]
 pub struct BridgeObserver(pub(super) Arc<Counters>);
 impl BridgeObserver {
+    /// Consumer-owned causal inventory boundaries, not a timestamped replay of
+    /// producer publications or a source sample-age estimate.
+    pub fn queue_history(&self) -> Option<crate::latency::queue::QueueHistorySnapshot> {
+        self.0.queue_events.snapshot()
+    }
     /// Control-side bounded native callback history, separate from the
     /// approximate aggregate snapshot. No graph read manufactures arrivals.
     pub fn delivery_events(&self) -> Option<crate::latency::events::EventHistorySnapshot> {
