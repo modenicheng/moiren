@@ -117,6 +117,19 @@ pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
         ]);
         if let Some(telemetry) = &diagnostics.telemetry {
             rows.extend(telemetry_rows(telemetry));
+            // Only playback stamps carry the native sequence. Microphone
+            // stamps describe host submissions and cannot establish these holes.
+            if status.intent.direction == ExportDirection::Playback {
+                rows.push((
+                    t!("Playback native sequence gaps").into(),
+                    t!(
+                        "%{observations} gap observations / %{slots} unobserved native sequence slots (not proof of signal loss; first-packet prefix unknown)",
+                        observations = telemetry.sequence_gap_observations,
+                        slots = telemetry.missing_sequence_slots,
+                    )
+                    .into(),
+                ));
+            }
         } else {
             rows.push((
                 t!("Provider packet telemetry").into(),

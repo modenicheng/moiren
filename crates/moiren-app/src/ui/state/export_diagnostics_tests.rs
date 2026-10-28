@@ -29,7 +29,7 @@ fn export() -> ExportStatus {
             native_stamp: Some([1, 2, 3, 0, 5]),
             transport_prepared: true,
             telemetry: Some(VadPcmTelemetrySnapshot {
-                schema_version: 2,
+                schema_version: 3,
                 packet_frames: 128,
                 max_packet_frames: 256,
                 submission_attempts: u64::MAX,
@@ -47,6 +47,7 @@ fn export() -> ExportStatus {
                 silence_frames: (1 << 53) + 37,
                 epoch_resets: 41,
                 recovery_events: 43,
+                ..Default::default()
             }),
             error: Some("PCM preparation refused: packet quota 0x80070057".into()),
             windows_name: None,
@@ -171,6 +172,57 @@ fn provider_diagnostics_preserve_all_counters_and_observed_timing_units() {
 }
 
 #[test]
+fn provider_sequence_gaps_preserve_exact_u64_counters_without_claiming_signal_loss() {
+    let mut status = export();
+    let telemetry = status
+        .diagnostics
+        .as_mut()
+        .unwrap()
+        .telemetry
+        .as_mut()
+        .unwrap();
+    telemetry.sequence_gap_observations = (1_u64 << 53) + 1;
+    telemetry.missing_sequence_slots = u64::MAX;
+    let rows = export_diagnostic_rows(&status);
+    let text = value(&rows, "Playback native sequence gaps");
+    assert_eq!(
+        text,
+        "9007199254740993 gap observations / 18446744073709551615 unobserved native sequence slots (not proof of signal loss; first-packet prefix unknown)"
+    );
+    assert!(!text.contains("frames"));
+    assert!(!text.contains("latency"));
+    assert_eq!(value(&rows, "Provider telemetry schema"), "3");
+    assert_eq!(
+        value(&rows, "Cumulative packet drops"),
+        "Driver 17 / quota 19 / carrier 23 / total 13 packets",
+        "missing native sequence slots must not be added to packet drops"
+    );
+}
+
+#[test]
+fn provider_sequence_gap_zero_counters_are_diagnostic_not_a_continuity_pass() {
+    let rows = export_diagnostic_rows(&export());
+    assert_eq!(
+        value(&rows, "Playback native sequence gaps"),
+        "0 gap observations / 0 unobserved native sequence slots (not proof of signal loss; first-packet prefix unknown)"
+    );
+    assert_eq!(value(&rows, "Engine-confirmed binding"), "Inactive");
+    assert_eq!(value(&rows, "Gate admission"), "Closed");
+}
+
+#[test]
+fn microphone_submission_sequences_are_not_presented_as_playback_gap_observations() {
+    let mut status = export();
+    status.intent.direction = ExportDirection::Microphone;
+    let rows = export_diagnostic_rows(&status);
+    assert!(
+        !rows
+            .iter()
+            .any(|(key, _)| key == "Playback native sequence gaps")
+    );
+}
+
+#[test]
 fn provider_diagnostics_identify_requested_actual_and_pending_names_with_exact_endpoint_error() {
     let status = export();
     let rows = export_diagnostic_rows(&status);
@@ -243,6 +295,11 @@ fn provider_diagnostics_missing_telemetry_keeps_native_preparation_and_refusal()
     );
     assert!(!rows.iter().any(|(key, _)| key.starts_with("Cumulative")));
     assert!(!rows.iter().any(|(key, _)| key == "Observed packet"));
+    assert!(
+        !rows
+            .iter()
+            .any(|(key, _)| key == "Playback native sequence gaps")
+    );
 }
 
 #[test]
@@ -267,6 +324,11 @@ fn provider_diagnostics_missing_evidence_never_fabricates_zero_or_preparation() 
     assert!(
         !rows
             .iter()
+            .any(|(key, _)| key == "Playback native sequence gaps")
+    );
+    assert!(
+        !rows
+            .iter()
             .any(|(_, text)| text == "0" || text.starts_with("Prepared"))
     );
 }
@@ -275,6 +337,15 @@ fn provider_diagnostics_missing_evidence_never_fabricates_zero_or_preparation() 
 fn provider_diagnostics_remain_last_observations_while_engine_stops_or_endpoint_retires() {
     let mut snapshot: AppSnapshot = crate::service::snapshot(&ServiceContext::default());
     snapshot.exports = vec![export()];
+    let telemetry = snapshot.exports[0]
+        .diagnostics
+        .as_mut()
+        .unwrap()
+        .telemetry
+        .as_mut()
+        .unwrap();
+    telemetry.sequence_gap_observations = 2;
+    telemetry.missing_sequence_slots = 5;
     let requested_profile = snapshot.latency_profile;
     let requested_transport = snapshot.transport_latency;
     for phase in [
@@ -300,6 +371,10 @@ fn provider_diagnostics_remain_last_observations_while_engine_stops_or_endpoint_
             assert_eq!(value(&rows, "Gate admission"), "Closed");
             assert_eq!(value(&rows, "Engine-confirmed binding"), "Inactive");
             assert_eq!(value(&rows, "Observed packet"), "128 frames");
+            assert_eq!(
+                value(&rows, "Playback native sequence gaps"),
+                "2 gap observations / 5 unobserved native sequence slots (not proof of signal loss; first-packet prefix unknown)"
+            );
             assert_eq!(
                 value(&rows, "Endpoint"),
                 if resource == ExportResourceState::Removing {
