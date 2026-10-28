@@ -8,10 +8,40 @@ use moiren_windows_audio::{
     },
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
-use std::{collections::BTreeMap, fmt, path::Path};
+use std::{collections::BTreeMap, fmt, fs::OpenOptions, io::Write, path::Path};
 
 const HARD_INPUT_BYTES: u64 = 1_048_576;
 const MAX_CANDIDATES: usize = 16;
+
+struct CappedOutput(Vec<u8>);
+impl Write for CappedOutput {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > HARD_INPUT_BYTES as usize - self.0.len() {
+            return Err(std::io::Error::other("replay output exceeds 1 MiB"));
+        }
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn write_output(path: &Path, output: &ReplayOutput) -> Result<()> {
+    // Serialize within a fixed byte limit before opening the output. Repeated
+    // caller-supplied labels across 16 reports must not amplify disk usage or
+    // leave an apparently complete partial evidence file on cap refusal.
+    let mut bytes = CappedOutput(Vec::new());
+    serde_json::to_writer_pretty(&mut bytes, output).context("serialize bounded replay output")?;
+    bytes.write_all(b"\n")?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("create new replay output {}", path.display()))?;
+    file.write_all(&bytes.0).context("write replay output")?;
+    file.flush().context("flush replay output")
+}
 const OPTIONS: [&str; 7] = [
     "--trace",
     "--candidates",
@@ -277,7 +307,7 @@ pub(super) fn run(arguments: Vec<String>) -> Result<i32> {
             "Synthetic replay has no measured signal continuity or sample age; writer closure is not transport cleanup.",
         ],
     };
-    super::write_json(Path::new(options["--output"]), &output)?;
+    write_output(Path::new(options["--output"]), &output)?;
     // A completed experiment sweep is not a quality gate. Candidate refusals
     // stay explicit, and only trace refusal changes a well-formed run to exit 1.
     Ok(i32::from(trace_error.is_some()))

@@ -253,6 +253,18 @@ fn invalid_trace_refusals_keep_requested_candidates_and_exit_one() {
 }
 
 #[test]
+fn replay_output_is_capped_before_creating_a_partial_evidence_file() {
+    let fixture = Fixture::new();
+    fixture.inputs();
+    let mut trace = artifact();
+    trace["process"]["executable_name"] = json!("x".repeat(600_000));
+    fixture.json("trace.json", &trace);
+    assert!(fs::metadata(fixture.path("trace.json")).unwrap().len() < HARD_CAP);
+    assert!(super::super::run(fixture.arguments()).is_err());
+    assert!(!fixture.path("output.json").exists());
+}
+
+#[test]
 fn required_flags_duplicates_unknowns_and_numeric_bounds_are_rejected_before_io() {
     let fixture = Fixture::new();
     for name in [
