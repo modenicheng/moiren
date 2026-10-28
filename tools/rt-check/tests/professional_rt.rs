@@ -14,7 +14,6 @@ use moiren_engine::{
 };
 use moiren_windows_audio::capture;
 use moiren_windows_audio::clock_bridge;
-use moiren_windows_audio::latency;
 use moiren_windows_audio::native;
 use moiren_windows_audio::stats;
 use moiren_windows_audio::virtual_owner;
@@ -39,6 +38,9 @@ const NATIVE_SAMPLE_RATE: u32 = 48_000;
 #[path = "../../../crates/moiren-windows-audio/src/asio_rt_tests.rs"]
 #[allow(dead_code)]
 mod asio_rt;
+#[path = "../../../crates/moiren-windows-audio/src/latency/bounded_history.rs"]
+#[allow(dead_code)]
+pub(crate) mod bounded_history;
 #[path = "../../../crates/moiren-windows-audio/src/bridge.rs"]
 #[allow(dead_code)]
 mod bridge;
@@ -54,10 +56,16 @@ mod process_bridge;
 #[path = "../../../crates/moiren-windows-audio/src/process_loopback/replay.rs"]
 #[allow(dead_code)]
 mod process_replay;
+mod latency {
+    pub(crate) use super::bounded_history;
+    pub use moiren_windows_audio::latency::*;
+}
 mod process_loopback {
     pub(crate) use super::process_bridge::ProcessBridgeOptions;
     pub(crate) use super::process_replay::{
-        ObservedProcessTrace, ProcessReplayError, ProcessTraceArtifact, ProcessTraceOrigin,
+        ObservedProcessTrace, ProcessReplayError, ProcessTraceArchive, ProcessTraceArtifact,
+        ProcessTraceCollectionRefusal, ProcessTraceCollector, ProcessTraceDocument,
+        ProcessTraceOrigin,
     };
     pub use moiren_windows_audio::process_loopback::*;
 }

@@ -15,6 +15,11 @@ use thiserror::Error;
 #[path = "replay/artifact.rs"]
 mod artifact;
 pub use artifact::ProcessTraceArtifact;
+#[path = "replay/archive.rs"]
+mod archive;
+pub use archive::{
+    ProcessTraceArchive, ProcessTraceCollectionRefusal, ProcessTraceCollector, ProcessTraceDocument,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ProcessReplayError {
@@ -176,6 +181,29 @@ impl ObservedProcessTrace {
         packets: PacketHistorySnapshot,
         reads: QueueHistorySnapshot,
     ) -> Result<Self, ProcessReplayError> {
+        Self::from_complete_prefix(
+            process,
+            owner_generation,
+            input_rate,
+            consumer_rate,
+            prepared_demand,
+            packets,
+            reads,
+            256,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_complete_prefix(
+        process: ProcessIdentity,
+        owner_generation: u64,
+        input_rate: u32,
+        consumer_rate: u32,
+        prepared_demand: u32,
+        packets: PacketHistorySnapshot,
+        reads: QueueHistorySnapshot,
+        event_limit: usize,
+    ) -> Result<Self, ProcessReplayError> {
         if process.pid == 0 || process.creation_time_100ns == 0 || owner_generation == 0 {
             return Err(ProcessReplayError::InvalidIdentity);
         }
@@ -192,6 +220,7 @@ impl ObservedProcessTrace {
             packets.overwritten_events,
             packets.events.len(),
             packets.saturated,
+            event_limit,
         )?;
         closed_complete(
             reads.writer_finished,
@@ -199,6 +228,7 @@ impl ObservedProcessTrace {
             reads.overwritten_events,
             reads.events.len(),
             reads.saturated,
+            event_limit,
         )?;
         if packets.unavailable_clocks != 0
             || packets.regressed_clocks != 0
@@ -210,7 +240,12 @@ impl ObservedProcessTrace {
         let (mut writer, observer) = packet_history();
         let mut expected_generation = 1_u64;
         let mut work = 0_u64;
-        for event in &packets.events {
+        let work_limit = if event_limit == 256 {
+            MAX_WORK_FRAMES
+        } else {
+            16_777_216
+        };
+        for (index, event) in packets.events.iter().enumerate() {
             let sample = event.sample;
             validate_clock(sample.qpc_before_100ns, sample.qpc_after_100ns)?;
             if sample.origin != PacketPublicationOrigin::NativeCapture
@@ -227,19 +262,35 @@ impl ObservedProcessTrace {
             if sample.accepted_frames < sample.offered_frames {
                 expected_generation += 1;
             }
-            add_work(&mut work, sample.offered_frames)?;
+            add_work(&mut work, sample.offered_frames, work_limit)?;
             writer.record(sample);
+            // Validate every prefix before the fixed native ring overwrites
+            // it. Comparing only the final suffix would trust earlier edits.
+            if (index + 1).is_multiple_of(256) {
+                let canonical = observer
+                    .snapshot()
+                    .ok_or(ProcessReplayError::InvalidHistory)?;
+                if canonical.events != packets.events[index + 1 - 256..=index] {
+                    return Err(ProcessReplayError::InvalidHistory);
+                }
+            }
         }
         drop(writer);
-        if observer.snapshot().as_ref() != Some(&packets) {
+        let canonical = observer
+            .snapshot()
+            .ok_or(ProcessReplayError::InvalidHistory)?;
+        let mut expected = packets.clone();
+        expected.events = expected.events[expected.events.len().saturating_sub(256)..].to_vec();
+        expected.overwritten_events = expected.total_events - expected.events.len() as u64;
+        if canonical != expected {
             return Err(ProcessReplayError::InvalidHistory);
         }
         let (mut writer, observer) = queue_history();
         let mut reset_total = 0_u64;
-        for event in &reads.events {
+        for (index, event) in reads.events.iter().enumerate() {
             let sample = event.sample;
             validate_clock(sample.qpc_before_100ns, sample.qpc_after_100ns)?;
-            add_work(&mut work, sample.requested_frames)?;
+            add_work(&mut work, sample.requested_frames, work_limit)?;
             if sample.requested_frames > u64::from(prepared_demand) {
                 return Err(ProcessReplayError::UnsupportedShape);
             }
@@ -247,9 +298,23 @@ impl ObservedProcessTrace {
                 .checked_add(sample.resets)
                 .ok_or(ProcessReplayError::InvalidHistory)?;
             writer.record(sample);
+            if (index + 1).is_multiple_of(256) {
+                let canonical = observer
+                    .snapshot()
+                    .ok_or(ProcessReplayError::InvalidHistory)?;
+                if canonical.events != reads.events[index + 1 - 256..=index] {
+                    return Err(ProcessReplayError::InvalidHistory);
+                }
+            }
         }
         drop(writer);
-        if observer.snapshot().as_ref() != Some(&reads) {
+        let canonical = observer
+            .snapshot()
+            .ok_or(ProcessReplayError::InvalidHistory)?;
+        let mut expected = reads.clone();
+        expected.events = expected.events[expected.events.len().saturating_sub(256)..].to_vec();
+        expected.overwritten_events = expected.total_events - expected.events.len() as u64;
+        if canonical != expected {
             return Err(ProcessReplayError::InvalidHistory);
         }
         let first = reads.events[0].sample.before;
@@ -469,11 +534,12 @@ fn closed_complete(
     overwritten: u64,
     count: usize,
     saturated: bool,
+    event_limit: usize,
 ) -> Result<(), ProcessReplayError> {
     if !finished
         || saturated
         || total == 0
-        || total > 256
+        || total > event_limit as u64
         || overwritten != 0
         || count as u64 != total
     {
@@ -489,11 +555,11 @@ fn validate_clock(before: Option<u64>, after: Option<u64>) -> Result<(), Process
     }
 }
 
-fn add_work(work: &mut u64, frames: u64) -> Result<(), ProcessReplayError> {
+fn add_work(work: &mut u64, frames: u64, limit: u64) -> Result<(), ProcessReplayError> {
     *work = work
         .checked_add(frames)
         .ok_or(ProcessReplayError::UnsupportedShape)?;
-    if frames == 0 || frames > MAX_EVENT_FRAMES || *work > MAX_WORK_FRAMES {
+    if frames == 0 || frames > MAX_EVENT_FRAMES || *work > limit {
         return Err(ProcessReplayError::UnsupportedShape);
     }
     Ok(())

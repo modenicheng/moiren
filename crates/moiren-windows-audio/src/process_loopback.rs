@@ -11,7 +11,8 @@ pub use measured::{MeasuredAdmissionError, MeasuredProcessDelivery};
 mod replay;
 pub use replay::{
     ObservedProcessTrace, OfferedSupplyAssumption, ProcessReplayError, ProcessReplayReport,
-    ProcessReplayStatus, ProcessTraceArtifact, ProcessTraceOrigin,
+    ProcessReplayStatus, ProcessTraceArchive, ProcessTraceArtifact, ProcessTraceCollectionRefusal,
+    ProcessTraceCollector, ProcessTraceDocument, ProcessTraceOrigin,
 };
 #[cfg(windows)]
 pub(crate) mod activation;

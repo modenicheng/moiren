@@ -1,6 +1,6 @@
 //! Bounded owner-local diagnostics. Queue and callback observations are not
 //! an end-to-end latency measurement. Quantiles are histogram upper bounds.
-mod bounded_history;
+pub(crate) mod bounded_history;
 mod budget;
 mod delivery;
 pub mod events;
