@@ -72,6 +72,8 @@ pub(super) struct Graph {
     recovered_renderer: Option<DemandRenderer>,
     bridge: Option<BridgeObserver>,
     timeline: Option<TimelineObserver>,
+    process: Option<ProcessIdentity>,
+    prepared_demand: u32,
     pub(super) capture_report: Option<CaptureReport>,
     pub(super) render_report: Option<RenderReport>,
     pub(super) aborts: Vec<Value>,
@@ -91,6 +93,8 @@ impl Graph {
             recovered_renderer: None,
             bridge: None,
             timeline: None,
+            process: None,
+            prepared_demand: 0,
             capture_report: None,
             render_report: None,
             aborts: Vec::with_capacity(3),
@@ -106,6 +110,10 @@ impl Graph {
         identity: ProcessIdentity,
         mut stop_peers: impl FnMut() -> Option<String>,
     ) -> Result<()> {
+        self.process = Some(identity.clone());
+        // Renderer splits every native wake into at most one Engine block per
+        // actual source read. This records read demand, not per-wake admission.
+        self.prepared_demand = options.engine_block_frames;
         let capture = match prepare_process_capture_with_gate_returning_with_abort(
             ProcessLoopbackOptions {
                 artifact: Some(PcmArtifactConfig::new(
@@ -260,6 +268,29 @@ impl Graph {
         }
         Ok(())
     }
+
+    pub(super) fn export_trace(
+        &self,
+        paths: &ArtifactPaths,
+        report: &mut super::super::NativeReport,
+    ) -> Result<()> {
+        match (&self.bridge, &self.process) {
+            (Some(observer), Some(process)) => super::super::process_trace::export_into(
+                report,
+                paths,
+                observer,
+                process.clone(),
+                self.prepared_demand,
+            ),
+            _ => {
+                report.process_trace = Some(
+                    json!({"schema_version":1,"exported":false,"qualified":false,
+                    "failure":"Process bridge was not prepared"}),
+                );
+                Ok(())
+            }
+        }
+    }
 }
 
 pub(super) fn persist_artifact_with<W: Write>(
@@ -300,3 +331,7 @@ pub(super) fn persist_artifact_with<W: Write>(
     );
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "graph/tests.rs"]
+mod tests;

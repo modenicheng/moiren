@@ -33,6 +33,10 @@ use std::{
 #[path = "source.rs"]
 mod source;
 
+#[cfg(any(windows, test))]
+#[path = "process_trace.rs"]
+mod process_trace;
+
 #[path = "validation_policy.rs"]
 mod validation_policy;
 use validation_policy::{ValidationMode, ValidationPolicy};
@@ -244,6 +248,7 @@ struct NativeReport {
     error: Option<String>,
     collection: Option<Value>,
     controlled_load: Option<Value>,
+    process_trace: Option<Value>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -261,6 +266,7 @@ struct ArtifactPaths {
     capture_pcm: Option<String>,
     capture_pcm_metadata: Option<String>,
     diagnostic_observations: Option<String>,
+    process_trace: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -1065,6 +1071,14 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
     let capture_pcm_metadata = options.artifact_dir.join("capture.metadata.json");
     let report_key = output_path_key(&report)?;
     let manifest_key = output_path_key(&manifest)?;
+    let process_trace = options.artifact_dir.join("process-trace.json");
+    let process_trace_key = output_path_key(&process_trace)?;
+    if options.source_kind == EvidenceSourceKind::ProcessLoopback {
+        ensure!(
+            report_key != process_trace_key && manifest_key != process_trace_key,
+            "report/manifest aliases reserved process-trace.json"
+        );
+    }
     let source_path = options.artifact_dir.join("source-schedule.json");
     let source_key = output_path_key(&source_path)?;
     let reserved: Vec<PathBuf> = [
@@ -1103,6 +1117,10 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
     .flatten()
     {
         let key = output_path_key(input)?;
+        ensure!(
+            options.source_kind != EvidenceSourceKind::ProcessLoopback || key != process_trace_key,
+            "input aliases reserved process-trace.json"
+        );
         ensure!(
             key != source_key && key != report_key && key != manifest_key,
             "input must not alias reserved source plan, report or manifest output"
@@ -1231,6 +1249,8 @@ fn prepare_paths(options: &LiveOptions) -> Result<ArtifactPaths> {
                 .to_string_lossy()
                 .into_owned()
         }),
+        process_trace: (options.source_kind == EvidenceSourceKind::ProcessLoopback)
+            .then(|| process_trace.to_string_lossy().into_owned()),
     })
 }
 
@@ -1387,6 +1407,7 @@ impl ArtifactPaths {
             capture_pcm: self.capture_pcm.clone(),
             capture_pcm_metadata: self.capture_pcm_metadata.clone(),
             diagnostic_observations: self.diagnostic_observations.clone(),
+            process_trace: self.process_trace.clone(),
         }
     }
 }
@@ -1914,7 +1935,7 @@ mod native {
                 },
                 bridge: *bridge,
                 latency_telemetry: options.telemetry,
-                target: identity,
+                target: identity.clone(),
                 duration,
             },
             stop.clone(),
@@ -2067,6 +2088,16 @@ mod native {
         // Keep the observer alive across both joins so this is the final
         // runtime state, rather than the all-zero pre-activation snapshot.
         native_report.bridge = Some(serde_json::to_value(bridge_observer.snapshot())?);
+        // The source and renderer have been destroyed by both joins. Preserve
+        // actual writer-closure/truncation facts, never infer successful cleanup
+        // or complete history from the registry/owner being stopped.
+        let trace_export = process_trace::export_into(
+            native_report,
+            paths,
+            &bridge_observer,
+            identity,
+            options.engine_block_frames,
+        );
         // Keep the metadata read above in the report path even if the source
         // process exits during the finite run.
         if render_info.timing.capacity_frames == 0 {
@@ -2082,6 +2113,7 @@ mod native {
         // Preserve final owner/bridge reports before any wait on the sink.
         // A stalled OS write may delay exit, never native cancellation.
         let result = soak_cleanup::combine(collection, owners);
+        let result = soak_cleanup::combine(result, trace_export);
         soak_cleanup::combine(result, finish_journal(&mut journal, native_report))
     }
 

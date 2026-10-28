@@ -985,6 +985,12 @@ pub(super) fn collect(
     }
     let mut persistence = Ok(());
     if let Some(graph) = &guard.graph {
+        if let Err(error) = graph.export_trace(paths, native) {
+            append_failure(
+                &mut guard.failures,
+                &format!("persist Process trace: {error:#}"),
+            );
+        }
         native.capture = graph
             .capture_report
             .as_ref()
