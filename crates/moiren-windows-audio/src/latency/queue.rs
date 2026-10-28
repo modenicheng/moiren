@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 const HISTORY_CAPACITY: usize = 256;
-const EVENT_FIELDS: usize = 16;
+const EVENT_FIELDS: usize = 17;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct QueueBoundary {
@@ -50,8 +50,12 @@ pub struct QueueReadSample {
     /// Per-read reset count, not a cumulative telemetry counter.
     pub resets: u64,
     pub underrun_frames: u64,
-    /// Labels the before boundary only; None does not invalidate inventory.
+    /// Host clock immediately before acquiring the before inventory boundary.
+    /// Together with after, brackets the read; not native sample/device time.
     pub qpc_before_100ns: Option<u64>,
+    /// Host clock immediately after acquiring the after inventory boundary.
+    /// A missing bracket endpoint does not invalidate inventory observations.
+    pub qpc_after_100ns: Option<u64>,
 }
 
 impl QueueReadSample {
@@ -182,13 +186,22 @@ impl QueueHistoryWriter {
             return;
         }
         sample.qpc_before_100ns = sample.qpc_before_100ns.filter(|&stamp| stamp != 0);
+        sample.qpc_after_100ns = sample.qpc_after_100ns.filter(|&stamp| stamp != 0);
         let regressed = sample
             .qpc_before_100ns
             .zip(self.last_clock)
-            .is_some_and(|(stamp, last)| stamp < last);
+            .is_some_and(|(stamp, last)| stamp < last)
+            || sample
+                .qpc_after_100ns
+                .zip(sample.qpc_before_100ns)
+                .is_some_and(|(after, before)| after < before)
+            || sample
+                .qpc_after_100ns
+                .zip(self.last_clock)
+                .is_some_and(|(stamp, last)| stamp < last);
+        let missing = sample.qpc_before_100ns.is_none() || sample.qpc_after_100ns.is_none();
         let (Some(unavailable), Some(regressed_count)) = (
-            self.unavailable
-                .checked_add(u64::from(sample.qpc_before_100ns.is_none())),
+            self.unavailable.checked_add(u64::from(missing)),
             self.regressed.checked_add(u64::from(regressed)),
         ) else {
             self.mark_saturated();
@@ -214,6 +227,7 @@ impl QueueHistoryWriter {
             sample.resets,
             sample.underrun_frames,
             sample.qpc_before_100ns.unwrap_or(0),
+            sample.qpc_after_100ns.unwrap_or(0),
         ];
         let event = &self.shared.events[((total - 1) % HISTORY_CAPACITY as u64) as usize];
         for (slot, field) in event.iter().zip(fields) {
@@ -228,7 +242,10 @@ impl QueueHistoryWriter {
         self.regressed = regressed_count;
         // Missing clocks cannot conceal a regression against the last known
         // stamp; inventory remains useful even when timing is unavailable.
-        self.last_clock = sample.qpc_before_100ns.or(self.last_clock);
+        self.last_clock = sample
+            .qpc_after_100ns
+            .or(sample.qpc_before_100ns)
+            .or(self.last_clock);
         self.last_boundary = Some(sample.after);
     }
 
@@ -277,6 +294,7 @@ impl QueueHistoryObserver {
                     resets: f[13],
                     underrun_frames: f[14],
                     qpc_before_100ns: (f[15] != 0).then_some(f[15]),
+                    qpc_after_100ns: (f[16] != 0).then_some(f[16]),
                 },
             });
         }

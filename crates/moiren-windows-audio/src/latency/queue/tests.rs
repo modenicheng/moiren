@@ -21,6 +21,7 @@ fn sample(n: u64) -> QueueReadSample {
         resets: 0,
         underrun_frames: 0,
         qpc_before_100ns: Some(n * 10),
+        qpc_after_100ns: Some(n * 10 + 1),
     }
 }
 
@@ -73,10 +74,18 @@ fn bounded_history_keeps_exact_suffix_and_overwrite_counts() {
 #[test]
 fn missing_and_regressed_clocks_remain_diagnostic_and_explicit() {
     let (mut writer, observer) = queue_history();
-    let stamps = [Some(100), None, Some(90), Some(0), Some(80), Some(110)];
-    for (index, stamp) in stamps.into_iter().enumerate() {
+    let clocks = [
+        (Some(100), Some(101)),
+        (None, None),
+        (Some(90), Some(91)),
+        (Some(0), Some(0)),
+        (Some(80), Some(81)),
+        (Some(110), Some(111)),
+    ];
+    for (index, (before, after)) in clocks.into_iter().enumerate() {
         let mut value = sample(index as u64 + 1);
-        value.qpc_before_100ns = stamp;
+        value.qpc_before_100ns = before;
+        value.qpc_after_100ns = after;
         writer.record(value);
     }
     let snapshot = observer.snapshot().unwrap();
@@ -84,7 +93,158 @@ fn missing_and_regressed_clocks_remain_diagnostic_and_explicit() {
     assert_eq!(snapshot.unavailable_clocks, 2);
     assert_eq!(snapshot.regressed_clocks, 2);
     assert_eq!(snapshot.events[1].sample.qpc_before_100ns, None);
+    assert_eq!(snapshot.events[1].sample.qpc_after_100ns, None);
     assert_eq!(snapshot.events[3].sample.qpc_before_100ns, None);
+    assert_eq!(snapshot.events[3].sample.qpc_after_100ns, None);
+    assert!(!snapshot.saturated);
+}
+
+#[test]
+fn read_bracket_roundtrips_exact_u64_stamps_without_fabricated_sample_time() {
+    let (mut writer, observer) = queue_history();
+    let value = QueueReadSample {
+        qpc_before_100ns: Some((1 << 53) + 7),
+        qpc_after_100ns: Some(u64::MAX),
+        ..sample(1)
+    };
+    writer.record(value);
+    let snapshot = observer.snapshot().unwrap();
+    assert_eq!(snapshot.events[0].sample, value);
+    assert_eq!(snapshot.unavailable_clocks, 0);
+    assert_eq!(snapshot.regressed_clocks, 0);
+    assert!(!snapshot.saturated);
+    let json = serde_json::to_value(snapshot).unwrap();
+    assert_eq!(
+        json["events"][0]["sample"]["qpc_before_100ns"].as_u64(),
+        value.qpc_before_100ns
+    );
+    assert_eq!(
+        json["events"][0]["sample"]["qpc_after_100ns"].as_u64(),
+        value.qpc_after_100ns
+    );
+}
+
+#[test]
+fn either_missing_or_zero_bracket_endpoint_counts_unknown_once_per_read() {
+    let (mut writer, observer) = queue_history();
+    let mut sequence = 0;
+    for before in [None, Some(0), Some(100)] {
+        for after in [None, Some(0), Some(100)] {
+            sequence += 1;
+            let value = QueueReadSample {
+                qpc_before_100ns: before,
+                qpc_after_100ns: after,
+                ..sample(sequence)
+            };
+            writer.record(value);
+            let observed = observer.snapshot().unwrap();
+            assert_eq!(
+                observed.events.last().unwrap().sample,
+                QueueReadSample {
+                    qpc_before_100ns: before.filter(|&stamp| stamp != 0),
+                    qpc_after_100ns: after.filter(|&stamp| stamp != 0),
+                    ..value
+                }
+            );
+        }
+    }
+    let snapshot = observer.snapshot().unwrap();
+    assert_eq!(snapshot.total_events, 9);
+    assert_eq!(snapshot.unavailable_clocks, 8);
+    assert_eq!(snapshot.regressed_clocks, 0);
+    assert!(!snapshot.saturated);
+}
+
+#[test]
+fn either_endpoint_and_internal_reversal_count_at_most_one_regression() {
+    for (before, after, regressed) in [
+        (Some(110), Some(110), false),
+        (Some(111), Some(112), false),
+        (Some(109), Some(120), true),
+        (Some(120), Some(119), true),
+        (Some(120), Some(100), true),
+        (None, Some(109), true),
+        (Some(109), None, true),
+        (Some(109), Some(100), true),
+        (None, None, false),
+        (Some(0), Some(109), true),
+        (Some(111), Some(0), false),
+        (Some(0), Some(0), false),
+    ] {
+        let (mut writer, observer) = queue_history();
+        writer.record(QueueReadSample {
+            qpc_before_100ns: Some(100),
+            qpc_after_100ns: Some(110),
+            ..sample(1)
+        });
+        let value = QueueReadSample {
+            qpc_before_100ns: before,
+            qpc_after_100ns: after,
+            ..sample(2)
+        };
+        writer.record(value);
+        let snapshot = observer.snapshot().unwrap();
+        assert_eq!(snapshot.total_events, 2);
+        assert_eq!(snapshot.regressed_clocks, u64::from(regressed), "{value:?}");
+        let before = before.filter(|&stamp| stamp != 0);
+        let after = after.filter(|&stamp| stamp != 0);
+        assert_eq!(
+            snapshot.unavailable_clocks,
+            u64::from(before.is_none() || after.is_none()),
+            "{value:?}"
+        );
+        assert_eq!(
+            snapshot.events[1].sample,
+            QueueReadSample {
+                qpc_before_100ns: before,
+                qpc_after_100ns: after,
+                ..value
+            }
+        );
+        assert!(!snapshot.saturated);
+    }
+}
+
+#[test]
+fn last_clock_uses_after_then_before_and_survives_wholly_unknown_reads() {
+    let (mut writer, observer) = queue_history();
+    for (index, (before, after)) in [
+        (Some(100), Some(110)),
+        (None, None),
+        (None, Some(90)),
+        (Some(80), None),
+        (Some(70), Some(60)),
+        (Some(65), Some(66)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        writer.record(QueueReadSample {
+            qpc_before_100ns: before,
+            qpc_after_100ns: after,
+            ..sample(index as u64 + 1)
+        });
+    }
+    let snapshot = observer.snapshot().unwrap();
+    assert_eq!(snapshot.unavailable_clocks, 3);
+    assert_eq!(snapshot.regressed_clocks, 3);
+    assert_eq!(snapshot.events[4].sample.qpc_before_100ns, Some(70));
+    assert_eq!(snapshot.events[4].sample.qpc_after_100ns, Some(60));
+    assert!(!snapshot.saturated);
+}
+
+#[test]
+fn legacy_before_only_clock_keeps_valid_inventory_but_not_a_complete_bracket() {
+    let (mut writer, observer) = queue_history();
+    let value = QueueReadSample {
+        qpc_after_100ns: None,
+        ..sample(1)
+    };
+    writer.record(value);
+    let snapshot = observer.snapshot().unwrap();
+    assert_eq!(snapshot.events[0].sample, value);
+    assert_eq!(snapshot.unavailable_clocks, 1);
+    assert_eq!(snapshot.regressed_clocks, 0);
     assert!(!snapshot.saturated);
 }
 
@@ -250,7 +410,7 @@ fn explicit_saturation_keeps_the_last_valid_history_and_is_sticky() {
 
 #[test]
 fn exhausted_version_sequence_and_clock_counters_do_not_wrap() {
-    for case in 0..4 {
+    for case in 0..7 {
         let (mut writer, observer) = queue_history();
         writer.record(sample(1));
         let mut next = sample(2);
@@ -264,6 +424,20 @@ fn exhausted_version_sequence_and_clock_counters_do_not_wrap() {
             3 => {
                 writer.regressed = u64::MAX;
                 next.qpc_before_100ns = Some(1);
+            }
+            4 => {
+                writer.unavailable = u64::MAX;
+                next.qpc_after_100ns = None;
+            }
+            5 => {
+                writer.regressed = u64::MAX;
+                next.qpc_before_100ns = None;
+                next.qpc_after_100ns = Some(1);
+            }
+            6 => {
+                writer.regressed = u64::MAX;
+                next.qpc_before_100ns = Some(50);
+                next.qpc_after_100ns = Some(40);
             }
             _ => unreachable!(),
         }
@@ -333,7 +507,10 @@ fn concurrent_atomic_history_never_mixes_event_fields_or_counts() {
 #[test]
 fn storage_budget_includes_all_published_atomic_slots() {
     assert_eq!(queue_history_storage_bytes(), size_of::<PublishedHistory>());
-    assert!(queue_history_storage_bytes() >= 256 * 16 * size_of::<AtomicU64>());
+    assert_eq!(
+        queue_history_storage_bytes(),
+        (256 * 17 + 5) * size_of::<AtomicU64>()
+    );
 }
 
 #[test]
@@ -341,9 +518,11 @@ fn snapshots_serialize_diagnostic_unknown_clock_without_synthesizing_time() {
     let (mut writer, observer) = queue_history();
     let mut value = sample(1);
     value.qpc_before_100ns = None;
+    value.qpc_after_100ns = None;
     writer.record(value);
     let json = serde_json::to_value(observer.snapshot().unwrap()).unwrap();
     assert!(json["events"][0]["sample"]["qpc_before_100ns"].is_null());
+    assert!(json["events"][0]["sample"]["qpc_after_100ns"].is_null());
     assert_eq!(json["unavailable_clocks"], 1);
     assert_eq!(json["events"][0]["sequence"], 1);
 }

@@ -53,6 +53,89 @@ fn queue_inventory_records_priming_and_exact_publication_retirement_frontiers() 
     assert_eq!(read.after.held_frames, 2);
     assert_eq!(read.output_frames, 3);
     assert_eq!(read.qpc_before_100ns, Some(200));
+    assert_eq!(
+        read.qpc_after_100ns, None,
+        "a supplied before stamp is not an after stamp"
+    );
+    assert_eq!(history.unavailable_clocks, 2);
+    assert!(!history.saturated);
+}
+
+#[test]
+fn queue_read_envelope_clocks_bracket_actual_transfer_and_empty_priming() {
+    use std::cell::Cell;
+    let (mut ingress, mut source, observer) = capture_bridge(config()).unwrap();
+    let calls = Cell::new(0_u64);
+    source
+        .read_interleaved_with_publication_clock(&mut [0.0; 2], || {
+            let call = calls.get();
+            calls.set(call + 1);
+            Some(100 + call)
+        })
+        .unwrap();
+    assert_eq!(
+        calls.get(),
+        2,
+        "nonzero priming request also has a full envelope"
+    );
+    ingress.push_packet(&[], packet(8, 0)).unwrap();
+    calls.set(0);
+    source
+        .read_interleaved_with_publication_clock(&mut [0.0; 6], || {
+            let call = calls.get();
+            assert_eq!(
+                observer.snapshot().output_frames,
+                if call == 0 { 0 } else { 3 }
+            );
+            calls.set(call + 1);
+            Some(200 + call)
+        })
+        .unwrap();
+    assert_eq!(calls.get(), 2);
+    let history = observer.queue_history().unwrap();
+    assert_eq!(history.events[0].sample.qpc_before_100ns, Some(100));
+    assert_eq!(history.events[0].sample.qpc_after_100ns, Some(101));
+    assert_eq!(history.events[1].sample.qpc_before_100ns, Some(200));
+    assert_eq!(history.events[1].sample.qpc_after_100ns, Some(201));
+    assert_eq!(history.unavailable_clocks, 0);
+    assert_eq!(history.regressed_clocks, 0);
+    assert_eq!(history.events[1].sample.after.retired_frames(), Some(2));
+    assert!(
+        source.oldest_frame_age(300).is_none(),
+        "host envelope is not sample time"
+    );
+}
+
+#[test]
+fn queue_read_envelope_invalid_and_zero_request_do_not_read_clocks() {
+    let (_ingress, mut source, observer) = capture_bridge(config()).unwrap();
+    let clock = || -> Option<u64> { panic!("no request, no timing observation") };
+    assert!(
+        source
+            .read_interleaved_with_publication_clock(&mut [0.0; 1], clock)
+            .is_err()
+    );
+    source
+        .read_interleaved_with_publication_clock(&mut [], clock)
+        .unwrap();
+    assert!(observer.queue_history().unwrap().events.is_empty());
+}
+
+#[test]
+fn queue_read_envelope_stays_allocation_free_with_exact_retained_suffix() {
+    let (mut ingress, mut source, observer) = capture_bridge(config()).unwrap();
+    common::assert_allocates_nothing(|| {
+        for stamp in 1..=300 {
+            ingress.push_packet(&[], packet(3, 0)).unwrap();
+            source
+                .read_interleaved_with_publication_clock(&mut [0.0; 6], || Some(stamp))
+                .unwrap();
+        }
+    });
+    let history = observer.queue_history().unwrap();
+    assert_eq!(history.total_events, 300);
+    assert_eq!(history.overwritten_events, 44);
+    assert_eq!(history.events[0].sample.qpc_after_100ns, Some(45));
     assert_eq!(history.unavailable_clocks, 0);
     assert!(!history.saturated);
 }

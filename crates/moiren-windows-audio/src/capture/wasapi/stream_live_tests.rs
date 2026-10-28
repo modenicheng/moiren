@@ -210,6 +210,18 @@ fn native_delivery_is_visible_before_join_and_age_clock_works_with_trace_disable
         let mut source = prepared.source;
         source.read_interleaved(&mut [0.0; 16]).unwrap();
         source.read_interleaved(&mut [0.0; 2]).unwrap();
+        let reads = prepared.observer.queue_history().unwrap();
+        assert_eq!(reads.total_events, 2);
+        for event in &reads.events {
+            assert!(
+                event.sample.qpc_before_100ns.unwrap() <= event.sample.qpc_after_100ns.unwrap()
+            );
+        }
+        assert_eq!(
+            reads.unavailable_clocks, 0,
+            "prepared host timing survives disabled trace collection"
+        );
+        assert_eq!(reads.regressed_clocks, 0);
         let age = serde_json::to_value(prepared.observer.snapshot()).unwrap();
         let running = !prepared.session.is_finished();
         let evidence_first = evidence.pop();

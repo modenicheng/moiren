@@ -144,6 +144,27 @@ impl ClockSource {
             }),
         )
     }
+
+    /// Bracket an actual consumer read with a host clock, never a source
+    /// sample timestamp. The prepared native path uses the same mechanism;
+    /// this injectable variant allows deterministic envelope verification.
+    pub fn read_interleaved_with_publication_clock(
+        &mut self,
+        output: &mut [f32],
+        mut clock: impl FnMut() -> Option<u64>,
+    ) -> Result<BoundaryReport, ClockBridgeError> {
+        if !output.len().is_multiple_of(2) {
+            self.counters.oldest_frame_age.publish(None);
+            return Err(ClockBridgeError::InvalidOutput);
+        }
+        output.fill(0.0);
+        Ok(self.read_to_with_clock(
+            output.len() / 2,
+            None,
+            |frame, pair| output[frame * 2..frame * 2 + 2].copy_from_slice(&pair),
+            &mut clock,
+        ))
+    }
     fn add_removed(&mut self, frames: usize) {
         if let Some(total) = self.removed_frames.checked_add(frames as u64) {
             self.removed_frames = total;
@@ -323,12 +344,24 @@ impl ClockSource {
         now_qpc_100ns: Option<u64>,
         set: impl FnMut(usize, [f32; 2]),
     ) -> BoundaryReport {
+        let clock = self.age_clock;
+        self.read_to_with_clock(frames, now_qpc_100ns, set, &mut || {
+            clock.as_ref().and_then(QpcClock::now)
+        })
+    }
+
+    fn read_to_with_clock(
+        &mut self,
+        frames: usize,
+        now_qpc_100ns: Option<u64>,
+        set: impl FnMut(usize, [f32; 2]),
+        clock: &mut impl FnMut() -> Option<u64>,
+    ) -> BoundaryReport {
         if frames == 0 {
             self.counters.oldest_frame_age.publish(None);
             return BoundaryReport::default();
         }
-        let now_qpc_100ns =
-            now_qpc_100ns.or_else(|| self.age_clock.as_ref().and_then(QpcClock::now));
+        let now_qpc_100ns = now_qpc_100ns.or_else(&mut *clock);
         let before = self.queue_boundary(self.rx.slots());
         let mut sample = QueueReadSample {
             requested_frames: frames as u64,
@@ -340,6 +373,7 @@ impl ClockSource {
         let reset_discarded = self.reset_discarded_frames;
         let report = self.read_inventory(frames, now_qpc_100ns, set, &mut sample);
         sample.after = self.queue_boundary(self.rx.slots());
+        sample.qpc_after_100ns = clock();
         sample.output_frames = report.transferred_frames as u64;
         sample.resets = self.reset_count - resets;
         sample.reset_discarded_frames = self.reset_discarded_frames - reset_discarded;
