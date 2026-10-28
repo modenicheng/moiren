@@ -17,9 +17,10 @@ use crate::native::{
 };
 use crate::negotiation::{
     EnginePeriodicityPolicy, EnginePeriods, LegacySharedInit, SUBFORMAT_FLOAT, SUBFORMAT_PCM,
-    StageError, client3_rejects_format, exclusive_format_supported, exclusive_frames_duration,
-    friendly_name, initialize_exclusive, initialize_legacy_shared, parse_descriptor,
-    shared_engine_periods,
+    StageError, aligned_shared_buffer_duration, client3_rejects_format, exclusive_format_supported,
+    exclusive_frames_duration, friendly_name, initialize_exclusive, initialize_legacy_shared,
+    initialize_legacy_shared_with_duration, parse_descriptor, shared_engine_periods,
+    shared_initialize_retryable,
 };
 use crate::owner::{Apartment, LeaseFallback, OwnedHandle, PacketLease, TaskMemory};
 use moiren_engine::{
@@ -415,7 +416,12 @@ impl WasapiStream {
             )?;
             client
         } else {
-            initialize_shared_legacy(&client, &format.Format, "Initialize(Shared)")?;
+            initialize_shared_legacy(
+                &client,
+                &format.Format,
+                "Initialize(Shared)",
+                period_report.as_mut().expect("Shared period report"),
+            )?;
             period_report
                 .as_mut()
                 .expect("Shared period report")
@@ -918,7 +924,12 @@ fn negotiate_shared_exact(
             sample_format,
             period,
         );
-        initialize_shared_legacy(client, &format.Format, "Initialize(Shared compatibility)")?;
+        initialize_shared_legacy(
+            client,
+            &format.Format,
+            "Initialize(Shared compatibility)",
+            report,
+        )?;
         report.initialization_api = Some(SharedInitializationApi::LegacyClient);
         report.fallback_reason = Some(SharedFallbackReason::WindowsFormatConversion);
         return Ok(());
@@ -941,7 +952,12 @@ fn negotiate_shared_exact(
                 error.code().0 as u32,
                 period,
             );
-            initialize_shared_legacy(client, &format.Format, "Initialize(Shared compatibility)")?;
+            initialize_shared_legacy(
+                client,
+                &format.Format,
+                "Initialize(Shared compatibility)",
+                report,
+            )?;
             report.initialization_api = Some(SharedInitializationApi::LegacyClient);
             None
         }
@@ -1021,6 +1037,7 @@ fn negotiate_shared_exact(
                     client,
                     &format.Format,
                     "Initialize(Shared compatibility)",
+                    report,
                 )?;
                 report.initialization_api = Some(SharedInitializationApi::LegacyClient);
             }
@@ -1320,22 +1337,72 @@ fn initialize_shared_legacy(
     client: &IAudioClient,
     format: &WAVEFORMATEX,
     stage: &'static str,
+    report: &mut SharedPeriodReport,
 ) -> Result<(), BackendError> {
     // D4: professional keeps Windows' default persisted-session behavior
     // (no NOPERSIST) and always converts between its fixed client format and
     // the endpoint mix; the legacy shared stack passes its own combination.
-    // SAFETY: format is the caller's live descriptor for this call.
-    api(stage, unsafe {
-        initialize_legacy_shared(
+    // SAFETY: format is the caller's live descriptor for both calls.
+    let flags = LegacySharedInit {
+        auto_convert: true,
+        nopersist: false,
+    };
+    let init_default =
+        || unsafe { initialize_legacy_shared(client, std::ptr::from_ref(format), None, flags) };
+    let init_with_duration = |duration: i64| unsafe {
+        initialize_legacy_shared_with_duration(
             client,
             std::ptr::from_ref(format),
             None,
-            LegacySharedInit {
-                auto_convert: true,
-                nopersist: false,
-            },
+            flags,
+            duration,
         )
-    })
+    };
+    let initial = match init_default() {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    if !shared_initialize_retryable(initial.code()) {
+        return api(stage, Err(initial));
+    }
+    // The engine can reject the 0/0 default durations on the AUTOCONVERTPCM
+    // path (observed as raw 0x8889000A). Retry exactly once with an explicit
+    // buffer duration of two engine periods; a failed shared Initialize left
+    // this client un-initialized, so it stays reusable (unlike the exclusive
+    // alignment flow, which must activate a fresh client).
+    let (mut default_period, mut minimum_period) = (0, 0);
+    let aligned = match unsafe {
+        client.GetDevicePeriod(Some(&mut default_period), Some(&mut minimum_period))
+    } {
+        Ok(()) => aligned_shared_buffer_duration(default_period)
+            .or_else(|| aligned_shared_buffer_duration(minimum_period)),
+        Err(error) => {
+            log::warn!(
+                target: "moiren::audio::wasapi",
+                "WASAPI Shared aligned-duration retry skipped; GetDevicePeriod failed: hresult=0x{:08X} initial_hresult=0x{:08X}",
+                error.code().0 as u32,
+                initial.code().0 as u32,
+            );
+            None
+        }
+    };
+    let Some(duration) = aligned else {
+        return api(stage, Err(initial));
+    };
+    log::warn!(
+        target: "moiren::audio::wasapi",
+        "WASAPI Shared compatibility initialization returned hresult=0x{:08X}; retrying once with an aligned buffer duration of {duration} 100ns units",
+        initial.code().0 as u32,
+    );
+    match init_with_duration(duration) {
+        Ok(()) => {
+            report.fallback_reason = Some(SharedFallbackReason::AlignedDurationRetry);
+            Ok(())
+        }
+        // Retain the original rejection as the surfaced diagnosis; the retry
+        // HRESULT stays in the log line above for evidence.
+        Err(_retry) => api(stage, Err(initial)),
+    }
 }
 
 fn same_format(left: &WAVEFORMATEXTENSIBLE, right: &WAVEFORMATEXTENSIBLE) -> bool {

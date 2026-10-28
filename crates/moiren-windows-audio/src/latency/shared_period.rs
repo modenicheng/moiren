@@ -36,6 +36,10 @@ pub enum SharedFallbackReason {
     CapabilityQueryUnsupported,
     EnginePeriodLocked,
     WindowsFormatConversion,
+    /// Default-duration shared Initialize was rejected (for example raw
+    /// 0x8889000A on the conversion path); one explicit aligned-duration
+    /// retry ran.
+    AlignedDurationRetry,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
