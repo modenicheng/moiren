@@ -379,6 +379,7 @@ fn process_bridge_storage_is_admitted_within_the_project_audio_budget() {
         }),
         engine_sample_rate: 48_000,
         max_demand_frames: 256,
+        age_limit_100ns: None,
     };
     let backend = ProfessionalBackend::<f32>::new()
         .unwrap()

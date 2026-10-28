@@ -118,3 +118,41 @@ fn startup_preserves_both_transport_requests_without_inventing_an_active_owner()
     assert_eq!(context.active_transport_latency, None);
     assert_eq!(context.audio_settings, Default::default());
 }
+
+#[test]
+fn process_age_intent_persists_without_claiming_an_active_or_measurable_age() {
+    let mut saved = serde_json::to_value(AppPreferences::default()).unwrap();
+    let mut input = serde_json::to_value(ExpertInputBuffer::default()).unwrap();
+    input["age_limit_100ns"] = json!(100_000);
+    saved["transport_latency"]["process"] = input;
+    let preferences: AppPreferences = serde_json::from_value(saved).unwrap();
+    preferences.validate().unwrap();
+    let restored = serde_json::to_value(&preferences).unwrap();
+    assert_eq!(
+        restored["transport_latency"]["process"]["age_limit_100ns"],
+        100_000
+    );
+    let context = moiren_app::project::StartupDocuments {
+        preferences,
+        project: None,
+    }
+    .into_context()
+    .unwrap();
+    assert_eq!(context.active_transport_latency, None);
+    assert_eq!(
+        serde_json::to_value(context.transport_latency).unwrap()["process"]["age_limit_100ns"],
+        100_000
+    );
+}
+
+#[test]
+fn process_age_intent_cannot_be_silently_used_as_a_vad_setting() {
+    let mut requested = serde_json::to_value(TransportLatencySettings::default()).unwrap();
+    let mut input = serde_json::to_value(ExpertInputBuffer::default()).unwrap();
+    input["age_limit_100ns"] = json!(100_000);
+    requested["vad"] = input;
+    let settings: TransportLatencySettings = serde_json::from_value(requested).unwrap();
+    let error = settings.validate().unwrap_err();
+    assert!(error.contains("VAD"), "{error}");
+    assert!(error.contains("Process"), "{error}");
+}

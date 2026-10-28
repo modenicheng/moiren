@@ -18,6 +18,10 @@ pub struct ExpertInputBuffer {
     pub jitter_frames: u32,
     pub max_packet_frames: u32,
     pub max_gap_frames: u32,
+    /// Process-only requested sample-age limit, not measured queue duration.
+    /// Persisted as intent; native Process preparation explicitly refuses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_limit_100ns: Option<u64>,
     #[serde(default)]
     pub provenance: DeliveryProvenance,
 }
@@ -30,6 +34,7 @@ impl Default for ExpertInputBuffer {
             jitter_frames: 96,
             max_packet_frames: 480,
             max_gap_frames: 480,
+            age_limit_100ns: None,
             provenance: DeliveryProvenance::Declared,
         }
     }
@@ -68,6 +73,12 @@ pub struct TransportLatencySettings {
 
 impl TransportLatencySettings {
     pub fn validate(self) -> Result<(), String> {
+        if self
+            .vad
+            .is_some_and(|input| input.age_limit_100ns.is_some())
+        {
+            return Err("VAD: age_limit_100ns is Process-only requested intent".into());
+        }
         for (name, input) in [("Process", self.process), ("VAD", self.vad)] {
             if let Some(input) = input {
                 input
@@ -85,6 +96,7 @@ impl TransportLatencySettings {
         moiren_windows_audio::process_loopback::ProcessBridgeOptions {
             input: policy(self.process),
             delivery: delivery(self.process),
+            age_limit_100ns: self.process.and_then(|input| input.age_limit_100ns),
             engine_sample_rate: 48_000,
             // Static preflight must not invent a 256-frame consumer. The
             // output owner replaces this with its complete prepared demand.
@@ -147,6 +159,7 @@ mod tests {
             max_packet_frames: 64,
             max_gap_frames: 32,
             provenance: DeliveryProvenance::Empirical,
+            age_limit_100ns: None,
         };
         let settings = TransportLatencySettings {
             process: Some(input),

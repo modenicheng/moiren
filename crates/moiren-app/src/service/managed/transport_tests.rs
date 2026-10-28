@@ -152,3 +152,51 @@ fn native_buffer_preparation_refusal_keeps_requested_values_without_active_claim
             .is_some_and(|error| error.contains("input") || error.contains("budget"))
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn process_age_refusal_preserves_desired_intent_without_fallback_for_both_precisions() {
+    for precision in [ProcessingPrecision::F32, ProcessingPrecision::F64] {
+        let mut r = Rig::new();
+        r.start();
+        r.driver.factory = Arc::new(|_, _, settings| {
+            settings
+                .process_options()
+                .prepare()
+                .map_err(|error| host::BackendError::Unsupported(error.to_string()))?;
+            unreachable!("unsupported Process sample age must fail before opening a backend")
+        });
+        r.driver.f64_factory = Some(Arc::new(|_, _, settings| {
+            settings
+                .process_options()
+                .prepare()
+                .map_err(|error| host::BackendError::Unsupported(error.to_string()))?;
+            unreachable!("unsupported Process sample age must fail before opening a backend")
+        }));
+        let mut requested = serde_json::to_value(expert()).unwrap();
+        requested["process"]["age_limit_100ns"] = serde_json::json!(100_000);
+        let requested: TransportLatencySettings = serde_json::from_value(requested).unwrap();
+        let mut audio = AudioSettings::default();
+        audio.processing.precision = precision;
+        r.request(AppRequest::SetAudioSettings(audio));
+        r.request(AppRequest::SetTransportLatency(requested));
+        assert_eq!(r.c.transport_latency, requested);
+        assert_eq!(
+            r.c.active_transport_latency,
+            Some(TransportLatencySettings::default())
+        );
+        r.request(AppRequest::ApplyGraph);
+        r.wait(|r| r.c.core.phase() == SessionPhase::Failed);
+        assert_eq!(r.c.transport_latency, requested);
+        assert_eq!(r.c.active_transport_latency, None);
+        assert_eq!(r.state.starts.load(Ordering::SeqCst), 1);
+        assert_eq!(r.state.stops.load(Ordering::SeqCst), 1);
+        assert!(
+            r.c.graph
+                .snapshot()
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("sample-age enforcement unsupported"))
+        );
+    }
+}

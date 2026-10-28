@@ -16,6 +16,10 @@ pub struct ProcessBridgeOptions {
     pub engine_sample_rate: u32,
     /// Maximum complete consumption burst, including startup render demand.
     pub max_demand_frames: u32,
+    /// Requested sample-age enforcement, not nominal queue duration. Process
+    /// capture cannot currently qualify sample age, so every Some is refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub age_limit_100ns: Option<u64>,
 }
 
 impl Default for ProcessBridgeOptions {
@@ -25,6 +29,7 @@ impl Default for ProcessBridgeOptions {
             delivery: None,
             engine_sample_rate: crate::NATIVE_SAMPLE_RATE,
             max_demand_frames: 256,
+            age_limit_100ns: None,
         }
     }
 }
@@ -47,6 +52,11 @@ impl ProcessBridgeOptions {
     }
 
     pub fn prepare(self) -> Result<PreparedInputQueue, CaptureError> {
+        // Never let Compatible silently ignore age intent, or attach a limit
+        // to a bridge whose Process packet stamps cannot establish sample age.
+        if self.age_limit_100ns.is_some() {
+            return Err(CaptureError::ProcessAgeUnsupported);
+        }
         if !moiren_engine::audio_config::SAMPLE_RATES.contains(&self.engine_sample_rate) {
             return Err(crate::clock_bridge::ClockBridgeError::InvalidConfig.into());
         }

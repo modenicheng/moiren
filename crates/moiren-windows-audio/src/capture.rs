@@ -57,6 +57,10 @@ pub enum CaptureError {
     StartupLost,
     #[error("process capture requires a nonzero PID and creation time")]
     InvalidProcess,
+    #[error(
+        "Process Loopback sample-age enforcement unsupported: sample age is unknown; nominal queue duration is not sample age"
+    )]
+    ProcessAgeUnsupported,
     #[error("target process identity changed since selection")]
     ProcessIdentityChanged,
     #[error("target process tree contains this audio host and would capture its own output")]
