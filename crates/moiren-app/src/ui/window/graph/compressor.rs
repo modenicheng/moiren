@@ -3,8 +3,11 @@ use crate::service::{CompressorParameter, CompressorState, GraphEdit, GraphSnaps
 use crate::ui::widgets::fader::SliderBehavior;
 use crate::ui::window::mixer::{SliderEdit, SliderSlot, commit_closure, sync_slider_range};
 use moiren_core::graph::{NodeId, NodeKind};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+
+#[cfg(all(test, feature = "gpui-test"))]
+mod lifecycle_tests;
 
 /// Normalized position step shared by slider creation and the wheel gesture.
 const SLIDER_STEP: f32 = 0.001;
@@ -13,6 +16,84 @@ const SLIDER_STEP: f32 = 0.001;
 pub(in crate::ui::window) struct CompressorControls {
     pub inputs: BTreeMap<(NodeId, CompressorParameter), Entity<component::input::InputState>>,
     pub sliders: BTreeMap<(NodeId, CompressorParameter), SliderSlot>,
+    baselines: BTreeMap<(NodeId, CompressorParameter), String>,
+    observed: BTreeMap<(NodeId, CompressorParameter), String>,
+    edited: BTreeSet<(NodeId, CompressorParameter)>,
+    pending: BTreeMap<(NodeId, CompressorParameter), crate::service::RequestId>,
+    pub errors: BTreeMap<(NodeId, CompressorParameter), String>,
+}
+
+fn commit_input(
+    shell: &mut StudioShell,
+    input: Entity<component::input::InputState>,
+    key: (NodeId, CompressorParameter),
+    event: &component::input::InputEvent,
+    cx: &mut Context<StudioShell>,
+) {
+    if shell.pending_project.is_some()
+        || shell.compressor.inputs.get(&key).map(Entity::entity_id) != Some(input.entity_id())
+        || shell.state.read(cx).snapshot.graph.kind_of(key.0) != Some(NodeKind::Compressor)
+    {
+        return;
+    }
+    let text = input.read(cx).value().to_string();
+    if matches!(event, component::input::InputEvent::Change) {
+        // The kit also emits Change for unchanged text. Only transitions mark
+        // intent, which survives a delete/retype back to the original baseline.
+        if shell.compressor.observed.get(&key) != Some(&text) {
+            shell.compressor.observed.insert(key, text);
+            shell.compressor.edited.insert(key);
+        }
+        return;
+    }
+    // Untouched Enter/Blur must not reverse another surface's queued edit;
+    // an explicit retype of this same baseline is still a newer intent.
+    if !shell.compressor.edited.contains(&key)
+        && shell.compressor.baselines.get(&key) == Some(&text)
+    {
+        shell.compressor.errors.remove(&key);
+        cx.notify();
+        return;
+    }
+    let Some(value) = text
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| key.1.accepts(*value))
+    else {
+        let (min, max) = key.1.range();
+        shell
+            .compressor
+            .errors
+            .insert(key, format!("{min} .. {max}"));
+        cx.notify();
+        return;
+    };
+    match shell.state.update(cx, |state, _| {
+        state.try_dispatch(AppRequest::EditGraph(GraphEdit::SetCompressor {
+            node: key.0,
+            parameter: key.1,
+            value,
+        }))
+    }) {
+        Ok(request) => {
+            shell.compressor.baselines.insert(key, text.clone());
+            shell.compressor.observed.insert(key, text);
+            shell.compressor.edited.remove(&key);
+            shell.compressor.pending.insert(key, request);
+            shell.compressor.errors.remove(&key);
+            super::node_controls::remember_compressor_input_admission(
+                shell, key.0, key.1, value, request, cx,
+            );
+        }
+        Err(_) => {
+            shell
+                .compressor
+                .errors
+                .insert(key, t!("Edit could not be sent; try again").to_string());
+        }
+    }
+    cx.notify();
 }
 
 /// One wheel notch on a compressor parameter: one normalized slider step,
@@ -52,9 +133,25 @@ impl StudioShell {
         cx: &mut Context<Self>,
     ) {
         let snapshot = self.state.read(cx).snapshot.graph.clone();
+        let consumed = self.state.read(cx).snapshot.consumed_request_id;
         self.compressor
             .inputs
-            .retain(|(id, _), _| snapshot.node(*id).is_some());
+            .retain(|(id, _), _| snapshot.kind_of(*id) == Some(NodeKind::Compressor));
+        self.compressor
+            .baselines
+            .retain(|key, _| self.compressor.inputs.contains_key(key));
+        self.compressor
+            .observed
+            .retain(|key, _| self.compressor.inputs.contains_key(key));
+        self.compressor
+            .edited
+            .retain(|key| self.compressor.inputs.contains_key(key));
+        self.compressor
+            .errors
+            .retain(|key, _| self.compressor.inputs.contains_key(key));
+        self.compressor
+            .pending
+            .retain(|key, request| self.compressor.inputs.contains_key(key) && *request > consumed);
         self.compressor
             .sliders
             .retain(|(id, _), _| snapshot.node(*id).is_some());
@@ -70,52 +167,54 @@ impl StudioShell {
             .compressor;
         for parameter in CompressorParameter::ALL {
             let value = state.value(parameter);
-            let input =
-                self.compressor
-                    .inputs
-                    .entry((id, parameter))
-                    .or_insert_with(|| {
-                        let input = cx.new(|cx| {
-                            component::input::InputState::new(window, cx)
-                                .default_value(value.to_string())
-                        });
-                        cx.subscribe(
-                            &input,
-                            move |shell, input, event: &component::input::InputEvent, cx| {
-                                if matches!(
-                                    event,
-                                    component::input::InputEvent::PressEnter { .. }
-                                        | component::input::InputEvent::Blur
-                                ) {
-                                    let value =
-                                        input.read(cx).value().parse::<f64>().unwrap_or(f64::NAN);
-                                    if shell.state.read(cx).snapshot.graph.node(id).is_some_and(
-                                        |node| node.compressor.value(parameter) == value,
-                                    ) {
-                                        return;
-                                    }
-                                    shell.state.update(cx, |state, _| {
-                                        state.dispatch(AppRequest::EditGraph(
-                                            GraphEdit::SetCompressor {
-                                                node: id,
-                                                parameter,
-                                                value,
-                                            },
-                                        ))
-                                    });
-                                    cx.notify();
-                                }
-                            },
-                        )
-                        .detach();
-                        input
+            let key = (id, parameter);
+            let text = value.to_string();
+            self.compressor
+                .baselines
+                .entry(key)
+                .or_insert_with(|| text.clone());
+            self.compressor
+                .observed
+                .entry(key)
+                .or_insert_with(|| text.clone());
+            let input = self
+                .compressor
+                .inputs
+                .entry((id, parameter))
+                .or_insert_with(|| {
+                    let input = cx.new(|cx| {
+                        component::input::InputState::new(window, cx)
+                            .default_value(value.to_string())
                     });
-            if !input.read(cx).focus_handle(cx).is_focused(window)
-                && input.read(cx).value().parse::<f64>().ok() != Some(value)
-            {
-                input.update(cx, |state, cx| {
-                    state.set_value(value.to_string(), window, cx)
+                    cx.subscribe(
+                        &input,
+                        move |shell, input, event: &component::input::InputEvent, cx| {
+                            if matches!(
+                                event,
+                                component::input::InputEvent::Change
+                                    | component::input::InputEvent::PressEnter { .. }
+                                    | component::input::InputEvent::Blur
+                            ) {
+                                commit_input(shell, input, key, event, cx);
+                            }
+                        },
+                    )
+                    .detach();
+                    input
                 });
+            let clean = self.compressor.baselines.get(&key).map(String::as_str)
+                == Some(input.read(cx).value().as_str());
+            if clean
+                && !self.compressor.edited.contains(&key)
+                && !input.read(cx).focus_handle(cx).is_focused(window)
+                && !self.compressor.pending.contains_key(&key)
+                && !self.compressor.errors.contains_key(&key)
+            {
+                if input.read(cx).value().as_str() != text {
+                    input.update(cx, |state, cx| state.set_value(text.clone(), window, cx));
+                }
+                self.compressor.baselines.insert(key, text.clone());
+                self.compressor.observed.insert(key, text);
             }
         }
         // Sliders ride the shared mixer sync: drag Changes coalesce at the

@@ -60,9 +60,12 @@ pub(super) fn detail_editable(
         .justify_between()
         .gap(px(theme::SPACE_3))
         .py(px(6.))
-        .child(label(key.to_string()))
+        .child(label(key.to_string()).flex_none())
         .child(
             editable_value(id, text, editing, input, on_start, px(12.), TextAlign::Left)
+                // The editor's percentage-width children have no intrinsic
+                // flex basis. Allocate row space instead of collapsing to zero.
+                .flex_1()
                 .min_w_0()
                 .max_w(px(190.))
                 .text_color(theme::TEXT),

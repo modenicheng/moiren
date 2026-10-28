@@ -907,6 +907,10 @@ impl StudioShell {
                 .mixer
                 .send_inputs
                 .values()
+                .chain(self.mixer.value_inputs.values())
+                .chain(self.mixer.balance_inputs.values())
+                .chain(self.mixer.node_gain_inputs.values())
+                .chain(self.mixer.node_pan_inputs.values())
                 .any(|input| input.read(cx).focus_handle(cx) == *focused)
             || self.export_controls.owns_focus(focused, cx)
             || self.node_controls.owns_focus(focused, cx)

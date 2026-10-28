@@ -30,6 +30,8 @@ pub(in crate::ui::window) struct MixerPresentation {
     /// Pan-node position editors, likewise separate from the strip fader.
     pub node_pan_inputs: BTreeMap<NodeId, Entity<component::input::InputState>>,
     pub editing_node_pan: Option<NodeId>,
+    readout_drafts: BTreeMap<(EditableValueFamily, NodeId), ReadoutDraft>,
+    readout_sync: Option<(u64, crate::service::RequestId)>,
     pub inputs_collapsed: bool,
     pub sends_collapsed: bool,
     synced_revision: Option<u64>,
@@ -90,6 +92,16 @@ impl MixerPresentation {
     /// Fixed strip and dock widths; strips are not user-resizable.
     pub(in crate::ui::window) const STRIP_WIDTH: f32 = 160.;
     pub(in crate::ui::window) const DOCK_WIDTH: f32 = 360.;
+
+    pub(in crate::ui::window) fn readout_error(
+        &self,
+        family: EditableValueFamily,
+        id: NodeId,
+    ) -> Option<&str> {
+        self.readout_drafts
+            .get(&(family, id))
+            .and_then(|draft| draft.error.as_deref())
+    }
 }
 
 /// dB readout for send gains: −∞ collapses to −60 dB at the slider's quiet
@@ -297,7 +309,7 @@ fn dispatch_edit(ui: &Entity<UiState>, edit: &Rc<SliderEdit>, value: f32, cx: &m
 /// Pan node fields stay separate families because a Gain/Pan node also has a
 /// strip fader, and those edit a different value (`mixer.gain` vs the node's
 /// own `gain`/`pan` parameter).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(in crate::ui::window) enum EditableValueFamily {
     Fader,
     Balance,
@@ -305,7 +317,66 @@ pub(in crate::ui::window) enum EditableValueFamily {
     NodePan,
 }
 
+struct ReadoutDraft {
+    baseline: String,
+    pending: Option<crate::service::RequestId>,
+    error: Option<String>,
+}
+
+impl ReadoutDraft {
+    fn new(baseline: String) -> Self {
+        Self {
+            baseline,
+            pending: None,
+            error: None,
+        }
+    }
+}
+
 impl EditableValueFamily {
+    /// Display labels may round; entering edit mode must not inherit that loss.
+    fn exact_text(self, graph: &GraphSnapshot, id: NodeId) -> Option<String> {
+        let node = graph.node(id)?;
+        let gain = match self {
+            Self::Fader => node.mixer.gain,
+            Self::NodeGain if graph.kind_of(id) == Some(NodeKind::Gain) => node.gain,
+            Self::NodeGain => return None,
+            Self::NodePan => {
+                return (graph.kind_of(id) == Some(NodeKind::Pan)).then(|| node.pan.to_string());
+            }
+            Self::Balance => {
+                return graph
+                    .graph
+                    .get_node(id)
+                    .ok()
+                    .filter(|node| node.channels() == 2)
+                    .map(|_| (node.mixer.balance * 100.).to_string());
+            }
+        };
+        Some(if gain == 0. {
+            "-inf".into()
+        } else {
+            (20. * gain.log10()).to_string()
+        })
+    }
+
+    fn parse(self, text: &str) -> Option<f64> {
+        match self {
+            Self::Fader | Self::NodeGain => parse_gain_db(text),
+            Self::Balance => parse_balance(text),
+            Self::NodePan => parse_pan(text),
+        }
+    }
+
+    fn error(self) -> String {
+        match self {
+            Self::Fader | Self::NodeGain => "-120 .. 24 dB, or -inf",
+            Self::Balance => "-100 .. 100 %",
+            Self::NodePan => "-1 .. 1, or L/R percent",
+        }
+        .into()
+    }
+
     /// Split borrow of the family's editing flag and editor map.
     fn parts(
         self,
@@ -347,12 +418,36 @@ pub(in crate::ui::window) fn start_value_edit(
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
     move |_, window, cx| {
         let focused = this.update(cx, |shell, cx| {
-            let text = prefill(&shell.state.read(cx).snapshot.graph);
+            if shell.pending_project.is_some() {
+                return None;
+            }
+            let graph = &shell.state.read(cx).snapshot.graph;
+            let text = family
+                .exact_text(graph, id)
+                .unwrap_or_else(|| prefill(graph));
+            let consumed = shell.state.read(cx).snapshot.consumed_request_id;
+            shell.mixer.readout_sync = None;
             let (editing, inputs) = family.parts(shell);
             *editing = Some(id);
             let focused = inputs.get(&id).cloned();
             if let Some(input) = focused.clone() {
-                input.update(cx, |input, cx| input.set_value(text, window, cx));
+                let draft = shell
+                    .mixer
+                    .readout_drafts
+                    .entry((family, id))
+                    .or_insert_with(|| ReadoutDraft::new(text.clone()));
+                if draft.pending.is_some_and(|request| request <= consumed) {
+                    draft.pending = None;
+                }
+                // Reopening before publication or after rejected input must
+                // retain the submitted/draft text, not the old display label.
+                if draft.pending.is_none()
+                    && draft.error.is_none()
+                    && input.read(cx).value().as_str() == draft.baseline
+                {
+                    draft.baseline = text.clone();
+                    input.update(cx, |input, cx| input.set_value(text, window, cx));
+                }
             }
             cx.notify();
             focused
@@ -364,106 +459,200 @@ pub(in crate::ui::window) fn start_value_edit(
     }
 }
 
-/// Creates (once) and value-syncs the inline editors for one keyed family.
-/// While a family member is being edited its text stands down, so typing is
-/// never overwritten by the snapshot write-back. `commit` runs on Enter and
-/// blur: it guards and clears the family's editing flag, parses the text and
-/// dispatches only a valid value — invalid input just closes the editor.
-fn sync_value_inputs<K: Ord + Clone + 'static>(
+/// Sync only clean, inactive text. Drafts and accepted-but-unpublished edits
+/// must survive a render caused by another control or a focus transition.
+fn sync_value_inputs(
     window: &mut Window,
     cx: &mut Context<StudioShell>,
-    map: &mut BTreeMap<K, Entity<component::input::InputState>>,
-    editing: Option<&K>,
-    rows: Vec<(K, String)>,
-    commit: impl Fn(&mut StudioShell, &K, &str, &mut App) + Clone + 'static,
+    shell: &mut StudioShell,
+    family: EditableValueFamily,
+    rows: Vec<(NodeId, String)>,
 ) {
     for (id, text) in rows {
-        let commit = commit.clone();
-        let captured = id.clone();
-        let input = map.entry(id.clone()).or_insert_with(|| {
-            let input = cx.new(|cx| component::input::InputState::new(window, cx));
-            cx.subscribe(
-                &input,
-                move |shell, input, event: &component::input::InputEvent, cx| {
-                    if matches!(
-                        event,
-                        component::input::InputEvent::PressEnter { .. }
-                            | component::input::InputEvent::Blur
-                    ) {
-                        let text = input.read(cx).value().to_string();
-                        commit(shell, &captured, &text, cx);
-                        cx.notify();
-                    }
-                },
-            )
-            .detach();
-            input
-        });
-        if editing != Some(&id) {
-            input.update(cx, |input, cx| input.set_value(text, window, cx));
+        let key = (family, id);
+        let (editing, map) = family.parts(shell);
+        let active = *editing == Some(id);
+        let input = map
+            .entry(id)
+            .or_insert_with(|| {
+                let input = cx.new(|cx| {
+                    component::input::InputState::new(window, cx).default_value(text.clone())
+                });
+                cx.subscribe(
+                    &input,
+                    move |shell, input, event: &component::input::InputEvent, cx| {
+                        if matches!(
+                            event,
+                            component::input::InputEvent::PressEnter { .. }
+                                | component::input::InputEvent::Blur
+                        ) {
+                            if family.parts(shell).1.get(&id).map(Entity::entity_id)
+                                != Some(input.entity_id())
+                            {
+                                return;
+                            }
+                            let text = input.read(cx).value().to_string();
+                            commit_value(shell, family, id, &text, cx);
+                            cx.notify();
+                        }
+                    },
+                )
+                .detach();
+                input
+            })
+            .clone();
+        let draft = shell
+            .mixer
+            .readout_drafts
+            .entry(key)
+            .or_insert_with(|| ReadoutDraft::new(text.clone()));
+        if !active
+            && draft.pending.is_none()
+            && draft.error.is_none()
+            && input.read(cx).value().as_str() == draft.baseline
+        {
+            draft.baseline = text.clone();
+            if input.read(cx).value().as_str() != text {
+                input.update(cx, |input, cx| input.set_value(text, window, cx));
+            }
         }
     }
 }
 
-/// Enter/blur commit shared by the fader readout editors: the edit is built
-/// from the live snapshot like the slider path, so a vanished node skips.
-/// The input subscription that calls these notifies afterwards.
+fn sync_readouts(shell: &mut StudioShell, window: &mut Window, cx: &mut Context<StudioShell>) {
+    let snapshot = shell.state.read(cx).snapshot.clone();
+    let graph = &snapshot.graph;
+    let consumed = snapshot.consumed_request_id;
+    let token = (graph.candidate_revision, consumed);
+    if shell.mixer.readout_sync == Some(token) {
+        return;
+    }
+    shell.mixer.readout_sync = Some(token);
+    shell.mixer.readout_drafts.retain(|(family, id), draft| {
+        if draft.pending.is_some_and(|request| request <= consumed) {
+            draft.pending = None;
+        }
+        family.exact_text(graph, *id).is_some()
+    });
+    for family in [
+        EditableValueFamily::Fader,
+        EditableValueFamily::Balance,
+        EditableValueFamily::NodeGain,
+        EditableValueFamily::NodePan,
+    ] {
+        let (editing, inputs) = family.parts(shell);
+        inputs.retain(|id, _| family.exact_text(graph, *id).is_some());
+        if editing.is_some_and(|id| !inputs.contains_key(&id)) {
+            *editing = None;
+        }
+        let rows = graph
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                family
+                    .exact_text(graph, node.id)
+                    .map(|text| (node.id, text))
+            })
+            .collect();
+        sync_value_inputs(window, cx, shell, family, rows);
+    }
+}
+
+fn commit_value(
+    shell: &mut StudioShell,
+    family: EditableValueFamily,
+    id: NodeId,
+    text: &str,
+    cx: &mut App,
+) {
+    if shell.pending_project.is_some() {
+        return;
+    }
+    let (editing, _) = family.parts(shell);
+    if *editing != Some(id) {
+        return;
+    }
+    // Preserve the existing click-to-type close behavior, including invalid
+    // outside clicks. The text/error survives separately for a later retry.
+    *editing = None;
+    shell.mixer.readout_sync = None;
+    let key = (family, id);
+    if shell
+        .mixer
+        .readout_drafts
+        .get(&key)
+        .is_some_and(|draft| draft.baseline == text)
+    {
+        if let Some(draft) = shell.mixer.readout_drafts.get_mut(&key) {
+            draft.error = None;
+        }
+        return;
+    }
+    let graph = &shell.state.read(cx).snapshot.graph;
+    let Some(baseline) = family.exact_text(graph, id) else {
+        return;
+    };
+    let node = graph.node(id).expect("validated readout target");
+    let Some(value) = family.parse(text) else {
+        shell
+            .mixer
+            .readout_drafts
+            .entry(key)
+            .or_insert_with(|| ReadoutDraft::new(baseline))
+            .error = Some(family.error());
+        return;
+    };
+    let edit = match family {
+        EditableValueFamily::NodeGain => GraphEdit::SetGain {
+            node: id,
+            gain: value,
+        },
+        EditableValueFamily::NodePan => GraphEdit::SetPan {
+            node: id,
+            pan: value,
+        },
+        EditableValueFamily::Fader | EditableValueFamily::Balance => {
+            let mut state = node.mixer;
+            if family == EditableValueFamily::Fader {
+                state.gain = value;
+            } else {
+                state.balance = value;
+            }
+            GraphEdit::SetMixer { node: id, state }
+        }
+    };
+    let result = shell.state.update(cx, |state, _| {
+        state.try_dispatch(AppRequest::EditGraph(edit))
+    });
+    let draft = shell
+        .mixer
+        .readout_drafts
+        .entry(key)
+        .or_insert_with(|| ReadoutDraft::new(baseline));
+    match result {
+        Ok(request) => {
+            draft.baseline = text.to_owned();
+            draft.pending = Some(request);
+            draft.error = None;
+        }
+        Err(_) => draft.error = Some(t!("Edit could not be sent; try again").to_string()),
+    }
+}
+
 fn commit_mixer_gain(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut App) {
-    if shell.mixer.editing_value != Some(*id) {
-        return;
-    }
-    shell.mixer.editing_value = None;
-    if let Some(gain) = parse_gain_db(text) {
-        shell.state.update(cx, |state, _| {
-            state.edit_mixer(*id, |state| state.gain = gain)
-        });
-    }
+    commit_value(shell, EditableValueFamily::Fader, *id, text, cx);
 }
 
-/// Enter/blur commit for the balance label editors.
 fn commit_mixer_balance(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut App) {
-    if shell.mixer.editing_balance != Some(*id) {
-        return;
-    }
-    shell.mixer.editing_balance = None;
-    if let Some(balance) = parse_balance(text) {
-        shell.state.update(cx, |state, _| {
-            state.edit_mixer(*id, |state| state.balance = balance);
-        });
-    }
+    commit_value(shell, EditableValueFamily::Balance, *id, text, cx);
 }
 
-/// Enter/blur commit for the Gain node's "Requested" dB field.
 fn commit_node_gain(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut App) {
-    if shell.mixer.editing_node_gain != Some(*id) {
-        return;
-    }
-    shell.mixer.editing_node_gain = None;
-    if let Some(gain) = parse_gain_db(text) {
-        shell.state.update(cx, |state, _| {
-            if state.snapshot.graph.node(*id).is_some() {
-                state.dispatch(AppRequest::EditGraph(GraphEdit::SetGain {
-                    node: *id,
-                    gain,
-                }));
-            }
-        });
-    }
+    commit_value(shell, EditableValueFamily::NodeGain, *id, text, cx);
 }
 
-/// Enter/blur commit for the Pan node's position field.
 fn commit_node_pan(shell: &mut StudioShell, id: &NodeId, text: &str, cx: &mut App) {
-    if shell.mixer.editing_node_pan != Some(*id) {
-        return;
-    }
-    shell.mixer.editing_node_pan = None;
-    if let Some(pan) = parse_pan(text) {
-        shell.state.update(cx, |state, _| {
-            if state.snapshot.graph.node(*id).is_some() {
-                state.dispatch(AppRequest::EditGraph(GraphEdit::SetPan { node: *id, pan }));
-            }
-        });
-    }
+    commit_value(shell, EditableValueFamily::NodePan, *id, text, cx);
 }
 
 /// Enter/blur commit for the send gain editor; the input subscription and
@@ -713,6 +902,9 @@ impl StudioShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Request acknowledgements and focus transitions can occur without a
+        // new graph revision. Keep input lifecycle outside the slider cache.
+        sync_readouts(self, window, cx);
         let revision = self.state.read(cx).snapshot.graph.candidate_revision;
         if self.mixer.synced_revision == Some(revision) {
             return;
@@ -842,60 +1034,6 @@ impl StudioShell {
             })
             .collect();
         sync_sliders(window, cx, &self.state, &mut self.mixer.sends, sends);
-        // Click-to-type editors, one family per value kind. Their text is
-        // the raw editable form ("−6", "R 25") rather than the styled
-        // readout, and stands down for the member being edited.
-        sync_value_inputs(
-            window,
-            cx,
-            &mut self.mixer.value_inputs,
-            self.mixer.editing_value.as_ref(),
-            graph
-                .nodes
-                .iter()
-                .map(|node| (node.id, gain_db_text(node.mixer.gain)))
-                .collect(),
-            commit_mixer_gain,
-        );
-        sync_value_inputs(
-            window,
-            cx,
-            &mut self.mixer.balance_inputs,
-            self.mixer.editing_balance.as_ref(),
-            graph
-                .nodes
-                .iter()
-                .filter(|node| channels_of(node.id) == Some(2))
-                .map(|node| (node.id, balance_text(node.mixer.balance)))
-                .collect(),
-            commit_mixer_balance,
-        );
-        sync_value_inputs(
-            window,
-            cx,
-            &mut self.mixer.node_gain_inputs,
-            self.mixer.editing_node_gain.as_ref(),
-            graph
-                .nodes
-                .iter()
-                .filter(|node| kind_of(node.id) == Some(NodeKind::Gain))
-                .map(|node| (node.id, gain_db_text(node.gain)))
-                .collect(),
-            commit_node_gain,
-        );
-        sync_value_inputs(
-            window,
-            cx,
-            &mut self.mixer.node_pan_inputs,
-            self.mixer.editing_node_pan.as_ref(),
-            graph
-                .nodes
-                .iter()
-                .filter(|node| kind_of(node.id) == Some(NodeKind::Pan))
-                .map(|node| (node.id, format!("{:+.2}", node.pan)))
-                .collect(),
-            commit_node_pan,
-        );
     }
 }
 

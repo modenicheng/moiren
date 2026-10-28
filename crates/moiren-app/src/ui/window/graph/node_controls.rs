@@ -83,6 +83,30 @@ impl NodeControls {
     }
 }
 
+/// Inspector submissions use engine units; the card's Mix dial uses percent.
+pub(super) fn remember_compressor_input_admission(
+    shell: &mut StudioShell,
+    id: NodeId,
+    parameter: crate::service::CompressorParameter,
+    value: f64,
+    request: crate::service::RequestId,
+    cx: &Context<StudioShell>,
+) {
+    let value = if parameter == crate::service::CompressorParameter::Mix {
+        value * 100.
+    } else {
+        value
+    };
+    rotary::remember_input_admission(
+        shell,
+        id,
+        Parameter::Compressor(parameter),
+        value,
+        request,
+        cx,
+    );
+}
+
 impl StudioShell {
     pub(in crate::ui::window) fn sync_node_controls(
         &mut self,

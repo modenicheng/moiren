@@ -23,14 +23,20 @@ pub(super) fn routing(
                 .on_click(edit(cx.entity(), GraphEdit::AddBusInput(id))),
         );
         if let Some(port) = node.inputs().last() {
+            let connected = !routes_for_port(&snapshot.graph.graph, port.id(), true).is_empty();
             view = view.child(
-                button("remove-bus-input", t!("Remove last input")).on_click(edit(
-                    cx.entity(),
-                    GraphEdit::RemoveBusInput {
-                        node: id,
-                        port: port.id(),
-                    },
-                )),
+                button("remove-bus-input", t!("Remove last input"))
+                    .disabled(connected)
+                    .when(connected, |button| {
+                        button.tooltip(t!("Disconnect this input first"))
+                    })
+                    .on_click(edit(
+                        cx.entity(),
+                        GraphEdit::RemoveBusInput {
+                            node: id,
+                            port: port.id(),
+                        },
+                    )),
             );
         }
     }

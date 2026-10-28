@@ -106,7 +106,7 @@ pub(super) fn parameters(
         view = view
             .child(heading(t!("Gain")))
             .child(detail_editable(
-                &t!("Requested"),
+                &format!("{} (dB)", t!("Requested")),
                 SharedString::from(format!("inspector-node-gain-{id:?}")),
                 db_text(entry.gain),
                 shell.mixer.editing_node_gain == Some(id),
@@ -118,11 +118,27 @@ pub(super) fn parameters(
                     move |graph| {
                         graph
                             .node(id)
-                            .map(|node| gain_db_text(node.gain))
+                            .map(|node| {
+                                if node.gain <= 0. {
+                                    "-inf".into()
+                                } else {
+                                    (20. * node.gain.log10()).to_string()
+                                }
+                            })
                             .unwrap_or_default()
                     },
                 ),
             ))
+            .when_some(
+                shell.mixer.readout_error(EditableValueFamily::NodeGain, id),
+                |view, error| {
+                    view.child(
+                        label(error.to_owned())
+                            .text_color(theme::DANGER)
+                            .text_size(px(theme::TEXT_XS)),
+                    )
+                },
+            )
             .child(
                 div()
                     .flex()
@@ -161,7 +177,7 @@ pub(super) fn parameters(
         view = view
             .child(heading(t!("Stereo controls")))
             .child(detail_editable(
-                &t!("Balance"),
+                &format!("{} (-1 .. 1)", t!("Balance")),
                 SharedString::from(format!("inspector-node-pan-{id:?}")),
                 format!("{:+.2}", entry.pan),
                 shell.mixer.editing_node_pan == Some(id),
@@ -173,11 +189,21 @@ pub(super) fn parameters(
                     move |graph| {
                         graph
                             .node(id)
-                            .map(|node| format!("{:+.2}", node.pan))
+                            .map(|node| node.pan.to_string())
                             .unwrap_or_default()
                     },
                 ),
             ))
+            .when_some(
+                shell.mixer.readout_error(EditableValueFamily::NodePan, id),
+                |view, error| {
+                    view.child(
+                        label(error.to_owned())
+                            .text_color(theme::DANGER)
+                            .text_size(px(theme::TEXT_XS)),
+                    )
+                },
+            )
             .child(
                 div()
                     .flex()
@@ -209,6 +235,7 @@ pub(super) fn parameters(
         for (title, parameters) in compressor_groups() {
             let mut fields = div().flex().flex_wrap().gap(px(theme::SPACE_2));
             for &parameter in parameters {
+                let error = shell.compressor.errors.get(&(id, parameter));
                 // Input::h only sizes multiline editors; use the Styled height
                 // for these single-line precision fields.
                 let input = Styled::h(
@@ -221,7 +248,11 @@ pub(super) fn parameters(
                 .text_size(px(theme::TEXT_SM))
                 .bg(theme::SURFACE_3)
                 .text_color(theme::TEXT)
-                .border_color(theme::BORDER);
+                .border_color(if error.is_some() {
+                    theme::DANGER
+                } else {
+                    theme::BORDER
+                });
                 fields = fields.child(
                     div()
                         .id(format!("compressor-{:?}", parameter.id()))
@@ -244,6 +275,15 @@ pub(super) fn parameters(
                                         .flex_none(),
                                 ),
                         )
+                        .when_some(error, |view, error| {
+                            view.child(
+                                label(error.clone())
+                                    .id(format!("compressor-error-{}", parameter.id().0))
+                                    .text_color(theme::DANGER)
+                                    .text_size(px(theme::TEXT_XS))
+                                    .gpui_test_observe(),
+                            )
+                        })
                         .gpui_test_observe(),
                 );
             }
