@@ -57,7 +57,8 @@ mod packet_service;
 #[allow(dead_code)]
 mod process_bridge;
 #[path = "../../../crates/moiren-windows-audio/src/process_loopback/replay.rs"]
-#[allow(dead_code)]
+// Offline replay exports more public report types than this shadow uses.
+#[allow(dead_code, unused_imports)]
 mod process_replay;
 mod latency {
     pub(crate) use super::bounded_history;

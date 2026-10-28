@@ -1,4 +1,6 @@
 use super::*;
+#[path = "window_tests.rs"]
+mod window_tests;
 use crate::{
     clock_bridge::{CapturePacket, ClockBridgeConfig, capture_bridge},
     stats::SILENT,
@@ -592,12 +594,19 @@ fn expanded_ordered_repeated_input_discontinuities_reset_then_recover_without_in
     assert_eq!(report.baseline.reset_discarded_frames, 4);
     assert_eq!(report.baseline.underrun_frames, 0);
     assert_eq!(report.candidate.resets, 2);
+    assert_eq!(report.candidate.reset_discarded_frames, 4);
+    assert_eq!(
+        report.candidate.written_frames,
+        report.candidate.retired_input_frames + report.terminal_inventory_frames
+    );
     assert_eq!(report.candidate.output_frames, 26);
     assert_eq!(report.candidate.output_frames, terminal.output_frames);
     assert_eq!(report.candidate.underrun_frames, 0);
     assert_eq!(report.candidate.dropped_frames, 0);
     assert_eq!(report.startup_unserved_frames, 0);
     assert_eq!(report.unserved_frames, 2);
+    assert_eq!(report.inventory.initial_unserved_frames, 0);
+    assert_eq!(report.inventory.post_start_unserved_frames, 2);
     assert_eq!(
         report.terminal_inventory_frames,
         terminal.fill_frames as u64
@@ -677,6 +686,18 @@ fn expanded_ordered_trailing_packet_is_terminal_inventory_not_an_unrecorded_fina
     );
     assert_eq!(after.unserved_frames, before.unserved_frames);
     assert!(after.window_end_100ns > before.window_end_100ns);
+    assert_eq!(after.inventory.trailing_offered_frames, 4);
+    assert_eq!(before.inventory.trailing_offered_frames, 0);
+    assert_eq!(after.inventory.output_reads, 1);
+    assert_eq!(after.inventory.output_span_lower_100ns, None);
+    assert_eq!(
+        after.inventory.last_output_pending_frames,
+        before.inventory.last_output_pending_frames
+    );
+    assert_eq!(
+        after.candidate.written_frames,
+        after.candidate.retired_input_frames + after.terminal_inventory_frames
+    );
 }
 
 #[test]
@@ -718,6 +739,8 @@ fn expanded_ordered_fully_rejected_baseline_packet_is_still_whole_offered_candid
     assert_eq!(report.candidate.dropped_frames, 0);
     assert_eq!(report.candidate.output_frames, 4);
     assert_eq!(report.terminal_inventory_frames, 9);
+    assert_eq!(report.inventory.event_boundary_max_pending_frames, 12);
+    assert_eq!(report.inventory.event_boundary_min_pending_frames, 0);
     expanded_assert_no_age_or_qualification(&report);
 }
 
@@ -757,6 +780,8 @@ fn expanded_ordered_post_start_starvation_and_reprime_are_not_counted_as_startup
     assert_eq!(report.requested_frames, 24);
     assert_eq!(report.startup_unserved_frames, 4);
     assert_eq!(report.unserved_frames, 9);
+    assert_eq!(report.inventory.initial_unserved_frames, 4);
+    assert_eq!(report.inventory.post_start_unserved_frames, 5);
     assert_eq!(report.candidate.priming_frames, 8);
     assert_eq!(report.candidate.underrun_frames, 1);
     assert_eq!(report.candidate.resets, 1);

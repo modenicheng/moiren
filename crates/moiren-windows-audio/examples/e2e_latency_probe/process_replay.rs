@@ -161,6 +161,7 @@ impl Refusal {
             ProcessReplayError::AmbiguousOrder => "ambiguous_order",
             ProcessReplayError::InconsistentPublication => "inconsistent_publication",
             ProcessReplayError::UnsupportedShape => "unsupported_shape",
+            ProcessReplayError::InvalidWindowPolicy => "invalid_window_policy",
             ProcessReplayError::Candidate(_) => "candidate_rejected",
         };
         Self {

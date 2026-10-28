@@ -331,6 +331,18 @@ fn complete_six_second_prefix_exercises_targets_without_expanding_native_history
             assert_eq!(report.candidate.dropped_frames, 0);
             assert_eq!(report.candidate.underrun_frames, 0);
             assert_eq!(report.unserved_frames, report.startup_unserved_frames);
+            assert_eq!(report.inventory.post_start_unserved_frames, 0);
+            assert_eq!(
+                report.inventory.initial_unserved_frames,
+                report.startup_unserved_frames
+            );
+            assert_eq!(
+                report.candidate.written_frames,
+                report.candidate.retired_input_frames + report.terminal_inventory_frames
+            );
+            assert_eq!(report.inventory.reset_discarded_frames, 0);
+            assert!(report.inventory.output_reads > 5900);
+            assert!(report.inventory.output_span_lower_100ns.unwrap() > 59_000_000);
             assert!(!report.qualified);
             let values = (
                 report.candidate.output_frames,

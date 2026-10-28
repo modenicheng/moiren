@@ -20,6 +20,15 @@ mod archive;
 pub use archive::{
     ProcessTraceArchive, ProcessTraceCollectionRefusal, ProcessTraceCollector, ProcessTraceDocument,
 };
+#[path = "replay/inventory.rs"]
+mod inventory;
+pub use inventory::ReplayInventoryReport;
+#[path = "replay/window.rs"]
+mod window;
+pub use window::{
+    AssessedProcessReplay, ReplayWindowAssessment, ReplayWindowPolicy, ReplayWindowStatus,
+    ReplayWindowViolation,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ProcessReplayError {
@@ -41,6 +50,10 @@ pub enum ProcessReplayError {
     InconsistentPublication,
     #[error("Process replay format, prepared demand or bounded work limit is unsupported")]
     UnsupportedShape,
+    #[error(
+        "finite replay policy requires positive output frames/span and at least two output reads"
+    )]
+    InvalidWindowPolicy,
     #[error(transparent)]
     Candidate(#[from] CaptureError),
 }
@@ -100,6 +113,7 @@ pub struct ProcessReplayReport {
     pub unserved_frames: u64,
     pub baseline: ReplayBaselineReport,
     pub candidate: ReplayQueueReport,
+    pub inventory: ReplayInventoryReport,
 }
 
 /// Queue mechanics only. Synthetic replay samples have no measured content,
@@ -116,6 +130,10 @@ pub struct ReplayQueueReport {
     pub backlog_discarded_frames: u64,
     pub backlog_recoveries: u64,
     pub age_discarded_frames: u64,
+    /// Native input retired from both the ring and held interpolation state.
+    pub retired_input_frames: u64,
+    pub consumed_input_frames: u64,
+    pub reset_discarded_frames: u64,
     pub resets: u64,
     pub min_fill_frames: usize,
     pub max_fill_frames: usize,
@@ -413,7 +431,7 @@ impl ObservedProcessTrace {
                 previous_before = sample.qpc_before_100ns;
             }
         }
-        let (mut ingress, mut source, _observer) =
+        let (mut ingress, mut source, observer) =
             capture_bridge(config).map_err(CaptureError::from)?;
         let max_read = self
             .reads
@@ -427,6 +445,8 @@ impl ObservedProcessTrace {
         let mut startup_unserved_frames = 0;
         let mut unserved_frames = 0;
         let baseline = self.baseline();
+        let mut inventory = inventory::Inventory::default();
+        let mut read_count = 0;
         for event in &self.order {
             match *event {
                 OrderedEvent::Packet(index) => {
@@ -445,6 +465,7 @@ impl ObservedProcessTrace {
                             },
                         )
                         .map_err(CaptureError::from)?;
+                    inventory.packet(packet.offered_frames);
                 }
                 OrderedEvent::Read(index) => {
                     let requested = self.reads.events[index].sample.requested_frames;
@@ -459,10 +480,34 @@ impl ObservedProcessTrace {
                     if report.transferred_frames > 0 {
                         startup = false;
                     }
+                    let sample = self.reads.events[index].sample;
+                    inventory.output(
+                        report.transferred_frames as u64,
+                        sample.qpc_before_100ns.unwrap(),
+                        sample.qpc_after_100ns.unwrap(),
+                        source.snapshot().fill_frames as u64,
+                    );
+                    read_count += 1;
+                    if read_count % 256 == 0 {
+                        inventory.reads(
+                            &observer
+                                .queue_history()
+                                .ok_or(ProcessReplayError::InvalidHistory)?,
+                        )?;
+                    }
                 }
             }
+            inventory.boundary(source.snapshot().fill_frames as u64);
+        }
+        if read_count % 256 != 0 {
+            inventory.reads(
+                &observer
+                    .queue_history()
+                    .ok_or(ProcessReplayError::InvalidHistory)?,
+            )?;
         }
         let s = source.snapshot();
+        let inventory = inventory.finish(s.written_frames, s.fill_frames as u64)?;
         let candidate = ReplayQueueReport {
             captured_frames: s.captured_frames,
             written_frames: s.written_frames,
@@ -474,6 +519,9 @@ impl ObservedProcessTrace {
             backlog_discarded_frames: s.backlog_discarded_frames,
             backlog_recoveries: s.backlog_recoveries,
             age_discarded_frames: s.age_discarded_frames,
+            retired_input_frames: inventory.retired_input_frames,
+            consumed_input_frames: inventory.consumed_input_frames,
+            reset_discarded_frames: inventory.reset_discarded_frames,
             resets: s.resets,
             min_fill_frames: s.min_fill_frames,
             max_fill_frames: s.max_fill_frames,
@@ -503,6 +551,7 @@ impl ObservedProcessTrace {
             unserved_frames,
             baseline,
             candidate,
+            inventory,
         })
     }
 
