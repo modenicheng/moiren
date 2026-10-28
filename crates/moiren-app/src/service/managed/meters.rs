@@ -64,18 +64,8 @@ impl MeterBridge {
             c.graph.record_error(format!("Node meters: {error}"));
             return;
         }
-        let source = active
-            .graph
-            .nodes()
-            .iter()
-            .filter(|n| n.kind() == NodeKind::Source)
-            .min_by_key(|n| n.id());
-        let sink = active
-            .graph
-            .nodes()
-            .iter()
-            .filter(|n| n.kind() == NodeKind::Sink)
-            .min_by_key(|n| n.id());
+        let source = primary_node_of(&active.graph, NodeKind::Source);
+        let sink = primary_node_of(&active.graph, NodeKind::Sink);
         let tone = source.is_some_and(|node| {
             matches!(
                 active.nodes.get(&node.id()),
@@ -85,6 +75,9 @@ impl MeterBridge {
                 }))
             )
         });
+        // The resolved wiring is the fact: consumers read `tone_session` from
+        // the snapshot instead of re-deriving it from their own input.
+        c.tone_session = tone;
         let nodes = [
             source.filter(|_| !tone).map(|n| n.id()),
             sink.filter(|_| !tone).map(|n| n.id()),

@@ -1,0 +1,198 @@
+{
+  "date": "2026-10-28",
+  "status": "Historical experiment only; the dedicated native clock has been removed. Current Mixer scheduling uses GPUI request_animation_frame.",
+  "method": "Release ui-profiler; then-current production Windows frame clock (subsequently removed); 1 s settling and 30 s requested per viewport; eight-node managed fake backend, no physical audio. Actual draw/present counts divided by measured wall time. Not scan-out verification.",
+  "target_hz": 240,
+  "target_budget_ms": 4.166666666666667,
+  "viewports": {
+    "comfortable": {
+      "elapsed_ms": 30070.3495,
+      "draws": 7371,
+      "presents": 7371,
+      "render_fps": 245.12518552536278,
+      "present_fps": 245.12518552536278,
+      "journal_lost": 0,
+      "dwm": {
+        "refresh_numerator": 10000000,
+        "refresh_denominator": 69444,
+        "compose_numerator": 10000000,
+        "compose_denominator": 69444
+      },
+      "strip_renders": 0,
+      "meter_paints": 7371,
+      "toolbar_renders": 897,
+      "status_renders": 897,
+      "clock_ticks": 7216,
+      "level_changes": 4918,
+      "dropped": 0,
+      "clock_delivered_hz": 239.970606261161,
+      "draws_per_full_second": [
+        249,
+        247,
+        246,
+        248,
+        242,
+        244,
+        241,
+        248,
+        245,
+        248,
+        243,
+        246,
+        244,
+        243,
+        246,
+        248,
+        244,
+        242,
+        246,
+        248,
+        246,
+        242,
+        242,
+        246,
+        245,
+        244,
+        244,
+        248,
+        242,
+        247
+      ],
+      "draw_ms": {
+        "count": 7371,
+        "mean": 1.4079876814543482,
+        "p50": 1.3686,
+        "p95": 1.9072,
+        "p99": 2.2594,
+        "maximum": 2.8616
+      },
+      "present_gap_ms": {
+        "count": 7370,
+        "mean": 4.079684151967435,
+        "p50": 4.1419999999999995,
+        "p95": 5.0123,
+        "p99": 5.498,
+        "maximum": 9.191899999999999
+      },
+      "meter_gap_ms": {
+        "count": 7370,
+        "mean": 4.079641221166892,
+        "p50": 4.1511,
+        "p95": 4.755599999999999,
+        "p99": 5.139399999999999,
+        "maximum": 9.0465
+      },
+      "raw_sha256": {
+        "platform-comfortable.json": "6bb53bbebfe02883c02ef830313b714aced4909920445a1fe4345f4de4210291",
+        "meter-comfortable.json": "eb3011c1ba93159fd8a1e5df9aa9774f5d27f668eb48c94400ed076884c2154d"
+      },
+      "body_pixel_difference_bounds": null
+    },
+    "compact": {
+      "elapsed_ms": 30075.894900000003,
+      "draws": 7398,
+      "presents": 7398,
+      "render_fps": 245.9777181891934,
+      "present_fps": 245.9777181891934,
+      "journal_lost": 0,
+      "dwm": {
+        "refresh_numerator": 10000000,
+        "refresh_denominator": 69444,
+        "compose_numerator": 10000000,
+        "compose_denominator": 69444
+      },
+      "strip_renders": 0,
+      "meter_paints": 7398,
+      "toolbar_renders": 898,
+      "status_renders": 898,
+      "clock_ticks": 7217,
+      "level_changes": 4919,
+      "dropped": 0,
+      "clock_delivered_hz": 239.9596096473924,
+      "draws_per_full_second": [
+        248,
+        247,
+        246,
+        242,
+        247,
+        245,
+        247,
+        248,
+        245,
+        245,
+        244,
+        242,
+        247,
+        244,
+        249,
+        247,
+        247,
+        248,
+        248,
+        244,
+        243,
+        246,
+        245,
+        251,
+        249,
+        247,
+        248,
+        243,
+        243,
+        245
+      ],
+      "draw_ms": {
+        "count": 7398,
+        "mean": 1.15180866450392,
+        "p50": 1.1064,
+        "p95": 1.6256000000000002,
+        "p99": 1.9567,
+        "maximum": 2.5798
+      },
+      "present_gap_ms": {
+        "count": 7397,
+        "mean": 4.065166337704475,
+        "p50": 4.1476999999999995,
+        "p95": 5.001,
+        "p99": 5.5164,
+        "maximum": 10.2696
+      },
+      "meter_gap_ms": {
+        "count": 7397,
+        "mean": 4.065223712315804,
+        "p50": 4.149500000000001,
+        "p95": 4.7641,
+        "p99": 5.1994,
+        "maximum": 10.0331
+      },
+      "raw_sha256": {
+        "platform-compact.json": "9e0ccf982f2496f2ec1fb348b485724478fc58808375a9cee30fda297fd2fdea",
+        "meter-compact.json": "7b4bbcd2951014e251833bd649eb266e9a0ef9df055f4b438270299f5260fae6"
+      },
+      "body_pixel_difference_bounds": null
+    }
+  },
+  "lifecycle": {
+    "cancel_resume": [
+      "graph",
+      "settings",
+      "minimized",
+      "hidden",
+      "stopped"
+    ],
+    "native_minimize_restore": true,
+    "resumed_meter_paints": 30
+  },
+  "worker_fault_probe": {
+    "cancel_resume": [
+      "graph",
+      "settings",
+      "minimized",
+      "hidden",
+      "stopped"
+    ],
+    "native_minimize_restore": true,
+    "resumed_meter_paints": 31,
+    "worker_failure_fallback_paints": 17
+  }
+}

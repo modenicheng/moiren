@@ -1,6 +1,6 @@
 use moiren_engine::meter::signal::{AudioWindow, ChannelLevel};
 use moiren_signal::{
-    BlockInit, Bus, BusConfig, LatestBlock, PumpBudget, PumpReport, RegisterError, Shape,
+    BlockInit, Bus, BusConfig, PumpBudget, PumpReport, RegisterError, Shape, StreamBlock,
     SubscribeError, Subscriber, SubscriptionOptions, Topic,
 };
 use std::sync::{
@@ -10,7 +10,12 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-pub type LevelTopic = LatestBlock<AudioWindow, ChannelLevel>;
+/// Level windows stream FIFO: superseding delivery would drop the three of
+/// four windows published at 240 Hz that a 60 Hz display never reads, losing
+/// their peaks. Sixteen queued slots hold ~67 ms of backlog for slower readers.
+const LEVEL_STREAM_DEPTH: usize = 16;
+
+pub type LevelTopic = StreamBlock<AudioWindow, ChannelLevel>;
 
 #[derive(Debug, Clone)]
 pub struct SignalTopics {
@@ -34,20 +39,6 @@ impl SignalService {
     ) -> Result<(moiren_signal::HostControl, moiren_signal::RtHost), moiren_signal::HostError> {
         self.bus.create_host(131)
     }
-    pub fn prepare_session(
-        &mut self,
-        source: &super::InputSelection,
-    ) -> Result<super::SignalPreparation, moiren_signal::HostError> {
-        let (input, output) = match source {
-            super::InputSelection::Tone { .. } => (None, self.topics.tone_output.clone()),
-            _ => (
-                Some(self.topics.monitor_input.clone()),
-                self.topics.monitor_output.clone(),
-            ),
-        };
-        super::SignalPreparation::new(&mut self.bus, input, output)
-    }
-
     pub fn new() -> Result<Self, RegisterError> {
         let mut bus = Bus::new(BusConfig {
             max_topics: 131,
@@ -111,9 +102,21 @@ impl SignalTopics {
         };
         Ok(Self {
             node_levels: Default::default(),
-            monitor_input: bus.register_latest_block("monitor/input/output/level", initial)?,
-            monitor_output: bus.register_latest_block("monitor/output/level", initial)?,
-            tone_output: bus.register_latest_block("tone/output/level", initial)?,
+            monitor_input: bus.register_stream_block(
+                "monitor/input/output/level",
+                initial,
+                LEVEL_STREAM_DEPTH,
+            )?,
+            monitor_output: bus.register_stream_block(
+                "monitor/output/level",
+                initial,
+                LEVEL_STREAM_DEPTH,
+            )?,
+            tone_output: bus.register_stream_block(
+                "tone/output/level",
+                initial,
+                LEVEL_STREAM_DEPTH,
+            )?,
         })
     }
 }
@@ -146,7 +149,7 @@ impl SignalService {
             }
             let topic = self
                 .bus
-                .register_latest_block(
+                .register_stream_block(
                     &format!("node/{:?}/level", node.id()),
                     BlockInit {
                         header: AudioWindow {
@@ -158,6 +161,7 @@ impl SignalService {
                         element: ChannelLevel { peak: 0., rms: 0. },
                         capacity: node.channels(),
                     },
+                    LEVEL_STREAM_DEPTH,
                 )
                 .map_err(|error| error.to_string())?;
             self.topics.node_levels.insert(node.id(), topic);
@@ -503,132 +507,5 @@ mod tests {
             .pump_if_due(now + Duration::from_millis(105))
             .unwrap();
         assert_eq!(subscriber.next().unwrap().value, 4);
-    }
-
-    #[test]
-    fn analysis_receives_real_audio_windows_after_ui_hide_without_generation_reset() {
-        use crate::ui::signals::{PresentationDemand, VisibleSignal};
-
-        let mut service = SignalService::new().unwrap();
-        let topic = service.topics.tone_output.clone();
-        let mut snapshot = super::super::snapshot(&super::super::ServiceContext::default());
-        snapshot.signal_topics = service.topics.clone();
-        let (handle, mailbox) =
-            super::super::ServiceMailbox::with_snapshot(std::thread::current(), snapshot);
-        let mut ui = VisibleSignal::new(handle, topic.clone(), Default::default());
-        let mut demand = PresentationDemand {
-            window_visible: true,
-            minimized: false,
-            page_active: true,
-            component_visible: true,
-            intersects_viewport: true,
-        };
-        ui.update_demand(demand).unwrap();
-        assert!(matches!(mailbox.try_dispatch(&mut service), Some(None)));
-        assert!(ui.subscriber().unwrap().is_some());
-        let mut analysis = service.bus.subscribe(&topic, Default::default()).unwrap();
-        let generation = topic.demand_snapshot().generation;
-        let mut preparation = service
-            .prepare_session(&super::super::InputSelection::Tone {
-                frequency_hz: 440.0,
-            })
-            .unwrap();
-        let mut tone = crate::tone::prepare_tone_with_signals(
-            crate::tone::ToneConfig {
-                gain: 0.01,
-                ..Default::default()
-            },
-            &mut preparation,
-        )
-        .unwrap();
-        let now = Instant::now();
-        for _ in 0..6 {
-            tone.compiled.engine.render(256).unwrap();
-            tone.output.read_interleaved(&mut [0.0; 512]).unwrap();
-        }
-        service.pump_if_due(now).unwrap();
-        let first_sequence = analysis.read_latest().unwrap().meta().sequence;
-        assert_eq!(
-            ui.subscriber()
-                .unwrap()
-                .unwrap()
-                .read_latest()
-                .unwrap()
-                .meta()
-                .sequence,
-            first_sequence
-        );
-        demand.window_visible = false;
-        ui.update_demand(demand).unwrap();
-        ui.update_demand(demand).unwrap();
-        assert!(ui.subscriber().unwrap().is_none());
-        assert_eq!(topic.business_subscribers(), 1);
-        assert_eq!(topic.demand_snapshot().generation, generation);
-        // Two 256-frame blocks complete three more 200-frame windows. Latest
-        // keeps the newest window; skipped windows cannot contribute peaks.
-        for _ in 0..2 {
-            tone.compiled.engine.render(256).unwrap();
-            tone.output.read_interleaved(&mut [0.0; 512]).unwrap();
-        }
-        service.pump_if_due(now + Duration::from_millis(5)).unwrap();
-        {
-            let window = analysis.read_latest().unwrap();
-            assert_eq!(window.meta().sequence, first_sequence + 3);
-            assert_eq!(window.meta().activation_generation, generation);
-            assert_eq!(window.header().frame_start, 1800);
-            assert_eq!(window.header().frame_end, 2000);
-            let expected_rms = ((1800..2000)
-                .map(|frame| {
-                    (std::f64::consts::TAU * 440.0 * frame as f64 / 48_000.0)
-                        .sin()
-                        .powi(2)
-                })
-                .sum::<f64>()
-                / 200.0)
-                .sqrt()
-                * 0.01;
-            for level in window.elements() {
-                assert!((level.peak - 0.01).abs() < 0.00001);
-                assert!((f64::from(level.rms) - expected_rms).abs() < 0.00001);
-            }
-        }
-        drop(ui);
-        assert_eq!(topic.business_subscribers(), 1);
-        drop(analysis);
-        assert_eq!(topic.business_subscribers(), 0);
-        let attempts = topic.stats().attempts;
-        for _ in 0..6 {
-            tone.compiled.engine.render(256).unwrap();
-            tone.output.read_interleaved(&mut [0.0; 512]).unwrap();
-        }
-        assert_eq!(topic.stats().attempts, attempts);
-        assert!(
-            service
-                .pump_if_due(now + Duration::from_millis(10))
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn subscribe_error_and_service_disconnection_are_distinct() {
-        let (mut bus, topics) = fixture();
-        let (mut ticket, request) = subscription_request(
-            topics.tone_output.clone(),
-            SubscriptionOptions {
-                stream_depth: Some(1),
-            },
-        );
-        request(&mut bus);
-        assert!(matches!(
-            ticket.try_take(),
-            Err(SubscriptionDeliveryError::Subscribe(_))
-        ));
-        let (mut ticket, request) = subscription_request(topics.tone_output, Default::default());
-        drop(request);
-        assert!(matches!(
-            ticket.try_take(),
-            Err(SubscriptionDeliveryError::Disconnected)
-        ));
-        assert!(!bus.has_business_demand());
     }
 }

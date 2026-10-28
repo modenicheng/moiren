@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use moiren_engine::meter::signal::{AudioWindow, ChannelLevel};
-use moiren_signal::{PublisherStatus, Topic, TopicLifecycle};
+use moiren_signal::{PublisherStatus, SubscriptionOptions, Topic, TopicLifecycle};
 use rust_i18n::t;
 
 use crate::service::{
@@ -23,11 +23,16 @@ const STALE_AFTER: Duration = Duration::from_millis(500);
 /// fresh publications while the graph canvas is panned or zoomed.
 const SUBSCRIPTION_GRACE: Duration = Duration::from_millis(750);
 
+/// Queued depth for level subscriptions: sixteen windows hold ~67 ms of the
+/// 240 Hz publication stream, covering both display-rate readers and the
+/// slower control-side pump without dropping intermediate peaks.
+const LEVEL_WINDOW_DEPTH: usize = 16;
+
 mod ballistics;
 use crate::project::MeterDisplayPreferences;
 use ballistics::ChannelBallistics;
 #[cfg(test)]
-use ballistics::{PEAK_HOLD, RMS_ATTACK, RMS_RELEASE};
+use ballistics::{PEAK_HOLD, RMS_INTEGRATION};
 
 /// Ballistics-processed presentation reading for one channel: the moving
 /// peak-programme bar fill, the held recent-maximum marker, and the smoothed
@@ -132,11 +137,6 @@ impl MeterSubscriptions {
             .and_then(|subscription| stereo_display(subscription.display.as_deref()))
     }
 
-    #[cfg(test)]
-    fn update_at(&mut self, snapshot: &AppSnapshot, visible: bool, now: Instant) -> bool {
-        self.update_points_at(snapshot, visible, visible, now)
-    }
-
     fn update_points_at(
         &mut self,
         snapshot: &AppSnapshot,
@@ -172,12 +172,16 @@ impl MeterSubscriptions {
                 self.clear();
                 self.session = Some((snapshot.generation, spec.source.clone()));
             }
-            let (input_topic, output_topic) = match spec.source {
-                InputSelection::Tone { .. } => (None, &snapshot.signal_topics.tone_output),
-                _ => (
+            // Which topics the running session feeds is a published fact
+            // resolved by the service's meter bridge from the active host
+            // graph — a tone session has no observable input at all.
+            let (input_topic, output_topic) = if snapshot.tone_session {
+                (None, &snapshot.signal_topics.tone_output)
+            } else {
+                (
                     Some(&snapshot.signal_topics.monitor_input),
                     &snapshot.signal_topics.monitor_output,
-                ),
+                )
             };
             if !input_visible {
                 self.input_subscription = None;
@@ -450,7 +454,13 @@ impl MeterSubscription {
     fn new(handle: AppHandle, topic: Topic<LevelTopic>, channels: usize) -> Self {
         Self {
             sequence_fence: topic.stats().attempts,
-            visible: VisibleSignal::new(handle, topic.clone(), Default::default()),
+            visible: VisibleSignal::new(
+                handle,
+                topic.clone(),
+                SubscriptionOptions {
+                    stream_depth: Some(LEVEL_WINDOW_DEPTH),
+                },
+            ),
             topic,
             last_delivery: None,
             last_window: None,
@@ -465,12 +475,13 @@ impl MeterSubscription {
 
     fn poll(&mut self, now: Instant) -> bool {
         let published = self.poll_windows(now);
-        self.advance_display(now, published);
+        self.advance_display(now);
         published
     }
 
-    /// Reads the latest published window; returns whether a new publication
-    /// was accepted.
+    /// Drains every queued window; returns whether a new publication was
+    /// accepted. Every drained window contributes its peak and its RMS share,
+    /// so intermediate windows between display reads are never lost.
     fn poll_windows(&mut self, now: Instant) -> bool {
         let demand = PresentationDemand {
             window_visible: true,
@@ -510,29 +521,43 @@ impl MeterSubscription {
                 return false;
             }
         };
-        if let Some(window) = subscriber.read_latest() {
-            let header = window.header();
+        let mut published = false;
+        while let Some(window) = subscriber.next() {
             let meta = window.meta();
-            let valid = valid_level_window(
+            let header = *window.header();
+            let elements = window.elements();
+            if !valid_level_window(
                 self.channels,
                 meta.sequence,
                 self.sequence_fence,
-                *header,
-                window.elements(),
+                header,
+                elements,
                 self.last_window,
-            );
-            if valid {
-                if let Some(levels) = self.levels.as_deref_mut() {
-                    levels.copy_from_slice(window.elements());
-                } else {
-                    self.levels = Some(window.elements().to_vec().into_boxed_slice());
-                }
-                self.sequence_fence = meta.sequence;
-                self.last_window = Some((header.timeline_epoch, header.frame_end));
-                self.last_delivery = Some(now);
-                self.status = MeterStatus::Live;
-                return true;
+            ) {
+                continue;
             }
+            self.sequence_fence = meta.sequence;
+            self.last_window = Some((header.timeline_epoch, header.frame_end));
+            self.last_delivery = Some(now);
+            self.status = MeterStatus::Live;
+            published = true;
+            match self.levels.as_deref_mut() {
+                Some(levels) => {
+                    for (level, element) in levels.iter_mut().zip(elements) {
+                        level.peak = level.peak.max(element.peak);
+                        level.rms = element.rms;
+                    }
+                }
+                None => self.levels = Some(elements.to_vec().into_boxed_slice()),
+            }
+            let duration = window_secs(header);
+            sync_ballistics(&mut self.ballistics, &mut self.display, self.channels);
+            for (channel, element) in self.ballistics.iter_mut().zip(elements) {
+                channel.ingest(*element, duration, now);
+            }
+        }
+        if published {
+            return true;
         }
         if self
             .last_delivery
@@ -550,47 +575,50 @@ impl MeterSubscription {
     /// control-side timer), so decay and peak release continue smoothly
     /// between publications; the display is `None` exactly when the raw
     /// observation is.
-    fn advance_display(&mut self, now: Instant, published: bool) {
+    fn advance_display(&mut self, now: Instant) {
         let Some(levels) = self.levels.as_deref() else {
             self.display = None;
             self.ballistics.clear();
             return;
         };
-        if self.ballistics.len() != levels.len()
-            || self
-                .display
-                .as_deref()
-                .is_none_or(|display| display.len() != levels.len())
-        {
-            self.ballistics = levels.iter().map(|_| ChannelBallistics::new()).collect();
-            self.display = Some(
-                vec![
-                    DisplayLevel {
-                        bar: 0.,
-                        marker: 0.,
-                        rms: 0.
-                    };
-                    levels.len()
-                ]
-                .into(),
-            );
-        }
+        sync_ballistics(&mut self.ballistics, &mut self.display, levels.len());
         let display = self.display.as_deref_mut().expect("sized with ballistics");
-        for ((channel, level), shown) in self
-            .ballistics
-            .iter_mut()
-            .zip(levels)
-            .zip(display.iter_mut())
-        {
+        for (channel, shown) in self.ballistics.iter_mut().zip(display.iter_mut()) {
             channel.settings = self.settings;
-            if published {
-                channel.observe(*level, now);
-            } else {
-                channel.advance(now);
-            }
+            channel.advance(now);
             *shown = channel.level();
         }
     }
+}
+
+fn sync_ballistics(
+    ballistics: &mut Vec<ChannelBallistics>,
+    display: &mut Option<Box<[DisplayLevel]>>,
+    channels: usize,
+) {
+    if ballistics.len() != channels
+        || display
+            .as_deref()
+            .is_none_or(|display| display.len() != channels)
+    {
+        *ballistics = (0..channels).map(|_| ChannelBallistics::new()).collect();
+        *display = Some(
+            vec![
+                DisplayLevel {
+                    bar: 0.,
+                    marker: 0.,
+                    rms: 0.
+                };
+                channels
+            ]
+            .into(),
+        );
+    }
+}
+
+/// True window duration; validation guarantees positive frames and rate.
+fn window_secs(header: AudioWindow) -> Duration {
+    Duration::from_secs_f64((header.frame_end - header.frame_start) as f64 / header.sample_rate)
 }
 
 fn valid_level_window(
@@ -618,6 +646,8 @@ fn valid_level_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const WINDOW: Duration = Duration::from_millis(4);
 
     #[test]
     fn clip_hold_retains_each_channel_until_explicit_reset() {
@@ -699,152 +729,177 @@ mod tests {
     fn falling_peak_never_undershoots_the_current_received_target() {
         let start = Instant::now();
         let mut channel = ChannelBallistics::new();
-        channel.observe(ChannelLevel { peak: 1., rms: 0. }, start);
-        channel.observe(
+        channel.ingest(ChannelLevel { peak: 1., rms: 0. }, WINDOW, start);
+        channel.advance(start);
+        channel.ingest(
             ChannelLevel { peak: 0.1, rms: 0. },
+            WINDOW,
             start + Duration::from_secs(10),
         );
+        channel.advance(start + Duration::from_secs(10));
         assert!(channel.level().bar >= 0.1);
         assert!(channel.level().marker >= channel.level().bar);
     }
 
     #[test]
-    fn ballistics_snap_to_the_first_window_then_smooth_rms_asymmetrically() {
+    fn ballistics_snap_the_peak_to_the_first_window_and_integrate_rms() {
         let start = Instant::now();
         let mut channel = ChannelBallistics::new();
-        channel.observe(
+        channel.ingest(
             ChannelLevel {
                 peak: 0.5,
                 rms: 0.3,
             },
+            WINDOW,
             start,
         );
-        assert_eq!(
-            channel.level(),
-            DisplayLevel {
-                bar: 0.5,
-                marker: 0.5,
-                rms: 0.3
-            },
-            "the first observation snaps to the raw window"
-        );
+        channel.advance(start);
+        let level = channel.level();
+        assert!((level.bar - 0.5).abs() < 0.000001, "the peak snaps");
+        assert!((level.marker - 0.5).abs() < 0.000001, "the marker snaps");
 
-        // Rising RMS covers 1 - 1/e of the gap after one attack constant.
-        channel.observe(
+        // The body integrates from silence, so one integration constant of a
+        // constant 0.4 RMS reading moves it toward the target without
+        // overshooting it.
+        channel.ingest(
             ChannelLevel {
                 peak: 0.5,
                 rms: 0.4,
             },
-            start + RMS_ATTACK,
+            RMS_INTEGRATION,
+            start + WINDOW,
         );
-        let expected = 0.3 + (0.4 - 0.3) * (1. - std::f32::consts::E.recip());
-        assert!((channel.level().rms - expected).abs() < 0.000001);
-
-        // Falling RMS is far slower: after one release constant the reading
-        // still holds 1/e of its previous value.
-        let falling_from = channel.level().rms;
-        channel.observe(
-            ChannelLevel { peak: 0., rms: 0. },
-            start + RMS_ATTACK + RMS_RELEASE,
+        channel.advance(start + WINDOW + RMS_INTEGRATION);
+        let risen = channel.level().rms;
+        assert!(
+            risen > level.rms && risen < 0.4,
+            "body {risen} rises toward the raw window without reaching it"
         );
-        let expected = falling_from * std::f32::consts::E.recip();
-        assert!((channel.level().rms - expected).abs() < 0.000001);
     }
 
     #[test]
-    fn ballistics_marker_holds_then_falls_at_a_fixed_db_rate() {
+    fn ballistics_marker_holds_then_falls_at_the_preference_rate() {
         let start = Instant::now();
+        let rate = crate::project::MeterFalloff::Fast.db_per_second();
         let mut channel = ChannelBallistics::new();
-        channel.observe(ChannelLevel { peak: 0.5, rms: 0. }, start);
+        channel.ingest(ChannelLevel { peak: 0.5, rms: 0. }, WINDOW, start);
+        channel.advance(start);
         // Quieter windows never lower the marker while the hold lasts.
-        channel.observe(
+        channel.ingest(
             ChannelLevel { peak: 0.1, rms: 0. },
+            WINDOW,
             start + Duration::from_millis(100),
         );
-        channel.observe(ChannelLevel { peak: 0.1, rms: 0. }, start + PEAK_HOLD);
+        channel.advance(start + Duration::from_millis(100));
+        channel.ingest(
+            ChannelLevel { peak: 0.1, rms: 0. },
+            WINDOW,
+            start + PEAK_HOLD,
+        );
+        channel.advance(start + PEAK_HOLD);
         assert!((channel.level().marker - 0.5).abs() < 0.000001);
 
-        // 100 ms into the fall: −6.02 dB fell by 2 dB (20 dB/s).
-        channel.observe(
+        // 100 ms into the fall: −6.02 dB less the fall at the preference rate.
+        channel.ingest(
             ChannelLevel { peak: 0., rms: 0. },
+            WINDOW,
             start + PEAK_HOLD + Duration::from_millis(100),
         );
+        channel.advance(start + PEAK_HOLD + Duration::from_millis(100));
         let db = 20. * channel.level().marker.max(f32::MIN_POSITIVE).log10();
-        assert!((db - (-6.0206 - 2.)).abs() < 0.01);
+        assert!((db - (-6.0206 - rate * 0.1)).abs() < 0.01);
 
         // A later, louder window raises the marker instantly and re-holds.
-        channel.observe(
+        channel.ingest(
             ChannelLevel { peak: 0.8, rms: 0. },
+            WINDOW,
             start + PEAK_HOLD + Duration::from_millis(200),
         );
+        channel.advance(start + PEAK_HOLD + Duration::from_millis(200));
         assert!((channel.level().marker - 0.8).abs() < 0.000001);
     }
 
     #[test]
     fn ballistics_peak_bar_moves_immediately_without_hold() {
         let start = Instant::now();
+        let rate = crate::project::MeterFalloff::Fast.db_per_second();
         let mut channel = ChannelBallistics::new();
-        channel.observe(ChannelLevel { peak: 0.5, rms: 0. }, start);
+        channel.ingest(ChannelLevel { peak: 0.5, rms: 0. }, WINDOW, start);
+        channel.advance(start);
         // A quieter window starts the fallback at once — the bar never pins
         // at the recent maximum the way the marker does.
-        channel.observe(
+        channel.ingest(
             ChannelLevel { peak: 0.1, rms: 0. },
+            WINDOW,
             start + Duration::from_millis(100),
         );
+        channel.advance(start + Duration::from_millis(100));
         let level = channel.level();
         assert!((level.marker - 0.5).abs() < 0.000001, "marker still holds");
-        // 100 ms at 20 dB/s below −6.02 dB.
+        // 100 ms of fall below −6.02 dB, floored by the quieter target.
         let db = 20. * level.bar.max(f32::MIN_POSITIVE).log10();
-        assert!((db - (-6.0206 - 2.)).abs() < 0.01, "bar fell to {db} dB");
+        let expected = (-6.0206 - rate * 0.1).max(20. * 0.1f32.log10());
+        assert!((db - expected).abs() < 0.01, "bar fell to {db} dB");
 
         // A louder window raises the bar instantly.
-        channel.observe(
+        channel.ingest(
             ChannelLevel { peak: 0.8, rms: 0. },
+            WINDOW,
             start + Duration::from_millis(200),
         );
+        channel.advance(start + Duration::from_millis(200));
         assert!((channel.level().bar - 0.8).abs() < 0.000001);
     }
 
     #[test]
-    fn rms_release_glides_at_a_standard_db_rate_instead_of_dropping_to_silence() {
+    fn rms_body_glides_through_sustained_silence_instead_of_dropping_to_zero() {
         let start = Instant::now();
         let mut channel = ChannelBallistics::new();
-        channel.observe(ChannelLevel { peak: 0., rms: 0.5 }, start);
-        // One second of digital silence: the bar glides down at the
-        // constant pole rate (8.686 dB per release constant) rather than
-        // stepping to zero, matching a program meter's visible fall.
-        channel.observe(
-            ChannelLevel { peak: 0., rms: 0. },
-            start + Duration::from_secs(1),
-        );
-        let expected_db = 20. * f32::log10(0.5) - 8.686 / RMS_RELEASE.as_secs_f32();
+        for _ in 0..1_500 {
+            channel.ingest(ChannelLevel { peak: 0., rms: 0.5 }, WINDOW, start);
+        }
+        channel.advance(start);
+        let settled_db = 20. * channel.level().rms.max(f32::MIN_POSITIVE).log10();
+        // One real second of digital silence keeps publishing windows; the
+        // integrator decays exponentially (~29 dB per second at 150 ms) and
+        // the display follows it downward instead of stepping to zero.
+        for step in 0..250 {
+            channel.ingest(
+                ChannelLevel { peak: 0., rms: 0. },
+                WINDOW,
+                start + Duration::from_millis(step * 4),
+            );
+        }
+        channel.advance(start + Duration::from_secs(1));
         let display_db = 20. * channel.level().rms.max(f32::MIN_POSITIVE).log10();
-        assert!((display_db - expected_db).abs() < 0.05);
+        assert!(
+            display_db < settled_db - 20.,
+            "body {display_db} dB did not glide down from {settled_db} dB"
+        );
+        assert!(
+            display_db > settled_db - 60.,
+            "body {display_db} dB snapped to silence from {settled_db} dB"
+        );
     }
 
     #[test]
-    fn rms_attack_flattens_window_envelope_ripple() {
-        // A 10 ms RMS window swings with the bass envelope; feed that swing
-        // (±6 dB at 5 Hz, ticked at 20 Hz) and require the display to keep
-        // it to a fraction of the input swing.
+    fn rms_integration_flattens_window_envelope_ripple() {
+        // A short RMS window swings with the bass envelope; feed that swing
+        // (±6 dB at 5 Hz) and require the integrated body to keep the
+        // displayed swing to a fraction of the input swing.
         let start = Instant::now();
         let mut channel = ChannelBallistics::new();
-        channel.observe(
-            ChannelLevel {
-                peak: 0.,
-                rms: 0.5625,
-            },
-            start,
-        );
         let mut high: f32 = 0.;
         let mut low: f32 = 1.;
         for step in 0..40 {
             let rms = if step % 2 == 0 { 1. } else { 0.25 };
-            channel.observe(
+            channel.ingest(
                 ChannelLevel { peak: 0., rms },
-                start + Duration::from_millis(50 * (step + 1)),
+                Duration::from_millis(100),
+                start + Duration::from_millis(100 * (step + 1)),
             );
-            // Skip the settling transient (three release constants).
+            channel.advance(start + Duration::from_millis(100 * (step + 1)));
+            // Skip the settling transient.
             if step >= 20 {
                 high = high.max(channel.level().rms);
                 low = low.min(channel.level().rms);
@@ -855,454 +910,5 @@ mod tests {
             swing_db < 3.,
             "displayed swing {swing_db} dB is not smoothed against the 12 dB input swing"
         );
-    }
-
-    use crate::service::{RunLimit, ServiceContext, ServiceMailbox, SessionSpec};
-    use crate::tone::{ToneConfig, prepare_tone_with_signals};
-    use moiren_engine::{boundary::AudioReader, runtime::Engine};
-
-    fn fixture(source: InputSelection) -> (ServiceContext, AppHandle, ServiceMailbox, AppSnapshot) {
-        let mut context = ServiceContext::default();
-        let generation = context
-            .core
-            .start(SessionSpec {
-                source,
-                output_endpoint_id: "test-output".into(),
-                limit: RunLimit::UntilStopped,
-                gain: 0.05,
-                pan: 0.0,
-                max_block_frames: 256,
-            })
-            .unwrap();
-        assert!(context.core.activated(generation));
-        assert!(context.core.owner_started(generation));
-        let snapshot = crate::service::snapshot(&context);
-        let (handle, mailbox) =
-            ServiceMailbox::with_snapshot(std::thread::current(), snapshot.clone());
-        (context, handle, mailbox, snapshot)
-    }
-
-    fn drain(mailbox: &ServiceMailbox, context: &mut ServiceContext) {
-        while let Some(request) = mailbox.try_dispatch(&mut context.signals) {
-            assert!(request.is_none());
-        }
-    }
-
-    #[test]
-    fn node_meter_demand_is_per_node_visible_and_survives_candidate_edits() {
-        let (mut context, handle, mailbox, mut snapshot) =
-            fixture(InputSelection::Tone { frequency_hz: 440. });
-        let id = snapshot.graph.nodes[1].id;
-        let other = snapshot.graph.nodes[2].id;
-        snapshot
-            .signal_topics
-            .node_levels
-            .insert(id, snapshot.signal_topics.tone_output.clone());
-        snapshot
-            .signal_topics
-            .node_levels
-            .insert(other, snapshot.signal_topics.monitor_output.clone());
-        let mut meters = NodeMeters::new(handle);
-        let visible = [id].into_iter().collect();
-        let now = Instant::now();
-        meters.update_at(&snapshot, &visible, now);
-        drain(&mailbox, &mut context);
-        assert_eq!(
-            snapshot.signal_topics.node_levels[&id].business_subscribers(),
-            1
-        );
-        assert_eq!(
-            snapshot.signal_topics.node_levels[&other].business_subscribers(),
-            0
-        );
-        // A candidate edit (revision drift while a rebuild is pending) must
-        // not interrupt meter demand or drop the current levels.
-        std::sync::Arc::make_mut(&mut snapshot.graph).candidate_revision += 1;
-        meters.update_at(&snapshot, &visible, now);
-        assert_eq!(
-            snapshot.signal_topics.node_levels[&id].business_subscribers(),
-            1
-        );
-        // Leaving visibility keeps the subscription for the grace period so a
-        // one-frame viewport flap cannot reset the RT window, then releases it.
-        meters.update_at(&snapshot, &Default::default(), now);
-        assert_eq!(
-            snapshot.signal_topics.node_levels[&id].business_subscribers(),
-            1,
-            "demand survives a short invisibility gap"
-        );
-        meters.update_at(&snapshot, &Default::default(), now + SUBSCRIPTION_GRACE);
-        assert_eq!(
-            snapshot.signal_topics.node_levels[&id].business_subscribers(),
-            0
-        );
-        assert!(meters.levels(id).is_none());
-    }
-
-    fn render(engine: &mut Engine<f32>, output: &mut AudioReader<f32>, blocks: usize) {
-        for _ in 0..blocks {
-            engine.render(256).unwrap();
-            assert_eq!(
-                output
-                    .read_interleaved(&mut [0.0; 512])
-                    .unwrap()
-                    .transferred_frames,
-                256
-            );
-        }
-    }
-
-    #[test]
-    fn non_running_and_hidden_observers_create_no_demand() {
-        let (mut context, handle, mailbox, mut snapshot) = fixture(InputSelection::Tone {
-            frequency_hz: 440.0,
-        });
-        let topic = snapshot.signal_topics.tone_output.clone();
-        let mut meters = MeterSubscriptions::new(handle);
-        for phase in [
-            SessionPhase::Idle,
-            SessionPhase::Starting,
-            SessionPhase::Stopping,
-            SessionPhase::Failed,
-        ] {
-            snapshot.phase = phase;
-            meters.update(&snapshot, true);
-            drain(&mailbox, &mut context);
-            assert_eq!(topic.business_subscribers(), 0);
-            assert_eq!(meters.output, None);
-            assert_eq!(meters.output_status, MeterStatus::Stopped);
-        }
-        snapshot.phase = SessionPhase::Running;
-        meters.update(&snapshot, false);
-        drain(&mailbox, &mut context);
-        assert_eq!(topic.business_subscribers(), 0);
-        assert_eq!(meters.output_status, MeterStatus::Hidden);
-        meters.update(&snapshot, true);
-        drain(&mailbox, &mut context);
-        assert_eq!(topic.business_subscribers(), 1);
-        assert_eq!(meters.output_status, MeterStatus::NoPublisher);
-        assert_eq!(meters.input_status, MeterStatus::NotAvailable);
-        meters.update(&snapshot, false);
-        assert_eq!(topic.business_subscribers(), 0);
-        assert_eq!(meters.output, None);
-    }
-
-    #[test]
-    fn complete_real_windows_become_live_then_stale_and_resume_without_fake_zeroes() {
-        let (mut context, handle, mailbox, snapshot) = fixture(InputSelection::Tone {
-            frequency_hz: 440.0,
-        });
-        let mut preparation = context
-            .signals
-            .prepare_session(&snapshot.desired.as_ref().unwrap().source)
-            .unwrap();
-        let mut tone = prepare_tone_with_signals(
-            ToneConfig {
-                gain: 0.01,
-                pan: 1.0,
-                ..Default::default()
-            },
-            &mut preparation,
-        )
-        .unwrap();
-        let mut meters = MeterSubscriptions::new(handle);
-        let now = Instant::now();
-        meters.update_at(&snapshot, true, now);
-        drain(&mailbox, &mut context);
-        tone.compiled.engine.render(199).unwrap();
-        tone.output.read_interleaved(&mut [0.; 398]).unwrap();
-        context.signals.pump_if_due(now).unwrap();
-        meters.update_at(&snapshot, true, now);
-        assert_eq!(meters.output, None, "partial windows are unknown");
-        assert_eq!(meters.output_status, MeterStatus::Waiting);
-        tone.compiled.engine.render(1).unwrap();
-        tone.output.read_interleaved(&mut [0.; 2]).unwrap();
-        let received = now + Duration::from_millis(5);
-        context.signals.pump_if_due(received).unwrap();
-        assert!(meters.update_at(&snapshot, true, received));
-        let [left, right] = meters.output.unwrap();
-        assert_eq!(
-            left,
-            ChannelLevel {
-                peak: 0.0,
-                rms: 0.0
-            },
-            "real silence remains a measured zero"
-        );
-        assert!((right.peak - 0.01).abs() < 0.00001);
-        let expected_rms = ((0..200)
-            .map(|frame| {
-                (std::f64::consts::TAU * 440. * f64::from(frame) / 48_000.)
-                    .sin()
-                    .powi(2)
-            })
-            .sum::<f64>()
-            / 200.)
-            .sqrt()
-            * 0.01;
-        assert!((f64::from(right.rms) - expected_rms).abs() < 0.000001);
-        assert_eq!(meters.output_status, MeterStatus::Live);
-        assert_eq!(meters.input, None);
-        assert_eq!(
-            meters.display_output(),
-            meters.output.map(|[left, right]| {
-                [
-                    DisplayLevel {
-                        bar: left.peak,
-                        marker: left.peak,
-                        rms: left.rms,
-                    },
-                    DisplayLevel {
-                        bar: right.peak,
-                        marker: right.peak,
-                        rms: right.rms,
-                    },
-                ]
-            }),
-            "the first live window snaps the display to the raw reading"
-        );
-        assert!(!meters.update_at(&snapshot, true, received));
-        assert!(meters.update_at(&snapshot, true, received + STALE_AFTER));
-        assert_eq!(meters.output_status, MeterStatus::Stale);
-        assert_eq!(meters.output, None);
-        assert_eq!(meters.display_output(), None, "stale clears the display");
-        render(&mut tone.compiled.engine, &mut tone.output, 6);
-        context.signals.pump_if_due(received + STALE_AFTER).unwrap();
-        assert!(meters.update_at(&snapshot, true, received + STALE_AFTER));
-        assert_eq!(meters.output_status, MeterStatus::Live);
-        assert!(meters.output.is_some());
-        drop(tone);
-        drop(preparation);
-        assert!(meters.update_at(&snapshot, true, received + STALE_AFTER));
-        assert_eq!(meters.output, None);
-        assert_eq!(meters.output_status, MeterStatus::NoPublisher);
-    }
-
-    #[test]
-    fn retained_analysis_cache_is_fenced_after_hide_and_generation_changes() {
-        let (mut context, handle, mailbox, mut snapshot) = fixture(InputSelection::Tone {
-            frequency_hz: 440.0,
-        });
-        let topic = snapshot.signal_topics.tone_output.clone();
-        let mut ticket = handle
-            .subscribe_topic(topic.clone(), Default::default())
-            .unwrap();
-        drain(&mailbox, &mut context);
-        let _analysis = ticket.try_take().unwrap().unwrap();
-        let demand_generation = topic.demand_snapshot().generation;
-        let mut preparation = context
-            .signals
-            .prepare_session(&snapshot.desired.as_ref().unwrap().source)
-            .unwrap();
-        let mut tone = prepare_tone_with_signals(ToneConfig::default(), &mut preparation).unwrap();
-        let now = Instant::now();
-        render(&mut tone.compiled.engine, &mut tone.output, 6);
-        context.signals.pump_if_due(now).unwrap();
-        let mut meters = MeterSubscriptions::new(handle);
-        meters.update_at(&snapshot, true, now);
-        drain(&mailbox, &mut context);
-        meters.update_at(&snapshot, true, now);
-        assert_eq!(meters.output, None, "cache from before UI demand is fenced");
-        render(&mut tone.compiled.engine, &mut tone.output, 6);
-        context
-            .signals
-            .pump_if_due(now + Duration::from_millis(5))
-            .unwrap();
-        meters.update_at(&snapshot, true, now + Duration::from_millis(5));
-        assert!(meters.output.is_some());
-        meters.update_at(&snapshot, false, now + Duration::from_millis(5));
-        assert_eq!(topic.business_subscribers(), 1);
-        assert_eq!(topic.demand_snapshot().generation, demand_generation);
-        render(&mut tone.compiled.engine, &mut tone.output, 6);
-        context
-            .signals
-            .pump_if_due(now + Duration::from_millis(10))
-            .unwrap();
-        meters.update_at(&snapshot, true, now + Duration::from_millis(10));
-        drain(&mailbox, &mut context);
-        meters.update_at(&snapshot, true, now + Duration::from_millis(10));
-        assert_eq!(
-            meters.output, None,
-            "hidden-period cache is fenced even with persistent analysis demand"
-        );
-        drop(tone);
-        drop(preparation);
-        snapshot.generation = SessionGeneration(snapshot.generation.0 + 1);
-        let mut preparation = context
-            .signals
-            .prepare_session(&snapshot.desired.as_ref().unwrap().source)
-            .unwrap();
-        let mut tone = prepare_tone_with_signals(
-            ToneConfig {
-                gain: 0.2,
-                ..Default::default()
-            },
-            &mut preparation,
-        )
-        .unwrap();
-        render(&mut tone.compiled.engine, &mut tone.output, 6);
-        context
-            .signals
-            .pump_if_due(now + Duration::from_millis(15))
-            .unwrap();
-        meters.update_at(&snapshot, true, now + Duration::from_millis(15));
-        drain(&mailbox, &mut context);
-        meters.update_at(&snapshot, true, now + Duration::from_millis(15));
-        assert_eq!(
-            meters.output, None,
-            "new session begins unknown until a post-reset publication"
-        );
-        render(&mut tone.compiled.engine, &mut tone.output, 6);
-        context
-            .signals
-            .pump_if_due(now + Duration::from_millis(20))
-            .unwrap();
-        meters.update_at(&snapshot, true, now + Duration::from_millis(20));
-        assert!((meters.output.unwrap()[0].peak - 0.2).abs() < 0.00001);
-        assert_eq!(meters.output_status, MeterStatus::Live);
-        assert_eq!(topic.demand_snapshot().generation, demand_generation);
-        drop(meters);
-        assert_eq!(topic.business_subscribers(), 1);
-    }
-
-    #[test]
-    fn monitor_observations_are_independent_input_and_output_measurements() {
-        use crate::monitor::{MonitorConfig, prepare_monitor_with_signals};
-        use moiren_engine::boundary::ConstantSource;
-
-        let (mut context, handle, mailbox, snapshot) = fixture(InputSelection::Physical {
-            endpoint_id: "test-input".into(),
-        });
-        let mut preparation = context
-            .signals
-            .prepare_session(&snapshot.desired.as_ref().unwrap().source)
-            .unwrap();
-        let mut monitor = prepare_monitor_with_signals(
-            ConstantSource {
-                channels: 2,
-                value: 0.4,
-            },
-            MonitorConfig {
-                gain: 0.25,
-                ..Default::default()
-            },
-            &mut preparation,
-        )
-        .unwrap();
-        let mut meters = MeterSubscriptions::new(handle);
-        let now = Instant::now();
-        meters.update_at(&snapshot, true, now);
-        drain(&mailbox, &mut context);
-        render(&mut monitor.compiled.engine, &mut monitor.output, 6);
-        context.signals.pump_if_due(now).unwrap();
-        meters.update_at(&snapshot, true, now);
-        assert_eq!(meters.input_status, MeterStatus::Live);
-        assert_eq!(meters.output_status, MeterStatus::Live);
-        for level in meters.input.unwrap() {
-            assert!((level.peak - 0.4).abs() < 0.00001);
-            assert!((level.rms - 0.4).abs() < 0.00001);
-        }
-        for level in meters.output.unwrap() {
-            assert!((level.peak - 0.1).abs() < 0.00001);
-            assert!((level.rms - 0.1).abs() < 0.00001);
-        }
-        meters.update_at(&snapshot, false, now);
-        assert_eq!(
-            snapshot.signal_topics.monitor_input.business_subscribers(),
-            0
-        );
-        assert_eq!(
-            snapshot.signal_topics.monitor_output.business_subscribers(),
-            0
-        );
-    }
-
-    #[test]
-    fn scrolling_one_monitor_point_out_of_view_preserves_the_other_live_subscription() {
-        use crate::monitor::{MonitorConfig, prepare_monitor_with_signals};
-        use moiren_engine::boundary::ConstantSource;
-
-        let (mut context, handle, mailbox, snapshot) = fixture(InputSelection::Physical {
-            endpoint_id: "test-input".into(),
-        });
-        let input_topic = snapshot.signal_topics.monitor_input.clone();
-        let output_topic = snapshot.signal_topics.monitor_output.clone();
-        let mut preparation = context
-            .signals
-            .prepare_session(&snapshot.desired.as_ref().unwrap().source)
-            .unwrap();
-        let mut monitor = prepare_monitor_with_signals(
-            ConstantSource {
-                channels: 2,
-                value: 0.4,
-            },
-            MonitorConfig {
-                gain: 0.25,
-                ..Default::default()
-            },
-            &mut preparation,
-        )
-        .unwrap();
-        let mut meters = MeterSubscriptions::new(handle);
-        let now = Instant::now();
-        meters.update_points_at(&snapshot, true, true, now);
-        drain(&mailbox, &mut context);
-        render(&mut monitor.compiled.engine, &mut monitor.output, 6);
-        context.signals.pump_if_due(now).unwrap();
-        meters.update_points_at(&snapshot, true, true, now);
-        assert_eq!(meters.input_status, MeterStatus::Live);
-        assert_eq!(meters.output_status, MeterStatus::Live);
-        let output_generation = output_topic.demand_snapshot().generation;
-        let input_attempts = input_topic.stats().attempts;
-
-        assert!(meters.update_points_at(&snapshot, false, true, now));
-        assert_eq!(input_topic.business_subscribers(), 0);
-        assert_eq!(meters.input, None);
-        assert_eq!(meters.input_status, MeterStatus::Hidden);
-        assert_eq!(output_topic.business_subscribers(), 1);
-        assert_eq!(meters.output_status, MeterStatus::Live);
-        assert!(meters.output.is_some());
-        render(&mut monitor.compiled.engine, &mut monitor.output, 6);
-        context
-            .signals
-            .pump_if_due(now + Duration::from_millis(5))
-            .unwrap();
-        assert!(meters.update_points_at(&snapshot, false, true, now + Duration::from_millis(5)));
-        assert_eq!(input_topic.stats().attempts, input_attempts);
-        assert_eq!(output_topic.demand_snapshot().generation, output_generation);
-        assert!((meters.output.unwrap()[0].peak - 0.1).abs() < 0.00001);
-
-        meters.update_points_at(&snapshot, true, true, now + Duration::from_millis(5));
-        drain(&mailbox, &mut context);
-        meters.update_points_at(&snapshot, true, true, now + Duration::from_millis(5));
-        assert_eq!(
-            meters.input, None,
-            "reappearing point waits for its own fresh window"
-        );
-        assert_eq!(output_topic.demand_snapshot().generation, output_generation);
-        render(&mut monitor.compiled.engine, &mut monitor.output, 6);
-        context
-            .signals
-            .pump_if_due(now + Duration::from_millis(10))
-            .unwrap();
-        meters.update_points_at(&snapshot, true, true, now + Duration::from_millis(10));
-        assert_eq!(meters.input_status, MeterStatus::Live);
-        assert!((meters.input.unwrap()[0].peak - 0.4).abs() < 0.00001);
-        let input_generation = input_topic.demand_snapshot().generation;
-
-        assert!(meters.update_points_at(&snapshot, true, false, now + Duration::from_millis(10)));
-        assert_eq!(output_topic.business_subscribers(), 0);
-        assert_eq!(meters.output, None);
-        assert_eq!(meters.output_status, MeterStatus::Hidden);
-        assert_eq!(input_topic.business_subscribers(), 1);
-        assert_eq!(meters.input_status, MeterStatus::Live);
-        render(&mut monitor.compiled.engine, &mut monitor.output, 6);
-        context
-            .signals
-            .pump_if_due(now + Duration::from_millis(15))
-            .unwrap();
-        assert!(meters.update_points_at(&snapshot, true, false, now + Duration::from_millis(15)));
-        assert_eq!(input_topic.demand_snapshot().generation, input_generation);
-        assert_eq!(meters.input_status, MeterStatus::Live);
     }
 }

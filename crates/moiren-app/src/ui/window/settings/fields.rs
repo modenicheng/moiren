@@ -177,7 +177,7 @@ pub(in super::super) fn footer(
     let needs_restart = state.snapshot.active_audio_settings.as_ref() != Some(&draft.audio)
         || state.snapshot.active_transport_latency != Some(draft.transport)
         || state.snapshot.active_latency_profile
-            != super::model::expected_active_profile(&draft.audio, draft.profile);
+            != super::model::expected_active_profile(draft.profile);
     let busy = shell.settings.busy()
         || state.pending_request
         || state.snapshot.graph.pending_revision.is_some()

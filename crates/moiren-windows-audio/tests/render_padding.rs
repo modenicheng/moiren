@@ -1,4 +1,4 @@
-use moiren_windows_audio::render::{RenderPaddingObserver, RenderPaddingSample};
+use moiren_windows_audio::latency::render::{RenderPaddingObserver, RenderPaddingSample};
 use std::sync::{Arc, Barrier};
 
 mod common;
@@ -188,12 +188,11 @@ fn owner_thread_publication_and_invalidation_do_not_allocate_or_free() {
 fn live_padding_does_not_change_existing_empty_padding_diagnostics() {
     use moiren_windows_audio::{
         latency::TelemetryMode,
-        render::{RenderCallback, RenderDiagnostics, RenderStats},
+        latency::render::{RenderCallback, RenderDiagnostics},
     };
 
     let observer = RenderPaddingObserver::new();
     let mut owner = observer.new_owner();
-    let stats = RenderStats::default();
     let mut diagnostics = RenderDiagnostics::new(TelemetryMode::Trace, 75_000);
     for value in [20, 0, 10] {
         assert!(owner.publish(sample(value)));
@@ -202,7 +201,6 @@ fn live_padding_does_not_change_existing_empty_padding_diagnostics() {
             ..Default::default()
         });
     }
-    assert_eq!(stats.empty_padding_wakes, 0);
     let events = diagnostics.finish().events;
     assert_eq!(events.len(), 1);
     assert!(events[0].empty_padding);

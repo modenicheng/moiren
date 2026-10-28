@@ -310,6 +310,9 @@ impl From<RunLimitDocument> for RunLimit {
 #[serde(default, deny_unknown_fields)]
 pub struct ProjectLayout {
     pub mixer_order: Vec<u64>,
+    /// Strip and dock widths are fixed in the UI; these fields survive only
+    /// so older documents still parse under `deny_unknown_fields`. Ignored
+    /// on load and rewritten with the defaults on save.
     pub mixer_width: f32,
     pub mixer_dock_width: f32,
     pub workspace: WorkspaceDocument,

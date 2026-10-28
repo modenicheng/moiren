@@ -1,7 +1,9 @@
 use super::super::{ProcessContext, ProcessorError, RtProcessor};
-use super::dynamics::{db_to_gain, float_specs, resolve_float, smooth, validate_float_domains};
+use super::dynamics::{
+    db_to_gain, float_specs, resolve_float, smooth, validate_float_domains, validate_linked_io,
+};
 use crate::{
-    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    buffer::{FrameIo, PreparedIo, ProcessIo},
     control::{FloatRamp, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
@@ -121,6 +123,14 @@ impl Compressor {
         float_specs(id, &Self::DOMAINS, values)
     }
 
+    /// Unified preparation entry used by rack expansion and node lowering:
+    /// the kernel and its parameter schema come from one call, so a prepared
+    /// kernel and its table cannot drift apart. The signal-publishing variant
+    /// (`with_signal`) replaces only the kernel, never this schema.
+    pub fn prepare(id: ProcessorId, settings: CompressorSettings) -> (Self, Vec<ParamSpec>) {
+        (Self::new(), Self::parameters(id, settings).to_vec())
+    }
+
     /// Effective settings after applying recorded parameter intent by id. Each
     /// field is keyed by its named constant — never by declaration order — so
     /// reordering `CompressorSettings` can no longer silently misroute intent
@@ -206,14 +216,7 @@ impl<S: ProcessingSample> RtProcessor<S> for Compressor {
         self.signal.as_ref().map_or(&[], |signal| &signal.bindings)
     }
     fn validate_io(&self, io: &PreparedIo) -> Result<(), ProcessorError> {
-        if io.input_count() != 1
-            || io.output_count() != 1
-            || io.input_channels(0).is_none()
-            || io.input_channels(0) != io.output_channels(0)
-        {
-            return Err(ProcessorError::InvalidIo);
-        }
-        Ok(())
+        validate_linked_io(io)
     }
 
     fn validate_parameters(&self, params: ProcessParameters<'_>) -> Result<(), ProcessorError> {
@@ -238,25 +241,7 @@ impl<S: ProcessingSample> RtProcessor<S> for Compressor {
                 .float(ParameterId(index as u32))
                 .expect("validated compressor parameter")
         });
-        match io {
-            ProcessIo::Separate {
-                inputs,
-                mut outputs,
-            } => self.process_linked(
-                &mut SeparateFrames::new(
-                    inputs.get(0).expect("validated compressor input"),
-                    outputs.get_mut(0).expect("validated compressor output"),
-                ),
-                ramps,
-                ctx.processing_sr,
-            ),
-            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
-                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated compressor pair")),
-                ramps,
-                ctx.processing_sr,
-            ),
-            ProcessIo::ReadOnly { .. } => unreachable!("compressor requires an output"),
-        }
+        linked_io!(io, self, "compressor", ramps, ctx.processing_sr);
         if let Some(signal) = &self.signal
             && signals
                 .demand(&signal.publisher)

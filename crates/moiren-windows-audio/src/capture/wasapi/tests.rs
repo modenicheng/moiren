@@ -1,38 +1,14 @@
 use super::*;
 
 #[test]
-fn capture_and_process_preparation_reject_foreign_gate_stop_before_spawning() {
-    use crate::{ActivationGate, GateError, SessionDuration};
+fn process_preparation_rejects_foreign_gate_stop_before_spawning() {
+    use crate::{GateError, SessionDuration};
     let stop = StopSignal::new().unwrap();
     let gate = ActivationGate::new(StopSignal::new().unwrap()).unwrap();
     let expected = CaptureError::Gate(GateError::Api {
         stage: "ActivationGate stop identity",
         hresult: 0x80070057u32 as i32,
     });
-    let physical = prepare_capture_with_gate(
-        CaptureOptions {
-            artifact: None,
-            latency_telemetry: crate::latency::TelemetryMode::Summary,
-            shared_period: crate::shared_stream::SharedPeriodPolicy::default(),
-            endpoint_id: "unopened".into(),
-            duration: SessionDuration::UntilStopped,
-        },
-        stop.clone(),
-        gate.clone(),
-    );
-    assert!(matches!(physical, Err(error) if error == expected));
-    let native = prepare_capture_native_with_gate(
-        CaptureOptions {
-            artifact: None,
-            latency_telemetry: crate::latency::TelemetryMode::Summary,
-            shared_period: crate::shared_stream::SharedPeriodPolicy::default(),
-            endpoint_id: "unopened".into(),
-            duration: SessionDuration::UntilStopped,
-        },
-        stop.clone(),
-        gate.clone(),
-    );
-    assert!(matches!(native, Err(error) if error == expected));
     let process = crate::process_loopback::prepare_process_capture_with_gate(
         crate::process_loopback::ProcessLoopbackOptions {
             artifact: None,
@@ -227,7 +203,7 @@ fn capture_lease_copies_raw_evidence_before_release_without_allocating() {
             2,
         )
         .unwrap();
-        let (result, counts) = crate::render::wasapi::count_test_allocations(|| {
+        let (result, counts) = allocation_guard::count_allocations(|| {
             transfer_packet(&client, 2, &mut ingress, None, Some(&mut writer))
         });
         assert_eq!(counts, (0, 0));
@@ -283,27 +259,25 @@ fn prepared_capture_publishes_bridge_before_gate_and_cancel_never_runs() {
             );
             report.shared_period.requested_period_frames = Some(240);
             report.shared_period.actual_period_frames = Some(336);
-            let result = stream::ready_and_wait(
-                &sender,
-                Startup {
+            let result = sender
+                .send(Ok(Startup {
                     source,
                     observer,
                     sample_rate: 48000,
                     channels: 2,
-                },
-                &worker_gate,
-                None,
-            )
-            .map(|activation| {
-                if activation == Activation::Start {
-                    ran.fetch_add(1, Ordering::SeqCst);
-                    started.store(true, Ordering::Release);
-                    report.stream_started = true;
-                    crate::capture::CaptureStatus::Completed
-                } else {
-                    crate::capture::CaptureStatus::Stopped
-                }
-            });
+                }))
+                .map_err(|_| CaptureError::StartupLost)
+                .and_then(|()| worker_gate.wait().map_err(CaptureError::from))
+                .map(|activation| {
+                    if activation == Activation::Start {
+                        ran.fetch_add(1, Ordering::SeqCst);
+                        started.store(true, Ordering::Release);
+                        report.stream_started = true;
+                        crate::capture::CaptureStatus::Completed
+                    } else {
+                        crate::capture::CaptureStatus::Stopped
+                    }
+                });
             stream::finish(result, &stop, &sender, report)
         })
         .unwrap();
@@ -329,6 +303,11 @@ fn prepared_capture_publishes_bridge_before_gate_and_cancel_never_runs() {
         assert!(json["requested_seconds"].is_null());
     }
 }
+
+// The library test binary needs its own allocator; the retired render worker
+// used to provide it. Integration tests compile this same scaffold separately.
+#[path = "../../../tests/common/alloc_guard.rs"]
+mod allocation_guard;
 
 #[test]
 fn capture_preparation_failure_joins_owner_before_returning() {

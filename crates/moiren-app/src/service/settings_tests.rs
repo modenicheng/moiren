@@ -63,57 +63,6 @@ fn saved_audio_is_present_before_first_driver_poll_and_initial_snapshot() {
     assert_eq!(observed, settings);
 }
 
-struct UnusedLegacyBackend(Arc<AtomicUsize>);
-
-impl BackendAdapter for UnusedLegacyBackend {
-    fn prepare(
-        &self,
-        _: SessionSpec,
-        _: Cancellation,
-    ) -> Result<Box<dyn PreparedSession>, BackendError> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Err(BackendError::new(
-            "test",
-            "legacy preparation must not be called",
-        ))
-    }
-
-    fn catalog(&self) -> Result<DeviceCatalog, BackendError> {
-        Ok(DeviceCatalog::default())
-    }
-}
-
-#[test]
-fn legacy_driver_retains_draft_but_refuses_to_start_unsupported_configuration() {
-    let prepares = Arc::new(AtomicUsize::new(0));
-    let mut driver = BackendDriver::new(Arc::new(UnusedLegacyBackend(prepares.clone())));
-    let mut context = ServiceContext::default();
-    let mut pool = JobPool::new().unwrap();
-    let mut settings = AudioSettings::default();
-    settings.processing.precision = ProcessingPrecision::F64;
-    driver.request(
-        &mut context,
-        &mut pool,
-        AppRequest::SetAudioSettings(settings.clone()),
-    );
-    for request in [AppRequest::Start(session()), AppRequest::ApplyGraph] {
-        driver.request(&mut context, &mut pool, request);
-        driver.poll(&mut context, &mut pool, RoundBudget::default());
-        assert!(
-            context
-                .graph
-                .snapshot()
-                .last_error
-                .unwrap()
-                .contains("legacy")
-        );
-        assert_eq!(context.audio_settings, settings);
-        assert_eq!(context.active_audio_settings, None);
-        assert_eq!(context.core.phase(), SessionPhase::Idle);
-        assert_eq!(prepares.load(Ordering::SeqCst), 0);
-    }
-}
-
 #[test]
 fn active_audio_settings_require_running_current_owner() {
     let mut context = ServiceContext {

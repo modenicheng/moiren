@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
     PumpBudget, PumpReport,
@@ -29,6 +29,36 @@ impl Fanout {
             (retired.rotate_right(self.retire_cursor).trailing_zeros() + self.retire_cursor) % 64;
         self.retire_cursor = (index + 1) % 64;
         index as usize
+    }
+
+    /// Shared retired-reclaim prelude of both dispatch steps: picks the next
+    /// rotating retired slot, lets `drain` stage the sender's teardown, then
+    /// detaches it with `storage::retire_sender` — the slot directory first,
+    /// its completion bit strictly after. Returns `false` when `drain` needs
+    /// more passes (Stream frees one queued owner per step); the slot stays
+    /// retired and the step still counts as progressed. The caller owns the
+    /// charge, the retired-scheduling flag and the post-detach finish once the
+    /// recipients mask drains.
+    fn reclaim_retired<S>(
+        &mut self,
+        retired: u64,
+        senders: &mut [Option<S>; 64],
+        occupied: &mut u64,
+        retired_receivers: &AtomicU64,
+        drain: impl FnOnce(&mut S) -> bool,
+    ) -> bool {
+        let index = self.retired_slot(retired);
+        if !drain(senders[index].as_mut().expect("retired sender")) {
+            return false;
+        }
+        retire_sender(
+            senders,
+            occupied,
+            &mut self.recipients,
+            retired_receivers,
+            index,
+        );
+        true
     }
 }
 
@@ -82,13 +112,12 @@ impl<S: Payload> Dispatch for LatestStorage<S> {
             if !charge(report, budget, 0) {
                 return false;
             }
-            let index = self.fanout.retired_slot(retired);
-            retire_sender(
+            self.fanout.reclaim_retired(
+                retired,
                 &mut self.senders,
                 &mut self.occupied,
-                &mut self.fanout.recipients,
                 &self.state.retired_receivers,
-                index,
+                |_| true,
             );
             if self.fanout.recipients == 0 {
                 self.fanout.active = false;
@@ -123,10 +152,7 @@ impl<S: Payload> Dispatch for LatestStorage<S> {
         let demand = self.state.demand.snapshot();
         let sender = self.senders[index].as_mut().expect("snapshotted sender");
         let lease = sender.lease.upgrade();
-        let eligible = lease.is_some()
-            && demand.active
-            && meta.activation_generation == demand.generation
-            && meta.sequence > sender.last_sequence;
+        let eligible = lease.is_some() && sender.eligible(meta, &demand);
         if !charge(
             report,
             budget,
@@ -177,21 +203,15 @@ impl<S: Payload> Dispatch for StreamStorage<S> {
                 return false;
             }
             self.fanout.retired_last = true;
-            let index = self.fanout.retired_slot(retired);
-            if !self.senders[index]
-                .as_mut()
-                .expect("retired sender")
-                .retire_one()
-            {
-                return true;
-            }
-            retire_sender(
+            if !self.fanout.reclaim_retired(
+                retired,
                 &mut self.senders,
                 &mut self.occupied,
-                &mut self.fanout.recipients,
                 &self.state.retired_receivers,
-                index,
-            );
+                |sender| sender.retire_one(),
+            ) {
+                return true;
+            }
             if self.fanout.recipients == 0 {
                 self.finish_dispatch();
             }

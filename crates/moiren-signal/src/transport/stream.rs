@@ -20,7 +20,6 @@ pub(crate) struct StreamEndpoint<'a, S> {
 
 #[cfg(test)]
 impl<S: Payload> StreamStorage<S> {
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn endpoint(&mut self) -> StreamEndpoint<'_, S> {
         assert_eq!(
             self.state
@@ -49,13 +48,6 @@ impl<'a, S: Clone + Send> StreamEndpoint<'a, S> {
 }
 
 impl<S> StreamEndpoint<'_, S> {
-    fn check_open(&self) -> Result<(), PublishError> {
-        if self.state.demand.is_closed() {
-            Err(PublishError::Closed)
-        } else {
-            Ok(())
-        }
-    }
     fn dropped(&mut self) -> Result<u64, PublishError> {
         let sequence = self.sequence.allocate(&self.state.attempt_sequence)?;
         crate::lifecycle::increment(&self.state.ingress_drops);
@@ -73,7 +65,7 @@ impl<S> StreamEndpoint<'_, S> {
         Ok(slot)
     }
     fn acquire(&mut self) -> Result<StreamWrite<'_, S>, WriteError> {
-        self.check_open()?;
+        self.state.check_open()?;
         let slot = self.acquire_slot()?;
         Ok(StreamWrite {
             endpoint: StreamEndpoint {
@@ -104,7 +96,7 @@ impl<S: Payload> StreamWrite<'_, S> {
         self.slot.as_mut().expect("acquired owner")
     }
     fn commit(mut self, len: usize) -> Result<PublishOutcome, PublishError> {
-        self.endpoint.check_open()?;
+        self.endpoint.state.check_open()?;
         let sequence = self
             .endpoint
             .sequence
@@ -130,7 +122,6 @@ impl<S: Payload> StreamWrite<'_, S> {
 }
 
 impl<T: Copy + Send + 'static> StreamEndpoint<'_, ValueSlot<T>> {
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish(&mut self, value: T) -> Result<PublishOutcome, PublishError> {
         let mut write = match self.acquire() {
             Ok(write) => write,
@@ -166,7 +157,7 @@ impl<H: Copy + Send + 'static, E: Copy + Send + 'static> StreamEndpoint<'_, Bloc
     /// Validation shared with the production `try_write_owned` path so the
     /// test-facing borrow entry point exercises the same checks.
     fn check_write(&self, max_len: usize) -> Result<(), WriteError> {
-        self.check_open()?;
+        self.state.check_open()?;
         if max_len > self.capacity {
             return Err(PublishError::InvalidLength.into());
         }
@@ -185,6 +176,10 @@ impl<H: Copy + Send + 'static, E: Copy + Send + 'static> StreamEndpoint<'_, Bloc
             marker: std::marker::PhantomData,
         })
     }
+    /// Test seam: one-call slice publication for private transport tests.
+    /// Production writes go through `try_write_owned` (scoped guards) or the
+    /// value `publish`; the scope-level `SignalScope::publish_slice` is the
+    /// production slice entry point.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish_slice(
         &mut self,
@@ -227,7 +222,6 @@ pub(crate) enum DispatchStep {
 
 // Dispatcher charges dequeue/cleanup and each independent receiver copy.
 // No operation scans a configured Stream depth, including a depth of ZST slots.
-#[cfg_attr(not(test), allow(dead_code))]
 impl<S: Payload> StreamStorage<S> {
     pub(crate) fn begin_dispatch(&mut self) -> DispatchStep {
         assert!(self.dispatch.is_none(), "finish the held dispatch first");

@@ -1,8 +1,9 @@
 use super::{NodeKind, ServiceRuntime, TrayMixer, UiState};
+use crate::ui::widgets::fader::FaderScale;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AppContext, Entity, Modifiers, MouseButton, SharedString, TestAppContext, VisualTestContext,
-    point, px, size,
+    AppContext, Entity, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, SharedString,
+    TestAppContext, VisualTestContext, point, px, size,
 };
 use std::time::Duration;
 
@@ -99,8 +100,10 @@ fn tray_mixer_fader_drag_edits_the_gain(cx: &mut TestAppContext) {
             .id()
     });
     // Press the track's midpoint and release: the press jumps the value
-    // and the edit applies itself. The track midpoint maps to roughly
-    // -18 dB.
+    // and the edit applies itself. The tray now shares the main mixer's
+    // perceptual value space, so the midpoint lands near the scale's middle
+    // (about -11.5 dB); derive the window from the scale instead of a
+    // hardcoded amplitude range.
     let target = cx.update(|window, _| {
         let levels = window
             .find(SharedString::from(format!("tray-strip-levels-{source:?}")))
@@ -110,11 +113,111 @@ fn tray_mixer_fader_drag_edits_the_gain(cx: &mut TestAppContext) {
     cx.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
     cx.update(|window, cx| window.render_frame(cx));
     cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    let middle = FaderScale::gain(0.5);
     poll_until(&view, cx, |snapshot| {
         snapshot
             .graph
             .node(source)
-            .is_some_and(|node| (0.10..0.16).contains(&node.mixer.gain))
+            .is_some_and(|node| (middle * 0.9..middle * 1.1).contains(&node.mixer.gain))
+    });
+    handle.request_exit();
+    runtime.join().unwrap();
+}
+
+/// Wheel and double-click go through the behavior's commit path: one wheel
+/// notch is a multiplicative +1 dB, and a double click restores unity (0 dB).
+/// A wheel notch is `Lines { y: 1. }` — gpui's positive wheel delta means the
+/// wheel moved up, which must increase the value.
+#[gpui_kit::test]
+fn tray_mixer_fader_wheel_steps_and_double_click_resets(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let runtime = ServiceRuntime::spawn().unwrap();
+    let handle = runtime.handle();
+    let snapshot = crate::ui::state::initial_snapshot(&handle).unwrap();
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let (view, cx) = cx.add_window_view(|window, cx| TrayMixer::new(state, None, window, cx));
+    cx.update(|window, _| window.resize(size(px(360.), px(372.))));
+    cx.update(|window, cx| window.render_frame(cx));
+    let source = view.update(cx, |flyout, cx| {
+        let graph = &flyout.state.read(cx).snapshot.graph.graph;
+        graph
+            .nodes()
+            .iter()
+            .find(|node| node.kind() == NodeKind::Source)
+            .unwrap()
+            .id()
+    });
+    let before = view.update(cx, |flyout, cx| {
+        flyout
+            .state
+            .read(cx)
+            .snapshot
+            .graph
+            .node(source)
+            .unwrap()
+            .mixer
+            .gain
+    });
+    let expected = before * 10f64.powf(1. / 20.);
+    // Hover the fader and wheel up one notch.
+    let center = view.update(cx, |flyout, cx| {
+        flyout.faders[&source].state.read(cx).bounds().center()
+    });
+    cx.simulate_mouse_move(center, None, Modifiers::default());
+    cx.simulate_event(ScrollWheelEvent {
+        position: center,
+        delta: ScrollDelta::Lines(point(0., 1.)),
+        ..Default::default()
+    });
+    poll_until(&view, cx, |snapshot| {
+        snapshot
+            .graph
+            .node(source)
+            .is_some_and(|node| (node.mixer.gain - expected).abs() < expected * 0.01)
+    });
+    // The commit path also wrote the stepped value into the slider state.
+    view.update(cx, |flyout, cx| {
+        let value = flyout.faders[&source].state.read(cx).value().end();
+        let stepped = 1. - FaderScale::position(expected);
+        assert!(
+            (value - stepped).abs() < 0.001,
+            "slider value {value} != stepped {stepped}"
+        );
+    });
+    // Double click the track below the thumb (a plain click jumps there; the
+    // second click restores unity).
+    cx.simulate_event(gpui_kit::MouseDownEvent {
+        position: center,
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui_kit::MouseUpEvent {
+        position: center,
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+    });
+    cx.simulate_event(gpui_kit::MouseDownEvent {
+        position: center,
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    cx.simulate_event(gpui_kit::MouseUpEvent {
+        position: center,
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+        click_count: 2,
+    });
+    poll_until(&view, cx, |snapshot| {
+        // f32 round trips through the perceptual scale leave ~1e-7 slack.
+        snapshot
+            .graph
+            .node(source)
+            .is_some_and(|node| (node.mixer.gain - 1.).abs() < 1e-6)
     });
     handle.request_exit();
     runtime.join().unwrap();

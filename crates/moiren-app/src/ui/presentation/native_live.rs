@@ -4,7 +4,7 @@
 use moiren_core::graph::NodeId;
 use moiren_windows_audio::{
     clock_bridge::BridgeSnapshot, engine_backend::NativeObservationSnapshot,
-    render::RenderPaddingSnapshot,
+    latency::render::RenderPaddingSnapshot,
 };
 use rust_i18n::t;
 

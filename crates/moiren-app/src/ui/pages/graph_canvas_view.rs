@@ -9,7 +9,7 @@ use gpui_kit::*;
 use rust_i18n::t;
 
 use super::graph_canvas::{
-    Camera, CanvasFrame, CanvasWorld, HitTarget, PortDirection, PortTarget, WireCurve,
+    Camera, CanvasFrame, CanvasNode, CanvasWorld, HitTarget, PortDirection, PortTarget, WireCurve,
 };
 use crate::ui::theme;
 use crate::ui::window::TestObserve;
@@ -154,6 +154,88 @@ fn paint_canvas_layer(
             }
         },
     );
+}
+
+/// Port dots straddle the card edge by their radius; pad the ghost so they
+/// stay inside the element.
+const PREVIEW_PORT_PAD: f32 = 4.;
+
+/// Drag ghost for a library template: the exact default card the drop will
+/// create, painted by the shared node painter instead of a bare placeholder.
+pub(in crate::ui) fn node_drag_preview(
+    template: super::node_catalog::NodeTemplate,
+) -> impl IntoElement {
+    use super::node_catalog::NodeTemplate;
+    let (icon, tint) = match template {
+        NodeTemplate::Input => ("figma-input", theme::NODE_SOURCE),
+        NodeTemplate::Application => ("app", theme::NODE_SOURCE),
+        NodeTemplate::Tone => ("wave", theme::NODE_SOURCE),
+        NodeTemplate::Output => ("figma-output", theme::NODE_SINK),
+        NodeTemplate::Bus => ("figma-bus", theme::NODE_UTILITY),
+        NodeTemplate::Recorder => ("radio", theme::NODE_ANALYSIS),
+        NodeTemplate::Meter => ("activity", theme::NODE_ANALYSIS),
+        NodeTemplate::Spectrum => ("wave", theme::NODE_ANALYSIS),
+        NodeTemplate::Delay => ("clock", theme::NODE_DSP),
+        NodeTemplate::ChannelMapper | NodeTemplate::Rack => ("route", theme::NODE_UTILITY),
+        _ => ("figma-fader", theme::NODE_DSP),
+    };
+    // A fresh card's port shape: sources only output, the sink only inputs.
+    let (input_count, has_output) = match template {
+        NodeTemplate::Input | NodeTemplate::Application | NodeTemplate::Tone => (0, true),
+        NodeTemplate::Output => (1, false),
+        _ => (1, true),
+    };
+    let node = CanvasNode {
+        node_id: None,
+        id: "drag-preview".into(),
+        name: t!(template.title()).to_string(),
+        detail: match template {
+            NodeTemplate::Input => t!("Choose a source").to_string(),
+            NodeTemplate::Output => t!("Choose an output").to_string(),
+            _ => "L/R".into(),
+        },
+        icon: Some(icon),
+        x: PREVIEW_PORT_PAD,
+        y: PREVIEW_PORT_PAD,
+        wide: false,
+        input_count,
+        input_ports: Vec::new(),
+        output_port: None,
+        has_output,
+        tint: Some(tint),
+        gain: 1.,
+        balance: None,
+        peaks: None,
+    };
+    let size = (
+        node.width() + PREVIEW_PORT_PAD * 2.,
+        node.height() + PREVIEW_PORT_PAD * 2.,
+    );
+    let world = Arc::new(CanvasWorld::new(vec![node], Vec::new()));
+    canvas(
+        move |bounds, _, _| {
+            CanvasFrame::new(
+                world,
+                Camera {
+                    adjusted: true,
+                    ..Default::default()
+                },
+                bounds,
+            )
+        },
+        |_, frame, window, cx| {
+            nodes::paint_node(
+                &frame,
+                &frame.world.nodes[0],
+                &frame.nodes[0],
+                true,
+                window,
+                cx,
+            );
+        },
+    )
+    .w(px(size.0))
+    .h(px(size.1))
 }
 
 fn overview(prepared: PreparedFrame) -> impl IntoElement {

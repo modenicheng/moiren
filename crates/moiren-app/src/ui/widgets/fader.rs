@@ -2,6 +2,8 @@
 use crate::ui::theme;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use rust_i18n::t;
+use std::rc::Rc;
 
 pub struct FaderScale;
 
@@ -122,54 +124,264 @@ pub(super) fn paint_text(
     let _ = line.paint(origin, px(10.), align, width, window, cx);
 }
 
-pub fn fader(state: &Entity<base::slider::SliderState>, gain: f64) -> impl IntoElement {
-    base::slider::Slider::new(state)
-        .vertical()
+/// Shared wheel/double-click commit for one computed value: writes the
+/// slider value and dispatches the graph edit.
+pub type Commit = Rc<dyn Fn(f32, &mut Window, &mut App)>;
+
+/// Interaction beyond dragging, supplied by the value-space owner: wheel
+/// stepping and the double-click reset. `commit` writes the slider value and
+/// dispatches the graph edit as one step; `set_value` emits no
+/// [`base::slider::SliderEvent::Change`], so committing never feeds back into
+/// the drag path.
+#[derive(Clone)]
+pub struct SliderBehavior {
+    /// One wheel notch: current value -> new value. Direction +1 = up/right
+    /// (increase), -1 = down/left.
+    pub step: Rc<dyn Fn(f32, i32) -> f32>,
+    /// Value a double click restores (unity / default / center).
+    pub reset: f32,
+    /// Commit an externally computed value: set slider value + dispatch the
+    /// graph edit.
+    pub commit: Commit,
+}
+
+/// Wheel direction as a step count: wheel up (or tilt right) is +1. gpui
+/// carries touchpad pixel deltas and discrete line notches with the same
+/// sign — positive scrolls the content down, i.e. the wheel moved up. The
+/// secondary axis covers shift+wheel and tilt wheels on horizontal sliders.
+fn wheel_direction(delta: &ScrollDelta) -> i32 {
+    let (x, y) = match delta {
+        ScrollDelta::Pixels(delta) => (f32::from(delta.x), f32::from(delta.y)),
+        ScrollDelta::Lines(delta) => (delta.x, delta.y),
+    };
+    let (x, y) = (x.signum(), y.signum());
+    if y != 0. { y as i32 } else { x as i32 }
+}
+
+/// Wraps a slider in the shared gesture surface: the wheel steps by
+/// `behavior.step` and a double click restores `behavior.reset`, both through
+/// `commit`. Wheel events stop propagation here so adjusting a slider never
+/// scrolls the surrounding strip or panel container.
+fn gestures(
+    state: &Entity<base::slider::SliderState>,
+    behavior: &SliderBehavior,
+    slider: impl IntoElement,
+) -> Stateful<Div> {
+    let hint = t!("Scroll to adjust · double-click to reset").to_string();
+    div()
+        .id(("slider-gestures", state.entity_id()))
         .relative()
-        .flex_none()
-        .w(px(32.))
-        .h_full()
-        // Keep the indicator: gpui uses it to record pointer mapping bounds.
-        .child(
-            base::slider::SliderIndicator::new(state)
-                .absolute()
-                .left(px(15.))
-                .top_0()
-                .w(px(2.))
-                .h_full(),
-        )
-        .child(
-            base::slider::SliderTrack::new(state)
-                .axis(Axis::Vertical)
-                .absolute()
-                .left(px(15.))
-                .top_0()
-                .w(px(2.))
-                .h_full()
-                .bg(theme::BORDER_STRONG),
-        )
-        .child(
-            base::slider::SliderThumb::new(state)
-                .axis(Axis::Vertical)
-                .absolute()
-                .left(px(5.))
-                .top(relative(FaderScale::position(gain)))
-                .mt(px(-16.))
-                .w(px(22.))
-                .h(px(32.))
-                .bg(theme::TEXT_MUTED)
-                .border_1()
-                .border_color(theme::BORDER_STRONG)
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(2.))
-                        .right(px(2.))
-                        .top(px(14.))
-                        .h(px(2.))
-                        .bg(theme::TEXT),
-                ),
-        )
+        .tooltip(move |window, cx| component::tooltip::Tooltip::new(hint.clone()).build(window, cx))
+        .on_scroll_wheel({
+            let state = state.clone();
+            let behavior = behavior.clone();
+            move |event: &ScrollWheelEvent, window, cx| {
+                cx.stop_propagation();
+                let direction = wheel_direction(&event.delta);
+                if direction == 0 {
+                    return;
+                }
+                let current = state.read(cx).value().end();
+                let value = (behavior.step)(current, direction);
+                // An immediate, user-paced gesture: bypass drag coalescing
+                // and leave the dragging flag alone.
+                if value != current {
+                    (behavior.commit)(value, window, cx);
+                }
+            }
+        })
+        .on_click({
+            let behavior = behavior.clone();
+            move |event: &ClickEvent, window, cx| {
+                if event.click_count() == 2 {
+                    (behavior.commit)(behavior.reset, window, cx);
+                }
+            }
+        })
+        .child(slider)
+}
+
+/// Linear position of `value` inside the slider's own value range, 0..1.
+/// Pure so the geometry tests run without a rendered slider.
+fn normalized_value(value: f32, min: f32, max: f32) -> f32 {
+    let span = max - min;
+    if span <= 0. {
+        return 0.;
+    }
+    ((value - min) / span).clamp(0., 1.)
+}
+
+/// Vertical thumb position from the track top. The fader's slider value space
+/// is inverted (1 = top), so the thumb rides at `1 - normalized`.
+fn thumb_top(value: f32, min: f32, max: f32) -> f32 {
+    1. - normalized_value(value, min, max)
+}
+
+/// Vertical channel fader for the main mixer and the tray flyout: a flat
+/// capsule track, a fill from the thumb down to the quiet end, a 0 dB detent
+/// tick (the flyout has no ruler or unity line of its own), and a classic
+/// fader cap — taller than wide, light-bodied with a dark horizontal slot —
+/// centered on the current value. The widget reads its value from the slider
+/// state, so callers never duplicate the gain mapping.
+pub fn fader(
+    state: &Entity<base::slider::SliderState>,
+    behavior: &SliderBehavior,
+    cx: &App,
+) -> Stateful<Div> {
+    let slider = state.read(cx);
+    let thumb = thumb_top(slider.value().end(), slider.min_value(), slider.max_value());
+    gestures(
+        state,
+        behavior,
+        base::slider::Slider::new(state)
+            .vertical()
+            .relative()
+            .size_full()
+            // Keep the indicator: gpui uses it to record pointer mapping bounds.
+            // Without it the state keeps zero bounds and drags map to NaN.
+            .child(
+                base::slider::SliderIndicator::new(state)
+                    .absolute()
+                    .left(px(13.))
+                    .top_0()
+                    .w(px(6.))
+                    .h_full(),
+            )
+            .child(
+                base::slider::SliderTrack::new(state)
+                    .axis(Axis::Vertical)
+                    .absolute()
+                    .left(px(13.))
+                    .top_0()
+                    .w(px(6.))
+                    .h_full()
+                    .rounded(px(theme::RADIUS_SM))
+                    .bg(theme::WINDOW_BG)
+                    .border_1()
+                    .border_color(theme::BORDER),
+            )
+            .child(
+                // The value space is inverted: everything louder than the thumb
+                // lights up between it and the bottom (quiet) end.
+                div()
+                    .absolute()
+                    .left(px(13.))
+                    .top(relative(thumb))
+                    .bottom_0()
+                    .w(px(6.))
+                    .rounded(px(theme::RADIUS_SM))
+                    .bg(theme::SIGNAL_DEVICE.opacity(0.35)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left(px(11.))
+                    .top(relative(FaderScale::position(1.)))
+                    .w(px(10.))
+                    .h(px(1.))
+                    .bg(theme::SIGNAL_DEVICE.opacity(0.45)),
+            )
+            .child(
+                base::slider::SliderThumb::new(state)
+                    .axis(Axis::Vertical)
+                    .absolute()
+                    // Track spans x 13..19, so a 14px cap centers at left 9
+                    // and overhangs the 6px track by 4px per side.
+                    .left(px(9.))
+                    .top(relative(thumb))
+                    // Half the 22px cap height keeps it centered on the value.
+                    .mt(px(-11.))
+                    .w(px(14.))
+                    .h(px(22.))
+                    .rounded(px(3.))
+                    // A light body so the cap reads against the dark page; the
+                    // grip is a dark slot punched through it.
+                    .bg(theme::TEXT)
+                    .border_1()
+                    .border_color(theme::BORDER_STRONG)
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(2.))
+                            .right(px(2.))
+                            .top(px(10.))
+                            .h(px(2.))
+                            .bg(theme::SURFACE_3),
+                    ),
+            ),
+    )
+    .flex_none()
+    .w(px(32.))
+    .h_full()
+}
+
+/// Minimal horizontal slider for inspector parameters, the channel strip and
+/// sends: a thin capsule track, a fill from the quiet (left) end and a dot
+/// thumb. No detents, ticks or labels; the surrounding row keeps the value.
+pub fn hslider(
+    state: &Entity<base::slider::SliderState>,
+    behavior: &SliderBehavior,
+    cx: &App,
+) -> Stateful<Div> {
+    let slider = state.read(cx);
+    let fill = normalized_value(slider.value().end(), slider.min_value(), slider.max_value());
+    gestures(
+        state,
+        behavior,
+        base::slider::Slider::new(state)
+            .horizontal()
+            .relative()
+            .size_full()
+            .child(
+                base::slider::SliderIndicator::new(state)
+                    .absolute()
+                    .left_0()
+                    .top(px(5.))
+                    .w_full()
+                    .h(px(6.)),
+            )
+            .child(
+                base::slider::SliderTrack::new(state)
+                    .axis(Axis::Horizontal)
+                    .absolute()
+                    .left_0()
+                    .top(px(5.))
+                    .w_full()
+                    .h(px(6.))
+                    .rounded_full()
+                    .bg(theme::WINDOW_BG)
+                    .border_1()
+                    .border_color(theme::BORDER),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(5.))
+                    .w(relative(fill))
+                    .h(px(6.))
+                    .rounded_full()
+                    .bg(theme::SIGNAL_DEVICE.opacity(0.3)),
+            )
+            .child(
+                base::slider::SliderThumb::new(state)
+                    .axis(Axis::Horizontal)
+                    .absolute()
+                    .left(relative(fill))
+                    .ml(px(-6.))
+                    .top(px(2.))
+                    .w(px(12.))
+                    .h(px(12.))
+                    .rounded_full()
+                    .bg(theme::TEXT_MUTED)
+                    .hover(|style| style.bg(theme::TEXT))
+                    .border_1()
+                    .border_color(theme::BORDER_STRONG),
+            ),
+    )
+    .flex_none()
+    .w_full()
+    .h(px(16.))
 }
 
 #[cfg(test)]
@@ -209,5 +421,30 @@ mod tests {
         assert_eq!(FaderScale::gain(1.), 0.);
         assert_eq!(FaderScale::position(1e-5), 0.97);
         assert!(FaderScale::gain(0.99) > 0.);
+    }
+
+    #[test]
+    fn normalized_maps_values_inside_the_slider_range() {
+        use super::{normalized_value, thumb_top};
+        assert_eq!(normalized_value(0., 0., 1.), 0.);
+        assert_eq!(normalized_value(0.5, 0., 1.), 0.5);
+        assert_eq!(normalized_value(12., -60., 24.), 72. / 84.);
+        assert_eq!(normalized_value(-70., -60., 24.), 0.);
+        assert_eq!(normalized_value(30., -60., 24.), 1.);
+        // A degenerate span keeps the thumb at the quiet end instead of NaN.
+        assert_eq!(normalized_value(5., 5., 5.), 0.);
+        assert_eq!(thumb_top(0., 0., 1.), 1.);
+    }
+
+    #[test]
+    fn vertical_thumb_positions_mirror_the_fader_scale() {
+        use super::thumb_top;
+        // The slider's inverted value space round-trips through the scale: a
+        // value derived from a gain puts the thumb at the gain's position.
+        for (db, position) in FaderScale::ANCHORS {
+            let gain = 10f64.powf(db / 20.);
+            let value = 1. - FaderScale::position(gain);
+            assert!((thumb_top(value, 0., 1.) - position).abs() < 0.00001);
+        }
     }
 }

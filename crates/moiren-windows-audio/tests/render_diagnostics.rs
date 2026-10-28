@@ -1,7 +1,7 @@
 use moiren_windows_audio::{
     clock_bridge::BridgeSnapshot,
     latency::TelemetryMode,
-    render::{RENDER_EVENT_CAPACITY, RenderCallback, RenderDiagnostics},
+    latency::render::{RENDER_EVENT_CAPACITY, RenderCallback, RenderDiagnostics},
 };
 
 mod common;

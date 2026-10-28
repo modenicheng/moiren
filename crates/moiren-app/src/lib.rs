@@ -7,14 +7,10 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 pub mod i18n;
 pub mod logging;
-pub mod monitor;
-pub mod monitor_cli;
 pub mod project;
-pub mod render_cli;
 pub mod service;
-mod session_graph;
+#[cfg(test)]
 mod timeline;
-pub mod tone;
 pub mod ui;
 
 use moiren_core::protocol::{

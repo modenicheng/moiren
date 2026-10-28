@@ -1,19 +1,28 @@
 //! Windows audio probes, Shared capture/render and backend clock adaptation.
 
+#[cfg(all(windows, target_pointer_width = "64"))]
+pub mod asio;
+#[cfg(windows)]
+pub(crate) mod bridge;
 pub mod capture;
 #[cfg(any(windows, test))]
 pub(crate) mod capture_packet;
 pub mod clock;
 pub mod clock_bridge;
+pub(crate) mod codec;
 mod duration;
+#[cfg(windows)]
 pub mod engine_backend;
+pub(crate) mod format;
 pub mod latency;
+pub mod native;
 pub mod process_loopback;
-pub mod professional;
-pub mod render;
-pub mod shared_stream;
+pub(crate) mod resample;
+pub(crate) mod servo;
 pub mod stats;
 pub mod vad;
+#[cfg(windows)]
+pub mod wasapi;
 
 pub mod virtual_owner;
 pub use duration::{DurationError, SessionDuration};
@@ -52,9 +61,6 @@ pub use catalog::{
 };
 #[cfg(windows)]
 mod owner;
-
-#[cfg(windows)]
-mod preparation;
 
 #[cfg(windows)]
 pub(crate) mod negotiation;

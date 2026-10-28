@@ -102,7 +102,7 @@ impl NodeTemplate {
             Self::Meter => "Peak and RMS observation",
             Self::Spectrum => "Managed FFT observation",
             Self::Rack => "Ordered processor chain",
-            Self::Bus => "Sum dynamic input ports",
+            Self::Bus => "Bus dynamic input ports",
             Self::Output => "WASAPI render endpoint",
         }
     }

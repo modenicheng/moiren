@@ -63,8 +63,6 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
             shell.selected_device = Some("selected-input".into());
             shell.node_positions.insert(test_node, (12.0, 34.0));
             shell.project_name = "Keep candidate".into();
-            shell.mixer.width = 210.;
-            shell.mixer.dock_width = 410.;
             shell.mixer.order.reverse();
         })
         .unwrap();
@@ -99,8 +97,6 @@ fn close_releases_window_view_and_reopens_presentation_without_stopping_service(
                 assert_eq!(shell.camera.pan_x, 84.0);
                 assert_eq!(shell.node_positions.get(&test_node), Some(&(12.0, 34.0)));
                 assert_eq!(shell.project_name, "Keep candidate");
-                assert_eq!(shell.mixer.width, 210.);
-                assert_eq!(shell.mixer.dock_width, 410.);
                 assert!(
                     shell.sidebar_open && shell.inspector_open,
                     "reopen must preserve manually opened compact drawers"
@@ -329,13 +325,15 @@ fn graph_wire_selection_shows_connection_properties_without_selecting_node(
             px(if shell.sidebar_open {
                 theme::LIBRARY_WIDTH
             } else {
-                0.
+                crate::ui::theme::LIBRARY_RAIL_WIDTH
             } + shell.camera.pan_x
                 + (wire.from.0 + wire.to.0) * 0.5 * shell.camera.zoom),
-            px(48. + shell.camera.pan_y + wire.from.1 * shell.camera.zoom),
+            px(shell.camera.pan_y + wire.from.1 * shell.camera.zoom),
         )
     });
     cx.update(|window, cx| {
+        // First click selects the wire; the second opens the inspector.
+        window.click_at("graph-page", position, cx);
         window.click_at("graph-page", position, cx);
         window.render_frame(cx);
         assert!(window.find("matrix-inspector").visible());
@@ -734,25 +732,15 @@ impl crate::service::ServiceDriver for SettingsConfirmationDriver {
             context.graph.running(generation, revision);
             context.active_audio_settings = Some(context.audio_settings.clone());
             context.active_transport_latency = Some(context.transport_latency);
-            context.active_latency_profile = if context.audio_settings == Default::default() {
-                Some(context.latency_profile)
-            } else {
-                None
-            };
+            context.active_latency_profile = Some(context.latency_profile);
         }
         if self.awaiting && self.confirm.load(std::sync::atomic::Ordering::Acquire) {
             self.awaiting = false;
             let revision = context.graph.snapshot().candidate_revision;
             context.graph.running(context.core.generation(), revision);
             context.active_audio_settings = Some(context.audio_settings.clone());
-            // Match the real owner: transport intent becomes active only when
-            // this fixture confirms the prepared session, not when requested.
             context.active_transport_latency = Some(context.transport_latency);
-            context.active_latency_profile = if context.audio_settings == Default::default() {
-                Some(context.latency_profile)
-            } else {
-                None
-            };
+            context.active_latency_profile = Some(context.latency_profile);
         }
     }
 
@@ -1109,5 +1097,178 @@ fn ctrl_z_keystroke_steps_the_undo_journal(cx: &mut gpui_kit::TestAppContext) {
             shell.state.read(cx).snapshot.graph.nodes.len() == 5
         })
     });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn ctrl_z_in_a_mixer_send_editor_leaves_the_graph_journal_alone(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|_, cx| {
+        cx.bind_keys([gpui_kit::KeyBinding::new(
+            "ctrl-z",
+            super::app_view::Undo,
+            None,
+        )]);
+    });
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+    });
+    view.update(cx, |shell, cx| {
+        shell.presentation.page = pages::Page::Mixer;
+        shell.inspector_open = false;
+        cx.notify();
+    });
+    cx.update(|window, cx| window.render_frame(cx));
+    let handle = view.update(cx, |shell, cx| {
+        use gpui_kit::Focusable;
+        let edge = shell.state.read(cx).snapshot.graph.graph.edges()[0].id();
+        shell.mixer.send_inputs[&edge].read(cx).focus_handle(cx)
+    });
+    cx.update(|window, cx| window.focus(&handle, cx));
+    // The send-gain editor is a text field: typing_focus must claim it so
+    // the shell's undo action declines to step the journal mid-edit.
+    view.update(cx, |shell, cx| {
+        assert!(shell.typing_focus(&handle, cx));
+    });
+    let nodes = view.update(cx, |shell, cx| {
+        shell.state.read(cx).snapshot.graph.nodes.len()
+    });
+    cx.simulate_keystrokes("ctrl-z");
+    // Give a (wrongly) dispatched undo time to reach the service; the
+    // journal must still be where it was.
+    std::thread::sleep(Duration::from_millis(400));
+    view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| state.poll());
+        assert_eq!(shell.state.read(cx).snapshot.graph.nodes.len(), nodes);
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn inspector_panel_fills_the_column_even_for_its_empty_state(cx: &mut gpui_kit::TestAppContext) {
+    let (view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.resize(gpui_kit::size(px(1440.), px(900.)));
+        window.render_frame(cx);
+        window.render_frame(cx);
+        // Nothing is selected: the graph inspector shows its empty state.
+        view.update(cx, |shell, _| {
+            assert!(shell.selected_node.is_none() && shell.selected_route.is_none());
+        });
+        assert!(window.find("inspector-empty").visible());
+        // The placeholder illustration rides in a soft tile above the label.
+        let art = window.find("inspector-empty-art").bounds();
+        assert!(art.size.width > px(56.) && art.size.height > px(56.));
+        // Regression: the empty state's panel used to be as short as its
+        // label, leaving the rest of the sidebar column transparent so the
+        // inspector merged into the workspace background.
+        let panel = window.find("graph-inspector").bounds();
+        let column = window.find("graph-page").bounds();
+        assert_eq!(
+            f32::from(panel.size.height),
+            f32::from(column.size.height),
+            "the panel must fill the sidebar column"
+        );
+        // The illustration sits roughly centered in the column (the heading
+        // above it shifts the optical center up slightly), not at the top.
+        let art_center = f32::from(art.origin.y + art.size.height / 2.);
+        let panel_center = f32::from(panel.origin.y + panel.size.height / 2.);
+        assert!(
+            (art_center - panel_center).abs() < 24.,
+            "empty state centers vertically ({art_center} vs {panel_center})"
+        );
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn statusbar_shows_the_configured_format_and_hides_route_and_clock_when_idle(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    // Reaching Running through the real driver needs live audio devices, so
+    // the running-path composition is covered by chrome's unit tests.
+    let (_view, cx, runtime) = test_shell(cx);
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.find("statusbar-format").visible(),
+            "the configured processing format is informative even when idle"
+        );
+        assert!(window.try_find("statusbar-route").is_none());
+        assert!(window.try_find("statusbar-drift").is_none());
+    });
+    finish_service(runtime);
+}
+
+#[gpui_kit::test]
+fn expanded_library_bounds_its_scroll_area_and_scrolls_to_lower_templates(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::{Bounds, WindowBounds, WindowOptions};
+    cx.update(gpui_kit::init);
+    let runtime = spawn_service();
+    let handle = runtime.handle();
+    let snapshot = initial_projection(&handle);
+    let state = cx.new(|_| UiState::new(handle.clone(), snapshot));
+    let page = cx.new(|_| super::PageCell::default());
+    // Wide enough for the expanded sidebar, short enough that the template
+    // list must scroll. Test windows open maximized by default, so the short
+    // bounds have to be requested at open time.
+    let window = cx.update(|cx| {
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    gpui_kit::point(px(0.), px(0.)),
+                    gpui_kit::size(px(1440.), px(480.)),
+                ))),
+                ..Default::default()
+            },
+            |window, cx| {
+                cx.new(|cx| {
+                    let mut shell = super::StudioShell::new(state, window, cx, None);
+                    shell.test_page = Some(page);
+                    shell.preferences_path = None;
+                    shell
+                })
+            },
+        )
+        .unwrap()
+    });
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    super::settle_panels(&mut visual);
+    let probe = cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.find("session-io-panel").visible(),
+            "the expanded sidebar is mounted"
+        );
+        let panel = window.find("session-io-panel").bounds();
+        let scroll = window.find("node-library-scroll").bounds();
+        assert!(
+            f32::from(scroll.size.height) < f32::from(panel.size.height),
+            "the list is bounded by the panel, not by its own content"
+        );
+        assert!(
+            f32::from(panel.size.height) <= 480.,
+            "the panel cannot overflow the window height ({}px)",
+            f32::from(panel.size.height)
+        );
+        assert!(
+            !window.find("library-Recorder").visible(),
+            "the last template starts below the fold"
+        );
+        window.scroll(
+            "node-library-scroll",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-800.))),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(
+            window.find("library-Recorder").visible(),
+            "scrolling reaches the lower templates for dragging"
+        );
+    });
+    assert!(probe.is_ok(), "the probe window stays open");
     finish_service(runtime);
 }

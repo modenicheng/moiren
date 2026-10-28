@@ -1,4 +1,4 @@
-use crate::professional::{resample::StereoResampler, servo::FollowerServo};
+use crate::{resample::StereoResampler, servo::FollowerServo};
 use moiren_engine::{
     boundary::{AudioReader, AudioWriter, BoundaryReport, RtAudioSink, RtAudioSource},
     buffer::{AudioBlock, AudioBlockMut},

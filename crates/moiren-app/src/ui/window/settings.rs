@@ -301,10 +301,7 @@ fn audio(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             input_count = config.input_overrides.len(),
             output_count = config.output_overrides.len()
         )))
-        .when(config == &AudioSettings::default(), |view| view.child(latency_policy(shell, cx)))
-        .when(config != &AudioSettings::default(), |view| view.child(label(
-            t!("Explicit audio settings use the requested device buffers. Legacy queue/recovery profiles apply to the default WASAPI shared configuration.")
-        )))
+        .child(latency_policy(shell, cx))
 }
 
 fn language_choices(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
@@ -322,8 +319,8 @@ fn language_choices(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                 ButtonVariant::Secondary
             })
             .disabled(shell.settings.busy())
-            .on_click(move |_, _, cx| {
-                this.update(cx, |shell, cx| shell.set_language(language, cx));
+            .on_click(move |_, window, cx| {
+                this.update(cx, |shell, cx| shell.set_language(language, window, cx));
             }),
         );
     }

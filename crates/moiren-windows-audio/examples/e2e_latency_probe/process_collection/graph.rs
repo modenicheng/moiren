@@ -1,4 +1,8 @@
 //! Existing Process graph assembly and its control-side native ownership.
+use super::super::render::{
+    DemandRenderer, PreparedNativeRender, RenderOptions, RenderReport, RenderSession,
+    TimelineObserver, prepare_render_native_with_gate_returning_with_abort,
+};
 use super::super::{ArtifactPaths, LiveOptions};
 use super::append_failure;
 use anyhow::{Context, Result, ensure};
@@ -16,10 +20,6 @@ use moiren_windows_audio::{
     process_loopback::{
         ProcessBridgeOptions, ProcessIdentity, ProcessLoopbackOptions,
         prepare_process_capture_with_gate_returning_with_abort,
-    },
-    render::{
-        DemandRenderer, PreparedNativeRender, RenderOptions, RenderReport, RenderSession,
-        TimelineObserver, prepare_render_native_with_gate_returning_with_abort,
     },
 };
 use serde_json::{Value, json};
@@ -150,7 +150,6 @@ impl Graph {
                     queue,
                     endpoint_id: options.output_endpoint.clone(),
                     latency_telemetry: options.telemetry,
-                    shared_period: Default::default(),
                     duration: SessionDuration::UntilStopped,
                 },
                 self.stop.clone(),
@@ -159,15 +158,18 @@ impl Graph {
             ) {
                 Ok(render) => render,
                 Err(mut error) => {
+                    self.aborts.push(error.evidence("render_prepare"));
                     self.render_report = error.report.take();
-                    self.aborts.push(json!({"stage":"render_prepare", "error":error.error.to_string(),
-                    "stop_error":error.stop_error.map(|e|e.to_string()), "join_error":error.join_error.map(|e|e.to_string()),
-                    "abort":error.abort, "abort_panicked":error.abort_panicked}));
                     anyhow::bail!("prepare owned render: {}", error.error);
                 }
             },
         );
-        let renderer = build_renderer(options, source)?;
+        let renderer = build_renderer(options, source)?.with_bridge_observer(
+            self.bridge
+                .as_ref()
+                .expect("prepared capture observer")
+                .clone(),
+        );
         self.timeline = Some(renderer.timeline_observer());
         let render = self
             .prepared_render
@@ -176,10 +178,8 @@ impl Graph {
         match render.attach_returning_with_abort(renderer, queue, stop_peers) {
             Ok(prepared) => self.render = Some(prepared.into_session()),
             Err(mut error) => {
+                self.aborts.push(error.evidence("render_attach"));
                 self.render_report = error.report.take();
-                self.aborts.push(json!({"stage":"render_attach", "error":error.error.to_string(),
-                    "stop_error":error.stop_error.map(|e|e.to_string()), "join_error":error.join_error.map(|e|e.to_string()),
-                    "abort":error.abort, "abort_panicked":error.abort_panicked}));
                 self.recovered_renderer = Some(error.renderer);
                 anyhow::bail!("attach owned render: {}", error.error);
             }

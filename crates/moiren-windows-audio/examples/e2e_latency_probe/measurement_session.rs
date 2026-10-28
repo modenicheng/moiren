@@ -185,9 +185,7 @@ impl MeasurementSession {
         paths: MeasurementPaths,
     ) -> std::result::Result<Self, MeasurementPreparationFailure> {
         use moiren_windows_audio::{
-            ActivationGate, SessionDuration, StopSignal,
-            capture::{CaptureOptions, PcmEvidenceConfig},
-            latency::{PreparedInputQueue, TelemetryMode},
+            ActivationGate, SessionDuration, StopSignal, capture::PcmEvidenceConfig,
         };
         config
             .validate()
@@ -198,65 +196,33 @@ impl MeasurementSession {
         let stop = StopSignal::new().context("create independent measurement stop")?;
         let gate =
             ActivationGate::new(stop.clone()).context("create measurement activation gate")?;
-        let native = moiren_windows_audio::capture::prepare_capture_native_with_gate_returning(
-            CaptureOptions {
-                artifact: None,
-                latency_telemetry: TelemetryMode::Summary,
-                shared_period: Default::default(),
-                endpoint_id: config.input_endpoint_id.clone(),
-                duration: SessionDuration::UntilStopped,
-            },
-            stop.clone(),
+        let (prepared, reader) = NativeCapture::prepare(
+            &config,
             gate.clone(),
+            stop.clone(),
+            SessionDuration::UntilStopped,
+            PcmEvidenceConfig {
+                capacity_frames: config.ring_frames,
+                detect_position_gaps: true,
+            },
         )
         .map_err(|failure| MeasurementPreparationFailure {
-            error: anyhow::anyhow!("prepare independent native capture: {}", failure.error),
-            native_capture: failure.report.map(Box::new),
+            error: anyhow::anyhow!("prepare independent native capture: {:#}", failure.error),
+            native_capture: failure.report,
         })?;
-        let negotiated = native.info();
-        let info = match config.negotiated_info(negotiated.timing.sample_rate, negotiated.channels)
-        {
+        let info = match config.negotiated_info(prepared.info.sample_rate, prepared.info.channels) {
             Ok(info) => info,
             Err(error) => {
-                let (report, cleanup_error) = native.cancel_with_report_returning();
+                let (report, cleanup_error) = prepared.cancel_and_join();
                 return Err(MeasurementPreparationFailure {
-                    error: with_cleanup_error(
-                        error,
-                        cleanup_error
-                            .map(|error| anyhow::anyhow!("native cleanup failed: {error}")),
-                    ),
+                    error: with_cleanup_error(error, cleanup_error),
                     native_capture: report.map(Box::new),
                 });
             }
         };
-        let (capture, reader) = native
-            .attach_with_evidence_returning(
-                PreparedInputQueue::compatible(),
-                PcmEvidenceConfig {
-                    capacity_frames: config.ring_frames,
-                    detect_position_gaps: true,
-                },
-            )
-            .map_err(|failure| MeasurementPreparationFailure {
-                error: with_cleanup_error(
-                    anyhow::anyhow!("attach bounded measurement tap: {}", failure.error),
-                    failure
-                        .cleanup_error
-                        .map(|error| anyhow::anyhow!("native cleanup failed: {error}")),
-                ),
-                native_capture: failure.report.map(Box::new),
-            })?;
         // Install native ownership before any fallible sink setup. Drop must
         // stop/join the gated native owner before waiting on a filesystem worker.
-        let mut owner = Self::own_native(
-            config,
-            info,
-            NativeCapture {
-                capture: Some(capture),
-                gate,
-                stop,
-            },
-        );
+        let mut owner = Self::own_native(config, info, prepared.native);
         let sink = match EvidenceSink::create(
             reader,
             owner.info.sample_rate,
@@ -491,9 +457,294 @@ impl SinkOwner for EvidenceSink {
 
 #[cfg(windows)]
 struct NativeCapture {
-    capture: Option<moiren_windows_audio::capture::PreparedCapture>,
+    worker: Option<std::thread::JoinHandle<NativeCaptureExit>>,
+    started: std::sync::Arc<std::sync::atomic::AtomicBool>,
     gate: moiren_windows_audio::ActivationGate,
     stop: moiren_windows_audio::StopSignal,
+    stop_requested: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(windows)]
+struct NativeCaptureExit {
+    report: CaptureReport,
+    writer: Option<moiren_windows_audio::capture::PcmEvidenceWriter>,
+}
+
+#[cfg(windows)]
+impl NativeCaptureExit {
+    fn into_report(self) -> CaptureReport {
+        let mut report = self.report;
+        if let Some(writer) = self.writer {
+            let summary = writer.snapshot();
+            report.packets = summary.packets;
+            report.evidence_metadata = Some(summary);
+            drop(writer);
+        }
+        report
+    }
+}
+
+#[cfg(windows)]
+struct PreparedNativeCapture {
+    native: NativeCapture,
+    info: moiren_windows_audio::native::NativeStreamInfo,
+}
+
+#[cfg(windows)]
+struct NativeCapturePreparationFailure {
+    error: anyhow::Error,
+    report: Option<Box<CaptureReport>>,
+}
+
+#[cfg(windows)]
+impl PreparedNativeCapture {
+    fn cancel_and_join(mut self) -> (Option<CaptureReport>, Option<anyhow::Error>) {
+        let stop_error = self.native.request_stop().err();
+        let joined = self.native.join();
+        let cleanup = stop_error.or_else(|| {
+            joined
+                .as_ref()
+                .err()
+                .map(|error| anyhow::anyhow!("{error:#}"))
+        });
+        (joined.ok(), cleanup)
+    }
+}
+
+#[cfg(windows)]
+impl NativeCapture {
+    fn prepare(
+        config: &MeasurementConfig,
+        gate: moiren_windows_audio::ActivationGate,
+        stop: moiren_windows_audio::StopSignal,
+        duration: moiren_windows_audio::SessionDuration,
+        evidence_config: moiren_windows_audio::capture::PcmEvidenceConfig,
+    ) -> std::result::Result<
+        (
+            PreparedNativeCapture,
+            moiren_windows_audio::capture::PcmEvidenceReader,
+        ),
+        NativeCapturePreparationFailure,
+    > {
+        use std::sync::{atomic::AtomicBool, mpsc};
+
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let started = std::sync::Arc::new(AtomicBool::new(false));
+        let worker_started = started.clone();
+        let stop_requested = std::sync::Arc::new(AtomicBool::new(false));
+        let worker_stop_requested = stop_requested.clone();
+        let endpoint_id = config.input_endpoint_id.clone();
+        let worker_gate = gate.clone();
+        let worker = std::thread::Builder::new()
+            .name("e2e-measurement-capture".into())
+            .spawn(move || {
+                capture_owner(
+                    endpoint_id,
+                    duration,
+                    worker_gate,
+                    worker_started,
+                    worker_stop_requested,
+                    evidence_config,
+                    ready_tx,
+                )
+            })
+            .map_err(|error| NativeCapturePreparationFailure {
+                error: anyhow::anyhow!("spawn native measurement owner: {error}"),
+                report: None,
+            })?;
+        let startup = match ready_rx.recv() {
+            Ok(Ok(startup)) => startup,
+            Ok(Err(error)) => {
+                let _ = stop.request_stop();
+                let exit = worker.join().ok().map(NativeCaptureExit::into_report);
+                return Err(NativeCapturePreparationFailure {
+                    error: anyhow::anyhow!(error),
+                    report: exit.map(Box::new),
+                });
+            }
+            Err(_) => {
+                let _ = stop.request_stop();
+                let exit = worker.join().ok();
+                return Err(NativeCapturePreparationFailure {
+                    error: anyhow::anyhow!("native measurement owner lost during preparation"),
+                    report: exit.map(|report| Box::new(report.into_report())),
+                });
+            }
+        };
+        let native = NativeCapture {
+            worker: Some(worker),
+            started,
+            gate,
+            stop,
+            stop_requested,
+        };
+        Ok((
+            PreparedNativeCapture {
+                native,
+                info: startup.info,
+            },
+            startup.reader,
+        ))
+    }
+}
+
+#[cfg(windows)]
+struct CaptureStartup {
+    info: moiren_windows_audio::native::NativeStreamInfo,
+    reader: moiren_windows_audio::capture::PcmEvidenceReader,
+}
+
+#[cfg(windows)]
+fn capture_owner(
+    endpoint_id: String,
+    duration: moiren_windows_audio::SessionDuration,
+    gate: moiren_windows_audio::ActivationGate,
+    started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop_requested: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    evidence_config: moiren_windows_audio::capture::PcmEvidenceConfig,
+    ready: std::sync::mpsc::SyncSender<std::result::Result<CaptureStartup, String>>,
+) -> NativeCaptureExit {
+    use moiren_engine::{
+        audio_config::SampleFormat,
+        node::{DeviceMode, DeviceOptions},
+    };
+    use moiren_windows_audio::{
+        Activation,
+        capture::{CaptureReport, CaptureSource, CaptureStatus, pcm_evidence_stream},
+        native::NativeStream,
+        wasapi::{WasapiOptions, WasapiStream},
+    };
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        time::Instant,
+    };
+
+    let mut report = CaptureReport::new(CaptureSource::Physical, duration);
+    report.endpoint_id = Some(endpoint_id.clone());
+    let mut stream: Option<WasapiStream> = None;
+    let mut writer = None;
+    let mut ready = Some(ready);
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<CaptureStatus> {
+        let mut opened = WasapiStream::open(WasapiOptions {
+            endpoint_id: endpoint_id.clone(),
+            sample_rate: 48_000,
+            device: DeviceOptions {
+                mode: DeviceMode::Shared,
+                sample_format: SampleFormat::Float32,
+                ..DeviceOptions::default()
+            },
+            input: true,
+        })?;
+        let info = opened.info();
+        report.sample_rate = Some(info.sample_rate);
+        report.channels = Some(info.channels);
+        report.buffer_frames = Some(info.buffer_frames);
+        report.shared_period = opened.shared_period().unwrap_or_default();
+        ensure!(
+            info.format == SampleFormat::Float32 && (1..=2).contains(&info.channels),
+            "independent measurement requires negotiated Float32 mono/stereo"
+        );
+        let (evidence, reader) =
+            pcm_evidence_stream(evidence_config, info.sample_rate, info.channels)?;
+        match opened.attach_capture_evidence(evidence) {
+            Ok(()) => {}
+            Err(error) => {
+                let (error, returned) = *error;
+                writer = Some(returned);
+                return Err(anyhow::anyhow!("attach native PCM evidence tap: {error}"));
+            }
+        }
+        stream = Some(opened);
+        let mut output = vec![[0.0; 2]; info.buffer_frames as usize];
+        ready
+            .take()
+            .expect("startup sender")
+            .send(Ok(CaptureStartup { info, reader }))
+            .map_err(|_| anyhow::anyhow!("measurement preparation receiver was lost"))?;
+        if gate.wait()? == Activation::Cancelled {
+            return Ok(CaptureStatus::Stopped);
+        }
+        let stream = stream.as_mut().expect("opened capture stream");
+        stream.start()?;
+        started.store(true, std::sync::atomic::Ordering::Release);
+        report.stream_started = true;
+        let beginning = Instant::now();
+        loop {
+            report.elapsed_seconds = beginning.elapsed().as_secs_f64();
+            if stop_requested.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            if duration.remaining(beginning.elapsed()) == Some(Duration::ZERO) {
+                break;
+            }
+            let timeout = duration
+                .remaining(beginning.elapsed())
+                .unwrap_or(Duration::from_millis(20))
+                .min(Duration::from_millis(20));
+            if !stream.wait(timeout)? {
+                report.timeout_wakes += 1;
+                continue;
+            }
+            report.audio_wakes += 1;
+            loop {
+                let frames = stream.read(&mut output)?;
+                if frames == 0 {
+                    break;
+                }
+            }
+        }
+        report.elapsed_seconds = beginning.elapsed().as_secs_f64();
+        Ok(
+            if duration.remaining(beginning.elapsed()) == Some(Duration::ZERO) {
+                CaptureStatus::Completed
+            } else {
+                CaptureStatus::Stopped
+            },
+        )
+    }));
+    match result {
+        Ok(Ok(status)) => report.status = status,
+        Ok(Err(error)) => report.failure = Some(format!("{error:#}")),
+        Err(_) => report.failure = Some("native measurement owner panicked".into()),
+    }
+    if let Some(stream) = &mut stream {
+        match stream.stop() {
+            Ok(()) => report.stop_succeeded = true,
+            Err(error) => {
+                report.failure = Some(append_message(
+                    report.failure.take(),
+                    &format!("Stop capture: {error}"),
+                ));
+            }
+        }
+        // Evidence lifetime and reclamation remain separate from native IO:
+        // take only after Stop, then snapshot/drop it on the joining thread.
+        writer = stream.take_capture_evidence().or(writer);
+        let stats = stream.stats();
+        report.audio_wakes = stats.wait_wakes;
+        report.timeout_wakes = stats.wait_timeouts;
+        if let Err(error) = stream.release() {
+            report.failure = Some(append_message(
+                report.failure.take(),
+                &format!("release capture: {error}"),
+            ));
+        }
+    }
+    if let Some(ready) = ready {
+        let _ = ready
+            .send(Err(report.failure.clone().unwrap_or_else(|| {
+                "measurement capture preparation stopped".into()
+            })));
+    }
+    NativeCaptureExit { report, writer }
+}
+
+#[cfg(windows)]
+fn append_message(previous: Option<String>, message: &str) -> String {
+    previous.map_or_else(
+        || message.to_owned(),
+        |previous| format!("{previous}; {message}"),
+    )
 }
 
 #[cfg(windows)]
@@ -504,30 +755,28 @@ impl NativeOwner for NativeCapture {
             .context("activate independent measurement")
     }
     fn has_started(&self) -> bool {
-        self.capture
-            .as_ref()
-            .is_some_and(|capture| capture.session.has_started())
+        self.started.load(std::sync::atomic::Ordering::Acquire)
     }
     fn is_finished(&self) -> bool {
-        self.capture
+        self.worker
             .as_ref()
-            .is_none_or(|capture| capture.session.is_finished())
+            .is_none_or(std::thread::JoinHandle::is_finished)
     }
     fn request_stop(&self) -> Result<()> {
+        self.stop_requested
+            .store(true, std::sync::atomic::Ordering::Release);
         self.stop
             .request_stop()
             .context("stop independent measurement owner")
     }
     fn join(&mut self) -> Result<CaptureReport> {
-        let capture = self
-            .capture
+        let exit = self
+            .worker
             .take()
-            .context("measurement native owner missing")?;
-        let result = capture.session.join().context("join measurement owner");
-        // These are the unused monitoring bridge, not the waveform tap. Keep
-        // their allocations alive through the native join and reclaim off RT.
-        drop((capture.source, capture.observer));
-        result
+            .context("measurement native owner missing")?
+            .join()
+            .map_err(|_| anyhow::anyhow!("measurement native owner panicked outside cleanup"))?;
+        Ok(exit.into_report())
     }
 }
 

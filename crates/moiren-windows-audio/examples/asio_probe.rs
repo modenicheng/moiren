@@ -1,12 +1,12 @@
 //! Opt-in, finite ASIO acceptance. No captured PCM is printed or persisted.
 //! Option parsing, stream selection and the finite transfer loop with its
-//! progress acceptance live in `moiren_windows_audio::professional::asio::
+//! progress acceptance live in `moiren_windows_audio::asio::
 //! probe` (unit-tested there); this example keeps the CLI entry and the
 //! win64 stream-driving report.
 
 use anyhow::Result;
 #[cfg(all(windows, target_pointer_width = "64"))]
-use moiren_windows_audio::professional::asio::probe::{APPROVED_DRIVER, Options, parse_options};
+use moiren_windows_audio::asio::probe::{APPROVED_DRIVER, Options, parse_options};
 
 #[cfg(all(windows, target_pointer_width = "64"))]
 struct StderrTrace;
@@ -57,14 +57,12 @@ fn initialize_trace(explicit: bool) -> Result<()> {
 mod probe {
     use super::*;
     use anyhow::ensure;
-    use moiren_windows_audio::professional::{
-        asio::{
-            AsioCapabilities, AsioStream,
-            probe::{Transfers, run_stream, stream_options},
-            query_capabilities,
-        },
-        native::{NativeStream, NativeStreamStats},
+    use moiren_windows_audio::asio::{
+        AsioCapabilities, AsioStream,
+        probe::{Transfers, run_stream, stream_options},
+        query_capabilities,
     };
+    use moiren_windows_audio::native::{NativeStream, NativeStreamStats};
     use serde::Serialize;
     use std::{
         io::Write,

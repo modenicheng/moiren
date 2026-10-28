@@ -135,11 +135,10 @@ fn compressor_edits_are_node_local_and_reject_invalid_domains_transactionally() 
         CompressorState::default()
     );
 }
-use moiren_engine::boundary::ConstantSource;
 
 #[test]
-fn default_legacy_project_does_not_constrain_endpoint_mix_rates() {
-    use crate::service::AudioSettings;
+fn default_project_resolves_processing_rate_and_profile_buffers() {
+    use crate::service::{AudioLatencyProfile, AudioSettings};
     use moiren_engine::host::NodeConfig;
     let mut service = ServiceGraph::default();
     let (source, _, _, sink) = ids(&service);
@@ -165,12 +164,44 @@ fn default_legacy_project_does_not_constrain_endpoint_mix_rates() {
     let NodeConfig::Output(output) = &project.nodes[&sink] else {
         panic!("output");
     };
-    assert_eq!(input.device.hardware_sample_rate, None);
-    assert_eq!(output.device.hardware_sample_rate, None);
+    assert_eq!(input.device.hardware_sample_rate, Some(48_000));
+    assert_eq!(output.device.hardware_sample_rate, Some(48_000));
+    assert_eq!(input.device.period_frames, None);
+    assert_eq!(output.device.period_frames, None);
+    // Profiles map to a device buffer request on the power-of-two presets.
+    let balanced = preparation
+        .configured_engine_project(
+            256,
+            &AudioSettings::default(),
+            AudioLatencyProfile::Balanced,
+        )
+        .unwrap();
+    let NodeConfig::Input(input) = &balanced.nodes[&source] else {
+        panic!("input");
+    };
+    let NodeConfig::Output(output) = &balanced.nodes[&sink] else {
+        panic!("output");
+    };
+    assert_eq!(input.device.period_frames, Some(512));
+    assert_eq!(output.device.period_frames, Some(512));
+    // Explicit device buffers win over the profile mapping.
+    let mut explicit = AudioSettings::default();
+    explicit.output.buffer_frames = Some(128);
+    let mixed = preparation
+        .configured_engine_project(256, &explicit, AudioLatencyProfile::Low)
+        .unwrap();
+    let NodeConfig::Input(input) = &mixed.nodes[&source] else {
+        panic!("input");
+    };
+    let NodeConfig::Output(output) = &mixed.nodes[&sink] else {
+        panic!("output");
+    };
+    assert_eq!(input.device.period_frames, Some(256));
+    assert_eq!(output.device.period_frames, Some(128));
     let mut settings = AudioSettings::default();
     settings.processing.sample_rate = 96_000;
     let professional = preparation
-        .configured_engine_project(256, &settings)
+        .configured_engine_project(256, &settings, AudioLatencyProfile::Compatible)
         .unwrap();
     let NodeConfig::Input(input) = &professional.nodes[&source] else {
         panic!("input");
@@ -184,7 +215,9 @@ fn default_legacy_project_does_not_constrain_endpoint_mix_rates() {
 
 #[test]
 fn configured_project_resolves_each_endpoint_and_preserves_clock_roles() {
-    use crate::service::{AudioBackend, AudioSettings, SampleFormat, StreamSettings};
+    use crate::service::{
+        AudioBackend, AudioLatencyProfile, AudioSettings, SampleFormat, StreamSettings,
+    };
     use moiren_engine::{
         boundary::ClockRole,
         host::NodeConfig,
@@ -251,7 +284,7 @@ fn configured_project_resolves_each_endpoint_and_preserves_clock_roles() {
         .insert("render".into(), output_override);
     let preparation = service.preparation();
     let project = preparation
-        .configured_engine_project(256, &settings)
+        .configured_engine_project(256, &settings, AudioLatencyProfile::Compatible)
         .unwrap();
     assert_eq!(project.processing.engine.processing_sr, 88_200.0);
     assert_eq!(project.processing.engine.max_block_frames, 256);
@@ -277,7 +310,7 @@ fn configured_project_resolves_each_endpoint_and_preserves_clock_roles() {
     }
     settings.input_overrides.remove("capture");
     let reset = preparation
-        .configured_engine_project(256, &settings)
+        .configured_engine_project(256, &settings, AudioLatencyProfile::Compatible)
         .unwrap();
     let NodeConfig::Input(input) = &reset.nodes[&source] else {
         panic!("physical input");
@@ -292,7 +325,9 @@ fn configured_project_resolves_each_endpoint_and_preserves_clock_roles() {
 
 #[test]
 fn process_capture_and_software_tone_do_not_inherit_physical_stream_options() {
-    use crate::service::{AudioBackend, AudioSettings, SampleFormat, StreamSettings};
+    use crate::service::{
+        AudioBackend, AudioLatencyProfile, AudioSettings, SampleFormat, StreamSettings,
+    };
     use moiren_engine::{host::NodeConfig, node::DeviceMode};
     let mut service = ServiceGraph::default();
     let (source, _, _, sink) = ids(&service);
@@ -331,7 +366,7 @@ fn process_capture_and_software_tone_do_not_inherit_physical_stream_options() {
             .unwrap();
         let project = service
             .preparation()
-            .configured_engine_project(256, &settings)
+            .configured_engine_project(256, &settings, AudioLatencyProfile::Compatible)
             .unwrap();
         assert_eq!(project.processing.engine.processing_sr, 44_100.0);
         let NodeConfig::Input(input) = &project.nodes[&source] else {
@@ -614,25 +649,48 @@ fn ids(service: &ServiceGraph) -> (NodeId, NodeId, NodeId, NodeId) {
     (nodes[0].id(), nodes[1].id(), nodes[2].id(), nodes[3].id())
 }
 fn render(service: &ServiceGraph) -> Vec<f32> {
-    let mut prepared = crate::session_graph::prepare_routing(
-        &service.preparation(),
-        ConstantSource {
-            channels: 2,
-            value: 1.0,
+    use moiren_engine::boundary::ConstantSource;
+    use moiren_engine::{
+        boundary::audio_bridge,
+        compiler::{CompileConfig, compile},
+        runtime::EngineConfig,
+    };
+    let preparation = service.preparation();
+    let (input, sink) = preparation.io_nodes().expect("io nodes");
+    let (writer, mut output) = audio_bridge(2, 32, 8 * 1024 * 1024).unwrap();
+    let mut bindings = moiren_engine::compiler::NodeBindings::new();
+    bindings
+        .bind_source(
+            input,
+            ConstantSource {
+                channels: 2,
+                value: 1.0,
+            },
+        )
+        .unwrap();
+    bindings.bind_sink(sink, writer).unwrap();
+    preparation.bind_processors(&mut bindings).unwrap();
+    let config = CompileConfig {
+        engine: EngineConfig {
+            processing_sr: 48_000.0,
+            max_block_frames: 32,
+            max_events_per_block: 64,
         },
-        32,
-        None,
-    )
-    .unwrap();
+        audio_byte_budget: 8 * 1024 * 1024,
+        plan_revision: service.snapshot.candidate_revision,
+        timeline_epoch: crate::timeline::next_epoch().expect("epoch"),
+        control_capacity: 64,
+        control_horizon_frames: 48_000,
+    };
+    let mut compiled = compile(&preparation.graph, bindings, config).unwrap();
     assert_eq!(
-        prepared.compiled.engine.revision(),
+        compiled.engine.revision(),
         service.snapshot.candidate_revision
     );
-    prepared.compiled.engine.render(8).unwrap();
+    compiled.engine.render(8).unwrap();
     let mut samples = vec![0.0; 16];
     assert_eq!(
-        prepared
-            .output
+        output
             .read_interleaved(&mut samples)
             .unwrap()
             .transferred_frames,
@@ -641,60 +699,6 @@ fn render(service: &ServiceGraph) -> Vec<f32> {
     samples
 }
 
-#[test]
-fn offline_compressor_uses_saved_parameters_instead_of_defaults() {
-    let mut service = ServiceGraph::default();
-    let (source, gain, _, sink) = ids(&service);
-    service
-        .edit(GraphEdit::SetGain {
-            node: gain,
-            gain: 1.,
-        })
-        .unwrap();
-    service
-        .edit(GraphEdit::AddNode {
-            kind: NodeKind::Compressor,
-            channels: 2,
-        })
-        .unwrap();
-    let compressor = service.snapshot().graph.nodes()[4].id();
-    let snapshot = service.snapshot();
-    let final_edge = snapshot
-        .graph
-        .edges()
-        .iter()
-        .find(|edge| edge.dst() == sink)
-        .unwrap()
-        .id();
-    service.edit(GraphEdit::Disconnect(final_edge)).unwrap();
-    service
-        .edit(GraphEdit::Connect {
-            source: snapshot.graph.get_node(source).unwrap().outputs()[0].id(),
-            destination: snapshot.graph.get_node(compressor).unwrap().inputs()[0].id(),
-        })
-        .unwrap();
-    service
-        .edit(GraphEdit::Connect {
-            source: snapshot.graph.get_node(compressor).unwrap().outputs()[0].id(),
-            destination: snapshot.graph.get_node(sink).unwrap().inputs()[0].id(),
-        })
-        .unwrap();
-    for (parameter, value) in [
-        (CompressorParameter::Ratio, 1.),
-        (CompressorParameter::OutputGain, -6.020599913279624),
-    ] {
-        service
-            .edit(GraphEdit::SetCompressor {
-                node: compressor,
-                parameter,
-                value,
-            })
-            .unwrap();
-    }
-    for sample in render(&service) {
-        assert!((sample - 0.5).abs() < 0.00001);
-    }
-}
 #[test]
 fn rejected_edits_are_atomic_and_do_not_consume_revision_or_node_ids() {
     let mut service = ServiceGraph::default();
@@ -870,7 +874,7 @@ fn legacy_single_io_restriction_does_not_limit_managed_graph_preparation() {
             .preparation()
             .io_nodes()
             .unwrap_err()
-            .contains("1 个输入")
+            .contains("one Source and one Sink node")
     );
     assert!(service.preparation().primary_io_nodes().is_ok());
     assert_eq!(service.snapshot.graph.nodes().len(), 5);
@@ -1125,7 +1129,7 @@ fn undo_clears_faults_like_a_successful_edit() {
         })
         .unwrap();
     // A rejected rebuild leaves a fault behind while the journal is intact.
-    service.record_error("这个通道缺少可用的处理器配置");
+    service.record_error("This channel is missing a usable processor configuration");
     assert!(!service.snapshot().faults.is_empty());
     assert!(service.snapshot().last_error.is_some());
     assert!(service.undo());

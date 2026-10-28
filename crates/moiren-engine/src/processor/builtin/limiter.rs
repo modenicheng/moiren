@@ -4,7 +4,7 @@ use super::dynamics::{
     validate_linked_io,
 };
 use crate::{
-    buffer::{FrameIo, InPlaceFrames, PreparedIo, ProcessIo, SeparateFrames},
+    buffer::{FrameIo, PreparedIo, ProcessIo},
     control::{FloatRamp, ParamSpec, ProcessParameters},
     sample::ProcessingSample,
 };
@@ -58,6 +58,13 @@ impl Limiter {
             settings.input_gain_db,
         ];
         float_specs(id, &Self::DOMAINS, values)
+    }
+
+    /// Unified preparation entry used by rack expansion and node lowering:
+    /// the kernel and its parameter schema come from one call, so a prepared
+    /// kernel and its table cannot drift apart.
+    pub fn prepare(id: ProcessorId, settings: LimiterSettings) -> (Self, Vec<ParamSpec>) {
+        (Self::new(), Self::parameters(id, settings).to_vec())
     }
 
     /// Effective settings after applying recorded parameter intent by id; the
@@ -141,28 +148,14 @@ impl<S: ProcessingSample> RtProcessor<S> for Limiter {
         let input_gain = params
             .float(Self::INPUT_GAIN)
             .expect("validated limiter input gain");
-        match io {
-            ProcessIo::Separate {
-                inputs,
-                mut outputs,
-            } => self.process_linked(
-                &mut SeparateFrames::new(
-                    inputs.get(0).expect("validated limiter input"),
-                    outputs.get_mut(0).expect("validated limiter output"),
-                ),
-                threshold,
-                release,
-                input_gain,
-                ctx.processing_sr,
-            ),
-            ProcessIo::InPlace { mut pairs, .. } => self.process_linked(
-                &mut InPlaceFrames::new(pairs.get_mut(0, 0).expect("validated limiter pair")),
-                threshold,
-                release,
-                input_gain,
-                ctx.processing_sr,
-            ),
-            ProcessIo::ReadOnly { .. } => unreachable!("limiter requires an output"),
-        }
+        linked_io!(
+            io,
+            self,
+            "limiter",
+            threshold,
+            release,
+            input_gain,
+            ctx.processing_sr
+        )
     }
 }

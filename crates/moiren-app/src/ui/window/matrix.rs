@@ -3,6 +3,7 @@ use rust_i18n::t;
 
 use super::*;
 use crate::service::GraphEdit;
+use crate::ui::presentation::{db_text, step_db};
 use controls::*;
 use moiren_core::graph::{PortId, SendParams};
 
@@ -93,7 +94,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     if e.params().mute {
                         t!("Muted").into()
                     } else {
-                        db(e.params().gain)
+                        db_text(e.params().gain)
                     }
                 })
                 .unwrap_or_else(|| if forbidden { "×".into() } else { "—".into() });
@@ -132,7 +133,14 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     .on_click(move |_, _, cx| {
                         this.update(cx, |s, cx| {
                             s.selected_route = Some((src, dst));
-                            s.inspector_open = true;
+                            // Single click selects the cell; a double click
+                            // also opens the inspector.
+                            if s.element_double_clicked(StudioShell::element_key(
+                                "route",
+                                (src, dst),
+                            )) {
+                                s.open_inspector();
+                            }
                             cx.notify();
                         })
                     }),
@@ -151,24 +159,9 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .child(
             div()
                 .flex()
-                .flex_none()
-                .h(px(row_height))
-                .items_center()
-                .justify_between()
-                .px(px(16.))
-                .child(heading(t!("Routing matrix")))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .child(inspector_toggle("toggle-details", cx)),
-                ),
-        )
-        .child(
-            div()
-                .flex()
                 .flex_1()
                 .min_h_0()
+                .min_w_0()
                 .gap(px(12.))
                 .p(px(12.))
                 .child(
@@ -240,8 +233,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                             inputs = inputs.len(),
                             connections = graph.edges().len()
                         )))),
-                )
-                .when(shell.inspector_open, |v| v.child(inspector(shell, cx))),
+                ),
         )
         .gpui_test_observe()
         .into_any_element()
@@ -267,7 +259,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                 let params = *edge.params();
                 view = view
                     .child(badge(t!("Connected"), theme::PRIMARY))
-                    .child(detail(&t!("Route gain"), db(params.gain)))
+                    .child(detail(&t!("Route gain"), db_text(params.gain)))
                     .child(detail(&t!("Route balance"), format!("{:+.2}", params.pan)))
                     .child(detail(
                         &t!("Tap"),
@@ -305,12 +297,15 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                         div()
                             .flex()
                             .gap(px(6.))
+                            // Route sends have no upper gain limit by design
+                            // (SendParams deliberately accepts any finite
+                            // headroom), so the +1 dB step never clamps.
                             .child(button("route-down", "−1 dB").on_click(edit(
                                 cx.entity(),
                                 GraphEdit::SetSend {
                                     edge: id,
                                     params: SendParams {
-                                        gain: params.gain * 10f64.powf(-1. / 20.),
+                                        gain: step_db(params.gain, -1., 0., f64::INFINITY),
                                         ..params
                                     },
                                 },
@@ -320,7 +315,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                                 GraphEdit::SetSend {
                                     edge: id,
                                     params: SendParams {
-                                        gain: params.gain * 10f64.powf(1. / 20.),
+                                        gain: step_db(params.gain, 1., 0., f64::INFINITY),
                                         ..params
                                     },
                                 },
@@ -348,7 +343,7 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
                         this.update(cx, |s, cx| {
                             s.selected_node = None;
                             s.set_page(Page::Graph, cx);
-                            s.inspector_open = true;
+                            s.open_inspector();
                         })
                     },
                 ))

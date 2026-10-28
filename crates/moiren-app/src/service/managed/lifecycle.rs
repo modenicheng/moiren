@@ -12,13 +12,14 @@ impl ManagedDriver {
             self.cleaning,
         );
         self.meters = None;
+        c.tone_session = false;
         c.signals.clear_node_levels();
         c.active_latency_profile = None;
         c.active_audio_settings = None;
         c.active_transport_latency = None;
         #[cfg(windows)]
         {
-            if let Some(observations) = &self.observations {
+            if let Some(observations) = &self.native_observations {
                 *observations.lock().unwrap_or_else(|p| p.into_inner()) = None;
             }
             c.native_observations = None;
@@ -80,17 +81,18 @@ impl ManagedDriver {
             .clone();
         let settings = requested.audio;
         let block = settings.processing.block_frames as usize;
-        let project = match preparation.configured_engine_project(block, &settings) {
-            Ok(project) => project,
-            Err(error) => {
-                if self.owner.is_none() && self.cleaning == 0 {
-                    c.core.failed(c.core.generation(), error.clone());
+        let project =
+            match preparation.configured_engine_project(block, &settings, requested.profile) {
+                Ok(project) => project,
+                Err(error) => {
+                    if self.owner.is_none() && self.cleaning == 0 {
+                        c.core.failed(c.core.generation(), error.clone());
+                    }
+                    c.graph.record_error(error);
+                    self.apply = false;
+                    return;
                 }
-                c.graph.record_error(error);
-                self.apply = false;
-                return;
-            }
-        };
+            };
         // A failed PCM worker can drain while its PDO stays healthy/Present.
         // Waiting for transport admission before replacing that host would
         // strand Apply: only a fresh preparation can create its PCM session.
@@ -107,7 +109,7 @@ impl ManagedDriver {
         });
         if self.owner.as_ref().is_some_and(|o| {
             o.document != self.document
-                || (settings == AudioSettings::default() && o.profile != requested.profile)
+                || o.profile != requested.profile
                 || o.audio_settings != settings
                 || o.transport_latency != requested.transport
                 || o.exports != preparation.exports
@@ -140,7 +142,8 @@ impl ManagedDriver {
                 return;
             }
             let Some(apply_id) = owner.latest_apply_id.checked_add(1) else {
-                c.graph.record_error("应用请求身份空间已耗尽");
+                c.graph
+                    .record_error("The apply request identity space is exhausted");
                 self.apply = false;
                 return;
             };

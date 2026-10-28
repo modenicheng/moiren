@@ -220,9 +220,17 @@ pub(crate) fn run(arguments: Vec<String>) -> Result<i32> {
 pub(crate) fn list_inputs() -> Result<i32> {
     #[cfg(windows)]
     {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&moiren_windows_audio::capture::list_capture_endpoints()?)?
+        let catalog = moiren_windows_audio::catalog_snapshot()?;
+        let inputs: Vec<_> = catalog
+            .endpoints
+            .into_iter()
+            .filter(|endpoint| endpoint.flow == "capture")
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&inputs)?);
+        ensure!(
+            catalog.errors.is_empty(),
+            "capture endpoint enumeration had errors: {}",
+            serde_json::to_string(&catalog.errors)?
         );
         Ok(0)
     }

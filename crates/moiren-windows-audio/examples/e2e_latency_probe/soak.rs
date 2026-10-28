@@ -159,7 +159,7 @@ impl Drop for Journal {
 }
 
 pub(super) fn process_padding_observation(
-    observer: &moiren_windows_audio::render::RenderPaddingObserver,
+    observer: &moiren_windows_audio::latency::render::RenderPaddingObserver,
 ) -> serde_json::Value {
     serde_json::json!(observer.try_snapshot())
 }
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn process_padding_is_unknown_before_publication_and_after_stop_without_stale_fallback() {
-        use moiren_windows_audio::render::{RenderPaddingObserver, RenderPaddingSample};
+        use moiren_windows_audio::latency::render::{RenderPaddingObserver, RenderPaddingSample};
         let observer = RenderPaddingObserver::new();
         let mut owner = observer.new_owner();
         assert!(process_padding_observation(&observer).is_null());

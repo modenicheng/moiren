@@ -86,6 +86,14 @@ impl<S: ProcessingSample> ProcessorInstance<S> {
             reservation: None,
         }
     }
+
+    /// Single source for "both transports are equivalent for this kernel",
+    /// queried by the compiler's in-place candidacy and the swap snapshot's
+    /// IO-mode normalization. Control-side only, like every other schema
+    /// query; it never touches rendering.
+    pub(crate) fn transport_interchangeable(&self) -> bool {
+        self.processor.transport_interchangeable()
+    }
 }
 /// Owns persistent DSP state independently from the schedule. Existing slots
 /// may be migrated into a compatible prepared plan without reinitialization.

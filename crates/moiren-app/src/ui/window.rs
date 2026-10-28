@@ -1,6 +1,6 @@
 //! Disposable main window views over the application-owned service projection.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -165,6 +165,11 @@ pub struct StudioShell {
     matrix_scroll: ScrollHandle,
     mixer_scroll: ScrollHandle,
     mixer: mixer::MixerPresentation,
+    mixer_geometry: mixer::meter_frame::Geometry,
+    mixer_controls: Entity<mixer::meter_frame::MixerControls>,
+    mixer_toolbar: Entity<chrome::CachedChrome>,
+    mixer_status: Entity<chrome::CachedChrome>,
+    mixer_frame: Entity<mixer::meter_frame::MixerMeterFrame>,
     compressor: graph::CompressorControls,
     meter_points: std::rc::Rc<std::cell::Cell<(bool, bool)>>,
     observation_nodes: Option<(
@@ -178,6 +183,9 @@ pub struct StudioShell {
     pan_grab: Option<(f32, f32)>,
     /// Left background clicks deselect only on release; a pan keeps selection.
     background_click: Option<(f32, f32)>,
+    /// Last selectable-element press (target hash + time) for double-click
+    /// detection: single clicks select, double clicks also open the inspector.
+    last_element_press: Option<(u64, Instant)>,
     desktop: Option<WeakEntity<desktop::Desktop>>,
     window_state: crate::project::WindowState,
     /// Precision-touchpad subclass state (Windows pointer input). Held for
@@ -286,6 +294,23 @@ impl StudioShell {
         };
         let settings = settings::SettingsEditor::new(&preferences, cx);
         let export_controls = devices::ExportControls::new(window, cx);
+        let mixer_geometry = mixer::meter_frame::Geometry::default();
+        let shell_entity = cx.entity();
+        let mixer_controls = cx.new(|child_cx| {
+            mixer::meter_frame::MixerControls::new(
+                shell_entity.clone(),
+                mixer_geometry.clone(),
+                child_cx,
+            )
+        });
+        let mixer_frame = cx.new(|_| {
+            mixer::meter_frame::MixerMeterFrame::new(
+                shell_entity.downgrade(),
+                mixer_geometry.clone(),
+            )
+        });
+        let mixer_toolbar = cx.new(|cx| chrome::CachedChrome::new(shell_entity.clone(), true, cx));
+        let mixer_status = cx.new(|cx| chrome::CachedChrome::new(shell_entity.clone(), false, cx));
         let mut shell = Self {
             state,
             settings_open: false,
@@ -332,6 +357,11 @@ impl StudioShell {
             matrix_scroll: ScrollHandle::new(),
             mixer_scroll: ScrollHandle::new(),
             mixer: mixer::MixerPresentation::default(),
+            mixer_geometry,
+            mixer_controls,
+            mixer_toolbar,
+            mixer_status,
+            mixer_frame,
             compressor: graph::CompressorControls::default(),
             meter_points: Default::default(),
             observation_nodes: None,
@@ -339,6 +369,7 @@ impl StudioShell {
             selected_node: None,
             pan_grab: None,
             background_click: None,
+            last_element_press: None,
             desktop,
             window_state: desktop::capture_window_state(window, Page::Graph),
             #[cfg(windows)]
@@ -511,6 +542,8 @@ pub fn shell_for_tests(
 ) -> StudioShell {
     let mut shell = StudioShell::new(state, window, cx, None);
     shell.test_page = Some(page);
+    // Headless tests must never write the developer's real configuration.
+    shell.preferences_path = None;
     shell
 }
 
@@ -551,25 +584,19 @@ mod mixer;
 mod native;
 mod project;
 mod settings;
+mod sidebar;
 #[cfg(any(test, feature = "gpui-test"))]
 mod test_harness;
 #[cfg(any(test, feature = "gpui-test"))]
 pub use test_harness::{finish_service, initial_projection, spawn_service, wait_for, wait_until};
 #[cfg(feature = "gpui-test")]
-pub use test_harness::{shell_with_state, test_shell};
+pub use test_harness::{settle_panels, shell_with_state, test_shell};
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
 mod tray_mixer;
 
 impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(feature = "gpui-test")]
-        self.mixer
-            .trace
-            .borrow_mut()
-            .begin(self.presentation.page == Page::Mixer);
-        #[cfg(feature = "gpui-test")]
-        let visible_meter_count = self.node_meter_points.borrow().len();
         self.finish_settings_save(cx);
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
@@ -590,21 +617,19 @@ impl Render for StudioShell {
         self.compact = compact;
         let visible =
             window.is_visible() && matches!(self.presentation.page, Page::Graph | Page::Mixer);
-        if self.meters_frame_active(cx) {
-            #[cfg(feature = "gpui-test")]
-            let meter_began = std::time::Instant::now();
-            // Frame-driven meters: advance observations every display frame
-            // (this frame builds from the pumped state) and keep the
-            // vsync loop running. Must run before the per-frame reset of
-            // `meter_points` below so visibility comes from the last frame.
+        if self.meters_frame_active(cx) && self.presentation.page == Page::Graph {
+            // Mixer owns a separate animation canvas; Graph keeps its existing
+            // frame-driven path. Never pump the same subscriptions twice.
             self.pump_meters(cx);
-            #[cfg(feature = "gpui-test")]
-            self.mixer.trace.borrow_mut().add(meter_began.elapsed());
             window.request_animation_frame();
         }
         self.refresh_observation_nodes(cx);
-        self.meter_points.set((false, false));
-        self.node_meter_points.borrow_mut().clear();
+        // Mixer demand is retained with its cached controls. Clearing it on
+        // an animation-only frame would unsubscribe meters that remain visible.
+        if self.presentation.page != Page::Mixer {
+            self.meter_points.set((false, false));
+            self.node_meter_points.borrow_mut().clear();
+        }
         if !visible {
             self.meters.update(&self.state.read(cx).snapshot, false);
             self.update_node_meters(false, cx);
@@ -721,7 +746,11 @@ impl Render for StudioShell {
                             div()
                                 .text_color(theme::DANGER)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .child(t!("Error: %{cause}", cause = fault.cause.as_str())),
+                                // Causes and hints are English catalog keys
+                                // produced by the service; translation happens
+                                // here so a locale switch re-renders stored
+                                // faults, and unknown prose passes through.
+                                .child(t!("Error: %{cause}", cause = t!(fault.cause.as_str()))),
                         )
                         .when_some(location, |row, location| {
                             row.child(
@@ -735,17 +764,20 @@ impl Render for StudioShell {
                             row.child(
                                 div()
                                     .text_color(theme::TEXT)
-                                    .child(t!("Hint: %{hint}", hint = hint)),
+                                    .child(t!("Hint: %{hint}", hint = t!(hint))),
                             )
                         });
                     list = list.child(row.gpui_test_observe());
                 }
                 if let Some(error) = other {
+                    // Dispatch/persistence diagnostics may be plain prose; a
+                    // catalog miss renders the source text unchanged.
+                    let message = t!(error.as_str()).into_owned();
                     list = list.child(
                         div()
                             .id("error-strip-message")
                             .text_color(theme::DANGER)
-                            .child(error),
+                            .child(message),
                     );
                 }
                 list.child(
@@ -757,7 +789,7 @@ impl Render for StudioShell {
                 .gpui_test_observe()
             })
         };
-        let view = div()
+        div()
             .id("studio-shell")
             .relative()
             .size_full()
@@ -768,15 +800,40 @@ impl Render for StudioShell {
             .text_color(theme::TEXT)
             .font_family(theme::FONT_UI)
             .text_size(px(theme::TEXT_MD))
-            .child(chrome::toolbar(self, cx))
+            .child(chrome::toolbar_for_page(self, cx))
             .when_some(error_strip, |view, error_strip| view.child(error_strip))
-            .child(match self.presentation.page {
-                Page::Graph => graph::render_graph_page(self, cx),
-                Page::Mixer => mixer::page(self, cx),
-                Page::Matrix => matrix::page(self, cx),
-                Page::Devices => devices::page(self, cx),
+            .child(
+                div()
+                    .id("workspace-row")
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(match self.presentation.page {
+                        Page::Graph => graph::render_graph_page(self, cx),
+                        Page::Mixer => mixer::meter_frame::page(self),
+                        Page::Matrix => matrix::page(self, cx),
+                        Page::Devices => devices::page(self, cx),
+                    })
+                    .child(sidebar::inspector_host(self, cx)),
+            )
+            .child(chrome::status_for_page(self, cx))
+            // Clicking anywhere outside an open inline editor commits it, so
+            // saving never requires Enter. Editors stop presses inside their
+            // own bounds from propagating; a press that reaches this root
+            // listener therefore landed outside the active editor, and the
+            // bubble phase runs it after whatever deeper handler the press
+            // targeted.
+            .on_mouse_down(MouseButton::Left, {
+                let shell = cx.entity();
+                move |_, _, cx| {
+                    shell.update(cx, |shell, cx| {
+                        if mixer::commit_active_editor(shell, cx) {
+                            cx.notify();
+                        }
+                    });
+                }
             })
-            .child(chrome::statusbar(self.state.read(cx)).gpui_test_observe())
             .when(self.project_menu, |v| v.child(project::menu(self, cx)))
             .when(self.settings_open, |v| {
                 v.child(settings::overlay(self, window, cx))
@@ -786,14 +843,60 @@ impl Render for StudioShell {
             }))
             .on_action(cx.listener(|shell, _: &app_view::Redo, window, cx| {
                 shell.undo_redo_graph(true, window, cx);
-            }));
-        #[cfg(feature = "gpui-test")]
-        self.mixer.trace.borrow_mut().finish(visible_meter_count);
-        view
+            }))
     }
 }
 
 impl StudioShell {
+    /// Stable identity for a selectable element (canvas node, wire, mixer
+    /// strip, matrix cell) used by double-click detection.
+    pub(super) fn element_key(kind: &str, id: impl std::hash::Hash) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        kind.hash(&mut hasher);
+        id.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Records a press on a selectable element and reports whether it closes
+    /// a double-click pair with the previous press of the same element.
+    pub(super) fn element_double_clicked(&mut self, key: u64) -> bool {
+        let now = Instant::now();
+        let double = self.last_element_press.is_some_and(|(previous, at)| {
+            previous == key && now.duration_since(at) <= Duration::from_millis(400)
+        });
+        self.last_element_press = Some((key, now));
+        double
+    }
+
+    /// Expands the inspector from a double click or an explicit open action;
+    /// compact widths give its space back by closing the library.
+    pub(super) fn open_inspector(&mut self) {
+        self.inspector_open = true;
+        if self.compact {
+            self.sidebar_open = false;
+        }
+    }
+
+    /// True when a text field anywhere in the shell owns focus: graph
+    /// search, node rename, inspector editors, mixer send gains, and export
+    /// fields all keep typing shortcuts (and their undo) for themselves.
+    fn typing_focus(&self, focused: &FocusHandle, cx: &App) -> bool {
+        self.node_search.read(cx).focus_handle(cx) == *focused
+            || self.node_name.read(cx).focus_handle(cx) == *focused
+            || self
+                .compressor
+                .inputs
+                .values()
+                .any(|input| input.read(cx).focus_handle(cx) == *focused)
+            || self
+                .mixer
+                .send_inputs
+                .values()
+                .any(|input| input.read(cx).focus_handle(cx) == *focused)
+            || self.export_controls.owns_focus(focused, cx)
+    }
+
     /// Ctrl+Z / Ctrl+Y: step the service graph journal. Typing focus and
     /// modal settings keep the shortcut for themselves.
     fn undo_redo_graph(&mut self, redo: bool, window: &Window, cx: &mut Context<Self>) {
@@ -810,18 +913,10 @@ impl StudioShell {
         }
         // A focused text field owns ctrl-z; undoing the graph out from under
         // a keystroke the user is typing would be a surprise.
-        if let Some(focused) = window.focused(cx) {
-            let typing = self.node_search.read(cx).focus_handle(cx) == focused
-                || self.node_name.read(cx).focus_handle(cx) == focused
-                || self
-                    .compressor
-                    .inputs
-                    .values()
-                    .any(|input| input.read(cx).focus_handle(cx) == focused)
-                || self.export_controls.owns_focus(&focused, cx);
-            if typing {
-                return;
-            }
+        if let Some(focused) = window.focused(cx)
+            && self.typing_focus(&focused, cx)
+        {
+            return;
         }
         self.state.update(cx, |state, _| {
             state.dispatch(if redo {
@@ -845,15 +940,7 @@ impl StudioShell {
             return;
         }
         let focused = window.focused(cx);
-        let text_input_focused = focused.is_some_and(|focused| {
-            self.node_search.read(cx).focus_handle(cx) == focused
-                || self.node_name.read(cx).focus_handle(cx) == focused
-                || self
-                    .compressor
-                    .inputs
-                    .values()
-                    .any(|input| input.read(cx).focus_handle(cx) == focused)
-        });
+        let text_input_focused = focused.is_some_and(|focused| self.typing_focus(&focused, cx));
         if !text_input_focused {
             window.focus(&self.graph_focus, cx);
         }
@@ -872,17 +959,11 @@ impl StudioShell {
         let graph = &snapshot.graph;
         if snapshot.phase == SessionPhase::Running {
             let source = graph
-                .graph
-                .nodes()
-                .iter()
-                .find(|n| n.kind() == NodeKind::Source)
-                .map(|n| n.id());
+                .node_of_kind(NodeKind::Source)
+                .map(|(node, _)| node.id());
             let sink = graph
-                .graph
-                .nodes()
-                .iter()
-                .find(|n| n.kind() == NodeKind::Sink)
-                .map(|n| n.id());
+                .node_of_kind(NodeKind::Sink)
+                .map(|(node, _)| node.id());
             self.observation_nodes = source
                 .zip(sink)
                 .map(|(source, sink)| (snapshot.generation, source, sink));

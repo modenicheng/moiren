@@ -113,14 +113,7 @@ pub(super) async fn capture(
         })
         .map_err(anyhow::Error::msg)?;
     let snapshot = graph.snapshot();
-    let source = snapshot
-        .graph
-        .nodes()
-        .iter()
-        .find(|node| node.kind() == NodeKind::Source)
-        .unwrap()
-        .outputs()[0]
-        .id();
+    let source = snapshot.node_of_kind(NodeKind::Source).unwrap().0.outputs()[0].id();
     for port in snapshot.graph.get_node(bus)?.inputs() {
         graph
             .edit(GraphEdit::Connect {
@@ -132,7 +125,6 @@ pub(super) async fn capture(
     let snapshot = graph.snapshot();
     shell.update(cx, |shell, cx| {
         shell.selected_node = None;
-        shell.mixer.dock_width = 320.;
         shell.state.update(cx, |state, _| {
             state.dispatch(AppRequest::ReplaceGraph {
                 graph: snapshot.graph,

@@ -358,29 +358,13 @@ impl ManagedDriver {
         snapshot: &host::ProjectSnapshot,
         generation: SessionGeneration,
     ) {
-        // Write-side stale guard shared by the native and professional
-        // publishers: an observation counts only while its own owner
-        // generation still runs.
+        // Write-side stale guard: an observation counts only while its own
+        // owner generation still runs.
         let fresh = |running: bool, owner_generation: u64| {
             running
                 && owner_generation == snapshot.state.owner_generation
                 && snapshot.state.execution == ExecutionState::Running
         };
-        c.native_observations = self
-            .observations
-            .as_ref()
-            .and_then(|handle| {
-                handle
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .as_ref()
-                    .and_then(|value| value.snapshot())
-            })
-            .filter(|observation| fresh(observation.running, observation.owner_generation))
-            .map(|observation| NativeSessionObservations {
-                generation,
-                observation,
-            });
         c.professional_observations = self
             .professional_observations
             .as_ref()
@@ -393,6 +377,21 @@ impl ManagedDriver {
             })
             .filter(|observation| fresh(observation.running, observation.owner_generation))
             .map(|observation| ProfessionalSessionObservations {
+                generation,
+                observation,
+            });
+        c.native_observations = self
+            .native_observations
+            .as_ref()
+            .and_then(|handle| {
+                handle
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .and_then(|value| value.snapshot())
+            })
+            .filter(|observation| fresh(observation.running, observation.owner_generation))
+            .map(|observation| NativeSessionObservations {
                 generation,
                 observation,
             });
@@ -436,10 +435,9 @@ impl ManagedDriver {
         }
         c.core.managed_execution(owner.generation, running, error);
         if running {
-            // Professional streams use their explicit buffer configuration.
-            // The saved latency preset belongs only to the legacy default path.
-            c.active_latency_profile =
-                (owner.audio_settings == AudioSettings::default()).then_some(owner.profile);
+            // The latency profile applies to every configuration now: it maps
+            // to a device buffer request when no explicit buffer is set.
+            c.active_latency_profile = Some(owner.profile);
             c.active_audio_settings = Some(owner.audio_settings.clone());
             c.active_transport_latency = Some(owner.transport_latency);
             if owner.started.is_none() {
@@ -549,7 +547,8 @@ impl ManagedDriver {
                     // A target removed by a newer candidate is an expected
                     // consequence of editing, not a failure to report.
                     if error != host::ParameterFailure::TargetRemoved {
-                        c.graph.record_error(format!("实时参数被拒绝: {error:?}"));
+                        c.graph
+                            .record_error(format!("Live parameters rejected: {error:?}"));
                     }
                     parameter_failed |= pending.confirmation.is_some()
                         && pending.confirmation == self.confirm_parameters;
@@ -693,37 +692,37 @@ fn project_fault(error: &moiren_engine::host::ProjectError) -> super::GraphFault
     let (subject, cause, hint) = match error {
         E::MissingConfiguration(node) => (
             super::GraphSubject::Node(*node),
-            "这个通道缺少可用的处理器配置".to_string(),
-            Some("删掉这个通道再重新添加一个同类型的"),
+            "This channel is missing a usable processor configuration".to_string(),
+            Some("Delete this channel and re-add one of the same type"),
         ),
         E::ConfigurationKind(node) => (
             super::GraphSubject::Node(*node),
-            "通道的配置和它的类型不匹配".to_string(),
-            Some("检查这个通道的参数设置，或删除后重新添加"),
+            "The channel's configuration does not match its kind".to_string(),
+            Some("Check the channel's parameter settings, or delete and re-add it"),
         ),
         E::UnknownConfiguration(node) => (
             super::GraphSubject::Node(*node),
-            "配置指向的通道已经不存在".to_string(),
+            "The configuration points at a channel that no longer exists".to_string(),
             None,
         ),
         E::IoChannels(node) => (
             super::GraphSubject::Node(*node),
-            "通道的声道数和连线不一致".to_string(),
-            Some("调整通道声道数，或重连这条 route"),
+            "The channel's channel count disagrees with its wiring".to_string(),
+            Some("Adjust the channel count, or reconnect the route"),
         ),
         E::Io { node, .. } => (
             super::GraphSubject::Node(*node),
-            "输入/输出设备配置无效".to_string(),
-            Some("换一个设备，或检查采样率/精度设置"),
+            "The input/output device configuration is invalid".to_string(),
+            Some("Choose another device, or check the sample rate/precision settings"),
         ),
         E::InvalidProcessor(node) => (
             super::GraphSubject::Node(*node),
-            "通道参数超出有效范围".to_string(),
+            "Channel parameters are outside their valid range".to_string(),
             None,
         ),
         E::InvalidParameter => (
             super::GraphSubject::Graph,
-            "参数超出有效范围".to_string(),
+            "Parameters are outside their valid range".to_string(),
             None,
         ),
         E::Graph(_) | E::InvalidProcessing | E::Capacity => {

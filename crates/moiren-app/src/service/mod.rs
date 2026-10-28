@@ -3,7 +3,6 @@
 
 mod backend;
 mod core;
-mod driver;
 mod exports;
 mod graph;
 mod jobs;
@@ -11,11 +10,8 @@ mod latency;
 mod mailbox;
 mod managed;
 mod model;
-mod parameters;
-mod recovery;
 #[cfg(test)]
 mod settings_tests;
-mod signal_preparation;
 mod signals;
 mod startup;
 #[cfg(any(test, feature = "gpui-test"))]
@@ -25,8 +21,8 @@ mod transport_latency;
 #[cfg(windows)]
 mod windows;
 pub use backend::*;
-pub use driver::BackendDriver;
 pub use exports::*;
+pub(crate) use graph::primary_node_of;
 pub use graph::{
     BuiltinState, CompressorParameter, CompressorState, GraphEdit, GraphFault, GraphNodeState,
     GraphPreparation, GraphSnapshot, GraphSubject, MixerState, ServiceGraph, default_label,
@@ -35,7 +31,6 @@ pub use graph::{
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;
 pub use moiren_engine::audio_config::*;
-pub use signal_preparation::{SignalPreparation, SignalPreparationError};
 pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
 pub use transport_latency::{DeliveryProvenance, ExpertInputBuffer, TransportLatencySettings};
 #[cfg(windows)]
@@ -123,13 +118,15 @@ pub struct ServiceContext {
     pub transport_latency: TransportLatencySettings,
     pub active_transport_latency: Option<TransportLatencySettings>,
     pub graph: ServiceGraph,
-    pub monitor_latency: Option<MonitorLatencyStatus>,
-    pub monitor_diagnostics: Option<MonitorDiagnosticsSnapshot>,
     pub core: ServiceCore,
     pub catalog: Arc<DeviceCatalog>,
     pub catalog_error: Option<String>,
     pub control: ControlSummary,
     pub(crate) signals: signals::SignalService,
+    /// Whether the active session routes its levels into the tone topic
+    /// instead of the physical monitor pair. The meter bridge resolves it
+    /// from the running host graph and retires it with the owner.
+    pub tone_session: bool,
     pending: VecDeque<(JobPriority, Job, DeferredPermit)>,
     slots: Arc<AtomicUsize>,
 }
@@ -149,13 +146,12 @@ impl Default for ServiceContext {
             transport_latency: TransportLatencySettings::default(),
             active_transport_latency: None,
             graph: ServiceGraph::default(),
-            monitor_latency: None,
-            monitor_diagnostics: None,
             core: ServiceCore::default(),
             catalog: Arc::new(DeviceCatalog::default()),
             catalog_error: None,
             control: ControlSummary::default(),
             signals: signals::SignalService::new().expect("fixed application signal topics"),
+            tone_session: false,
             pending: VecDeque::with_capacity(MAX_PENDING_JOBS),
             slots: Arc::new(AtomicUsize::new(MAX_PENDING_JOBS)),
         }
@@ -348,7 +344,8 @@ impl ServiceDriver for CoreDriver {
                 }
             }
             AppRequest::ApplyGraph => {
-                c.graph.record_error("未配置原生音频驱动");
+                c.graph
+                    .record_error("No native audio backend is configured");
             }
         }
     }
@@ -381,10 +378,6 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
             .active_transport_latency
             .filter(|_| c.fresh(c.core.generation())),
         graph: Arc::new(graph),
-        monitor_latency: c.monitor_latency.clone(),
-        monitor_diagnostics: c
-            .monitor_diagnostics
-            .filter(|diagnostics| c.fresh(diagnostics.generation)),
         consumed_request_id: RequestId::default(),
         generation: c.core.generation(),
         phase: c.core.phase(),
@@ -394,6 +387,7 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         catalog_error: c.catalog_error.clone(),
         control: c.control.clone(),
         signal_topics: c.signals.topics.clone(),
+        tone_session: c.tone_session,
         elapsed: c.core.elapsed(),
     }
 }

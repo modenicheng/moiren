@@ -71,6 +71,7 @@ pub struct ActionButton {
     size: ControlSize,
     density: Density,
     icon: Option<ActionIcon>,
+    icon_only: bool,
     disabled: bool,
     on_click: Option<ClickHandler>,
     tooltip: Option<SharedString>,
@@ -90,6 +91,7 @@ impl ActionButton {
             size: ControlSize::default(),
             density: Density::default(),
             icon: None,
+            icon_only: false,
             disabled: false,
             on_click: None,
             tooltip: None,
@@ -136,6 +138,12 @@ impl ActionButton {
         self.icon = Some(icon);
         self
     }
+    /// Paint only the icon in a square hit target; the label stays available
+    /// to accessibility and tooltips. Requires `icon`.
+    pub fn icon_only(mut self) -> Self {
+        self.icon_only = true;
+        self
+    }
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
@@ -157,6 +165,7 @@ impl ActionButton {
 impl RenderOnce for ActionButton {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let m = self.size.metrics(self.density);
+        let icon_only = self.icon_only && self.icon.is_some();
         styled_control(
             base::Button::new(self.id)
                 .disabled(self.disabled)
@@ -175,8 +184,9 @@ impl RenderOnce for ActionButton {
         .when(self.full_width, |s| s.w_full().justify_center())
         .when(self.justify_start, |s| s.justify_start())
         .when(self.square, |s| s.rounded_none())
+        .when(icon_only, |s| s.w(px(m.height)).justify_center().px(px(6.)))
         .when_some(self.icon, |s, icon| s.child(icon.element()))
-        .child(self.label)
+        .when(!icon_only, |s| s.child(self.label))
         .when_some(self.trailing, |s, text| s.child(div().flex_1()).child(text))
         .when_some(self.tooltip, |s, text| {
             s.tooltip(move |window, cx| {

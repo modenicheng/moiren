@@ -44,6 +44,10 @@ mod vad_collection;
 mod process_collection;
 
 #[cfg(any(windows, test))]
+#[path = "render.rs"]
+mod render;
+
+#[cfg(any(windows, test))]
 #[path = "control_observation.rs"]
 mod control_observation;
 
@@ -220,6 +224,7 @@ struct SourceReport {
 struct NativeReport {
     capture: Option<Value>,
     render: Option<Value>,
+    render_failure: Option<Value>,
     bridge: Option<Value>,
     vad_playback: Option<Value>,
     vad_provider: Option<Value>,
@@ -1785,21 +1790,22 @@ mod native {
     };
     use moiren_windows_audio::{
         ActivationGate, SessionDuration, StopSignal,
-        engine_backend::{WindowsBackend, WindowsBackendConfig},
+        engine_backend::ProfessionalBackend,
         latency::RenderQueuePolicy,
         process_loopback::{
             ProcessLoopbackOptions, inspect_process, prepare_process_capture_with_gate,
         },
-        render::{RenderOptions, prepare_render_native_with_gate},
         vad::{Channels, Intent, PdoState, WindowsVadProvider},
         virtual_owner::VirtualBufferOptions,
     };
     use std::{
         str::FromStr,
-        sync::{Arc, Mutex},
+        sync::Arc,
         thread,
         time::{Duration, Instant},
     };
+
+    use super::render::{RenderOptions, prepare_render_native_with_gate_returning_with_abort};
 
     const STARTUP_SAMPLE_LIMIT: usize = 256;
     const STARTUP_SAMPLE_INTERVAL: Duration = Duration::from_millis(10);
@@ -1843,27 +1849,39 @@ mod native {
             gate.clone(),
         )
         .context("prepare Process Loopback capture")?;
-        let render = prepare_render_native_with_gate(
+        let render = match prepare_render_native_with_gate_returning_with_abort(
             RenderOptions {
                 queue,
                 endpoint_id: options.output_endpoint.clone(),
                 latency_telemetry: options.telemetry,
-                shared_period: Default::default(),
                 duration,
             },
             stop.clone(),
             gate.clone(),
-        )
-        .context("prepare WASAPI render")?;
+            || (),
+        ) {
+            Ok(render) => render,
+            Err(error) => {
+                native_report.render_failure = Some(error.evidence("render_prepare"));
+                native_report.render = error.report.map(serde_json::to_value).transpose()?;
+                return Err(error.error).context("prepare WASAPI render");
+            }
+        };
         let render_info = render.info();
         let padding = render.padding_observer();
         let bridge_observer = capture.observer.clone();
         let prepared = capture;
-        let renderer = process_collection::graph::build_renderer(options, prepared.source)?;
+        let renderer = process_collection::graph::build_renderer(options, prepared.source)?
+            .with_bridge_observer(bridge_observer.clone());
         let timeline = renderer.timeline_observer();
-        let prepared_render = render
-            .attach(renderer, queue)
-            .context("attach Engine renderer")?;
+        let prepared_render = match render.attach_returning_with_abort(renderer, queue, || ()) {
+            Ok(render) => render,
+            Err(error) => {
+                native_report.render_failure = Some(error.evidence("render_attach"));
+                native_report.render = error.report.map(serde_json::to_value).transpose()?;
+                return Err(error.error).context("attach Engine renderer");
+            }
+        };
         gate.activate().context("activate capture/render gate")?;
         let capture_session = prepared.session;
         let render_session = prepared_render.into_session();
@@ -2043,7 +2061,6 @@ mod native {
             host: None,
             observer: None,
             observations: None,
-            backend_diagnostics: None,
             playback_info: None,
             startup_samples: Vec::with_capacity(STARTUP_SAMPLE_LIMIT),
             observation_clock: control_observation::ControlObservationClock::prepare(),
@@ -2157,7 +2174,6 @@ mod native {
         host: Option<EngineHost<f32>>,
         observer: Option<moiren_engine::host::EngineObserver>,
         observations: Option<moiren_windows_audio::engine_backend::NativeObservations>,
-        backend_diagnostics: Option<Arc<Mutex<Option<String>>>>,
         playback_info: Option<Value>,
         startup_samples: Vec<Value>,
         observation_clock: control_observation::ControlObservationClock,
@@ -2338,17 +2354,13 @@ mod native {
             };
             let mut project = minimal_vad_project(self.endpoint_id, output)?;
             project.processing.engine.max_block_frames = options.engine_block_frames as usize;
-            let backend_config = WindowsBackendConfig {
-                render_queue: render_queue(options)?,
-                virtual_buffer: virtual_buffer(options)?,
-                telemetry: options.telemetry,
-                ..WindowsBackendConfig::default()
-            };
-            let backend = WindowsBackend::new(backend_config)
-                .context("prepare Windows backend")?
+            let backend = ProfessionalBackend::<f32>::new()
+                .context("prepare Professional backend")?
+                .with_render_queue(render_queue(options)?)?
+                .with_virtual_buffer(virtual_buffer(options)?)?
+                .with_telemetry(options.telemetry)
                 .with_virtual_provider(self.provider.clone());
-            self.backend_diagnostics = Some(backend.diagnostics_handle());
-            self.observations = Some(backend.observations());
+            self.observations = Some(backend.native_observations());
             let host = EngineHost::open(HostConfig::default(), project, backend)
                 .context("open VAD EngineHost")?;
             self.observer = Some(host.observer());
@@ -2486,10 +2498,9 @@ mod native {
 
         fn shutdown_host(&mut self) -> Result<()> {
             drop(self.host.take());
-            self.report.backend_diagnostics = self
-                .backend_diagnostics
-                .as_ref()
-                .and_then(diagnostics_value);
+            // Professional exposes typed observations; the removed backend's
+            // serialized render report is unavailable, rather than zero faults.
+            self.report.backend_diagnostics = None;
             if let Some(observer) = &self.observer {
                 let snapshot = observer.snapshot();
                 self.report.engine_cleanup = Some(engine_snapshot_value(&snapshot));
@@ -2609,18 +2620,6 @@ mod native {
             );
             thread::sleep(Duration::from_millis(10));
         }
-    }
-
-    fn diagnostics_value(handle: &Arc<Mutex<Option<String>>>) -> Option<Value> {
-        let raw = handle
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clone()?;
-        serde_json::from_str(&raw).ok().or_else(|| {
-            Some(serde_json::json!({
-                "raw": raw,
-            }))
-        })
     }
 
     fn engine_timeline_value(timeline: Option<moiren_engine::host::OwnerTimeline>) -> Value {

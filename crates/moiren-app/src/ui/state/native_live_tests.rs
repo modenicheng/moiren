@@ -10,8 +10,7 @@ use moiren_windows_audio::{
         NativeBridgeObservation, NativeObservationSnapshot, NativeRenderPaddingObservation,
         NativeStreamKind, NativeStreamObservation,
     },
-    latency::InputDeliverySnapshot,
-    render::RenderPaddingSnapshot,
+    latency::{InputDeliverySnapshot, render::RenderPaddingSnapshot},
 };
 
 fn live_snapshot() -> AppSnapshot {
@@ -93,6 +92,85 @@ fn value<'a>(rows: &'a [(String, String)], key: &str) -> &'a str {
         .find(|(label, _)| label == key)
         .unwrap_or_else(|| panic!("missing {key}: {rows:?}"))
         .1
+}
+
+#[test]
+fn professional_and_native_diagnostics_coexist_and_filter_stale_publishers_independently() {
+    use crate::service::{ProfessionalSessionObservations, SampleFormat};
+    use moiren_engine::node::DeviceOptions;
+    use moiren_windows_audio::{
+        engine_backend::{ProfessionalObservationSnapshot, ProfessionalStreamObservation},
+        native::NativeStreamInfo,
+    };
+
+    let mut fresh = live_snapshot();
+    fresh.professional_observations = Some(ProfessionalSessionObservations {
+        generation: fresh.generation,
+        observation: ProfessionalObservationSnapshot {
+            owner_generation: 3,
+            running: true,
+            streams: vec![ProfessionalStreamObservation {
+                node: fresh.graph.graph.nodes()[1].id(),
+                input: false,
+                master: true,
+                requested: DeviceOptions::default(),
+                actual: NativeStreamInfo {
+                    sample_rate: 48_000,
+                    format: SampleFormat::Float32,
+                    buffer_frames: 240,
+                    channels: 2,
+                },
+                dropped_frames: 0,
+                silent_frames: 0,
+                native_callbacks: 0,
+                native_dropped_frames: 0,
+                native_silent_frames: 0,
+                driver_latency: None,
+            }],
+        },
+    });
+    let assert_publishers = |snapshot: &AppSnapshot, professional: bool, native: bool| {
+        let rows = native_timing_rows(snapshot);
+        assert_eq!(
+            rows.iter().any(|(key, _)| key.contains(": actual stream")),
+            professional,
+        );
+        assert_eq!(
+            rows.iter()
+                .any(|(key, _)| key.contains(": native render padding")),
+            native,
+        );
+        assert_eq!(
+            crate::ui::presentation::measured_master_output(snapshot),
+            professional.then_some((48_000, 240)),
+        );
+    };
+    assert_publishers(&fresh, true, true);
+    for stopped in [false, true] {
+        let mut snapshot = fresh.clone();
+        let status = snapshot.native_observations.as_mut().unwrap();
+        if stopped {
+            status.observation.running = false;
+        } else {
+            status.generation = SessionGeneration(9);
+        }
+        assert_publishers(&snapshot, true, false);
+
+        let mut snapshot = fresh.clone();
+        let status = snapshot.professional_observations.as_mut().unwrap();
+        if stopped {
+            status.observation.running = false;
+        } else {
+            status.generation = SessionGeneration(9);
+        }
+        assert_publishers(&snapshot, false, true);
+    }
+    fresh.phase = SessionPhase::Stopping;
+    assert_publishers(&fresh, false, false);
+    assert_eq!(
+        native_timing_rows(&fresh),
+        vec![("Actual native timing".into(), "\u{2014}".into())],
+    );
 }
 
 #[test]

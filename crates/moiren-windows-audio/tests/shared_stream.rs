@@ -2,8 +2,7 @@ use moiren_windows_audio::{
     SessionDuration,
     capture::{CaptureError, CaptureOptions},
     latency::TelemetryMode,
-    render::{RenderError, RenderOptions},
-    shared_stream::{
+    latency::shared_period::{
         SharedFallbackReason, SharedInitializationApi, SharedInitializationFailure,
         SharedInitializationStage, SharedPeriodCaps, SharedPeriodError, SharedPeriodPolicy,
         SharedPeriodReport, SharedPeriodSelectionFailure, choose_shared_period,
@@ -151,7 +150,7 @@ fn rejects_bad_capabilities_and_conversion_overflow() {
 }
 
 #[test]
-fn invalid_policy_is_rejected_by_both_owners_before_spawning() {
+fn invalid_policy_is_rejected_before_capture_preparation() {
     for milliseconds in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let shared_period = SharedPeriodPolicy {
             desired_period_ms: Some(milliseconds),
@@ -163,22 +162,9 @@ fn invalid_policy_is_rejected_by_both_owners_before_spawning() {
             latency_telemetry: TelemetryMode::Disabled,
             shared_period,
         };
-        let render = RenderOptions {
-            queue: moiren_windows_audio::latency::RenderQueuePolicy::default(),
-            endpoint_id: "fake".into(),
-            duration: SessionDuration::UntilStopped,
-            latency_telemetry: TelemetryMode::Disabled,
-            shared_period,
-        };
         assert_eq!(
             capture.validate(),
             Err(CaptureError::SharedPeriod(
-                SharedPeriodError::InvalidDesiredPeriod
-            ))
-        );
-        assert_eq!(
-            render.validate(),
-            Err(RenderError::SharedPeriod(
                 SharedPeriodError::InvalidDesiredPeriod
             ))
         );

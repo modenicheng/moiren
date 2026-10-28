@@ -374,7 +374,9 @@ fn compact_shell_keeps_navigation_and_opens_session_drawer(cx: &mut gpui_kit::Te
     });
     cx.update_window(window.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find("session-io-panel").is_none());
+        // Panels stay mounted and animate their width; closed means not
+        // visible rather than absent.
+        assert!(!window.find("session-io-panel").visible());
         for tab in [
             "tab-graph",
             "tab-mixer",
@@ -384,11 +386,17 @@ fn compact_shell_keeps_navigation_and_opens_session_drawer(cx: &mut gpui_kit::Te
         ] {
             assert!(window.find(tab).visible());
         }
-        window.click("toggle-library", cx);
+        window.click("library-toggle", cx);
+        // The library springs open on its edge handle; panels animate their
+        // width, so give the spring real time before asserting visibility.
+        std::thread::sleep(std::time::Duration::from_millis(900));
+        window.render_frame(cx);
         assert!(window.find("session-io-panel").visible());
-        window.click("toggle-inspector", cx);
+        window.click("inspector-toggle", cx);
+        std::thread::sleep(std::time::Duration::from_millis(900));
+        window.render_frame(cx);
         assert!(
-            window.try_find("session-io-panel").is_none(),
+            !window.find("session-io-panel").visible(),
             "compact drawers are exclusive"
         );
         window.click("tab-devices", cx);

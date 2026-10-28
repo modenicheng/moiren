@@ -1,9 +1,11 @@
 use super::*;
-use crate::service::{GraphEdit, GraphNodeState, MixerState};
+use crate::service::{GraphNodeState, MixerState};
+use crate::ui::presentation::db_text;
 use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
 use rust_i18n::t;
 
+pub(super) mod meter_frame;
 mod model;
 #[cfg(feature = "gpui-test")]
 pub(super) mod performance;
@@ -11,7 +13,14 @@ mod routing;
 pub(super) mod strip_controls;
 use crate::ui::widgets::fader::{FaderScale, fader, ruler};
 use component::menu::ContextMenuExt;
-pub(super) use model::{MixerPresentation, SliderEdit, gain_db, linear_gain, sync_sliders};
+// Slider-sync machinery is shared with the compressor parameter sliders
+// (window::graph::compressor), so the slot type, edit type and the
+// coalesced sync/commit entry points are visible across the window.
+pub(super) use model::{
+    EditableValueFamily, MixerPresentation, SliderEdit, SliderSlot, balance_text,
+    commit_active_editor, commit_closure, fader_rows, gain_db_text, start_value_edit, sync_faders,
+    sync_slider_range,
+};
 use model::{StripDrag, reorder};
 use routing::{inputs, sends};
 
@@ -65,7 +74,7 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
         .id("mixer-dock")
         .flex()
         .flex_none()
-        .w(px(shell.mixer.dock_width))
+        .w(px(MixerPresentation::DOCK_WIDTH))
         .max_w(relative(0.55))
         .min_h_0()
         .border_l_1()
@@ -90,49 +99,12 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
     }
     div()
         .id("mixer-page")
+        .size_full()
         .flex()
         .flex_col()
         .flex_1()
         .min_h_0()
         .overflow_hidden()
-        .on_mouse_move({
-            let this = cx.entity();
-            move |event, _, cx| {
-                this.update(cx, |shell, cx| {
-                    if event.pressed_button == Some(MouseButton::Left)
-                        && let Some((docked, origin, width)) = shell.mixer.resize
-                    {
-                        let delta = f32::from(event.position.x) - origin;
-                        if docked {
-                            shell.mixer.dock_width = (width - delta).clamp(160., 640.);
-                        } else {
-                            shell.mixer.width = (width + delta).clamp(136., 280.);
-                        }
-                        cx.notify();
-                    }
-                });
-            }
-        })
-        .on_mouse_up(MouseButton::Left, {
-            let this = cx.entity();
-            move |_, _, cx| this.update(cx, |shell, _| shell.mixer.resize = None)
-        })
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .h(px(40.))
-                .items_center()
-                .justify_between()
-                .px(px(16.))
-                .child(heading(t!("Mixer")))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .child(inspector_toggle("toggle-details", cx)),
-                ),
-        )
         .child(
             div()
                 .flex()
@@ -140,45 +112,10 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                 .min_h_0()
                 .min_w_0()
                 .child(channels.gpui_test_observe())
-                .child(resize_handle(shell, true, "mixer-dock-resize", cx))
-                .child(dock_container.child(dock).gpui_test_observe())
-                .when(shell.inspector_open, |view| {
-                    if shell.selected_node.is_none() && shell.selected_route.is_some() {
-                        view.child(matrix::inspector(shell, cx))
-                    } else {
-                        view.child(graph::inspector(shell, cx))
-                    }
-                }),
+                .child(dock_container.child(dock).gpui_test_observe()),
         )
         .gpui_test_observe()
         .into_any_element()
-}
-
-fn resize_handle(
-    shell: &StudioShell,
-    docked: bool,
-    id: impl Into<ElementId>,
-    cx: &Context<StudioShell>,
-) -> impl IntoElement {
-    let width = if docked {
-        shell.mixer.dock_width
-    } else {
-        shell.mixer.width
-    };
-    let this = cx.entity();
-    div()
-        .id(id)
-        .w(px(6.))
-        .h_full()
-        .flex_none()
-        .bg(theme::SURFACE)
-        .on_mouse_down(MouseButton::Left, move |event, _, cx| {
-            cx.stop_propagation();
-            this.update(cx, |shell, _| {
-                shell.mixer.resize = Some((docked, f32::from(event.position.x), width))
-            });
-        })
-        .gpui_test_observe()
 }
 
 pub(super) fn node_kind_color(kind: NodeKind) -> Hsla {
@@ -197,6 +134,10 @@ fn strip(
     channels: usize,
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
+    #[cfg(feature = "gpui-test")]
+    {
+        shell.mixer.trace.borrow_mut().strip_renders += 1;
+    }
     let id = entry.id;
     let selected = shell.selected_node == Some(id);
     let color = node_kind_color(kind);
@@ -242,8 +183,11 @@ fn strip(
             move |_, _, cx| {
                 this.update(cx, |shell, cx| {
                     shell.selected_node = Some(id);
-                    shell.selected_route = None;
-                    shell.inspector_open = true;
+                    // Single click selects the strip; a double click also
+                    // opens the inspector.
+                    if shell.element_double_clicked(StudioShell::element_key("node", id)) {
+                        shell.open_inspector();
+                    }
                     cx.notify();
                 })
             }
@@ -260,7 +204,7 @@ fn strip(
         .id(SharedString::from(format!("strip-{id:?}")))
         .flex()
         .flex_none()
-        .w(px(shell.mixer.width))
+        .w(px(MixerPresentation::STRIP_WIDTH))
         .h_full()
         .min_h_0()
         .bg(if selected {
@@ -303,17 +247,32 @@ fn strip(
                 .child(sends(shell, id, cx))
                 .child(strip_controls::balance(shell, entry, channels, cx))
                 .child(node_controls(entry, channels, cx))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("strip-readout-{id:?}")))
-                        .flex_none()
-                        .h(px(24.))
-                        .text_center()
-                        .font_family(theme::FONT_MONO)
-                        .text_size(px(12.))
-                        .child(db(entry.mixer.gain))
-                        .gpui_test_observe(),
-                )
+                .child({
+                    let editing = shell.mixer.editing_value == Some(id);
+                    editable_value(
+                        SharedString::from(format!("strip-readout-{id:?}")),
+                        db_text(entry.mixer.gain),
+                        editing,
+                        &shell.mixer.value_inputs[&id],
+                        start_value_edit(
+                            cx.entity(),
+                            EditableValueFamily::Fader,
+                            id,
+                            move |graph| {
+                                graph
+                                    .node(id)
+                                    .map(|node| gain_db_text(node.mixer.gain))
+                                    .unwrap_or_default()
+                            },
+                        ),
+                        px(12.),
+                        TextAlign::Center,
+                    )
+                    .flex_none()
+                    .h(px(24.))
+                    .font_family(theme::FONT_MONO)
+                    .gpui_test_observe()
+                })
                 .child(
                     div()
                         .id(SharedString::from(format!("strip-levels-{id:?}")))
@@ -337,18 +296,15 @@ fn strip(
                         )
                         .child(meter(shell, entry, kind, channels, cx))
                         .child(ruler())
-                        .child(fader(&shell.mixer.faders[&id], entry.mixer.gain))
+                        .child(fader(
+                            &shell.mixer.faders[&id].state,
+                            &shell.mixer.faders[&id].behavior,
+                            cx,
+                        ))
                         .gpui_test_observe(),
                 )
                 .child(title),
         )
-        .child(resize_handle(
-            shell,
-            false,
-            SharedString::from(format!("strip-resize-{id:?}")),
-            cx,
-        ))
-        // Paint after the resize handle so its surface cannot shorten the bar.
         .child(
             div()
                 .id(SharedString::from(format!("strip-color-{id:?}")))
@@ -372,16 +328,9 @@ fn mixer_edit(
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
     move |_, _, cx| {
         this.update(cx, |shell, cx| {
-            shell.state.update(cx, |state, _| {
-                if let Some(node) = state.snapshot.graph.node(id) {
-                    let mut requested = node.mixer;
-                    change(&mut requested);
-                    state.dispatch(AppRequest::EditGraph(GraphEdit::SetMixer {
-                        node: id,
-                        state: requested,
-                    }));
-                }
-            });
+            shell
+                .state
+                .update(cx, |state, _| state.edit_mixer(id, &change));
             cx.notify();
         })
     }
@@ -394,8 +343,6 @@ fn meter(
     channels: usize,
     cx: &Context<StudioShell>,
 ) -> impl IntoElement {
-    #[cfg(feature = "gpui-test")]
-    let began = std::time::Instant::now();
     let state = shell.state.read(cx);
     let input = kind == NodeKind::Source;
     let eligible = matches!(kind, NodeKind::Source | NodeKind::Sink)
@@ -412,23 +359,12 @@ fn meter(
                 entry.output_endpoint_id.as_ref() == Some(&active.output_endpoint_id)
             }
         });
-    let levels = eligible
-        .then_some(if input {
-            shell.meters.display_input()
-        } else {
-            shell.meters.display_output()
-        })
-        .flatten();
-    let levels = shell.node_meters.levels(entry.id).or(levels);
-    let clips = shell.node_meters.channel_clips(entry.id);
     let managed = state
         .snapshot
         .signal_topics
         .node_levels
         .contains_key(&entry.id);
-    let raw = shell.node_meters.raw_levels(entry.id);
-    let readout = raw.map(|levels| levels.iter().map(|level| level.peak).fold(0f32, f32::max));
-    let view = div()
+    div()
         .h_full()
         .flex_none()
         .id(SharedString::from(format!("meter-reset-{:?}", entry.id)))
@@ -465,14 +401,11 @@ fn meter(
         .when(eligible, |view| {
             view.child(meter_probe(shell.meter_points.clone(), input))
         })
-        .child(crate::ui::widgets::meters::channel_meter(
-            shell.node_meters.channel_levels(entry.id).or_else(|| levels.as_ref().map(|levels| levels.as_slice())), channels, clips,
-        ))
+        .child(meter_frame::track(shell, entry.id, channels, eligible.then_some(input)))
         .child(div().id(SharedString::from(format!("meter-readout-{:?}", entry.id)))
             .absolute().bottom(px(-28.)).left(px(-10.)).w(px(48.)).h(px(12.)).line_height(px(12.))
             .text_center().font_family(theme::FONT_MONO).text_size(px(8.)).text_color(theme::TEXT_MUTED)
-            .child(readout.map(|peak| if peak == 0. { "−∞".into() }
-                else { format!("{:.1}", 20. * peak.log10()) }).unwrap_or_else(|| "—".into()))
+            .child(meter_frame::readout(shell, entry.id))
             .gpui_test_observe())
         .tooltip(|window, cx| component::tooltip::Tooltip::new(
             t!("Sample peak / RMS in dBFS. Shared scale with fader gain in dB. Click to reset clip; right-click for response.").into_owned()
@@ -509,10 +442,7 @@ fn meter(
                 }
                 menu
             }
-        });
-    #[cfg(feature = "gpui-test")]
-    shell.mixer.trace.borrow_mut().add(began.elapsed());
-    view
+        })
 }
 
 fn meter_probe(

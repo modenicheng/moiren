@@ -20,6 +20,7 @@ pub use budget::{
 };
 
 pub(crate) mod clock;
+pub use clock::QpcClock;
 
 use serde::Serialize;
 pub use telemetry::{
@@ -55,3 +56,6 @@ pub fn qpc_ticks_to_100ns(ticks: u64, frequency: u64) -> Option<u64> {
     }
     u64::try_from(u128::from(ticks) * 10_000_000 / u128::from(frequency)).ok()
 }
+
+pub mod render;
+pub mod shared_period;

@@ -1,4 +1,17 @@
-# Moiren VAD driver status - 2026-10-21
+# Moiren VAD driver status
+
+This file is the canonical owner of VAD run and gate status; the other
+`docs/vad-*.md` records are dated evidence logs and link here for the current
+verdict. Status updated 2026-10-27.
+
+**Long-soak gate status (updated for the 2026-10-22 run, `cdd44a2`):** the
+eight-hour **idle** run passed for the first time — 28,730/28,800 verified
+windows, zero epochs, flat resource trend (see the "Long-soak attempt 2"
+closing section of `docs/vad-validation-2026-10-21.md`). The eight-hour
+**music** phase and a full 16-hour pass remain unqualified: the music gate
+tripped environmentally on this VM (capture-gap + correlation-lag wander), and
+the run verdict concludes full 16h PASS is not achievable on that host without
+a lag-tracker measurement fix.
 
 The development project links ACX audio circuits and bounded Direct I/O PCM.
 A test-signed package is now installed in the VMware Windows 11 target, and
@@ -45,7 +58,9 @@ analyzed build/INF validation. These host results do not establish target
 long-duration stability. The opt-in continuous soak and its runner require
 their own completed target evidence; starting or rehearsing them is not an
 eight-hour PASS. Historical timer failures and outstanding release gates below
-remain open.
+remain open. The 2026-10-22 eight-hour idle soak pass (header note above)
+closes the idle-duration gate; the music-phase and 16h duration gates stay
+open.
 
 ## Implemented source
 
@@ -196,7 +211,8 @@ or real audio APIs.
   is distinct from the run reports' `Removing` state and is not default-policy
   evidence. Default-device policy/arrival is not qualified; the probe does not
   change user defaults.
-  Timer-mode, shared-mode and physical-device paths, eight-hour runs, 100-round
+  Timer-mode, shared-mode and physical-device paths, eight-hour music/16-hour
+  runs (the eight-hour idle run passed on 2026-10-22), 100-round
   lifecycle/crash tests, Verifier and production signing remain unqualified.
 - The earlier ALL-states (mask 15) MMDevice result of 0/4 is superseded by a
   target-validated metadata-only child MEDIA/null-service INF: all four owned
@@ -274,7 +290,8 @@ broader active-audio-client revoke/remove/recreate beyond the bounded stage1
 result, including PCM and crash cleanup; App Stage2 native-client PCM and final
 endpoint-absence checks beyond the two bounded Stage2 passes; default-device
 policy and arrival qualification; timer/shared/physical-path integration; power
-transitions; Verifier; eight-hour idle/audio runs; 100 lifecycle/crash rounds;
+transitions; Verifier; eight-hour audio/16-hour runs (idle passed 2026-10-22);
+100 lifecycle/crash rounds;
 resource/latency reports; upgrade/rollback/uninstall; production signing and
 broader Windows-version validation. Raw-child and exact-file cleanup PASS results
 do not close these audio-path or long-duration gates. The Stage2 probe does not

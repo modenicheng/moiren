@@ -1,0 +1,150 @@
+{
+  "date": "2026-10-27",
+  "method": "Native Release ui-profiler, 1 s settling per viewport, 12 s steady-state requested, fake backend, same eight-node graph. Counts / measured wall time; neither GPU scan-out nor a guarantee.",
+  "target_hz": 240,
+  "target_budget_ms": 4.166666666666667,
+  "viewports": {
+    "comfortable": {
+      "elapsed_ms": 12050.904199999999,
+      "draws": 2773,
+      "presents": 2773,
+      "render_fps": 230.10721469348334,
+      "present_fps": 230.10721469348334,
+      "journal_lost": 0,
+      "dwm": {
+        "refresh_numerator": 10000000,
+        "refresh_denominator": 41667,
+        "compose_numerator": 10000000,
+        "compose_denominator": 41667
+      },
+      "capture_sha256": "2e75a8dec236a012ce23dba9c04081b8c3e78b5f85a7a05105a23d9a4d676b22",
+      "strip_renders": 0,
+      "meter_paints": 2773,
+      "meter_samples_dropped": 0,
+      "visible_nodes": [
+        8
+      ],
+      "source_counts": {
+        "NativeCallback": 2773
+      },
+      "draw_ms": {
+        "count": 2773,
+        "mean": 1.7649,
+        "p50": 1.6206,
+        "p95": 2.402,
+        "p99": 3.8685,
+        "maximum": 10.0564,
+        "over_240hz_budget": 23
+      },
+      "present_gap_ms": {
+        "count": 2772,
+        "mean": 4.345,
+        "p50": 4.2514,
+        "p95": 6.7965,
+        "p99": 8.0163,
+        "maximum": 23.6244,
+        "over_240hz_budget": 1460
+      },
+      "signal_gap_ms": {
+        "count": 2770,
+        "mean": 4.3479,
+        "p50": 4.2221,
+        "p95": 6.3856,
+        "p99": 7.3561,
+        "maximum": 14.2211,
+        "over_240hz_budget": 1471
+      },
+      "signal_wait_ms": {
+        "count": 2771,
+        "mean": 0.2727,
+        "p50": 0.1323,
+        "p95": 0.8101,
+        "p99": 3.4341,
+        "maximum": 13.8393,
+        "over_240hz_budget": 22
+      },
+      "meter_cpu_ms": {
+        "count": 2773,
+        "mean": 0.1784,
+        "p50": 0.1492,
+        "p95": 0.2461,
+        "p99": 0.5165,
+        "maximum": 6.0969,
+        "over_240hz_budget": 1
+      },
+      "foreground_small_polls_ms": 16.175,
+      "foreground_tasks_ms": 4.5077
+    },
+    "compact": {
+      "elapsed_ms": 12034.913700000001,
+      "draws": 2827,
+      "presents": 2827,
+      "render_fps": 234.8998979527373,
+      "present_fps": 234.8998979527373,
+      "journal_lost": 0,
+      "dwm": {
+        "refresh_numerator": 10000000,
+        "refresh_denominator": 41667,
+        "compose_numerator": 10000000,
+        "compose_denominator": 41667
+      },
+      "capture_sha256": "be8ddbbc69afe0a57823f1183b53f847f31adf52c83852a10755ed83c15c078a",
+      "strip_renders": 0,
+      "meter_paints": 2827,
+      "meter_samples_dropped": 0,
+      "visible_nodes": [
+        5
+      ],
+      "source_counts": {
+        "NativeCallback": 2827
+      },
+      "draw_ms": {
+        "count": 2827,
+        "mean": 1.4441,
+        "p50": 1.3672,
+        "p95": 1.8966,
+        "p99": 2.1541,
+        "maximum": 3.3766,
+        "over_240hz_budget": 0
+      },
+      "present_gap_ms": {
+        "count": 2826,
+        "mean": 4.2573,
+        "p50": 4.2413,
+        "p95": 6.4496,
+        "p99": 7.5687,
+        "maximum": 12.627,
+        "over_240hz_budget": 1504
+      },
+      "signal_gap_ms": {
+        "count": 2826,
+        "mean": 4.2569,
+        "p50": 4.168,
+        "p95": 6.2171,
+        "p99": 7.1493,
+        "maximum": 13.1464,
+        "over_240hz_budget": 1413
+      },
+      "signal_wait_ms": {
+        "count": 2827,
+        "mean": 0.178,
+        "p50": 0.128,
+        "p95": 0.3699,
+        "p99": 0.9915,
+        "maximum": 11.0081,
+        "over_240hz_budget": 2
+      },
+      "meter_cpu_ms": {
+        "count": 2827,
+        "mean": 0.1015,
+        "p50": 0.0925,
+        "p95": 0.1421,
+        "p99": 0.1933,
+        "maximum": 0.3135,
+        "over_240hz_budget": 0
+      },
+      "foreground_small_polls_ms": 15.9648,
+      "foreground_tasks_ms": 3.4776
+    }
+  }
+}

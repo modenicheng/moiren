@@ -21,7 +21,7 @@ fn gain_and_sum_reject_invalid_port_contracts() {
             Err(ProcessorError::InvalidIo)
         );
         assert_eq!(
-            RtProcessor::<f64>::validate_io(&Sum, &io),
+            RtProcessor::<f64>::validate_io(&Bus, &io),
             Err(ProcessorError::InvalidIo)
         );
     }
@@ -49,7 +49,7 @@ fn gain_and_sum_reject_invalid_port_contracts() {
         }])
         .unwrap();
     assert_eq!(
-        RtProcessor::<f64>::validate_io(&Sum, &io),
+        RtProcessor::<f64>::validate_io(&Bus, &io),
         Err(ProcessorError::InvalidIo)
     );
 }

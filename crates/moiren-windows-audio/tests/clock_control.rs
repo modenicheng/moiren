@@ -212,6 +212,7 @@ fn clock_control_prepared_low_inventory_handles_rate_phase_order_and_lateness() 
         })
         .unwrap_or(120);
     assert!((120..=7200).contains(&seconds));
+    let mut cases = Vec::new();
     for sample_rate in [44_100, 48_000] {
         let capture_period = if sample_rate == 44_100 { 309 } else { 336 };
         let budget = prepare_latency_budget(
@@ -240,7 +241,7 @@ fn clock_control_prepared_low_inventory_handles_rate_phase_order_and_lateness() 
         for drift_ppm in [-1000.0, 0.0, 1000.0] {
             for phase_frames in [0.0, 84.0, 168.0, 252.0] {
                 for render_first in [false, true] {
-                    let case = ClockCase {
+                    cases.push(ClockCase {
                         sample_rate,
                         capture_period: capture_period as usize,
                         render_period: 336,
@@ -253,37 +254,44 @@ fn clock_control_prepared_low_inventory_handles_rate_phase_order_and_lateness() 
                         render_first,
                         phase_frames,
                         prepared_input: Some(budget.input),
-                    };
-                    let result = simulate(case, seconds);
-                    assert_eq!(result.short_callbacks, 0, "case={case:?}: {result:?}");
-                    assert_eq!(
-                        result.bridge.underrun_frames, 0,
-                        "case={case:?}: {result:?}"
-                    );
-                    assert_eq!(result.bridge.dropped_frames, 0, "case={case:?}: {result:?}");
-                    assert_eq!(
-                        result.bridge.backlog_recoveries, 0,
-                        "case={case:?}: {result:?}"
-                    );
-                    assert!(
-                        (result.mean_correction_ppm - drift_ppm).abs() < 300.0,
-                        "case={case:?}: {result:?}"
-                    );
-                    println!(
-                        "clock_case,{sample_rate},{capture_period},336,1024,256,{drift_ppm:.0},96,{render_first},{phase_frames:.0},{seconds},{},{},{},{},{},{},{},{}",
-                        result.short_callbacks,
-                        result.bridge.underrun_frames,
-                        result.bridge.dropped_frames,
-                        result.bridge.backlog_recoveries,
-                        result.bridge.low_water_guard_frames,
-                        result.mean_correction_ppm,
-                        result.bridge.correction_ppm,
-                        result.ending_inventory
-                    );
+                    });
                 }
             }
         }
     }
+    common::for_each_parallel(&cases, |case| {
+        let result = simulate(*case, seconds);
+        assert_eq!(result.short_callbacks, 0, "case={case:?}: {result:?}");
+        assert_eq!(
+            result.bridge.underrun_frames, 0,
+            "case={case:?}: {result:?}"
+        );
+        assert_eq!(result.bridge.dropped_frames, 0, "case={case:?}: {result:?}");
+        assert_eq!(
+            result.bridge.backlog_recoveries, 0,
+            "case={case:?}: {result:?}"
+        );
+        assert!(
+            (result.mean_correction_ppm - case.drift_ppm).abs() < 300.0,
+            "case={case:?}: {result:?}"
+        );
+        println!(
+            "clock_case,{},{},336,1024,256,{:.0},96,{},{:.0},{seconds},{},{},{},{},{},{},{},{}",
+            case.sample_rate,
+            case.capture_period,
+            case.drift_ppm,
+            case.render_first,
+            case.phase_frames,
+            result.short_callbacks,
+            result.bridge.underrun_frames,
+            result.bridge.dropped_frames,
+            result.bridge.backlog_recoveries,
+            result.bridge.low_water_guard_frames,
+            result.mean_correction_ppm,
+            result.bridge.correction_ppm,
+            result.ending_inventory
+        );
+    });
 }
 
 #[test]
@@ -455,6 +463,7 @@ fn clock_control_handles_independent_render_drift_and_timestamp_fallback() {
         })
         .unwrap_or(120);
     assert!((120..=7200).contains(&seconds));
+    let mut cases = Vec::new();
     for sample_rate in [44_100, 48_000] {
         let capture_period = if sample_rate == 44_100 { 309 } else { 336 };
         let budget = prepare_latency_budget(
@@ -483,7 +492,7 @@ fn clock_control_handles_independent_render_drift_and_timestamp_fallback() {
         for drift_ppm in [-1_000.0, 1_000.0] {
             for render_drift_ppm in [-500.0, 500.0] {
                 for invalid_clock in [false, true] {
-                    let case = ClockCase {
+                    cases.push(ClockCase {
                         sample_rate,
                         capture_period: capture_period as usize,
                         render_period: 336,
@@ -496,49 +505,55 @@ fn clock_control_handles_independent_render_drift_and_timestamp_fallback() {
                         render_first: true,
                         phase_frames: 168.0,
                         prepared_input: Some(budget.input),
-                    };
-                    let result = simulate(case, seconds);
-                    let expected_relative = ((1.0 + drift_ppm / 1_000_000.0)
-                        / (1.0 + render_drift_ppm / 1_000_000.0)
-                        - 1.0)
-                        * 1_000_000.0;
-                    assert_eq!(result.short_callbacks, 0, "case={case:?}: {result:?}");
-                    assert_eq!(
-                        result.bridge.underrun_frames, 0,
-                        "case={case:?}: {result:?}"
-                    );
-                    assert_eq!(result.bridge.dropped_frames, 0, "case={case:?}: {result:?}");
-                    assert_eq!(
-                        result.bridge.backlog_recoveries, 0,
-                        "case={case:?}: {result:?}"
-                    );
-                    assert!(
-                        (result.mean_correction_ppm - expected_relative).abs() < 300.0,
-                        "case={case:?}: {result:?}"
-                    );
-                    assert!(result.bridge.correction_ppm.abs() <= 2_000.0);
-                    assert_eq!(
-                        result.last_rate_estimate_ppm,
-                        if invalid_clock {
-                            None
-                        } else {
-                            Some(drift_ppm as i64)
-                        }
-                    );
-                    println!(
-                        "rate_case,{sample_rate},{drift_ppm},{render_drift_ppm},{invalid_clock},{seconds},{},{},{},{},{:.6},{:.6},{}",
-                        result.short_callbacks,
-                        result.bridge.underrun_frames,
-                        result.bridge.dropped_frames,
-                        result.bridge.backlog_recoveries,
-                        result.mean_correction_ppm,
-                        result.bridge.correction_ppm,
-                        result
-                            .last_rate_estimate_ppm
-                            .map_or_else(|| "none".to_owned(), |value| value.to_string()),
-                    );
+                    });
                 }
             }
         }
     }
+    common::for_each_parallel(&cases, |case| {
+        let result = simulate(*case, seconds);
+        let expected_relative = ((1.0 + case.drift_ppm / 1_000_000.0)
+            / (1.0 + case.render_drift_ppm / 1_000_000.0)
+            - 1.0)
+            * 1_000_000.0;
+        assert_eq!(result.short_callbacks, 0, "case={case:?}: {result:?}");
+        assert_eq!(
+            result.bridge.underrun_frames, 0,
+            "case={case:?}: {result:?}"
+        );
+        assert_eq!(result.bridge.dropped_frames, 0, "case={case:?}: {result:?}");
+        assert_eq!(
+            result.bridge.backlog_recoveries, 0,
+            "case={case:?}: {result:?}"
+        );
+        assert!(
+            (result.mean_correction_ppm - expected_relative).abs() < 300.0,
+            "case={case:?}: {result:?}"
+        );
+        assert!(result.bridge.correction_ppm.abs() <= 2_000.0);
+        assert_eq!(
+            result.last_rate_estimate_ppm,
+            if case.invalid_clock {
+                None
+            } else {
+                Some(case.drift_ppm as i64)
+            }
+        );
+        println!(
+            "rate_case,{},{},{},{},{seconds},{},{},{},{},{:.6},{:.6},{}",
+            case.sample_rate,
+            case.drift_ppm,
+            case.render_drift_ppm,
+            case.invalid_clock,
+            result.short_callbacks,
+            result.bridge.underrun_frames,
+            result.bridge.dropped_frames,
+            result.bridge.backlog_recoveries,
+            result.mean_correction_ppm,
+            result.bridge.correction_ppm,
+            result
+                .last_rate_estimate_ppm
+                .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+        );
+    });
 }

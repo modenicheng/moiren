@@ -53,8 +53,7 @@ impl StudioShell {
             && snapshot.phase == SessionPhase::Running
             && (snapshot.active_audio_settings.as_ref() != Some(&submitted.audio)
                 || snapshot.active_transport_latency != Some(submitted.transport)
-                || snapshot.active_latency_profile
-                    != expected_active_profile(&submitted.audio, submitted.profile));
+                || snapshot.active_latency_profile != expected_active_profile(submitted.profile));
         match self.state.update(cx, |state, _| {
             state.try_dispatch(AppRequest::SetAudioSettings(submitted.audio.clone()))
         }) {
@@ -145,10 +144,7 @@ impl StudioShell {
                         && snapshot.active_audio_settings.as_ref() == Some(&pending.submitted.audio)
                         && snapshot.active_transport_latency == Some(pending.submitted.transport)
                         && snapshot.active_latency_profile
-                            == expected_active_profile(
-                                &pending.submitted.audio,
-                                pending.submitted.profile,
-                            )
+                            == expected_active_profile(pending.submitted.profile)
                         && snapshot.graph.pending_revision.is_none()
                         && snapshot.graph.active_revision == Some(snapshot.graph.candidate_revision)
                         && failure.is_none()

@@ -93,6 +93,7 @@ mod headless {
         AppRequest, AppSnapshot, ExportDirection, ExportIntent, GraphEdit, GraphSnapshot,
         ServiceRuntime,
     };
+    use crate::ui::window::test_harness::settle_panels;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
         AppContext, Entity, ScrollDelta, SharedString, VisualTestContext, point, px, size,
@@ -126,6 +127,26 @@ mod headless {
         view.update(cx, |shell, cx| {
             (*shell.state.read(cx).snapshot.graph).clone()
         })
+    }
+
+    fn assert_center_inside_window(
+        window: &gpui_kit::Window,
+        id: impl Into<gpui_kit::ElementId>,
+    ) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+        let id = id.into();
+        let bounds = window.find(id.clone()).bounds();
+        let center = bounds.center();
+        let viewport = window.viewport_size();
+        assert!(
+            center.x >= px(0.)
+                && center.x < viewport.width
+                && center.y >= px(0.)
+                && center.y < viewport.height,
+            "click center for {id:?} is outside viewport {viewport:?}: {bounds:?}; workspace={:?}, page={:?}",
+            window.find("workspace-row").bounds(),
+            window.find("devices-page").bounds(),
+        );
+        bounds
     }
 
     fn scroll_to_control(cx: &mut VisualTestContext, id: impl Into<SharedString>) {
@@ -541,8 +562,26 @@ mod headless {
         cx.update(|window, cx| {
             window.resize(size(px(1440.), px(900.)));
             window.render_frame(cx);
-            assert!(window.find(format!("choose-{playback}")).visible());
+        });
+        // The collapsing inspector moves the right-aligned Bind target while
+        // GPUI renders between pointer movement and press/release.
+        settle_panels(cx);
+        cx.update(|window, cx| {
+            let button = window.find(format!("choose-{playback}"));
+            assert!(button.visible());
+            let before = assert_center_inside_window(window, format!("choose-{playback}"));
             window.click(format!("choose-{playback}"), cx);
+            let after = assert_center_inside_window(window, format!("choose-{playback}"));
+            view.update(cx, |shell, cx| {
+                let state = shell.state.read(cx);
+                assert!(
+                    state.pending_request,
+                    "playback click did not dispatch: before={before:?}, after={after:?}, consumed={:?}, error={:?}, graph_error={:?}",
+                    state.snapshot.consumed_request_id,
+                    state.dispatch_error,
+                    state.snapshot.graph.last_error,
+                );
+            });
         });
         wait_for(&view, cx, |snapshot| {
             snapshot
@@ -614,8 +653,24 @@ mod headless {
         cx.update(|window, cx| {
             window.resize(size(px(1440.), px(900.)));
             window.render_frame(cx);
-            assert!(window.find(format!("choose-{microphone}")).visible());
+        });
+        settle_panels(cx);
+        cx.update(|window, cx| {
+            let button = window.find(format!("choose-{microphone}"));
+            assert!(button.visible());
+            let before = assert_center_inside_window(window, format!("choose-{microphone}"));
             window.click(format!("choose-{microphone}"), cx);
+            let after = assert_center_inside_window(window, format!("choose-{microphone}"));
+            view.update(cx, |shell, cx| {
+                let state = shell.state.read(cx);
+                assert!(
+                    state.pending_request,
+                    "microphone click did not dispatch: before={before:?}, after={after:?}, consumed={:?}, error={:?}, graph_error={:?}",
+                    state.snapshot.consumed_request_id,
+                    state.dispatch_error,
+                    state.snapshot.graph.last_error,
+                );
+            });
         });
         wait_for(&view, cx, |snapshot| {
             snapshot

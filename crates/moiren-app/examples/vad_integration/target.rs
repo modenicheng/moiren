@@ -3,13 +3,12 @@ use super::{
     material, native,
     options::Options,
     progress, project,
-    report::{Checkpoint, Evidence, IdleHoldEvidence, PcmEvidence, Report},
+    report::{Checkpoint, Evidence, IdleHoldEvidence, PcmEvidence, ProbeTrail, Report},
     soak, validation,
 };
 use anyhow::{Context, bail, ensure};
 use moiren_app::service::{AppHandle, AppRequest, ManagedDriver, ServiceRuntime, SessionPhase};
 use moiren_core::graph::NodeKind;
-use moiren_windows_audio::engine_backend::NativeStreamKind;
 use moiren_windows_audio::vad::StableEndpointId;
 use std::{
     cell::RefCell,
@@ -437,67 +436,48 @@ struct LiveSession<'a> {
     last_snapshot: RefCell<Option<(Arc<moiren_app::service::AppSnapshot>, Instant)>>,
 }
 
-/// One control-side sample of the service's virtual boundary carrier
-/// probes, taken from the service snapshot during a soak.
-#[derive(Clone, Debug, serde::Serialize)]
-pub(super) struct ProbeTrail {
-    pub elapsed_ms: u64,
-    pub playback_level_frames: Option<u32>,
-    pub microphone_level_frames: Option<u32>,
-    pub playback_milli_ppm: Option<i32>,
-    pub microphone_milli_ppm: Option<i32>,
-    pub playback_xruns: Option<u64>,
-    pub microphone_xruns: Option<u64>,
-    pub playback_soft_events: Option<u64>,
-    pub microphone_soft_events: Option<u64>,
-}
-
 impl LiveSession<'_> {
     /// Sample the virtual boundary water levels from the latest service
     /// snapshot. Missing probes stay None; the trail records what the
     /// control side could observe, never an inference.
     fn record_probe_trail(&self, report: &mut Report, now_ms: u64) {
         let snapshot = self.handle.try_snapshot();
-        let Some(native) = snapshot
+        #[cfg(windows)]
+        let native = snapshot
             .as_ref()
-            .and_then(|snapshot| snapshot.native_observations.as_ref())
-        else {
-            return;
-        };
-        let mut trail = ProbeTrail {
-            elapsed_ms: now_ms,
-            playback_level_frames: None,
-            microphone_level_frames: None,
-            playback_milli_ppm: None,
-            microphone_milli_ppm: None,
-            playback_xruns: None,
-            microphone_xruns: None,
-            playback_soft_events: None,
-            microphone_soft_events: None,
-        };
-        for probe in &native.observation.boundary_probes {
-            let (level, ppm, xruns, soft) = (
-                Some(probe.level_frames),
-                Some(probe.applied_milli_ppm),
-                Some(probe.xruns),
-                Some(probe.soft_events),
-            );
-            match probe.kind {
-                NativeStreamKind::VirtualPlayback => {
-                    trail.playback_level_frames = level;
-                    trail.playback_milli_ppm = ppm;
-                    trail.playback_xruns = xruns;
-                    trail.playback_soft_events = soft;
+            .and_then(|snapshot| snapshot.professional_observations.as_ref())
+            .map(|session| &session.observation);
+        #[cfg(windows)]
+        let (playback, microphone) = {
+            let mut playback = None;
+            let mut microphone = None;
+            if let Some(native) = native {
+                for stream in &native.streams {
+                    if stream.input {
+                        playback.get_or_insert(stream);
+                    } else {
+                        microphone.get_or_insert(stream);
+                    }
                 }
-                NativeStreamKind::VirtualMicrophone => {
-                    trail.microphone_level_frames = level;
-                    trail.microphone_milli_ppm = ppm;
-                    trail.microphone_xruns = xruns;
-                    trail.microphone_soft_events = soft;
-                }
-                _ => {}
             }
-        }
+            (playback, microphone)
+        };
+        #[cfg(windows)]
+        let trail = ProbeTrail {
+            elapsed_ms: now_ms,
+            playback_dropped_frames: playback.map(|stream| stream.dropped_frames),
+            microphone_silent_frames: microphone.map(|stream| stream.silent_frames),
+            playback_native_callbacks: playback.map(|stream| stream.native_callbacks),
+            microphone_native_callbacks: microphone.map(|stream| stream.native_callbacks),
+        };
+        #[cfg(not(windows))]
+        let trail = ProbeTrail {
+            elapsed_ms: now_ms,
+            playback_dropped_frames: None,
+            microphone_silent_frames: None,
+            playback_native_callbacks: None,
+            microphone_native_callbacks: None,
+        };
         report.probe_trail.push(trail);
     }
 
@@ -694,22 +674,26 @@ impl LiveSession<'_> {
                 .expect("initialized hold evidence");
             hold.observed_wall_ms = elapsed.as_millis();
             let mut header = None;
-            if let Some(window) = subscriber.read_latest()
-                && window.header().frame_end > window.header().frame_start
-            {
-                ensure!(
-                    window.elements().len() == 2
-                        && window
-                            .elements()
-                            .iter()
-                            .all(|level| level.peak.is_finite() && level.rms.is_finite()),
-                    "invalid stereo Gain signal window"
-                );
-                hold.timeline.observe(*window.header())?;
-                header = Some(*window.header());
+            // Level topics are FIFO stream blocks: drain the queued windows
+            // and validate each; the freshest header feeds the hold timeline.
+            while let Some(window) = subscriber.next() {
+                if window.header().frame_end > window.header().frame_start {
+                    ensure!(
+                        window.elements().len() == 2
+                            && window
+                                .elements()
+                                .iter()
+                                .all(|level| level.peak.is_finite() && level.rms.is_finite()),
+                        "invalid stereo Gain signal window"
+                    );
+                    header = Some(*window.header());
+                }
+            }
+            if let Some(timeline_header) = header {
+                hold.timeline.observe(timeline_header)?;
                 if elapsed >= Duration::from_secs(3) {
                     hold.after_old_three_second_threshold
-                        .observe(*window.header())?;
+                        .observe(timeline_header)?;
                 }
             }
             if let Some(soak) = &mut report.soak_idle {

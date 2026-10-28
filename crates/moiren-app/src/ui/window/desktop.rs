@@ -29,8 +29,6 @@ struct PresentationSnapshot {
     camera: Camera,
     node_positions: std::collections::HashMap<moiren_core::graph::NodeId, (f32, f32)>,
     mixer_order: Vec<moiren_core::graph::NodeId>,
-    mixer_width: f32,
-    mixer_dock_width: f32,
     pending_node_spawn: Option<graph::PendingNodeSpawn>,
     selected_node: Option<moiren_core::graph::NodeId>,
     selected_route: Option<(moiren_core::graph::PortId, moiren_core::graph::PortId)>,
@@ -57,8 +55,6 @@ impl PresentationSnapshot {
             camera: shell.camera,
             node_positions: std::mem::take(&mut shell.node_positions),
             mixer_order: shell.mixer.order.clone(),
-            mixer_width: shell.mixer.width,
-            mixer_dock_width: shell.mixer.dock_width,
             pending_node_spawn: shell.pending_node_spawn.take(),
             selected_node: shell.selected_node.take(),
             selected_route: shell.selected_route,
@@ -80,8 +76,6 @@ impl PresentationSnapshot {
         shell.camera = self.camera;
         shell.node_positions = self.node_positions;
         shell.mixer.order = self.mixer_order;
-        shell.mixer.width = self.mixer_width;
-        shell.mixer.dock_width = self.mixer_dock_width;
         shell.pending_node_spawn = self.pending_node_spawn;
         shell.node_name_editing = None;
         shell.selected_node = self.selected_node;

@@ -13,8 +13,7 @@ use moiren_windows_audio::{
         NativeBridgeObservation, NativeObservationSnapshot, NativeRenderPaddingObservation,
         NativeStreamKind, NativeStreamObservation,
     },
-    latency::{InputDeliverySnapshot, NativeStreamTiming},
-    render::RenderPaddingSnapshot,
+    latency::{InputDeliverySnapshot, NativeStreamTiming, render::RenderPaddingSnapshot},
 };
 use std::sync::Arc;
 

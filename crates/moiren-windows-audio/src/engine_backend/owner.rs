@@ -1,402 +1,879 @@
+//! Native workers park before activation. The master borrows Engine during the
+//! unwind boundary, then returns it through a control-only handoff after Stop.
 use super::{
-    NativeObservations, NativeStreamKind, NativeStreamObservation,
-    preparation::{Diagnostics, capture_error, render_error},
-    resources::Resources,
+    native_observations::{NativeObservations, NativeStreamKind, NativeStreamObservation},
+    observations::{Counters, ProfessionalObservations, ProfessionalStreamObservation},
+    recovery::RecoveryTicket,
 };
-use crate::{
-    ActivationGate, StopSignal,
-    capture::{CaptureReport, CaptureSession, CaptureStatus},
-    latency::RenderQueuePolicy,
-    render::{
-        DemandRenderer, PreparedNativeRender, RenderReport, RenderSession, RenderStatus,
-        TimelineObserver,
-    },
-    virtual_owner::VirtualSessions,
-};
+use crate::bridge::{CaptureWriteClock, refill, unsupported};
+use crate::native::{NativeStream, NativeStreamInfo, StereoFrame};
+use crate::resample::StereoResampler;
+use crate::servo::FollowerServo;
+use crate::virtual_owner::VirtualResourceSession;
 use moiren_core::graph::NodeId;
 use moiren_engine::{
-    boundary::AudioReader,
     compiler::CompiledBindings,
     host::{
         AttachFailure, BackendError, BackendOwner, CancellationToken, OwnerReturn, OwnerStatus,
         OwnerTimeline, PreparedTransport,
     },
     runtime::Engine,
+    sample::ProcessingSample,
 };
-use serde::Serialize;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use rtrb::{Consumer, Producer};
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
+    },
+    thread::{self, JoinHandle},
+    time::Duration,
 };
 
-pub(super) struct WindowsTransport {
-    pub(super) native: Option<PreparedNativeRender>,
-    pub(super) captures: Vec<CaptureSession>,
-    pub(super) followers: Vec<RenderSession>,
-    pub(super) sinks: Vec<NodeId>,
-    pub(super) observations: NativeObservations,
-    pub(super) streams: Vec<NativeStreamObservation>,
-    pub(super) bridges: Vec<(NodeId, crate::clock_bridge::BridgeObserver)>,
-    pub(super) render_padding: Vec<(NodeId, crate::render::RenderPaddingObserver)>,
-    pub(super) probes: Vec<(
-        NodeId,
-        NativeStreamKind,
-        std::sync::Arc<crate::virtual_owner::BoundaryProbe>,
-    )>,
-    pub(super) output: Option<AudioReader<f32>>,
-    pub(super) sink: NodeId,
-    pub(super) stop: StopSignal,
-    pub(super) gate: ActivationGate,
-    pub(super) generation: u64,
-    pub(super) queue: RenderQueuePolicy,
-    pub(super) diagnostics: Diagnostics,
-    pub(super) resources: Arc<Resources>,
-    pub(super) virtual_sessions: VirtualSessions,
-}
+#[cfg(test)]
+#[path = "owner/demand_tests.rs"]
+mod demand_tests;
+#[cfg(test)]
+#[path = "owner/idle_tests.rs"]
+mod idle_tests;
+#[cfg(test)]
+#[path = "owner/lifecycle_tests.rs"]
+mod lifecycle_tests;
 
-impl Drop for WindowsTransport {
-    fn drop(&mut self) {
-        if self.native.is_some()
-            || !self.captures.is_empty()
-            || !self.followers.is_empty()
-            || !self.virtual_sessions.is_empty()
-        {
-            // A compiler rejection may drop an unattached transport. Reclaim
-            // all owners here too, retaining their reports on the control side.
-            self.cancel_and_report(None, &BackendError::Cancelled);
-        }
-    }
-}
-
-impl WindowsTransport {
-    fn cancel_and_report(&mut self, report: Option<RenderReport>, failure: &BackendError) {
-        let _ = self.stop.request_stop();
-        let _ = self.virtual_sessions.stop_and_join();
-        let render = report.or_else(|| {
-            self.native
-                .take()
-                .and_then(|native| native.cancel_with_report().ok())
-        });
-        let followers = std::mem::take(&mut self.followers)
-            .into_iter()
-            .filter_map(|follower| follower.join().ok())
-            .collect();
-        self.observations.clear(self.generation);
-        let capture = std::mem::take(&mut self.captures)
-            .into_iter()
-            .filter_map(|capture| capture.join().ok())
-            .collect();
-        save(
-            &self.diagnostics,
-            NativeReport {
-                render,
-                prepared: Vec::new(),
-                followers,
-                capture,
-                failure: Some(failure.to_string()),
-            },
-        );
-    }
-}
-
-impl PreparedTransport<f32> for WindowsTransport {
-    fn attach(
-        mut self: Box<Self>,
-        engine: Engine<f32>,
-        bindings: &CompiledBindings,
-        cancel: CancellationToken,
-    ) -> Result<Box<dyn BackendOwner<f32>>, Box<AttachFailure<f32>>> {
-        if cancel.is_cancelled() {
-            self.cancel_and_report(None, &BackendError::Cancelled);
-            return Err(Box::new(AttachFailure {
-                engine,
-                error: BackendError::Cancelled,
-            }));
-        }
-        let Some(sink) = bindings.node(self.sink) else {
-            let error = BackendError::Unsupported(
-                "transport does not match the compiled output sink".into(),
-            );
-            self.cancel_and_report(None, &error);
-            return Err(Box::new(AttachFailure { engine, error }));
-        };
-        let protected: Option<Vec<_>> =
-            self.sinks.iter().map(|&node| bindings.node(node)).collect();
-        let Some(protected) = protected else {
-            let error = BackendError::Unsupported(
-                "transport sink set does not match compiled outputs".into(),
-            );
-            self.cancel_and_report(None, &error);
-            return Err(Box::new(AttachFailure { engine, error }));
-        };
-        if !protected.contains(&sink) {
-            let error =
-                BackendError::Unsupported("master sink missing from transport sink set".into());
-            self.cancel_and_report(None, &error);
-            return Err(Box::new(AttachFailure { engine, error }));
-        }
-        let renderer = match DemandRenderer::new_managed_outputs_returning(
-            engine,
-            self.output.take().expect("prepared output consumer"),
-            &protected,
-            self.generation,
-        ) {
-            Ok(renderer) => renderer,
-            Err(failure) => {
-                let error = render_error(failure.error);
-                self.cancel_and_report(None, &error);
-                return Err(Box::new(AttachFailure {
-                    engine: failure.engine,
-                    error,
-                }));
-            }
-        };
-        let timeline = renderer.timeline_observer();
-        let prepared = match self
-            .native
-            .take()
-            .expect("prepared native transport")
-            .attach_returning(renderer, self.queue)
-        {
-            Ok(prepared) => prepared,
-            Err(failure) => {
-                let error = render_error(failure.error);
-                self.cancel_and_report(failure.report, &error);
-                let (engine, _) = failure.renderer.into_parts();
-                return Err(Box::new(AttachFailure { engine, error }));
-            }
-        };
-        let render = prepared.into_session();
-        let stop = self.stop.clone();
-        if let Err(error) = cancel.on_cancel(move || {
-            let _ = stop.request_stop();
-        }) {
-            let _ = self.stop.request_stop();
-            let exit = render
-                .join_with_renderer()
-                .expect("native loop catches panic while retaining renderer");
-            self.cancel_and_report(Some(exit.report), &error);
-            let (engine, _) = exit.renderer.into_parts();
-            return Err(Box::new(AttachFailure { engine, error }));
-        }
-        self.observations.publish_with_renders(
-            self.generation,
-            std::mem::take(&mut self.streams),
-            std::mem::take(&mut self.bridges),
-            std::mem::take(&mut self.probes),
-            std::mem::take(&mut self.render_padding),
-        );
-        Ok(Box::new(WindowsOwner {
-            render,
-            followers: std::mem::take(&mut self.followers),
-            observations: self.observations.clone(),
-            generation: self.generation,
-            _observation_lease: self.observations.lease(self.generation),
-            captures: std::mem::take(&mut self.captures),
-            stop: self.stop.clone(),
-            timeline,
-            diagnostics: self.diagnostics.clone(),
-            resources: self.resources.clone(),
-            reported_failure: AtomicBool::new(false),
-            gate: self.gate.clone(),
-            cancellation: cancel,
-            virtual_sessions: std::mem::take(&mut self.virtual_sessions),
-        }))
-    }
-}
-
-struct WindowsOwner {
-    _observation_lease: super::observations::ObservationLease,
-    render: RenderSession,
-    captures: Vec<CaptureSession>,
-    followers: Vec<RenderSession>,
-    observations: NativeObservations,
-    generation: u64,
-    stop: StopSignal,
-    timeline: TimelineObserver,
-    diagnostics: Diagnostics,
-    resources: Arc<Resources>,
-    reported_failure: AtomicBool,
-    gate: ActivationGate,
-    cancellation: CancellationToken,
-    virtual_sessions: VirtualSessions,
-}
-
-impl BackendOwner<f32> for WindowsOwner {
-    fn activate(&self) -> Result<(), BackendError> {
-        if self.cancellation.is_cancelled() {
-            return Err(BackendError::Cancelled);
-        }
-        if let Err(error) = self.virtual_sessions.activate() {
-            let _ = self.stop.request_stop();
-            return Err(error);
-        }
-        if let Err(error) = self.gate.activate() {
-            self.virtual_sessions.cancel();
-            let _ = self.stop.request_stop();
-            return Err(BackendError::Failed(error.to_string()));
-        }
-        Ok(())
-    }
-
-    fn cancel(&self) {
-        self.observations.clear(self.generation);
-        self.virtual_sessions.cancel();
-        let _ = self.stop.request_stop();
-    }
-
+pub(super) trait AuxiliaryOwner: Send {
+    fn activate(&self) -> Result<(), BackendError>;
+    fn cancel(&self);
+    fn running(&self) -> bool;
+    fn finished(&self) -> bool;
     fn status(&self) -> OwnerStatus {
-        if let OwnerStatus::Failed(error) = self.virtual_sessions.status() {
-            self.cancel();
-            return OwnerStatus::Failed(error);
-        }
-        if self.render.is_finished()
-            || self.captures.iter().any(CaptureSession::is_finished)
-            || self.followers.iter().any(RenderSession::is_finished)
-        {
-            self.observations.clear(self.generation);
-            let _ = self.stop.request_stop();
-            if !self.reported_failure.swap(true, Ordering::AcqRel) {
-                self.resources.retry();
-            }
+        if self.finished() {
             OwnerStatus::Failed(BackendError::ResourceUnavailable(
-                "native audio owner stopped; cleanup retains its report".into(),
+                "process capture stopped".into(),
             ))
-        } else if self.render.has_started()
-            && self.captures.iter().all(CaptureSession::has_started)
-            && self.followers.iter().all(RenderSession::has_started)
-            && self.virtual_sessions.status() == OwnerStatus::Running
-        {
-            self.observations.running(self.generation);
+        } else if self.running() {
             OwnerStatus::Running
         } else {
             OwnerStatus::Starting
         }
     }
+    fn join(&mut self) -> Result<(), BackendError>;
+}
 
-    fn timeline(&self) -> Option<OwnerTimeline> {
-        self.timeline.try_snapshot().map(|timeline| OwnerTimeline {
-            epoch: timeline.epoch,
-            revision: timeline.revision,
-            frame: timeline.frame,
+pub(super) type StreamFactory =
+    Box<dyn FnOnce() -> Result<Box<dyn NativeStream>, BackendError> + Send>;
+
+#[derive(Default)]
+pub(super) struct RunState {
+    stop: AtomicBool,
+    active: AtomicBool,
+    gate: Condvar,
+    mutex: Mutex<()>,
+    failure: Mutex<Option<Failure>>,
+}
+struct Failure {
+    error: BackendError,
+    recovery: Option<RecoveryTicket>,
+}
+impl RunState {
+    pub fn cancel(&self) {
+        let _guard = self.mutex.lock().unwrap_or_else(|p| p.into_inner());
+        self.stop.store(true, Ordering::Release);
+        self.gate.notify_all();
+    }
+    fn fail(&self, error: BackendError) {
+        self.record_failure(error, None);
+    }
+    fn record_failure(&self, error: BackendError, recovery: Option<RecoveryTicket>) {
+        let mut failure = self.failure.lock().unwrap_or_else(|p| p.into_inner());
+        // Another stream's terminal fault must not be hidden by a recoverable
+        // ASIO candidate. A panic also dominates terminal faults from other
+        // workers/auxiliaries, regardless of their completion order.
+        if failure.as_ref().is_none_or(|old| {
+            error == BackendError::WorkerPanicked || (old.recovery.is_some() && recovery.is_none())
+        }) {
+            *failure = Some(Failure { error, recovery });
+        }
+        drop(failure);
+        self.cancel();
+    }
+    fn await_activation(&self) -> bool {
+        let guard = self.mutex.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = self
+            .gate
+            .wait_while(guard, |_| {
+                !self.stop.load(Ordering::Acquire) && !self.active.load(Ordering::Acquire)
+            })
+            .unwrap_or_else(|p| p.into_inner());
+        !self.stop.load(Ordering::Acquire)
+    }
+    fn activate(&self) -> Result<(), BackendError> {
+        // Serialize the predicate change with wait_while to avoid a lost wake.
+        let _guard = self.mutex.lock().unwrap_or_else(|p| p.into_inner());
+        if self.stop.load(Ordering::Acquire) {
+            return Err(BackendError::Cancelled);
+        }
+        if self.active.swap(true, Ordering::AcqRel) {
+            return Err(unsupported("professional owner was already activated"));
+        }
+        self.gate.notify_all();
+        Ok(())
+    }
+}
+
+pub(super) struct EngineSlot<S: ProcessingSample> {
+    value: Mutex<Option<Engine<S>>>,
+}
+impl<S: ProcessingSample> Default for EngineSlot<S> {
+    fn default() -> Self {
+        Self {
+            value: Mutex::new(None),
+        }
+    }
+}
+impl<S: ProcessingSample> EngineSlot<S> {
+    fn take(&self) -> Option<Engine<S>> {
+        self.value.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+    fn put(&self, engine: Engine<S>) {
+        *self.value.lock().unwrap_or_else(|p| p.into_inner()) = Some(engine);
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Timeline {
+    sequence: AtomicU64,
+    epoch: AtomicU64,
+    revision: AtomicU64,
+    frame: AtomicU64,
+}
+impl Timeline {
+    fn publish<S: ProcessingSample>(&self, engine: &Engine<S>) {
+        self.sequence.fetch_add(1, Ordering::SeqCst);
+        self.epoch.store(engine.epoch(), Ordering::SeqCst);
+        self.revision.store(engine.revision(), Ordering::SeqCst);
+        self.frame.store(engine.timeline(), Ordering::SeqCst);
+        self.sequence.fetch_add(1, Ordering::SeqCst);
+    }
+    fn snapshot(&self) -> Option<OwnerTimeline> {
+        let seq = self.sequence.load(Ordering::SeqCst);
+        if !seq.is_multiple_of(2) {
+            return None;
+        }
+        let snapshot = OwnerTimeline {
+            epoch: self.epoch.load(Ordering::SeqCst),
+            revision: self.revision.load(Ordering::SeqCst),
+            frame: self.frame.load(Ordering::SeqCst),
+        };
+        (seq == self.sequence.load(Ordering::SeqCst)).then_some(snapshot)
+    }
+}
+
+pub(super) struct Worker {
+    handle: Option<JoinHandle<()>>,
+    started: Arc<AtomicBool>,
+}
+impl Worker {
+    fn join(&mut self) -> Result<(), BackendError> {
+        if let Some(handle) = self.handle.take() {
+            handle.join().map_err(|_| BackendError::WorkerPanicked)?;
+        }
+        Ok(())
+    }
+}
+
+pub(super) struct WorkerRequest<S: ProcessingSample> {
+    pub factory: StreamFactory,
+    pub capture: Option<Producer<StereoFrame>>,
+    pub capture_clock: Option<Arc<CaptureWriteClock>>,
+    pub render: Option<Consumer<StereoFrame>>,
+    pub counters: Arc<Counters>,
+    pub state: Arc<RunState>,
+    pub slot: Arc<EngineSlot<S>>,
+    pub timeline: Arc<Timeline>,
+    pub engine_rate: u32,
+    pub capacity: usize,
+    pub master: bool,
+    pub recovery: Option<RecoveryTicket>,
+}
+
+/// Startup allocates buffers and negotiates native metadata before returning.
+pub(super) fn spawn<S: ProcessingSample>(
+    request: WorkerRequest<S>,
+    cancel: &CancellationToken,
+) -> Result<(Worker, NativeStreamInfo), BackendError> {
+    let (tx, rx) = mpsc::sync_channel(1);
+    let started = Arc::new(AtomicBool::new(false));
+    let worker_started = started.clone();
+    let state = request.state.clone();
+    let panic_state = state.clone();
+    let handle = thread::Builder::new()
+        .name(if request.master {
+            "moiren-professional-master".into()
+        } else {
+            "moiren-professional-device".into()
+        })
+        .spawn(move || {
+            log::debug!(
+                target: "moiren::audio::professional",
+                "native worker started: master={}",
+                request.master,
+            );
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                native_owner(request, &tx, &worker_started)
+            }));
+            if result.is_err() {
+                let _ = tx.send(Err(BackendError::WorkerPanicked));
+                panic_state.fail(BackendError::WorkerPanicked);
+            }
+        })
+        .map_err(|e| BackendError::Failed(e.to_string()))?;
+    let mut worker = Worker {
+        handle: Some(handle),
+        started,
+    };
+    loop {
+        if cancel.is_cancelled() {
+            state.cancel();
+            let _ = worker.join();
+            return Err(BackendError::Cancelled);
+        }
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(Ok(info)) => return Ok((worker, info)),
+            Ok(Err(error)) => {
+                state.cancel();
+                let _ = worker.join();
+                return Err(error);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                state.cancel();
+                let _ = worker.join();
+                return Err(BackendError::WorkerPanicked);
+            }
+        }
+    }
+}
+
+fn native_owner<S: ProcessingSample>(
+    mut request: WorkerRequest<S>,
+    sender: &mpsc::SyncSender<Result<NativeStreamInfo, BackendError>>,
+    started: &AtomicBool,
+) {
+    // Match the physical and virtual paths' scheduling class: this thread
+    // paces exclusive native deadlines. Registration failure is non-fatal.
+    #[cfg(windows)]
+    let _mmcss = crate::owner::Mmcss::audio();
+    let native = (request.factory)();
+    let mut stream = match native {
+        Ok(stream) => stream,
+        Err(error) => {
+            let _ = sender.send(Err(error));
+            return;
+        }
+    };
+    let info = stream.info();
+    request
+        .counters
+        .publish_native(stream.stats(), stream.driver_latency());
+    log::debug!(
+        target: "moiren::audio::professional",
+        "native stream negotiated: master={} rate={} format={:?} channels={} buffer_frames={}",
+        request.master,
+        info.sample_rate,
+        info.format,
+        info.channels,
+        info.buffer_frames,
+    );
+    if !(8_000..=384_000).contains(&info.sample_rate)
+        || info.buffer_frames == 0
+        || info.buffer_frames > 65536
+        || info.channels == 0
+        || info.channels > 32
+    {
+        let _ = sender.send(Err(unsupported("native stream returned invalid metadata")));
+        return;
+    }
+    let mut pump = match Pump::new(
+        request.capture.take(),
+        request.capture_clock.take(),
+        request.render.take(),
+        info,
+        request.engine_rate,
+        request.capacity,
+        request.counters.clone(),
+        request.master,
+    ) {
+        Ok(pump) => pump,
+        Err(error) => {
+            let _ = sender.send(Err(error));
+            return;
+        }
+    };
+    if sender.send(Ok(info)).is_err() || !request.state.await_activation() {
+        return;
+    }
+    let mut engine = if request.master {
+        request.slot.take()
+    } else {
+        None
+    };
+    if request.master && engine.is_none() {
+        request.state.fail(BackendError::Failed(
+            "master activated without Engine".into(),
+        ));
+        return;
+    }
+    // Engine is outside this closure: processor/native panics cannot unwind it.
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), BackendError> {
+        // Activation authorizes native start even when the master has no PCM.
+        // The follower pump supplies silence without advancing Engine.
+        stream.start()?;
+        log::debug!(
+            target: "moiren::audio::professional",
+            "native stream started: master={}",
+            request.master,
+        );
+        started.store(true, Ordering::Release);
+        while !request.state.stop.load(Ordering::Acquire) {
+            // Zero transfers and wait timeouts describe supply/demand, not
+            // resource health. Only explicit native errors retire this owner.
+            pump.cycle(&mut *stream, engine.as_mut(), &request.timeline)?;
+            // Waiting belongs to the native owner, outside Engine::render.
+            stream.wait(Duration::from_millis(10))?;
+            request
+                .counters
+                .publish_native(stream.stats(), stream.driver_latency());
+        }
+        Ok(())
+    }));
+    let stopped = catch_unwind(AssertUnwindSafe(|| stream.stop()));
+    // Even a panic or Stop failure returns the complete runtime before any
+    // worker-local destruction. The host alone retires/drops its processors.
+    if let Some(engine) = engine {
+        request.slot.put(engine);
+    }
+    let notification = catch_unwind(AssertUnwindSafe(|| {
+        request
+            .counters
+            .publish_native(stream.stats(), stream.driver_latency());
+        stream.recovery_request()
+    }));
+    let recoverable = matches!(&result, Ok(Err(error)) if *error != BackendError::WorkerPanicked)
+        && matches!(&stopped, Ok(Ok(())))
+        && matches!(&notification, Ok(Some(_)));
+    let released = catch_unwind(AssertUnwindSafe(|| stream.release()));
+    // Final Drop releases the apartment/lease as well as the IASIO reference.
+    // No replacement may open until both release and destruction have finished.
+    let dropped = catch_unwind(AssertUnwindSafe(|| drop(stream)));
+    let recovery = (recoverable && matches!(&released, Ok(Ok(()))) && dropped.is_ok())
+        .then_some(request.recovery)
+        .flatten();
+    let mut failure = None;
+    for (phase, outcome) in [
+        ("run", result.unwrap_or(Err(BackendError::WorkerPanicked))),
+        ("stop", stopped.unwrap_or(Err(BackendError::WorkerPanicked))),
+        (
+            "observation",
+            notification
+                .map(|_| ())
+                .map_err(|_| BackendError::WorkerPanicked),
+        ),
+        (
+            "release",
+            released.unwrap_or(Err(BackendError::WorkerPanicked)),
+        ),
+        ("drop", dropped.map_err(|_| BackendError::WorkerPanicked)),
+    ] {
+        if let Err(error) = outcome {
+            // Keep every concrete terminal diagnostic even when a later cleanup
+            // error wins. No non-panic error may ever downgrade WorkerPanicked.
+            log::error!(
+                target: "moiren::audio::professional",
+                "native {phase} failed: master={} error={error:?}",
+                request.master,
+            );
+            if failure != Some(BackendError::WorkerPanicked) {
+                failure = Some(error);
+            }
+        }
+    }
+    log::debug!(
+        target: "moiren::audio::professional",
+        "native stream stopped: master={} failure={:?}",
+        request.master,
+        failure,
+    );
+    if let Some(error) = failure {
+        // This is only a candidate: another worker's Stop/Drop or auxiliary
+        // Join can still make the entire transport terminal during retirement.
+        request.state.record_failure(error, recovery);
+    }
+}
+
+pub(super) struct Pump {
+    capture: Option<Producer<StereoFrame>>,
+    capture_clock: Option<Arc<CaptureWriteClock>>,
+    capture_frames: u64,
+    qpc: Option<crate::latency::QpcClock>,
+    render: Option<Consumer<StereoFrame>>,
+    src: Option<StereoResampler>,
+    input: Box<[StereoFrame]>,
+    output: Box<[StereoFrame]>,
+    pending: usize,
+    offset: usize,
+    counters: Arc<Counters>,
+    master: bool,
+    servo: FollowerServo,
+    max_engine_frames: usize,
+}
+impl Pump {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        capture: Option<Producer<StereoFrame>>,
+        capture_clock: Option<Arc<CaptureWriteClock>>,
+        render: Option<Consumer<StereoFrame>>,
+        info: NativeStreamInfo,
+        engine_rate: u32,
+        capacity: usize,
+        counters: Arc<Counters>,
+        master: bool,
+    ) -> Result<Self, BackendError> {
+        let src = if render.is_some() {
+            Some(
+                StereoResampler::new(engine_rate, info.sample_rate, capacity)
+                    .map_err(unsupported)?,
+            )
+        } else {
+            None
+        };
+        // The servo targets two native periods in engine-rate frames; this
+        // watermark is a drift target, never a condition for native start.
+        let period_frames = (u64::from(info.buffer_frames) * u64::from(engine_rate)
+            / u64::from(info.sample_rate)) as usize;
+        let qpc = (capture.is_some())
+            .then(crate::latency::QpcClock::new)
+            .flatten();
+        Ok(Self {
+            capture,
+            capture_clock,
+            capture_frames: 0,
+            qpc,
+            render,
+            src,
+            input: vec![[0.0; 2]; info.buffer_frames as usize].into_boxed_slice(),
+            output: vec![[0.0; 2]; info.buffer_frames as usize].into_boxed_slice(),
+            pending: 0,
+            offset: 0,
+            counters,
+            master,
+            servo: FollowerServo::new(FollowerServo::start_target(period_frames, capacity)),
+            max_engine_frames: (u64::from(info.buffer_frames) * u64::from(engine_rate))
+                .div_ceil(u64::from(info.sample_rate)) as usize
+                + 64,
         })
     }
-
-    fn stop_and_join(self: Box<Self>) -> OwnerReturn<f32> {
-        let Self {
-            render,
-            captures,
-            followers,
-            observations,
-            generation,
-            stop,
-            diagnostics,
-            mut virtual_sessions,
-            ..
-        } = *self;
-        observations.clear(generation);
-        let mut failure = stop
-            .request_stop()
-            .err()
-            .map(|error| BackendError::Failed(error.to_string()));
-        if let Err(error) = virtual_sessions.stop_and_join() {
-            failure.get_or_insert(error);
-        }
-        // Both sides share stop. Always join every capture even if render or a
-        // peer fails, and keep the returned Engine for host control retirement.
-        let rendered = render.join_with_renderer();
-        let mut follower_reports = Vec::with_capacity(followers.len());
-        for follower in followers {
-            match follower.join() {
-                Ok(report) => {
-                    if report.status == RenderStatus::Failed {
-                        failure.get_or_insert_with(|| {
-                            BackendError::ResourceUnavailable(
-                                report
-                                    .failure
-                                    .clone()
-                                    .unwrap_or_else(|| "follower render stopped".into()),
-                            )
-                        });
-                    }
-                    follower_reports.push(report);
+    pub(super) fn cycle<S: ProcessingSample>(
+        &mut self,
+        native: &mut dyn NativeStream,
+        mut engine: Option<&mut Engine<S>>,
+        timeline: &Timeline,
+    ) -> Result<bool, BackendError> {
+        let mut progress = false;
+        if let Some(tx) = &mut self.capture {
+            // Snapshot-sized work: a perpetually busy capture cannot starve output.
+            let mut captured = 0usize;
+            for _ in 0..4 {
+                let frames = native.read(&mut self.input)?;
+                if frames > self.input.len() {
+                    return Err(unsupported("native capture exceeded its destination"));
                 }
-                Err(error) => {
-                    failure.get_or_insert_with(|| render_error(error));
+                if frames == 0 {
+                    break;
+                }
+                progress = true;
+                captured += frames;
+                let accepted = frames.min(tx.slots());
+                for &frame in &self.input[..accepted] {
+                    let _ = tx.push(frame);
+                }
+                self.counters
+                    .dropped
+                    .fetch_add((frames - accepted) as u64, Ordering::Relaxed);
+            }
+            if captured > 0 {
+                // One stamp per wake carries the capture/QPC slope; dropped
+                // frames stay part of the position so the rate stays honest.
+                self.capture_frames += captured as u64;
+                if let Some(now) = self.qpc.as_ref().and_then(|clock| clock.now())
+                    && let Some(clock) = &self.capture_clock
+                {
+                    clock.publish(self.capture_frames, now);
                 }
             }
         }
-        let mut reports = Vec::with_capacity(captures.len());
-        for capture in captures {
-            match capture.join() {
-                Ok(report) => {
-                    if matches!(
-                        report.status,
-                        CaptureStatus::Failed | CaptureStatus::TargetExited
-                    ) {
-                        failure.get_or_insert_with(|| {
-                            BackendError::ResourceUnavailable(
-                                report
-                                    .failure
-                                    .clone()
-                                    .unwrap_or_else(|| "capture source stopped".into()),
-                            )
-                        });
-                    }
-                    reports.push(report);
+        if let (Some(rx), Some(src)) = (&mut self.render, &mut self.src) {
+            if self.pending == self.offset {
+                self.pending = 0;
+                self.offset = 0;
+                // Ask before advancing the graph. Filling a capacity-sized
+                // scratch buffer here would hide latency outside the native
+                // target queue even when the device needs only one period.
+                let demand = native.render_demand()?;
+                if demand > self.output.len() {
+                    return Err(unsupported(
+                        "native render demand exceeded its prepared capacity",
+                    ));
                 }
-                Err(error) => {
-                    failure.get_or_insert_with(|| capture_error(error));
+                if demand == 0 {
+                    return Ok(progress);
+                }
+                let mut rendered = 0usize;
+                if !self.master {
+                    let queued = rx.slots() + src.queued_frames();
+                    src.set_correction_ppm(self.servo.observe(queued));
+                }
+                while self.pending < demand {
+                    refill(src, rx);
+                    let count = src.produce(&mut self.output[self.pending..demand]);
+                    self.pending += count;
+                    if self.pending == demand {
+                        break;
+                    }
+                    if self.master {
+                        let engine = engine
+                            .as_mut()
+                            .ok_or_else(|| unsupported("master has no Engine"))?;
+                        if rendered > self.max_engine_frames + engine.config().max_block_frames {
+                            return Err(unsupported(
+                                "Engine did not produce its prepared master sink",
+                            ));
+                        }
+                        engine
+                            .render(engine.config().max_block_frames)
+                            .map_err(|e| BackendError::Failed(e.to_string()))?;
+                        rendered += engine.config().max_block_frames;
+                        timeline.publish(engine);
+                    } else {
+                        // Followers run only from queued master output and never
+                        // advance Engine's timeline to mask a queue shortfall.
+                        let missing = demand - self.pending;
+                        self.output[self.pending..demand].fill([0.0; 2]);
+                        self.counters
+                            .silent
+                            .fetch_add(missing as u64, Ordering::Relaxed);
+                        self.pending = demand;
+                    }
                 }
             }
+            let written = native.write(&self.output[self.offset..self.pending])?;
+            if written > self.pending - self.offset {
+                return Err(unsupported("native render consumed beyond its source"));
+            }
+            self.offset += written;
+            progress |= written > 0;
         }
-        let rendered = rendered.expect("native callback unwind retains renderer for its joiner");
-        if rendered.report.status == RenderStatus::Failed {
-            failure.get_or_insert_with(|| {
-                let message = rendered
-                    .report
-                    .failure
-                    .clone()
-                    .unwrap_or_else(|| "render failed".into());
-                if message == crate::render::RenderError::WorkerPanicked.to_string() {
-                    BackendError::WorkerPanicked
-                } else {
-                    BackendError::ResourceUnavailable(message)
-                }
-            });
-        }
-        save(
-            &diagnostics,
-            NativeReport {
-                render: Some(rendered.report),
-                prepared: Vec::new(),
-                followers: follower_reports,
-                capture: reports,
-                failure: failure.as_ref().map(ToString::to_string),
-            },
-        );
-        let (engine, _) = rendered.renderer.into_parts();
-        OwnerReturn {
-            engine,
-            error: failure,
-        }
+        Ok(progress)
     }
 }
 
-#[derive(Serialize)]
-pub(super) struct NativeReport {
-    pub(super) render: Option<RenderReport>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(super) prepared: Vec<RenderReport>,
-    pub(super) followers: Vec<RenderReport>,
-    pub(super) capture: Vec<CaptureReport>,
-    pub(super) failure: Option<String>,
+pub(super) struct Transport<S: ProcessingSample> {
+    pub workers: Vec<Worker>,
+    pub auxiliaries: Vec<Box<dyn AuxiliaryOwner>>,
+    pub state: Arc<RunState>,
+    pub slot: Arc<EngineSlot<S>>,
+    pub timeline: Arc<Timeline>,
+    pub sinks: Vec<NodeId>,
+    pub observations: ProfessionalObservations,
+    pub streams: Vec<(ProfessionalStreamObservation, Arc<Counters>)>,
+    pub native_observations: NativeObservations,
+    pub native_streams: Vec<NativeStreamObservation>,
+    pub native_bridges: Vec<(NodeId, crate::clock_bridge::BridgeObserver)>,
+    pub native_probes: Vec<(
+        NodeId,
+        NativeStreamKind,
+        Arc<crate::virtual_owner::BoundaryProbe>,
+    )>,
+    pub native_renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
+    pub generation: u64,
 }
-pub(super) fn save(diagnostics: &Diagnostics, report: NativeReport) {
-    *diagnostics
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner()) = serde_json::to_string(&report).ok();
+impl<S: ProcessingSample> Transport<S> {
+    pub fn new(generation: u64, observations: ProfessionalObservations) -> Self {
+        Self {
+            workers: Vec::new(),
+            auxiliaries: Vec::new(),
+            state: Arc::default(),
+            slot: Arc::default(),
+            timeline: Arc::default(),
+            sinks: Vec::new(),
+            observations,
+            streams: Vec::new(),
+            native_observations: NativeObservations::default(),
+            native_streams: Vec::new(),
+            native_bridges: Vec::new(),
+            native_probes: Vec::new(),
+            native_renders: Vec::new(),
+            generation,
+        }
+    }
+    /// Reuse native capture retirement without attaching or creating an Engine.
+    pub fn into_follower(
+        self: Box<Self>,
+        cancellation: CancellationToken,
+    ) -> Result<Box<dyn VirtualResourceSession>, BackendError> {
+        if !self.sinks.is_empty() {
+            return Err(unsupported(
+                "render transports cannot become capture followers",
+            ));
+        }
+        let state = self.state.clone();
+        cancellation.on_cancel(move || state.cancel())?;
+        Ok(Box::new(FollowerOwner {
+            transport: self,
+            cancellation,
+        }))
+    }
+    fn activate(&self) -> Result<(), BackendError> {
+        self.native_observations.publish_with_renders(
+            self.generation,
+            self.native_streams.clone(),
+            self.native_bridges.clone(),
+            self.native_probes.clone(),
+            self.native_renders.clone(),
+        );
+        for auxiliary in &self.auxiliaries {
+            if let Err(error) = auxiliary.activate() {
+                self.cancel();
+                return Err(error);
+            }
+        }
+        if let Err(error) = self.state.activate() {
+            // Cancellation can win after auxiliary admission but before the
+            // native start gate. Roll back every admitted resource immediately.
+            self.cancel();
+            return Err(error);
+        }
+        Ok(())
+    }
+    fn cancel(&self) {
+        self.state.cancel();
+        for auxiliary in &self.auxiliaries {
+            if catch_unwind(AssertUnwindSafe(|| auxiliary.cancel())).is_err() {
+                self.state.fail(BackendError::WorkerPanicked);
+            }
+        }
+        self.observations.clear(self.generation);
+        self.native_observations.clear(self.generation);
+    }
+    fn failure(&self) -> Option<BackendError> {
+        self.state
+            .failure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|failure| failure.error.clone())
+    }
+    fn status(&self) -> OwnerStatus {
+        if self.failure().is_some() {
+            self.cancel();
+            return OwnerStatus::Failed(self.failure().expect("failure retained until join"));
+        }
+        let mut starting = false;
+        for auxiliary in &self.auxiliaries {
+            match auxiliary.status() {
+                OwnerStatus::Failed(error) => {
+                    self.state.fail(error);
+                    self.cancel();
+                    return OwnerStatus::Failed(
+                        self.failure().expect("auxiliary failure retained"),
+                    );
+                }
+                OwnerStatus::Starting => starting = true,
+                OwnerStatus::Running => {}
+            }
+        }
+        if !starting
+            && self
+                .workers
+                .iter()
+                .all(|w| w.started.load(Ordering::Acquire))
+            && !self.state.stop.load(Ordering::Acquire)
+        {
+            self.observations.running(self.generation);
+            self.native_observations.running(self.generation);
+            OwnerStatus::Running
+        } else {
+            OwnerStatus::Starting
+        }
+    }
+    fn take_error(
+        &self,
+        cancellation: &CancellationToken,
+        suppress_recovered: bool,
+    ) -> Option<BackendError> {
+        let failure = self
+            .state
+            .failure
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        // Only the complete stop/release/drop/auxiliary aggregate can spend a
+        // recovery ticket. A user cancellation fences authorization.
+        failure.and_then(|failure| {
+            let authorized = !cancellation.is_cancelled()
+                && failure.recovery.is_some_and(|ticket| ticket.request());
+            (!(authorized && suppress_recovered)).then_some(failure.error)
+        })
+    }
+    fn cleanup(&mut self) {
+        log::debug!(
+            target: "moiren::audio::professional",
+            "transport cleanup started: generation={} workers={} auxiliaries={}",
+            self.generation,
+            self.workers.len(),
+            self.auxiliaries.len(),
+        );
+        self.state.cancel();
+        for auxiliary in &self.auxiliaries {
+            if catch_unwind(AssertUnwindSafe(|| auxiliary.cancel())).is_err() {
+                self.state.fail(BackendError::WorkerPanicked);
+            }
+        }
+        for worker in &mut self.workers {
+            if let Err(error) = worker.join() {
+                self.state.fail(error);
+            }
+        }
+        for mut auxiliary in self.auxiliaries.drain(..) {
+            if let Err(error) = catch_unwind(AssertUnwindSafe(|| auxiliary.join()))
+                .unwrap_or(Err(BackendError::WorkerPanicked))
+            {
+                self.state.fail(error);
+            }
+            // Auxiliaries may own native leases too. Their destruction must be
+            // included in authorization, not deferred to Transport::drop.
+            if catch_unwind(AssertUnwindSafe(|| drop(auxiliary))).is_err() {
+                self.state.fail(BackendError::WorkerPanicked);
+            }
+        }
+        self.observations.clear(self.generation);
+        self.native_observations.clear(self.generation);
+        log::debug!(
+            target: "moiren::audio::professional",
+            "transport cleanup finished: generation={}",
+            self.generation,
+        );
+    }
+}
+impl<S: ProcessingSample> Drop for Transport<S> {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+impl<S: ProcessingSample> PreparedTransport<S> for Transport<S> {
+    fn attach(
+        mut self: Box<Self>,
+        mut engine: Engine<S>,
+        bindings: &CompiledBindings,
+        cancel: CancellationToken,
+    ) -> Result<Box<dyn BackendOwner<S>>, Box<AttachFailure<S>>> {
+        let validate = || -> Result<(), BackendError> {
+            if cancel.is_cancelled() {
+                return Err(BackendError::Cancelled);
+            }
+            for node in &self.sinks {
+                if bindings.node(*node).is_none() {
+                    return Err(unsupported("compiled transport sink is missing"));
+                }
+            }
+            Ok(())
+        };
+        if let Err(error) = validate() {
+            return Err(Box::new(AttachFailure { engine, error }));
+        }
+        if engine.plan_switching_enabled() {
+            for node in &self.sinks {
+                if let Err(error) = engine.require_sink_reuse(bindings.node(*node).unwrap()) {
+                    return Err(Box::new(AttachFailure {
+                        engine,
+                        error: unsupported(error),
+                    }));
+                }
+            }
+        }
+        let state = self.state.clone();
+        if let Err(error) = cancel.on_cancel(move || state.cancel()) {
+            return Err(Box::new(AttachFailure { engine, error }));
+        }
+        self.timeline.publish(&engine);
+        self.slot.put(engine);
+        self.observations
+            .publish(self.generation, std::mem::take(&mut self.streams));
+        Ok(Box::new(Owner {
+            transport: self,
+            cancellation: cancel,
+        }))
+    }
 }
 
-#[cfg(test)]
-mod tests;
+struct Owner<S: ProcessingSample> {
+    transport: Box<Transport<S>>,
+    cancellation: CancellationToken,
+}
+struct FollowerOwner<S: ProcessingSample> {
+    transport: Box<Transport<S>>,
+    cancellation: CancellationToken,
+}
+impl<S: ProcessingSample> VirtualResourceSession for FollowerOwner<S> {
+    fn activate(&self) -> Result<(), BackendError> {
+        if self.cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        self.transport
+            .observations
+            .publish(self.transport.generation, self.transport.streams.clone());
+        self.transport.activate()
+    }
+    fn cancel(&self) {
+        self.transport.cancel();
+    }
+    fn status(&self) -> OwnerStatus {
+        self.transport.status()
+    }
+    fn stop_and_join(mut self: Box<Self>) -> Result<(), BackendError> {
+        self.transport.cleanup();
+        // The virtual owner must receive the actual capture error even if a
+        // native recovery event was authorized after successful retirement.
+        self.transport
+            .take_error(&self.cancellation, false)
+            .map_or(Ok(()), Err)
+    }
+}
+impl<S: ProcessingSample> BackendOwner<S> for Owner<S> {
+    fn activate(&self) -> Result<(), BackendError> {
+        if self.cancellation.is_cancelled() {
+            return Err(BackendError::Cancelled);
+        }
+        self.transport.activate()
+    }
+    fn cancel(&self) {
+        self.transport.cancel();
+    }
+    fn status(&self) -> OwnerStatus {
+        self.transport.status()
+    }
+    fn timeline(&self) -> Option<OwnerTimeline> {
+        self.transport.timeline.snapshot()
+    }
+    fn stop_and_join(mut self: Box<Self>) -> OwnerReturn<S> {
+        self.transport.cleanup();
+        let engine = self
+            .transport
+            .slot
+            .take()
+            .expect("Engine is retained outside native unwind boundaries");
+        let error = self.transport.take_error(&self.cancellation, true);
+        OwnerReturn { engine, error }
+    }
+}

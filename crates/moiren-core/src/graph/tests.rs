@@ -46,15 +46,88 @@ fn id_exhaustion_is_atomic_for_nodes_ports_and_edges() {
 }
 
 #[test]
+fn connect_rejections_preserve_graph_state_across_every_rule() {
+    let mut graph = LogicalGraph::new();
+    let first = graph.create_node(NodeKind::Gain, 1).unwrap();
+    let second = graph.create_node(NodeKind::Gain, 1).unwrap();
+    let stereo = graph.create_node(NodeKind::Gain, 2).unwrap();
+    let first_input = graph.get_node(first).unwrap().inputs()[0].id();
+    let first_output = graph.get_node(first).unwrap().outputs()[0].id();
+    let second_input = graph.get_node(second).unwrap().inputs()[0].id();
+    let second_output = graph.get_node(second).unwrap().outputs()[0].id();
+    let stereo_input = graph.get_node(stereo).unwrap().inputs()[0].id();
+    graph
+        .connect(first_output, second_input, SendParams::default())
+        .unwrap();
+    for (output, input, params, error) in [
+        (
+            second_input,
+            first_output,
+            SendParams::default(),
+            GraphError::PortDirectionMismatch,
+        ),
+        (
+            first_output,
+            second_input,
+            SendParams::default(),
+            GraphError::InputAlreadyConnected,
+        ),
+        (
+            second_output,
+            first_input,
+            SendParams::default(),
+            GraphError::CycleDetected,
+        ),
+        (
+            first_output,
+            stereo_input,
+            SendParams::default(),
+            GraphError::ChannelMismatch,
+        ),
+        (
+            second_output,
+            first_input,
+            SendParams {
+                gain: f64::NAN,
+                ..Default::default()
+            },
+            GraphError::InvalidSendParameters,
+        ),
+        (
+            PortId(u64::MAX),
+            first_input,
+            SendParams::default(),
+            GraphError::PortNotFound,
+        ),
+    ] {
+        let original = graph.clone();
+        assert_eq!(graph.connect(output, input, params), Err(error));
+        assert_eq!(graph, original);
+    }
+    let source = graph.create_node(NodeKind::Source, 1).unwrap();
+    let output = graph.get_node(source).unwrap().outputs()[0].id();
+    assert!(
+        graph
+            .connect(output, first_input, SendParams::default())
+            .is_ok()
+    );
+}
+
+#[test]
 fn bus_input_count_fits_engine_port_indices() {
+    // The u16 boundary fill itself is covered by the native suite; Miri still
+    // checks dynamic add/remove/reuse, just without 65k live port records.
+    const FILLED: usize = if cfg!(miri) { 256 } else { MAX_INPUT_PORTS };
     let mut graph = LogicalGraph::new();
     let bus = graph.create_node(NodeKind::Bus, 1).unwrap();
-    for _ in 0..MAX_INPUT_PORTS {
+    for _ in 0..FILLED {
         graph.add_input_port(bus, 1).unwrap();
     }
-    let before = graph.clone();
-    assert_eq!(graph.add_input_port(bus, 1), Err(GraphError::TooManyPorts));
-    assert_eq!(graph, before);
+    if FILLED == MAX_INPUT_PORTS {
+        let before = graph.clone();
+        assert_eq!(graph.add_input_port(bus, 1), Err(GraphError::TooManyPorts));
+        assert_eq!(graph, before);
+    }
     let first = graph.get_node(bus).unwrap().inputs()[0].id();
     graph.remove_input_port(bus, first).unwrap();
     graph.add_input_port(bus, 1).unwrap();

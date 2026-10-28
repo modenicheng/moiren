@@ -19,7 +19,7 @@ struct RateWindow {
 }
 
 #[derive(Default)]
-pub(super) struct RateClock {
+pub struct RateClock {
     anchor: Option<RateAnchor>,
     packets: u32,
     previous_window: Option<RateWindow>,

@@ -1,5 +1,13 @@
 use serde::Serialize;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RenderStatus {
+    Stopped,
+    #[cfg(test)]
+    Failed,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Options {
     endpoint_id: String,
@@ -11,7 +19,7 @@ struct CancellationEvidence {
     initialized: Option<bool>,
     stop_error: Option<String>,
     join_error: Option<String>,
-    status: Option<moiren_windows_audio::render::RenderStatus>,
+    status: Option<RenderStatus>,
     stream_started: Option<bool>,
     stop_succeeded: Option<bool>,
     report_failure: Option<String>,
@@ -21,13 +29,7 @@ struct CancellationEvidence {
 fn cancellation_evidence(
     stop_error: Option<String>,
     join_error: Option<String>,
-    report: Option<(
-        moiren_windows_audio::render::RenderStatus,
-        bool,
-        bool,
-        bool,
-        Option<String>,
-    )>,
+    report: Option<(RenderStatus, bool, bool, bool, Option<String>)>,
 ) -> CancellationEvidence {
     let (initialized, status, stream_started, stop_succeeded, report_failure) = report
         .map(
@@ -113,11 +115,18 @@ fn policies(
     selection: PolicySelection,
 ) -> Vec<(
     &'static str,
-    moiren_windows_audio::shared_stream::SharedPeriodPolicy,
+    moiren_windows_audio::latency::shared_period::SharedPeriodPolicy,
 )> {
-    use moiren_windows_audio::shared_stream::SharedPeriodPolicy;
+    use moiren_windows_audio::latency::shared_period::SharedPeriodPolicy;
 
-    let process = ("process", SharedPeriodPolicy::default());
+    // Both paths now use Professional's device-default Shared period. Do not
+    // silently retain the removed renderer's implicit five-millisecond request.
+    let process = (
+        "process",
+        SharedPeriodPolicy {
+            desired_period_ms: None,
+        },
+    );
     let routing = (
         "routing",
         SharedPeriodPolicy {
@@ -176,10 +185,10 @@ mod tests {
     }
 
     #[test]
-    fn process_and_routing_period_policies_match_their_native_call_sites() {
+    fn process_and_routing_use_the_professional_default_shared_period() {
         assert_eq!(
             policies(PolicySelection::Process)[0].1.desired_period_ms,
-            Some(5.0)
+            None
         );
         assert_eq!(
             policies(PolicySelection::Routing)[0].1.desired_period_ms,
@@ -194,8 +203,6 @@ mod tests {
 
     #[test]
     fn cleanup_requires_successful_stop_join_and_a_clean_pre_activation_report() {
-        use moiren_windows_audio::render::RenderStatus;
-
         let report = Some((
             RenderStatus::Failed,
             true,
@@ -247,81 +254,66 @@ mod tests {
 
 #[cfg(windows)]
 fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
+    use moiren_engine::{
+        audio_config::SampleFormat,
+        node::{DeviceMode, DeviceOptions},
+    };
     use moiren_windows_audio::{
-        ActivationGate, SessionDuration, StopSignal,
-        latency::{RenderQueuePolicy, TelemetryMode},
-        render::{RenderOptions, prepare_render_native_with_gate_returning_with_abort},
+        native::NativeStream,
+        wasapi::{WasapiOptions, WasapiStream},
     };
 
     let mut results = Vec::new();
     for (name, shared_period) in policies(options.policy) {
-        let stop = StopSignal::new()?;
-        let gate = ActivationGate::new(stop.clone())?;
-        let render_options = RenderOptions {
-            queue: RenderQueuePolicy::FullCapacity,
-            latency_telemetry: TelemetryMode::Summary,
-            shared_period,
+        let render_options = WasapiOptions {
             endpoint_id: options.endpoint_id.clone(),
-            duration: SessionDuration::UntilStopped,
+            sample_rate: 48_000,
+            device: DeviceOptions {
+                mode: DeviceMode::Shared,
+                sample_format: SampleFormat::Float32,
+                ..DeviceOptions::default()
+            },
+            input: false,
         };
-        let result = match prepare_render_native_with_gate_returning_with_abort(
-            render_options,
-            stop,
-            gate,
-            || (),
-        ) {
-            Ok(prepared) => {
-                let info = prepared.info();
-                let cancellation = prepared.cancel_with_report_returning();
+        let result = match WasapiStream::open(render_options) {
+            Ok(mut stream) => {
+                let timing = stream.prepared_timing();
+                let period = stream.shared_period();
+                // Opening, stopping and releasing happen on this one COM owner.
+                // Start is never called, and there is no worker to join.
+                let stop_error = stream.stop().err().map(|error| error.to_string());
+                let release_error = stream.release().err().map(|error| error.to_string());
+                let stop_succeeded = stop_error.is_none();
                 let cleanup = cancellation_evidence(
-                    cancellation.stop_error.map(|error| error.to_string()),
-                    cancellation.join_error.map(|error| error.to_string()),
-                    cancellation.report.as_ref().map(|report| {
-                        (
-                            report.status,
-                            report.format_supported,
-                            report.stream_started,
-                            report.stop_succeeded,
-                            report.failure.clone(),
-                        )
-                    }),
+                    stop_error,
+                    release_error,
+                    Some((RenderStatus::Stopped, true, false, stop_succeeded, None)),
                 );
                 let cleanup_complete = cleanup.cleanup_complete;
                 serde_json::json!({
                     "policy": name,
                     "initialized": cleanup.initialized,
                     "activated": false,
-                    "info": {"timing": info.timing, "shared_period": info.shared_period},
-                    "report": cancellation.report,
+                    "requested_shared_period": shared_period,
+                    "info": {"timing": timing, "shared_period": period},
+                    "report": null,
                     "cleanup": cleanup,
                     "cleanup_complete": cleanup_complete,
                 })
             }
             Err(failure) => {
-                let cleanup = cancellation_evidence(
-                    failure.stop_error.map(|error| error.to_string()),
-                    failure.join_error.map(|error| error.to_string()),
-                    failure.report.as_ref().map(|report| {
-                        (
-                            report.status,
-                            report.format_supported,
-                            report.stream_started,
-                            report.stop_succeeded,
-                            report.failure.clone(),
-                        )
-                    }),
-                );
-                let mut cleanup = cleanup;
-                cleanup.cleanup_complete &= !failure.abort_panicked;
+                // A failed open has no public partial-initialization report.
+                // Preserve unknown initialization/cleanup rather than success.
+                let cleanup = cancellation_evidence(None, None, None);
                 let cleanup_complete = cleanup.cleanup_complete;
                 serde_json::json!({
                     "policy": name,
                     "initialized": cleanup.initialized,
                     "activated": false,
-                    "error": failure.error.to_string(),
-                    "error_debug": format!("{:?}", failure.error),
-                    "report": failure.report,
-                    "abort_panicked": failure.abort_panicked,
+                    "requested_shared_period": shared_period,
+                    "error": failure.to_string(),
+                    "error_debug": format!("{failure:?}"),
+                    "report": null,
                     "cleanup": cleanup,
                     "cleanup_complete": cleanup_complete,
                 })

@@ -7,6 +7,7 @@ use thiserror::Error;
 
 mod ingress;
 mod rate;
+pub use rate::RateClock;
 mod source;
 mod telemetry;
 mod timing;
@@ -62,6 +63,14 @@ impl Default for ClockBridgeConfig {
     }
 }
 impl ClockBridgeConfig {
+    /// Samples and per-frame timing/generation metadata share one bounded ring.
+    pub(crate) fn storage_bytes(self) -> Result<usize, ClockBridgeError> {
+        self.capacity_frames
+            .checked_mul(size_of::<Frame>())
+            .filter(|&bytes| bytes <= isize::MAX as usize && bytes <= self.byte_budget)
+            .ok_or(ClockBridgeError::BudgetExceeded)
+    }
+
     pub fn with_prepared_input(
         input_sample_rate: u32,
         input_channels: usize,
@@ -162,11 +171,7 @@ pub(crate) fn capture_bridge_with_clock(
     {
         return Err(ClockBridgeError::InvalidConfig);
     }
-    config
-        .capacity_frames
-        .checked_mul(size_of::<Frame>())
-        .filter(|&n| n <= isize::MAX as usize && n <= config.byte_budget)
-        .ok_or(ClockBridgeError::BudgetExceeded)?;
+    config.storage_bytes()?;
     let counters = Arc::new(Counters::new(config.capacity_frames));
     let (tx, rx) = RingBuffer::new(config.capacity_frames);
     Ok((

@@ -7,8 +7,8 @@ mod library;
 pub(super) use compressor::CompressorControls;
 mod node_inspector;
 pub(super) use library::PendingNodeSpawn;
-use library::library;
-pub(super) use node_inspector::inspector;
+pub(in crate::ui::window) use library::{library, library_rail};
+pub(in crate::ui::window) use node_inspector::inspector;
 
 #[cfg(all(test, feature = "gpui-test"))]
 mod tests;
@@ -197,9 +197,10 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                 let pos = window.mouse_position();
                 shell.camera.adjusted = true;
                 shell.node_drag = Some((node_id, f32::from(pos.x), f32::from(pos.y)));
-                if shell.compact {
-                    shell.inspector_open = true;
-                    shell.sidebar_open = false;
+                // Single click selects; a double click on the same node also
+                // opens the inspector.
+                if shell.element_double_clicked(StudioShell::element_key("node", node_id)) {
+                    shell.open_inspector();
                 }
                 cx.notify();
             });
@@ -518,9 +519,11 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                             .map(|e| (e.src_port(), e.dst_port()));
                         shell.selected_node = None;
                         shell.selected_nodes.clear();
-                        shell.inspector_open = true;
-                        if shell.compact {
-                            shell.sidebar_open = false;
+                        if let Some(route) = shell.selected_route
+                            && shell
+                                .element_double_clicked(StudioShell::element_key("route", route))
+                        {
+                            shell.open_inspector();
                         }
                         cx.notify();
                     })
@@ -533,47 +536,20 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
     div()
         .id("graph-page")
         .flex()
-        .flex_col()
         .flex_1()
         .min_h_0()
+        .min_w_0()
         .overflow_hidden()
         .child(
-            div()
-                .flex()
-                .flex_none()
-                .h(px(48.))
-                .items_center()
-                .justify_between()
-                .px(px(theme::SPACE_3))
-                .child(div().flex().gap(px(8.)).items_center().child(
-                    controls::button("toggle-library", t!("Node library")).on_click({
-                        let this = this.clone();
-                        move |_, _, cx| {
-                            this.update(cx, |s, cx| {
-                                s.sidebar_open = !s.sidebar_open;
-                                if s.compact {
-                                    s.inspector_open = false;
-                                }
-                                cx.notify();
-                            })
-                        }
-                    }),
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.))
-                        .child(controls::inspector_toggle("toggle-inspector", cx)),
-                ),
-        )
-        .child(
+            // Row-reversed so the canvas leads the DOM: gpui has no z-index,
+            // and the library's protruding handle must paint above the canvas.
             div()
                 .relative()
                 .flex()
+                .flex_row_reverse()
                 .flex_1()
                 .min_h_0()
-                .overflow_hidden()
-                .when(shell.sidebar_open, |v| v.child(library(shell, cx)))
+                .min_w_0()
                 .child(
                     div()
                         .id("graph-canvas-host")
@@ -584,13 +560,7 @@ pub(super) fn render_graph_page(shell: &StudioShell, cx: &mut Context<StudioShel
                         .child(canvas_view)
                         .child(editing_toolbar(shell, &this)),
                 )
-                .when(shell.inspector_open, |view| {
-                    if shell.selected_node.is_none() && shell.selected_route.is_some() {
-                        view.child(matrix::inspector(shell, cx))
-                    } else {
-                        view.child(inspector(shell, cx))
-                    }
-                }),
+                .child(sidebar::library_host(shell, cx)),
         )
         .gpui_test_observe()
         .into_any_element()
@@ -610,13 +580,16 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
         .bg(theme::SURFACE)
         .border_1()
         .border_color(theme::BORDER);
-    for (id, name, hand) in [
-        ("tool-select", t!("Select"), false),
-        ("tool-hand", t!("Hand"), true),
+    for (id, name, icon, hand) in [
+        ("tool-select", t!("Select"), ActionIcon::Cursor, false),
+        ("tool-hand", t!("Hand"), ActionIcon::HandMove, true),
     ] {
         let this = this.clone();
         view = view.child(
-            button(id, name)
+            button(id, name.clone())
+                .icon(icon)
+                .icon_only()
+                .tooltip(name)
                 .variant(if shell.hand_tool == hand {
                     ButtonVariant::Primary
                 } else {
@@ -630,20 +603,55 @@ fn editing_toolbar(shell: &StudioShell, this: &Entity<StudioShell>) -> impl Into
                 }),
         );
     }
-    for (id, name, factor) in [("zoom-out", "−", 1. / 1.1), ("zoom-in", "+", 1.1)] {
-        let this = this.clone();
-        view = view.child(button(id, name).on_click(move |_, _, cx| {
-            this.update(cx, |s, cx| {
-                s.camera.zoom_around_center(s.canvas_size, factor);
-                cx.notify();
+    view = view.child(
+        div()
+            .flex_none()
+            .w(px(1.))
+            .h(px(16.))
+            .mx(px(2.))
+            .rounded_full()
+            .bg(theme::BORDER),
+    );
+    // Zoom-out · readout · zoom-in reads as a stepper around the percentage;
+    // the readout's width is pinned so the stepper never reflows.
+    let zoom_step = |id: &'static str, icon: ActionIcon, name: SharedString, factor: f32| {
+        button(id, name.clone())
+            .icon(icon)
+            .icon_only()
+            .tooltip(name)
+            .on_click({
+                let this = this.clone();
+                move |_, _, cx: &mut App| {
+                    this.update(cx, |s, cx| {
+                        s.camera.zoom_around_center(s.canvas_size, factor);
+                        cx.notify();
+                    })
+                }
             })
-        }));
-    }
-    view.child(label(format!(
-        "{}%",
-        (shell.camera.zoom * 100.).round() as i32
-    )))
-    .child(button("zoom-fit", t!("Fit")).on_click({
+    };
+    view = view.child(zoom_step(
+        "zoom-out",
+        ActionIcon::ZoomOut,
+        t!("Zoom out").into(),
+        1. / 1.1,
+    ));
+    view = view.child(
+        div()
+            .min_w(px(44.))
+            .flex()
+            .justify_center()
+            .child(label(format!(
+                "{}%",
+                (shell.camera.zoom * 100.).round() as i32
+            ))),
+    );
+    view = view.child(zoom_step(
+        "zoom-in",
+        ActionIcon::ZoomIn,
+        t!("Zoom in").into(),
+        1.1,
+    ));
+    view.child(button("zoom-fit", t!("Fit")).on_click({
         let this = this.clone();
         move |_, _, cx| {
             this.update(cx, |s, cx| {

@@ -11,108 +11,97 @@ use gpui_kit::*;
 /// Main Mixer bars fill exactly the shared fader track; there is no second
 /// ruler or independent dB interpolation here. Channel count is never inferred
 /// from a stereo projection of mono/multichannel data.
-pub fn channel_meter(levels: Option<&[DisplayLevel]>, channels: usize, clips: &[bool]) -> Div {
-    use super::fader::{FaderScale, paint_text};
-    let levels = levels.map(<[DisplayLevel]>::to_vec);
-    let clips = clips.to_vec();
+pub(crate) fn channel_meter_width(channels: usize) -> f32 {
     let count = channels.max(1) as f32;
     let gap = (8. / count).min(3.);
     let width = (28. / count)
         .clamp(2., 10.)
         .min((40. - gap * (count - 1.)) / count);
-    let total_width = width * count + gap * (count - 1.);
-    // All changing bars share one canvas. This avoids rebuilding a separate
-    // layout tree for every color segment of every channel at display rate.
-    div().h_full().flex_none().w(px(total_width)).child(
-        canvas(
-            |_, _, _| {},
-            move |bounds, _, window, cx| {
-                for index in 0..channels {
-                    let left = bounds.left() + px(index as f32 * (width + gap));
-                    let track = Bounds::new(
-                        point(left, bounds.top()),
-                        size(px(width), bounds.size.height),
-                    );
-                    window.paint_quad(fill(track, theme::BORDER));
-                    let level = levels.as_deref().and_then(|levels| levels.get(index));
-                    if let Some(level) = level {
-                        let amount = |value| 1. - FaderScale::position(f64::from(value));
-                        let peak = amount(level.bar);
-                        let mut bottom: f32 = 0.;
-                        for (top, color) in [
-                            (meter_height(10f32.powf(-6. / 20.)), theme::SUCCESS),
-                            (meter_height(1.), theme::WARNING),
-                            (1., theme::DANGER),
-                        ] {
-                            let height = (peak.min(top) - bottom).max(0.);
-                            window.paint_quad(fill(
-                                Bounds::new(
-                                    point(
-                                        left,
-                                        bounds.bottom() - bounds.size.height * (bottom + height),
-                                    ),
-                                    size(px(width), bounds.size.height * height),
-                                ),
-                                color,
-                            ));
-                            bottom = top;
-                        }
-                        let rms = amount(level.rms).min(peak);
-                        window.paint_quad(fill(
-                            Bounds::new(
-                                point(left, bounds.bottom() - bounds.size.height * peak),
-                                size(px(width), bounds.size.height * (peak - rms).max(0.)),
-                            ),
-                            theme::METER_PEAK_ZONE,
-                        ));
-                        let y = bounds.top()
-                            + bounds.size.height * FaderScale::position(f64::from(level.marker));
-                        window.paint_quad(fill(
-                            Bounds::new(point(left, y - px(1.)), size(px(width), px(2.)))
-                                .intersect(&track),
-                            theme::TEXT,
-                        ));
-                    }
-                    // A held display marker is not a new overload. Trust the
-                    // raw-window latch so clicking reset clears it immediately.
-                    let clip = clips.get(index).copied().unwrap_or(false);
-                    window.paint_quad(fill(
-                        Bounds::new(point(left, bounds.top() - px(10.)), size(px(width), px(3.))),
-                        if clip { theme::DANGER } else { theme::BORDER },
-                    ));
-                    if width + gap >= 5. {
-                        let label = if channels == 2 {
-                            ["L", "R"][index].to_owned()
-                        } else {
-                            (index + 1).to_string()
-                        };
-                        paint_text(
-                            &label,
-                            point(left, bounds.bottom() + px(6.)),
-                            8.,
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        );
-                    }
-                }
-                if width + gap < 5. {
-                    paint_text(
-                        &format!("{channels} ch"),
-                        point(bounds.left(), bounds.bottom() + px(6.)),
-                        8.,
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
-                }
-            },
-        )
-        .size_full(),
-    )
+    width * count + gap * (count - 1.)
 }
+
+pub(crate) fn paint_channel_meter(
+    bounds: Bounds<Pixels>,
+    levels: Option<&[DisplayLevel]>,
+    channels: usize,
+    clips: &[bool],
+    window: &mut Window,
+    cx: &mut App,
+) {
+    use super::fader::{FaderScale, paint_text};
+    let count = channels.max(1) as f32;
+    let gap = (8. / count).min(3.);
+    let width = (28. / count)
+        .clamp(2., 10.)
+        .min((40. - gap * (count - 1.)) / count);
+    for index in 0..channels {
+        let left = bounds.left() + px(index as f32 * (width + gap));
+        let track = Bounds::new(
+            point(left, bounds.top()),
+            size(px(width), bounds.size.height),
+        );
+        window.paint_quad(fill(track, theme::BORDER));
+        let level = levels.and_then(|levels| levels.get(index));
+        if let Some(level) = level {
+            // The zone segmentation, the dark peak tail and their
+            // colors are the DOM bars' [`meter_spans`]; only the
+            // painting surface differs here.
+            for span in meter_spans(*level) {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(
+                            left,
+                            bounds.bottom() - bounds.size.height * (span.bottom + span.height),
+                        ),
+                        size(px(width), bounds.size.height * span.height),
+                    ),
+                    span.color,
+                ));
+            }
+            let y =
+                bounds.top() + bounds.size.height * FaderScale::position(f64::from(level.marker));
+            window.paint_quad(fill(
+                Bounds::new(point(left, y - px(1.)), size(px(width), px(2.))).intersect(&track),
+                theme::TEXT,
+            ));
+        }
+        // A held display marker is not a new overload. Trust the
+        // raw-window latch so clicking reset clears it immediately.
+        let clip = clips.get(index).copied().unwrap_or(false);
+        window.paint_quad(fill(
+            Bounds::new(point(left, bounds.top() - px(10.)), size(px(width), px(3.))),
+            if clip { theme::DANGER } else { theme::BORDER },
+        ));
+        if width + gap >= 5. {
+            let label = if channels == 2 {
+                ["L", "R"][index].to_owned()
+            } else {
+                (index + 1).to_string()
+            };
+            paint_text(
+                &label,
+                point(left, bounds.bottom() + px(6.)),
+                8.,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+    }
+    if width + gap < 5. {
+        paint_text(
+            &format!("{channels} ch"),
+            point(bounds.left(), bounds.bottom() + px(6.)),
+            8.,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
+}
+
 pub(crate) fn meter_height(value: f32) -> f32 {
     if value <= 0. {
         0.
@@ -134,10 +123,11 @@ struct MeterSpan {
 /// a translucent dark extension above it reaches the peak bar so the
 /// sustained reading stays light and transients show as the dark tail.
 /// Zone boundaries use the compact digital reference: −6 dBFS
-/// (green→yellow) and 0 dBFS (yellow→red).
+/// (green→yellow) and 0 dBFS (yellow→red). This is the single source for the
+/// segmentation strategy: the canvas meter paints the same spans with quads.
 fn meter_spans(level: DisplayLevel) -> Vec<MeterSpan> {
     let bar_amount = meter_height(level.bar);
-    let mut spans = Vec::new();
+    let mut spans = Vec::with_capacity(4);
     let green_top = meter_height(10f32.powf(-6. / 20.));
     let red_top = meter_height(1.);
     for (bottom, top, color) in [
@@ -230,9 +220,73 @@ pub fn compact_stereo_meter(levels: Option<[DisplayLevel; 2]>, clips: [bool; 2])
     pair
 }
 
+/// A horizontal bar reuses the vertical track space: `bottom` becomes the
+/// distance from the left (quiet) edge and `height` the extent from there.
+fn horizontal_span(span: &MeterSpan) -> (f32, f32) {
+    (span.bottom, span.height)
+}
+
+/// Inspector-scale horizontal meter: one slim bar per channel (up to a stereo
+/// pair), the quiet end at the left, reusing `meter_spans` so zone colors and
+/// the peak tail stay identical to the vertical bars. The clip latch is a
+/// single dot below the bars, like the flyout meter.
+pub fn compact_horizontal_meter(
+    levels: Option<&[DisplayLevel]>,
+    channels: usize,
+    clips: &[bool],
+) -> Div {
+    let levels = levels.map(<[DisplayLevel]>::to_vec);
+    let clips = clips.to_vec();
+    let count = channels.clamp(1, 2);
+    let mut bars = div().flex().flex_none().flex_col().gap(px(2.)).w_full();
+    for index in 0..count {
+        let mut bar = div()
+            .relative()
+            .w_full()
+            .h(px(4.))
+            .flex_none()
+            .overflow_hidden()
+            .rounded(px(1.))
+            .bg(theme::BORDER);
+        if let Some(level) = levels.as_deref().and_then(|levels| levels.get(index)) {
+            for span in meter_spans(*level) {
+                let (left, width) = horizontal_span(&span);
+                bar = bar.child(
+                    div()
+                        .absolute()
+                        .left(relative(left))
+                        .top_0()
+                        .bottom_0()
+                        .w(relative(width))
+                        .bg(span.color),
+                );
+            }
+            bar = bar.child(
+                div()
+                    .absolute()
+                    .left(relative(meter_height(level.marker)))
+                    .top_0()
+                    .bottom_0()
+                    .w(px(2.))
+                    .bg(theme::TEXT),
+            );
+        }
+        bars = bars.child(bar);
+    }
+    let clip = (0..count).any(|index| clips.get(index).copied().unwrap_or(false));
+    bars.child(
+        div()
+            .w(px(6.))
+            .h(px(3.))
+            .flex_none()
+            .rounded(px(1.))
+            .bg(if clip { theme::DANGER } else { theme::BORDER }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MeterSpan, meter_height, meter_spans};
+    use super::{MeterSpan, horizontal_span, meter_height, meter_spans};
     use crate::ui::monitoring::DisplayLevel;
     use crate::ui::theme;
 
@@ -297,5 +351,30 @@ mod tests {
         assert_eq!(spans.len(), 1);
         assert!((spans[0].height - meter_height(0.1)).abs() < 0.00001);
         assert!(!same_color(&spans[0], theme::METER_PEAK_ZONE));
+    }
+
+    #[test]
+    fn horizontal_spans_map_distance_from_the_quiet_left_edge() {
+        // Mapping bottom->left and height->width rotates the vertical track:
+        // the zone segments tile from the left edge up to the bar height, and
+        // the translucent tail overlays the top of that run exactly as it
+        // overlays the zone tops in the vertical bars.
+        let spans = meter_spans(level(3., -30.));
+        assert_eq!(spans.len(), 4);
+        let mut reach = 0.;
+        for span in &spans[..3] {
+            let (left, width) = horizontal_span(span);
+            assert!((left - reach).abs() < 0.00001);
+            reach = left + width;
+        }
+        let peak = meter_height(10f32.powf(3. / 20.));
+        assert!((reach - peak).abs() < 0.00001);
+        let rms = meter_height(10f32.powf(-30. / 20.));
+        let (left, width) = horizontal_span(&spans[3]);
+        assert!((left - rms).abs() < 0.00001);
+        assert!((width - (peak - rms)).abs() < 0.00001);
+        let (left, width) = horizontal_span(&spans[0]);
+        assert_eq!(left, 0.);
+        assert!((width - meter_height(10f32.powf(-6. / 20.))).abs() < 0.00001);
     }
 }

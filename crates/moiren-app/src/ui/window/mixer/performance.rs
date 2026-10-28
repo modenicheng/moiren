@@ -2,48 +2,44 @@
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "ui-profiler")]
-pub(in crate::ui::window) fn write_platform_frames(
-    frames: &mut gpui_kit::profiler::FrameTimingCollector,
-    path: &std::path::Path,
-) -> anyhow::Result<()> {
-    use gpui_kit::profiler::FrameEvent;
-    let mut previous = None;
-    let mut rows = Vec::new();
-    for event in frames.collect_unseen() {
-        match event {
-            FrameEvent::Draw(frame) => rows.push(serde_json::json!({
-                "event": "draw",
-                "draw_ms": (frame.draw_end - frame.draw_start).as_secs_f64() * 1000.,
-                "signal_wait_ms": frame.signal_at.map(|time| frame.draw_start.saturating_duration_since(time).as_secs_f64() * 1000.),
-                "layout_ms": frame.phases.request_layout.as_secs_f64() * 1000.,
-                "prepaint_ms": frame.phases.prepaint.as_secs_f64() * 1000.,
-                "paint_ms": frame.phases.paint.as_secs_f64() * 1000.,
-                "refresh_ms": frame.refresh_interval.map(|duration| duration.as_secs_f64() * 1000.),
-            })),
-            FrameEvent::Present(frame) => {
-                rows.push(serde_json::json!({
-                    "event": "present",
-                    "gap_ms": previous.map(|time| frame.present_end.saturating_duration_since(time).as_secs_f64() * 1000.),
-                    "present_ms": frame.present_duration().as_secs_f64() * 1000.,
-                }));
-                previous = Some(frame.present_end);
-            }
-        }
-    }
-    std::fs::write(path, serde_json::to_vec_pretty(&rows)?)?;
-    Ok(())
-}
+mod platform_trace;
+#[cfg(feature = "ui-profiler")]
+pub(in crate::ui::window) use platform_trace::PlatformTrace;
 
 #[derive(Default)]
 pub(in crate::ui::window) struct MeterTrace {
+    pub meter_paints: usize,
+    pub strip_renders: usize,
+    pub toolbar_renders: usize,
+    pub status_renders: usize,
     previous: Option<Instant>,
     cpu: Duration,
     gap: Duration,
     active: bool,
     frames: Vec<(f64, f64, usize)>,
+    dropped: usize,
+    sample_counts: (usize, usize, usize, usize),
+    level_changes: usize,
+    previous_levels: Option<u64>,
 }
 
 impl MeterTrace {
+    pub fn start_sample(&mut self) {
+        self.previous = None;
+        self.cpu = Duration::ZERO;
+        self.gap = Duration::ZERO;
+        self.frames.clear();
+        self.dropped = 0;
+        self.sample_counts = (
+            self.strip_renders,
+            self.meter_paints,
+            self.toolbar_renders,
+            self.status_renders,
+        );
+        self.level_changes = 0;
+        self.previous_levels = None;
+    }
+
     pub fn begin(&mut self, active: bool) {
         self.active = active && std::env::var_os("MOIREN_CAPTURE_METERS").is_some();
         self.cpu = Duration::ZERO;
@@ -72,35 +68,81 @@ impl MeterTrace {
                 self.cpu.as_secs_f64() * 1000.,
                 visible,
             ));
+        } else if self.active {
+            self.dropped += 1;
+        }
+    }
+
+    pub fn levels(&mut self, fingerprint: u64) {
+        if self.active {
+            if self
+                .previous_levels
+                .is_some_and(|previous| previous != fingerprint)
+            {
+                self.level_changes += 1;
+            }
+            self.previous_levels = Some(fingerprint);
         }
     }
 
     pub fn write(&self, path: &std::path::Path) -> anyhow::Result<()> {
-        std::fs::write(path, serde_json::to_vec_pretty(&self.frames)?)?;
+        std::fs::write(
+            path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 2, "samples": self.frames, "dropped": self.dropped,
+                "strip_renders": self.strip_renders - self.sample_counts.0,
+                "meter_paints": self.meter_paints - self.sample_counts.1,
+                "toolbar_renders": self.toolbar_renders - self.sample_counts.2,
+                "status_renders": self.status_renders - self.sample_counts.3,
+                "level_changes": self.level_changes,
+            }))?,
+        )?;
         let mut cpu: Vec<_> = self
             .frames
             .iter()
-            .filter(|frame| frame.2 >= 8)
+            .filter(|frame| frame.2 > 0)
             .map(|frame| frame.1)
             .collect();
         let mut gaps: Vec<_> = self
             .frames
             .iter()
-            .filter(|frame| frame.2 >= 8 && frame.0 > 0.)
+            .filter(|frame| frame.2 > 0 && frame.0 > 0.)
             .map(|frame| frame.0)
             .collect();
         cpu.sort_by(f64::total_cmp);
         gaps.sort_by(f64::total_cmp);
         if !cpu.is_empty() && !gaps.is_empty() {
             eprintln!(
-                "Native meter frames: {}, meter work p95={:.3}ms, frame interval p50={:.3}ms p95={:.3}ms, intervals >12.5ms={}",
+                "Native meter frames: {}, meter work p95={:.3}ms, frame interval p50={:.3}ms p95={:.3}ms, intervals >12.5ms={}, dropped={}",
                 cpu.len(),
                 cpu[(cpu.len() * 95 / 100).min(cpu.len() - 1)],
                 gaps[gaps.len() / 2],
                 gaps[(gaps.len() * 95 / 100).min(gaps.len() - 1)],
-                gaps.iter().filter(|gap| **gap > 12.5).count()
+                gaps.iter().filter(|gap| **gap > 12.5).count(),
+                self.dropped
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_samples_do_not_retain_previous_viewport_or_silently_truncate() {
+        let mut trace = MeterTrace {
+            active: true,
+            ..Default::default()
+        };
+        for _ in 0..20_001 {
+            trace.finish(5);
+        }
+        assert_eq!(trace.dropped, 1);
+        trace.start_sample();
+        assert!(trace.frames.is_empty());
+        assert!(trace.previous.is_none());
+        assert_eq!(trace.dropped, 0);
     }
 }

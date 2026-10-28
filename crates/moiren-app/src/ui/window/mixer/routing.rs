@@ -1,5 +1,7 @@
 //! Routing rows retain graph edge/port identity, including parallel connections.
 use super::*;
+use crate::service::GraphEdit;
+use crate::ui::widgets::fader::hslider;
 
 fn section(
     id: String,
@@ -281,11 +283,20 @@ pub(super) fn sends(
                         )),
                 );
             if shell.mixer.editing_send == Some(edge_id) {
+                // The editor takes the label's box (32px, right-aligned mono
+                // 9px text) with the shared underline-only chrome, so the row
+                // neither grows nor shifts the text when it opens.
                 row = row.child(
-                    component::input::Input::new(&shell.mixer.send_inputs[&edge_id])
-                        .w(px(42.))
-                        .h(px(24.))
-                        .text_size(px(10.)),
+                    div()
+                        .id(SharedString::from(format!("send-value-{edge_id:?}")))
+                        .flex_none()
+                        .w(px(32.))
+                        .font_family(theme::FONT_MONO)
+                        .child(underline_editor(
+                            &shell.mixer.send_inputs[&edge_id],
+                            px(9.),
+                            TextAlign::Right,
+                        )),
                 );
             } else {
                 row = row.child(
@@ -328,17 +339,11 @@ pub(super) fn sends(
                 div().flex().flex_col().flex_none().child(row).child(
                     div()
                         .id(SharedString::from(format!("send-track-{edge_id:?}")))
-                        .on_click({
-                            let this = cx.entity();
-                            move |event, window, cx| {
-                                if event.click_count() == 2 {
-                                    send_edit(this.clone(), edge_id, |params| params.gain = 1.)(
-                                        event, window, cx,
-                                    );
-                                }
-                            }
-                        })
-                        .child(component::slider::Slider::new(&shell.mixer.sends[&edge_id])),
+                        .child(hslider(
+                            &shell.mixer.sends[&edge_id].state,
+                            &shell.mixer.sends[&edge_id].behavior,
+                            cx,
+                        )),
                 ),
             );
         }
