@@ -48,7 +48,8 @@ mod bridge;
 #[allow(dead_code)]
 mod codec;
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/native_observations.rs"]
-#[allow(dead_code)]
+// The production adapter exports control-only collectors not used by this shadow.
+#[allow(dead_code, unused_imports)]
 mod native_observations;
 #[path = "../../../crates/moiren-windows-audio/src/latency/packet_service.rs"]
 #[allow(dead_code)]

@@ -10,7 +10,8 @@ mod recovery;
 pub use native_observations::{
     NativeBoundaryProbe, NativeBridgeObservation, NativeObservationReadHandle,
     NativeObservationSnapshot, NativeObservations, NativeProcessDeliveryObservation,
-    NativeRenderPaddingObservation, NativeStreamKind, NativeStreamObservation,
+    NativeProcessTraceCollector, NativeRenderPaddingObservation, NativeStreamKind,
+    NativeStreamObservation,
 };
 #[cfg(windows)]
 pub use observations::{

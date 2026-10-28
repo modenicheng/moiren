@@ -291,6 +291,20 @@ impl ProcessTraceCollector {
         self.artifact.clone()
     }
 
+    /// Constant-size control-side status; never clone a growing archive merely
+    /// to discover that a missed/capped prefix has permanently refused replay.
+    pub fn collection_refusal(&self) -> Option<ProcessTraceCollectionRefusal> {
+        self.artifact.collection_refusal
+    }
+
+    pub fn process(&self) -> &ProcessIdentity {
+        &self.artifact.process
+    }
+
+    pub fn owner_generation(&self) -> u64 {
+        self.artifact.owner_generation
+    }
+
     fn packets(&mut self, mut next: PacketHistorySnapshot) {
         let previous = &mut self.artifact.packet_history;
         let conflict = next.total_events < previous.total_events

@@ -13,6 +13,10 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+#[path = "native_observations/process_trace.rs"]
+mod process_trace;
+pub use process_trace::NativeProcessTraceCollector;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeStreamKind {
@@ -250,6 +254,16 @@ pub(super) struct Session {
     renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
 }
 impl NativeObservationReadHandle {
+    /// Publication state only, not a successful-start or teardown witness.
+    /// Immutable owner identity prevents registry replacement from redirecting
+    /// admission while avoiding a full history snapshot just to inspect it.
+    pub fn running_generation(&self) -> Option<u64> {
+        self.0
+            .running
+            .load(Ordering::Acquire)
+            .then_some(self.0.generation)
+    }
+
     /// Read closed histories from this exact retained source/owner, not public
     /// caller-supplied labels. Registry replacement cannot redirect this handle.
     /// Writer closure still does not prove successful transport cleanup.
@@ -449,6 +463,10 @@ impl NativeObservations {
 #[cfg(test)]
 #[path = "native_observations/process_tests.rs"]
 mod process_tests;
+
+#[cfg(test)]
+#[path = "native_observations/process_trace_tests.rs"]
+mod process_trace_tests;
 
 #[cfg(test)]
 mod tests {
