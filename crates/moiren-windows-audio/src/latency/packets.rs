@@ -3,7 +3,7 @@
 //! Host QPC brackets describe SPSC publication commits, not WASAPI packet
 //! timestamps, source age or end-to-end latency. Origins, generations and
 //! native flags remain separate evidence; no continuity is inferred from them.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering::SeqCst},
@@ -12,7 +12,7 @@ use std::sync::{
 const HISTORY_CAPACITY: usize = 256;
 const EVENT_FIELDS: usize = 10;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 #[serde(rename_all = "snake_case")]
 pub enum PacketPublicationOrigin {
@@ -22,7 +22,8 @@ pub enum PacketPublicationOrigin {
     GraphOutput = 2,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PacketPublicationSample {
     pub offered_frames: u64,
     /// The prefix actually committed to the ring, including zero on full drop.
@@ -37,7 +38,8 @@ pub struct PacketPublicationSample {
     pub flags: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PacketPublicationEvent {
     pub sequence: u64,
     /// Cumulative frontiers before this event, even in a retained suffix.
@@ -46,8 +48,10 @@ pub struct PacketPublicationEvent {
     pub sample: PacketPublicationSample,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PacketHistorySnapshot {
+    #[serde(deserialize_with = "super::bounded_history::deserialize_events")]
     pub events: Vec<PacketPublicationEvent>,
     pub total_events: u64,
     pub overwritten_events: u64,

@@ -2,7 +2,7 @@
 //! checked again by the owner; a recycled PID never silently changes the source.
 use crate::SessionDuration;
 use crate::capture::{CaptureError, PcmArtifactConfig};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 mod bridge;
 pub use bridge::ProcessBridgeOptions;
@@ -11,7 +11,7 @@ pub use measured::{MeasuredAdmissionError, MeasuredProcessDelivery};
 mod replay;
 pub use replay::{
     ObservedProcessTrace, OfferedSupplyAssumption, ProcessReplayError, ProcessReplayReport,
-    ProcessReplayStatus, ProcessTraceOrigin,
+    ProcessReplayStatus, ProcessTraceArtifact, ProcessTraceOrigin,
 };
 #[cfg(windows)]
 pub(crate) mod activation;
@@ -29,7 +29,8 @@ pub use stream::{
     start_process_capture, start_process_capture_with_stop,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProcessIdentity {
     pub pid: u32,
     pub creation_time_100ns: u64,

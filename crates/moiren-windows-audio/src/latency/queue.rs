@@ -1,5 +1,5 @@
 //! Consumer-owned queue inventory, not source age or alternate-target replay.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering::SeqCst},
@@ -8,7 +8,8 @@ use std::sync::{
 const HISTORY_CAPACITY: usize = 256;
 const EVENT_FIELDS: usize = 17;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueueBoundary {
     /// Cumulative successful ring pops and committed ring discards.
     pub removed_frames: u64,
@@ -34,7 +35,8 @@ impl QueueBoundary {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueueReadSample {
     /// Requested/output frames use the consumer rate, not the input rate.
     pub requested_frames: u64,
@@ -98,14 +100,17 @@ impl QueueReadSample {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueueReadEvent {
     pub sequence: u64,
     pub sample: QueueReadSample,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueueHistorySnapshot {
+    #[serde(deserialize_with = "super::bounded_history::deserialize_events")]
     pub events: Vec<QueueReadEvent>,
     pub total_events: u64,
     pub overwritten_events: u64,

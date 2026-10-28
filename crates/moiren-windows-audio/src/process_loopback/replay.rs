@@ -12,6 +12,10 @@ use crate::{
 use serde::Serialize;
 use thiserror::Error;
 
+#[path = "replay/artifact.rs"]
+mod artifact;
+pub use artifact::ProcessTraceArtifact;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ProcessReplayError {
     #[error("Process replay requires a valid source identity and owner generation")]
