@@ -17,6 +17,7 @@ impl ManagedDriver {
         c.active_latency_profile = None;
         c.active_audio_settings = None;
         c.active_transport_latency = None;
+        c.active_measured_process = None;
         #[cfg(windows)]
         {
             if let Some(observations) = &self.native_observations {
@@ -101,6 +102,27 @@ impl ManagedDriver {
                     return;
                 }
             };
+        if let Some(profile) = &requested.measured_process {
+            if preparation.revision != profile.summary().request.graph_revision {
+                c.graph.record_error("measured Process graph revision changed; clear the profile or select fresh observations");
+                self.apply = false;
+                return;
+            }
+            let source = preparation
+                .nodes
+                .iter()
+                .find(|node| node.id == profile.summary().request.node)
+                .and_then(|node| node.source.as_ref());
+            if let Err(error) = source
+                .ok_or("measured Process source was removed")
+                .map_err(str::to_owned)
+                .and_then(|source| profile.validate_source(source))
+            {
+                c.graph.record_error(error);
+                self.apply = false;
+                return;
+            }
+        }
         // A failed PCM worker can drain while its PDO stays healthy/Present.
         // Waiting for transport admission before replacing that host would
         // strand Apply: only a fresh preparation can create its PCM session.
@@ -120,6 +142,11 @@ impl ManagedDriver {
                 || o.profile != requested.profile
                 || o.audio_settings != settings
                 || o.transport_latency != requested.transport
+                || o.measured_process.as_ref().map(|profile| profile.summary())
+                    != requested
+                        .measured_process
+                        .as_ref()
+                        .map(|profile| profile.summary())
                 || o.exports != preparation.exports
                 || stranded_virtual_transport
         }) {
@@ -188,6 +215,9 @@ impl ManagedDriver {
                 }
             }
         } else if self.cleaning == 0 && !self.exiting {
+            if self.reject_failed_cleanup(c, false) {
+                return;
+            }
             let mut summary = match c
                 .graph
                 .managed_session_spec(c.core.desired(), c.core.run_limit())
@@ -214,7 +244,13 @@ impl ManagedDriver {
                 return;
             };
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.open_host(requested.profile, &settings, &requested.transport, project)
+                self.open_host(
+                    requested.profile,
+                    &settings,
+                    &requested.transport,
+                    requested.measured_process.as_ref(),
+                    project,
+                )
             }))
             .unwrap_or_else(|_| {
                 Err(host::BackendError::Failed(
@@ -247,6 +283,7 @@ impl ManagedDriver {
                         profile: requested.profile,
                         audio_settings: settings,
                         transport_latency: requested.transport,
+                        measured_process: requested.measured_process,
                         exports: preparation.exports.clone(),
                         active_revision: (1, preparation.revision),
                         active_apply_id: 0,
@@ -280,6 +317,7 @@ impl ManagedDriver {
         profile: AudioLatencyProfile,
         settings: &AudioSettings,
         transport: &TransportLatencySettings,
+        measured: Option<&super::super::measured_process::MeasuredProcessProfile>,
         project: host::EngineProject,
     ) -> Result<AudioHost, host::BackendError> {
         log::info!(
@@ -301,7 +339,7 @@ impl ManagedDriver {
         );
         match settings.processing.precision {
             ProcessingPrecision::F32 => {
-                let backend = (self.factory)(profile, settings, transport)?;
+                let backend = (self.factory)(profile, settings, transport, measured)?;
                 EngineHost::open(self.host_config.clone(), project, backend).map(AudioHost::F32)
             }
             ProcessingPrecision::F64 => {
@@ -310,7 +348,7 @@ impl ManagedDriver {
                         "this driver has no f64 processing backend".into(),
                     )
                 })?;
-                let backend = factory(profile, settings, transport)?;
+                let backend = factory(profile, settings, transport, measured)?;
                 EngineHost::open(self.host_config.clone(), project, backend).map(AudioHost::F64)
             }
         }

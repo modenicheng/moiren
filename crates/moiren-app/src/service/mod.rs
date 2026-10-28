@@ -9,6 +9,7 @@ mod jobs;
 mod latency;
 mod mailbox;
 mod managed;
+pub(crate) mod measured_process;
 mod model;
 #[cfg(test)]
 mod settings_tests;
@@ -30,6 +31,7 @@ pub use graph::{
 };
 pub use latency::AudioLatencyProfile;
 pub use managed::ManagedDriver;
+pub use measured_process::{MeasuredProcessRequest, MeasuredProcessSummary};
 pub use moiren_engine::audio_config::*;
 pub use signals::{LevelTopic, SignalTopics, SubscriptionDeliveryError, SubscriptionTicket};
 pub use transport_latency::{DeliveryProvenance, ExpertInputBuffer, TransportLatencySettings};
@@ -105,6 +107,8 @@ impl Default for RoundBudget {
     }
 }
 pub struct ServiceContext {
+    pub(crate) measured_process: Option<measured_process::MeasuredProcessProfile>,
+    pub active_measured_process: Option<MeasuredProcessSummary>,
     pub last_cleanup: Option<SessionCleanupObservation>,
     pub exports: ExportService,
     pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
@@ -134,6 +138,8 @@ pub struct ServiceContext {
 impl Default for ServiceContext {
     fn default() -> Self {
         Self {
+            measured_process: None,
+            active_measured_process: None,
             last_cleanup: None,
             exports: ExportService::default(),
             loaded_project: None,
@@ -207,6 +213,7 @@ impl ServiceContext {
             self.graph.replace(candidate.graph, candidate.nodes)?;
         }
         self.audio_settings = audio;
+        self.measured_process = None;
         self.loaded_project = Some(Arc::new(document));
         Ok(())
     }
@@ -228,6 +235,7 @@ impl ServiceContext {
             return false;
         }
         self.transport_latency = settings;
+        self.measured_process = None;
         true
     }
 
@@ -331,6 +339,11 @@ impl ServiceDriver for CoreDriver {
             AppRequest::SetTransportLatency(settings) => {
                 c.set_transport_latency(settings);
             }
+            AppRequest::ApplyMeasuredProcessBridge(_) => {
+                c.graph.record_error(
+                    "measured Process application requires the managed native service",
+                );
+            }
             AppRequest::EditGraph(edit) => {
                 let _ = c.graph.edit(edit);
             }
@@ -355,6 +368,14 @@ impl ServiceDriver for CoreDriver {
 pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
     let graph = c.graph.snapshot();
     AppSnapshot {
+        measured_process: c
+            .measured_process
+            .as_ref()
+            .map(|profile| profile.summary().clone()),
+        active_measured_process: c
+            .active_measured_process
+            .clone()
+            .filter(|_| c.fresh(c.core.generation())),
         last_cleanup: c.last_cleanup.clone(),
         loaded_project: c.loaded_project.clone(),
         exports: c.exports.statuses(&graph),

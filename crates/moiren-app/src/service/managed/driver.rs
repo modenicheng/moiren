@@ -50,6 +50,17 @@ impl ServiceDriver for ManagedDriver {
             AppRequest::SetTransportLatency(settings) => {
                 c.set_transport_latency(settings);
             }
+            AppRequest::ApplyMeasuredProcessBridge(request) => {
+                match self.select_measured_process(c, request) {
+                    Ok(()) => {
+                        self.automatic_startup = false;
+                        self.auto_apply_deadline = None;
+                        self.apply_settings = Some(ApplySettings::capture(c));
+                        self.apply = true;
+                    }
+                    Err(error) => c.graph.record_error(error),
+                }
+            }
             AppRequest::RefreshCatalog => self.catalog.request(),
             AppRequest::Start(spec) => {
                 self.automatic_startup = false;
@@ -80,6 +91,7 @@ impl ServiceDriver for ManagedDriver {
                 self.apply = true;
             }
             AppRequest::Stop => {
+                c.measured_process = None;
                 self.automatic_startup = false;
                 self.apply = false;
                 self.apply_settings = None;
@@ -89,6 +101,7 @@ impl ServiceDriver for ManagedDriver {
             }
             AppRequest::ReplaceGraph { graph, nodes } => {
                 if c.graph.replace(graph, nodes).is_ok() {
+                    c.measured_process = None;
                     self.exports_runtime.revoke();
                     self.document = self
                         .document
@@ -227,6 +240,55 @@ fn update_vad_catalog(context: &mut ServiceContext) {
 }
 
 impl ManagedDriver {
+    pub(super) fn reject_failed_cleanup(
+        &mut self,
+        c: &mut ServiceContext,
+        just_reaped: bool,
+    ) -> bool {
+        let Some(cleanup) = c.last_cleanup.as_ref() else {
+            return false;
+        };
+        let state = &cleanup.state;
+        if state.host == host::HostState::Closed
+            && state.cleanup_error.is_none()
+            && state.fault.is_none()
+        {
+            return false;
+        }
+        let measured = self
+            .apply_settings
+            .as_ref()
+            .is_some_and(|settings| settings.measured_process.is_some());
+        // A measured baseline needs a clean receipt. Declared replacement may
+        // recover the modeled PCM disconnect, but no other queued work survives
+        // a cleanup failure. Once Closed, a later explicit declared request can
+        // retry without erasing the receipt or requiring a service restart.
+        if state.host == host::HostState::Closed
+            && !measured
+            && (!just_reaped
+                || (state.fault.is_none()
+                    && matches!(
+                        state.cleanup_error,
+                        Some(host::BackendError::ResourceUnavailable(_))
+                    )))
+        {
+            return false;
+        }
+        let error = format!(
+            "audio owner cleanup failed: generation={} host={:?}, cleanup_error={:?}, fault={:?}",
+            cleanup.generation.0, state.host, state.cleanup_error, state.fault,
+        );
+        // Keep the measured draft and original receipt for review; cancelling
+        // queued work must not silently turn it into a declared replacement.
+        self.apply = false;
+        self.apply_settings = None;
+        self.auto_apply_deadline = None;
+        self.automatic_startup = false;
+        c.core.failed(c.core.generation(), error.clone());
+        c.graph.record_error(error);
+        true
+    }
+
     /// Drain owner-reaping and catalog-refresh completions from the cleanup
     /// worker.
     fn poll_completions(&mut self, c: &mut ServiceContext, budget: RoundBudget) {
@@ -250,6 +312,7 @@ impl ManagedDriver {
                     );
                     c.core.owner_reaped(generation);
                     c.last_cleanup = Some(cleanup);
+                    self.reject_failed_cleanup(c, true);
                 }
                 Completion::Catalog(result) => {
                     self.catalog.finished();
@@ -442,6 +505,10 @@ impl ManagedDriver {
             c.active_latency_profile = Some(owner.profile);
             c.active_audio_settings = Some(owner.audio_settings.clone());
             c.active_transport_latency = Some(owner.transport_latency);
+            c.active_measured_process = owner
+                .measured_process
+                .as_ref()
+                .map(|profile| profile.summary().clone());
             if owner.started.is_none() {
                 log::info!(
                     target: "moiren::audio::service",
@@ -467,6 +534,7 @@ impl ManagedDriver {
             c.active_latency_profile = None;
             c.active_audio_settings = None;
             c.active_transport_latency = None;
+            c.active_measured_process = None;
             c.graph.stopped();
         }
         if let UpdateState::Blocked { reason, .. } = &snapshot.state.update {

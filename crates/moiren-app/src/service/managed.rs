@@ -13,6 +13,7 @@ use std::{
 };
 mod driver;
 mod lifecycle;
+mod measured;
 mod meters;
 mod parameters;
 #[cfg(test)]
@@ -22,6 +23,7 @@ type Factory<S> = dyn Fn(
         AudioLatencyProfile,
         &AudioSettings,
         &TransportLatencySettings,
+        Option<&super::measured_process::MeasuredProcessProfile>,
     ) -> Result<Box<dyn EngineBackend<S>>, host::BackendError>
     + Send
     + Sync;
@@ -54,6 +56,7 @@ struct Owner {
     profile: AudioLatencyProfile,
     audio_settings: AudioSettings,
     transport_latency: TransportLatencySettings,
+    measured_process: Option<super::measured_process::MeasuredProcessProfile>,
     exports: Vec<ExportIntent>,
     active_revision: (u64, u64),
     /// The Apply whose matching ACKs established `active_revision`.
@@ -93,6 +96,7 @@ enum Completion {
 
 #[derive(Clone)]
 struct ApplySettings {
+    measured_process: Option<super::measured_process::MeasuredProcessProfile>,
     audio: AudioSettings,
     transport: TransportLatencySettings,
     profile: AudioLatencyProfile,
@@ -100,6 +104,7 @@ struct ApplySettings {
 impl ApplySettings {
     fn capture(c: &ServiceContext) -> Self {
         Self {
+            measured_process: c.measured_process.clone(),
             audio: c.audio_settings.clone(),
             transport: c.transport_latency,
             profile: c.latency_profile,
@@ -112,6 +117,8 @@ impl ApplySettings {
 const AUTO_APPLY_DELAY: Duration = Duration::from_millis(200);
 
 pub struct ManagedDriver {
+    #[cfg(windows)]
+    measured_selection_id: u64,
     exports_runtime: super::exports::runtime::Runtime,
     factory: Arc<Factory<f32>>,
     f64_factory: Option<Arc<Factory<f64>>>,
@@ -154,6 +161,26 @@ pub struct ManagedDriver {
     virtual_provider: Option<Arc<moiren_windows_audio::vad::WindowsVadProvider>>,
 }
 impl ManagedDriver {
+    #[cfg(all(test, windows))]
+    pub(crate) fn set_measured_test_factory(&mut self, backend: super::test_backend::FakeBackend) {
+        let first = backend.clone();
+        self.factory = Arc::new(move |_, _, _, measured| {
+            if let Some(profile) = measured {
+                profile.configure(moiren_windows_audio::engine_backend::ProfessionalBackend::<
+                    f32,
+                >::new()?)?;
+            }
+            Ok(Box::new(first.clone()))
+        });
+        self.f64_factory = Some(Arc::new(move |_, _, _, measured| {
+            if let Some(profile) = measured {
+                profile.configure(moiren_windows_audio::engine_backend::ProfessionalBackend::<
+                    f64,
+                >::new()?)?;
+            }
+            Ok(Box::new(backend.clone()))
+        }));
+    }
     pub fn new(
         factory: impl Fn(AudioLatencyProfile) -> Result<Box<dyn EngineBackend<f32>>, host::BackendError>
         + Send
@@ -161,8 +188,17 @@ impl ManagedDriver {
         + 'static,
     ) -> Self {
         Self {
+            #[cfg(windows)]
+            measured_selection_id: 0,
             exports_runtime: Default::default(),
-            factory: Arc::new(move |profile, _, _| factory(profile)),
+            factory: Arc::new(move |profile, _, _, measured| {
+                if measured.is_some() {
+                    return Err(host::BackendError::Unsupported(
+                        "backend does not accept measured Process profiles".into(),
+                    ));
+                }
+                factory(profile)
+            }),
             f64_factory: None,
             catalog_backend: None,
             host_config: HostConfig {
@@ -210,7 +246,14 @@ impl ManagedDriver {
         + Sync
         + 'static,
     ) -> Self {
-        self.f64_factory = Some(Arc::new(move |profile, _, _| factory(profile)));
+        self.f64_factory = Some(Arc::new(move |profile, _, _, measured| {
+            if measured.is_some() {
+                return Err(host::BackendError::Unsupported(
+                    "backend does not accept measured Process profiles".into(),
+                ));
+            }
+            factory(profile)
+        }));
         self
     }
     pub fn with_catalog(mut self, backend: Arc<dyn CatalogBackend>) -> Self {
@@ -235,13 +278,18 @@ impl ManagedDriver {
         let provider_for_f64 = virtual_provider.clone();
         let mut driver = Self::new(|_| unreachable!("Windows factory replaced before use"))
             .with_catalog(Arc::new(WindowsBackend));
-        driver.factory = Arc::new(move |_, _, transport| {
+        driver.factory = Arc::new(move |_, _, transport, measured| {
             transport
                 .validate()
                 .map_err(host::BackendError::Unsupported)?;
             let backend = moiren_windows_audio::engine_backend::ProfessionalBackend::<f32>::new()?
                 .with_process_bridge(transport.process_options())?
                 .with_virtual_buffer(transport.virtual_options())?;
+            let backend = if let Some(profile) = measured {
+                profile.configure(backend)?
+            } else {
+                backend
+            };
             let backend = if let Some(provider) = provider_for_factory.as_ref() {
                 backend.with_virtual_provider(provider.clone())
             } else {
@@ -254,13 +302,18 @@ impl ManagedDriver {
                 Some(backend.native_observations());
             Ok(Box::new(backend))
         });
-        driver.f64_factory = Some(Arc::new(move |_, _, transport| {
+        driver.f64_factory = Some(Arc::new(move |_, _, transport, measured| {
             transport
                 .validate()
                 .map_err(host::BackendError::Unsupported)?;
             let backend = moiren_windows_audio::engine_backend::ProfessionalBackend::<f64>::new()?
                 .with_process_bridge(transport.process_options())?
                 .with_virtual_buffer(transport.virtual_options())?;
+            let backend = if let Some(profile) = measured {
+                profile.configure(backend)?
+            } else {
+                backend
+            };
             let backend = if let Some(provider) = provider_for_f64.as_ref() {
                 backend.with_virtual_provider(provider.clone())
             } else {

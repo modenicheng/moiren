@@ -3,6 +3,9 @@ use crate::service::test_backend::{FakeBackend, State};
 use moiren_core::graph::NodeKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(windows)]
+#[path = "measured_tests.rs"]
+mod measured_tests;
 #[path = "rename_tests.rs"]
 mod rename_tests;
 #[path = "transport_tests.rs"]
@@ -643,7 +646,7 @@ fn nondefault_f32_and_f64_settings_support_export_admission_after_confirmation()
     ] {
         let (mut rig, _) = export_rig();
         let backend = FakeBackend(rig.state.clone());
-        rig.driver.f64_factory = Some(Arc::new(move |_, _, _| Ok(Box::new(backend.clone()))));
+        rig.driver.f64_factory = Some(Arc::new(move |_, _, _, _| Ok(Box::new(backend.clone()))));
         let mut settings = AudioSettings::default();
         settings.processing.precision = precision;
         settings.processing.sample_rate = 44_100;

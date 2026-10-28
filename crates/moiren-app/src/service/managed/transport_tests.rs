@@ -100,14 +100,14 @@ fn both_precision_factories_receive_the_applied_transport_snapshot() {
         let f64_observed = observed.clone();
         let f32_backend = FakeBackend(r.state.clone());
         let f64_backend = f32_backend.clone();
-        r.driver.factory = Arc::new(move |_, _, transport| {
+        r.driver.factory = Arc::new(move |_, _, transport, _| {
             f32_observed
                 .lock()
                 .unwrap()
                 .push((ProcessingPrecision::F32, *transport));
             Ok(Box::new(f32_backend.clone()))
         });
-        r.driver.f64_factory = Some(Arc::new(move |_, _, transport| {
+        r.driver.f64_factory = Some(Arc::new(move |_, _, transport, _| {
             f64_observed
                 .lock()
                 .unwrap()
@@ -142,7 +142,7 @@ fn both_precision_factories_receive_the_applied_transport_snapshot() {
 fn native_buffer_preparation_refusal_keeps_requested_values_without_active_claim() {
     let mut r = Rig::new();
     r.start();
-    r.driver.factory = Arc::new(move |_, _, settings| {
+    r.driver.factory = Arc::new(move |_, _, settings, _| {
         settings
             .virtual_options()
             .validate()
@@ -182,14 +182,14 @@ fn process_age_refusal_preserves_desired_intent_without_fallback_for_both_precis
     for precision in [ProcessingPrecision::F32, ProcessingPrecision::F64] {
         let mut r = Rig::new();
         r.start();
-        r.driver.factory = Arc::new(|_, _, settings| {
+        r.driver.factory = Arc::new(|_, _, settings, _| {
             settings
                 .process_options()
                 .prepare()
                 .map_err(|error| host::BackendError::Unsupported(error.to_string()))?;
             unreachable!("unsupported Process sample age must fail before opening a backend")
         });
-        r.driver.f64_factory = Some(Arc::new(|_, _, settings| {
+        r.driver.f64_factory = Some(Arc::new(|_, _, settings, _| {
             settings
                 .process_options()
                 .prepare()

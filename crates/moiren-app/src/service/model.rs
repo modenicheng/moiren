@@ -86,6 +86,8 @@ pub enum AppRequest {
     SetLatencyProfile(super::AudioLatencyProfile),
     SetAudioSettings(super::AudioSettings),
     SetTransportLatency(super::TransportLatencySettings),
+    /// Select current native evidence and rebuild; never mutates a live queue.
+    ApplyMeasuredProcessBridge(super::MeasuredProcessRequest),
     EditGraph(super::GraphEdit),
     /// Restore the candidate content recorded before the last user edit.
     UndoGraph,
@@ -167,6 +169,8 @@ pub struct AppSnapshot {
     /// Requested bounds owned by the Running generation. Effective native
     /// queues are reported separately in its diagnostics.
     pub active_transport_latency: Option<super::TransportLatencySettings>,
+    pub measured_process: Option<super::MeasuredProcessSummary>,
+    pub active_measured_process: Option<super::MeasuredProcessSummary>,
     pub graph: Arc<super::GraphSnapshot>,
     /// Consumption is published with the phase produced by those requests.
     pub consumed_request_id: RequestId,
