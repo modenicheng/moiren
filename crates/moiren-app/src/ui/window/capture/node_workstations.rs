@@ -18,6 +18,7 @@ use std::sync::{Arc, atomic::Ordering};
 mod mapper_editing;
 mod rack_editing;
 mod recording_formats;
+mod scalar_precision;
 mod spectrum_live;
 mod tone_precision;
 mod wav_validation;
@@ -1434,12 +1435,15 @@ fn overview_measurements(
 }
 
 fn contains_native_bounds(outer: Bounds<f32>, inner: Bounds<f32>) -> bool {
+    // Fractional native coordinates can reach the same edge via different f32
+    // sums. Allow at most half a pixel; larger clipping must still fail.
+    const EDGE_TOLERANCE: f32 = 0.5;
     inner.size.width > 0.
         && inner.size.height > 0.
-        && inner.left() >= outer.left()
-        && inner.right() <= outer.right()
-        && inner.top() >= outer.top()
-        && inner.bottom() <= outer.bottom()
+        && inner.left() >= outer.left() - EDGE_TOLERANCE
+        && inner.right() <= outer.right() + EDGE_TOLERANCE
+        && inner.top() >= outer.top() - EDGE_TOLERANCE
+        && inner.bottom() <= outer.bottom() + EDGE_TOLERANCE
 }
 
 fn pixel_bounds(bounds: Bounds<Pixels>) -> Bounds<f32> {
@@ -1708,6 +1712,20 @@ fn verify_overview_bounds(
     }))
 }
 
+fn requires_side_meter(kind: NodeKind, rack_stages: Option<usize>) -> bool {
+    matches!(
+        kind,
+        NodeKind::Eq
+            | NodeKind::Compressor
+            | NodeKind::Gate
+            | NodeKind::Pan
+            | NodeKind::Bus
+            | NodeKind::Recorder
+            | NodeKind::SpectrumAnalyzer
+            | NodeKind::ChannelMapper
+    ) || (kind == NodeKind::Rack && rack_stages.is_some_and(|count| count > 0))
+}
+
 fn verify_native_bounds(
     snapshot: &AppSnapshot,
     positions: &HashMap<NodeId, (f32, f32)>,
@@ -1761,11 +1779,7 @@ fn verify_native_bounds(
             .node(*id)
             .and_then(|node| node.builtin.rack())
             .map(|rack| rack.slots.len());
-        let vertical_meter = matches!(
-            node.kind,
-            NodeKind::Bus | NodeKind::Recorder | NodeKind::SpectrumAnalyzer
-        ) || (node.kind == NodeKind::Rack
-            && rack_stages.is_some_and(|stages| stages > 0));
+        let vertical_meter = requires_side_meter(node.kind, rack_stages);
         let meter = measured.meters.get(id);
         let channels = snapshot
             .graph
@@ -1994,8 +2008,29 @@ async fn capture_group(
         );
     })?;
     let (ids, settled) = prepare_group(window, shell, kinds, inspector, running, cx).await?;
+    let check_precision = scalar_precision::checks_frame(name);
+    if check_precision && inspector {
+        window.update(cx, |_, window, cx| -> anyhow::Result<()> {
+            let before = shell.read(cx);
+            let camera = before.camera;
+            let positions = before.node_positions.clone();
+            let selected = before.selected_node;
+            let snapshot = before.state.read(cx).snapshot.clone();
+            scalar_precision::reveal(window, &snapshot, ids[0], cx)?;
+            let after = shell.read(cx);
+            anyhow::ensure!(
+                after.camera == camera
+                    && after.node_positions == positions
+                    && after.selected_node == selected
+                    && after.state.read(cx).snapshot.graph == snapshot.graph
+                    && native_measurements(window, &ids)? == settled,
+                "precision Inspector scroll changed graph, camera, selection, or measured body"
+            );
+            Ok(())
+        })??;
+    }
     let path = directory.join(format!("{name}.png"));
-    let (dimensions, geometry, recordings) =
+    let (dimensions, geometry, recordings, scalar_precision) =
         window.update(cx, |_, window, cx| -> anyhow::Result<_> {
             window.refresh();
             window.draw(cx).clear(cx);
@@ -2031,6 +2066,16 @@ async fn capture_group(
                     })
                 })
                 .collect::<Vec<_>>();
+            let scalar_precision = check_precision
+                .then(|| {
+                    scalar_precision::evidence(
+                        window,
+                        &view.state.read(cx).snapshot,
+                        ids[0],
+                        inspector,
+                    )
+                })
+                .transpose()?;
             window.render_to_image()?.save(&path)?;
             Ok((
                 (
@@ -2039,6 +2084,7 @@ async fn capture_group(
                 ),
                 geometry,
                 recordings,
+                scalar_precision,
             ))
         })??;
     eprintln!("Capture {}: saved", path.display());
@@ -2091,6 +2137,7 @@ async fn capture_group(
             "live_levels": live,
             "channel_levels": channel_levels,
             "recordings": recordings,
+            "scalar_precision": scalar_precision,
         }))
     })
 }
@@ -2334,7 +2381,36 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn expanded_rack_bus_recorder_and_spectrum_require_meters_to_follow_measured_content() {
+    fn side_meter_classification_matches_expanded_native_controls() {
+        for kind in [
+            NodeKind::Eq,
+            NodeKind::Compressor,
+            NodeKind::Gate,
+            NodeKind::Pan,
+            NodeKind::Bus,
+            NodeKind::Recorder,
+            NodeKind::SpectrumAnalyzer,
+            NodeKind::ChannelMapper,
+        ] {
+            assert!(super::requires_side_meter(kind, None), "{kind:?}");
+        }
+        for kind in [
+            NodeKind::Gain,
+            NodeKind::Limiter,
+            NodeKind::Delay,
+            NodeKind::Meter,
+            NodeKind::Source,
+            NodeKind::Sink,
+        ] {
+            assert!(!super::requires_side_meter(kind, None), "{kind:?}");
+        }
+        assert!(!super::requires_side_meter(NodeKind::Rack, Some(0)));
+        assert!(!super::requires_side_meter(NodeKind::Rack, None));
+        assert!(super::requires_side_meter(NodeKind::Rack, Some(1)));
+    }
+
+    #[::core::prelude::v1::test]
+    fn side_meter_kinds_require_meters_to_follow_measured_content() {
         let runtime = spawn_service();
         let mut snapshot = (*initial_projection(&runtime.handle())).clone();
         let initial = fixture().unwrap();
@@ -2345,6 +2421,11 @@ mod tests {
             ("bus-expanded", NodeKind::Bus, None),
             ("recorder", NodeKind::Recorder, None),
             ("spectrum", NodeKind::SpectrumAnalyzer, None),
+            ("eq", NodeKind::Eq, None),
+            ("compressor", NodeKind::Compressor, None),
+            ("gate", NodeKind::Gate, None),
+            ("balance", NodeKind::Pan, None),
+            ("mapper", NodeKind::ChannelMapper, None),
         ] {
             let mut graph = ServiceGraph::default();
             graph
@@ -2375,6 +2456,7 @@ mod tests {
             let heights = BTreeMap::from([(id, 500.)]);
             let layout = measured_focus_layout(&snapshot, &[kind], viewport, &heights).unwrap();
             let mut measured = measurement_fixture(&snapshot, &layout, viewport, heights);
+            measured.meters.clear();
             assert!(
                 verify_native_bounds(
                     &snapshot,
@@ -2402,17 +2484,38 @@ mod tests {
             )
             .unwrap();
             assert_eq!(verified[0]["vertical_meter_verified"], true);
-            measured.meters.get_mut(&id).unwrap().size.height -= 30.;
-            assert!(
-                verify_native_bounds(
-                    &snapshot,
-                    &layout.positions,
-                    layout.camera,
-                    &layout.ids,
-                    &measured
-                )
-                .is_err()
-            );
+            let valid = measured.meters[&id];
+            for invalid in [
+                Bounds {
+                    size: size(valid.size.width, valid.size.height - 30.),
+                    ..valid
+                },
+                Bounds {
+                    origin: point(valid.left(), valid.top() - 20.),
+                    ..valid
+                },
+                Bounds {
+                    origin: point(body.right(), valid.top()),
+                    ..valid
+                },
+                Bounds {
+                    size: size(0., valid.size.height),
+                    ..valid
+                },
+            ] {
+                measured.meters.insert(id, invalid);
+                assert!(
+                    verify_native_bounds(
+                        &snapshot,
+                        &layout.positions,
+                        layout.camera,
+                        &layout.ids,
+                        &measured
+                    )
+                    .is_err(),
+                    "{kind:?}: {invalid:?}"
+                );
+            }
         }
         finish_service(runtime);
     }
@@ -2451,7 +2554,7 @@ mod tests {
         heights: BTreeMap<NodeId, f32>,
     ) -> NativeMeasurements {
         let world = CanvasWorld::measured(snapshot, &layout.positions, &heights);
-        let bodies = world
+        let bodies: BTreeMap<NodeId, Bounds<f32>> = world
             .nodes
             .iter()
             .filter_map(|node| {
@@ -2469,11 +2572,33 @@ mod tests {
                 ))
             })
             .collect();
+        let meters = layout
+            .ids
+            .iter()
+            .filter_map(|id| {
+                let node = snapshot.graph.graph.get_node(*id).ok()?;
+                let stages = snapshot
+                    .graph
+                    .node(*id)
+                    .and_then(|n| n.builtin.rack())
+                    .map(|r| r.slots.len());
+                super::requires_side_meter(node.kind(), stages).then(|| {
+                    let body = bodies[id];
+                    (
+                        *id,
+                        Bounds {
+                            origin: point(body.right() - 100., body.top()),
+                            size: size(100., body.size.height),
+                        },
+                    )
+                })
+            })
+            .collect();
         NativeMeasurements {
             viewport,
             heights,
             bodies,
-            meters: BTreeMap::new(),
+            meters,
         }
     }
 
@@ -2526,6 +2651,72 @@ mod tests {
             );
         }
         finish_service(runtime);
+    }
+
+    #[::core::prelude::v1::test]
+    fn native_bounds_containment_accepts_fractional_pixel_endpoints() {
+        let parent = Bounds {
+            origin: point(1176.8, 208.8),
+            size: size(247.2, 260.),
+        };
+        let release = Bounds {
+            origin: point(1176.8, 423.2),
+            size: size(247.2, 45.6),
+        };
+        // Actual Gate Release layout: equivalent bottom edges round differently.
+        assert!(release.bottom() > parent.bottom());
+        assert!(release.bottom() - parent.bottom() < 0.001);
+        assert!(super::contains_native_bounds(parent, release));
+    }
+
+    #[::core::prelude::v1::test]
+    fn native_bounds_containment_rejects_clipping_over_half_pixel() {
+        let parent = Bounds {
+            origin: point(10., 20.),
+            size: size(100., 80.),
+        };
+        for overflow in [0.5, 0.501, 1., 20.] {
+            for child in [
+                Bounds {
+                    origin: point(parent.left() - overflow, parent.top()),
+                    ..parent
+                },
+                Bounds {
+                    origin: point(parent.left() + overflow, parent.top()),
+                    ..parent
+                },
+                Bounds {
+                    origin: point(parent.left(), parent.top() - overflow),
+                    ..parent
+                },
+                Bounds {
+                    origin: point(parent.left(), parent.top() + overflow),
+                    ..parent
+                },
+            ] {
+                assert_eq!(
+                    super::contains_native_bounds(parent, child),
+                    overflow <= 0.5,
+                    "overflow={overflow}, child={child:?}"
+                );
+            }
+        }
+        for invalid in [0., -1., f32::NAN, f32::INFINITY] {
+            assert!(!super::contains_native_bounds(
+                parent,
+                Bounds {
+                    size: size(invalid, 40.),
+                    ..parent
+                }
+            ));
+            assert!(!super::contains_native_bounds(
+                parent,
+                Bounds {
+                    size: size(40., invalid),
+                    ..parent
+                }
+            ));
+        }
     }
 
     #[::core::prelude::v1::test]
