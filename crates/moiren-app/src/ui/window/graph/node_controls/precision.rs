@@ -25,6 +25,13 @@ impl Editors {
 }
 
 const EQ_PARAMETERS: [Parameter; 3] = [Parameter::EqFrequency, Parameter::EqGain, Parameter::EqQ];
+const GATE_PARAMETERS: [Parameter; 5] = [
+    Parameter::GateThreshold,
+    Parameter::GateRange,
+    Parameter::GateAttack,
+    Parameter::GateHold,
+    Parameter::GateRelease,
+];
 
 fn parameters(kind: NodeKind, node: &GraphNodeState) -> &'static [Parameter] {
     match kind {
@@ -32,6 +39,7 @@ fn parameters(kind: NodeKind, node: &GraphNodeState) -> &'static [Parameter] {
             &[Parameter::Frequency]
         }
         NodeKind::Eq if node.builtin.eq().is_some() => &EQ_PARAMETERS,
+        NodeKind::Gate if node.builtin.gate().is_some() => &GATE_PARAMETERS,
         _ => &[],
     }
 }
@@ -175,14 +183,32 @@ pub(in crate::ui::window::graph) fn tone_inspector(shell: &StudioShell, id: Node
 }
 
 pub(in crate::ui::window::graph) fn eq_inspector(shell: &StudioShell, id: NodeId) -> AnyElement {
+    inspector_fields(shell, id, format!("eq-precision-{id:?}"), &EQ_PARAMETERS)
+}
+
+pub(in crate::ui::window::graph) fn gate_inspector(shell: &StudioShell, id: NodeId) -> AnyElement {
+    inspector_fields(
+        shell,
+        id,
+        format!("gate-precision-{id:?}"),
+        &GATE_PARAMETERS,
+    )
+}
+
+fn inspector_fields(
+    shell: &StudioShell,
+    id: NodeId,
+    root_id: String,
+    parameters: &[Parameter],
+) -> AnyElement {
     div()
-        .id(format!("eq-precision-{id:?}"))
+        .id(root_id)
         .flex()
         .flex_col()
         .min_w_0()
         .w_full()
         .gap(px(8.))
-        .children(EQ_PARAMETERS.map(|parameter| {
+        .children(parameters.iter().copied().map(|parameter| {
             precision_field(
                 shell,
                 (id, parameter),

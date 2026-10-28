@@ -353,17 +353,20 @@ impl Parameter {
             | Self::GateAttack
             | Self::GateHold
             | Self::GateRelease => {
-                if let BuiltinState::Gate(s) = &mut builtin {
-                    match self {
-                        Self::GateThreshold => s.threshold_db = value,
-                        Self::GateRange => s.range_db = value,
-                        Self::GateAttack => s.attack_ms = value,
-                        Self::GateHold => s.hold_ms = value,
-                        _ => s.release_ms = value,
-                    }
-                } else {
+                if kind != NodeKind::Gate || node.builtin.gate().is_none() {
                     return None;
                 }
+                return Some(GraphEdit::SetBuiltinParameter {
+                    node: id,
+                    parameter: match self {
+                        Self::GateThreshold => RackParameter::GateThreshold,
+                        Self::GateRange => RackParameter::GateRange,
+                        Self::GateAttack => RackParameter::GateAttack,
+                        Self::GateHold => RackParameter::GateHold,
+                        _ => RackParameter::GateRelease,
+                    },
+                    value,
+                });
             }
             Self::LimitInput | Self::LimitThreshold | Self::LimitRelease => {
                 if let BuiltinState::Limiter(s) = &mut builtin {
