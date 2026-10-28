@@ -545,6 +545,9 @@ _version: 2
 "Enable intent":
   en: Enable intent
   zh-CN: 启用意图
+"Bind":
+  en: Bind
+  zh-CN: 绑定
 "Bind selected IO":
   en: Bind selected IO
   zh-CN: 绑定选中的 IO
@@ -1797,6 +1800,18 @@ _version: 2
 "The node does not exist":
   en: "The node does not exist"
   zh-CN: "节点不存在"
+"The virtual export does not exist":
+  en: "The virtual export does not exist"
+  zh-CN: "虚拟设备不存在"
+"A Playback export can only bind an input node":
+  en: "A Playback export can only bind an input node"
+  zh-CN: "Playback 虚拟设备只能绑定输入节点"
+"A Microphone export can only bind an output node":
+  en: "A Microphone export can only bind an output node"
+  zh-CN: "Microphone 虚拟设备只能绑定输出节点"
+"The virtual export and graph node have different channel counts":
+  en: "The virtual export and graph node have different channel counts"
+  zh-CN: "虚拟设备与图节点声道数不一致"
 "Compressor parameters only apply to Compressor nodes":
   en: "Compressor parameters only apply to Compressor nodes"
   zh-CN: "Compressor 参数只能用于 Compressor 节点"

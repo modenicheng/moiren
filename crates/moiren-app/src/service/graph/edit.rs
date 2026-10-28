@@ -178,7 +178,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
         }
         GraphEdit::BindSource { node, source } => {
             if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Source {
-                return Err("只有输入节点可以绑定音源".into());
+                return Err("Only input nodes can bind a source".into());
             }
             for export in &mut next.exports {
                 if export.binding == Some(node) {
@@ -210,7 +210,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
         }
         GraphEdit::BindOutput { node, endpoint_id } => {
             if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Sink {
-                return Err("只有输出节点可以绑定设备".into());
+                return Err("Only output nodes can bind a device".into());
             }
             for export in &mut next.exports {
                 if export.binding == Some(node) {
@@ -230,21 +230,23 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .iter()
                 .find(|export| export.endpoint_id == endpoint_id)
                 .map(|export| (export.direction, export.channels))
-                .ok_or("虚拟设备不存在")?;
+                .ok_or("The virtual export does not exist")?;
             if let Some(node) = node {
                 let topology = next.graph.get_node(node).map_err(|e| e.to_string())?;
                 if topology.kind() != direction.node_kind() {
                     return Err(match direction {
                         super::super::ExportDirection::Playback => {
-                            "Playback 只能绑定输入节点".into()
+                            "A Playback export can only bind an input node".into()
                         }
                         super::super::ExportDirection::Microphone => {
-                            "Microphone 只能绑定输出节点".into()
+                            "A Microphone export can only bind an output node".into()
                         }
                     });
                 }
                 if topology.channels() != channels {
-                    return Err("虚拟设备与图节点声道数不一致".into());
+                    return Err(
+                        "The virtual export and graph node have different channel counts".into(),
+                    );
                 }
                 for other in &mut next.exports {
                     if other.endpoint_id != endpoint_id && other.binding == Some(node) {
@@ -255,7 +257,7 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                     .nodes
                     .iter_mut()
                     .find(|state| state.id == node)
-                    .ok_or("节点不存在")?;
+                    .ok_or("The node does not exist")?;
                 match direction {
                     super::super::ExportDirection::Playback => state.source = None,
                     super::super::ExportDirection::Microphone => state.output_endpoint_id = None,
