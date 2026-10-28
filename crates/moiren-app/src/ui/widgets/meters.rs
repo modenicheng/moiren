@@ -104,10 +104,20 @@ pub(crate) fn paint_channel_meter(
 
 pub(crate) fn meter_height(value: f32) -> f32 {
     if value <= 0. {
-        0.
+        return 0.;
+    }
+    use super::fader::FaderScale;
+    let (&(floor_db, floor_position), _) = FaderScale::ANCHORS.split_last().expect("non-empty");
+    let floor = 10f64.powf(floor_db / 20.);
+    let value = f64::from(value);
+    if value >= floor {
+        1. - FaderScale::position(value)
     } else {
-        use super::fader::FaderScale;
-        1. - FaderScale::position(f64::from(value))
+        // `FaderScale::position` holds finite gains at the last tick so the
+        // fader itself stays visible; a meter bar must keep falling, so
+        // invert the amplitude-linear tail of `FaderScale::gain` that owns
+        // the `floor_position`..1 segment reaching exact digital zero.
+        (value / floor) as f32 * (1. - floor_position)
     }
 }
 
@@ -314,6 +324,20 @@ mod tests {
         assert_eq!(meter_height(10f32.powf(12. / 20.)), 1.);
         assert_eq!(meter_height(2. * 10f32.powf(12. / 20.)), 1.);
         assert!((meter_height(10f32.powf(-6. / 20.)) - 0.62).abs() < 0.00001);
+    }
+
+    #[test]
+    fn silence_below_the_scale_floor_keeps_falling_to_zero_height() {
+        let floor = 10f32.powf(-72. / 20.);
+        // The tail meets the interpolated scale exactly at the last tick.
+        assert!((meter_height(floor) - 0.03).abs() < 0.00001);
+        // A decaying bar keeps shrinking through the tail instead of
+        // saturating at the fader's −72 dB hold.
+        let fading = meter_height(floor * 0.01);
+        assert!(fading > 0. && fading < 0.0004, "fading = {fading}");
+        assert!(meter_height(floor * 0.5) < meter_height(floor));
+        // And exact digital zero stays fully invisible.
+        assert_eq!(meter_height(0.), 0.);
     }
 
     #[test]
