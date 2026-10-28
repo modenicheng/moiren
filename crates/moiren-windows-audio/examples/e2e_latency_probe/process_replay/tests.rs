@@ -5,7 +5,7 @@ use moiren_windows_audio::{
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf};
 
-const HARD_CAP: u64 = 1_048_576;
+const HARD_CAP: u64 = 16_777_216;
 
 struct Fixture(PathBuf);
 
@@ -214,14 +214,7 @@ fn invalid_custom_candidates_are_structured_refusals_without_compatible_fallback
 
 #[test]
 fn invalid_trace_refusals_keep_requested_candidates_and_exit_one() {
-    for fault in [
-        "truncated",
-        "ambiguous",
-        "pid",
-        "created",
-        "generation",
-        "schema",
-    ] {
+    for fault in ["truncated", "ambiguous", "pid", "created", "generation"] {
         let fixture = Fixture::new();
         fixture.inputs();
         let mut trace = artifact();
@@ -235,7 +228,6 @@ fn invalid_trace_refusals_keep_requested_candidates_and_exit_one() {
             "pid" => set_option(&mut arguments, "--process-pid", 43),
             "created" => set_option(&mut arguments, "--process-created-100ns", 123),
             "generation" => set_option(&mut arguments, "--owner-generation", 8),
-            "schema" => trace["schema_version"] = json!(2),
             _ => unreachable!(),
         }
         fixture.json("trace.json", &trace);
@@ -260,7 +252,11 @@ fn replay_output_is_capped_before_creating_a_partial_evidence_file() {
     trace["process"]["executable_name"] = json!("x".repeat(600_000));
     fixture.json("trace.json", &trace);
     assert!(fs::metadata(fixture.path("trace.json")).unwrap().len() < HARD_CAP);
-    assert!(super::super::run(fixture.arguments()).is_err());
+    let error = super::super::run(fixture.arguments()).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("replay output exceeds 1 MiB"),
+        "{error:#}"
+    );
     assert!(!fixture.path("output.json").exists());
 }
 
@@ -291,7 +287,7 @@ fn required_flags_duplicates_unknowns_and_numeric_bounds_are_rejected_before_io(
         ("--process-created-100ns", "0"),
         ("--owner-generation", "0"),
         ("--max-input-bytes", "0"),
-        ("--max-input-bytes", "1048577"),
+        ("--max-input-bytes", "16777217"),
         ("--max-input-bytes", "18446744073709551615"),
     ] {
         let mut arguments = fixture.arguments();
@@ -458,7 +454,7 @@ fn wrapper_distinguishes_completed_all_refused_sweep_from_refused_trace() {
 }
 
 #[test]
-fn exact_one_mib_inputs_are_accepted_but_more_than_256_history_events_are_not() {
+fn exact_sixteen_mib_inputs_are_accepted_but_schema1_still_refuses_257_events() {
     let fixture = Fixture::new();
     fixture.inputs();
     for name in ["trace.json", "candidates.json"] {
@@ -480,6 +476,104 @@ fn exact_one_mib_inputs_are_accepted_but_more_than_256_history_events_are_not() 
 }
 
 #[test]
+fn input_range_above_one_mib_up_to_sixteen_mib_is_valid_and_larger_caps_are_not() {
+    for limit in [1_048_577_u64, HARD_CAP] {
+        let fixture = Fixture::new();
+        fixture.inputs();
+        let mut arguments = fixture.arguments();
+        set_option(&mut arguments, "--max-input-bytes", limit);
+        assert_eq!(super::super::run(arguments).unwrap(), 0, "limit={limit}");
+        assert_eq!(fixture.output()["qualified"], false);
+    }
+    for limit in [0, HARD_CAP + 1, u64::MAX] {
+        let fixture = Fixture::new();
+        fixture.inputs();
+        let mut arguments = fixture.arguments();
+        set_option(&mut arguments, "--max-input-bytes", limit);
+        let error = super::super::run(arguments).unwrap_err();
+        assert!(
+            error.to_string().contains("1..16777216"),
+            "limit={limit}: {error:#}"
+        );
+        assert!(!fixture.path("output.json").exists());
+    }
+}
+
+#[test]
+fn schema2_prefix_document_replays_without_promoting_origin_or_qualification() {
+    let fixture = Fixture::new();
+    fixture.inputs();
+    let mut trace = artifact();
+    trace["schema_version"] = json!(2);
+    trace["collection_refusal"] = Value::Null;
+    fixture.json("trace.json", &trace);
+    assert_eq!(super::super::run(fixture.arguments()).unwrap(), 0);
+    let output = fixture.output();
+    assert_eq!(output["status"], "completed");
+    assert_eq!(output["trace_origin"], "caller_supplied");
+    assert_eq!(output["qualified"], false);
+    assert_eq!(output["process"], trace["process"]);
+    assert_eq!(output["owner_generation"], trace["owner_generation"]);
+    assert_eq!(output["candidates"][0]["status"], "replayed");
+    let report = &output["candidates"][0]["report"];
+    assert_eq!(report["packet_events"], 8);
+    assert_eq!(report["read_events"], 8);
+    assert_eq!(report["requested_frames"], 32);
+    assert_eq!(report["trace_origin"], "caller_supplied");
+    assert_eq!(report["qualified"], false);
+    assert_eq!(report["candidate"]["age_discarded_frames"], 0);
+    assert!(report["candidate"].get("oldest_frame_age").is_none());
+}
+
+#[test]
+fn schema2_requires_collection_refusal_and_retains_structured_trace_refusals() {
+    for malformed in ["missing_refusal", "unknown_refusal", "unknown_schema"] {
+        let fixture = Fixture::new();
+        fixture.inputs();
+        let mut trace = artifact();
+        trace["schema_version"] = json!(2);
+        trace["collection_refusal"] = Value::Null;
+        match malformed {
+            "missing_refusal" => {
+                trace.as_object_mut().unwrap().remove("collection_refusal");
+            }
+            "unknown_refusal" => trace["collection_refusal"] = json!("not_a_collection_refusal"),
+            "unknown_schema" => trace["schema_version"] = json!(3),
+            _ => unreachable!(),
+        }
+        fixture.json("trace.json", &trace);
+        assert!(
+            super::super::run(fixture.arguments()).is_err(),
+            "{malformed}"
+        );
+        assert!(!fixture.path("output.json").exists());
+    }
+    for fault in ["unclosed", "generation"] {
+        let fixture = Fixture::new();
+        fixture.inputs();
+        let mut trace = artifact();
+        trace["schema_version"] = json!(2);
+        trace["collection_refusal"] = Value::Null;
+        let mut arguments = fixture.arguments();
+        if fault == "unclosed" {
+            trace["queue_history"]["writer_finished"] = json!(false);
+        } else {
+            set_option(&mut arguments, "--owner-generation", 8);
+        }
+        fixture.json("trace.json", &trace);
+        assert_eq!(super::super::run(arguments).unwrap(), 1, "{fault}");
+        let output = fixture.output();
+        assert_eq!(output["status"], "refused");
+        assert_eq!(output["qualified"], false);
+        assert_eq!(output["trace_origin"], "caller_supplied");
+        assert_eq!(output["error"]["stage"], "trace_validation");
+        assert_eq!(output["candidates"][0]["options"], candidate(12, 32));
+        assert_eq!(output["candidates"][0]["status"], "refused");
+        assert!(output["candidates"][0].get("report").is_none());
+    }
+}
+
+#[test]
 fn command_help_is_offline_and_does_not_require_input_files() {
     assert_eq!(
         super::super::run(vec!["replay-process".into(), "--help".into()]).unwrap(),
@@ -487,4 +581,7 @@ fn command_help_is_offline_and_does_not_require_input_files() {
     );
     assert!(super::super::HELP.contains("replay-process"));
     assert!(super::super::HELP.contains("not qualification"));
+    assert!(super::super::HELP.contains("--max-input-bytes 1..16777216"));
+    assert!(super::super::HELP.contains("schema 1 or 2"));
+    assert!(super::super::HELP.contains("output hard cap 1 MiB"));
 }

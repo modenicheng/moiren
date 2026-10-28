@@ -4,19 +4,20 @@ use moiren_windows_audio::{
     latency::transport::{DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy},
     process_loopback::{
         ProcessBridgeOptions, ProcessIdentity, ProcessReplayError, ProcessReplayReport,
-        ProcessTraceArtifact, ProcessTraceOrigin,
+        ProcessTraceDocument, ProcessTraceOrigin,
     },
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::{collections::BTreeMap, fmt, fs::OpenOptions, io::Write, path::Path};
 
-const HARD_INPUT_BYTES: u64 = 1_048_576;
+const HARD_INPUT_BYTES: u64 = 16_777_216;
+const HARD_OUTPUT_BYTES: usize = 1_048_576;
 const MAX_CANDIDATES: usize = 16;
 
 struct CappedOutput(Vec<u8>);
 impl Write for CappedOutput {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > HARD_INPUT_BYTES as usize - self.0.len() {
+        if bytes.len() > HARD_OUTPUT_BYTES - self.0.len() {
             return Err(std::io::Error::other("replay output exceeds 1 MiB"));
         }
         self.0.extend_from_slice(bytes);
@@ -222,7 +223,7 @@ pub(super) fn run(arguments: Vec<String>) -> Result<i32> {
         .context("parse JSON input byte cap")?;
     ensure!(
         (1..=HARD_INPUT_BYTES).contains(&limit),
-        "JSON input byte cap must be 1..1048576 per file"
+        "JSON input byte cap must be 1..16777216 per file"
     );
     let pid: u32 = options["--process-pid"]
         .parse()
@@ -242,15 +243,15 @@ pub(super) fn run(arguments: Vec<String>) -> Result<i32> {
         request.schema_version == 1,
         "candidate schema_version must be 1"
     );
-    // Both files are byte-bounded before serde allocation. The artifact also
-    // caps histories; all imported identity labels remain caller-supplied.
-    let artifact: ProcessTraceArtifact = super::read_json(options["--trace"], limit)?;
+    // Both files are byte-bounded before serde allocation. The document
+    // validates schema-specific history caps; labels remain caller-supplied.
+    let document: ProcessTraceDocument = super::read_json(options["--trace"], limit)?;
     let expected = ProcessIdentity {
         pid,
         creation_time_100ns,
         executable_name: String::new(),
     };
-    let trace = artifact.trace(&expected, generation);
+    let trace = document.trace(&expected, generation);
     let trace_error = trace.as_ref().err().copied();
     let mut candidates = Vec::with_capacity(request.candidates.len());
     for (index, candidate) in request.candidates.into_iter().enumerate() {
@@ -293,8 +294,8 @@ pub(super) fn run(arguments: Vec<String>) -> Result<i32> {
         },
         qualified: false,
         trace_origin: ProcessTraceOrigin::CallerSupplied,
-        process: artifact.process,
-        owner_generation: artifact.owner_generation,
+        process: document.process().clone(),
+        owner_generation: document.owner_generation(),
         expected_process_pid: pid,
         expected_process_created_100ns: creation_time_100ns,
         expected_owner_generation: generation,
