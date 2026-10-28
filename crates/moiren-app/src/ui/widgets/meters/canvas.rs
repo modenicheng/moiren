@@ -11,6 +11,7 @@ pub(super) fn node(levels: Option<&[DisplayLevel]>, channels: usize, clips: &[bo
     let levels = levels.map(<[DisplayLevel]>::to_vec);
     let clips = clips.to_vec();
     div()
+        .relative()
         .w(px(super::node_meter_width(channels)))
         .h_full()
         .min_h_0()
@@ -37,11 +38,15 @@ pub(super) fn node(levels: Option<&[DisplayLevel]>, channels: usize, clips: &[bo
                             canvas(
                                 |_, _, _| {},
                                 move |bounds, _, window, cx| {
-                                    let layout = VerticalGeometry::node(
+                                    let mut layout = VerticalGeometry::node(
                                         f32::from(bounds.size.width),
                                         f32::from(bounds.size.height),
                                         channels,
                                     );
+                                    // Only channels scroll; the fixed sibling
+                                    // paints the ruler and heading once.
+                                    layout.ruler = None;
+                                    layout.clip_heading = None;
                                     paint_vertical(
                                         bounds,
                                         &layout,
@@ -58,6 +63,41 @@ pub(super) fn node(levels: Option<&[DisplayLevel]>, channels: usize, clips: &[bo
                 )
                 .gpui_test_observe(),
         )
+        .child(
+            // A bare canvas has no hitbox: scrolling and the parent's clip
+            // reset still reach the existing viewport beneath this overlay.
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, cx| {
+                    let layout = VerticalGeometry::node(
+                        f32::from(bounds.size.width),
+                        f32::from(bounds.size.height),
+                        channels,
+                    );
+                    let gutter = node_gutter_bounds(bounds, &layout);
+                    window.with_content_mask(Some(ContentMask { bounds: gutter }), |window| {
+                        // Match graph_canvas_view::nodes::paint_node. Cover the
+                        // footer too, so a partial previous readout cannot leak.
+                        window.paint_quad(fill(gutter, theme::SURFACE_3));
+                        paint_vertical_scale(bounds, &layout, window, cx);
+                    });
+                },
+            )
+            .absolute()
+            .left_0()
+            .top_0()
+            .size_full(),
+        )
+}
+
+fn node_gutter_bounds(bounds: Bounds<Pixels>, layout: &VerticalGeometry) -> Bounds<Pixels> {
+    Bounds::new(
+        bounds.origin,
+        size(
+            px(layout.track.x).min(bounds.size.width),
+            bounds.size.height,
+        ),
+    )
 }
 
 pub(super) fn compact_stereo(levels: Option<[DisplayLevel; 2]>, clips: [bool; 2]) -> Div {
@@ -163,40 +203,7 @@ fn paint_vertical(
     cx: &mut App,
 ) {
     window.with_content_mask(Some(ContentMask { bounds }), |window| {
-        if let Some(rect) = layout.clip_heading {
-            text(bounds, rect, "CLIP", TextStyle::Header, window, cx);
-        }
-        if let Some(ruler) = layout.ruler.filter(|ruler| ruler.width >= 20.) {
-            for tick in geometry::scale_ticks(layout.track) {
-                let label = tick
-                    .db
-                    .map_or_else(|| "\u{2212}\u{221e}".to_owned(), |db| format!("{db:+.0}"));
-                text(
-                    bounds,
-                    Rect {
-                        y: tick.y - TICK_LINE_HEIGHT / 2.,
-                        height: TICK_LINE_HEIGHT,
-                        width: (ruler.width - 4.).max(0.),
-                        ..ruler
-                    },
-                    &label,
-                    TextStyle::Scale,
-                    window,
-                    cx,
-                );
-                quad(
-                    bounds,
-                    Rect {
-                        x: ruler.right() - 3.,
-                        y: tick.y - 0.5,
-                        width: 3.,
-                        height: 1.,
-                    },
-                    theme::BORDER_STRONG,
-                    window,
-                );
-            }
-        }
+        paint_vertical_scale(bounds, layout, window, cx);
         for index in 0..layout.channels {
             let channel = layout.channel(index).expect("channel within layout");
             quad(bounds, channel.track, theme::BORDER, window);
@@ -245,6 +252,48 @@ fn paint_vertical(
             }
         }
     });
+}
+
+fn paint_vertical_scale(
+    bounds: Bounds<Pixels>,
+    layout: &VerticalGeometry,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if let Some(rect) = layout.clip_heading {
+        text(bounds, rect, "CLIP", TextStyle::Header, window, cx);
+    }
+    if let Some(ruler) = layout.ruler.filter(|ruler| ruler.width >= 20.) {
+        for tick in geometry::scale_ticks(layout.track) {
+            let label = tick
+                .db
+                .map_or_else(|| "\u{2212}\u{221e}".to_owned(), |db| format!("{db:+.0}"));
+            text(
+                bounds,
+                Rect {
+                    y: tick.y - TICK_LINE_HEIGHT / 2.,
+                    height: TICK_LINE_HEIGHT,
+                    width: (ruler.width - 4.).max(0.),
+                    ..ruler
+                },
+                &label,
+                TextStyle::Scale,
+                window,
+                cx,
+            );
+            quad(
+                bounds,
+                Rect {
+                    x: ruler.right() - 3.,
+                    y: tick.y - 0.5,
+                    width: 3.,
+                    height: 1.,
+                },
+                theme::BORDER_STRONG,
+                window,
+            );
+        }
+    }
 }
 
 fn reading(levels: Option<&[DisplayLevel]>, index: usize) -> Option<DisplayLevel> {
@@ -346,6 +395,108 @@ fn text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn node_gutter_stays_inside_viewport_and_aligns_with_natural_track() {
+        for height in [0., 1., 24., 64., 128., 300.] {
+            for width in [0., 12., 24., 100., 176., 328.] {
+                let bounds = Bounds::new(point(px(41.), px(17.)), size(px(width), px(height)));
+                for channels in [1, 2, 32, 256] {
+                    let fixed = VerticalGeometry::node(width, height, channels);
+                    let natural =
+                        VerticalGeometry::node(geometry::node_width(channels), height, channels);
+                    let gutter = node_gutter_bounds(bounds, &fixed);
+                    assert_eq!(gutter.origin, bounds.origin);
+                    assert_eq!(gutter.size.width, px(width.min(24.)));
+                    assert_eq!(gutter.size.height, bounds.size.height);
+                    assert!(gutter.right() <= bounds.right());
+                    assert_eq!(fixed.track.y, natural.track.y);
+                    assert_eq!(fixed.track.height, natural.track.height);
+                    assert_eq!(
+                        fixed.clip_heading.map(|rect| rect.y),
+                        natural.clip_heading.map(|rect| rect.y)
+                    );
+                    let fixed_ticks: Vec<_> = geometry::scale_ticks(fixed.track)
+                        .into_iter()
+                        .map(|tick| (tick.db, tick.y))
+                        .collect();
+                    let natural_ticks: Vec<_> = geometry::scale_ticks(natural.track)
+                        .into_iter()
+                        .map(|tick| (tick.db, tick.y))
+                        .collect();
+                    assert_eq!(fixed_ticks, natural_ticks);
+                }
+            }
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn node_gutter_masks_partial_previous_channel_without_changing_scroll_end() {
+        for channels in [8, 32, 256] {
+            for visible in [2, 4, 8].into_iter().filter(|visible| *visible <= channels) {
+                let natural_width = geometry::node_width(channels);
+                let viewport_width = geometry::node_width(visible);
+                let scroll_end = natural_width - viewport_width;
+                assert_eq!(scroll_end, (channels - visible) as f32 * 38.);
+                for height in [64., 128., 300.] {
+                    let bounds =
+                        Bounds::new(point(px(0.), px(0.)), size(px(viewport_width), px(height)));
+                    let layout = VerticalGeometry::node(natural_width, height, channels);
+                    let fixed = VerticalGeometry::node(viewport_width, height, channels);
+                    let gutter = node_gutter_bounds(bounds, &fixed);
+                    let first = channels - visible;
+                    if first > 0 {
+                        let previous = layout.channel(first - 1).unwrap();
+                        for rect in [
+                            previous.track,
+                            previous.clip,
+                            previous.label.unwrap(),
+                            previous.readout.unwrap(),
+                        ] {
+                            assert!(rect.right() - scroll_end <= f32::from(gutter.right()));
+                        }
+                    }
+                    for index in first..channels {
+                        let channel = layout.channel(index).unwrap();
+                        for rect in [
+                            channel.track,
+                            channel.clip,
+                            channel.label.unwrap(),
+                            channel.readout.unwrap(),
+                        ] {
+                            assert!(rect.x - scroll_end >= f32::from(gutter.right()));
+                            assert!(rect.right() - scroll_end <= viewport_width);
+                        }
+                    }
+                    let last = layout.channel(channels - 1).unwrap().readout.unwrap();
+                    assert_eq!(last.right() - scroll_end, viewport_width);
+                }
+            }
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn node_gutter_does_not_cover_stereo_or_first_page_channel_cells() {
+        for channels in [1, 2, 4, 8, 32] {
+            let viewport_width = super::super::node_meter_width(channels.min(4));
+            let bounds = Bounds::new(point(px(0.), px(0.)), size(px(viewport_width), px(176.)));
+            let natural = VerticalGeometry::node(geometry::node_width(channels), 176., channels);
+            let fixed = VerticalGeometry::node(viewport_width, 176., channels);
+            let gutter = node_gutter_bounds(bounds, &fixed);
+            for index in 0..channels.min(4) {
+                let channel = natural.channel(index).unwrap();
+                for rect in [
+                    channel.track,
+                    channel.clip,
+                    channel.label.unwrap(),
+                    channel.readout.unwrap(),
+                ] {
+                    assert!(rect.x >= f32::from(gutter.right()));
+                    assert!(rect.right() <= viewport_width);
+                }
+            }
+        }
+    }
 
     #[::core::prelude::v1::test]
     fn held_peak_is_short_numeric_and_distinguishes_silence_from_unknown() {
