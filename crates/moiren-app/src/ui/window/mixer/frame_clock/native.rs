@@ -35,7 +35,9 @@ impl Wake {
         let _ = unsafe { SetEvent(raw(&self.stop)) };
     }
 
-    pub fn start() -> anyhow::Result<(Self, async_channel::Receiver<()>)> {
+    pub fn start(
+        period: std::time::Duration,
+    ) -> anyhow::Result<(Self, async_channel::Receiver<()>)> {
         // SAFETY: unnamed kernel handles, immediately transferred into RAII
         // ownership. Only the worker waits; drop signals before joining it.
         let stop = Arc::new(unsafe {
@@ -57,7 +59,7 @@ impl Wake {
         let worker = std::thread::Builder::new()
             .name("mixer-frame-clock".into())
             .spawn(move || {
-                let mut cadence = Cadence::new(Instant::now());
+                let mut cadence = Cadence::new(Instant::now(), period);
                 loop {
                     let remaining = cadence.next.saturating_duration_since(Instant::now());
                     let due = -(remaining
@@ -132,7 +134,8 @@ mod tests {
 
     #[test]
     fn native_demand_is_bounded_and_drop_cancels_the_waiter() {
-        let (wake, receiver) = Wake::start().expect("high-resolution timer");
+        let (wake, receiver) =
+            Wake::start(Duration::from_secs(1) / 240).expect("high-resolution timer");
         let deadline = Instant::now() + Duration::from_secs(2);
         while receiver.is_empty() {
             assert!(Instant::now() < deadline, "native timer never woke");

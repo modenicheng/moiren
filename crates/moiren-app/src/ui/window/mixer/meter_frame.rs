@@ -237,6 +237,7 @@ pub(in crate::ui::window) struct MixerMeterFrame {
     pub(super) shell: WeakEntity<StudioShell>,
     geometry: Geometry,
     pub(in crate::ui::window) clock: super::frame_clock::FrameClock,
+    display_subscription: Option<Subscription>,
     _subscription: Subscription,
 }
 
@@ -254,6 +255,7 @@ impl MixerMeterFrame {
             shell: shell.downgrade(),
             geometry,
             clock: Default::default(),
+            display_subscription: None,
             _subscription: subscription,
         }
     }
@@ -268,8 +270,18 @@ impl MixerMeterFrame {
 
 impl Render for MixerMeterFrame {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.display_subscription.is_none() {
+            self.display_subscription = Some(cx.observe_window_display(window, |view, _, cx| {
+                // The next render reads the new display interval and
+                // replaces the worker; discard any tick from the old one.
+                view.clock.stop();
+                cx.notify();
+            }));
+        }
         let active = self.frame_active(cx);
-        let clocked = self.clock.sync(active, window, cx);
+        let clocked = self
+            .clock
+            .sync(active, window.refresh_interval(cx), window, cx);
         let shell = self.shell.clone();
         let geometry = self.geometry.clone();
         // No hitbox: faders, clip reset, tooltips and context menus continue
@@ -399,7 +411,9 @@ mod tests {
         cx.update(|window, cx| {
             view.update(cx, |view, cx| {
                 assert!(
-                    !view.clock.sync(true, window, cx),
+                    !view
+                        .clock
+                        .sync(true, window.refresh_interval(cx), window, cx),
                     "a headless window must not launch a native timer or replace simulated RAF"
                 );
             });
