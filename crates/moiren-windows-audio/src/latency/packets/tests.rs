@@ -304,6 +304,60 @@ fn observers_own_copies_and_survive_writer_drop_without_session_mixing() {
 }
 
 #[test]
+fn only_writer_drop_closes_empty_or_saturated_history() {
+    for saturated in [false, true] {
+        let (mut writer, observer) = packet_history();
+        assert!(!observer.snapshot().unwrap().writer_finished);
+        if saturated {
+            writer.mark_saturated();
+        }
+        let mut expected = observer.snapshot().unwrap();
+        assert!(!expected.writer_finished);
+        drop(writer);
+        expected.writer_finished = true;
+        assert_eq!(observer.snapshot().unwrap(), expected);
+        assert_eq!(
+            serde_json::to_value(&expected).unwrap()["writer_finished"],
+            true
+        );
+    }
+}
+
+#[test]
+fn writer_drop_retains_exact_suffix_frontiers_and_observer_allocation() {
+    let (mut writer, observer) = packet_history();
+    let peer = observer.clone();
+    let allocation = Arc::as_ptr(&observer.0);
+    assert_eq!(Arc::strong_count(&observer.0), 3);
+    for sequence in 1..=259 {
+        writer.record(sample(sequence));
+    }
+    let mut expected = observer.snapshot().unwrap();
+    assert!(!expected.writer_finished);
+    assert_eq!(expected.total_events, 259);
+    assert_eq!(expected.overwritten_events, 3);
+    assert_eq!(expected.events[0].published_before_frames, 24);
+    drop(writer);
+    assert_eq!(Arc::strong_count(&observer.0), 2);
+    assert_eq!(Arc::as_ptr(&observer.0), allocation);
+    assert_eq!(Arc::as_ptr(&peer.0), allocation);
+    expected.writer_finished = true;
+    assert_eq!(observer.snapshot().unwrap(), expected);
+    assert_eq!(peer.snapshot().unwrap(), expected);
+    let (_replacement, replacement_observer) = packet_history();
+    assert!(!replacement_observer.snapshot().unwrap().writer_finished);
+}
+
+#[test]
+fn writer_drop_does_not_bypass_contended_snapshot_validation() {
+    let (mut writer, observer) = packet_history();
+    writer.record(sample(1));
+    observer.0.version.store(3, SeqCst);
+    drop(writer);
+    assert!(observer.snapshot().is_none());
+}
+
+#[test]
 fn concurrent_suffix_never_mixes_totals_frontiers_origin_or_payload() {
     let (mut writer, observer) = packet_history();
     let barrier = Arc::new(std::sync::Barrier::new(2));
@@ -320,6 +374,9 @@ fn concurrent_suffix_never_mixes_totals_frontiers_origin_or_payload() {
             assert!(!snapshot.saturated);
             assert_eq!(snapshot.offered_frames, snapshot.total_events * 12);
             assert_eq!(snapshot.published_frames, snapshot.total_events * 8);
+            if snapshot.writer_finished {
+                assert_eq!(snapshot.total_events, 20_000);
+            }
             let count = snapshot.total_events.min(256);
             assert_eq!(snapshot.events.len() as u64, count);
             assert_eq!(snapshot.overwritten_events, snapshot.total_events - count);
@@ -335,7 +392,9 @@ fn concurrent_suffix_never_mixes_totals_frontiers_origin_or_payload() {
         }
     }
     thread.join().unwrap();
-    assert_eq!(observer.snapshot().unwrap().total_events, 20_000);
+    let snapshot = observer.snapshot().unwrap();
+    assert_eq!(snapshot.total_events, 20_000);
+    assert!(snapshot.writer_finished);
 }
 
 #[test]
@@ -346,6 +405,6 @@ fn storage_budget_includes_every_scalar_in_the_fixed_256_slot_ring() {
     );
     assert_eq!(
         packet_history_storage_bytes(),
-        (256 * 10 + 7) * size_of::<AtomicU64>()
+        (256 * 10 + 8) * size_of::<AtomicU64>()
     );
 }

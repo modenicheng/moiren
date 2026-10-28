@@ -474,6 +474,60 @@ fn observers_survive_writer_drop_without_aliasing_or_new_history_mixing() {
 }
 
 #[test]
+fn only_writer_drop_closes_empty_or_saturated_history() {
+    for saturated in [false, true] {
+        let (mut writer, observer) = queue_history();
+        assert!(!observer.snapshot().unwrap().writer_finished);
+        if saturated {
+            writer.mark_saturated();
+        }
+        let mut expected = observer.snapshot().unwrap();
+        assert!(!expected.writer_finished);
+        drop(writer);
+        expected.writer_finished = true;
+        assert_eq!(observer.snapshot().unwrap(), expected);
+        assert_eq!(
+            serde_json::to_value(&expected).unwrap()["writer_finished"],
+            true
+        );
+    }
+}
+
+#[test]
+fn writer_drop_retains_exact_suffix_inventory_and_observer_allocation() {
+    let (mut writer, observer) = queue_history();
+    let peer = observer.clone();
+    let allocation = Arc::as_ptr(&observer.0);
+    assert_eq!(Arc::strong_count(&observer.0), 3);
+    for sequence in 1..=259 {
+        writer.record(sample(sequence));
+    }
+    let mut expected = observer.snapshot().unwrap();
+    assert!(!expected.writer_finished);
+    assert_eq!(expected.total_events, 259);
+    assert_eq!(expected.overwritten_events, 3);
+    assert_eq!(expected.events[0].sample.before, sample(4).before);
+    drop(writer);
+    assert_eq!(Arc::strong_count(&observer.0), 2);
+    assert_eq!(Arc::as_ptr(&observer.0), allocation);
+    assert_eq!(Arc::as_ptr(&peer.0), allocation);
+    expected.writer_finished = true;
+    assert_eq!(observer.snapshot().unwrap(), expected);
+    assert_eq!(peer.snapshot().unwrap(), expected);
+    let (_replacement, replacement_observer) = queue_history();
+    assert!(!replacement_observer.snapshot().unwrap().writer_finished);
+}
+
+#[test]
+fn writer_drop_does_not_bypass_contended_snapshot_validation() {
+    let (mut writer, observer) = queue_history();
+    writer.record(sample(1));
+    observer.0.version.store(3, SeqCst);
+    drop(writer);
+    assert!(observer.snapshot().is_none());
+}
+
+#[test]
 fn concurrent_atomic_history_never_mixes_event_fields_or_counts() {
     let (mut writer, observer) = queue_history();
     let barrier = Arc::new(std::sync::Barrier::new(2));
@@ -488,6 +542,9 @@ fn concurrent_atomic_history_never_mixes_event_fields_or_counts() {
     for _ in 0..10_000 {
         if let Some(snapshot) = observer.snapshot() {
             assert!(!snapshot.saturated);
+            if snapshot.writer_finished {
+                assert_eq!(snapshot.total_events, 20_000);
+            }
             let count = snapshot.total_events.min(256);
             assert_eq!(snapshot.events.len() as u64, count);
             assert_eq!(snapshot.overwritten_events, snapshot.total_events - count);
@@ -501,7 +558,9 @@ fn concurrent_atomic_history_never_mixes_event_fields_or_counts() {
         }
     }
     thread.join().unwrap();
-    assert_eq!(observer.snapshot().unwrap().total_events, 20_000);
+    let snapshot = observer.snapshot().unwrap();
+    assert_eq!(snapshot.total_events, 20_000);
+    assert!(snapshot.writer_finished);
 }
 
 #[test]
@@ -509,7 +568,7 @@ fn storage_budget_includes_all_published_atomic_slots() {
     assert_eq!(queue_history_storage_bytes(), size_of::<PublishedHistory>());
     assert_eq!(
         queue_history_storage_bytes(),
-        (256 * 17 + 5) * size_of::<AtomicU64>()
+        (256 * 17 + 6) * size_of::<AtomicU64>()
     );
 }
 

@@ -56,6 +56,8 @@ pub struct PacketHistorySnapshot {
     pub unavailable_clocks: u64,
     pub regressed_clocks: u64,
     pub saturated: bool,
+    /// The unique history writer was dropped, not full transport cleanup.
+    pub writer_finished: bool,
 }
 
 struct PublishedHistory {
@@ -66,6 +68,7 @@ struct PublishedHistory {
     unavailable: AtomicU64,
     regressed: AtomicU64,
     saturated: AtomicU64,
+    finished: AtomicU64,
     events: [[AtomicU64; EVENT_FIELDS]; HISTORY_CAPACITY],
 }
 
@@ -79,6 +82,7 @@ impl Default for PublishedHistory {
             unavailable: AtomicU64::new(0),
             regressed: AtomicU64::new(0),
             saturated: AtomicU64::new(0),
+            finished: AtomicU64::new(0),
             events: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
         }
     }
@@ -206,6 +210,14 @@ impl PacketHistoryWriter {
     }
 }
 
+impl Drop for PacketHistoryWriter {
+    fn drop(&mut self) {
+        // The unique writer cannot publish again. An observer-held Arc keeps
+        // storage alive; this marker does not claim full transport cleanup.
+        self.shared.finished.store(1, SeqCst);
+    }
+}
+
 #[derive(Clone)]
 pub struct PacketHistoryObserver(Arc<PublishedHistory>);
 
@@ -218,6 +230,10 @@ impl PacketHistoryObserver {
         if !before.is_multiple_of(2) {
             return None;
         }
+        // Read closure before every payload field, including saturation which
+        // does not advance version. A true marker therefore includes all final
+        // writer facts, while the version double-check still rejects races.
+        let writer_finished = shared.finished.load(SeqCst) != 0;
         let total = shared.total.load(SeqCst);
         let count = total.min(HISTORY_CAPACITY as u64);
         let mut events = Vec::with_capacity(count as usize);
@@ -256,6 +272,7 @@ impl PacketHistoryObserver {
             unavailable_clocks: shared.unavailable.load(SeqCst),
             regressed_clocks: shared.regressed.load(SeqCst),
             saturated: shared.saturated.load(SeqCst) != 0,
+            writer_finished,
         };
         (before == shared.version.load(SeqCst)).then_some(snapshot)
     }
