@@ -28,7 +28,7 @@ pub(crate) fn paint_channel_meter(
     window: &mut Window,
     cx: &mut App,
 ) {
-    use super::fader::{FaderScale, paint_text};
+    use super::fader::paint_text;
     let count = channels.max(1) as f32;
     let gap = (8. / count).min(3.);
     let width = (28. / count)
@@ -58,8 +58,7 @@ pub(crate) fn paint_channel_meter(
                     span.color,
                 ));
             }
-            let y =
-                bounds.top() + bounds.size.height * FaderScale::position(f64::from(level.marker));
+            let y = bounds.top() + bounds.size.height * meter_marker_position(level.marker);
             window.paint_quad(fill(
                 Bounds::new(point(left, y - px(1.)), size(px(width), px(2.))).intersect(&track),
                 theme::TEXT,
@@ -106,11 +105,11 @@ pub(crate) fn meter_height(value: f32) -> f32 {
     if value <= 0. {
         return 0.;
     }
-    use super::fader::FaderScale;
-    let (&(floor_db, floor_position), _) = FaderScale::ANCHORS.split_last().expect("non-empty");
+    let (floor_db, floor_position) = scale_floor();
     let floor = 10f64.powf(floor_db / 20.);
     let value = f64::from(value);
     if value >= floor {
+        use super::fader::FaderScale;
         1. - FaderScale::position(value)
     } else {
         // `FaderScale::position` holds finite gains at the last tick so the
@@ -119,6 +118,22 @@ pub(crate) fn meter_height(value: f32) -> f32 {
         // the `floor_position`..1 segment reaching exact digital zero.
         (value / floor) as f32 * (1. - floor_position)
     }
+}
+
+/// The last scale tick. The fader holds finite gains at it on purpose, so
+/// meter readings must never reuse `FaderScale::position` below it.
+fn scale_floor() -> (f64, f32) {
+    use super::fader::FaderScale;
+    let (&floor, _) = FaderScale::ANCHORS.split_last().expect("non-empty");
+    floor
+}
+
+/// Track position of a held peak marker, downwards from the top in 0..1,
+/// sharing [`meter_height`]'s inverted tail: below the last tick the fader
+/// holds position, but a falling marker keeps sliding through the −∞ tail
+/// and rests at the bottom edge.
+fn meter_marker_position(marker: f32) -> f32 {
+    1. - meter_height(marker)
 }
 
 /// One colored layer of a meter bar, spanning `bottom`..`bottom + height` in
@@ -296,7 +311,7 @@ pub fn compact_horizontal_meter(
 
 #[cfg(test)]
 mod tests {
-    use super::{MeterSpan, horizontal_span, meter_height, meter_spans};
+    use super::{MeterSpan, horizontal_span, meter_height, meter_marker_position, meter_spans};
     use crate::ui::monitoring::DisplayLevel;
     use crate::ui::theme;
 
@@ -338,6 +353,20 @@ mod tests {
         assert!(meter_height(floor * 0.5) < meter_height(floor));
         // And exact digital zero stays fully invisible.
         assert_eq!(meter_height(0.), 0.);
+    }
+
+    #[test]
+    fn peak_markers_slide_through_the_silence_tail_to_the_bottom_edge() {
+        let floor = 10f32.powf(-72. / 20.);
+        // Mid-scale markers keep their interpolated position.
+        assert!((meter_marker_position(1.) - 0.24).abs() < 0.001);
+        // Below the fader's −72 dB hold the marker keeps sliding instead of
+        // pinning at the tick, converging on the bottom edge as it fades.
+        let at_floor = meter_marker_position(floor);
+        assert!((at_floor - 0.97).abs() < 0.00001);
+        assert!(meter_marker_position(floor * 0.5) > at_floor);
+        let faded = meter_marker_position(floor * 0.01);
+        assert!(faded > 0.999 && faded < 1., "faded = {faded}");
     }
 
     #[test]
