@@ -1,4 +1,7 @@
 use super::*;
+
+#[path = "sequence_tests.rs"]
+mod sequence_tests;
 use crate::vad::{SampleFormat, pcm_slots::SlotBook};
 use moiren_core::graph::{LogicalGraph, NodeKind, SendParams};
 use moiren_engine::{

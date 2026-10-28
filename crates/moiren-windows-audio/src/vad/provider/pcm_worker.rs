@@ -26,17 +26,36 @@ impl PcmIo for PcmOwner {
 }
 
 #[derive(Default)]
-pub(super) struct PacketOrder(Option<PcmPacketStamp>);
+pub(super) struct PacketOrder(Option<(u64, PcmPacketStamp)>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PacketProgress {
+    First,
+    Contiguous,
+    Gap { missing_slots: u64 },
+    Stale,
+}
+
 impl PacketOrder {
-    fn accept(&mut self, stamp: PcmPacketStamp) -> bool {
-        if self
-            .0
-            .is_some_and(|last| stamp.sequence <= last.sequence || stamp.qpc < last.qpc)
-        {
-            return false;
-        }
-        self.0 = Some(stamp);
-        true
+    fn accept(&mut self, epoch: u64, stamp: PcmPacketStamp) -> PacketProgress {
+        let progress = match self.0.filter(|(last_epoch, _)| *last_epoch == epoch) {
+            None => PacketProgress::First,
+            Some((_, last)) if stamp.sequence <= last.sequence || stamp.qpc < last.qpc => {
+                return PacketProgress::Stale;
+            }
+            Some((_, last)) => {
+                // Strictly increasing sequence makes both subtractions safe,
+                // including MAX. Never infer the unobserved initial prefix.
+                let missing_slots = stamp.sequence - last.sequence - 1;
+                if missing_slots == 0 {
+                    PacketProgress::Contiguous
+                } else {
+                    PacketProgress::Gap { missing_slots }
+                }
+            }
+        };
+        self.0 = Some((epoch, stamp));
+        progress
     }
 }
 
@@ -228,11 +247,23 @@ pub(super) fn playback<C: PcmIo>(
                 }
                 #[cfg(test)]
                 tests::before_playback_publish();
-                state.telemetry.completion(bridge.packet_frames());
-                let accepted = order.accept(stamp);
-                if !accepted {
-                    state.telemetry.stale_packet();
+                if !epoch_ready(state, epoch) {
+                    return Ok(PumpState::Reset);
                 }
+                state.telemetry.completion(bridge.packet_frames());
+                let accepted = match order.accept(epoch, stamp) {
+                    PacketProgress::Stale => {
+                        state.telemetry.stale_packet();
+                        false
+                    }
+                    PacketProgress::Gap { missing_slots } => {
+                        // READ stamps describe native playback slots. A hole
+                        // does not prove non-silent PCM loss and is not a reset.
+                        state.telemetry.sequence_gap(missing_slots);
+                        true
+                    }
+                    PacketProgress::First | PacketProgress::Contiguous => true,
+                };
                 if accepted && !bridge.decode_packet(pcm)? {
                     // Only the consumer can discard this SPSC carrier. Ask its
                     // prepared boundary to drop the stale queue before replay.
@@ -333,7 +364,9 @@ pub(super) fn microphone<C: PcmIo>(
         if !pump.observe(state, epoch, collected_at) {
             return Ok(PumpState::Reset);
         }
-        if !pump.order.accept(stamp) {
+        // WRITE completion echoes a host submission sequence, not the native
+        // packet cursor. Keep order validation, never report native slot loss.
+        if pump.order.accept(epoch, stamp) == PacketProgress::Stale {
             return Err(BackendError::Failed(
                 "microphone completion sequence regressed".into(),
             ));

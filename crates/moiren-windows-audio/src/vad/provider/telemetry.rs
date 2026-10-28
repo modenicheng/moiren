@@ -8,12 +8,15 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
-const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct VadPcmTelemetrySnapshot {
-    #[serde(deserialize_with = "deserialize_current_schema_version")]
+    #[serde(
+        default = "current_schema_version",
+        deserialize_with = "deserialize_current_schema_version"
+    )]
     pub schema_version: u32,
     pub packet_frames: u32,
     pub max_packet_frames: u32,
@@ -25,6 +28,12 @@ pub struct VadPcmTelemetrySnapshot {
     #[serde(alias = "max_completion_gap_100ns")]
     pub max_completion_interval_100ns: u64,
     pub completion_clock_regressions: u64,
+    /// Playback READ native forward sequence gaps observed after a known
+    /// predecessor. The unknown first prefix is not inferred or counted.
+    pub sequence_gap_observations: u64,
+    /// Missing playback native sequence slots, not proven non-silent PCM drops.
+    /// No frame conversion or native sample age follows from this count.
+    pub missing_sequence_slots: u64,
     pub dropped_packets: u64,
     pub driver_dropped_packets: u64,
     pub quota_dropped_packets: u64,
@@ -34,6 +43,10 @@ pub struct VadPcmTelemetrySnapshot {
     pub silence_frames: u64,
     pub epoch_resets: u64,
     pub recovery_events: u64,
+}
+
+fn current_schema_version() -> u32 {
+    SNAPSHOT_SCHEMA_VERSION
 }
 
 fn deserialize_current_schema_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
@@ -52,6 +65,8 @@ struct Counters {
     completion_intervals: AtomicU64,
     max_completion_interval_100ns: AtomicU64,
     completion_clock_regressions: AtomicU64,
+    sequence_gap_observations: AtomicU64,
+    missing_sequence_slots: AtomicU64,
     dropped_packets: AtomicU64,
     driver_dropped_packets: AtomicU64,
     quota_dropped_packets: AtomicU64,
@@ -76,6 +91,8 @@ impl Default for Counters {
             completion_intervals: AtomicU64::new(0),
             max_completion_interval_100ns: AtomicU64::new(0),
             completion_clock_regressions: AtomicU64::new(0),
+            sequence_gap_observations: AtomicU64::new(0),
+            missing_sequence_slots: AtomicU64::new(0),
             dropped_packets: AtomicU64::new(0),
             driver_dropped_packets: AtomicU64::new(0),
             quota_dropped_packets: AtomicU64::new(0),
@@ -164,6 +181,17 @@ impl PcmTelemetry {
         saturating_add(&self.counters.driver_dropped_packets, 1);
     }
 
+    /// Caller supplies only accepted playback READ native forward gaps; a
+    /// microphone completion echoes host submission order, not native supply.
+    /// The caller ignores an unknown first prefix; zero adds no observation.
+    pub(super) fn sequence_gap(&self, missing_slots: u64) {
+        if missing_slots == 0 {
+            return;
+        }
+        saturating_add(&self.counters.sequence_gap_observations, 1);
+        saturating_add(&self.counters.missing_sequence_slots, missing_slots);
+    }
+
     pub(super) fn quota_drop(&self) {
         saturating_add(&self.counters.dropped_packets, 1);
         saturating_add(&self.counters.quota_dropped_packets, 1);
@@ -226,6 +254,11 @@ impl PcmTelemetry {
                 .counters
                 .completion_clock_regressions
                 .load(Ordering::Relaxed),
+            sequence_gap_observations: self
+                .counters
+                .sequence_gap_observations
+                .load(Ordering::Relaxed),
+            missing_sequence_slots: self.counters.missing_sequence_slots.load(Ordering::Relaxed),
             dropped_packets: self.counters.dropped_packets.load(Ordering::Relaxed),
             driver_dropped_packets: self.counters.driver_dropped_packets.load(Ordering::Relaxed),
             quota_dropped_packets: self.counters.quota_dropped_packets.load(Ordering::Relaxed),
@@ -313,6 +346,8 @@ mod tests {
                 completion_interval_observations: 1,
                 max_completion_interval_100ns: 1_250,
                 completion_clock_regressions: 0,
+                sequence_gap_observations: 0,
+                missing_sequence_slots: 0,
                 dropped_packets: 3,
                 driver_dropped_packets: 1,
                 quota_dropped_packets: 1,
@@ -356,5 +391,129 @@ mod tests {
         assert_eq!(serialized["max_completion_interval_100ns"], 110_118);
         assert!(serialized.get("completion_gaps").is_none());
         assert!(serialized.get("max_completion_gap_100ns").is_none());
+    }
+
+    #[test]
+    fn sequence_gap_schema_three_defaults_new_fields_for_legacy_json() {
+        for legacy in [
+            serde_json::json!({}),
+            serde_json::json!({ "schema_version": 0 }),
+            serde_json::json!({ "schema_version": 1, "completion_gaps": 40 }),
+            serde_json::json!({ "schema_version": 2, "dropped_packets": 7 }),
+        ] {
+            let snapshot: VadPcmTelemetrySnapshot = serde_json::from_value(legacy).unwrap();
+            let serialized = serde_json::to_value(snapshot).unwrap();
+            assert_eq!(serialized["schema_version"], 3);
+            assert_eq!(serialized["sequence_gap_observations"], 0);
+            assert_eq!(serialized["missing_sequence_slots"], 0);
+            assert!(serialized.get("completion_gaps").is_none());
+        }
+        let serialized = serde_json::to_value(PcmTelemetry::default().snapshot()).unwrap();
+        assert_eq!(serialized["schema_version"], 3);
+        assert_eq!(serialized["sequence_gap_observations"], 0);
+        assert_eq!(serialized["missing_sequence_slots"], 0);
+    }
+
+    #[test]
+    fn sequence_gap_json_keeps_u64_precision_and_future_schema_versions() {
+        let large = (1_u64 << 53) + 1;
+        let json = format!(
+            r#"{{"schema_version":7,"sequence_gap_observations":{large},"missing_sequence_slots":{}}}"#,
+            u64::MAX,
+        );
+        let snapshot: VadPcmTelemetrySnapshot = serde_json::from_str(&json).unwrap();
+        let serialized = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(serialized["schema_version"], 7);
+        assert_eq!(
+            serialized["sequence_gap_observations"].as_u64(),
+            Some(large)
+        );
+        assert_eq!(
+            serialized["missing_sequence_slots"].as_u64(),
+            Some(u64::MAX)
+        );
+        assert_eq!(serialized["dropped_packets"], 0);
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        assert!(encoded.contains(&format!(r#""sequence_gap_observations":{large}"#)));
+        assert!(encoded.contains(&format!(r#""missing_sequence_slots":{}"#, u64::MAX)));
+    }
+
+    #[test]
+    fn sequence_gap_counts_playback_forward_observations_without_claiming_pcm_drops() {
+        let telemetry = PcmTelemetry::default();
+        let before = telemetry.snapshot();
+        telemetry.sequence_gap(0);
+        assert_eq!(telemetry.snapshot(), before);
+
+        telemetry.sequence_gap(2);
+        telemetry.sequence_gap(5);
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot.sequence_gap_observations, 2);
+        assert_eq!(snapshot.missing_sequence_slots, 7);
+        assert_eq!(snapshot.dropped_packets, 0);
+        assert_eq!(snapshot.driver_dropped_packets, 0);
+        assert_eq!(snapshot.quota_dropped_packets, 0);
+        assert_eq!(snapshot.carrier_dropped_packets, 0);
+        assert_eq!(snapshot.stale_packets, 0);
+        assert_eq!(snapshot.packet_frames, 0);
+        assert_eq!(snapshot.completed_packets, 0);
+        assert_eq!(snapshot.silence_frames, 0);
+        assert_eq!(snapshot.epoch_resets, 0);
+        assert_eq!(snapshot.recovery_events, 0);
+    }
+
+    #[test]
+    fn sequence_gap_update_serializes_large_integer_slot_counts_exactly() {
+        let telemetry = PcmTelemetry::default();
+        let large = (1_u64 << 53) + 1;
+        telemetry.sequence_gap(large);
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot.sequence_gap_observations, 1);
+        assert_eq!(snapshot.missing_sequence_slots, large);
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(json.contains(&format!(r#""missing_sequence_slots":{large}"#)));
+        let decoded: VadPcmTelemetrySnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn sequence_gap_counters_saturate_independently_without_changing_drop_counters() {
+        let telemetry = PcmTelemetry::default();
+        telemetry
+            .counters
+            .sequence_gap_observations
+            .store(u64::MAX - 1, Ordering::Relaxed);
+        telemetry
+            .counters
+            .missing_sequence_slots
+            .store(u64::MAX - 2, Ordering::Relaxed);
+        telemetry.driver_drop();
+        telemetry.sequence_gap(2);
+        let at_limit = telemetry.snapshot();
+        assert_eq!(at_limit.sequence_gap_observations, u64::MAX);
+        assert_eq!(at_limit.missing_sequence_slots, u64::MAX);
+        telemetry.sequence_gap(u64::MAX);
+        telemetry.sequence_gap(0);
+        assert_eq!(telemetry.snapshot(), at_limit);
+        assert_eq!(at_limit.dropped_packets, 1);
+        assert_eq!(at_limit.driver_dropped_packets, 1);
+
+        let telemetry = PcmTelemetry::default();
+        telemetry
+            .counters
+            .sequence_gap_observations
+            .store(u64::MAX, Ordering::Relaxed);
+        telemetry.sequence_gap(3);
+        assert_eq!(telemetry.snapshot().sequence_gap_observations, u64::MAX);
+        assert_eq!(telemetry.snapshot().missing_sequence_slots, 3);
+
+        let telemetry = PcmTelemetry::default();
+        telemetry
+            .counters
+            .missing_sequence_slots
+            .store(u64::MAX, Ordering::Relaxed);
+        telemetry.sequence_gap(3);
+        assert_eq!(telemetry.snapshot().sequence_gap_observations, 1);
+        assert_eq!(telemetry.snapshot().missing_sequence_slots, u64::MAX);
     }
 }

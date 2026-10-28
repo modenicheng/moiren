@@ -6,7 +6,7 @@ use moiren_windows_audio::vad::{
 
 fn telemetry() -> VadPcmTelemetrySnapshot {
     VadPcmTelemetrySnapshot {
-        schema_version: 2,
+        schema_version: 3,
         packet_frames: 128,
         max_packet_frames: 256,
         submission_attempts: u64::MAX,
@@ -15,6 +15,8 @@ fn telemetry() -> VadPcmTelemetrySnapshot {
         completion_interval_observations: 7,
         max_completion_interval_100ns: 123_456,
         completion_clock_regressions: 11,
+        sequence_gap_observations: 47,
+        missing_sequence_slots: (1 << 53) + 49,
         dropped_packets: 13,
         driver_dropped_packets: 17,
         quota_dropped_packets: 19,

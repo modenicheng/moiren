@@ -1927,6 +1927,45 @@ mod tests {
     }
 
     #[test]
+    fn playback_sequence_holes_continue_correctness_but_fail_strict_without_signal_loss() {
+        let admitted = healthy();
+        let mut current = admitted.clone();
+        let mut report = raw_health_report();
+        let telemetry = &mut report.vad_provider.as_mut().unwrap()["telemetry"];
+        telemetry["sequence_gap_observations"] = 2.into();
+        telemetry["missing_sequence_slots"] = 5.into();
+        current.quality_faults = super::super::native_quality(&report).delivery_bound_violations;
+        assert_eq!(current.quality_faults, 5);
+        let mut quality = Quality::default();
+        let mut first_failure = None;
+        validate_health_with_policy(
+            &current,
+            &admitted,
+            &report,
+            &mut first_failure,
+            correctness(),
+            &mut quality,
+        )
+        .unwrap();
+        assert!(first_failure.is_none());
+        assert!(quality.failure.is_some());
+        let raw = quality.first_observations.unwrap();
+        assert_eq!(raw["provider"]["telemetry"]["missing_sequence_slots"], 5);
+        assert!(
+            validate_health_with_policy(
+                &current,
+                &admitted,
+                &report,
+                &mut first_failure,
+                ValidationPolicy::default(),
+                &mut Quality::default(),
+            )
+            .is_err()
+        );
+        assert_eq!(super::super::native_quality(&report).dropped_frames, 0);
+    }
+
+    #[test]
     fn correctness_health_retains_soft_faults_without_relaxing_strict_validation() {
         let admitted = healthy();
         let mut current = admitted.clone();

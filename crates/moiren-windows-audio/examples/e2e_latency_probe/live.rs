@@ -1708,6 +1708,9 @@ fn native_delivery_violations(native: &NativeReport) -> u64 {
                 "stale_packets",
                 "recovery_events",
                 "dropped_packets",
+                // Unobserved native slots are delivery quality, not a
+                // measured non-silent PCM/frame loss. Do not also sum gaps.
+                "missing_sequence_slots",
             ]
             .into_iter()
             .filter_map(|key| telemetry.get(key).and_then(Value::as_u64))
@@ -2290,6 +2293,7 @@ mod native {
                     value.epoch_resets,
                     value.recovery_events,
                     value.completion_clock_regressions,
+                    value.missing_sequence_slots,
                 ] {
                     faults = faults.saturating_add(count);
                 }
@@ -3946,6 +3950,24 @@ mod tests {
             ..native
         };
         assert_eq!(native_quality(&backend_only).underrun_frames, 31);
+    }
+
+    #[test]
+    fn playback_sequence_holes_are_delivery_quality_not_invented_sample_loss() {
+        let native = NativeReport {
+            vad_provider: Some(serde_json::json!({
+                "telemetry": {
+                    "sequence_gap_observations": 2,
+                    "missing_sequence_slots": 5
+                }
+            })),
+            ..NativeReport::default()
+        };
+        let quality = native_quality(&native);
+        assert_eq!(quality.delivery_bound_violations, 5);
+        assert_eq!(quality.dropped_frames, 0);
+        assert_eq!(quality.silent_frames, 0);
+        assert_eq!(quality.epoch_resets, 0);
     }
 
     #[test]
