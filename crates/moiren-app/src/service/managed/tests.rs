@@ -1587,42 +1587,105 @@ fn apply_ack_for_a_new_parameter_target_waits_for_pending_topology_mapping() {
 fn repeated_same_candidate_apply_keeps_its_own_future_target_ack_barrier() {
     let mut r = Rig::new();
     r.start();
+    let original = r.c.graph.snapshot().active_revision;
+    let no_parameter_submissions = RoundBudget {
+        applied: 0,
+        ..RoundBudget::default()
+    };
     r.state.block_update.store(true, Ordering::SeqCst);
     r.request(AppRequest::EditGraph(GraphEdit::AddNode {
         kind: NodeKind::Gain,
         channels: 2,
     }));
+    let target = ParameterTarget::Node {
+        node: r.c.graph.snapshot().graph.nodes().last().unwrap().id(),
+        parameter: moiren_engine::processor::Gain::LEVEL,
+    };
     r.request(AppRequest::ApplyGraph);
     r.wait(|r| r.state.prepares.load(Ordering::SeqCst) >= 2);
     let revision = r.c.graph.snapshot().candidate_revision;
     r.request(AppRequest::ApplyGraph);
-    r.wait(|r| {
-        r.confirmation_revision() == Some((revision, 2)) && r.driver.confirmation_values.is_empty()
-    });
-    for _ in 0..10 {
-        r.tick();
-    }
+    r.wait_with_budget(
+        |r| r.confirmation_revision() == Some((revision, 2)),
+        no_parameter_submissions,
+    );
+    let first = r.driver.confirm_parameters.unwrap();
+    assert_eq!(r.driver.confirmation_values.len(), 34);
+    assert!(r.driver.unsent.is_empty());
+    // Keep an unsent tail while observing receipts: active-target ACKs may
+    // finish at any time, and future-only targets do not retain the barrier.
+    // No pause flag, sleep or assumption about an in-flight callback is needed.
+    let through_target = r
+        .driver
+        .confirmation_values
+        .iter()
+        .position(|(pending, _)| *pending == target)
+        .unwrap()
+        + 1;
+    assert!(through_target <= 32 && through_target < r.driver.confirmation_values.len());
+    let through_target_budget = RoundBudget {
+        applied: through_target,
+        ..RoundBudget::default()
+    };
+    r.tick_with_budget(through_target_budget);
+    r.wait_with_budget(
+        |r| {
+            r.driver.parameters.iter().any(|pending| {
+                pending.target == target
+                    && pending.confirmation == Some(first)
+                    && pending.receipt.outcome() == ParameterOutcome::Accepted
+            })
+        },
+        no_parameter_submissions,
+    );
     let older = r
         .driver
         .parameters
         .iter()
-        .find(|pending| {
-            pending.confirmation.is_some_and(|confirmation| {
-                confirmation.revision == revision && confirmation.host_revision == 2
-            }) && pending.receipt.outcome() == ParameterOutcome::Accepted
-        })
+        .find(|pending| pending.target == target && pending.confirmation == Some(first))
         .expect("new Gain request waits for topology mapping")
         .receipt
         .clone();
     r.request(AppRequest::ApplyGraph);
-    r.wait(|_| older.outcome() == ParameterOutcome::Superseded);
-    // The repeated apply re-establishes its own barrier once its host edit
-    // activates; the supersede may be observed first.
-    r.wait(|r| {
-        r.c.graph.snapshot().candidate_revision == revision
-            && r.c.graph.snapshot().pending_revision == Some(revision)
-            && r.confirmation_revision() == Some((revision, 2))
-    });
+    r.wait_with_budget(
+        |r| {
+            r.confirmation_revision() == Some((revision, 2))
+                && r.driver
+                    .confirm_parameters
+                    .is_some_and(|next| next.id > first.id)
+        },
+        no_parameter_submissions,
+    );
+    let repeated = r.driver.confirm_parameters.unwrap();
+    assert_eq!(
+        repeated.id,
+        r.driver.owner.as_ref().unwrap().latest_apply_id
+    );
+    assert_eq!(r.driver.confirmation_values.len(), 34);
+    r.tick_with_budget(through_target_budget);
+    r.wait_with_budget(
+        |r| {
+            older.outcome() == ParameterOutcome::Superseded
+                && r.driver.parameters.iter().any(|pending| {
+                    pending.target == target
+                        && pending.confirmation == Some(repeated)
+                        && pending.receipt.outcome() == ParameterOutcome::Accepted
+                })
+        },
+        no_parameter_submissions,
+    );
+    // The unsent tail keeps this Apply's own barrier observable independently
+    // of RT progress. Once flushed, the barrier may validly be consumed; the
+    // blocked topology must still prevent graph confirmation.
+    assert!(!r.driver.confirmation_values.is_empty());
+    assert_eq!(r.driver.confirm_parameters, Some(repeated));
+    assert_eq!(r.c.graph.snapshot().candidate_revision, revision);
+    assert_eq!(r.c.graph.snapshot().pending_revision, Some(revision));
+    assert_eq!(r.c.graph.snapshot().active_revision, original);
+    r.tick();
+    assert!(r.driver.confirmation_values.is_empty());
+    assert_eq!(r.c.graph.snapshot().pending_revision, Some(revision));
+    assert_eq!(r.c.graph.snapshot().active_revision, original);
     r.state.block_update.store(false, Ordering::SeqCst);
     r.wait(|r| {
         r.c.graph.snapshot().active_revision == Some(revision) && r.c.control.accepted_pending == 0
