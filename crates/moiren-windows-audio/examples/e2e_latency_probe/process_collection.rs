@@ -840,7 +840,7 @@ pub(super) fn collect(
         );
         phase_stamps.push(json!({"phase":"activation_requested","elapsed_seconds":initial.elapsed().as_secs_f64()}));
         phases.start_requested = initial.elapsed();
-        guard.graph.as_ref().context("graph missing")?.activate()?;
+        guard.graph.as_mut().context("graph missing")?.activate()?;
         guard
             .measurement
             .as_mut()
@@ -852,7 +852,7 @@ pub(super) fn collect(
                 now < phases.ceiling,
                 "incomplete Process collection: initial total deadline"
             );
-            let observation = guard.graph.as_ref().context("graph missing")?.observation();
+            let observation = guard.graph.as_mut().context("graph missing")?.observation();
             guard.last_observation = Some(observation.clone());
             let graph_started = match guard.observe_graph(&observation, phases.submitted.is_some())
             {
@@ -1160,7 +1160,7 @@ impl Guard {
         if self.retired {
             return;
         }
-        if let Some(graph) = &self.graph {
+        if let Some(graph) = &mut self.graph {
             let value = graph.observation();
             if let Err(error) = self.observe_graph(&value, false) {
                 append_failure(&mut self.failures, &format!("pre-stop graph: {error:#}"));
@@ -1172,7 +1172,7 @@ impl Guard {
         if let Some(error) = cleanup {
             append_failure(&mut self.failures, &error);
         }
-        if let Some(graph) = &self.graph {
+        if let Some(graph) = &mut self.graph {
             self.final_observation = Some(graph.observation());
         }
         if let Some(value) = &self.final_observation

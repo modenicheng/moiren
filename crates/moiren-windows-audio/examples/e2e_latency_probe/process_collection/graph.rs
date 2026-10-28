@@ -18,7 +18,7 @@ use moiren_windows_audio::{
     clock_bridge::{BridgeObserver, ClockSource},
     latency::RenderQueuePolicy,
     process_loopback::{
-        ProcessBridgeOptions, ProcessIdentity, ProcessLoopbackOptions,
+        ProcessBridgeOptions, ProcessIdentity, ProcessLoopbackOptions, ProcessTraceCollector,
         prepare_process_capture_with_gate_returning_with_abort,
     },
 };
@@ -72,8 +72,7 @@ pub(super) struct Graph {
     recovered_renderer: Option<DemandRenderer>,
     bridge: Option<BridgeObserver>,
     timeline: Option<TimelineObserver>,
-    process: Option<ProcessIdentity>,
-    prepared_demand: u32,
+    trace: Option<ProcessTraceCollector>,
     pub(super) capture_report: Option<CaptureReport>,
     pub(super) render_report: Option<RenderReport>,
     pub(super) aborts: Vec<Value>,
@@ -93,8 +92,7 @@ impl Graph {
             recovered_renderer: None,
             bridge: None,
             timeline: None,
-            process: None,
-            prepared_demand: 0,
+            trace: None,
             capture_report: None,
             render_report: None,
             aborts: Vec::with_capacity(3),
@@ -110,10 +108,15 @@ impl Graph {
         identity: ProcessIdentity,
         mut stop_peers: impl FnMut() -> Option<String>,
     ) -> Result<()> {
-        self.process = Some(identity.clone());
         // Renderer splits every native wake into at most one Engine block per
         // actual source read. This records read demand, not per-wake admission.
-        self.prepared_demand = options.engine_block_frames;
+        self.trace = Some(ProcessTraceCollector::new(
+            identity.clone(),
+            1,
+            48_000,
+            48_000,
+            options.engine_block_frames,
+        ));
         let capture = match prepare_process_capture_with_gate_returning_with_abort(
             ProcessLoopbackOptions {
                 artifact: Some(PcmArtifactConfig::new(
@@ -148,6 +151,7 @@ impl Graph {
         } = capture;
         self.capture = Some(session);
         self.bridge = Some(observer);
+        self.poll_trace();
         ensure!(
             sample_rate == 48_000 && channels == 2,
             "Process graph negotiation is not 48k stereo"
@@ -195,14 +199,22 @@ impl Graph {
         Ok(())
     }
 
-    pub(super) fn activate(&self) -> Result<()> {
+    pub(super) fn activate(&mut self) -> Result<()> {
+        self.poll_trace();
         self.gate.activate().context("activate Process graph")
     }
     pub(super) fn request_stop(&self) -> Result<()> {
         self.stop.request_stop().context("stop Process graph")
     }
 
-    pub(super) fn observation(&self) -> Value {
+    pub(super) fn poll_trace(&mut self) {
+        if let (Some(trace), Some(observer)) = (&mut self.trace, &self.bridge) {
+            trace.poll(observer);
+        }
+    }
+
+    pub(super) fn observation(&mut self) -> Value {
+        self.poll_trace();
         json!({"capture_started":self.capture.as_ref().map(CaptureSession::has_started),
             "render_started":self.render.as_ref().map(RenderSession::has_started),
             "capture_finished":self.capture.as_ref().map(CaptureSession::is_finished),
@@ -212,6 +224,7 @@ impl Graph {
     }
 
     pub(super) fn finish(&mut self) -> Result<()> {
+        self.poll_trace();
         if let Some(capture) = self.capture.take() {
             match catch_unwind(AssertUnwindSafe(|| capture.join())) {
                 Ok(Ok(report)) => self.capture_report = Some(report),
@@ -221,6 +234,7 @@ impl Graph {
                 Err(_) => append_failure(&mut self.failures, "join capture panic"),
             }
         }
+        self.poll_trace();
         if let Some(render) = self.prepared_render.take() {
             match catch_unwind(AssertUnwindSafe(|| render.cancel_with_report())) {
                 Ok(Ok(report)) => self.render_report = Some(report),
@@ -244,6 +258,7 @@ impl Graph {
             }
         }
         self.recovered_renderer.take();
+        self.poll_trace();
         ensure!(
             self.failures.is_none(),
             "{}",
@@ -274,14 +289,10 @@ impl Graph {
         paths: &ArtifactPaths,
         report: &mut super::super::NativeReport,
     ) -> Result<()> {
-        match (&self.bridge, &self.process) {
-            (Some(observer), Some(process)) => super::super::process_trace::export_into(
-                report,
-                paths,
-                observer,
-                process.clone(),
-                self.prepared_demand,
-            ),
+        match (&self.bridge, &self.trace) {
+            (Some(_), Some(trace)) => {
+                super::super::process_trace::export_collector_into(report, paths, trace)
+            }
             _ => {
                 report.process_trace = Some(
                     json!({"schema_version":1,"exported":false,"qualified":false,

@@ -1942,6 +1942,17 @@ mod native {
             gate.clone(),
         )
         .context("prepare Process Loopback capture")?;
+        // Archive from the empty, gated bridge, not from a late realtime suffix.
+        // Generation 1 belongs only to this one probe invocation.
+        let bridge_observer = capture.observer.clone();
+        let mut trace = moiren_windows_audio::process_loopback::ProcessTraceCollector::new(
+            identity.clone(),
+            1,
+            48_000,
+            48_000,
+            options.engine_block_frames,
+        );
+        trace.poll(&bridge_observer);
         let render = match prepare_render_native_with_gate_returning_with_abort(
             RenderOptions {
                 queue,
@@ -1962,7 +1973,6 @@ mod native {
         };
         let render_info = render.info();
         let padding = render.padding_observer();
-        let bridge_observer = capture.observer.clone();
         let prepared = capture;
         let renderer = process_collection::graph::build_renderer(options, prepared.source)?
             .with_bridge_observer(bridge_observer.clone());
@@ -1975,12 +1985,14 @@ mod native {
                 return Err(error.error).context("attach Engine renderer");
             }
         };
+        trace.poll(&bridge_observer);
         gate.activate().context("activate capture/render gate")?;
         let capture_session = prepared.session;
         let render_session = prepared_render.into_session();
         let mut controlled_load = if let Some(load_id) = options.controlled_load_id.as_deref() {
             let startup_deadline = Instant::now() + Duration::from_secs(5);
             while !(capture_session.has_started() && render_session.has_started()) {
+                trace.poll(&bridge_observer);
                 ensure!(
                     !capture_session.is_finished() && !render_session.is_finished(),
                     "native owner stopped before controlled load startup"
@@ -2001,6 +2013,7 @@ mod native {
         } else {
             None
         };
+        trace.poll(&bridge_observer);
         let collection = if journal.is_some() || controlled_load.is_some() {
             let duration = Duration::from_secs(options.seconds);
             let interval = Duration::from_secs(options.observation_interval_seconds);
@@ -2008,6 +2021,7 @@ mod native {
             soak_control::run_until(
                 duration,
                 |elapsed| {
+                    trace.poll(&bridge_observer);
                     if let Some(journal) = journal.as_mut() {
                         journal.check()?;
                         if elapsed >= next_observation {
@@ -2039,10 +2053,22 @@ mod native {
                 || stop.request_stop().context("stop supervised native owners"),
             )
         } else {
-            Ok(())
+            process_trace::poll_finite(
+                Duration::from_secs(options.seconds),
+                || trace.poll(&bridge_observer),
+                || capture_session.is_finished() && render_session.is_finished(),
+                || {
+                    stop.request_stop()
+                        .context("stop finite Process owners at deadline")
+                },
+            )
         };
+        trace.poll(&bridge_observer);
         let mut collection = collection;
         if let Some(load) = controlled_load.take() {
+            // This blocking wait, like the joins below, can outlast the realtime
+            // history window. Polling is best-effort: the next poll latches any
+            // gap as diagnostic refusal; final closure cannot prove completeness.
             match load.finish(Duration::from_secs(options.seconds)) {
                 Ok(evidence) => {
                     if !evidence.valid {
@@ -2070,8 +2096,11 @@ mod native {
                 }
             }
         }
+        trace.poll(&bridge_observer);
         let capture_result = capture_session.join();
+        trace.poll(&bridge_observer);
         let render_result = render_session.join();
+        trace.poll(&bridge_observer);
         match capture_result {
             Ok(report) => {
                 if let Err(error) = persist_capture_artifact(paths, &report) {
@@ -2091,13 +2120,7 @@ mod native {
         // The source and renderer have been destroyed by both joins. Preserve
         // actual writer-closure/truncation facts, never infer successful cleanup
         // or complete history from the registry/owner being stopped.
-        let trace_export = process_trace::export_into(
-            native_report,
-            paths,
-            &bridge_observer,
-            identity,
-            options.engine_block_frames,
-        );
+        let trace_export = process_trace::export_collector_into(native_report, paths, &trace);
         // Keep the metadata read above in the report path even if the source
         // process exits during the finite run.
         if render_info.timing.capacity_frames == 0 {
