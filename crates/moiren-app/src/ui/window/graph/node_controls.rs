@@ -1,7 +1,7 @@
 //! Native, task-specific controls over the graph's shared card geometry.
 //! Only presentation state lives here; all edits go through the service.
 use super::*;
-use crate::service::{GraphEdit, GraphNodeState, InputSelection};
+use crate::service::{GraphEdit, GraphNodeState, InputSelection, MixerEdit};
 use crate::ui::pages::graph_canvas::{CanvasNode, CanvasWorld};
 use crate::ui::widgets::fader::hslider;
 use crate::ui::widgets::meters::compact_horizontal_meter;
@@ -27,6 +27,8 @@ mod plots;
 mod precision;
 #[cfg(all(test, feature = "gpui-test"))]
 mod precision_intent_tests;
+#[cfg(all(test, feature = "gpui-test"))]
+mod queued_strip_tests;
 mod rack_editor;
 mod recording;
 mod rotary;
@@ -472,8 +474,6 @@ fn full_body(
         card.kind,
         NodeKind::Recorder | NodeKind::Meter | NodeKind::SpectrumAnalyzer
     ) {
-        let mut muted = node.mixer;
-        muted.muted = !muted.muted;
         actions = actions.child(
             controls::button(format!("card-mute-{id:?}"), t!("Mute"))
                 .variant(if node.mixer.muted {
@@ -483,9 +483,9 @@ fn full_body(
                 })
                 .on_click(controls::edit(
                     this.clone(),
-                    GraphEdit::SetMixer {
+                    GraphEdit::EditMixer {
                         node: id,
-                        state: muted,
+                        edit: MixerEdit::ToggleMute,
                     },
                 )),
         );

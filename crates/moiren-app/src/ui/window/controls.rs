@@ -206,13 +206,7 @@ pub(super) fn stereo_controls(
                 } else {
                     ButtonVariant::Secondary
                 })
-                .on_click(edit(
-                    cx.entity(),
-                    GraphEdit::SetMono {
-                        node: node.id,
-                        mono: !node.mono,
-                    },
-                )),
+                .on_click(edit(cx.entity(), GraphEdit::ToggleMono { node: node.id })),
         )
         .child(
             button("mix-swap", t!("Swap"))
@@ -221,12 +215,6 @@ pub(super) fn stereo_controls(
                 } else {
                     ButtonVariant::Secondary
                 })
-                .on_click(edit(
-                    cx.entity(),
-                    GraphEdit::SetSwap {
-                        node: node.id,
-                        swap: !node.swap,
-                    },
-                )),
+                .on_click(edit(cx.entity(), GraphEdit::ToggleSwap { node: node.id })),
         )
 }

@@ -123,7 +123,7 @@ fn linear_gain(value: f32) -> f64 {
 }
 
 /// Loudness domain of the click-to-type dB entries. +24 dB keeps the parsed
-/// amplitude inside [`MixerState::valid`]'s 0..=16 bound (10^(24/20) ≈ 15.8);
+/// amplitude inside [`crate::service::MixerState::valid`]'s 0..=16 bound (10^(24/20) ≈ 15.8);
 /// the −120 dB floor matches the send readouts' editing domain.
 const ENTRY_MIN_DB: f64 = -120.;
 const ENTRY_MAX_DB: f64 = 24.;
@@ -216,7 +216,7 @@ pub(in crate::ui::window) fn balance_text(balance: f64) -> String {
 /// snapshot; None when the target vanished since the slider was created.
 pub(in crate::ui::window) type SliderEdit = Box<dyn Fn(f32, &GraphSnapshot) -> Option<AppRequest>>;
 
-/// Loudest gain a [`MixerState`] accepts. The fader scale tops out at +12 dB,
+/// Loudest gain a [`crate::service::MixerState`] accepts. The fader scale tops out at +12 dB,
 /// well below this, so clamping only guards edit validity.
 const FADER_MAX_GAIN: f64 = 16.;
 
@@ -592,7 +592,6 @@ fn commit_value(
     let Some(baseline) = family.exact_text(graph, id) else {
         return;
     };
-    let node = graph.node(id).expect("validated readout target");
     let Some(value) = family.parse(text) else {
         shell
             .mixer
@@ -611,15 +610,14 @@ fn commit_value(
             node: id,
             pan: value,
         },
-        EditableValueFamily::Fader | EditableValueFamily::Balance => {
-            let mut state = node.mixer;
-            if family == EditableValueFamily::Fader {
-                state.gain = value;
-            } else {
-                state.balance = value;
-            }
-            GraphEdit::SetMixer { node: id, state }
-        }
+        EditableValueFamily::Fader => GraphEdit::EditMixer {
+            node: id,
+            edit: MixerEdit::SetGain(value),
+        },
+        EditableValueFamily::Balance => GraphEdit::EditMixer {
+            node: id,
+            edit: MixerEdit::SetBalance(value),
+        },
     };
     let result = shell.state.update(cx, |state, _| {
         state.try_dispatch(AppRequest::EditGraph(edit))
@@ -758,13 +756,10 @@ pub(in crate::ui::window) fn fader_rows(
                 id,
                 1. - FaderScale::position(node.mixer.gain),
                 Box::new(move |value: f32, graph: &GraphSnapshot| {
-                    graph.node(id).map(|node| {
-                        AppRequest::EditGraph(GraphEdit::SetMixer {
+                    graph.node(id).map(|_| {
+                        AppRequest::EditGraph(GraphEdit::EditMixer {
                             node: id,
-                            state: MixerState {
-                                gain: FaderScale::gain(1. - value),
-                                ..node.mixer
-                            },
+                            edit: MixerEdit::SetGain(FaderScale::gain(1. - value)),
                         })
                     })
                 }) as SliderEdit,

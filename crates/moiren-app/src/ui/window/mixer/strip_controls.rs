@@ -99,14 +99,14 @@ pub(in crate::ui::window) fn node_controls(
                             "M",
                             requested.muted,
                             t!("Mute this channel"),
-                            mixer_edit(cx.entity(), id, |state| state.muted = !state.muted),
+                            mixer_edit(cx.entity(), id, MixerEdit::ToggleMute),
                         )))
                         .child(control(group_cell(
                             SharedString::from(format!("strip-solo-{id:?}")),
                             "S",
                             requested.solo,
                             t!("Solo this channel and its connected signal path"),
-                            mixer_edit(cx.entity(), id, |state| state.solo = !state.solo),
+                            mixer_edit(cx.entity(), id, MixerEdit::ToggleSolo),
                         ))
                         .border_l_1()
                         .border_color(theme::BORDER)),
@@ -125,9 +125,7 @@ pub(in crate::ui::window) fn node_controls(
                             } else {
                                 t!("Cycle normal, mono average, individual channels, and reverse channel order")
                             },
-                            mixer_edit(cx.entity(), id, move |state| {
-                                *state = state.next_mode(channels)
-                            }),
+                            mixer_edit(cx.entity(), id, MixerEdit::CycleMode),
                         ))
                         .border_t_1()
                         .border_color(theme::BORDER))
@@ -136,7 +134,7 @@ pub(in crate::ui::window) fn node_controls(
                             "DIM",
                             requested.dimmed,
                             t!("Dim attenuates the post-fader signal by 12 dB"),
-                            mixer_edit(cx.entity(), id, |state| state.dimmed = !state.dimmed),
+                            mixer_edit(cx.entity(), id, MixerEdit::ToggleDim),
                         ))
                         .border_l_1()
                         .border_t_1()
@@ -181,7 +179,7 @@ fn wheel_direction(delta: &ScrollDelta) -> i32 {
 fn set_balance(this: &Entity<StudioShell>, id: NodeId, balance: f64, cx: &mut App) {
     this.update(cx, |shell, cx| {
         shell.state.update(cx, |state, _| {
-            state.edit_mixer(id, |state| state.balance = balance.clamp(-1., 1.));
+            state.edit_mixer(id, MixerEdit::SetBalance(balance.clamp(-1., 1.)));
         });
         cx.notify();
     });
@@ -267,9 +265,15 @@ pub(in crate::ui::window) fn balance(
                         // One notch is 0.1 in the Left/Right buttons' sign
                         // convention: left is negative and a wheel-up notch
                         // moves right. The drag path has no center snap, so
-                        // stepping keeps the value it lands on.
+                        // stepping keeps the value it lands on. Resolve each
+                        // step in the service so unpublished notches accumulate.
                         let step = f64::from(direction) * 0.1;
-                        set_balance(&this, id, (value + step).clamp(-1., 1.), cx);
+                        this.update(cx, |shell, cx| {
+                            shell.state.update(cx, |state, _| {
+                                state.edit_mixer(id, MixerEdit::AdjustBalance(step));
+                            });
+                            cx.notify();
+                        });
                     }
                 })
                 .child(

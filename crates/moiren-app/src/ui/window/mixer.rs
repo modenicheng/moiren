@@ -1,5 +1,5 @@
 use super::*;
-use crate::service::{GraphNodeState, MixerState};
+use crate::service::{GraphNodeState, MixerEdit};
 use crate::ui::presentation::db_text;
 use controls::*;
 use moiren_core::graph::{EdgeId, NodeId, NodeKind, SendParams, SendTap};
@@ -346,13 +346,13 @@ pub(super) use strip_controls::node_controls;
 fn mixer_edit(
     this: Entity<StudioShell>,
     id: NodeId,
-    change: impl Fn(&mut MixerState) + 'static,
+    edit: MixerEdit,
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
     move |_, _, cx| {
         this.update(cx, |shell, cx| {
             shell
                 .state
-                .update(cx, |state, _| state.edit_mixer(id, &change));
+                .update(cx, |state, _| state.edit_mixer(id, edit));
             cx.notify();
         })
     }

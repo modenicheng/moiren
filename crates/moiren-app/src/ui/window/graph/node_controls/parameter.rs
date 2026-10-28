@@ -1,6 +1,7 @@
 //! Shared parameters with separate gesture travel and exact-entry domains.
 use crate::service::{
-    BuiltinState, CompressorParameter, GraphEdit, GraphNodeState, InputSelection, RackParameter,
+    BuiltinState, CompressorParameter, GraphEdit, GraphNodeState, InputSelection, MixerEdit,
+    RackParameter,
 };
 use moiren_core::graph::NodeKind;
 
@@ -300,9 +301,10 @@ impl Parameter {
                 return Some(if kind == NodeKind::Gain {
                     GraphEdit::SetGain { node: id, gain }
                 } else {
-                    let mut state = node.mixer;
-                    state.gain = gain;
-                    GraphEdit::SetMixer { node: id, state }
+                    GraphEdit::EditMixer {
+                        node: id,
+                        edit: MixerEdit::SetGain(gain),
+                    }
                 });
             }
             Self::Balance => {

@@ -19,8 +19,6 @@ pub(super) fn io_body(
     let meter_width = crate::ui::widgets::meters::node_meter_width(channels);
     let this = cx.entity();
     let details = this.clone();
-    let mut muted = node.mixer;
-    muted.muted = !muted.muted;
     let mut body = div()
         .flex()
         .flex_col()
@@ -78,9 +76,9 @@ pub(super) fn io_body(
                                     })
                                     .on_click(controls::edit(
                                         this,
-                                        GraphEdit::SetMixer {
+                                        GraphEdit::EditMixer {
                                             node: id,
-                                            state: muted,
+                                            edit: MixerEdit::ToggleMute,
                                         },
                                     )),
                             )

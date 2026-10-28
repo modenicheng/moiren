@@ -14,7 +14,7 @@ use super::controls::{button, heading, label};
 use super::desktop::Desktop;
 use super::mixer::{SliderSlot, fader_rows, node_kind_color, sync_faders};
 use super::*;
-use crate::service::{GraphNodeState, GraphSnapshot, MixerState};
+use crate::service::{GraphNodeState, GraphSnapshot, MixerEdit};
 use crate::ui::monitoring::NodeMeters;
 use crate::ui::presentation::db_text;
 use crate::ui::widgets::fader::fader;
@@ -296,9 +296,12 @@ fn strip(
                         } else {
                             ButtonVariant::Secondary
                         })
-                        .on_click(mixer_edit(flyout.state.clone(), cx.entity(), id, |state| {
-                            state.muted = !state.muted
-                        })),
+                        .on_click(mixer_edit(
+                            flyout.state.clone(),
+                            cx.entity(),
+                            id,
+                            MixerEdit::ToggleMute,
+                        )),
                 )
                 .child(
                     button(SharedString::from(format!("tray-strip-solo-{id:?}")), "S")
@@ -307,9 +310,12 @@ fn strip(
                         } else {
                             ButtonVariant::Secondary
                         })
-                        .on_click(mixer_edit(flyout.state.clone(), cx.entity(), id, |state| {
-                            state.solo = !state.solo
-                        })),
+                        .on_click(mixer_edit(
+                            flyout.state.clone(),
+                            cx.entity(),
+                            id,
+                            MixerEdit::ToggleSolo,
+                        )),
                 )
                 .gpui_test_observe(),
         )
@@ -337,10 +343,10 @@ fn mixer_edit(
     state: Entity<UiState>,
     this: Entity<TrayMixer>,
     id: NodeId,
-    change: impl Fn(&mut MixerState) + 'static,
+    edit: MixerEdit,
 ) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
     move |_, _, cx| {
-        state.update(cx, |state, _| state.edit_mixer(id, &change));
+        state.update(cx, |state, _| state.edit_mixer(id, edit));
         this.update(cx, |_, cx| cx.notify());
     }
 }
