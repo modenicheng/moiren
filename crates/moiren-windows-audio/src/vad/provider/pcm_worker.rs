@@ -71,9 +71,20 @@ pub(super) struct MicrophonePump {
     /// carrier has not yet reached `reprime_frames` (see `arm_reprime`).
     reprime_deadline: Option<Instant>,
     reprime_frames: usize,
+    reprime_wait: Duration,
 }
 
 impl MicrophonePump {
+    pub(super) fn prepared(policy: crate::virtual_owner::PreparedMicrophoneReprime) -> Self {
+        let mut pump = Self::new(policy.packet_frames);
+        pump.reprime_frames = policy.required_frames as usize;
+        pump.reprime_wait = Duration::new(
+            policy.max_wait_100ns / 10_000_000,
+            ((policy.max_wait_100ns % 10_000_000) * 100) as u32,
+        );
+        pump
+    }
+
     pub(super) fn new(packet_frames: u32) -> Self {
         Self {
             order: PacketOrder::default(),
@@ -91,6 +102,10 @@ impl MicrophonePump {
             last_observed: None,
             reprime_deadline: None,
             reprime_frames: usize::try_from(packet_frames).unwrap_or(0) * 2,
+            reprime_wait: Duration::from_nanos(
+                (u64::from(packet_frames) * 1_000_000_000).div_ceil(u64::from(SAMPLE_RATE)),
+            ) * 5
+                / 2,
         }
     }
 
@@ -98,14 +113,17 @@ impl MicrophonePump {
     /// while production roughly equals device-clock consumption: the level
     /// cannot rebuild on servo authority alone (+/-2000 ppm is ~96 frames/s
     /// against a 480-frame packet cadence), so every packet would carry a
-    /// silent tail for ~20 s. Instead the first fresh submission waits,
-    /// bounded by 2.5 native periods, until the carrier holds two packets of
-    /// margin; the device absorbs the bounded wait itself (the late WRITE
-    /// completes as a counted drop) and resumption is silent-free. Fresh
-    /// streams do not re-prime: their first packet starts the native phase
-    /// immediately.
-    pub(super) fn arm_reprime(&mut self, now: Instant) {
-        self.reprime_deadline = Some(now + self.period * 5 / 2);
+    /// silent tail for ~20 s. Hold the first fresh submission for the prepared
+    /// whole-Engine-wake margin, with one finite deadline. Missing production
+    /// still falls back to counted silence; native drops remain counted too.
+    /// This is recovery readiness, not a physical latency guarantee. Fresh
+    /// streams keep their immediate first submission and native phase.
+    pub(super) fn arm_reprime(&mut self, now: Instant) -> Result<(), BackendError> {
+        self.reprime_deadline =
+            Some(now.checked_add(self.reprime_wait).ok_or_else(|| {
+                BackendError::Failed("microphone re-prime deadline overflow".into())
+            })?);
+        Ok(())
     }
 
     fn remaining(&self, now: Instant) -> Option<Duration> {
@@ -398,7 +416,7 @@ pub(super) fn microphone<C: PcmIo>(
             return Ok(PumpState::Reset);
         }
         // Bounded re-prime after a hard reset: hold the first fresh
-        // submission until the carrier holds two packets of margin or the
+        // submission until the carrier holds the prepared recovery margin or the
         // deadline expires; wait_for_microphone yields in 1 ms slices.
         let reprime_hold = match pump.reprime_deadline {
             Some(deadline) => bridge.available_frames() < pump.reprime_frames && now() < deadline,

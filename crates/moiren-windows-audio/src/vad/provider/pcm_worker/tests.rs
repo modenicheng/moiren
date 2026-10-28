@@ -2,6 +2,9 @@ use super::*;
 
 #[path = "sequence_tests.rs"]
 mod sequence_tests;
+
+#[path = "reprime_tests.rs"]
+mod reprime_tests;
 use crate::vad::{SampleFormat, pcm_slots::SlotBook};
 use moiren_core::graph::{LogicalGraph, NodeKind, SendParams};
 use moiren_engine::{
@@ -1357,7 +1360,7 @@ fn microphone_reprime_after_a_hard_reset_waits_for_two_packets_or_the_deadline()
     let mut f = MicrophoneFixture::new(480);
     f.cycle().unwrap();
     f.io.drain(&mut f.tickets);
-    f.pump.arm_reprime(f.clock.now());
+    f.pump.arm_reprime(f.clock.now()).unwrap();
     // One packet of margin is not enough: the first fresh submission waits.
     f.writer.write_interleaved_exact(&vec![1.; 960]).unwrap();
     assert_eq!(f.cycle().unwrap(), PumpState::Current);
@@ -1379,7 +1382,7 @@ fn microphone_reprime_after_a_hard_reset_waits_for_two_packets_or_the_deadline()
     let mut f = MicrophoneFixture::new(480);
     f.cycle().unwrap();
     f.io.drain(&mut f.tickets);
-    f.pump.arm_reprime(f.clock.now());
+    f.pump.arm_reprime(f.clock.now()).unwrap();
     f.writer.write_interleaved_exact(&vec![7.; 1920]).unwrap();
     assert_eq!(f.cycle().unwrap(), PumpState::Current);
     assert_eq!(f.io.written.len(), 2);

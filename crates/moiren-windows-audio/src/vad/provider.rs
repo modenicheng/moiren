@@ -381,6 +381,7 @@ impl VirtualBoundaryProvider for WindowsVadProvider {
         request: VirtualBoundaryRequest,
         cancel: &CancellationToken,
     ) -> Result<PreparedVirtualMicrophone, BackendError> {
+        let budget = request.prepared_budget()?;
         let capacity = carrier_capacity(request)?;
         let channels = Channels::try_from(request.channels as u32)
             .map_err(|error| BackendError::Unsupported(error.to_string()))?;
@@ -395,7 +396,7 @@ impl VirtualBoundaryProvider for WindowsVadProvider {
                 channels,
                 reader,
                 byte_budget: request.audio_byte_budget,
-                buffer: request.buffer,
+                budget,
             },
             state,
         )?;
@@ -447,7 +448,7 @@ enum WorkerConfig {
         channels: Channels,
         reader: AudioReader<f32>,
         byte_budget: usize,
-        buffer: crate::virtual_owner::VirtualBufferOptions,
+        budget: crate::virtual_owner::PreparedVirtualBudget,
     },
 }
 
@@ -622,14 +623,14 @@ fn run_worker(config: WorkerConfig, state: Arc<SessionState>) {
             channels,
             reader,
             byte_budget,
-            buffer,
+            budget,
         } => run_microphone(
             control,
             endpoint,
             channels,
             Some(reader),
             byte_budget,
-            buffer,
+            budget,
             &state,
         ),
     }))
@@ -923,7 +924,7 @@ fn run_microphone(
     channels: Channels,
     mut reader: Option<AudioReader<f32>>,
     byte_budget: usize,
-    buffer: crate::virtual_owner::VirtualBufferOptions,
+    budget: crate::virtual_owner::PreparedVirtualBudget,
     state: &SessionState,
 ) -> Result<(), BackendError> {
     let mut current = endpoint.snapshot;
@@ -976,9 +977,19 @@ fn run_microphone(
                         let shape = current
                             .pcm_shape(control.capabilities())
                             .map_err(|e| client_error(e.into()))?;
-                        buffer
-                            .admit_native_packet(shape.frames())
+                        let capacity = u32::try_from(
+                            reader
+                                .as_ref()
+                                .expect("microphone carrier is free")
+                                .capacity_frames(),
+                        )
+                        .map_err(|_| {
+                            BackendError::Unsupported("microphone carrier capacity overflow".into())
+                        })?;
+                        let reprime = budget
+                            .microphone_reprime(shape.frames(), capacity)
                             .map_err(|error| BackendError::Unsupported(error.to_string()))?;
+                        log::debug!(target: "moiren::audio::vad", "event=microphone_reprime_budget admitted={reprime:?}");
                         bridge = Some(PcmMicrophoneBridge::new(
                             channels,
                             shape.format(),
@@ -989,9 +1000,9 @@ fn run_microphone(
                         owner = Some(control.pcm_owner(current).map_err(client_error)?);
                         transport_started = true;
                         tickets.clear();
-                        let mut fresh = pcm_worker::MicrophonePump::new(shape.frames());
+                        let mut fresh = pcm_worker::MicrophonePump::prepared(reprime);
                         if reprime_after_reset {
-                            fresh.arm_reprime(Instant::now());
+                            fresh.arm_reprime(Instant::now())?;
                             reprime_after_reset = false;
                         }
                         pump = Some(fresh);
