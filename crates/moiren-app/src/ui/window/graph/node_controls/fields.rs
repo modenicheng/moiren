@@ -155,8 +155,10 @@ pub(super) fn dial_field(
                         .top_0()
                         .w(px(12.))
                         .h(px(22.))
+                        .font_family(theme::FONT_MONO)
                         .text_size(px(9.))
                         .line_height(px(22.))
+                        .whitespace_nowrap()
                         .text_color(theme::TEXT_FAINT)
                         .child(unit)
                         .gpui_test_observe(),
