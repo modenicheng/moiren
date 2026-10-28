@@ -105,6 +105,7 @@ impl Default for RoundBudget {
     }
 }
 pub struct ServiceContext {
+    pub last_cleanup: Option<SessionCleanupObservation>,
     pub exports: ExportService,
     pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
     #[cfg(windows)]
@@ -133,6 +134,7 @@ pub struct ServiceContext {
 impl Default for ServiceContext {
     fn default() -> Self {
         Self {
+            last_cleanup: None,
             exports: ExportService::default(),
             loaded_project: None,
             #[cfg(windows)]
@@ -353,6 +355,7 @@ impl ServiceDriver for CoreDriver {
 pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
     let graph = c.graph.snapshot();
     AppSnapshot {
+        last_cleanup: c.last_cleanup.clone(),
         loaded_project: c.loaded_project.clone(),
         exports: c.exports.statuses(&graph),
         export_plan: c.exports.reconcile(&graph),
@@ -435,7 +438,7 @@ impl ServiceRuntime {
         Self::spawn_with_context(driver, context)
     }
 
-    fn spawn_with_context(
+    pub(crate) fn spawn_with_context(
         mut driver: impl ServiceDriver,
         mut c: ServiceContext,
     ) -> io::Result<Self> {
@@ -521,6 +524,10 @@ impl ServiceRuntime {
     }
     pub fn handle(&self) -> AppHandle {
         self.handle.clone()
+    }
+    #[cfg(any(windows, test))]
+    pub(crate) fn is_finished(&self) -> bool {
+        self.thread.is_finished()
     }
     /// Call after an Exited snapshot; this is the only UI-side service join.
     pub fn join(self) -> Result<(), ServiceJoinError> {

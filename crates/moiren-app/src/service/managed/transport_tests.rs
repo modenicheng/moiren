@@ -8,6 +8,29 @@ fn expert() -> TransportLatencySettings {
 }
 
 #[test]
+fn reaped_owner_preserves_final_closed_state_and_cleanup_failure() {
+    let mut rig = Rig::new();
+    rig.start();
+    let generation = rig.c.core.generation();
+    rig.state.fail_stop.store(true, Ordering::SeqCst);
+    rig.request(AppRequest::Stop);
+    rig.wait(|rig| rig.driver.is_drained());
+    let cleanup = rig.c.last_cleanup.as_ref().expect("joined-owner receipt");
+    assert_eq!(cleanup.generation, generation);
+    assert_eq!(cleanup.state.host, host::HostState::Closed);
+    assert!(
+        cleanup
+            .state
+            .cleanup_error
+            .as_ref()
+            .is_some_and(|error| error.to_string().contains("injected stop failure"))
+    );
+    let published = crate::service::snapshot(&rig.c);
+    assert_eq!(published.last_cleanup.unwrap().generation, generation);
+    assert!(published.active_audio_settings.is_none());
+}
+
+#[test]
 fn transport_draft_requires_apply_and_replacement_reaps_previous_owner() {
     let mut r = Rig::new();
     r.start();

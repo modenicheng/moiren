@@ -149,6 +149,9 @@ pub struct ControlSummary {
 pub struct RequestId(pub u64);
 #[derive(Debug, Clone)]
 pub struct AppSnapshot {
+    /// Last reaped host, kept separately from live-generation observations.
+    /// A joined service thread alone does not establish successful cleanup.
+    pub last_cleanup: Option<SessionCleanupObservation>,
     pub loaded_project: Option<Arc<crate::project::ProjectDocument>>,
     pub exports: Vec<super::ExportStatus>,
     pub export_plan: super::ExportReconcilePlan,
@@ -184,6 +187,12 @@ pub struct AppSnapshot {
     /// re-deriving "is this a software source" from its own input.
     pub tone_session: bool,
     pub elapsed: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionCleanupObservation {
+    pub generation: SessionGeneration,
+    pub state: moiren_engine::host::HostSnapshot,
 }
 #[cfg(windows)]
 #[derive(Debug, Clone)]

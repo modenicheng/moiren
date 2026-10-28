@@ -33,6 +33,7 @@ impl ManagedDriver {
         if let Some(owner) = self.owner.take() {
             let Owner {
                 host,
+                observer,
                 generation,
                 cleanup,
                 completion,
@@ -49,7 +50,14 @@ impl ManagedDriver {
                     target: "moiren::audio::service",
                     "audio owner cleanup finished: generation={generation:?}",
                 );
-                completion.send_or_dispose(Completion::Reaped(generation), drop);
+                // The observer survives the host join without retaining its
+                // native owner. Read the final cleanup result, not a pre-stop
+                // Running snapshot or the fact that Drop returned.
+                let cleanup = SessionCleanupObservation {
+                    generation,
+                    state: observer.read().state,
+                };
+                completion.send_or_dispose(Completion::Reaped(cleanup), drop);
             });
             // Reserved before opening the host, so stop never needs additional
             // storage and host Drop/join always runs on the cleanup worker.

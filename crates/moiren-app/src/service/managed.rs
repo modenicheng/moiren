@@ -86,7 +86,7 @@ struct PendingParameter {
     confirmation: Option<ApplyConfirmation>,
 }
 enum Completion {
-    Reaped(SessionGeneration),
+    Reaped(SessionCleanupObservation),
     Catalog(Result<DeviceCatalog, BackendError>),
     Exports(Result<super::exports::runtime::Batch, String>),
 }

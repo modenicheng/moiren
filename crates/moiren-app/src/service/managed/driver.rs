@@ -240,14 +240,16 @@ impl ManagedDriver {
                         c.graph.record_error(error);
                     }
                 }
-                Completion::Reaped(generation) => {
+                Completion::Reaped(cleanup) => {
                     self.cleaning -= 1;
+                    let generation = cleanup.generation;
                     log::info!(
                         target: "moiren::audio::service",
                         "audio owner reaped: generation={generation:?} cleaning={}",
                         self.cleaning,
                     );
                     c.core.owner_reaped(generation);
+                    c.last_cleanup = Some(cleanup);
                 }
                 Completion::Catalog(result) => {
                     self.catalog.finished();
