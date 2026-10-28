@@ -12,9 +12,17 @@ use std::{
     path::Path,
 };
 
+#[path = "process_replay.rs"]
+mod process_replay;
+
 const HELP: &str = "Offline evidence analysis plus an explicitly qualified live Process Loopback harness.
 evaluate --reports FILE --expectation FILE --level experimental|default --max-input-bytes N --max-runs N --output FILE
 analyze-pcm --pcm FILE --schedule FILE --max-input-bytes N --output FILE [--packets FILE --max-packets N]
+replay-process --trace FILE --candidates FILE --process-pid PID --process-created-100ns N
+    --owner-generation N --max-input-bytes 1..1048576 --output NEWFILE
+Offline finite Process queue replay only, not qualification: no safe/stability/latency or source-age claim.
+Candidates: schema_version=1, candidates:[explicit ProcessBridgeOptions], 1..16 entries; no defaults.
+Replay exits 0=completed candidate sweep (quality/refusals retained), 1=trace refused, 2=invalid input/IO.
 live-process-loopback --source-pid PID --output ENDPOINT --artifact-dir DIR [--seconds 1..600]
 live-vad --stable-endpoint-id ID --name NAME --output ENDPOINT --artifact-dir DIR [--seconds 1..600]
 record-measurement --input ENDPOINT --artifact-dir NEW_DIR --seconds 1..7200
@@ -82,6 +90,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         return Ok(0);
     }
     let command = &arguments[0];
+    if command == "replay-process" {
+        return process_replay::run(arguments[1..].to_vec());
+    }
     if command == "process-source-worker" {
         #[cfg(any(windows, test))]
         return live::process_source::run_worker(arguments[1..].to_vec());
