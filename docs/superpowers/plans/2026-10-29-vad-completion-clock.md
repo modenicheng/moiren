@@ -25,17 +25,21 @@ No PCM metadata, kernel ABI or production buffer changes are necessary.
 
 ## Work
 
-- [ ] Test-first portable fixed completion-clock summary: direction/provenance,
+- [x] Test-first portable fixed completion-clock summary: direction/provenance,
   exact large ticks, delta-before-conversion rounding, missing/zero/future stamps,
   arithmetic limits, zero observations and saturation; allocation guard.
-- [ ] Prepare raw QPC access once and wire actual playback, microphone and
+- [x] Prepare raw QPC access once and wire actual playback, microphone and
   intentionally dropped microphone completions. Preserve existing packet order,
   reset, cancellation and pumping semantics. Mock regressions, no native stream.
-- [ ] Expose separate playback transfer-service and microphone submission-service
+- [x] Expose separate playback transfer-service and microphone submission-service
   values through the existing telemetry DTO and app diagnostics, with explicit
   unknown source age and live-summary consistency limitations.
-- [ ] Full affected audio/app/probe/RT tests, strict Clippy/fmt and Linux
+- [x] Full affected audio/app/probe/RT tests, strict Clippy/fmt and Linux
   cross-check; independent review, evidence ledger, atomic commit/push.
 
 This is S1 diagnostic progress. It does not close physical S1 measurements,
 VAD sample-age propagation or sustained sub-10-ms qualification.
+
+Implementation receipts: audio `592a4e4`, app `f6ac8c4`, both pushed and
+remote-SHA verified. Evidence and remaining gates are recorded in
+`docs/validation/2026-10-29-vad-completion-clock.md`.
