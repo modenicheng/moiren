@@ -178,6 +178,7 @@ impl Adapter for FakeAdapter {
                 #[cfg(windows)]
                 diagnostic_provenance:
                     moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                #[cfg(windows)]
                 windows_name: None,
                 error: None,
             })
@@ -471,6 +472,7 @@ fn idle_native_mapping_plans_gate_open_only_after_engine_confirmation() {
                         #[cfg(windows)]
                         diagnostic_provenance:
                             moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                        #[cfg(windows)]
                         windows_name: None,
                         error: None,
                     }],
@@ -535,6 +537,7 @@ fn unhealthy_native_observation_cannot_confirm_or_prepare_and_plans_gate_close()
                 #[cfg(windows)]
                 diagnostic_provenance:
                     moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                #[cfg(windows)]
                 windows_name: None,
                 error: Some("QUERY timed out; snapshot is last known".into()),
             }],
@@ -589,6 +592,7 @@ fn lifecycle_readiness_does_not_require_transport_admission() {
                 #[cfg(windows)]
                 diagnostic_provenance:
                     moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                #[cfg(windows)]
                 windows_name: None,
                 error: None,
             }],
@@ -640,6 +644,7 @@ fn confirmed_absence_releases_app_tracking_across_documents() {
                     #[cfg(windows)]
                     diagnostic_provenance:
                         moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                    #[cfg(windows)]
                     windows_name: None,
                     error: None,
                 }],
@@ -672,6 +677,7 @@ mod native_stamp {
                 #[cfg(windows)]
                 diagnostic_provenance:
                     moiren_windows_audio::vad::VadExportDiagnosticProvenance::Fresh,
+                #[cfg(windows)]
                 windows_name: None,
                 error: None,
             }],
@@ -697,6 +703,7 @@ mod native_stamp {
             let first = status.observation_generation.unwrap();
             assert!(first > baseline);
             assert_eq!(status.resource, ExportResourceState::Absent);
+            #[cfg(windows)]
             assert!(status.diagnostics.is_none());
             assert_eq!(status.native_stamp, None);
             assert!(!status.gate_open && status.active_revision.is_none());
