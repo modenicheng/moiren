@@ -7,6 +7,34 @@ mod exports;
 pub(super) use exports::ExportControls;
 mod overrides;
 
+/// Quick-bind candidate for a virtual export row: the first graph node whose
+/// kind and channel count match the export, preferring one no other export
+/// holds so the shortcut never steals an occupied IO while a free match
+/// exists. The service edit still validates the final choice.
+fn export_bind_candidate(
+    graph: &crate::service::GraphSnapshot,
+    direction: crate::service::ExportDirection,
+    channels: usize,
+) -> Option<moiren_core::graph::NodeId> {
+    let kind = direction.node_kind();
+    let mut occupied = None;
+    for node in graph.graph.nodes() {
+        if node.kind() != kind || node.channels() != channels {
+            continue;
+        }
+        let id = node.id();
+        if graph
+            .exports
+            .iter()
+            .all(|export| export.binding != Some(id))
+        {
+            return Some(id);
+        }
+        occupied.get_or_insert(id);
+    }
+    occupied
+}
+
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DeviceTab {
     Inputs,
@@ -116,22 +144,10 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                     .exports
                     .iter()
                     .find(|export| export.endpoint_id.to_string() == row.endpoint_id);
-                let node = snapshot
-                    .graph
-                    .graph
-                    .nodes()
-                    .iter()
-                    .find(|node| {
-                        node.kind()
-                            == if input {
-                                moiren_core::graph::NodeKind::Source
-                            } else {
-                                moiren_core::graph::NodeKind::Sink
-                            }
-                    })
-                    .map(|node| node.id());
                 let selected = if let Some(export) = vad_export {
-                    node.is_some_and(|node| export.binding == Some(node))
+                    // Bound shows whenever this export holds any IO, including
+                    // one outside the current candidate set.
+                    export.binding.is_some()
                 } else if input {
                     state.selection.input_id.as_ref() == Some(&row.endpoint_id)
                 } else {
@@ -231,36 +247,16 @@ pub(super) fn page(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyElement
                             .disabled(!present || state.pending_request)
                             .on_click(move |_, _, cx| {
                                 this.update(cx, |s, cx| {
-                                    let export_node = s
-                                        .state
-                                        .read(cx)
-                                        .snapshot
-                                        .graph
-                                        .graph
-                                        .nodes()
-                                        .iter()
-                                        .find(|node| {
-                                            node.kind()
-                                                == if input {
-                                                    moiren_core::graph::NodeKind::Source
-                                                } else {
-                                                    moiren_core::graph::NodeKind::Sink
-                                                }
-                                        })
-                                        .map(|node| node.id());
-                                    let export_id = s
-                                        .state
-                                        .read(cx)
-                                        .snapshot
-                                        .graph
-                                        .exports
-                                        .iter()
-                                        .find(|export| {
-                                            export.enabled
-                                                && export.direction == direction
-                                                && export.endpoint_id.to_string() == id
-                                        })
-                                        .map(|export| export.endpoint_id);
+                                    let snapshot = &s.state.read(cx).snapshot.graph;
+                                    let export = snapshot.exports.iter().find(|export| {
+                                        export.enabled
+                                            && export.direction == direction
+                                            && export.endpoint_id.to_string() == id
+                                    });
+                                    let export_node = export.and_then(|export| {
+                                        export_bind_candidate(snapshot, direction, export.channels)
+                                    });
+                                    let export_id = export.map(|export| export.endpoint_id);
                                     if let (Some(node), Some(endpoint_id)) =
                                         (export_node, export_id)
                                     {
@@ -481,4 +477,106 @@ pub(super) fn inspector(shell: &StudioShell, cx: &Context<StudioShell>) -> AnyEl
         )))
         .gpui_test_observe()
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::export_bind_candidate;
+    use crate::service::{ExportDirection, ExportIntent, GraphSnapshot};
+    use moiren_core::graph::{LogicalGraph, NodeKind};
+    use moiren_engine::node::VirtualEndpointId;
+
+    fn snapshot(graph: LogicalGraph, exports: Vec<ExportIntent>) -> GraphSnapshot {
+        GraphSnapshot {
+            exports,
+            graph,
+            nodes: Vec::new(),
+            candidate_revision: 0,
+            active_revision: None,
+            pending_revision: None,
+            last_error: None,
+            faults: Vec::new(),
+            can_undo: false,
+            can_redo: false,
+        }
+    }
+
+    fn export(binding: Option<moiren_core::graph::NodeId>) -> ExportIntent {
+        ExportIntent {
+            endpoint_id: VirtualEndpointId::from_bytes([0x7e; 16]),
+            direction: ExportDirection::Playback,
+            name: "export".into(),
+            channels: 2,
+            enabled: true,
+            binding,
+        }
+    }
+
+    fn stereo_export_bound_to(node: moiren_core::graph::NodeId) -> ExportIntent {
+        ExportIntent {
+            endpoint_id: VirtualEndpointId::from_bytes([0x7d; 16]),
+            direction: ExportDirection::Playback,
+            name: "other".into(),
+            channels: 2,
+            enabled: true,
+            binding: Some(node),
+        }
+    }
+
+    #[test]
+    fn quick_bind_skips_channel_mismatches() {
+        let mut graph = LogicalGraph::new();
+        let mono = graph.create_node(NodeKind::Source, 1).unwrap();
+        let stereo = graph.create_node(NodeKind::Source, 2).unwrap();
+        assert_eq!(
+            export_bind_candidate(
+                &snapshot(graph, vec![export(None)]),
+                ExportDirection::Playback,
+                2
+            ),
+            Some(stereo)
+        );
+        assert_eq!(
+            export_bind_candidate(
+                &snapshot(LogicalGraph::new(), vec![]),
+                ExportDirection::Playback,
+                2
+            )
+            .map(|_| ()),
+            None
+        );
+        let _ = mono;
+    }
+
+    #[test]
+    fn quick_bind_prefers_an_unoccupied_match_and_falls_back_to_steal() {
+        let mut graph = LogicalGraph::new();
+        let first = graph.create_node(NodeKind::Source, 2).unwrap();
+        let second = graph.create_node(NodeKind::Source, 2).unwrap();
+        // Another export holds the first match; the shortcut must pick the
+        // free second node instead of silently rebinding the occupied one.
+        assert_eq!(
+            export_bind_candidate(
+                &snapshot(
+                    graph.clone(),
+                    vec![export(None), stereo_export_bound_to(first)]
+                ),
+                ExportDirection::Playback,
+                2
+            ),
+            Some(second)
+        );
+        // With every match occupied, the previous behavior of binding the
+        // first match (the service edit steals it) is preserved.
+        let mut single = LogicalGraph::new();
+        let only = single.create_node(NodeKind::Source, 2).unwrap();
+        assert_eq!(
+            export_bind_candidate(
+                &snapshot(single, vec![export(None), stereo_export_bound_to(only)]),
+                ExportDirection::Playback,
+                2
+            ),
+            Some(only)
+        );
+    }
 }
