@@ -130,3 +130,11 @@ Prerequisites complete: latest-candidate scalar/Mapper field intents and per-fie
 Mapper acceptance adds 16 real 32-channel frames, including native signed input on both surfaces, paging to channel 32, fast presets and horizontal meter scrolling; four additional stereo frames verify the smaller intrinsic card. Capture geometry measures stereo at 440 x 256 logical pixels and 32-channel at 516 x 382, with meter heights 187.2 and 313.6 respectively. Generated images/manifests remain ignored and untracked. Generic capture manifests initially omit vertical verification for these kinds; the dedicated 32-channel scenario verifies all 16 frames. The common verifier will be corrected and those generic frames repeated rather than retroactively claiming validation.
 
 EQ has four native layout frames and seven initial precision tests passing. Review exposed queued wheel increments, band-drag undo granularity, pending-load callbacks and logarithmic maximum endpoints; fixes and regressions are in progress before EQ acceptance. Gate / Limiter / Delay and Meter / Recorder precision editors remain open.
+
+### Precision progress after Gate
+
+- EQ accepted: 14 focused tests and four fresh native frames; queued Q, compound band undo, pending-load fences and gesture endpoints fixed. `2511a8e`, `1b77844`.
+- Gate accepted: seven focused tests and four native frames. Screenshot found wrapped ms units; mono/no-wrap fix recaptured successfully. `2d642e4`, `c5921de`.
+- Node meter gutter fixed and recaptured: Mapper16+stereo4 retain ruler/CLIP at both scroll endpoints; three geometry tests pass. `79718ba`.
+- Common scalar capture has five tests, side-meter verification two and pixel-boundary tolerance two; EQ/Gate/stereo Mapper vertical flags now all true. `91c40a8`.
+- Limiter / Delay, Meter / Recorder precision inputs and final full-suite/Clippy remain pending. No generated artifacts are tracked; PR #23 remains open, not merged.
