@@ -3364,3 +3364,60 @@ strict Clippy pass for both touched crates. The full workspace matrix runs
 in CI per the selective-CI contract; no full local workspace run was
 performed. None of this is native, physical-latency or rename-acceptance
 evidence; Stage 7 remains unqualified.
+
+### 2026-10-28 bounded rename rerun on the 133d31d driver (VM, authorized)
+
+After the host-side fix slice passed CI green (run 40703240203, all jobs
+including the new example suites), the user authorized running the queued VM
+diagnostics in parallel. The VM was temporarily occupied by an unrelated
+`deployment-2477251\moiren-app.exe` session (PID 2484); it was left
+untouched and the run waited until it exited.
+
+Driver `133d31dcc9dac14b12f14434bc1d60007d7b06db` was rebuilt with the WDK
+flow, signed with the same `WDKTestCert cheng` (SHA1 7F17CCDC...), staged
+hash-pinned (SYS `CAC0B92A...`, INF `A88161EB...`, CAT `3282784A...`), and
+installed on `DRIVER-TEST` via the verified pnputil flow after the
+preconditions passed (idle, bus OK, running 2121277 SYS hash `F5175178...`
+confirmed first). The install receipt verified the running service now uses
+the 133d31d SYS.
+
+One bounded `connected-133d31d-20261028-231700` rename run
+(`--exercise --rename --rename-fixture-seed=202610271027`) exited 1
+(`child_failed`) after ~seconds, as diagnostics do. All 14 payloads
+(7,170,106 bytes) were archived to
+`target/vad-target-archive/connected-133d31d-20261028-231700/`, verified
+against the guest manifest by length and SHA-256 on both sides, and the run
+directory plus the four install-staging items were removed only after
+verified checks. Final inventory: bus OK, no live VAD children, no probe
+process, 133d31d driver Running, 30.58 GiB free; only the four pre-existing
+directories from other sessions remain under `C:\MoirenVadTest`.
+
+Results:
+
+1. **0xE0000225 masking is gone.** No `GetDevice(error attribution)` appears
+   anywhere; baseline `windows_name_error` is null and every name
+   observation returned real values.
+2. **Name-derived endpoint identity works.** Both directions received a NEW
+   MMDevice endpoint GUID after the rename (Playback
+   `{47b0492f...}`→`{f01c01f5...}`, Microphone
+   `{d0dd91f5...}`→`{18b08783...}`), proving the reference-string fix
+   composes a fresh endpoint instead of returning to the persisted name.
+3. **The microphone rename now recomposes its Windows FriendlyName**:
+   `Moiren integration microphone seed 202610271027 (Moiren virtual audio
+   endpoint)` became `Moiren rename Microphone 3820 (Moiren virtual audio
+   endpoint)`. This is the first observed Windows-side rename effect.
+4. Playback still composes the generic `扬声器 (2- Moiren virtual audio
+   endpoint)`: its EP0 name never reaches the composition (a pre-existing
+   direction asymmetry, not identity staleness), and during the held phase
+   the strict select rejected `multiple MMDevices map to the owned raw
+   endpoint` because the previous-name endpoint lingers as not-present
+   while still mapping to the same raw PDO. Both are confirmed follow-up
+   targets.
+5. The strict-held gate still fails with `missing fresh current QUERY
+   stamp; old provider resource is no longer held`, unchanged from all
+   earlier runs and unrelated to these fixes. The parenthesized
+   `(Moiren virtual audio endpoint)` device part remains the INF-fixed
+   `ChildDeviceDescription` as designed.
+
+This is rename/composition evidence only: no PCM, latency, or stability
+qualification is claimed, and Stage 7 remains unqualified.
