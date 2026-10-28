@@ -13,17 +13,37 @@ use crate::service::{
     InputSelection, MixerState, RequestId, RunLimit, SessionPhase, SessionSpec,
 };
 
-pub(crate) fn input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> &[DeviceRow] {
+pub(crate) fn input_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> Vec<DeviceRow> {
     match backend {
-        AudioBackend::Wasapi => &catalog.inputs,
-        AudioBackend::Asio => &catalog.asio_drivers,
+        AudioBackend::Wasapi => catalog
+            .inputs
+            .iter()
+            .filter(|row| {
+                !catalog
+                    .vad_endpoints
+                    .values()
+                    .any(|id| id == &row.endpoint_id)
+            })
+            .cloned()
+            .collect(),
+        AudioBackend::Asio => catalog.asio_drivers.clone(),
     }
 }
 
-pub(crate) fn output_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> &[DeviceRow] {
+pub(crate) fn output_rows(catalog: &DeviceCatalog, backend: AudioBackend) -> Vec<DeviceRow> {
     match backend {
-        AudioBackend::Wasapi => &catalog.outputs,
-        AudioBackend::Asio => &catalog.asio_drivers,
+        AudioBackend::Wasapi => catalog
+            .outputs
+            .iter()
+            .filter(|row| {
+                !catalog
+                    .vad_endpoints
+                    .values()
+                    .any(|id| id == &row.endpoint_id)
+            })
+            .cloned()
+            .collect(),
+        AudioBackend::Asio => catalog.asio_drivers.clone(),
     }
 }
 
@@ -129,7 +149,7 @@ impl SelectionState {
                 .as_deref()
                 .and_then(|id| {
                     input_rows(catalog, self.backend)
-                        .iter()
+                        .into_iter()
                         .find(|r| r.endpoint_id == id)
                 })
                 .map(|r| InputSelection::Physical {
@@ -579,7 +599,7 @@ fn primary_parameters(snapshot: &AppSnapshot) -> (f64, f64) {
 
 pub fn output_name(snapshot: &AppSnapshot, id: &str) -> String {
     output_rows(&snapshot.catalog, snapshot.audio_settings.backend)
-        .iter()
+        .into_iter()
         .find(|row| row.endpoint_id == id)
         .map(|row| row.name.clone())
         .unwrap_or_else(|| t!("Unavailable output").into())
@@ -601,12 +621,42 @@ pub fn display_label(
         NodeKind::Source => entry
             .source
             .as_ref()
-            .map(|source| source_name(snapshot, source))
+            .and_then(|source| {
+                (!snapshot
+                    .graph
+                    .exports
+                    .iter()
+                    .any(|export| export.enabled && export.binding == Some(entry.id)))
+                .then(|| source_name(snapshot, source))
+            })
+            .or_else(|| {
+                snapshot
+                    .graph
+                    .exports
+                    .iter()
+                    .find(|export| export.enabled && export.binding == Some(entry.id))
+                    .map(|export| export.name.clone())
+            })
             .unwrap_or_else(|| entry.label.clone()),
         NodeKind::Sink => entry
             .output_endpoint_id
             .as_ref()
-            .map(|endpoint| output_name(snapshot, endpoint))
+            .and_then(|endpoint| {
+                (!snapshot
+                    .graph
+                    .exports
+                    .iter()
+                    .any(|export| export.enabled && export.binding == Some(entry.id)))
+                .then(|| output_name(snapshot, endpoint))
+            })
+            .or_else(|| {
+                snapshot
+                    .graph
+                    .exports
+                    .iter()
+                    .find(|export| export.enabled && export.binding == Some(entry.id))
+                    .map(|export| export.name.clone())
+            })
             .unwrap_or_else(|| entry.label.clone()),
         _ => entry.label.clone(),
     }
@@ -621,7 +671,7 @@ pub fn source_name(snapshot: &AppSnapshot, source: &InputSelection) -> String {
         .to_string(),
         InputSelection::Physical { endpoint_id } => {
             input_rows(&snapshot.catalog, snapshot.audio_settings.backend)
-                .iter()
+                .into_iter()
                 .find(|row| row.endpoint_id == *endpoint_id)
                 .map(|row| row.name.clone())
                 .unwrap_or_else(|| t!("Unavailable input").into())

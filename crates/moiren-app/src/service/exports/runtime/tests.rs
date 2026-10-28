@@ -163,6 +163,7 @@ impl Adapter for FakeAdapter {
             .map(|record| NativeObservation {
                 intent: record.intent.clone(),
                 snapshot: (!self.uncertain_create.load(Ordering::Acquire)).then_some(record.stamp),
+                windows_name: None,
                 resource: record.resource,
                 gate_open: record.gate,
                 allow_default: record.allow_default,
@@ -448,6 +449,7 @@ fn idle_native_mapping_plans_gate_open_only_after_engine_confirmation() {
                     observations: vec![NativeObservation {
                         intent: intent.clone(),
                         snapshot: Some([1, 7, 1, 0, 5]),
+                        windows_name: None,
                         resource: ExportResourceState::Present,
                         gate_open: false,
                         allow_default: false,
@@ -504,6 +506,7 @@ fn unhealthy_native_observation_cannot_confirm_or_prepare_and_plans_gate_close()
             observations: vec![NativeObservation {
                 intent: intent.clone(),
                 snapshot: Some([1, 7, 1, 3, 5]),
+                windows_name: None,
                 resource: ExportResourceState::Present,
                 gate_open: true,
                 allow_default: false,
@@ -550,6 +553,7 @@ fn lifecycle_readiness_does_not_require_transport_admission() {
             observations: vec![NativeObservation {
                 intent: intent.clone(),
                 snapshot: Some([1, 7, 1, 3, 5]),
+                windows_name: None,
                 resource: ExportResourceState::Present,
                 gate_open: false,
                 allow_default: false,
@@ -593,6 +597,7 @@ fn confirmed_absence_releases_app_tracking_across_documents() {
                 observations: vec![NativeObservation {
                     intent: intent.clone(),
                     snapshot: Some([value as u64, 7, value as u64, 3, 5]),
+                    windows_name: None,
                     resource: ExportResourceState::Absent,
                     gate_open: false,
                     allow_default: false,
@@ -617,6 +622,7 @@ mod native_stamp {
             observations: vec![NativeObservation {
                 intent: intent.clone(),
                 snapshot,
+                windows_name: None,
                 resource: ExportResourceState::Present,
                 gate_open: false,
                 allow_default: false,

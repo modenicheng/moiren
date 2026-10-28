@@ -153,6 +153,7 @@ impl ServiceDriver for ManagedDriver {
     }
     fn poll(&mut self, c: &mut ServiceContext, pool: &mut JobPool, budget: RoundBudget) {
         self.poll_completions(c, budget);
+        update_vad_catalog(c);
         self.poll_catalog(pool);
         if let Some(deadline) = self.auto_apply_deadline
             && deadline <= Instant::now()
@@ -177,6 +178,7 @@ impl ServiceDriver for ManagedDriver {
             self.poll_run_limit(c);
         }
         self.poll_exports(c, pool);
+        update_vad_catalog(c);
     }
     fn begin_exit(&mut self, c: &mut ServiceContext, _: &mut JobPool) {
         self.exiting = true;
@@ -195,6 +197,36 @@ impl ServiceDriver for ManagedDriver {
                 .completions
                 .as_ref()
                 .is_none_or(|q| q.outstanding() == 0)
+    }
+}
+
+fn update_vad_catalog(context: &mut ServiceContext) {
+    let statuses = context.exports.statuses(&context.graph.snapshot());
+    let live_exports = statuses
+        .iter()
+        .filter(|status| status.resource != super::super::ExportResourceState::Absent)
+        .map(|status| status.intent.endpoint_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut catalog = (*context.catalog).clone();
+    catalog
+        .vad_endpoints
+        .retain(|endpoint_id, _| live_exports.contains(endpoint_id));
+    for status in statuses {
+        if !matches!(
+            status.resource,
+            super::super::ExportResourceState::Present
+                | super::super::ExportResourceState::Removing
+        ) {
+            continue;
+        }
+        if let Some(mmdevice_id) = status.windows_name.and_then(|name| name.mmdevice_id) {
+            catalog
+                .vad_endpoints
+                .insert(status.intent.endpoint_id, mmdevice_id);
+        }
+    }
+    if catalog != *context.catalog {
+        context.catalog = Arc::new(catalog);
     }
 }
 

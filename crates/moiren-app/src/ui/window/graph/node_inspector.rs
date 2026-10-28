@@ -207,13 +207,22 @@ pub(in crate::ui::window) fn inspector(
             cx,
         ));
     if node.kind() == NodeKind::Source {
+        let bound_export = snapshot
+            .graph
+            .exports
+            .iter()
+            .find(|export| export.enabled && export.binding == Some(id));
         view = view
             .child(heading(t!("Source")))
             .child(label(
-                entry
-                    .source
-                    .as_ref()
-                    .map(|source| crate::ui::state::source_name(snapshot, source))
+                bound_export
+                    .map(|export| export.name.clone())
+                    .or_else(|| {
+                        entry
+                            .source
+                            .as_ref()
+                            .map(|source| crate::ui::state::source_name(snapshot, source))
+                    })
                     .unwrap_or_else(|| t!("Not bound · choose a resource").into()),
             ))
             .child(
@@ -256,7 +265,8 @@ pub(in crate::ui::window) fn inspector(
                         ))),
                 );
         }
-        for row in &snapshot.catalog.inputs {
+        for row in crate::ui::state::input_rows(&snapshot.catalog, snapshot.audio_settings.backend)
+        {
             view = view.child(
                 button(
                     SharedString::from(format!("bind-input-{}", row.endpoint_id)),
@@ -270,6 +280,24 @@ pub(in crate::ui::window) fn inspector(
                         source: InputSelection::Physical {
                             endpoint_id: row.endpoint_id.clone(),
                         },
+                    },
+                )),
+            );
+        }
+        for export in snapshot.graph.exports.iter().filter(|export| {
+            export.enabled && export.direction == crate::service::ExportDirection::Playback
+        }) {
+            view = view.child(
+                button(
+                    SharedString::from(format!("bind-playback-export-{}", export.endpoint_id)),
+                    export.name.clone(),
+                )
+                .variant(ButtonVariant::Ghost)
+                .on_click(edit(
+                    cx.entity(),
+                    GraphEdit::BindExport {
+                        endpoint_id: export.endpoint_id,
+                        node: Some(id),
                     },
                 )),
             );
@@ -308,18 +336,28 @@ pub(in crate::ui::window) fn inspector(
         );
     }
     if node.kind() == NodeKind::Sink {
+        let bound_export = snapshot
+            .graph
+            .exports
+            .iter()
+            .find(|export| export.enabled && export.binding == Some(id));
         view = view.child(heading(t!("Output device"))).child(label(
-            entry
-                .output_endpoint_id
-                .as_ref()
-                .map(|endpoint| crate::ui::state::output_name(snapshot, endpoint))
+            bound_export
+                .map(|export| export.name.clone())
+                .or_else(|| {
+                    entry
+                        .output_endpoint_id
+                        .as_ref()
+                        .map(|endpoint| crate::ui::state::output_name(snapshot, endpoint))
+                })
                 .unwrap_or_else(|| t!("Not bound · choose an output").into()),
         ));
         view = view.child(
             button("unbind-node-output", t!("Clear binding"))
                 .on_click(edit(cx.entity(), GraphEdit::ClearBinding(id))),
         );
-        for row in &snapshot.catalog.outputs {
+        for row in crate::ui::state::output_rows(&snapshot.catalog, snapshot.audio_settings.backend)
+        {
             view = view.child(
                 button(
                     SharedString::from(format!("bind-output-{}", row.endpoint_id)),
@@ -331,6 +369,24 @@ pub(in crate::ui::window) fn inspector(
                     GraphEdit::BindOutput {
                         node: id,
                         endpoint_id: row.endpoint_id.clone(),
+                    },
+                )),
+            );
+        }
+        for export in snapshot.graph.exports.iter().filter(|export| {
+            export.enabled && export.direction == crate::service::ExportDirection::Microphone
+        }) {
+            view = view.child(
+                button(
+                    SharedString::from(format!("bind-microphone-export-{}", export.endpoint_id)),
+                    export.name.clone(),
+                )
+                .variant(ButtonVariant::Ghost)
+                .on_click(edit(
+                    cx.entity(),
+                    GraphEdit::BindExport {
+                        endpoint_id: export.endpoint_id,
+                        node: Some(id),
                     },
                 )),
             );

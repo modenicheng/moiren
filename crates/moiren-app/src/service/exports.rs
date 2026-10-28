@@ -106,6 +106,7 @@ pub struct ExportService {
     pub(super) available: bool,
     pub(super) authorizations: BTreeMap<VirtualEndpointId, bool>,
     pub(super) observations: BTreeMap<VirtualEndpointId, ExportObservation>,
+    pub(super) windows_names: BTreeMap<VirtualEndpointId, WindowsEndpointNameObservation>,
     /// Probe-only observations, never consulted for native action authority.
     #[cfg(feature = "vad-integration-probe")]
     pub(super) native_stamps: BTreeMap<VirtualEndpointId, [u64; 5]>,

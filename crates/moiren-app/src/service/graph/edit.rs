@@ -100,6 +100,11 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
                 .ok_or("The node does not exist")?;
             entry.source = None;
             entry.output_endpoint_id = None;
+            for export in &mut next.exports {
+                if export.binding == Some(node) {
+                    export.binding = None;
+                }
+            }
         }
         GraphEdit::RemoveNode(node) => {
             next.graph.remove_node(node).map_err(|e| e.to_string())?;
@@ -172,6 +177,14 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             validate_edited_node(next, node)?;
         }
         GraphEdit::BindSource { node, source } => {
+            if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Source {
+                return Err("Only Source nodes can bind an input source".into());
+            }
+            for export in &mut next.exports {
+                if export.binding == Some(node) {
+                    export.binding = None;
+                }
+            }
             next.nodes
                 .iter_mut()
                 .find(|s| s.id == node)
@@ -196,12 +209,63 @@ pub(super) fn edit_candidate(next: &mut GraphSnapshot, edit: GraphEdit) -> Resul
             validate_edited_node(next, node)?;
         }
         GraphEdit::BindOutput { node, endpoint_id } => {
+            if next.graph.get_node(node).map_err(|e| e.to_string())?.kind() != NodeKind::Sink {
+                return Err("Only Sink nodes can bind an output device".into());
+            }
+            for export in &mut next.exports {
+                if export.binding == Some(node) {
+                    export.binding = None;
+                }
+            }
             next.nodes
                 .iter_mut()
                 .find(|s| s.id == node)
                 .ok_or("The node does not exist")?
                 .output_endpoint_id = Some(endpoint_id);
             validate_edited_node(next, node)?;
+        }
+        GraphEdit::BindExport { endpoint_id, node } => {
+            let (direction, channels) = next
+                .exports
+                .iter()
+                .find(|export| export.endpoint_id == endpoint_id)
+                .map(|export| (export.direction, export.channels))
+                .ok_or("The virtual export does not exist")?;
+            if let Some(node) = node {
+                let topology = next.graph.get_node(node).map_err(|e| e.to_string())?;
+                if topology.kind() != direction.node_kind() {
+                    return Err(match direction {
+                        super::super::ExportDirection::Playback => {
+                            "Playback exports can only bind to a Source node".into()
+                        }
+                        super::super::ExportDirection::Microphone => {
+                            "Microphone exports can only bind to a Sink node".into()
+                        }
+                    });
+                }
+                if topology.channels() != channels {
+                    return Err("Virtual export and graph IO channel counts differ".into());
+                }
+                for other in &mut next.exports {
+                    if other.endpoint_id != endpoint_id && other.binding == Some(node) {
+                        other.binding = None;
+                    }
+                }
+                let state = next
+                    .nodes
+                    .iter_mut()
+                    .find(|state| state.id == node)
+                    .ok_or("The graph node does not exist")?;
+                match direction {
+                    super::super::ExportDirection::Playback => state.source = None,
+                    super::super::ExportDirection::Microphone => state.output_endpoint_id = None,
+                }
+            }
+            next.exports
+                .iter_mut()
+                .find(|export| export.endpoint_id == endpoint_id)
+                .expect("export validated above")
+                .binding = node;
         }
     }
     Ok(())
