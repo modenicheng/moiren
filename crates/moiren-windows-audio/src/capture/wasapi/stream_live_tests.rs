@@ -319,6 +319,28 @@ fn assert_final_drain_is_retained(
     assert_eq!(history.events.len(), 1);
     assert_eq!(history.events[0].frames, 16);
     assert!(history.events[0].qpc_100ns.is_some());
+    let packets = observer.packet_history().unwrap();
+    assert_eq!(
+        packets.total_events, 2,
+        "individual packets, not the drain total"
+    );
+    assert_eq!(packets.offered_frames, 16);
+    assert_eq!(packets.published_frames, 16);
+    for event in &packets.events {
+        assert_eq!(event.sample.offered_frames, 8);
+        assert_eq!(event.sample.accepted_frames, 8);
+        assert_eq!(
+            event.sample.origin,
+            crate::latency::packets::PacketPublicationOrigin::NativeCapture
+        );
+        let before = event.sample.qpc_before_100ns.unwrap();
+        let after = event.sample.qpc_after_100ns.unwrap();
+        assert!(before <= after);
+        assert!(after <= history.events[0].qpc_100ns.unwrap());
+    }
+    assert_eq!(packets.unavailable_clocks, 0);
+    assert_eq!(packets.regressed_clocks, 0);
+    assert!(!packets.saturated);
     assert!(observer.producer_finished());
     let counters = observer.snapshot();
     assert_eq!(counters.captured_frames, 16);

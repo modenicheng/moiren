@@ -44,6 +44,7 @@ pub struct NativeBridgeObservation {
     pub node: NodeId,
     pub counters: BridgeSnapshot,
     pub queue_history: Option<crate::latency::queue::QueueHistorySnapshot>,
+    pub packet_history: Option<crate::latency::packets::PacketHistorySnapshot>,
 }
 
 fn serialize_node<S: serde::Serializer>(node: &NodeId, serializer: S) -> Result<S::Ok, S::Error> {
@@ -84,6 +85,9 @@ pub struct NativeProcessDeliveryObservation {
     /// Actual source-owned native-frame inventory. Pre-read QPC does not
     /// timestamp the later post-read boundary or establish source sample age.
     pub queue_history: Option<crate::latency::queue::QueueHistorySnapshot>,
+    /// Offered supply and admitted publication with host-QPC envelopes. Not
+    /// source sample age, exact commit instants or alternate-target admission.
+    pub packet_history: Option<crate::latency::packets::PacketHistorySnapshot>,
     pub counters: BridgeSnapshot,
 }
 
@@ -246,6 +250,7 @@ impl NativeObservationReadHandle {
                             .as_ref()
                             .and_then(|consumer| consumer.snapshot()),
                         queue_history: source.bridge.queue_history(),
+                        packet_history: source.bridge.packet_history(),
                         counters,
                     }
                 })
@@ -258,6 +263,7 @@ impl NativeObservationReadHandle {
                     node: *node,
                     counters: observer.snapshot(),
                     queue_history: observer.queue_history(),
+                    packet_history: observer.packet_history(),
                 })
                 .collect(),
             boundary_probes,

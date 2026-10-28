@@ -16,6 +16,7 @@ use moiren_windows_audio::clock_bridge;
 use moiren_windows_audio::latency;
 use moiren_windows_audio::native;
 use moiren_windows_audio::process_loopback;
+use moiren_windows_audio::stats;
 use moiren_windows_audio::virtual_owner;
 use std::{
     marker::PhantomData,

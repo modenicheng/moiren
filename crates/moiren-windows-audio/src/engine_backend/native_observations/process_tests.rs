@@ -10,7 +10,7 @@ use moiren_core::graph::{LogicalGraph, NodeKind};
 fn retained_process_observations_keep_late_native_events_and_original_generation() {
     let mut graph = LogicalGraph::new();
     let node = graph.create_node(NodeKind::Source, 2).unwrap();
-    let (_ingress, mut source, bridge) = capture_bridge(ClockBridgeConfig::default()).unwrap();
+    let (mut ingress, mut source, bridge) = capture_bridge(ClockBridgeConfig::default()).unwrap();
     let (mut consumer, consumer_observer) = event_history();
     let process = ProcessIdentity {
         pid: 42,
@@ -49,6 +49,18 @@ fn retained_process_observations_keep_late_native_events_and_original_generation
 
     observations.clear(7);
     observations.publish(8, Vec::new(), Vec::new(), Vec::new());
+    ingress
+        .push_packet_with_publication_clock(
+            &[],
+            crate::clock_bridge::CapturePacket {
+                frames: 4,
+                flags: crate::stats::SILENT,
+                device_position_frames: 0,
+                qpc_100ns: 0,
+            },
+            || Some(115),
+        )
+        .unwrap();
     // A final consumption publication can arrive after registry retirement.
     consumer.record(128, Some(110));
     source
@@ -64,7 +76,12 @@ fn retained_process_observations_keep_late_native_events_and_original_generation
     assert_eq!(final_process.input_sample_rate, 48_000);
     assert_eq!(final_process.consumer_sample_rate, 96_000);
     assert_eq!(final_process.prepared_consumer_demand_frames, 512);
-    assert_eq!(final_process.counters.captured_frames, 0);
+    assert_eq!(final_process.counters.captured_frames, 4);
+    let packet_history = final_process.packet_history.as_ref().unwrap();
+    assert_eq!(packet_history.total_events, 1);
+    assert_eq!(packet_history.events[0].sample.accepted_frames, 4);
+    assert_eq!(packet_history.events[0].sample.qpc_before_100ns, Some(115));
+    assert_eq!(packet_history.events[0].sample.qpc_after_100ns, Some(115));
     assert!(final_process.producer.as_ref().unwrap().events.is_empty());
     assert_eq!(
         final_process.consumer.as_ref().unwrap().events[0].frames,
@@ -72,6 +89,11 @@ fn retained_process_observations_keep_late_native_events_and_original_generation
     );
     let json = serde_json::to_value(final_process).unwrap();
     assert!(json["delivery"].is_null());
+    assert_eq!(json["packet_history"]["published_frames"], 4);
+    assert_eq!(
+        json["packet_history"]["events"][0]["sample"]["origin"],
+        "native_capture"
+    );
     assert_eq!(json["process"]["creation_time_100ns"], 123);
     assert!(json["measured_source_generation"].is_null());
     assert_eq!(json["admitted_bridge"]["max_demand_frames"], 512);
@@ -113,6 +135,7 @@ fn measured_projection_requires_complete_matching_observations() {
     }
     let mut observation = NativeProcessDeliveryObservation {
         queue_history: None,
+        packet_history: None,
         node,
         process: process.clone(),
         owner_generation: 7,

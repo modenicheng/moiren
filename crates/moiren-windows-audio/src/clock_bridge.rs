@@ -70,6 +70,9 @@ impl ClockBridgeConfig {
             .and_then(|bytes| {
                 bytes.checked_add(crate::latency::queue::queue_history_storage_bytes())
             })
+            .and_then(|bytes| {
+                bytes.checked_add(crate::latency::packets::packet_history_storage_bytes())
+            })
             .filter(|&bytes| bytes <= isize::MAX as usize && bytes <= self.byte_budget)
             .ok_or(ClockBridgeError::BudgetExceeded)
     }
@@ -177,14 +180,23 @@ pub(crate) fn capture_bridge_with_clock(
     config.storage_bytes()?;
     let (delivery_writer, delivery_events) = crate::latency::events::event_history();
     let (queue_writer, queue_events) = crate::latency::queue::queue_history();
+    let (packet_writer, packet_events) = crate::latency::packets::packet_history();
     let counters = Arc::new(Counters::new(
         config.capacity_frames,
         delivery_events,
         queue_events,
+        packet_events,
     ));
     let (tx, rx) = RingBuffer::new(config.capacity_frames);
     Ok((
-        CaptureIngress::new(tx, config, Arc::clone(&counters), delivery_writer),
+        CaptureIngress::new(
+            tx,
+            config,
+            Arc::clone(&counters),
+            delivery_writer,
+            packet_writer,
+            age_clock,
+        ),
         ClockSource::new(rx, config, Arc::clone(&counters), age_clock, queue_writer),
         BridgeObserver(counters),
     ))

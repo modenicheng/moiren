@@ -104,6 +104,7 @@ struct FakeCapture {
     frames: u32,
     flags: u32,
     null_buffer: bool,
+    fail_release: bool,
 }
 impl IAudioCaptureClient_Impl for FakeCapture_Impl {
     fn GetBuffer(
@@ -130,7 +131,11 @@ impl IAudioCaptureClient_Impl for FakeCapture_Impl {
     }
     fn ReleaseBuffer(&self, frames: u32) -> WinResult<()> {
         self.releases.borrow_mut().push(frames);
-        Ok(())
+        if self.fail_release {
+            Err(windows::Win32::Foundation::E_NOINTERFACE.into())
+        } else {
+            Ok(())
+        }
     }
     fn GetNextPacketSize(&self) -> WinResult<u32> {
         Ok(self.frames)
@@ -153,6 +158,7 @@ fn capture_lease_releases_complete_packet_on_success_silence_and_validation_fail
             frames,
             flags,
             null_buffer,
+            fail_release: false,
         }
         .into();
         let (mut input, _source, observer) = capture_bridge(ClockBridgeConfig::default()).unwrap();
@@ -169,6 +175,50 @@ fn capture_lease_releases_complete_packet_on_success_silence_and_validation_fail
             if fails { 0 } else { frames as u64 }
         );
     }
+}
+
+#[test]
+fn published_packet_evidence_survives_release_failure_without_healing_native_error() {
+    let releases = Rc::new(RefCell::new(Vec::with_capacity(1)));
+    let client: IAudioCaptureClient = FakeCapture {
+        data: Rc::new(UnsafeCell::new([0.25, -0.25, 0.5, -0.5])),
+        releases: releases.clone(),
+        frames: 2,
+        flags: 0,
+        null_buffer: false,
+        fail_release: true,
+    }
+    .into();
+    let (mut input, _source, observer) = crate::clock_bridge::capture_bridge_with_clock(
+        ClockBridgeConfig::default(),
+        crate::latency::QpcClock::new(),
+    )
+    .unwrap();
+    let error = transfer_packet(&client, 2, &mut input, None, None)
+        .err()
+        .unwrap();
+    assert_eq!(
+        error,
+        CaptureError::Api {
+            stage: "ReleaseBuffer(capture)",
+            hresult: windows::Win32::Foundation::E_NOINTERFACE.0,
+        }
+    );
+    assert_eq!(releases.borrow().as_slice(), [2]);
+    let packets = observer.packet_history().unwrap();
+    assert_eq!(packets.total_events, 1);
+    assert_eq!(packets.offered_frames, 2);
+    assert_eq!(packets.published_frames, 2);
+    let sample = packets.events[0].sample;
+    assert!(sample.qpc_before_100ns.unwrap() <= sample.qpc_after_100ns.unwrap());
+    assert!(
+        sample.qpc_after_100ns.unwrap() > 1,
+        "GetBuffer sample stamp is not the commit clock"
+    );
+    assert!(
+        observer.delivery_events().unwrap().events.is_empty(),
+        "no successfully released drain"
+    );
 }
 
 #[test]
@@ -191,6 +241,7 @@ fn capture_lease_copies_raw_evidence_before_release_without_allocating() {
             frames,
             flags,
             null_buffer,
+            fail_release: false,
         }
         .into();
         let (mut ingress, _source, _) = capture_bridge(ClockBridgeConfig::default()).unwrap();

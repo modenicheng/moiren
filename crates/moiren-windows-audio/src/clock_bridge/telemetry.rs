@@ -54,6 +54,7 @@ pub struct BridgeSnapshot {
     pub correction_ppm: f64,
 }
 pub(super) struct Counters {
+    pub packet_events: crate::latency::packets::PacketHistoryObserver,
     pub queue_events: crate::latency::queue::QueueHistoryObserver,
     pub delivery_events: crate::latency::events::EventHistoryObserver,
     pub native_delivery: DeliverySample,
@@ -90,8 +91,10 @@ impl Counters {
         capacity: usize,
         delivery_events: crate::latency::events::EventHistoryObserver,
         queue_events: crate::latency::queue::QueueHistoryObserver,
+        packet_events: crate::latency::packets::PacketHistoryObserver,
     ) -> Self {
         Self {
+            packet_events,
             queue_events,
             delivery_events,
             native_delivery: DeliverySample::default(),
@@ -128,6 +131,11 @@ impl Counters {
 #[derive(Clone)]
 pub struct BridgeObserver(pub(super) Arc<Counters>);
 impl BridgeObserver {
+    /// Offered/accepted packet frontiers and SPSC publication brackets. These
+    /// are neither sample timestamps nor a counterfactual queue replay.
+    pub fn packet_history(&self) -> Option<crate::latency::packets::PacketHistorySnapshot> {
+        self.0.packet_events.snapshot()
+    }
     /// Consumer-owned causal inventory boundaries, not a timestamped replay of
     /// producer publications or a source sample-age estimate.
     pub fn queue_history(&self) -> Option<crate::latency::queue::QueueHistorySnapshot> {

@@ -111,6 +111,7 @@ fn live_snapshot(mut snapshot: AppSnapshot) -> AppSnapshot {
             bridges: vec![NativeBridgeObservation {
                 node: input,
                 queue_history: None,
+                packet_history: None,
                 counters: BridgeSnapshot {
                     // These deliberately disagree with age: neither is its provenance.
                     fill_frames: 960,
