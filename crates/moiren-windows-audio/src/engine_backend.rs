@@ -7,12 +7,14 @@ mod owner;
 mod recovery;
 
 pub use native_observations::{
-    NativeBoundaryProbe, NativeBridgeObservation, NativeObservationSnapshot, NativeObservations,
-    NativeRenderPaddingObservation, NativeStreamKind, NativeStreamObservation,
+    NativeBoundaryProbe, NativeBridgeObservation, NativeObservationReadHandle,
+    NativeObservationSnapshot, NativeObservations, NativeRenderPaddingObservation,
+    NativeStreamKind, NativeStreamObservation,
 };
 #[cfg(windows)]
 pub use observations::{
-    ProfessionalObservationSnapshot, ProfessionalObservations, ProfessionalStreamObservation,
+    ProfessionalObservationReadHandle, ProfessionalObservationSnapshot, ProfessionalObservations,
+    ProfessionalStreamObservation,
 };
 
 use crate::asio::{AsioOptions, AsioStream};
@@ -889,6 +891,9 @@ fn observation(
         dropped_frames: 0,
         silent_frames: 0,
         native_callbacks: 0,
+        native_wait_wakes: 0,
+        native_written_frames: 0,
+        native_wait_timeouts: 0,
         native_dropped_frames: 0,
         native_silent_frames: 0,
         driver_latency: None,
@@ -1017,6 +1022,9 @@ fn prepare_process<S: ProcessingSample>(
             dropped_frames: 0,
             silent_frames: 0,
             native_callbacks: 0,
+            native_wait_wakes: 0,
+            native_written_frames: 0,
+            native_wait_timeouts: 0,
             native_dropped_frames: 0,
             native_silent_frames: 0,
             driver_latency: None,

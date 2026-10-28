@@ -51,6 +51,8 @@ fn serialize_node<S: serde::Serializer>(node: &NodeId, serializer: S) -> Result<
 #[derive(Debug, Clone, Serialize)]
 pub struct NativeObservationSnapshot {
     pub owner_generation: u64,
+    /// Publication state only. False does not prove workers joined or cleanup
+    /// succeeded; callers must establish teardown completion separately.
     pub running: bool,
     pub streams: Vec<NativeStreamObservation>,
     pub bridges: Vec<NativeBridgeObservation>,
@@ -100,6 +102,13 @@ impl From<(NodeId, NativeStreamKind, BoundaryProbeSample)> for NativeBoundaryPro
 }
 #[derive(Clone, Default)]
 pub struct NativeObservations(Arc<Mutex<Option<Arc<Session>>>>);
+
+/// Control-side read access to exactly one published owner generation.
+/// Does not retain audio resources or republish a cleared session. Counters
+/// remain live; read final values only after independently completed teardown.
+#[derive(Clone)]
+pub struct NativeObservationReadHandle(Arc<Session>);
+
 #[cfg(test)]
 pub(crate) struct ObservationLease {
     observations: NativeObservations,
@@ -123,26 +132,15 @@ pub(super) struct Session {
     )>,
     renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
 }
-impl NativeObservations {
-    #[cfg(test)]
-    pub(crate) fn lease(&self, generation: u64) -> ObservationLease {
-        ObservationLease {
-            observations: self.clone(),
-            generation,
-        }
-    }
-    pub fn snapshot(&self) -> Option<NativeObservationSnapshot> {
-        let session = self
-            .0
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clone()?;
+impl NativeObservationReadHandle {
+    pub fn snapshot(&self) -> NativeObservationSnapshot {
+        let session = &self.0;
         let boundary_probes = session
             .probes
             .iter()
             .map(|(node, kind, probe)| (*node, *kind, probe.snapshot()).into())
             .collect();
-        Some(NativeObservationSnapshot {
+        NativeObservationSnapshot {
             owner_generation: session.generation,
             running: session.running.load(Ordering::Acquire),
             streams: session.streams.clone(),
@@ -163,7 +161,31 @@ impl NativeObservations {
                     sample: observer.try_snapshot(),
                 })
                 .collect(),
-        })
+        }
+    }
+}
+
+impl NativeObservations {
+    #[cfg(test)]
+    pub(crate) fn lease(&self, generation: u64) -> ObservationLease {
+        ObservationLease {
+            observations: self.clone(),
+            generation,
+        }
+    }
+
+    /// Retain the current generation's metadata and shared counters off RT.
+    /// Clearing or replacing the live session cannot redirect this handle.
+    pub fn retain_session(&self) -> Option<NativeObservationReadHandle> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+            .map(|session| NativeObservationReadHandle(session.clone()))
+    }
+
+    pub fn snapshot(&self) -> Option<NativeObservationSnapshot> {
+        self.retain_session().map(|handle| handle.snapshot())
     }
     #[cfg(test)]
     pub(crate) fn publish(
@@ -192,7 +214,11 @@ impl NativeObservations {
         )>,
         renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
     ) {
-        *self.0.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(Arc::new(Session {
+        let mut state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(previous) = state.as_ref() {
+            previous.running.store(false, Ordering::Release);
+        }
+        *state = Some(Arc::new(Session {
             generation,
             running: AtomicBool::new(false),
             streams,
@@ -220,6 +246,11 @@ impl NativeObservations {
             .as_ref()
             .is_some_and(|session| session.generation == generation)
         {
+            // Cancellation also clears before joins. Retained counters still
+            // receive final owner writes; false is not a completion witness.
+            if let Some(session) = state.as_ref() {
+                session.running.store(false, Ordering::Release);
+            }
             *state = None;
         }
     }
@@ -238,6 +269,35 @@ mod tests {
         buffer::{BufferArena, BufferSlotLayout, PortAccess, ProcessIo},
         processor::ProcessContext,
     };
+
+    #[test]
+    fn retained_session_survives_clear_without_resurrection_or_replacement_mixing() {
+        let observations = NativeObservations::default();
+        assert!(observations.retain_session().is_none());
+        observations.publish(1, Vec::new(), Vec::new(), Vec::new());
+        observations.running(1);
+        let old = observations.retain_session().unwrap();
+        assert!(old.snapshot().running);
+        observations.publish(2, Vec::new(), Vec::new(), Vec::new());
+        let current = observations.retain_session().unwrap();
+        observations.running(2);
+        observations.clear(1);
+        observations.running(1);
+        assert_eq!(old.snapshot().owner_generation, 1);
+        assert!(!old.snapshot().running);
+        assert_eq!(current.snapshot().owner_generation, 2);
+        assert!(current.snapshot().running);
+        observations.clear(2);
+        observations.running(2);
+        assert!(observations.snapshot().is_none());
+        assert!(observations.retain_session().is_none());
+        assert!(!current.snapshot().running);
+        let retained = current.clone();
+        drop(observations);
+        drop(current);
+        assert_eq!(retained.snapshot().owner_generation, 2);
+        assert!(!retained.snapshot().running);
+    }
 
     #[test]
     fn virtual_budget_survives_snapshot_serialization_without_native_packet_inference() {
@@ -283,7 +343,13 @@ mod tests {
             .collect();
             let observations = NativeObservations::default();
             observations.publish(7, streams, Vec::new(), Vec::new());
-            let mut snapshot = observations.snapshot().unwrap();
+            observations.running(7);
+            let retained = observations.retain_session().unwrap();
+            observations.clear(7);
+            assert!(observations.snapshot().is_none());
+            let mut snapshot = retained.snapshot();
+            assert_eq!(snapshot.owner_generation, 7);
+            assert!(!snapshot.running);
             let json = serde_json::to_value(&snapshot).unwrap();
             for (index, kind) in [
                 NativeStreamKind::VirtualPlayback,
@@ -310,10 +376,7 @@ mod tests {
             assert!(json["streams"][2]["virtual_budget"].is_null());
             // A caller's owned snapshot cannot modify the session's admission.
             snapshot.streams[0].virtual_budget = None;
-            assert_eq!(
-                observations.snapshot().unwrap().streams[0].virtual_budget,
-                Some(budget)
-            );
+            assert_eq!(retained.snapshot().streams[0].virtual_budget, Some(budget));
         }
     }
 
@@ -341,6 +404,8 @@ mod tests {
             vec![(node, NativeStreamKind::VirtualMicrophone, probe.clone())],
         );
         observations.running(7);
+        let retained = observations.retain_session().unwrap();
+        observations.clear(7);
         let mut arena = BufferArena::<f32>::new(
             &[BufferSlotLayout {
                 channels: 2,
@@ -374,14 +439,15 @@ mod tests {
                 })
                 .unwrap();
         }
-        (observations.snapshot().unwrap(), probe.snapshot())
+        assert!(observations.snapshot().is_none());
+        (retained.snapshot(), probe.snapshot())
     }
 
     #[test]
     fn native_boundary_snapshot_preserves_prepared_geometry_and_live_events() {
         let (snapshot, sample) = sampled_boundary(true);
         assert_eq!(snapshot.owner_generation, 7);
-        assert!(snapshot.running);
+        assert!(!snapshot.running);
         assert_eq!(sample.capacity_frames, 512);
         assert_eq!(sample.target_frames, Some(128));
         assert!(sample.level_frames > 0);
@@ -445,6 +511,8 @@ mod tests {
             Vec::new(),
             vec![(node, observer)],
         );
+        let retained = observations.retain_session().unwrap();
+        observations.running(1);
         let old_lease = observations.lease(1);
         let first = observations.snapshot().unwrap();
         assert_eq!(first.render_padding.len(), 1);
@@ -474,7 +542,30 @@ mod tests {
             vec![(node, replacement)],
         );
         drop(old_lease);
+        assert!(!retained.snapshot().running);
+        assert_eq!(retained.snapshot().owner_generation, 1);
+        assert_eq!(
+            retained.snapshot().render_padding[0]
+                .sample
+                .unwrap()
+                .padding_frames,
+            21
+        );
+        owner.publish(RenderPaddingSample {
+            padding_frames: 23,
+            capacity_frames: 240,
+            sample_rate: Some(48_000),
+            period_frames: Some(48),
+        });
+        assert_eq!(
+            retained.snapshot().render_padding[0]
+                .sample
+                .unwrap()
+                .padding_frames,
+            23
+        );
         owner.invalidate();
+        assert!(retained.snapshot().render_padding[0].sample.is_none());
         let current = observations.snapshot().unwrap();
         assert_eq!(current.owner_generation, 2);
         assert_eq!(current.render_padding[0].sample.unwrap().padding_frames, 17);

@@ -278,6 +278,9 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
                 dropped_frames: 9,
                 silent_frames: 11,
                 native_callbacks: 100,
+                native_wait_wakes: 0,
+                native_wait_timeouts: 0,
+                native_written_frames: 0,
                 native_dropped_frames: 3,
                 native_silent_frames: 5,
                 driver_latency: Some(moiren_windows_audio::native::NativeLatency {
