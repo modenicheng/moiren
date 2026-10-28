@@ -8,6 +8,19 @@ pub(super) fn parameters(
     cx: &Context<StudioShell>,
 ) -> AnyElement {
     let id = node.id();
+    if node.kind() == NodeKind::Meter {
+        return Disclosure::new(
+            Section::Advanced,
+            id,
+            super::super::node_controls::integer_inspector(
+                shell,
+                id,
+                super::super::node_controls::IntegerField::MeterWindow,
+                cx,
+            ),
+        )
+        .into_any_element();
+    }
     if node.kind() == NodeKind::Eq {
         return Disclosure::new(
             Section::Advanced,
@@ -68,15 +81,27 @@ pub(super) fn parameters(
         )
         .into_any_element();
     }
-    let mut view = body();
     if node.kind() == NodeKind::Recorder {
-        view = view.child(super::super::node_controls::recording_format_controls(
-            shell,
+        return Disclosure::new(
+            Section::Advanced,
             id,
-            "inspector-record-format",
-            cx,
-        ));
+            body()
+                .child(super::super::node_controls::recording_format_controls(
+                    shell,
+                    id,
+                    "inspector-record-format",
+                    cx,
+                ))
+                .child(super::super::node_controls::integer_inspector(
+                    shell,
+                    id,
+                    super::super::node_controls::IntegerField::RecorderCapacity,
+                    cx,
+                )),
+        )
+        .into_any_element();
     }
+    let mut view = body();
     if node.kind() == NodeKind::Gain {
         view = view
             .child(heading(t!("Gain")))

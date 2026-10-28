@@ -34,25 +34,3 @@ pub(super) fn content(
 fn builtin_edit(node: NodeId, state: BuiltinState) -> GraphEdit {
     GraphEdit::SetBuiltin { node, state }
 }
-
-fn choice(
-    id: String,
-    label: impl Into<SharedString>,
-    selected: bool,
-    edit: Option<GraphEdit>,
-    cx: &Context<StudioShell>,
-) -> ActionButton {
-    let label = label.into();
-    let button = controls::button(id, t!(label.as_ref()).to_string())
-        .density(Density::Compact)
-        .variant(if selected {
-            ButtonVariant::Primary
-        } else {
-            ButtonVariant::Secondary
-        })
-        .disabled(selected || edit.is_none());
-    match edit {
-        Some(edit) => button.on_click(controls::edit(cx.entity(), edit)),
-        None => button,
-    }
-}

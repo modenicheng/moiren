@@ -23,18 +23,43 @@ pub(super) fn content(
     let unknown = t!("Unknown");
     let mut windows = div().flex().items_center().gap(px(4.));
     for frames in [128, 480, 2048, 8192] {
-        windows = windows.child(choice(
-            format!("card-meter-window-{:?}-{frames}", node.id),
-            frames.to_string(),
-            frames == settings.window_frames,
-            Some(builtin_edit(
-                node.id,
-                BuiltinState::Meter(MeterSettings {
-                    window_frames: frames,
-                }),
-            )),
-            cx,
-        ));
+        let preset = MeterSettings {
+            window_frames: frames,
+        };
+        let this = cx.entity();
+        let id = node.id;
+        // Selection reflects the last snapshot, not queued intent. Keep it
+        // clickable so 480 -> 128 -> 480 cannot lose the return before polling.
+        windows = windows.child(
+            controls::button(
+                format!("card-meter-window-{:?}-{frames}", node.id),
+                frames.to_string(),
+            )
+            .density(Density::Compact)
+            .variant(if frames == settings.window_frames {
+                ButtonVariant::Primary
+            } else {
+                ButtonVariant::Secondary
+            })
+            .disabled(!preset.valid())
+            .on_click(move |_, _, cx| {
+                this.update(cx, |shell, cx| {
+                    // Load can reuse the id before its replacement is published.
+                    if shell.pending_project.is_some()
+                        || shell.state.read(cx).snapshot.graph.kind_of(id) != Some(NodeKind::Meter)
+                    {
+                        return;
+                    }
+                    shell.state.update(cx, |state, _| {
+                        state.dispatch(AppRequest::EditGraph(builtin_edit(
+                            id,
+                            BuiltinState::Meter(preset),
+                        )));
+                    });
+                    cx.notify();
+                });
+            }),
+        );
     }
     let mut readings = div()
         .id(format!("card-meter-readings-{:?}", node.id))

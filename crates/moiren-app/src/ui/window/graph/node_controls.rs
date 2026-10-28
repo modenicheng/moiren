@@ -17,6 +17,7 @@ mod delay_precision_tests;
 mod fields;
 #[cfg(all(test, feature = "gpui-test"))]
 mod gate_precision_tests;
+mod integer;
 mod io;
 #[cfg(all(test, feature = "gpui-test"))]
 mod limiter_precision_tests;
@@ -37,6 +38,7 @@ mod tests;
 mod tone_tests;
 mod utility;
 use fields::{parameter_control, parameter_row};
+pub(super) use integer::{Field as IntegerField, render as integer_inspector};
 use io::io_body;
 pub(super) use mapper_editor::inspector as mapper_inspector;
 use parameter::Parameter;
@@ -59,6 +61,7 @@ pub(in crate::ui::window) struct NodeControls {
     input_pending: BTreeMap<(NodeId, Parameter), crate::service::RequestId>,
     errors: BTreeMap<(NodeId, Parameter), String>,
     precision: precision::Editors,
+    integer: integer::Editors,
     mapper: mapper_editor::Editors,
     pub(super) resource_popup: Option<NodeId>,
     application_picker: BTreeMap<NodeId, bool>,
@@ -75,6 +78,7 @@ impl NodeControls {
             || self.rack.owns_focus(focused, cx)
             || self.spectrum_editors.owns_focus(focused, cx)
             || self.precision.owns_focus(focused, cx)
+            || self.integer.owns_focus(focused, cx)
             || self.mapper.owns_focus(focused, cx)
     }
 }
@@ -270,6 +274,7 @@ impl StudioShell {
         rack_editor::sync(self, window, cx);
         utility::spectrum::editor::sync(self, window, cx);
         precision::sync(self, window, cx);
+        integer::sync(self, window, cx);
         mapper_editor::sync(self, window, cx);
     }
 }
