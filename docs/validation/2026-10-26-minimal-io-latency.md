@@ -3229,3 +3229,67 @@ tools; no obsolete owned VM artifact was found to clean. The next native
 preflight remains gated on a suitable active non-default virtual render
 endpoint and its explicit selection. Stage 7 physical calibration, matched
 VAD/Process comparison, and long-duration stability gates remain incomplete.
+
+### 2026-10-28 Stage 7 evidence recovery and verified VM cleanup
+
+The accepted immutable Process source snapshot remains
+`481136255235586fe9012046ef412fe7745d0289`. Its retained terminal matrix is
+13/14 commands: the only failure is the original `rt-fmt` check in
+`target/post-b-4811362-verification/rt-fmt.log` (SHA-256
+`1669D6A5519232E72DB8B11F39BEB98EB68889A6DFC5EF14CD3D0AE49C2CDB0E`). The
+source-integrity receipt records all 1,004 inputs unchanged and archive SHA-256
+`FE0708DC1E13DA03615A10D6A861C087E27C1A1DD3E9E5421BA4B529E0F8C8FF`. The
+active-branch formatting-only follow-up is separate from that immutable result.
+On this branch, rerunning
+`cargo fmt --manifest-path tools/rt-check/Cargo.toml --all -- --check`
+passed, and
+`cargo test --locked --manifest-path tools/rt-check/Cargo.toml --target-dir target/rt-check-stage7-active`
+passed 86/86. The test build still emits 14 existing `dead_code` warnings;
+this is not a strict RT-harness Clippy pass. None of these software checks is
+native or physical latency evidence.
+
+The independent HOST first-failure evidence review
+`.superpowers/sdd/task7-process-native-first-review.md` is evidence-QA PASS and
+keeps native diagnosis OPEN. The accepted Process collector's single HOST
+attempt stopped before activation at
+`Initialize(Shared compatibility)` with raw HRESULT `0x8889000A`: zero source
+frames were acknowledged, the recorder never activated, and no PCM or latency
+was produced. Cleanup completed and the report remains unqualified. The
+separate muted routing preflight is only initialization/configuration evidence;
+it does not turn this failure into an endpoint verdict or a Process audio pass.
+No new native comparison was run in this continuation; that remains a separate
+authorized gate.
+
+The bounded rename diagnostic
+`rename-bb2dfe6-seed-20261028-084716` used source `bb2dfe67925d3aa164c93ea01419f2bdcbad628e`,
+probe SHA-256 `783EFFA31A999020476806A39A84D01E68FE8602626A1277FF579DF04357DDD2`,
+and the already installed driver image SHA-256
+`F517517781C8A41D47AAC259665CB39EF22BE127261EA66C54B2FC0D2BD0A376`. It
+exited 1 without timeout or forced termination. Both directions recorded old
+object Removed and Engine-confirmed replacement, but failed the strict-held
+acceptance (the old resource was absent rather than held with fresh QUERY
+evidence) and exact Windows `FriendlyName` equality. The replacement provider,
+interface and connected-part names reflect the requested name, while Windows
+`FriendlyName` remains the seeded baseline name. The probe started zero native
+clients and verified no PCM; this is a rename failure, not audio or latency
+evidence. Do not weaken either acceptance gate based on this run.
+
+Before cleanup, all 14 archived payloads (7,985,474 bytes) were checked against
+the guest manifest on the host and VM; every length and SHA-256 matched. The
+guest manifest SHA-256 is
+`D0D349355B5F1E2ADE64E5DB972CA00AF5A20C06F60199A38058CF277BEBD823`. After
+confirming the run was the sole direct child of `C:\MoirenVadTest`, had no
+reparse points and no active test process, cleanup removed only
+`C:\MoirenVadTest\rename-bb2dfe6-seed-20261028-084716`. The test root is now
+empty and the measured free-space increase was 8,019,968 bytes. A fresh
+read-only inventory reports `DRIVER-TEST`, Windows build 26200, 32,207,069,184
+bytes free on its 67,599,593,472-byte C: volume, no matching process, the
+Moiren control bus `OK`, and the existing driver service `Running` with the
+same SYS hash. No driver, default endpoint, `C:\DriverTest`, Windows or
+DriverStore files were changed.
+
+This continuation closes the immutable software-matrix audit and the verified
+cleanup of that owned obsolete VM run only. It does not close rename
+acceptance, the reviewed/authorized native Process comparison, matched VAD vs
+Process PCM/latency, calibrated physical measurement, or any 30-minute/two-hour
+stability gate. Stage 7 remains unqualified.
