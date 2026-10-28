@@ -37,6 +37,11 @@ const LIMITER_PARAMETERS: [Parameter; 3] = [
     Parameter::LimitThreshold,
     Parameter::LimitRelease,
 ];
+const DELAY_PARAMETERS: [Parameter; 3] = [
+    Parameter::DelayTime,
+    Parameter::DelayFeedback,
+    Parameter::DelayMix,
+];
 
 fn parameters(kind: NodeKind, node: &GraphNodeState) -> &'static [Parameter] {
     match kind {
@@ -46,6 +51,7 @@ fn parameters(kind: NodeKind, node: &GraphNodeState) -> &'static [Parameter] {
         NodeKind::Eq if node.builtin.eq().is_some() => &EQ_PARAMETERS,
         NodeKind::Gate if node.builtin.gate().is_some() => &GATE_PARAMETERS,
         NodeKind::Limiter if node.builtin.limiter().is_some() => &LIMITER_PARAMETERS,
+        NodeKind::Delay if node.builtin.delay().is_some() => &DELAY_PARAMETERS,
         _ => &[],
     }
 }
@@ -210,6 +216,15 @@ pub(in crate::ui::window::graph) fn limiter_inspector(
         id,
         format!("limiter-precision-{id:?}"),
         &LIMITER_PARAMETERS,
+    )
+}
+
+pub(in crate::ui::window::graph) fn delay_inspector(shell: &StudioShell, id: NodeId) -> AnyElement {
+    inspector_fields(
+        shell,
+        id,
+        format!("delay-precision-{id:?}"),
+        &DELAY_PARAMETERS,
     )
 }
 

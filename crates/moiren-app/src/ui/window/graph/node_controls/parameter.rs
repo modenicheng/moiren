@@ -294,8 +294,7 @@ impl Parameter {
     ) -> Option<GraphEdit> {
         let silence = self == Self::Level && value == f64::NEG_INFINITY;
         let id = node.id;
-        let mut builtin = node.builtin.clone();
-        match self {
+        let (parameter, value) = match self {
             Self::Level => {
                 let gain = if silence { 0. } else { 10f64.powf(value / 20.) }.min(16.);
                 return Some(if kind == NodeKind::Gain {
@@ -383,31 +382,34 @@ impl Parameter {
                 });
             }
             Self::DelayTime | Self::DelayFeedback | Self::DelayMix => {
-                if let BuiltinState::Delay(s) = &mut builtin {
-                    match self {
-                        Self::DelayTime => s.delay_ms = value,
-                        Self::DelayFeedback => {
-                            // Validation already rejected out-of-domain text.
-                            // Exact UI endpoints otherwise divide one ULP past
-                            // the engine's inclusive +/-0.999 feedback bound.
-                            s.feedback = if value == -99.9 {
-                                -0.999
-                            } else if value == 99.9 {
-                                0.999
-                            } else {
-                                value / 100.
-                            };
-                        }
-                        _ => s.mix = value / 100.,
-                    }
-                } else {
+                if kind != NodeKind::Delay || node.builtin.delay().is_none() {
                     return None;
                 }
+                match self {
+                    Self::DelayTime => (RackParameter::DelayTime, value),
+                    Self::DelayFeedback => {
+                        // Validation already rejected out-of-domain text.
+                        // Exact UI endpoints otherwise divide one ULP past
+                        // the engine's inclusive +/-0.999 feedback bound.
+                        let feedback = if value == -99.9 {
+                            -0.999
+                        } else if value == 99.9 {
+                            0.999
+                        } else {
+                            value / 100.
+                        };
+                        (RackParameter::DelayFeedback, feedback)
+                    }
+                    _ => (RackParameter::DelayMix, value / 100.),
+                }
             }
-        }
-        Some(GraphEdit::SetBuiltin {
+        };
+        // A Delay field never carries stale sibling values or replaces the
+        // prepared storage capacity; the service merges its latest candidate.
+        Some(GraphEdit::SetBuiltinParameter {
             node: id,
-            state: builtin,
+            parameter,
+            value,
         })
     }
 }
@@ -501,19 +503,19 @@ mod tests {
         let node = snapshot.nodes.last().unwrap();
         for (text, expected) in [("99.9%", 0.999), ("-99.9%", -0.999)] {
             let value = parse(text, Parameter::DelayFeedback.unit()).unwrap();
-            let Some(GraphEdit::SetBuiltin {
-                state: BuiltinState::Delay(settings),
-                ..
-            }) = Parameter::DelayFeedback.edit(value, NodeKind::Delay, node)
-            else {
-                panic!("valid feedback endpoint")
-            };
-            assert_eq!(settings.feedback, expected);
-            graph
-                .edit(GraphEdit::SetBuiltin {
+            let edit = Parameter::DelayFeedback
+                .edit(value, NodeKind::Delay, node)
+                .expect("valid feedback endpoint");
+            assert_eq!(
+                edit,
+                GraphEdit::SetBuiltinParameter {
                     node: node.id,
-                    state: BuiltinState::Delay(settings),
-                })
+                    parameter: RackParameter::DelayFeedback,
+                    value: expected,
+                }
+            );
+            graph
+                .edit(edit)
                 .expect("the service accepts the exact engine endpoint");
         }
         for value in [

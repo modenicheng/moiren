@@ -12,6 +12,8 @@ use std::{
     rc::Rc,
 };
 
+#[cfg(all(test, feature = "gpui-test"))]
+mod delay_precision_tests;
 mod fields;
 #[cfg(all(test, feature = "gpui-test"))]
 mod gate_precision_tests;
@@ -34,7 +36,9 @@ use fields::{parameter_control, parameter_row};
 use io::io_body;
 pub(super) use mapper_editor::inspector as mapper_inspector;
 use parameter::Parameter;
-pub(super) use precision::{eq_inspector, gate_inspector, limiter_inspector, tone_inspector};
+pub(super) use precision::{
+    delay_inspector, eq_inspector, gate_inspector, limiter_inspector, tone_inspector,
+};
 pub(super) use rack_editor::inspector as rack_inspector;
 pub(super) use recording::format_controls as recording_format_controls;
 pub(super) use utility::spectrum::inspector as spectrum_inspector;
