@@ -22,8 +22,8 @@
 | Compressor | 输入增益、阈值、比率、Attack、Hold、Release、Knee、补偿增益、输出增益、干湿比 | 阈值 / 比率 / Attack / Release / 补偿 / 干湿六个主参数；拖动静态曲线改阈值与比率，Shift 微调 | 十参数按 Dynamics / Timing / Gain staging 分组；没有实时 GR 读数 |
 | Eq | 单个 peaking band 的频率、增益、Q | 三参数旋钮与数值；拖动响应曲线改频率 / 增益，滚轮改 Q，Shift 微调 | 独立精确输入与同域校验；不是多段 EQ，也没有输入频谱叠加 |
 | Gate | 阈值、衰减范围、Attack、Hold、Release | 五参数旋钮与数值、Mute、图电平 | 五参数独立精确输入与同域校验；linked downward expander，无实时门状态 / GR 可视化 |
-| Limiter | 输入增益、阈值、Release | 三参数旋钮与数值、Mute、图电平 | 同参数步进；零延迟 linked peak limiter，不宣称 true-peak 或实时 GR |
-| Delay | 延迟时间、反馈、Wet mix | 三参数旋钮与数值、Mute、图电平 | 同参数步进；时间上限来自已配置的 `max_delay_ms`，本页不调整其分配容量 |
+| Limiter | 输入增益、阈值、Release | 三参数旋钮与数值、Mute、图电平 | 三参数独立精确输入；零延迟 linked peak limiter，不宣称 true-peak 或实时 GR |
+| Delay | 延迟时间、反馈、Wet mix | 三参数旋钮与数值、Mute、图电平 | 三参数独立精确输入；时间上限来自已配置的 `max_delay_ms`，本页不调整其分配容量 |
 | Bus | 输出 Level、动态输入端口 | 按实际输入列出来源与声道宽度，点击连接进入路由详情，增加输入 | 全部端口 / 连接、增加 / 删除末尾输入；删除已连接端口须先断开，不能凭空生成路由 |
 | Pan（Balance） | 双声道平衡、Mono、Swap L/R | Balance 旋钮与数值、Mono / Swap、Mute | 精确平衡与 Left / Center / Right 步进；这是 stereo balance，不是任意多声道声像器 |
 | ChannelMapper | 输出到输入映射，或有符号线性权重矩阵 | 4×4 分页精确权重，支持全部 256 通道；等宽时 Identity / Swap 1/2；自适应竖表 | 同一参数域，独立分页与输入草稿；有限负数和大于 1 的值均合法；0 表示该格无贡献 |
@@ -208,3 +208,10 @@ EQ 14 项、Gate 7 项原生/参数测试通过；EQ 审查新增的七项中六
 通用捕获器现在覆盖全部实际侧竖表节点，检查表高与 body 一致；边界仅允许 0.5px 的浮点/像素舍入，回归明确拒绝更大越界。EQ / Gate / stereo Mapper 的全部竖表检查均为 true。Mapper 额外 16 帧已重拍：固定标尺与 CLIP 标题不随通道滚动，末页不再露出被截断的第 28 声道读数，29～32 通道完整可读；自然通道宽度和滚动几何不变。纯几何三项回归通过，未更改 Mixer / compact meter。
 
 以上由 `2511a8e` / `1b77844`（EQ）、`79718ba`（固定标尺）、`2d642e4`（Gate）、`c5921de`（单位单行）和 `91c40a8`（捕获验收）分别提交。截图 / JSON 仍未入库。Limiter / Delay、Meter / Recorder 精确输入与最终整体验证仍在进行，不把这些分段结果当作完整 workspace 终验。
+
+
+## Limiter / Delay 精确参数验收（2026-10-28）
+
+Limiter 和 Delay 的三个 Inspector 字段均与卡片分离输入实体，沿用相同参数域。字段级请求合并最新候选值，不覆盖其他参数；Delay 保留已有 `max_delay_ms`，反馈 ±99.9% 精确映射到引擎 ±0.999，Wet mix 仍以百分比显示。两个节点各五项定向测试通过，各自完成两种密度的卡片 / Inspector 四帧原生捕获，并分别目视检查紧凑 Inspector 与舒适卡片。短卡片保留紧凑横表，不为竖表而增加空白高度。
+
+代码分别以 `7005ad3` / `8d9dbd9` 原子提交并推送。八张 PNG 与两份 JSON 仅保存在本地 `limiter-precision/`、`delay-precision/` 子目录。后续审查发现共享旋钮在快照未发布期间的连续滚轮、加载后的旧回调，以及跨表面重输原值的意图处理仍有缺陷；这些按独立回归修复，不把局部参数测试和截图作为整体交互完成证明。

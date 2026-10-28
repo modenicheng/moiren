@@ -138,3 +138,11 @@ EQ has four native layout frames and seven initial precision tests passing. Revi
 - Node meter gutter fixed and recaptured: Mapper16+stereo4 retain ruler/CLIP at both scroll endpoints; three geometry tests pass. `79718ba`.
 - Common scalar capture has five tests, side-meter verification two and pixel-boundary tolerance two; EQ/Gate/stereo Mapper vertical flags now all true. `91c40a8`.
 - Limiter / Delay, Meter / Recorder precision inputs and final full-suite/Clippy remain pending. No generated artifacts are tracked; PR #23 remains open, not merged.
+
+
+### Precision progress after Delay
+
+- Limiter and Delay accepted locally: five focused tests and four native frames each, including Compact Inspector and Comfortable card visual review. Commits `7005ad3`, `8d9dbd9` pushed.
+- Meter baseline: seven focused tests and four native frames pass; Recorder exact capacity hookup follows its independent screenshot gate.
+- Review-driven completion gates added: node rotary pending/load/lifetime acknowledgement, cross-surface explicit retyping intent, legacy Gain/Pan/strip focus and untouched precision, Compressor draft/queue lifecycle, connected Bus removal affordance. These are concrete interaction regressions, not new DSP features.
+- Integrated tests and final PR validation remain pending. No generated screenshot/JSON/WAV is staged, and PR #23 remains open without merge.
