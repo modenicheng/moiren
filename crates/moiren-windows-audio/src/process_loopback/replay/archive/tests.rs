@@ -1,7 +1,10 @@
-use super::*;
 use crate::{
     clock_bridge::{CapturePacket, ClockBridgeConfig, capture_bridge},
-    process_loopback::{ProcessBridgeOptions, ProcessIdentity, ProcessTraceOrigin},
+    process_loopback::{
+        ProcessBridgeOptions, ProcessIdentity, ProcessReplayError, ProcessTraceArchive,
+        ProcessTraceCollectionRefusal, ProcessTraceCollector, ProcessTraceDocument,
+        ProcessTraceOrigin,
+    },
     stats::SILENT,
 };
 
@@ -254,6 +257,91 @@ fn archived_replay_work_limit_is_independent_of_event_capacity() {
             assert!(result.is_ok());
         } else {
             assert_eq!(result.unwrap_err(), ProcessReplayError::UnsupportedShape);
+        }
+    }
+}
+
+#[test]
+fn complete_six_second_prefix_exercises_targets_without_expanding_native_history_or_capacity() {
+    use crate::latency::transport::{
+        DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy,
+    };
+    let (mut ingress, mut source, observer) = capture_bridge(ClockBridgeConfig {
+        capacity_frames: 8192,
+        target_fill_frames: 2048,
+        detect_position_gaps: false,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut collector = ProcessTraceCollector::new(process(), 7, 48_000, 48_000, 48);
+    collector.poll(&observer);
+    for n in 0..6000_usize {
+        let stamp = 1_000_000 + n as u64 * 10_000;
+        ingress
+            .push_packet_with_publication_clock(
+                &[],
+                CapturePacket {
+                    frames: 48,
+                    flags: SILENT,
+                    device_position_frames: 0,
+                    qpc_100ns: 0,
+                },
+                || Some(stamp),
+            )
+            .unwrap();
+        source
+            .read_interleaved_with_publication_clock(&mut [0.0; 96], || Some(stamp + 100))
+            .unwrap();
+        if (n + 1).is_multiple_of(64) {
+            collector.poll(&observer);
+        }
+    }
+    drop(ingress);
+    drop(source);
+    collector.poll(&observer);
+    assert_eq!(observer.packet_history().unwrap().events.len(), 256);
+    let trace = collector.artifact().trace(&process(), 7).unwrap();
+    for target in [256, 512, 1024] {
+        let mut first = None;
+        for capacity in [2048, 4096] {
+            let report = trace
+                .replay(
+                    &process(),
+                    7,
+                    ProcessBridgeOptions {
+                        input: TransportInputPolicy::Target {
+                            capacity_frames: capacity,
+                            target_frames: target,
+                            jitter_frames: 0,
+                        },
+                        delivery: Some(InputDeliveryTiming {
+                            sample_rate: 48_000,
+                            max_packet_frames: 48,
+                            max_gap_frames: 48,
+                            source: DeliveryTimingSource::Declared,
+                        }),
+                        engine_sample_rate: 48_000,
+                        max_demand_frames: 48,
+                        age_limit_100ns: None,
+                    },
+                )
+                .unwrap();
+            assert_eq!((report.packet_events, report.read_events), (6000, 6000));
+            assert_eq!(report.candidate.captured_frames, 288_000);
+            assert_eq!(report.candidate.dropped_frames, 0);
+            assert_eq!(report.candidate.underrun_frames, 0);
+            assert_eq!(report.unserved_frames, report.startup_unserved_frames);
+            assert!(!report.qualified);
+            let values = (
+                report.candidate.output_frames,
+                report.startup_unserved_frames,
+                report.candidate.prime_discarded_frames,
+                report.terminal_inventory_frames,
+            );
+            if let Some(first) = first {
+                assert_eq!(values, first);
+            }
+            first = Some(values);
         }
     }
 }
