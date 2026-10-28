@@ -1,8 +1,10 @@
 //! One numerical scale for the main Mixer's fader, ruler and meters.
 use crate::ui::theme;
+use crate::ui::widgets::scroll_step::{ScrollGesture, scroll_gesture};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use rust_i18n::t;
+use std::cell::Cell;
 use std::rc::Rc;
 
 pub struct FaderScale;
@@ -145,29 +147,21 @@ pub struct SliderBehavior {
     pub commit: Commit,
 }
 
-/// Wheel direction as a step count: wheel up (or tilt right) is +1. gpui
-/// carries touchpad pixel deltas and discrete line notches with the same
-/// sign — positive scrolls the content down, i.e. the wheel moved up. The
-/// secondary axis covers shift+wheel and tilt wheels on horizontal sliders.
-fn wheel_direction(delta: &ScrollDelta) -> i32 {
-    let (x, y) = match delta {
-        ScrollDelta::Pixels(delta) => (f32::from(delta.x), f32::from(delta.y)),
-        ScrollDelta::Lines(delta) => (delta.x, delta.y),
-    };
-    let (x, y) = (x.signum(), y.signum());
-    if y != 0. { y as i32 } else { x as i32 }
-}
-
-/// Wraps a slider in the shared gesture surface: the wheel steps by
-/// `behavior.step` and a double click restores `behavior.reset`, both through
-/// `commit`. Wheel events stop propagation here so adjusting a slider never
-/// scrolls the surrounding strip or panel container.
+/// Wraps a slider in the shared gesture surface: a wheel notch steps by
+/// `behavior.step`, a touchpad pan tracks the fingers proportionally, and a
+/// double click restores `behavior.reset` — all through `commit`. Scroll
+/// events stop propagation here so adjusting a slider never scrolls the
+/// surrounding strip or panel container.
 fn gestures(
     state: &Entity<base::slider::SliderState>,
     behavior: &SliderBehavior,
+    axis: Axis,
     slider: impl IntoElement,
 ) -> Stateful<Div> {
     let hint = t!("Scroll to adjust · double-click to reset").to_string();
+    // The gesture surface's own bounds: a pan maps its travel onto this
+    // extent so the thumb tracks the fingers one-to-one.
+    let surface = Rc::new(Cell::new(Bounds::default()));
     div()
         .id(("slider-gestures", state.entity_id()))
         .relative()
@@ -175,14 +169,20 @@ fn gestures(
         .on_scroll_wheel({
             let state = state.clone();
             let behavior = behavior.clone();
+            let surface = surface.clone();
             move |event: &ScrollWheelEvent, window, cx| {
                 cx.stop_propagation();
-                let direction = wheel_direction(&event.delta);
-                if direction == 0 {
+                let length = axis_length(axis, surface.get());
+                let Some(gesture) = scroll_gesture(&event.delta, axis, length) else {
                     return;
-                }
-                let current = state.read(cx).value().end();
-                let value = (behavior.step)(current, direction);
+                };
+                let slider = state.read(cx);
+                let current = slider.value().end();
+                let (min, max) = (slider.min_value(), slider.max_value());
+                let value = match gesture {
+                    ScrollGesture::Notch(direction) => (behavior.step)(current, direction),
+                    ScrollGesture::Pan(travel) => (current + travel * (max - min)).clamp(min, max),
+                };
                 // An immediate, user-paced gesture: bypass drag coalescing
                 // and leave the dragging flag alone.
                 if value != current {
@@ -198,7 +198,20 @@ fn gestures(
                 }
             }
         })
+        .child(
+            canvas(move |bounds, _, _| surface.set(bounds), |_, _, _, _| {})
+                .absolute()
+                .size_full(),
+        )
         .child(slider)
+}
+
+/// Extent of `bounds` along `axis`, the length pans travel across.
+fn axis_length(axis: Axis, bounds: Bounds<Pixels>) -> f32 {
+    match axis {
+        Axis::Vertical => f32::from(bounds.size.height),
+        Axis::Horizontal => f32::from(bounds.size.width),
+    }
 }
 
 /// Linear position of `value` inside the slider's own value range, 0..1.
@@ -233,6 +246,7 @@ pub fn fader(
     gestures(
         state,
         behavior,
+        Axis::Vertical,
         base::slider::Slider::new(state)
             .vertical()
             .relative()
@@ -328,6 +342,7 @@ pub fn hslider(
     gestures(
         state,
         behavior,
+        Axis::Horizontal,
         base::slider::Slider::new(state)
             .horizontal()
             .relative()

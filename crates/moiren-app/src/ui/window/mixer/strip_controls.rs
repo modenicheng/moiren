@@ -1,6 +1,7 @@
 //! Compact channel actions and the strip-specific balance control.
 
 use super::*;
+use crate::ui::widgets::scroll_step::{ScrollGesture, scroll_gesture};
 
 fn control(button: impl IntoElement) -> Div {
     div().flex_1().min_w_0().child(button)
@@ -163,21 +164,6 @@ fn balance_value(position: Point<Pixels>, bounds: Bounds<Pixels>) -> f64 {
         .mul_add(2., -1.) as f64
 }
 
-/// Wheel direction as a step count: wheel up (or tilt right) is +1. Mirrors
-/// the fader's private helper: gpui carries touchpad pixel deltas and
-/// discrete line notches with the same sign — positive scrolls the content
-/// down, i.e. the wheel moved up. For the horizontal balance the vertical
-/// axis is the plain wheel gesture and the secondary axis covers shift+wheel
-/// and tilt wheels.
-fn wheel_direction(delta: &ScrollDelta) -> i32 {
-    let (x, y) = match delta {
-        ScrollDelta::Pixels(delta) => (f32::from(delta.x), f32::from(delta.y)),
-        ScrollDelta::Lines(delta) => (delta.x, delta.y),
-    };
-    let (x, y) = (x.signum(), y.signum());
-    if y != 0. { y as i32 } else { x as i32 }
-}
-
 fn set_balance(this: &Entity<StudioShell>, id: NodeId, balance: f64, cx: &mut App) {
     this.update(cx, |shell, cx| {
         shell.state.update(cx, |state, _| {
@@ -215,6 +201,7 @@ pub(in crate::ui::window) fn balance(
     let wheel_this = this.clone();
     let click_bounds = track_bounds.clone();
     let drag_bounds = track_bounds.clone();
+    let wheel_bounds = track_bounds.clone();
     let track_id = SharedString::from(format!("balance-track-{id:?}"));
 
     div()
@@ -260,15 +247,21 @@ pub(in crate::ui::window) fn balance(
                         // balance never scrolls the strip page or the
                         // inspector panel underneath.
                         cx.stop_propagation();
-                        let direction = wheel_direction(&event.delta);
-                        if direction == 0 {
+                        // The balance pans across the track it is painted on.
+                        let width = f32::from(wheel_bounds.get().size.width);
+                        let Some(gesture) = scroll_gesture(&event.delta, Axis::Horizontal, width)
+                        else {
                             return;
-                        }
-                        // One notch is 0.1 in the Left/Right buttons' sign
+                        };
+                        // A notch is 0.1 in the Left/Right buttons' sign
                         // convention: left is negative and a wheel-up notch
-                        // moves right. The drag path has no center snap, so
-                        // stepping keeps the value it lands on.
-                        let step = f64::from(direction) * 0.1;
+                        // moves right. A pan follows the fingers across the
+                        // full Left..Right span. The drag path has no center
+                        // snap, so stepping keeps the value it lands on.
+                        let step = match gesture {
+                            ScrollGesture::Notch(direction) => f64::from(direction) * 0.1,
+                            ScrollGesture::Pan(travel) => f64::from(travel) * 2.,
+                        };
                         set_balance(&this, id, (value + step).clamp(-1., 1.), cx);
                     }
                 })
