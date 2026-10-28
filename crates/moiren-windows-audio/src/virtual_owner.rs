@@ -14,6 +14,7 @@ mod boundary;
 mod budget;
 mod clock;
 mod provider;
+mod reprime;
 
 pub use boundary::{
     BoundaryProbe, BoundaryProbeSample, VirtualMicrophoneSink, VirtualPlaybackSource,
@@ -27,6 +28,7 @@ pub use provider::{
     VirtualBoundaryRequest, VirtualResourceSession, VirtualSessions, bind_microphone_sink,
     bind_playback_source,
 };
+pub use reprime::PreparedMicrophoneReprime;
 
 #[cfg(windows)]
 mod owner;
