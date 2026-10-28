@@ -35,19 +35,23 @@ the real bridge, never invents initial state, and remains qualified=false.
 
 ## Tasks
 
-- [ ] Test-first accumulator: repeated/overlapping polls, >256 exact events,
+- [x] Test-first accumulator: repeated/overlapping polls, >256 exact events,
   final closure, missed poll, modified overlap, metadata/counter regressions,
   event cap and permanent refusal. Strict bounded archive deserialization.
-- [ ] Extend canonical replay validation with bounded complete prefixes while
+- [x] Extend canonical replay validation with bounded complete prefixes while
   preserving version 1's 256-event shape. Verify early edits are rejected even
   when no longer in the realtime suffix; explicit work cap and caller origin.
-- [ ] Wire both actual collectors before activation, poll during control loops
+- [x] Wire both actual collectors before activation, poll during control loops
   and after joins, export schema 2. Ordinary finite runs must poll even without
   journal/load. Archive refusal records diagnostics, not an early audio stop.
-- [ ] Support both input schemas in the actual offline replay CLI; independent
+- [x] Support both input schemas in the actual offline replay CLI; independent
   byte/output bounds and tests, actual executable offline smoke validation.
-- [ ] Run affected full software/RT suites, strict lint/fmt, independent review,
+- [x] Run affected full software/RT suites, strict lint/fmt, independent review,
   document precise results/remaining physical gates; commit/push atomic slices.
 
 This is finite diagnostic/replay infrastructure, not a 10-minute native result,
 sample-age evidence, a stable sub-10-ms result or completion of all S1-S3.
+
+Receipts: `9a13f7f`, `78b0633`, `8d97154`, `aa74c39`, each pushed with remote
+SHA verification. Exact evidence and remaining limits:
+[`../../validation/2026-10-29-process-prefix-archive.md`](../../validation/2026-10-29-process-prefix-archive.md).
