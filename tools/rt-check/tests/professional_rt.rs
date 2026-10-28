@@ -425,7 +425,17 @@ fn measure_renderer<S: ProcessingSample>() {
         },
         false,
     );
-    let mut pump = Pump::new(None, None, Some(rx), info(), 96000, 4096, counters.clone(), true).unwrap();
+    let mut pump = Pump::new(
+        None,
+        None,
+        Some(rx),
+        info(),
+        96000,
+        4096,
+        counters.clone(),
+        true,
+    )
+    .unwrap();
     let probe = Arc::new(Probe::default());
     let mut native = FakeNative {
         info: info(),
