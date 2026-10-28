@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::Ordering};
 
+mod mapper_editing;
 mod rack_editing;
 mod recording_formats;
 mod spectrum_live;
@@ -23,7 +24,8 @@ mod wav_validation;
 
 const ISOLATED_CONFIG: &str = "MOIREN_CAPTURE_NODES_CONFIG";
 const NODE_FILTER: &str = "MOIREN_CAPTURE_NODE";
-const SCENARIOS: [&str; 9] = [
+const SCENARIOS: [&str; 10] = [
+    "mapper-editing",
     "rack-populated",
     "rack-editing",
     "recording-states",
@@ -209,6 +211,8 @@ fn run_native(directory: &Path, filter: Option<&'static str>) -> anyhow::Result<
         // No stereo-only processors: 32 real constant-source channels pass
         // through the managed engine and its ordinary meter subscriptions.
         chain_fixture(&[NodeKind::Source, NodeKind::Meter, NodeKind::Sink], 32)?
+    } else if filter == Some("mapper-editing") {
+        mapper_editing::fixture()?
     } else if filter == Some("spectrum-live") {
         spectrum_live::fixture()?
     } else {
@@ -455,6 +459,9 @@ async fn capture(
     }
     if filter == Some("recording-formats") {
         return recording_formats::capture_formats(window, shell, directory, cx).await;
+    }
+    if filter == Some("mapper-editing") {
+        return mapper_editing::capture_mapper(window, shell, directory, cx).await;
     }
     if filter == Some("rack-editing") {
         return rack_editing::capture_rack(window, shell, directory, cx).await;
