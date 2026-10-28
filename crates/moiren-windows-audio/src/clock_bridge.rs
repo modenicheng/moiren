@@ -172,10 +172,11 @@ pub(crate) fn capture_bridge_with_clock(
         return Err(ClockBridgeError::InvalidConfig);
     }
     config.storage_bytes()?;
-    let counters = Arc::new(Counters::new(config.capacity_frames));
+    let (delivery_writer, delivery_events) = crate::latency::events::event_history();
+    let counters = Arc::new(Counters::new(config.capacity_frames, delivery_events));
     let (tx, rx) = RingBuffer::new(config.capacity_frames);
     Ok((
-        CaptureIngress::new(tx, config, Arc::clone(&counters)),
+        CaptureIngress::new(tx, config, Arc::clone(&counters), delivery_writer),
         ClockSource::new(rx, config, Arc::clone(&counters), age_clock),
         BridgeObserver(counters),
     ))

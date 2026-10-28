@@ -2734,6 +2734,7 @@ mod native {
 
         fn native() -> NativeObservationSnapshot {
             NativeObservationSnapshot {
+                process_delivery: Vec::new(),
                 owner_generation: 7,
                 running: false,
                 streams: Vec::new(),

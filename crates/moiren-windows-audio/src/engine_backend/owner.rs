@@ -413,6 +413,7 @@ fn native_owner<S: ProcessingSample>(
 }
 
 pub(super) struct Pump {
+    consumer_events: Option<crate::latency::events::EventHistoryWriter>,
     capture: Option<Producer<StereoFrame>>,
     capture_clock: Option<Arc<CaptureWriteClock>>,
     capture_frames: u64,
@@ -452,10 +453,17 @@ impl Pump {
         // watermark is a drift target, never a condition for native start.
         let period_frames = (u64::from(info.buffer_frames) * u64::from(engine_rate)
             / u64::from(info.sample_rate)) as usize;
-        let qpc = (capture.is_some())
+        let qpc = (capture.is_some() || master)
             .then(crate::latency::QpcClock::new)
             .flatten();
         Ok(Self {
+            consumer_events: if master {
+                let (writer, observer) = crate::latency::events::event_history();
+                let _ = counters.consumer_events.set(observer);
+                Some(writer)
+            } else {
+                None
+            },
             capture,
             capture_clock,
             capture_frames: 0,
@@ -530,6 +538,7 @@ impl Pump {
                     return Ok(progress);
                 }
                 let mut rendered = 0usize;
+                let consumption_qpc = self.qpc.as_ref().and_then(crate::latency::QpcClock::now);
                 if !self.master {
                     let queued = rx.slots() + src.queued_frames();
                     src.set_correction_ppm(self.servo.observe(queued));
@@ -566,6 +575,9 @@ impl Pump {
                         self.pending = demand;
                     }
                 }
+                if let Some(events) = &mut self.consumer_events {
+                    events.record(rendered as u64, consumption_qpc);
+                }
             }
             let written = native.write(&self.output[self.offset..self.pending])?;
             if written > self.pending - self.offset {
@@ -590,6 +602,7 @@ pub(super) struct Transport<S: ProcessingSample> {
     pub native_observations: NativeObservations,
     pub native_streams: Vec<NativeStreamObservation>,
     pub native_bridges: Vec<(NodeId, crate::clock_bridge::BridgeObserver)>,
+    pub native_process_delivery: Vec<super::native_observations::ProcessDeliverySource>,
     pub native_probes: Vec<(
         NodeId,
         NativeStreamKind,
@@ -612,6 +625,7 @@ impl<S: ProcessingSample> Transport<S> {
             native_observations: NativeObservations::default(),
             native_streams: Vec::new(),
             native_bridges: Vec::new(),
+            native_process_delivery: Vec::new(),
             native_probes: Vec::new(),
             native_renders: Vec::new(),
             generation,
@@ -635,12 +649,13 @@ impl<S: ProcessingSample> Transport<S> {
         }))
     }
     fn activate(&self) -> Result<(), BackendError> {
-        self.native_observations.publish_with_renders(
+        self.native_observations.publish_with_process(
             self.generation,
             self.native_streams.clone(),
             self.native_bridges.clone(),
             self.native_probes.clone(),
             self.native_renders.clone(),
+            self.native_process_delivery.clone(),
         );
         for auxiliary in &self.auxiliaries {
             if let Err(error) = auxiliary.activate() {

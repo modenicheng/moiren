@@ -10,6 +10,8 @@ mod fakes;
 use fakes::*;
 use std::sync::atomic::Ordering;
 
+#[path = "measured_preparation_tests.rs"]
+mod measured_preparation;
 #[path = "packet_phase_tests.rs"]
 mod packet_phase;
 

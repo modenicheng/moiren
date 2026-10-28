@@ -43,6 +43,9 @@ pub struct ProfessionalObservationSnapshot {
 
 #[derive(Default)]
 pub(crate) struct Counters {
+    /// Single master writer publishes actual complete Engine consumption
+    /// per native wake. Control retains the observer after worker retirement.
+    pub consumer_events: std::sync::OnceLock<crate::latency::events::EventHistoryObserver>,
     pub dropped: AtomicU64,
     pub silent: AtomicU64,
     native_callbacks: AtomicU64,

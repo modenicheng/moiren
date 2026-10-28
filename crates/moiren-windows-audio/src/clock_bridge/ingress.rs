@@ -14,6 +14,8 @@ pub struct CapturePacket {
     pub qpc_100ns: u64,
 }
 pub struct CaptureIngress {
+    #[cfg_attr(not(any(windows, test)), allow(dead_code))]
+    delivery_events: crate::latency::events::EventHistoryWriter,
     tx: Producer<Frame>,
     config: ClockBridgeConfig,
     generation: u64,
@@ -26,8 +28,10 @@ impl CaptureIngress {
         tx: Producer<Frame>,
         config: ClockBridgeConfig,
         counters: Arc<Counters>,
+        delivery_events: crate::latency::events::EventHistoryWriter,
     ) -> Self {
         Self {
+            delivery_events,
             tx,
             config,
             generation: 1,
@@ -49,6 +53,12 @@ impl CaptureIngress {
         sample: crate::latency::InputDeliverySnapshot,
     ) {
         self.counters.native_delivery.publish(sample);
+    }
+
+    /// One completed native drain, not one packet or per-sample timestamp.
+    #[cfg(any(windows, test))]
+    pub(crate) fn record_native_delivery_event(&mut self, frames: u64, qpc_100ns: Option<u64>) {
+        self.delivery_events.record(frames, qpc_100ns);
     }
 
     /// SILENT packets carry no readable payload (contract documented on

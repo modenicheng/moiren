@@ -15,7 +15,6 @@ use moiren_engine::{
 use moiren_windows_audio::clock_bridge;
 use moiren_windows_audio::latency;
 use moiren_windows_audio::native;
-#[cfg(windows)]
 use moiren_windows_audio::process_loopback;
 use moiren_windows_audio::virtual_owner;
 use std::{
@@ -409,7 +408,7 @@ fn measure_renderer<S: ProcessingSample>() {
         },
         false,
     );
-    let mut pump = Pump::new(None, None, Some(rx), info(), 96000, 4096, counters, true).unwrap();
+    let mut pump = Pump::new(None, None, Some(rx), info(), 96000, 4096, counters.clone(), true).unwrap();
     let probe = Arc::new(Probe::default());
     let mut native = FakeNative {
         info: info(),
@@ -426,6 +425,15 @@ fn measure_renderer<S: ProcessingSample>() {
     });
     assert_eq!(probe.written.load(Ordering::Relaxed), 32 * 128);
     assert!(compiled.engine.timeline() > 4096);
+    let events = counters.consumer_events.get().unwrap().snapshot().unwrap();
+    // Each demand spans several 64-frame graph segments; partial native writes
+    // do not publish extra consumption or prefetch another capacity of audio.
+    assert_eq!(events.total_events, 32);
+    assert_eq!(
+        events.events.iter().map(|event| event.frames).sum::<u64>(),
+        compiled.engine.timeline()
+    );
+    assert!(events.events.iter().all(|event| event.frames > 64));
     assert!(released.try_recv().is_err());
     drop(compiled);
     assert_eq!(released.recv().unwrap(), std::thread::current().id());

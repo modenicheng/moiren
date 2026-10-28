@@ -58,6 +58,83 @@ pub struct NativeObservationSnapshot {
     pub bridges: Vec<NativeBridgeObservation>,
     pub boundary_probes: Vec<NativeBoundaryProbe>,
     pub render_padding: Vec<NativeRenderPaddingObservation>,
+    pub process_delivery: Vec<NativeProcessDeliveryObservation>,
+}
+
+/// Service boundary events belonging to this exact source and transport owner.
+/// Independent histories are coherent individually, not a cross-owner audio
+/// transaction. Process service timestamps never establish sample age.
+#[derive(Debug, Clone, Serialize)]
+pub struct NativeProcessDeliveryObservation {
+    #[serde(serialize_with = "serialize_node")]
+    pub node: NodeId,
+    pub process: crate::process_loopback::ProcessIdentity,
+    pub owner_generation: u64,
+    pub input_sample_rate: u32,
+    pub consumer_sample_rate: u32,
+    pub prepared_consumer_demand_frames: u32,
+    /// Exact options admitted for this owner, distinct from collected timing.
+    pub admitted_bridge: crate::process_loopback::ProcessBridgeOptions,
+    /// Origin of an explicitly reused measured profile, never this new owner.
+    pub measured_source_generation: Option<u64>,
+    pub delivery: Option<crate::latency::InputDeliverySnapshot>,
+    pub producer: Option<crate::latency::events::EventHistorySnapshot>,
+    pub consumer: Option<crate::latency::events::EventHistorySnapshot>,
+    pub counters: BridgeSnapshot,
+}
+
+impl NativeProcessDeliveryObservation {
+    /// Validate individually coherent native histories off RT. A contended or
+    /// incomplete snapshot is refused; callers can collect another snapshot.
+    pub fn measured(
+        &self,
+        expected_process: &crate::process_loopback::ProcessIdentity,
+        expected_generation: u64,
+    ) -> Result<
+        crate::process_loopback::MeasuredProcessDelivery,
+        crate::process_loopback::MeasuredAdmissionError,
+    > {
+        use crate::process_loopback::{MeasuredAdmissionError as Error, MeasuredProcessDelivery};
+        if !self.process.same_process(expected_process) {
+            return Err(Error::IdentityMismatch);
+        }
+        if self.owner_generation != expected_generation {
+            return Err(Error::GenerationMismatch);
+        }
+        let delivery = self.delivery.ok_or(Error::MissingObservation {
+            observation: "packet delivery",
+        })?;
+        if self.counters.native_delivery != Some(delivery) {
+            return Err(Error::InconsistentDelivery);
+        }
+        MeasuredProcessDelivery::from_observations(
+            self.process.clone(),
+            self.owner_generation,
+            self.input_sample_rate,
+            self.consumer_sample_rate,
+            self.prepared_consumer_demand_frames,
+            delivery,
+            self.producer.clone().ok_or(Error::MissingObservation {
+                observation: "producer",
+            })?,
+            self.consumer.clone().ok_or(Error::MissingObservation {
+                observation: "consumer",
+            })?,
+        )
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct ProcessDeliverySource {
+    pub node: NodeId,
+    pub process: crate::process_loopback::ProcessIdentity,
+    pub input_sample_rate: u32,
+    pub consumer_sample_rate: u32,
+    pub prepared_consumer_demand_frames: u32,
+    pub admitted_bridge: crate::process_loopback::ProcessBridgeOptions,
+    pub measured_source_generation: Option<u64>,
+    pub bridge: BridgeObserver,
+    pub consumer: Option<crate::latency::events::EventHistoryObserver>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +198,7 @@ impl Drop for ObservationLease {
     }
 }
 pub(super) struct Session {
+    process_delivery: Vec<ProcessDeliverySource>,
     generation: u64,
     running: AtomicBool,
     streams: Vec<NativeStreamObservation>,
@@ -143,6 +221,30 @@ impl NativeObservationReadHandle {
         NativeObservationSnapshot {
             owner_generation: session.generation,
             running: session.running.load(Ordering::Acquire),
+            process_delivery: session
+                .process_delivery
+                .iter()
+                .map(|source| {
+                    let counters = source.bridge.snapshot();
+                    NativeProcessDeliveryObservation {
+                        node: source.node,
+                        process: source.process.clone(),
+                        owner_generation: session.generation,
+                        input_sample_rate: source.input_sample_rate,
+                        consumer_sample_rate: source.consumer_sample_rate,
+                        prepared_consumer_demand_frames: source.prepared_consumer_demand_frames,
+                        admitted_bridge: source.admitted_bridge,
+                        measured_source_generation: source.measured_source_generation,
+                        delivery: counters.native_delivery,
+                        producer: source.bridge.delivery_events(),
+                        consumer: source
+                            .consumer
+                            .as_ref()
+                            .and_then(|consumer| consumer.snapshot()),
+                        counters,
+                    }
+                })
+                .collect(),
             streams: session.streams.clone(),
             bridges: session
                 .bridges
@@ -201,7 +303,7 @@ impl NativeObservations {
     ) {
         self.publish_with_renders(generation, streams, bridges, probes, Vec::new());
     }
-    #[cfg(any(windows, test))]
+    #[cfg(test)]
     pub(crate) fn publish_with_renders(
         &self,
         generation: u64,
@@ -214,11 +316,29 @@ impl NativeObservations {
         )>,
         renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
     ) {
+        self.publish_with_process(generation, streams, bridges, probes, renders, Vec::new());
+    }
+    #[cfg(any(windows, test))]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn publish_with_process(
+        &self,
+        generation: u64,
+        streams: Vec<NativeStreamObservation>,
+        bridges: Vec<(NodeId, BridgeObserver)>,
+        probes: Vec<(
+            NodeId,
+            NativeStreamKind,
+            std::sync::Arc<crate::virtual_owner::BoundaryProbe>,
+        )>,
+        renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
+        process_delivery: Vec<ProcessDeliverySource>,
+    ) {
         let mut state = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
         if let Some(previous) = state.as_ref() {
             previous.running.store(false, Ordering::Release);
         }
         *state = Some(Arc::new(Session {
+            process_delivery,
             generation,
             running: AtomicBool::new(false),
             streams,
@@ -255,6 +375,10 @@ impl NativeObservations {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "native_observations/process_tests.rs"]
+mod process_tests;
 
 #[cfg(test)]
 mod tests {

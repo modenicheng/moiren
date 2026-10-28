@@ -7,14 +7,23 @@ use windows::{
     core::{GUID, HRESULT, Interface, Result as WinResult, implement},
 };
 
+enum DrainEnd {
+    Observe {
+        reached: mpsc::SyncSender<()>,
+        resume: mpsc::Receiver<()>,
+    },
+    StopAfterRelease,
+    PacketQueryError,
+}
+
 #[implement(IAudioCaptureClient)]
 struct Packets {
     audio: HANDLE,
+    stop: HANDLE,
     next: Cell<u32>,
     packet: Cell<u64>,
     origin: u64,
-    reached: mpsc::SyncSender<()>,
-    resume: mpsc::Receiver<()>,
+    end: DrainEnd,
 }
 impl IAudioCaptureClient_Impl for Packets_Impl {
     fn GetBuffer(
@@ -38,22 +47,28 @@ impl IAudioCaptureClient_Impl for Packets_Impl {
         Ok(())
     }
     fn ReleaseBuffer(&self, _: u32) -> WinResult<()> {
-        unsafe { SetEvent(self.audio) }
+        unsafe { SetEvent(self.audio)? };
+        if matches!(self.end, DrainEnd::StopAfterRelease) && self.packet.get() == 2 {
+            unsafe { SetEvent(self.stop)? };
+        }
+        Ok(())
     }
     fn GetNextPacketSize(&self) -> WinResult<u32> {
         let next = self.next.get();
         self.next.set(next + 1);
         match next {
             0 | 1 => Ok(8),
-            2 => {
+            2 if matches!(self.end, DrainEnd::Observe { .. }) => {
                 unsafe { SetEvent(self.audio)? };
                 Ok(0)
             }
             _ => {
                 // Only the fake blocks: park after a complete real callback so
                 // the control thread can inspect observations before Stop/join.
-                self.reached.send(()).unwrap();
-                self.resume.recv().unwrap();
+                if let DrainEnd::Observe { reached, resume } = &self.end {
+                    reached.send(()).unwrap();
+                    resume.recv().unwrap();
+                }
                 Err(E_NOINTERFACE.into())
             }
         }
@@ -139,6 +154,7 @@ fn native_delivery_is_visible_before_join_and_age_clock_works_with_trace_disable
             let audio = crate::owner::OwnedHandle::event().unwrap();
             let capture: IAudioCaptureClient = Packets {
                 audio: audio.0,
+                stop: handle(&stop),
                 next: Cell::new(0),
                 packet: Cell::new(0),
                 origin: QpcClock::prepare(TelemetryMode::Summary)
@@ -146,8 +162,10 @@ fn native_delivery_is_visible_before_join_and_age_clock_works_with_trace_disable
                     .now()
                     .unwrap()
                     - 100_000,
-                reached,
-                resume: continue_worker,
+                end: DrainEnd::Observe {
+                    reached,
+                    resume: continue_worker,
+                },
             }
             .into();
             let client: IAudioClient = Client {
@@ -232,4 +250,113 @@ fn native_delivery_is_visible_before_join_and_age_clock_works_with_trace_disable
         assert_eq!(report.latency.mode, TelemetryMode::Disabled);
         assert_eq!(report.latency.trace.records().len(), 0);
     }
+}
+
+fn interrupted_drain(end: DrainEnd) -> (CaptureReport, crate::clock_bridge::BridgeObserver) {
+    let stop = crate::StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let worker_gate = gate.clone();
+    let prepared = super::super::start_owner(stop, move |stop, sender, started| {
+        let audio = crate::owner::OwnedHandle::event().unwrap();
+        let capture: IAudioCaptureClient = Packets {
+            audio: audio.0,
+            stop: handle(&stop),
+            next: Cell::new(0),
+            packet: Cell::new(0),
+            origin: QpcClock::new().unwrap().now().unwrap(),
+            end,
+        }
+        .into();
+        let client: IAudioClient = Client {
+            capture,
+            audio: audio.0,
+        }
+        .into();
+        let mut report = CaptureReport::new(
+            CaptureSource::ProcessLoopback,
+            SessionDuration::UntilStopped,
+        );
+        let result = run(
+            StreamInput {
+                client: &client,
+                audio: audio.0,
+                target: None,
+                stop: &stop,
+                duration: SessionDuration::UntilStopped,
+                latency_telemetry: TelemetryMode::Trace,
+                gate: &worker_gate,
+                started: &started,
+                sample_rate: 48_000,
+                channels: 2,
+                artifact: None,
+            },
+            &sender,
+            &mut report,
+            ClockBridgeConfig {
+                capacity_frames: 64,
+                target_fill_frames: 2,
+                trim_on_prime: false,
+                max_correction_ppm: 0.0,
+                ..Default::default()
+            },
+        );
+        finish(result, &stop, &sender, report)
+    })
+    .unwrap();
+    let observer = prepared.observer;
+    gate.activate().unwrap();
+    let report = prepared.session.join().unwrap();
+    (report, observer)
+}
+
+fn assert_final_drain_is_retained(
+    report: &CaptureReport,
+    observer: &crate::clock_bridge::BridgeObserver,
+) {
+    let history = observer.delivery_events().unwrap();
+    assert_eq!(history.total_events, 1);
+    assert_eq!(history.overwritten_events, 0);
+    assert_eq!(history.events.len(), 1);
+    assert_eq!(history.events[0].frames, 16);
+    assert!(history.events[0].qpc_100ns.is_some());
+    assert!(observer.producer_finished());
+    let counters = observer.snapshot();
+    assert_eq!(counters.captured_frames, 16);
+    assert_eq!(counters.written_frames, 16);
+    assert_eq!(counters.native_delivery, Some(report.delivery));
+    assert_eq!(report.packets, 2);
+    assert_eq!(report.delivery.max_callback_burst_frames, 16);
+    assert!(report.stop_succeeded);
+    assert_eq!(report.shared_period.actual_period_frames, None);
+    let trace = report.latency.trace.records();
+    assert_eq!(trace.len(), 1);
+    assert_eq!(trace[0].demand_frames, 16);
+    assert_eq!(trace[0].submitted_frames, 16);
+    assert_eq!(report.latency.demand_frames.samples, 1);
+    assert_eq!(report.latency.wake_interval_100ns.samples, 0);
+}
+
+#[test]
+fn native_drain_history_survives_stop_after_successful_packet_releases() {
+    let (report, observer) = interrupted_drain(DrainEnd::StopAfterRelease);
+    assert_eq!(report.status, CaptureStatus::Stopped);
+    assert_eq!(report.failure, None);
+    assert_final_drain_is_retained(&report, &observer);
+}
+
+#[test]
+fn native_drain_history_survives_packet_query_error_after_successful_releases() {
+    let (report, observer) = interrupted_drain(DrainEnd::PacketQueryError);
+    assert_eq!(report.status, CaptureStatus::Failed);
+    assert_eq!(
+        report.failure,
+        Some(
+            CaptureError::Api {
+                stage: "GetNextPacketSize(capture)",
+                hresult: E_NOINTERFACE.0,
+            }
+            .to_string()
+        )
+    );
+    assert_final_drain_is_retained(&report, &observer);
 }

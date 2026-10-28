@@ -2,6 +2,7 @@
 //! an end-to-end latency measurement. Quantiles are histogram upper bounds.
 mod budget;
 mod delivery;
+pub mod events;
 mod marker;
 pub mod qualification;
 mod telemetry;

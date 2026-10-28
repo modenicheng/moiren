@@ -32,6 +32,7 @@ fn live_snapshot() -> AppSnapshot {
     snapshot.native_observations = Some(NativeSessionObservations {
         generation: SessionGeneration(8),
         observation: NativeObservationSnapshot {
+            process_delivery: Vec::new(),
             owner_generation: 3,
             running: true,
             streams: vec![

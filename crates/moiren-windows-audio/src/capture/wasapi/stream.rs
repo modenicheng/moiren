@@ -142,46 +142,58 @@ pub(super) fn run_prepared(
             let mut native_frames = 0u64;
             let mut accepted_frames = 0u64;
             // Stop and process-exit checks also bound a continuously busy producer.
-            while input.duration.remaining(started.elapsed()) != Some(Duration::ZERO) {
-                match wait_target(handle(input.stop), input.audio, input.target, 0)? {
-                    Wake::Stop => return Ok(CaptureStatus::Stopped),
-                    Wake::TargetExited => return Ok(CaptureStatus::TargetExited),
-                    Wake::Audio | Wake::Timeout => {}
+            // A terminating drain may already have released packets. Publish
+            // them before propagating its outcome; partial service bursts do
+            // not establish a steady native period.
+            let drained = (|| -> Result<Option<CaptureStatus>, CaptureError> {
+                while input.duration.remaining(started.elapsed()) != Some(Duration::ZERO) {
+                    match wait_target(handle(input.stop), input.audio, input.target, 0)? {
+                        Wake::Stop => return Ok(Some(CaptureStatus::Stopped)),
+                        Wake::TargetExited => return Ok(Some(CaptureStatus::TargetExited)),
+                        Wake::Audio | Wake::Timeout => {}
+                    }
+                    if api("GetNextPacketSize(capture)", unsafe {
+                        capture.GetNextPacketSize()
+                    })? == 0
+                    {
+                        break;
+                    }
+                    let transfer = transfer_packet(
+                        &capture,
+                        capacity,
+                        &mut ingress,
+                        report.artifact_recorder.as_mut(),
+                        report.evidence_recorder.as_mut(),
+                    )?;
+                    if transfer.native_frames == 0 {
+                        break;
+                    }
+                    delivery.packet(
+                        transfer.native_frames,
+                        clock.as_ref().and_then(QpcClock::now),
+                    );
+                    native_frames = native_frames.saturating_add(u64::from(transfer.native_frames));
+                    accepted_frames =
+                        accepted_frames.saturating_add(transfer.accepted_frames as u64);
+                    report.packets += 1;
+                    ingress.publish_native_delivery(delivery.snapshot());
                 }
-                if api("GetNextPacketSize(capture)", unsafe {
-                    capture.GetNextPacketSize()
-                })? == 0
-                {
-                    break;
-                }
-                let transfer = transfer_packet(
-                    &capture,
-                    capacity,
-                    &mut ingress,
-                    report.artifact_recorder.as_mut(),
-                    report.evidence_recorder.as_mut(),
-                )?;
-                if transfer.native_frames == 0 {
-                    break;
-                }
-                delivery.packet(
-                    transfer.native_frames,
-                    clock.as_ref().and_then(QpcClock::now),
-                );
-                native_frames = native_frames.saturating_add(u64::from(transfer.native_frames));
-                accepted_frames = accepted_frames.saturating_add(transfer.accepted_frames as u64);
-                report.packets += 1;
-                ingress.publish_native_delivery(delivery.snapshot());
-            }
+                Ok(None)
+            })();
+            let completed_qpc_100ns = clock.as_ref().and_then(QpcClock::now);
             delivery.callback_burst(native_frames);
+            ingress.record_native_delivery_event(native_frames, completed_qpc_100ns);
             ingress.publish_native_delivery(delivery.snapshot());
             telemetry.record(CallbackObservation {
                 wake_qpc_100ns,
-                completed_qpc_100ns: clock.as_ref().and_then(QpcClock::now),
+                completed_qpc_100ns,
                 demand_frames: native_frames,
                 padding_before_frames: None,
                 submitted_frames: accepted_frames,
             });
+            if let Some(status) = drained? {
+                return Ok(status);
+            }
         }
         Ok(CaptureStatus::Completed)
     })();

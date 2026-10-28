@@ -6,6 +6,8 @@ use serde::Serialize;
 
 mod bridge;
 pub use bridge::ProcessBridgeOptions;
+mod measured;
+pub use measured::{MeasuredAdmissionError, MeasuredProcessDelivery};
 #[cfg(windows)]
 pub(crate) mod activation;
 #[cfg(windows)]

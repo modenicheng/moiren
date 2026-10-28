@@ -28,6 +28,7 @@ fn boundary_snapshot(target_frames: Option<u32>) -> AppSnapshot {
     snapshot.native_observations = Some(NativeSessionObservations {
         generation: SessionGeneration(8),
         observation: NativeObservationSnapshot {
+            process_delivery: Vec::new(),
             render_padding: Vec::new(),
             owner_generation: 3,
             running: true,

@@ -54,6 +54,7 @@ pub struct BridgeSnapshot {
     pub correction_ppm: f64,
 }
 pub(super) struct Counters {
+    pub delivery_events: crate::latency::events::EventHistoryObserver,
     pub native_delivery: DeliverySample,
     pub oldest_frame_age: AgeSample,
     pub captured_frames: AtomicU64,
@@ -84,8 +85,12 @@ pub(super) struct Counters {
     pub producer_finished: AtomicBool,
 }
 impl Counters {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(
+        capacity: usize,
+        delivery_events: crate::latency::events::EventHistoryObserver,
+    ) -> Self {
         Self {
+            delivery_events,
             native_delivery: DeliverySample::default(),
             oldest_frame_age: AgeSample::default(),
             captured_frames: AtomicU64::new(0),
@@ -120,6 +125,11 @@ impl Counters {
 #[derive(Clone)]
 pub struct BridgeObserver(pub(super) Arc<Counters>);
 impl BridgeObserver {
+    /// Control-side bounded native callback history, separate from the
+    /// approximate aggregate snapshot. No graph read manufactures arrivals.
+    pub fn delivery_events(&self) -> Option<crate::latency::events::EventHistorySnapshot> {
+        self.0.delivery_events.snapshot()
+    }
     pub fn producer_finished(&self) -> bool {
         self.0.producer_finished.load(Relaxed)
     }

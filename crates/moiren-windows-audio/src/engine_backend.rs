@@ -3,13 +3,14 @@ mod native_observations;
 pub(crate) mod observations;
 #[cfg(windows)]
 mod owner;
+mod process_admission;
 #[cfg(any(windows, test))]
 mod recovery;
 
 pub use native_observations::{
     NativeBoundaryProbe, NativeBridgeObservation, NativeObservationReadHandle,
-    NativeObservationSnapshot, NativeObservations, NativeRenderPaddingObservation,
-    NativeStreamKind, NativeStreamObservation,
+    NativeObservationSnapshot, NativeObservations, NativeProcessDeliveryObservation,
+    NativeRenderPaddingObservation, NativeStreamKind, NativeStreamObservation,
 };
 #[cfg(windows)]
 pub use observations::{
@@ -59,6 +60,7 @@ pub struct ProfessionalBackend<S: ProcessingSample> {
     virtual_provider: Option<Arc<dyn VirtualBoundaryProvider>>,
     virtual_clock: Arc<dyn VirtualClockFactory>,
     process_bridge: crate::process_loopback::ProcessBridgeOptions,
+    measured_process_bridges: Vec<process_admission::MeasuredBridgeRequest>,
     virtual_buffer: crate::virtual_owner::VirtualBufferOptions,
     render_queue: RenderQueuePolicy,
     latency_budget: LatencyBudgetPolicy,
@@ -74,6 +76,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             virtual_provider: None,
             virtual_clock: Arc::new(QpcClockFactory),
             process_bridge: Default::default(),
+            measured_process_bridges: Vec::new(),
             virtual_buffer: Default::default(),
             render_queue: RenderQueuePolicy::default(),
             latency_budget: LatencyBudgetPolicy::default(),
@@ -300,6 +303,7 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             ));
         }
         let (rate, clock) = validate(&request, self.virtual_provider.is_some())?;
+        self.validate_measured_sources(request.project)?;
         let mut bindings = NodeBindings::new();
         if request.mode == PrepareMode::Update {
             for (&node, config) in &request.project.nodes {
@@ -347,12 +351,18 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
         let mut prepared_bytes = io_count
             .checked_mul(capacity.max(capture_capacity) * 32 + 131072)
             .ok_or_else(|| unsupported("native queue budget overflow"))?;
-        for config in request.project.nodes.values() {
+        for (&node, config) in &request.project.nodes {
             let extra = match config {
                 NodeConfig::Input(input)
                     if matches!(input.source, InputSource::Application { .. }) =>
                 {
-                    self.process_bridge
+                    let InputSource::Application { executable, .. } = &input.source else {
+                        unreachable!()
+                    };
+                    // Resolve the selected policy for storage accounting now;
+                    // admission runs again after the master's actual demand
+                    // is negotiated. Never budget a measured queue as legacy.
+                    self.process_bridge_for(node, process_selector(executable)?, rate, 1)?
                         .clock_config()
                         .map_err(unsupported)?
                         .storage_bytes()
@@ -811,9 +821,8 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
                 node,
                 device,
                 identity,
-                self.process_bridge
-                    .for_consumer(rate, process_demand)
-                    .map_err(unsupported)?,
+                self.process_bridge_for(node, identity, rate, process_demand)?,
+                self.measured_source_generation(node),
                 self.telemetry,
                 &mut bindings,
                 &mut transport,
@@ -952,6 +961,7 @@ fn prepare_process<S: ProcessingSample>(
     device: DeviceOptions,
     identity: (u32, u64),
     bridge: crate::process_loopback::ProcessBridgeOptions,
+    measured_source_generation: Option<u64>,
     telemetry: TelemetryMode,
     bindings: &mut NodeBindings<S>,
     transport: &mut Transport<S>,
@@ -973,7 +983,7 @@ fn prepare_process<S: ProcessingSample>(
         crate::process_loopback::ProcessLoopbackOptions {
             artifact: None,
             bridge,
-            target,
+            target: target.clone(),
             duration: crate::SessionDuration::UntilStopped,
             latency_telemetry: telemetry,
         },
@@ -983,6 +993,23 @@ fn prepare_process<S: ProcessingSample>(
     .map_err(unsupported)?;
     let channels = prepared.channels;
     let sample_rate = prepared.sample_rate;
+    transport
+        .native_process_delivery
+        .push(native_observations::ProcessDeliverySource {
+            node,
+            process: target,
+            input_sample_rate: sample_rate,
+            consumer_sample_rate: bridge.engine_sample_rate,
+            prepared_consumer_demand_frames: bridge.max_demand_frames,
+            admitted_bridge: bridge,
+            measured_source_generation,
+            bridge: prepared.observer.clone(),
+            consumer: transport
+                .streams
+                .iter()
+                .find(|(stream, _)| stream.master)
+                .and_then(|(_, counters)| counters.consumer_events.get().cloned()),
+        });
     transport.native_streams.push(NativeStreamObservation {
         node,
         kind: NativeStreamKind::ProcessInput,

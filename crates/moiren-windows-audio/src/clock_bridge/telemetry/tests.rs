@@ -5,6 +5,32 @@ use crate::{clock_bridge::QueuedFrameStamp, engine_backend::NativeObservations};
 #[cfg(windows)]
 use moiren_core::graph::{LogicalGraph, NodeKind};
 
+#[test]
+fn native_drain_events_remain_separate_from_graph_packets_and_survive_writer_drop() {
+    let (mut ingress, source, observer) = capture_bridge(ClockBridgeConfig::default()).unwrap();
+    ingress
+        .push_packet(
+            &[],
+            crate::clock_bridge::CapturePacket {
+                frames: 64,
+                flags: crate::stats::SILENT,
+                device_position_frames: 0,
+                qpc_100ns: 0,
+            },
+        )
+        .unwrap();
+    assert!(observer.delivery_events().unwrap().events.is_empty());
+    ingress.record_native_delivery_event(64, Some(100));
+    ingress.record_native_delivery_event(128, Some(200));
+    drop(ingress);
+    drop(source);
+    let snapshot = observer.delivery_events().unwrap();
+    assert_eq!(snapshot.total_events, 2);
+    assert_eq!(snapshot.events[0].frames, 64);
+    assert_eq!(snapshot.events[1].frames, 128);
+    assert_eq!(snapshot.events[1].qpc_100ns, Some(200));
+}
+
 #[cfg(windows)]
 #[test]
 fn native_projection_replacement_never_receives_old_owner_diagnostics() {

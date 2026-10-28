@@ -9,6 +9,22 @@ use moiren_windows_audio::{
 
 mod common;
 
+#[test]
+fn event_publication_is_allocation_free_after_retention_wraps() {
+    let (mut writer, observer) = moiren_windows_audio::latency::events::event_history();
+    common::alloc_guard::assert_allocates_nothing(|| {
+        for sequence in 1..=1024 {
+            writer.record(64, Some(sequence));
+        }
+        writer.record(64, None);
+        writer.record(64, Some(1));
+    });
+    let snapshot = observer.snapshot().unwrap();
+    assert_eq!(snapshot.events.len(), 256);
+    assert_eq!(snapshot.total_events, 1026);
+    assert_eq!(snapshot.unavailable_clocks, 1);
+}
+
 fn callback(wake: u64, duration: u64) -> CallbackObservation {
     CallbackObservation {
         wake_qpc_100ns: Some(wake),
