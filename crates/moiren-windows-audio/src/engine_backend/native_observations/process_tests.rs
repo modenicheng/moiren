@@ -176,3 +176,124 @@ fn measured_projection_requires_complete_matching_observations() {
         }
     );
 }
+
+#[test]
+fn ordered_replay_projection_requires_exact_process_generation_and_closed_histories() {
+    let mut graph = LogicalGraph::new();
+    let node = graph.create_node(NodeKind::Source, 2).unwrap();
+    let process = ProcessIdentity {
+        pid: 42,
+        creation_time_100ns: 123,
+        executable_name: "source.exe".into(),
+    };
+    let (mut ingress, mut source, observer) = capture_bridge(ClockBridgeConfig {
+        capacity_frames: 32,
+        target_fill_frames: 4,
+        trim_on_prime: false,
+        detect_position_gaps: false,
+        ..Default::default()
+    })
+    .unwrap();
+    let observations = NativeObservations::default();
+    observations.publish_with_process(
+        7,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        vec![ProcessDeliverySource {
+            node,
+            process: process.clone(),
+            input_sample_rate: 48_000,
+            consumer_sample_rate: 48_000,
+            prepared_consumer_demand_frames: 4,
+            admitted_bridge: crate::process_loopback::ProcessBridgeOptions {
+                max_demand_frames: 4,
+                ..Default::default()
+            },
+            measured_source_generation: None,
+            bridge: observer,
+            consumer: None,
+        }],
+    );
+    let retained = observations.retain_session().unwrap();
+    for t in [1000, 2000] {
+        ingress
+            .push_packet_with_publication_clock(
+                &[],
+                crate::clock_bridge::CapturePacket {
+                    frames: 4,
+                    flags: crate::stats::SILENT,
+                    device_position_frames: 0,
+                    qpc_100ns: 0,
+                },
+                || Some(t),
+            )
+            .unwrap();
+        source
+            .read_interleaved_with_publication_clock(&mut [0.0; 4], || Some(t + 100))
+            .unwrap();
+    }
+    observations.clear(7);
+    assert!(retained.ordered_process_trace(node, &process, 7).is_err());
+    let still_live = retained.snapshot();
+    assert!(
+        still_live.process_delivery[0]
+            .ordered_trace(&process, 7)
+            .is_err(),
+        "registry retirement is not writer closure"
+    );
+    drop(ingress);
+    drop(source);
+    let closed = retained.snapshot();
+    assert!(
+        closed.process_delivery[0]
+            .ordered_trace(&process, 7)
+            .is_ok()
+    );
+    assert!(
+        closed.process_delivery[0]
+            .ordered_trace(&process, 8)
+            .is_err()
+    );
+    let mut wrong = process.clone();
+    wrong.creation_time_100ns += 1;
+    assert!(closed.process_delivery[0].ordered_trace(&wrong, 7).is_err());
+    assert!(retained.ordered_process_trace(node, &process, 8).is_err());
+    assert!(retained.ordered_process_trace(node, &wrong, 7).is_err());
+    let missing = graph.create_node(NodeKind::Source, 2).unwrap();
+    assert!(
+        retained
+            .ordered_process_trace(missing, &process, 7)
+            .is_err()
+    );
+    let options = crate::process_loopback::ProcessBridgeOptions {
+        max_demand_frames: 4,
+        ..Default::default()
+    };
+    // Public DTO labels can be edited. Structural checks must never promote
+    // them to the provenance of the private retained native owner.
+    let mut edited = closed.process_delivery[0].clone();
+    edited.process = wrong.clone();
+    edited.owner_generation = 8;
+    let edited_report = edited
+        .ordered_trace(&wrong, 8)
+        .unwrap()
+        .replay(&wrong, 8, options)
+        .unwrap();
+    assert_eq!(
+        edited_report.trace_origin,
+        crate::process_loopback::ProcessTraceOrigin::CallerSupplied
+    );
+    observations.publish(8, Vec::new(), Vec::new(), Vec::new());
+    let native_report = retained
+        .ordered_process_trace(node, &process, 7)
+        .unwrap()
+        .replay(&process, 7, options)
+        .unwrap();
+    assert_eq!(native_report.owner_generation, 7);
+    assert_eq!(
+        native_report.trace_origin,
+        crate::process_loopback::ProcessTraceOrigin::RetainedNativeOwner
+    );
+}

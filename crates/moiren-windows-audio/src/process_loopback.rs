@@ -8,6 +8,11 @@ mod bridge;
 pub use bridge::ProcessBridgeOptions;
 mod measured;
 pub use measured::{MeasuredAdmissionError, MeasuredProcessDelivery};
+mod replay;
+pub use replay::{
+    ObservedProcessTrace, OfferedSupplyAssumption, ProcessReplayError, ProcessReplayReport,
+    ProcessReplayStatus, ProcessTraceOrigin,
+};
 #[cfg(windows)]
 pub(crate) mod activation;
 #[cfg(windows)]

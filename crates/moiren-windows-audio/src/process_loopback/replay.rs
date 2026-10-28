@@ -1,0 +1,500 @@
+//! Finite ordered boundary-request replay, never production admission or age.
+use super::{ProcessBridgeOptions, ProcessIdentity};
+use crate::{
+    capture::CaptureError,
+    clock_bridge::{CapturePacket, capture_bridge},
+    latency::{
+        packets::{PacketHistorySnapshot, PacketPublicationOrigin, packet_history},
+        queue::{QueueHistorySnapshot, queue_history},
+    },
+    stats::{DISCONTINUITY, SILENT, TIMESTAMP_ERROR},
+};
+use serde::Serialize;
+use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ProcessReplayError {
+    #[error("Process replay requires a valid source identity and owner generation")]
+    InvalidIdentity,
+    #[error("Process replay identity does not match the requested source")]
+    IdentityMismatch,
+    #[error("Process replay owner generation does not match the requested generation")]
+    GenerationMismatch,
+    #[error("Process replay requires closed, complete, unsaturated histories from sequence one")]
+    IncompleteHistory,
+    #[error("Process replay history has malformed counts, conservation or provenance")]
+    InvalidHistory,
+    #[error("Process replay requires known, nonregressing host-QPC envelopes")]
+    ClockFault,
+    #[error("Process packet/read envelopes overlap or tie; order is ambiguous")]
+    AmbiguousOrder,
+    #[error("Process read publication frontiers disagree with admitted packet prefixes")]
+    InconsistentPublication,
+    #[error("Process replay format, prepared demand or bounded work limit is unsupported")]
+    UnsupportedShape,
+    #[error(transparent)]
+    Candidate(#[from] CaptureError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessReplayStatus {
+    Replayed,
+}
+
+/// How identity labels reached this trace, not a hardware qualification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessTraceOrigin {
+    CallerSupplied,
+    RetainedNativeOwner,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OfferedSupplyAssumption {
+    CompletePacketAtObservedOrder,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+pub struct ReplayBaselineReport {
+    pub offered_frames: u64,
+    pub published_frames: u64,
+    pub dropped_frames: u64,
+    pub requested_frames: u64,
+    pub output_frames: u64,
+    pub underrun_frames: u64,
+    pub prime_discarded_frames: u64,
+    pub backlog_discarded_frames: u64,
+    pub age_discarded_frames: u64,
+    pub reset_discarded_frames: u64,
+    pub resets: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessReplayReport {
+    pub status: ProcessReplayStatus,
+    pub qualified: bool,
+    pub trace_origin: ProcessTraceOrigin,
+    pub process: ProcessIdentity,
+    pub owner_generation: u64,
+    pub options: ProcessBridgeOptions,
+    pub window_start_100ns: u64,
+    pub window_end_100ns: u64,
+    pub packet_events: u64,
+    pub read_events: u64,
+    pub offered_supply_assumption: OfferedSupplyAssumption,
+    pub start_inventory_frames: u64,
+    pub terminal_inventory_frames: u64,
+    pub requested_frames: u64,
+    pub startup_unserved_frames: u64,
+    pub unserved_frames: u64,
+    pub baseline: ReplayBaselineReport,
+    pub candidate: ReplayQueueReport,
+}
+
+/// Queue mechanics only. Synthetic replay samples have no measured content,
+/// sample clocks, signal continuity or presentation provenance.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ReplayQueueReport {
+    pub captured_frames: u64,
+    pub written_frames: u64,
+    pub dropped_frames: u64,
+    pub output_frames: u64,
+    pub priming_frames: u64,
+    pub underrun_frames: u64,
+    pub prime_discarded_frames: u64,
+    pub backlog_discarded_frames: u64,
+    pub backlog_recoveries: u64,
+    pub age_discarded_frames: u64,
+    pub resets: u64,
+    pub min_fill_frames: usize,
+    pub max_fill_frames: usize,
+    pub correction_ppm: f64,
+}
+
+/// Structurally validated immutable trace. The public constructor checks caller
+/// supplied labels, not authentic native provenance. Only a retained native
+/// owner can provide that origin; no persisted JSON becomes trusted evidence.
+/// Closure refers to both unique history writers, not transport cleanup.
+#[derive(Debug, Clone)]
+pub struct ObservedProcessTrace {
+    process: ProcessIdentity,
+    owner_generation: u64,
+    origin: ProcessTraceOrigin,
+    consumer_rate: u32,
+    prepared_demand: u32,
+    packets: PacketHistorySnapshot,
+    reads: QueueHistorySnapshot,
+    order: Vec<OrderedEvent>,
+}
+
+const MAX_EVENT_FRAMES: u64 = 65_536;
+const MAX_WORK_FRAMES: u64 = 1_048_576;
+
+#[derive(Debug, Clone, Copy)]
+enum OrderedEvent {
+    Packet(usize),
+    Read(usize),
+}
+
+impl OrderedEvent {
+    fn bounds(self, packets: &PacketHistorySnapshot, reads: &QueueHistorySnapshot) -> (u64, u64) {
+        match self {
+            Self::Packet(index) => {
+                let sample = packets.events[index].sample;
+                (
+                    sample.qpc_before_100ns.unwrap(),
+                    sample.qpc_after_100ns.unwrap(),
+                )
+            }
+            Self::Read(index) => {
+                let sample = reads.events[index].sample;
+                (
+                    sample.qpc_before_100ns.unwrap(),
+                    sample.qpc_after_100ns.unwrap(),
+                )
+            }
+        }
+    }
+}
+
+impl ObservedProcessTrace {
+    /// Validate caller-supplied counts, order and identity-label consistency.
+    /// This cannot authenticate where public snapshots or labels originated.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_observations(
+        process: ProcessIdentity,
+        owner_generation: u64,
+        input_rate: u32,
+        consumer_rate: u32,
+        prepared_demand: u32,
+        packets: PacketHistorySnapshot,
+        reads: QueueHistorySnapshot,
+    ) -> Result<Self, ProcessReplayError> {
+        if process.pid == 0 || process.creation_time_100ns == 0 || owner_generation == 0 {
+            return Err(ProcessReplayError::InvalidIdentity);
+        }
+        if input_rate != crate::NATIVE_SAMPLE_RATE
+            || prepared_demand == 0
+            || u64::from(prepared_demand) > MAX_EVENT_FRAMES
+            || !moiren_engine::audio_config::SAMPLE_RATES.contains(&consumer_rate)
+        {
+            return Err(ProcessReplayError::UnsupportedShape);
+        }
+        closed_complete(
+            packets.writer_finished,
+            packets.total_events,
+            packets.overwritten_events,
+            packets.events.len(),
+            packets.saturated,
+        )?;
+        closed_complete(
+            reads.writer_finished,
+            reads.total_events,
+            reads.overwritten_events,
+            reads.events.len(),
+            reads.saturated,
+        )?;
+        if packets.unavailable_clocks != 0
+            || packets.regressed_clocks != 0
+            || reads.unavailable_clocks != 0
+            || reads.regressed_clocks != 0
+        {
+            return Err(ProcessReplayError::ClockFault);
+        }
+        let (mut writer, observer) = packet_history();
+        let mut expected_generation = 1_u64;
+        let mut work = 0_u64;
+        for event in &packets.events {
+            let sample = event.sample;
+            validate_clock(sample.qpc_before_100ns, sample.qpc_after_100ns)?;
+            if sample.origin != PacketPublicationOrigin::NativeCapture
+                || sample.flags & !(DISCONTINUITY | SILENT | TIMESTAMP_ERROR) != 0
+            {
+                return Err(ProcessReplayError::InvalidHistory);
+            }
+            if sample.flags & DISCONTINUITY != 0 {
+                expected_generation += 1;
+            }
+            if sample.buffer_generation != expected_generation {
+                return Err(ProcessReplayError::InvalidHistory);
+            }
+            if sample.accepted_frames < sample.offered_frames {
+                expected_generation += 1;
+            }
+            add_work(&mut work, sample.offered_frames)?;
+            writer.record(sample);
+        }
+        drop(writer);
+        if observer.snapshot().as_ref() != Some(&packets) {
+            return Err(ProcessReplayError::InvalidHistory);
+        }
+        let (mut writer, observer) = queue_history();
+        let mut reset_total = 0_u64;
+        for event in &reads.events {
+            let sample = event.sample;
+            validate_clock(sample.qpc_before_100ns, sample.qpc_after_100ns)?;
+            add_work(&mut work, sample.requested_frames)?;
+            if sample.requested_frames > u64::from(prepared_demand) {
+                return Err(ProcessReplayError::UnsupportedShape);
+            }
+            reset_total = reset_total
+                .checked_add(sample.resets)
+                .ok_or(ProcessReplayError::InvalidHistory)?;
+            writer.record(sample);
+        }
+        drop(writer);
+        if observer.snapshot().as_ref() != Some(&reads) {
+            return Err(ProcessReplayError::InvalidHistory);
+        }
+        let first = reads.events[0].sample.before;
+        if first.removed_frames != 0 || first.held_frames != 0 {
+            return Err(ProcessReplayError::InconsistentPublication);
+        }
+        let mut order = (0..packets.events.len())
+            .map(OrderedEvent::Packet)
+            .chain((0..reads.events.len()).map(OrderedEvent::Read))
+            .collect::<Vec<_>>();
+        order.sort_by_key(|event| event.bounds(&packets, &reads).0);
+        for pair in order.windows(2) {
+            let (_, end) = pair[0].bounds(&packets, &reads);
+            let (start, _) = pair[1].bounds(&packets, &reads);
+            let same_writer = matches!(
+                (pair[0], pair[1]),
+                (OrderedEvent::Packet(_), OrderedEvent::Packet(_))
+                    | (OrderedEvent::Read(_), OrderedEvent::Read(_))
+            );
+            if end > start || (!same_writer && end == start) {
+                return Err(ProcessReplayError::AmbiguousOrder);
+            }
+        }
+        let mut published = 0;
+        for event in &order {
+            match *event {
+                OrderedEvent::Packet(index) => {
+                    published += packets.events[index].sample.accepted_frames
+                }
+                OrderedEvent::Read(index) => {
+                    let read = reads.events[index].sample;
+                    if read.before.published_frames() != Some(published)
+                        || read.after.published_frames() != Some(published)
+                    {
+                        return Err(ProcessReplayError::InconsistentPublication);
+                    }
+                }
+            }
+        }
+        Ok(Self {
+            process,
+            owner_generation,
+            origin: ProcessTraceOrigin::CallerSupplied,
+            consumer_rate,
+            prepared_demand,
+            packets,
+            reads,
+            order,
+        })
+    }
+
+    /// Internal origin promotion only after reading immutable retained Session
+    /// metadata and its exact bridge histories, never an externally edited DTO.
+    #[cfg(any(windows, test))]
+    pub(crate) fn with_retained_owner_origin(mut self) -> Self {
+        self.origin = ProcessTraceOrigin::RetainedNativeOwner;
+        self
+    }
+
+    /// Execute queue mechanics while keeping the candidate producer open for
+    /// the entire request window. Writer Drop/teardown timing is not replayed;
+    /// synthetic PCM never establishes signal correctness or sample age.
+    pub fn replay(
+        &self,
+        process: &ProcessIdentity,
+        generation: u64,
+        options: ProcessBridgeOptions,
+    ) -> Result<ProcessReplayReport, ProcessReplayError> {
+        if !self.process.same_process(process) {
+            return Err(ProcessReplayError::IdentityMismatch);
+        }
+        if self.owner_generation != generation {
+            return Err(ProcessReplayError::GenerationMismatch);
+        }
+        if options.engine_sample_rate != self.consumer_rate
+            || options.max_demand_frames < self.prepared_demand
+        {
+            return Err(ProcessReplayError::UnsupportedShape);
+        }
+        let config = options.clock_config()?;
+        if let Some(delivery) = options.delivery {
+            let mut previous_before = None;
+            for event in &self.packets.events {
+                let sample = event.sample;
+                if sample.offered_frames > u64::from(delivery.max_packet_frames) {
+                    return Err(ProcessReplayError::UnsupportedShape);
+                }
+                if let Some(previous) = previous_before {
+                    let gap = sample.qpc_after_100ns.unwrap() - previous;
+                    let frames = (u128::from(gap) * u128::from(crate::NATIVE_SAMPLE_RATE))
+                        .div_ceil(10_000_000);
+                    if frames > u128::from(delivery.max_gap_frames) {
+                        return Err(ProcessReplayError::UnsupportedShape);
+                    }
+                }
+                previous_before = sample.qpc_before_100ns;
+            }
+        }
+        let (mut ingress, mut source, _observer) =
+            capture_bridge(config).map_err(CaptureError::from)?;
+        let max_read = self
+            .reads
+            .events
+            .iter()
+            .map(|e| e.sample.requested_frames as usize)
+            .max()
+            .unwrap();
+        let mut output = vec![0.0; max_read * 2];
+        let mut startup = true;
+        let mut startup_unserved_frames = 0;
+        let mut unserved_frames = 0;
+        let baseline = self.baseline();
+        for event in &self.order {
+            match *event {
+                OrderedEvent::Packet(index) => {
+                    let packet = self.packets.events[index].sample;
+                    // Sample values do not affect queue/servo mechanics. Keep
+                    // native discontinuity, but never copy baseline overflow's
+                    // derived generation into the candidate or invent age.
+                    ingress
+                        .push_packet(
+                            &[],
+                            CapturePacket {
+                                frames: packet.offered_frames as usize,
+                                flags: packet.flags | SILENT,
+                                device_position_frames: 0,
+                                qpc_100ns: 0,
+                            },
+                        )
+                        .map_err(CaptureError::from)?;
+                }
+                OrderedEvent::Read(index) => {
+                    let requested = self.reads.events[index].sample.requested_frames;
+                    let report = source
+                        .read_interleaved(&mut output[..requested as usize * 2])
+                        .map_err(CaptureError::from)?;
+                    let missing = requested - report.transferred_frames as u64;
+                    unserved_frames += missing;
+                    if startup {
+                        startup_unserved_frames += missing;
+                    }
+                    if report.transferred_frames > 0 {
+                        startup = false;
+                    }
+                }
+            }
+        }
+        let s = source.snapshot();
+        let candidate = ReplayQueueReport {
+            captured_frames: s.captured_frames,
+            written_frames: s.written_frames,
+            dropped_frames: s.dropped_frames,
+            output_frames: s.output_frames,
+            priming_frames: s.priming_frames,
+            underrun_frames: s.underrun_frames,
+            prime_discarded_frames: s.prime_discarded_frames,
+            backlog_discarded_frames: s.backlog_discarded_frames,
+            backlog_recoveries: s.backlog_recoveries,
+            age_discarded_frames: s.age_discarded_frames,
+            resets: s.resets,
+            min_fill_frames: s.min_fill_frames,
+            max_fill_frames: s.max_fill_frames,
+            correction_ppm: s.correction_ppm,
+        };
+        Ok(ProcessReplayReport {
+            status: ProcessReplayStatus::Replayed,
+            qualified: false,
+            trace_origin: self.origin,
+            process: self.process.clone(),
+            owner_generation: self.owner_generation,
+            options,
+            window_start_100ns: self.order[0].bounds(&self.packets, &self.reads).0,
+            window_end_100ns: self
+                .order
+                .last()
+                .unwrap()
+                .bounds(&self.packets, &self.reads)
+                .1,
+            packet_events: self.packets.total_events,
+            read_events: self.reads.total_events,
+            offered_supply_assumption: OfferedSupplyAssumption::CompletePacketAtObservedOrder,
+            start_inventory_frames: 0,
+            terminal_inventory_frames: s.fill_frames as u64,
+            requested_frames: baseline.requested_frames,
+            startup_unserved_frames,
+            unserved_frames,
+            baseline,
+            candidate,
+        })
+    }
+
+    fn baseline(&self) -> ReplayBaselineReport {
+        let mut baseline = ReplayBaselineReport {
+            offered_frames: self.packets.offered_frames,
+            published_frames: self.packets.published_frames,
+            dropped_frames: self.packets.offered_frames - self.packets.published_frames,
+            ..Default::default()
+        };
+        for event in &self.reads.events {
+            let s = event.sample;
+            baseline.requested_frames += s.requested_frames;
+            baseline.output_frames += s.output_frames;
+            baseline.underrun_frames += s.underrun_frames;
+            baseline.prime_discarded_frames += s.prime_discarded_frames;
+            baseline.backlog_discarded_frames += s.backlog_discarded_frames;
+            baseline.age_discarded_frames += s.age_discarded_frames;
+            baseline.reset_discarded_frames += s.reset_discarded_frames;
+            baseline.resets += s.resets;
+        }
+        baseline
+    }
+}
+
+fn closed_complete(
+    finished: bool,
+    total: u64,
+    overwritten: u64,
+    count: usize,
+    saturated: bool,
+) -> Result<(), ProcessReplayError> {
+    if !finished
+        || saturated
+        || total == 0
+        || total > 256
+        || overwritten != 0
+        || count as u64 != total
+    {
+        return Err(ProcessReplayError::IncompleteHistory);
+    }
+    Ok(())
+}
+
+fn validate_clock(before: Option<u64>, after: Option<u64>) -> Result<(), ProcessReplayError> {
+    match (before, after) {
+        (Some(before), Some(after)) if before > 0 && after >= before => Ok(()),
+        _ => Err(ProcessReplayError::ClockFault),
+    }
+}
+
+fn add_work(work: &mut u64, frames: u64) -> Result<(), ProcessReplayError> {
+    *work = work
+        .checked_add(frames)
+        .ok_or(ProcessReplayError::UnsupportedShape)?;
+    if frames == 0 || frames > MAX_EVENT_FRAMES || *work > MAX_WORK_FRAMES {
+        return Err(ProcessReplayError::UnsupportedShape);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "replay/tests.rs"]
+mod tests;

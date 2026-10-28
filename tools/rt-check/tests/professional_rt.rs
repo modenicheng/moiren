@@ -12,12 +12,13 @@ use moiren_engine::{
     runtime::EngineConfig,
     sample::ProcessingSample,
 };
+use moiren_windows_audio::capture;
 use moiren_windows_audio::clock_bridge;
 use moiren_windows_audio::latency;
 use moiren_windows_audio::native;
-use moiren_windows_audio::process_loopback;
 use moiren_windows_audio::stats;
 use moiren_windows_audio::virtual_owner;
+use process_loopback::{ProcessBridgeOptions, ProcessIdentity};
 use std::{
     marker::PhantomData,
     sync::{
@@ -28,6 +29,8 @@ use std::{
     thread::ThreadId,
     time::{Duration, Instant},
 };
+const NATIVE_SAMPLE_RATE: u32 = 48_000;
+
 // Every `#[path]` module below mirrors a library file unchanged so the
 // harness measures the real realtime paths; not every library item is used
 // here, so the shadow copies compile with dead_code allowed instead of
@@ -45,6 +48,19 @@ mod codec;
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/native_observations.rs"]
 #[allow(dead_code)]
 mod native_observations;
+#[path = "../../../crates/moiren-windows-audio/src/process_loopback/bridge.rs"]
+#[allow(dead_code)]
+mod process_bridge;
+#[path = "../../../crates/moiren-windows-audio/src/process_loopback/replay.rs"]
+#[allow(dead_code)]
+mod process_replay;
+mod process_loopback {
+    pub(crate) use super::process_bridge::ProcessBridgeOptions;
+    pub(crate) use super::process_replay::{
+        ObservedProcessTrace, ProcessReplayError, ProcessTraceOrigin,
+    };
+    pub use moiren_windows_audio::process_loopback::*;
+}
 #[path = "../../../crates/moiren-windows-audio/src/engine_backend/observations.rs"]
 #[allow(dead_code)]
 mod observations;
@@ -57,8 +73,8 @@ mod professional_owner;
 // probe-tools feature, so the unused cfg stays allowed, not rewritten.
 #[allow(dead_code, unexpected_cfgs)]
 mod windows_owner;
-// The library's bridge references engine_backend::observations; mirror the
-// module path so the shadow-compiled file compiles unchanged.
+// Mirror library-internal paths and private replay constructors, instead of
+// widening the production API merely to compile this separate-crate harness.
 mod engine_backend {
     pub(crate) use super::observations;
 }

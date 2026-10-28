@@ -92,6 +92,37 @@ pub struct NativeProcessDeliveryObservation {
 }
 
 impl NativeProcessDeliveryObservation {
+    /// Caller-supplied structural trace only: this public DTO and its labels
+    /// are editable, so identity agreement does not authenticate native origin.
+    /// Registry retirement/running state does not prove unique-writer closure.
+    pub fn ordered_trace(
+        &self,
+        expected_process: &crate::process_loopback::ProcessIdentity,
+        expected_generation: u64,
+    ) -> Result<
+        crate::process_loopback::ObservedProcessTrace,
+        crate::process_loopback::ProcessReplayError,
+    > {
+        use crate::process_loopback::{ObservedProcessTrace, ProcessReplayError as Error};
+        if !self.process.same_process(expected_process) {
+            return Err(Error::IdentityMismatch);
+        }
+        if self.owner_generation != expected_generation {
+            return Err(Error::GenerationMismatch);
+        }
+        ObservedProcessTrace::from_observations(
+            self.process.clone(),
+            self.owner_generation,
+            self.input_sample_rate,
+            self.consumer_sample_rate,
+            self.prepared_consumer_demand_frames,
+            self.packet_history
+                .clone()
+                .ok_or(Error::IncompleteHistory)?,
+            self.queue_history.clone().ok_or(Error::IncompleteHistory)?,
+        )
+    }
+
     /// Validate individually coherent native histories off RT. A contended or
     /// incomplete snapshot is refused; callers can collect another snapshot.
     pub fn measured(
@@ -219,6 +250,33 @@ pub(super) struct Session {
     renders: Vec<(NodeId, crate::latency::render::RenderPaddingObserver)>,
 }
 impl NativeObservationReadHandle {
+    /// Read closed histories from this exact retained source/owner, not public
+    /// caller-supplied labels. Registry replacement cannot redirect this handle.
+    /// Writer closure still does not prove successful transport cleanup.
+    pub fn ordered_process_trace(
+        &self,
+        node: NodeId,
+        expected_process: &crate::process_loopback::ProcessIdentity,
+        expected_generation: u64,
+    ) -> Result<
+        crate::process_loopback::ObservedProcessTrace,
+        crate::process_loopback::ProcessReplayError,
+    > {
+        use crate::process_loopback::ProcessReplayError as Error;
+        if self.0.generation != expected_generation {
+            return Err(Error::GenerationMismatch);
+        }
+        let observation = self
+            .snapshot()
+            .process_delivery
+            .into_iter()
+            .find(|value| value.node == node)
+            .ok_or(Error::InvalidIdentity)?;
+        Ok(observation
+            .ordered_trace(expected_process, expected_generation)?
+            .with_retained_owner_origin())
+    }
+
     pub fn snapshot(&self) -> NativeObservationSnapshot {
         let session = &self.0;
         let boundary_probes = session

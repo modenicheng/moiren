@@ -77,7 +77,6 @@ impl ProcessBridgeOptions {
         )?)
     }
 
-    #[cfg(windows)]
     pub(crate) fn clock_config(
         self,
     ) -> Result<crate::clock_bridge::ClockBridgeConfig, CaptureError> {
