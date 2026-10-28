@@ -35,7 +35,6 @@ use windows::{
 const MAX_INSTANCE_ID_UNITS: usize = 4096;
 const MAX_MMDEVICE_ENDPOINTS: u32 = 512;
 const MAX_PROPERTY_STRING_UNITS: usize = 4096;
-const MAX_REPORTED_OWNED_ERRORS: usize = 8;
 
 struct DeviceInfoSet(HDEVINFO);
 
@@ -196,35 +195,30 @@ fn read_name(
     intent: super::super::Intent,
     root: &str,
 ) -> Result<(String, String), String> {
-    let mut owned_candidate_errors = Vec::new();
-    let mut omitted_owned_errors = 0;
-
-    for candidate_error in candidate_errors
+    // Attribute enumeration failures only when ownership is confirmed. A hint
+    // that itself fails (for example a removed endpoint whose connected-to
+    // device no longer resolves through GetDevice) stays undecidable: reporting
+    // the hint's own HRESULT here would mask both the candidate error and the
+    // exact-endpoint name read below with an error about the attribution path.
+    let hints: Vec<(u32, String, super::CandidateOwnership)> = candidate_errors
         .iter()
         .filter(|candidate_error| candidate_error.intent == intent)
-    {
-        if owned_identity_hint(enumerator, &candidate_error.device, stable_id).map_err(|hint| {
-            format!(
-                "MMDevice topology identity {}: {hint}",
-                candidate_error.index
+        .map(|candidate_error| {
+            let ownership =
+                match owned_identity_hint(enumerator, &candidate_error.device, stable_id) {
+                    Ok(owned) if owned => super::CandidateOwnership::Owned,
+                    Ok(_) => super::CandidateOwnership::NotOwned,
+                    Err(_) => super::CandidateOwnership::Undecidable,
+                };
+            (
+                candidate_error.index,
+                candidate_error.error.clone(),
+                ownership,
             )
-        })? {
-            if owned_candidate_errors.len() < MAX_REPORTED_OWNED_ERRORS {
-                owned_candidate_errors.push(format!(
-                    "MMDevice {intent:?} index {}: {}",
-                    candidate_error.index, candidate_error.error
-                ));
-            } else {
-                omitted_owned_errors += 1;
-            }
-        }
-    }
-
-    if omitted_owned_errors != 0 {
-        owned_candidate_errors.push(format!(
-            "{omitted_owned_errors} additional owned endpoint topology errors omitted"
-        ));
-    }
+        })
+        .collect();
+    let owned_candidate_errors =
+        super::owned_candidate_errors(&hints, super::MAX_REPORTED_OWNED_ERRORS);
     if !owned_candidate_errors.is_empty() {
         return Err(owned_candidate_errors.join("; "));
     }

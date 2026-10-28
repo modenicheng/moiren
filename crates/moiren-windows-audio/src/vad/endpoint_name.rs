@@ -6,6 +6,8 @@ use std::{collections::BTreeMap, time::Duration};
 
 const NAME_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const NEGATIVE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+/// Cap on attributed owned-enumeration errors retained in one observation.
+pub(super) const MAX_REPORTED_OWNED_ERRORS: usize = 8;
 
 /// Detached evidence from an exact Windows endpoint property read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +164,44 @@ struct Candidate {
     raw_instance: String,
     root_instance: String,
     intent: super::Intent,
+}
+
+/// Outcome of deciding whether a failed enumeration candidate belongs to the
+/// owned VAD device. `Undecidable` means the optional identity lookup itself
+/// failed; such an endpoint stays unattributed and never fails the name read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CandidateOwnership {
+    Owned,
+    NotOwned,
+    Undecidable,
+}
+
+/// Join the errors of enumeration candidates that are confirmed owned. The
+/// exact-identity `select` below remains the only source of a successful name;
+/// an undecidable hint must not turn into a false observation error about the
+/// attribution machinery itself.
+pub(super) fn owned_candidate_errors(
+    candidates: &[(u32, String, CandidateOwnership)],
+    reported_limit: usize,
+) -> Vec<String> {
+    let mut reports = Vec::new();
+    let mut omitted = 0;
+    for (index, error, ownership) in candidates.iter() {
+        if *ownership != CandidateOwnership::Owned {
+            continue;
+        }
+        if reports.len() < reported_limit {
+            reports.push(format!("MMDevice index {index}: {error}"));
+        } else {
+            omitted += 1;
+        }
+    }
+    if omitted != 0 {
+        reports.push(format!(
+            "{omitted} additional owned endpoint topology errors omitted"
+        ));
+    }
+    reports
 }
 
 fn select<'a>(
@@ -337,6 +377,53 @@ mod tests {
                 .unwrap()
                 .mmdevice_id,
             "opaque MMDevice ID"
+        );
+    }
+
+    #[test]
+    fn undecidable_ownership_hints_are_not_reported_as_observation_errors() {
+        // Regression: a failing optional identity lookup (for example
+        // GetDevice(error attribution) 0xE0000225 on a removing endpoint) used
+        // to abort the whole name read; it must stay unattributed instead.
+        let hints = vec![
+            (
+                0,
+                "topology walk failed".into(),
+                super::CandidateOwnership::Undecidable,
+            ),
+            (
+                1,
+                "adapter GetDevice failed".into(),
+                super::CandidateOwnership::NotOwned,
+            ),
+        ];
+        assert_eq!(
+            super::owned_candidate_errors(&hints, super::MAX_REPORTED_OWNED_ERRORS),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn confirmed_owned_candidate_errors_are_attributed_with_index_and_limit() {
+        let hints = vec![
+            (
+                0,
+                "connector count is 3, expected 1".into(),
+                super::CandidateOwnership::Owned,
+            ),
+            (1, "unrelated".into(), super::CandidateOwnership::NotOwned),
+            (
+                2,
+                "adapter property missing".into(),
+                super::CandidateOwnership::Owned,
+            ),
+        ];
+        assert_eq!(
+            super::owned_candidate_errors(&hints, 1),
+            vec![
+                "MMDevice index 0: connector count is 3, expected 1".to_owned(),
+                "1 additional owned endpoint topology errors omitted".to_owned(),
+            ]
         );
     }
 
