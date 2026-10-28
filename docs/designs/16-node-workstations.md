@@ -2,6 +2,8 @@
 
 2026-10-27。依据当前 `feat/node-ui-workstations` 工作树的 gpui 卡片、Inspector 和 service 实现整理。本文记录参数清单、真实数据边界与逐节点验收方法。实现复用当前 gpui 主题及基础组件，不修改 Figma 母版；Figma 只核对指定的基础组件区域。
 
+2026-10-28 终验：15 种节点与 Application / Tone 入口的卡片、Inspector 和逐节点截图复核已完成。以下阶段记录保留当时的测试数与待办说明，当前结论以文末「最终集成验证」为准；不把旧计数当成最新测试结果。
+
 ## 交互边界
 
 - 拓扑与参数来自真实 `GraphSnapshot` / `GraphNodeState`，卡片和 Inspector 通过 `GraphEdit` 修改同一份图；UI 只保留输入、弹层、选择和布局状态。
@@ -27,8 +29,8 @@
 | Bus | 输出 Level、动态输入端口 | 按实际输入列出来源与声道宽度，点击连接进入路由详情，增加输入 | 全部端口 / 连接、增加 / 删除末尾输入；删除已连接端口须先断开，不能凭空生成路由 |
 | Pan（Balance） | 双声道平衡、Mono、Swap L/R | Balance 旋钮与数值、Mono / Swap、Mute | 精确平衡与 Left / Center / Right 步进；这是 stereo balance，不是任意多声道声像器 |
 | ChannelMapper | 输出到输入映射，或有符号线性权重矩阵 | 4×4 分页精确权重，支持全部 256 通道；等宽时 Identity / Swap 1/2；自适应竖表 | 同一参数域，独立分页与输入草稿；有限负数和大于 1 的值均合法；0 表示该格无贡献 |
-| Recorder | 会话内目标路径、WAV 编码、录音启停、队列容量 | 选文件、32-bit float / 24-bit PCM / 16-bit PCM 三选一、打开输出目录、开始 / 停止、状态 / 时长 / 剩余容量与错误 | 共享同一编码选择与队列容量 ±48,000 frames；不提供其他容器或独立采样率；详见录音约束 |
-| Meter | 观测窗口帧数 | 128 / 480 / 2048 / 8192 选择；逐通道大号 held peak 与 RMS、真实订阅状态 | 2048 帧快捷设置、运行状态及逐通道读数；不是 LUFS / true-peak 仪表 |
+| Recorder | 会话内目标路径、WAV 编码、录音启停、队列容量 | 选文件、32-bit float / 24-bit PCM / 16-bit PCM 三选一、打开输出目录、开始 / 停止、状态 / 时长 / 剩余容量与错误 | 共享同一编码选择；队列容量精确整数输入，范围 1～`RecorderSettings::max_capacity_frames(实际拓扑声道数)` 帧，忙碌阶段禁改；不提供其他容器或独立采样率；详见录音约束 |
+| Meter | 观测窗口帧数 | 128 / 480 / 2048 / 8192 选择；逐通道大号 held peak 与 RMS、真实订阅状态 | 窗口 1～1,048,576 帧精确整数输入、运行状态及逐通道读数；不是 LUFS / true-peak 仪表 |
 | SpectrumAnalyzer | FFT 点数、hop 帧数、显示通道、dBFS 下限 | 真实单通道对数频谱、峰值频点、分辨率 / 窗长；FFT 与 hop 快捷选择、通道切换、−60 / −90 / −120 dBFS 显示下限、竖表 | 同一观测与快捷控制，另有完整引擎范围精确输入：FFT 16～8192 的 2 的幂，hop 1～FFT；候选配置与运行配置分开显示 |
 | Rack | 路由内阶段顺序、bypass、阶段集合、当前阶段参数 | 阶段列表与当前阶段内联编辑；八类处理器的旋钮 / 精确输入或分页矩阵；旁通 / 移除 / 上下移动、按路由加入处理器 | 当前阶段完整参数，与卡片共享选择、独立输入实体；Compressor 十参数，Mapper 4×4 分页；不是插件宿主 |
 | Application（Source 模式） | 应用绑定、数字微调 | 应用列表、刷新、微调、Mute、图电平 | 清除 / 更换来源；绑定使用 PID 与创建时间标识实例；选中条目不等于已经收到音频 |
@@ -38,7 +40,7 @@ Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、D
 
 ### 参数单位与现存差异
 
-以下是当前卡片输入边界，不代表所有 Inspector 入口已经统一。
+以下是当前卡片与 Inspector 的参数约定；精确输入和旋钮行程明确区分，百分比与线性比例在各自入口标注单位。
 
 | 参数组 | 当前边界 / 约定 |
 | --- | --- |
@@ -79,7 +81,7 @@ Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、D
 | 原则 | 当前实现与验证要求 |
 | --- | --- |
 | 内容决定高度 | 原生控件实测高度回写卡片布局，不再给所有种类统一固定 body 高度。绑定选择器、主参数、操作按钮优先可见；矩阵、阶段列表、多通道读数可局部滚动 |
-| 按职责选布局 | I/O 将绑定放在整行，下方参数与竖表并排；当前 EQ / Compressor / Gate 使用侧表。Pan / Bus / Recorder / Meter 与非空 Rack 采用竖表；Gain / Tone / Limiter / Delay 和空 Rack 保持紧凑横表 |
+| 按职责选布局 | I/O 将绑定放在整行，下方参数与竖表并排；当前 EQ / Compressor / Gate 使用侧表。Pan / Bus / Recorder / Meter / ChannelMapper / SpectrumAnalyzer 与非空 Rack 采用竖表；Gain / Tone / Limiter / Delay 和空 Rack 保持紧凑横表 |
 | 侧表只拉伸 | `node_vertical_meter(levels, channels, clips)` 使用 `h_full`，外层 `absolute top_0 bottom_0` 随相邻内容拉伸；竖表不反过来决定卡片高度 |
 | 共用宽度接口 | 外层与组件都用 `node_meter_width(channels)`：单 / 双声道 100 px，之后每声道加 38 px，外层最多占八声道的 328 px；更多声道在内部横向滚动，保留自然字宽及逐声道 Clip，不压缩成不可读的柱 |
 | bounds 内分区 | 从实际 canvas bounds 划出顶部短 CLIP 标识及逐声道锁存条、有效 track、底部 L/R 或声道编号与 held peak 数值。Clip 不画到 bounds 外；外层点击重置锁存 |
@@ -104,13 +106,13 @@ Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、D
 
 截图目录为 `docs/designs/screenshots/node-workstations/`。逐节点捕获使用真实 gpui 渲染、真实引擎处理和受管电平订阅，音频 I/O 使用测试后端，不代表物理设备验证。每个节点分别捕获 1440×900 与 1024×720 下的卡片和 Inspector，并验证原生控件位于实测卡片边界内。扩展场景覆盖多输入 Bus、有阶段 Rack、录音准备/录制/封尾、50% 概览、32 声道滚动以及长资源名。录音场景先核对真实 WAV 文件头、帧数与文件大小，再删除测试 WAV，仅保留截图和清单证据。纯几何测试不代替真实字体与布局检查。
 
-### 本轮截图证据
+### 初始基线截图证据
 
-本轮在本地保留 23 份 JSON 捕获清单、98 张 PNG，清单引用的图片全部存在。按用户要求，这些生成物不进入 Git 暂存区或提交；仓库只保留捕获程序和文字验收记录。逐节点复核后再统一刷新共享控件改动；没有把一张全景图当作所有节点的验收。最后复核覆盖旋钮标签 / 输入 / 单位对齐、长设备名省略、录音长路径、多声道横向滚动、重叠节点与概览入口。
+初始基线在本地保留 23 份 JSON 捕获清单、98 张 PNG，清单引用的图片全部存在。后续增量有各自的新截图，不将基线尺寸混称为当前布局。按用户要求，这些生成物不进入 Git 暂存区或提交；仓库只保留捕获程序和文字验收记录。逐节点复核后再统一刷新共享控件改动；没有把一张全景图当作所有节点的验收。复核覆盖旋钮标签 / 输入 / 单位对齐、长设备名省略、录音长路径、多声道横向滚动、重叠节点与概览入口。
 
 复现方式：构建 `cargo build --locked -p moiren-app --features gpui-test -j 2 --example ui_capture`，设置 `MOIREN_CAPTURE_NODES=1` 与 `MOIREN_CAPTURE_NODE=<节点筛选值>`，再执行生成的 `ui_capture` 示例并传入本地输出目录。筛选值包括 `input`、`gain`、`balance`、`eq`、`compressor`、`gate`、`limiter`、`delay`、`mapper`、`bus`、`rack`、`meter`、`spectrum`、`recorder`、`output`、`application`、`tone`，以及 `bus-expanded`、`rack-populated`、`recording-states`、`overview`、`meter32`、`input-long`。
 
-以下为 Compact、100% 缩放时清单记录的逻辑像素，说明竖表由不同内容高度驱动，而非统一固定尺寸；电平表高度包括 Clip 与底部声道读数区，并非单独有效 track 的高度。
+以下为初始基线 Compact、100% 缩放时清单记录的逻辑像素，说明竖表由不同内容高度驱动，而非统一固定尺寸；电平表高度包括 Clip 与底部声道读数区，并非单独有效 track 的高度。
 
 | 场景 | 卡片高度 | 电平表高度 |
 | --- | ---: | ---: |
@@ -133,7 +135,7 @@ Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、D
 | --- | --- |
 | 15 种节点定义 | `crates/moiren-core/src/graph/model.rs` |
 | 卡片、参数与交互 | `crates/moiren-app/src/ui/window/graph/node_controls.rs`；`node_controls/{fields,io,parameter,rotary,plots,recording}.rs`；`node_controls/utility/` |
-| 次级编辑与诊断 | `crates/moiren-app/src/ui/window/graph/node_inspector.rs`；`node_inspector/{binding,parameters,routing,strip,diagnostics,sections}.rs`；`node_inspector/builtin/` |
+| 次级编辑与诊断 | `crates/moiren-app/src/ui/window/graph/node_inspector.rs`；`node_inspector/{binding,parameters,routing,strip,diagnostics,sections}.rs`；精确编辑复用 `node_controls/{fields,precision,integer,mapper_editor,rack_editor}.rs` 的独立表面状态 |
 | 图与录音服务 | `crates/moiren-app/src/service/graph/`；`service/recording.rs`、`service/recording/`、`service/managed/recordings.rs` |
 | 实际电平与几何 | `crates/moiren-app/src/service/managed/meters.rs`；`crates/moiren-engine/src/host/signals.rs`；`crates/moiren-app/src/ui/monitoring/`；`ui/widgets/meters.rs`、`ui/widgets/meters/` |
 
@@ -147,7 +149,7 @@ Rack 的新增菜单包含 Gain、Balance、EQ、Compressor、Gate、Limiter、D
 
 验证：app GPUI 全套 488 passed / 0 failed / 3 ignored；最终捕获工具回归 17 passed；engine 全套 350 passed，8 个套件；默认及 GPUI-feature workspace strict Clippy、rustfmt 与 diff 空白检查通过。音频来自测试后端，不宣称物理设备录音验收。原有 98 张截图和更早的 workspace 测试结果仍属于前述基线，不混称为本次重新执行。
 
-Rack 阶段参数内联编辑、实时频谱、Tone / Mapper 参数域一致性与 Inspector 完整精确输入仍是后续任务；此补全不代表整个节点重设计目标完成。
+本节是 Recorder 阶段记录；当时未完成的 Rack、实时频谱、Tone / Mapper 与 Inspector 精确输入，已由下方各节点增量补齐，不再作为当前待办。
 
 
 ## Rack 阶段工作站（2026-10-28）
@@ -164,7 +166,7 @@ Rack 采用可滚动的双列阶段选择器，一次只展开当前阶段，不
 
 Compact 下空 Rack 高 228 px；四阶段 Rack 选 Gain 高 392 px、竖表 324 px；八阶段 Rack 选 Gain / EQ / Limiter / Delay 高 428 px、竖表 360 px，选 Compressor 高 562 px、竖表 493.6 px，选 Mapper 高 468 px、竖表 400 px。不同高度均来自内容，不是统一卡片高度。
 
-限制仍然明确：Rack 参数沿现有 prepared-structure / 自动 Apply 路径，不冒充无重建实时调参；没有每阶段 GR 或 FFT 观测，不绘制假表。实时频谱、Tone / 独立 Mapper 参数域一致性和其他节点 Inspector 的完整精确输入仍属于后续工作。
+限制仍然明确：Rack 参数沿现有 prepared-structure / 自动 Apply 路径，不冒充无重建实时调参；没有每阶段 GR 或 FFT 观测，不绘制假表。本阶段列出的实时频谱、Tone / 独立 Mapper 与 Inspector 精确输入待办，已由后续增量完成。
 
 验收结果：app GPUI 全套 540 passed / 0 failed / 3 ignored；Rack 定向回归 64 passed；Overview 模块调整后定向回归 1 passed。默认与 gpui-test feature 的 workspace / all-targets Clippy 均以 `-D warnings` 通过，rustfmt 与 diff 空白检查通过。共享输入组件额外重新捕获 Input、Gain、EQ、Compressor 的卡片与 Inspector、两种密度，共 16 张 PNG / 四份清单，保存在本地 `rack-editing/shared-fields/`，同样未入库。
 
@@ -197,7 +199,7 @@ Inspector 使用独立输入实体、基线、错误草稿与待消费请求。�
 
 十二项原生接受测试通过。原生 32 声道场景完成两种密度、两种编辑表面的首/末页与预设，共 16 张截图；通过真正聚焦输入、Ctrl+A、输入与 Enter 将最后一格写为 −3.125，并验证完整矩阵及 active revision。另捕获四张双声道卡片/Inspector。Compact 双声道卡片为 440×256，32 声道为 516×382 逻辑像素；竖表随内容分别为 187.2 / 313.6 高。所有截图与 JSON 仅本地保留，未入 Git。
 
-当前横向滚动保留自然通道列宽，末通道完整可见，但标尺会随内容移出且左边缘可能露出半个前导读数；这是已识别的后续打磨项，不隐瞒为完成。专用 16 帧均验证竖表边界；通用四帧只执行原有 bounds 检查，遗漏的竖表分类将在共用捕获验证器中修正后重拍。Mapper 交互与捕获源码由 `b5a05e6` / `741ad9d` 原子提交并推送至 PR #23。
+本阶段曾发现横向滚动会带走标尺、露出半个前导读数，以及通用捕获遗漏 Mapper 竖表分类；下方固定标尺与共用验证器增量已修正并重拍全部 20 帧。专用 16 帧均验证竖表边界。Mapper 交互与捕获源码由 `b5a05e6` / `741ad9d` 原子提交并推送至 PR #23。
 
 ## EQ / Gate 精确输入与视觉复核（2026-10-28）
 
@@ -214,4 +216,40 @@ EQ 14 项、Gate 7 项原生/参数测试通过；EQ 审查新增的七项中六
 
 Limiter 和 Delay 的三个 Inspector 字段均与卡片分离输入实体，沿用相同参数域。字段级请求合并最新候选值，不覆盖其他参数；Delay 保留已有 `max_delay_ms`，反馈 ±99.9% 精确映射到引擎 ±0.999，Wet mix 仍以百分比显示。两个节点各五项定向测试通过，各自完成两种密度的卡片 / Inspector 四帧原生捕获，并分别目视检查紧凑 Inspector 与舒适卡片。短卡片保留紧凑横表，不为竖表而增加空白高度。
 
-代码分别以 `7005ad3` / `8d9dbd9` 原子提交并推送。八张 PNG 与两份 JSON 仅保存在本地 `limiter-precision/`、`delay-precision/` 子目录。后续审查发现共享旋钮在快照未发布期间的连续滚轮、加载后的旧回调，以及跨表面重输原值的意图处理仍有缺陷；这些按独立回归修复，不把局部参数测试和截图作为整体交互完成证明。
+代码分别以 `7005ad3` / `8d9dbd9` 原子提交并推送。八张 PNG 与两份 JSON 仅保存在本地 `limiter-precision/`、`delay-precision/` 子目录。当时发现的连续滚轮、加载后的旧回调、跨表面重输原值等缺陷，已由下方标量意图、旋钮生命周期与既有 Inspector 回归修复验证；局部参数测试和截图不替代整体集成验证。
+
+## 整数输入与标量生命周期验收（2026-10-28）
+
+- Meter / Recorder 整数输入 **19 项通过**：Enter / Blur 单次提交、无效整数与队列 Busy 后重试、快速反向修改、项目待加载与旧输入实体隔离；Recorder 按实际拓扑声道校验容量，Starting / Recording / Stopping 禁改。输入跟踪实际文本变化，忽略冗余同文 Change，保留删除后重输原值的明确意图。
+- 标量意图 **12 项通过**、旋钮生命周期 **10 项通过**、既有 Inspector 回归 **14 项通过**：覆盖跨表面重输、未编辑失焦不回写、未确认请求与滚轮累积、部分确认、加载 / 删除后的旧回调、Compressor 草稿与队列，以及已连接 Bus 输入的删除限制。
+- 旧 `node_inspector/builtin/` 约 600 行重复实现已移除，参数入口由现有分职责编辑器承接；不新增第二份图或参数状态。
+
+原生证据分别为 Recorder 新捕获 4 帧、Meter 此前已验收 4 帧，以及最终 Gain / Balance / Compressor / Bus 各 4 帧、`meter32` 6 帧。截图与生成清单全部仅本地保留；此前 Meter 四帧不冒称本轮重拍，测试后端不代表物理设备验收。本节只记录上述定向测试和原生验收，不宣称最终全套测试、Clippy 或 CI 完成；整合结果与最终审查仍待主线程补充。
+
+## 最后视觉与交互复核（2026-10-28）
+
+Meter 双声道与 32 声道分别重新捕获 4 / 6 帧，保存在本地 `final-meter/meter/` 与 `final-meter/meter32/`。专用验证器将竖表与实际读数/状态区域对齐，而非错误要求它覆盖上方预设行；10 帧的 bounds 与 `vertical_meter_verified` 全为 true。目视复核紧凑 Inspector 及第 25～32 声道，固定标尺、顶部 CLIP 和底部读数均可见。卡片逻辑尺寸分别为 304×328 与 532×527，随信息量不同，不统一固定高度。捕获工具回归 20 项通过，变更由 `13dfa1a` 提交。
+
+EQ / Mapper 的库创建测试已改为真正聚焦原生输入、键入并提交，验证候选修订、完整参数与活动修订边界；不再点击已删除的旧步进按钮。Compressor 增加真实 1024×720 视口滚轮验收，能滚到最后的 Mix 精确输入和 Delete node，键入只更改 Mix，且不改变相机、布局或拓扑。测试平台必须用 resize 回调更新布局视口，不能只改变平台窗口矩形；该测试先暴露此夹具问题，再修正验证通过。三项定向测试均通过，变更由 `6d73736` 提交。
+
+当前本地累计保留 262 张 PNG / 50 份捕获清单，包含前述阶段证据；并非全部在最后一轮重新拍摄。清单引用图片全部存在。没有截图、生成 JSON 或测试 WAV 进入 PR；音频测试后端证据不等同于物理设备验收。
+
+### 排队操作终审
+
+最终审查用未发布快照的原生操作复现了五项失败：Level 与 Mute 的不同操作顺序互相覆盖，以及卡片 Mute、独立 Balance 的 Mono / Swap 快速双击丢失第二次意图。现在使用 service 字段级 `MixerEdit` 和 toggle intent，卡片、Inspector、Mixer 与托盘均不再从旧快照复制整个通道条；Balance 滚轮采用相对意图，逐次累计。精确输入与手势保持原有单位和外观，撤销按独立参数分组，开关 / 模式的每次点击独立撤销。七项原生排队回归通过。
+
+实时测试另复现了首次 Solo 在空观测缓存下没有真正静音其他通道的问题；同步现在比较事务前后有效增益 / 静音，而不是把空缓存误当成已下发值。十二项 service 测试覆盖字段合并、合法域、撤销、真实音频输出、Solo 跨通道静音 / 恢复、模式与 Mono / Swap，以及不重建引擎。代码分为 `dda5241`（service）和 `02129e3`（UI）提交。
+
+远端 Linux 暴露了既有 repeated-Apply 测试依赖瞬时 ACK 屏障的调度竞态；`643df62` 只修改该测试，通过保留未提交参数尾部与显式 round budget 稳定观察屏障，没有延长超时或更改生产 ACK 语义。仍验证旧 receipt 被替代、不同 Apply 身份、拓扑生效前保持 pending，以及最终活动修订、零 pending 和仅一次启动。
+
+## 最终集成验证（2026-10-28）
+
+最终生产代码及测试提交为 `643df62`；后续只更新本文与实施计划。全部命令在隔离工作树执行，使用共享构建目录、`-j 2` 和测试线程数 2，顺序执行并确认退出成功：
+
+- `cargo test --locked -p moiren-app --features gpui-test --lib -j 2 -- --test-threads=2`：740 passed，0 failed，3 ignored。
+- `cargo test --locked --workspace -j 2 -- --test-threads=2`：47 个套件，1,441 passed，0 failed，6 ignored，含时钟、故障、启动矩阵与文档测试。
+- 默认与 `--features moiren-app/gpui-test` 两套 `cargo clippy --locked --workspace --all-targets -j 2 -- -D warnings` 均通过。
+- `cargo fmt --all -- --check`、工作树与完整 PR 的 `git diff --check` 均通过；修正后的 repeated-Apply 测试另连续运行 20 次通过。
+- PR 全部提交历史中无新增 PNG、生成 JSON 或 WAV；50 份本地清单引用的 262 张截图均存在。原工作树既有未跟踪文件保留，未修改 Figma 母版。
+
+忽略项需要硬件、原生窗口或显式基准环境，不作为已经执行的硬件验收。PR #23 保持打开、不合并；远端 CI 在本次记录时仍运行，最新结果以 PR checks 为准，不能把本地通过写成远端已全绿。
