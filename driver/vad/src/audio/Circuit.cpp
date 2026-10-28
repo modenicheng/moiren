@@ -66,7 +66,7 @@ VAD_PAGE NTSTATUS VadAudioBuildCircuit(VAD_AUDIO_DEVICE* device)
         return status;
     }
     UNICODE_STRING name;
-    RtlInitUnicodeString(&name, VadAudioReference);
+    RtlInitUnicodeString(&name, device->Reference);
     status = AcxCircuitInitAssignName(init, &name);
     VadTrace(TRACE_LEVEL_INFORMATION, VAD_PDO,
         "Circuit name status=%!STATUS!", status);

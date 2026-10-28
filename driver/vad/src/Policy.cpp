@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "Driver.h"
+#include "EndpointReference.h"
 #include "InterfaceName.h"
 // Instantiate the SDK property key in this translation unit, not a private GUID.
 #include <initguid.h>
@@ -98,19 +99,20 @@ static NTSTATUS StageInterfaceName(const GUID& category, UNICODE_STRING* link,
 // returned allocation is owned by this driver.
 static NTSTATUS StageInterface(WDFDEVICE child, const GUID& category,
     PCWSTR association, ULONG associationBytes, ULONG neverDefault,
-    const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS], UNICODE_STRING* link)
+    const WCHAR (&name)[MOIREN_VAD_MAX_NAME_UNITS],
+    const WCHAR (&reference)[vad::EndpointReferenceUnits], UNICODE_STRING* link)
 {
     *link = {};
     const ULONG nameBytes = vad::InterfaceNameBytes(name);
     if (nameBytes == 0) {
         return STATUS_INVALID_PARAMETER;
     }
-    UNICODE_STRING reference;
-    RtlInitUnicodeString(&reference, VadAudioReference);
+    UNICODE_STRING referenceString;
+    RtlInitUnicodeString(&referenceString, reference);
     // Registration alone leaves the interface DISABLED. Never call
     // IoSetDeviceInterfaceState(TRUE) or let WDF automatically enable it.
     NTSTATUS status = IoRegisterDeviceInterface(
-        WdfDeviceWdmGetDeviceObject(child), &category, &reference, link);
+        WdfDeviceWdmGetDeviceObject(child), &category, &referenceString, link);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -226,9 +228,14 @@ static void PreparePolicy(WDFWORKITEM work)
             STATUS_SUCCESS : STATUS_INVALID_DEVICE_STATE;
         return;
     }
+    // The name-derived reference participates in the endpoint identity the
+    // audio service composes names for; derive it once from the same locked
+    // slot snapshot the staged properties use so all three categories agree.
+    WCHAR reference[vad::EndpointReferenceUnits] = {};
+    vad::EndpointReference(name, reference);
     for (const GUID* category : categories) {
         NTSTATUS status = StageInterface(child, *category, association,
-            associationBytes, neverDefault, name,
+            associationBytes, neverDefault, name, reference,
             &context->PolicyInterfaces[context->PolicyInterfaceCount]);
         if (!NT_SUCCESS(status)) {
             VadTrace(TRACE_LEVEL_ERROR, VAD_PDO,

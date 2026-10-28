@@ -34,6 +34,9 @@ parts = re.findall(r'static const GUID \w+Category\s*=\s*\{[^;]+;', text)
 header = root / 'src/InterfaceName.h'
 if header.exists():
     parts.append('#include "' + header.as_posix() + '"')
+reference = root / 'src/EndpointReference.h'
+if reference.exists():
+    parts.append('#include "' + reference.as_posix() + '"')
 functions = ['SnapshotPolicy', 'CreateKey', 'SetValue']
 if re.search(r'\bStageInterfaceName\s*\(', text):
     functions.append('StageInterfaceName')

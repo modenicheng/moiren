@@ -14,6 +14,7 @@ using PCWSTR = const wchar_t*;
 using PVOID = void*;
 #include <devpkey.h>
 #include "../include/moiren_vad.h"
+#include "../src/EndpointReference.h"
 
 // Extract real policy staging/rollback. This does not emulate PnP/ACX or prove
 // EndpointBuilder consumes this particular interface's friendly name.
@@ -47,6 +48,7 @@ constexpr int TRACE_LEVEL_INFORMATION = 4;
 constexpr int TRACE_LEVEL_ERROR = 2;
 constexpr int VAD_PDO = 1;
 constexpr bool FALSE = false;
+// The pre-rename fixed reference; staging must no longer publish it.
 constexpr WCHAR VadAudioReference[] = L"MoirenEndpoint";
 static_assert(sizeof(WCHAR) == 2, "exercise real Windows UTF-16 byte lengths");
 struct UNICODE_STRING {
@@ -172,11 +174,19 @@ static unsigned LinkIndex(const UNICODE_STRING* link)
     Check(false, "DDI uses exact owned symbolic link, not a reconstructed path");
     return 0;
 }
-NTSTATUS IoRegisterDeviceInterface(Child*, const GUID*, UNICODE_STRING* reference,
+NTSTATUS IoRegisterDeviceInterface(Child* child, const GUID*, UNICODE_STRING* reference,
     UNICODE_STRING* link)
 {
     CheckDdi();
-    Check(std::wcscmp(reference->Buffer, VadAudioReference) == 0, "reference unchanged");
+    // The registered reference must be derived from the current slot name so a
+    // rename composes a fresh endpoint identity instead of returning to the
+    // persisted name of the fixed-reference identity.
+    WCHAR expected[vad::EndpointReferenceUnits] = {};
+    vad::EndpointReference(child->Shared.Slots[0].Name, expected);
+    Check(std::wcscmp(reference->Buffer, expected) == 0,
+        "reference derived from the staged name");
+    Check(std::wcscmp(reference->Buffer, VadAudioReference) != 0,
+        "reference is not the fixed pre-rename constant");
     if (F.Registered + 1 == F.FailRegisterAt) { return ReadFailure; }
     Check(F.Registered < 3, "only three owned categories");
     const auto index = F.Registered++;
@@ -407,8 +417,32 @@ static void DisabledTraceDoesNotChoosePolicyOutcome()
     }
 }
 
+static void EndpointReferenceDerivation()
+{
+    const WCHAR name[MOIREN_VAD_MAX_NAME_UNITS] = L"Requested interface";
+    WCHAR reference[vad::EndpointReferenceUnits] = {};
+    vad::EndpointReference(name, reference);
+    Check(std::wcslen(reference) == 31, "prefix plus 16 hex digits, NUL terminated");
+    Check(std::wcsncmp(reference, L"MoirenEndpoint-", 15) == 0,
+        "reference keeps the Moiren endpoint prefix");
+    WCHAR again[vad::EndpointReferenceUnits] = {};
+    vad::EndpointReference(name, again);
+    Check(std::wcscmp(reference, again) == 0, "derivation is deterministic");
+    const WCHAR renamed[MOIREN_VAD_MAX_NAME_UNITS] = L"Renamed interface";
+    WCHAR other[vad::EndpointReferenceUnits] = {};
+    vad::EndpointReference(renamed, other);
+    Check(std::wcscmp(reference, other) != 0,
+        "a rename derives a fresh endpoint identity");
+    const WCHAR empty[MOIREN_VAD_MAX_NAME_UNITS] = {};
+    WCHAR fromEmpty[vad::EndpointReferenceUnits] = {};
+    vad::EndpointReference(empty, fromEmpty);
+    Check(std::wcslen(fromEmpty) == 31 && std::wcscmp(fromEmpty, other) != 0,
+        "empty input stays bounded and never aliases another name");
+}
+
 int main()
 {
+    EndpointReferenceDerivation();
     SuccessfulTypedPublication();
     TypedFailureClosesPolicy();
     RejectReadbackMismatch();
