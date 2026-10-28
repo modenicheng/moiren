@@ -415,6 +415,30 @@ fn compressor_inspector_edits_only_its_selected_node_and_hides_on_other_selectio
     finish_service(runtime);
 }
 
+fn edit_inspector_field(cx: &mut VisualTestContext, field_id: String, text: &str) {
+    let position = cx.update(|window, cx| {
+        window.render_frame(cx);
+        let inspector = window.find("inspector-parameters");
+        let field = window.find(field_id);
+        assert!(inspector.visible() && field.visible());
+        assert!(field.path().starts_with(inspector.path()));
+        let inputs: Vec<_> = gpui_kit::base::test_support::snapshots(window)
+            .into_iter()
+            .filter(|input| {
+                input.role() == Some(gpui_kit::Role::TextInput)
+                    && input.path().starts_with(field.path())
+            })
+            .collect();
+        assert_eq!(inputs.len(), 1, "one native editor for the selected field");
+        assert!(inputs[0].visible());
+        inputs[0].bounds().center()
+    });
+    cx.simulate_click(position, Modifiers::default());
+    cx.simulate_keystrokes("ctrl-a");
+    cx.simulate_input(text);
+    cx.simulate_keystrokes("enter");
+}
+
 #[gpui_kit::test]
 fn builtin_library_creation_opens_real_inspector_controls_and_updates_candidate_state(
     cx: &mut gpui_kit::TestAppContext,
@@ -422,7 +446,10 @@ fn builtin_library_creation_opens_real_inspector_controls_and_updates_candidate_
     use moiren_core::graph::NodeKind;
 
     let (view, cx, runtime) = test_shell(cx);
-    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    cx.update(|window, _| {
+        window.resize(size(px(1600.), px(1000.)));
+        window.activate_window();
+    });
 
     cx.update(|window, cx| window.click("add-Parametric EQ", cx));
     let id = wait_for(Duration::from_secs(3), || {
@@ -443,20 +470,38 @@ fn builtin_library_creation_opens_real_inspector_controls_and_updates_candidate_
         })
     });
 
-    cx.update(|window, _| assert!(window.find("eq-frequency-up").visible()));
-    cx.update(|window, cx| window.click("eq-frequency-up", cx));
+    settle_panels(cx);
+    let (revision, original) = view.read_with(cx, |shell, cx| {
+        assert_eq!(shell.selected_node, Some(id));
+        assert!(shell.inspector_open, "library creation opens the Inspector");
+        let graph = &shell.state.read(cx).snapshot.graph;
+        (
+            graph.candidate_revision,
+            *graph.node(id).unwrap().builtin.eq().unwrap(),
+        )
+    });
+    edit_inspector_field(
+        cx,
+        format!("inspector-precision-{id:?}-EqFrequency"),
+        "1234.56 Hz",
+    );
     wait_for_graph(&view, cx, |graph| {
         graph
             .node(id)
             .and_then(|node| node.builtin.eq())
-            .is_some_and(|settings| settings.frequency_hz == 1_100.)
+            .is_some_and(|settings| settings.frequency_hz == 1234.56)
     });
     view.update(cx, |shell, cx| {
         let graph = &shell.state.read(cx).snapshot.graph;
         assert_eq!(graph.active_revision, None);
+        assert!(graph.candidate_revision > revision);
         assert_eq!(
-            graph.node(id).unwrap().builtin.eq().unwrap().frequency_hz,
-            1_100.
+            *graph.node(id).unwrap().builtin.eq().unwrap(),
+            moiren_engine::processor::EqSettings {
+                frequency_hz: 1234.56,
+                ..original
+            },
+            "exact frequency editing preserves sibling EQ settings"
         );
     });
 
@@ -468,7 +513,10 @@ fn channel_mapper_inspector_edits_a_weighted_matrix_candidate(cx: &mut gpui_kit:
     use moiren_core::graph::NodeKind;
 
     let (view, cx, runtime) = test_shell(cx);
-    cx.update(|window, _| window.resize(size(px(1600.), px(1000.))));
+    cx.update(|window, _| {
+        window.resize(size(px(1600.), px(1000.)));
+        window.activate_window();
+    });
 
     cx.update(|window, cx| {
         view.update(cx, |shell, cx| {
@@ -497,33 +545,39 @@ fn channel_mapper_inspector_edits_a_weighted_matrix_candidate(cx: &mut gpui_kit:
         })
     });
 
-    cx.update(|window, _| {
-        assert!(window.find("channel-map-edit-matrix").visible());
+    settle_panels(cx);
+    let revision = view.read_with(cx, |shell, cx| {
+        assert_eq!(shell.selected_node, Some(id));
+        assert!(shell.inspector_open, "library creation opens the Inspector");
+        shell.state.read(cx).snapshot.graph.candidate_revision
     });
-    cx.update(|window, cx| window.click("channel-map-edit-matrix", cx));
+    let root = format!("mapper-inspector-{id:?}");
+    cx.update(|window, _| {
+        assert!(window.find(root.clone()).visible());
+        // A stereo Mapper fits the first page; no matrix-mode switch is needed.
+        for output in 0..2 {
+            for input in 0..2 {
+                assert!(
+                    window
+                        .find(format!("{root}-weight-{output}-{input}"))
+                        .visible()
+                );
+            }
+        }
+        assert!(window.try_find(format!("{root}-input-next")).is_none());
+        assert!(window.try_find(format!("{root}-output-next")).is_none());
+    });
+    edit_inspector_field(cx, format!("{root}-weight-0-1"), "0.25");
     wait_for_graph(&view, cx, |graph| {
         graph
             .node(id)
             .and_then(|node| node.builtin.channel_mapper())
-            .is_some_and(|settings| settings.matrix == vec![vec![1.0, 0.0], vec![0.0, 1.0]])
-    });
-    cx.update(|window, _| {
-        assert!(
-            window
-                .try_find("channel-map-matrix-out-0-in-1-up")
-                .is_some()
-        );
-    });
-    cx.update(|window, cx| window.click("channel-map-matrix-out-0-in-1-up", cx));
-    wait_for_graph(&view, cx, |graph| {
-        graph
-            .node(id)
-            .and_then(|node| node.builtin.channel_mapper())
-            .is_some_and(|settings| settings.matrix[0][1] == 0.25)
+            .is_some_and(|settings| settings.matrix == vec![vec![1., 0.25], vec![0., 1.]])
     });
     view.update(cx, |shell, cx| {
         let graph = &shell.state.read(cx).snapshot.graph;
         assert_eq!(graph.active_revision, None);
+        assert!(graph.candidate_revision > revision);
         assert_eq!(
             graph
                 .node(id)
@@ -531,8 +585,9 @@ fn channel_mapper_inspector_edits_a_weighted_matrix_candidate(cx: &mut gpui_kit:
                 .builtin
                 .channel_mapper()
                 .unwrap()
-                .matrix[0][1],
-            0.25
+                .matrix,
+            vec![vec![1., 0.25], vec![0., 1.]],
+            "editing one weight materializes identity without changing other routes"
         );
     });
 

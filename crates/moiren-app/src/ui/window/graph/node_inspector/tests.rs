@@ -235,6 +235,193 @@ mod ui {
     }
 
     #[gpui_kit::test]
+    fn compact_compressor_inspector_wheel_reaches_last_parameter_and_delete_action(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::{
+            Bounds, Focusable, Modifiers, Pixels, Role, ScrollDelta, ScrollWheelEvent, TouchPhase,
+            point,
+        };
+
+        fn contains(outer: Bounds<Pixels>, inner: Bounds<Pixels>) -> bool {
+            let tolerance = px(0.5);
+            inner.size.width > px(0.)
+                && inner.size.height > px(0.)
+                && inner.left() >= outer.left() - tolerance
+                && inner.right() <= outer.right() + tolerance
+                && inner.top() >= outer.top() - tolerance
+                && inner.bottom() <= outer.bottom() + tolerance
+        }
+
+        fn wheel(cx: &mut VisualTestContext, delta: f32) {
+            let position = cx.update(|window, cx| {
+                window.render_frame(cx);
+                let panel = window.find("graph-inspector").bounds();
+                // Panel padding avoids input/slider wheel handlers and proves
+                // the Inspector scrolls rather than the graph behind it.
+                point(panel.right() - px(2.), panel.center().y)
+            });
+            cx.simulate_mouse_move(position, None, Modifiers::default());
+            cx.simulate_event(ScrollWheelEvent {
+                position,
+                delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            cx.run_until_parked();
+        }
+
+        fn reveal(cx: &mut VisualTestContext, id: &str) -> Bounds<Pixels> {
+            for _ in 0..12 {
+                let (panel, target, visible) = cx.update(|window, cx| {
+                    window.render_frame(cx);
+                    let panel = window.find("graph-inspector");
+                    let target = window.find(id.to_owned());
+                    assert!(panel.visible());
+                    (panel.bounds(), target.bounds(), target.visible())
+                });
+                if contains(panel, target) {
+                    assert!(visible, "{id} must be visible inside {panel:?}: {target:?}");
+                    return target;
+                }
+                let delta = if target.top() < panel.top() {
+                    panel.top() - target.top() + px(8.)
+                } else {
+                    panel.bottom() - target.bottom() - px(8.)
+                };
+                wheel(cx, f32::from(delta).clamp(-160., 160.));
+            }
+            panic!("native Inspector wheel did not reveal {id}");
+        }
+
+        let (view, cx, runtime) = test_shell(cx);
+        view.update(cx, |shell, cx| {
+            shell.state.update(cx, |state, _| {
+                state.dispatch(AppRequest::EditGraph(GraphEdit::AddNode {
+                    kind: NodeKind::Compressor,
+                    channels: 2,
+                }));
+            });
+        });
+        let id = wait_for(Duration::from_secs(3), || {
+            view.update(cx, |shell, cx| {
+                shell.state.update(cx, |state, _| state.poll());
+                shell
+                    .state
+                    .read(cx)
+                    .snapshot
+                    .graph
+                    .node_of_kind(NodeKind::Compressor)
+                    .map(|(node, _)| node.id())
+            })
+        });
+        // The test platform's resize method alone does not deliver the resize
+        // callback that updates GPUI's cached layout viewport.
+        cx.simulate_resize(size(px(1024.), px(720.)));
+        show_inspector(&view, cx, id, 1024., 720.);
+        cx.update(|window, _| {
+            assert_eq!(
+                window.viewport_size(),
+                size(px(1024.), px(720.)),
+                "the native layout viewport must use the requested compact size"
+            );
+        });
+        let (before, camera, positions, input) = view.read_with(cx, |shell, cx| {
+            assert!(shell.compact, "the shell must render its compact layout");
+            (
+                shell.state.read(cx).snapshot.graph.clone(),
+                shell.camera,
+                shell.node_positions.clone(),
+                shell.compressor.inputs[&(id, CompressorParameter::Mix)].clone(),
+            )
+        });
+        let identity_top = cx.update(|window, cx| {
+            window.activate_window();
+            window.render_frame(cx);
+            let panel = window.find("graph-inspector").bounds();
+            let delete = window.find("remove-node");
+            let last = window.find(format!(
+                "compressor-input-{}",
+                CompressorParameter::Mix.id().0
+            ));
+            assert!(
+                delete.bounds().bottom() > panel.bottom(),
+                "the fixture must actually require vertical scrolling: viewport={:?}, panel={panel:?}, delete={:?} visible={}, last={:?} visible={}",
+                window.viewport_size(),
+                delete.bounds(),
+                delete.visible(),
+                last.bounds(),
+                last.visible(),
+            );
+            window.find("inspector-identity").bounds().top()
+        });
+        wheel(cx, -96.);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.find("inspector-identity").bounds().top() < identity_top,
+                "native wheel must move Inspector content"
+            );
+        });
+
+        let last_id = format!("compressor-input-{}", CompressorParameter::Mix.id().0);
+        reveal(cx, &last_id);
+        let position = cx.update(|window, _| {
+            let field = window.find(last_id);
+            let inputs: Vec<_> = gpui_kit::base::test_support::snapshots(window)
+                .into_iter()
+                .filter(|input| {
+                    input.role() == Some(Role::TextInput) && input.path().starts_with(field.path())
+                })
+                .collect();
+            assert_eq!(inputs.len(), 1);
+            assert!(inputs[0].visible());
+            assert!(contains(
+                window.find("graph-inspector").bounds(),
+                inputs[0].bounds()
+            ));
+            inputs[0].bounds().center()
+        });
+        cx.simulate_click(position, Modifiers::default());
+        cx.update(|window, cx| {
+            assert!(input.read(cx).focus_handle(cx).is_focused(window));
+        });
+        cx.simulate_keystrokes("ctrl-a backspace");
+        cx.simulate_input("0.25");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        wait_until(Duration::from_secs(3), || {
+            view.update(cx, |shell, cx| {
+                shell.state.update(cx, |state, _| state.poll());
+                let state = shell.state.read(cx);
+                assert!(state.dispatch_error.is_none(), "{:?}", state.dispatch_error);
+                !state.pending_request
+                    && state.snapshot.graph.node(id).unwrap().compressor.mix == 0.25
+            })
+        });
+
+        // The destructive action is measured, never clicked during acceptance.
+        let delete = reveal(cx, "remove-node");
+        assert!(delete.size.width >= px(24.) && delete.size.height >= px(24.));
+        view.read_with(cx, |shell, cx| {
+            let graph = &shell.state.read(cx).snapshot.graph;
+            let mut expected_nodes = before.nodes.clone();
+            expected_nodes
+                .iter_mut()
+                .find(|node| node.id == id)
+                .unwrap()
+                .compressor
+                .mix = 0.25;
+            assert_eq!(graph.nodes, expected_nodes, "only the typed Mix may change");
+            assert_eq!(graph.graph, before.graph, "scrolling must not delete nodes");
+            assert_eq!(shell.selected_node, Some(id));
+            assert_eq!(shell.camera, camera);
+            assert_eq!(shell.node_positions, positions);
+        });
+        finish_service(runtime);
+    }
+
+    #[gpui_kit::test]
     fn inspector_keeps_identity_edits_and_explicit_unknown_observation(
         cx: &mut gpui_kit::TestAppContext,
     ) {
