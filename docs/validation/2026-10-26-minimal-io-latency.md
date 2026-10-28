@@ -3293,3 +3293,74 @@ cleanup of that owned obsolete VM run only. It does not close rename
 acceptance, the reviewed/authorized native Process comparison, matched VAD vs
 Process PCM/latency, calibrated physical measurement, or any 30-minute/two-hour
 stability gate. Stage 7 remains unqualified.
+
+### 2026-10-28 confirmed-defect fix slice (host-side, pre-authorization)
+
+This slice fixes the four code problems confirmed by the last audit, before
+any new native run. No VM file, driver binary, endpoint default or audio
+session was touched, and no native gate is claimed.
+
+1. Shared conversion initialization negotiation (`0x8889000A`). The raw code
+   decodes as `AUDCLNT_E_DEVICE_IN_USE` per the SDK constants
+   (`0x88890020` is `AUDCLNT_E_INVALID_DEVICE_PERIOD`); the audit's
+   determination stands: the same endpoint initializes through the routing
+   path while the AUTOCONVERTPCM compatibility path fails, so the failure
+   class is our buffer/period negotiation. `initialize_shared_legacy` now
+   retries exactly once, on the same still-uninitialized client, with an
+   explicit buffer duration of two engine default periods (an integer
+   multiple of the period; `GetDevicePeriod` first, minimum as fallback)
+   when the first attempt returns `AUDCLNT_E_DEVICE_IN_USE`,
+   `AUDCLNT_E_INVALID_DEVICE_PERIOD` or `AUDCLNT_E_BUFDURATION_PERIOD_NOT_EQUAL`.
+   The original HRESULT remains the surfaced error and the retry outcome is
+   logged; `SharedFallbackReason::AlignedDurationRetry` records a successful
+   retry in the report. Failure-first unit tests cover the retryable set
+   (including the observed raw `0x8889000A`) and the aligned-duration math.
+2. Topology `GetDevice(error attribution)` masking (`0xE0000225`). An
+   optional owned-identity hint failure previously aborted the whole Windows
+   name observation with an error about the attribution walk itself (the VM
+   reports' `windows_name_error`), hiding both the real candidate error and
+   the exact-endpoint `PKEY_Device_FriendlyName` read. Attribution now
+   requires a confirmed-owned hint; undecidable hints stay unattributed and
+   the exact-identity `select` remains the only success path. Regression
+   tests cover undecidable/owned/limit attribution in the pure joiner.
+3. FriendlyName property source/publish timing (driver, host-testable half).
+   The composed MMDevice FriendlyName observed in the VM runs is
+   `<staged endpoint name> (<INF-fixed ChildDeviceDescription "Moiren
+   virtual audio endpoint">)`, and the requested name did reach the adapter
+   interface property while the endpoint name stayed the previously
+   composed value: with the fixed `MoirenEndpoint` reference string, a
+   same-StableId replacement returns to the same endpoint identity, whose
+   persisted composed name is never recomposed from the newly staged
+   properties. The driver now derives the interface reference string (and
+   the matching ACX circuit name) from the requested endpoint name via a
+   bounded FNV-1a-derived reference (`EndpointReference.h`), so each
+   requested name composes a fresh endpoint from the properties staged
+   before enable. `WdfPdoInitAddDeviceText` stays as the honest PDO text;
+   the INF DeviceDesc is unchanged. Strict-held and exact FriendlyName
+   gates are untouched. Validation requires the next explicitly authorized
+   bounded VM run; the parenthesized INF device part is expected to remain
+   until that evidence justifies changing it.
+4. Engineering items: the rt-check harness shadow-compiles library files
+   unchanged and now allows `dead_code` (plus the harness-inapplicable
+   `probe-tools` cfg) on those modules, so its strict Clippy passes; the
+   seven hardcoded Chinese `BindExport`/`BindSource`/`BindOutput` errors in
+   `service/graph/edit.rs` became English catalog keys (three reusing
+   existing translations, four newly translated in `zh-CN.yml`, all
+   documented in `i18n-keys.tsv`; the missing bare `Bind` key is also
+   translated); CI now runs the portable `e2e_latency_probe` and
+   `shared_render_preflight` example suites when `moiren-windows-audio`
+   changes; and the devices-page quick-bind picks a graph node whose kind
+   AND channel count match the export, preferring an IO no other export
+   holds (falling back to the first match when all are occupied, preserving
+   service-side steal semantics), with the button showing Bound whenever
+   the export holds any IO.
+
+Focused host verification: windows-audio lib 402 passed/2 ignored; the two
+example suites 193+5 passed; app lib 411 passed; UI acceptance 13/13; UI
+acceptance quick-bind regressions pass; rt-check 95 passed with strict
+all-target Clippy clean; all ten driver host suites pass including the
+extracted policy staging with the name-derived reference. Scoped fmt and
+strict Clippy pass for both touched crates. The full workspace matrix runs
+in CI per the selective-CI contract; no full local workspace run was
+performed. None of this is native, physical-latency or rename-acceptance
+evidence; Stage 7 remains unqualified.
