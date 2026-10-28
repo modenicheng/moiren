@@ -3190,7 +3190,8 @@ The VM was inspected read-only after the software checks: `DRIVER-TEST`,
 29.996 GiB free, empty `C:\MoirenVadTest`, no Moiren/VAD/probe process, and
 `ROOT\MEDIA\0000` status `OK`. No VM files were created or deleted; the
 approximately 302 MiB `C:\DriverTest`, installed/rollback packages, Windows
-and WDK data remain untouched. No native preflight was run: the host-side probe
-still needs the independent review checkpoint and authorized bounded native
-gate. This work establishes no PCM, physical delay, VAD/Process comparison or
-Stage 7 stability result.
+and WDK data remain untouched. The preflight implementation passed independent
+code review after commit `3eea229`; the reviewer found no blocking issues and
+did not run tests or native IO. No native preflight was run: the bounded native
+gate still requires separate explicit authorization. This work establishes no
+PCM, physical delay, VAD/Process comparison or Stage 7 stability result.
