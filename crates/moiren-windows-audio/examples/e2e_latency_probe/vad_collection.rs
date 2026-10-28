@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use std::{fs::File, io::Read, path::Path};
 
+#[cfg(any(windows, test))]
+use super::validation_policy::ValidationPolicy;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Config {
@@ -180,6 +183,16 @@ pub(super) struct Admission {
 #[cfg(any(windows, test))]
 impl Health {
     pub(super) fn require_present(&self) -> Result<()> {
+        self.require_operational()?;
+        ensure!(
+            self.quality_faults == 0,
+            "native/provider quality faults: {}",
+            self.quality_faults
+        );
+        Ok(())
+    }
+
+    fn require_operational(&self) -> Result<()> {
         ensure!(
             self.stamp.is_some()
                 && self.shape.is_some()
@@ -195,11 +208,6 @@ impl Health {
         ensure!(
             self.native_running && self.native_generation.is_some() && self.quality_known,
             "required native quality observations unavailable"
-        );
-        ensure!(
-            self.quality_faults == 0,
-            "native/provider quality faults: {}",
-            self.quality_faults
         );
         Ok(())
     }
@@ -217,6 +225,237 @@ impl Health {
         );
         Ok(())
     }
+}
+
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct Quality {
+    failure: Option<String>,
+    first_observations: Option<serde_json::Value>,
+}
+
+#[cfg(any(windows, test))]
+impl Quality {
+    fn record(
+        &mut self,
+        message: &str,
+        report: Option<&super::NativeReport>,
+        health: Option<&Health>,
+    ) {
+        // Polls often repeat cumulative counters. Keep diagnostics bounded and
+        // retain the first raw observation before a later QUERY replaces it.
+        if !self
+            .failure
+            .as_ref()
+            .is_some_and(|text| text.contains(message))
+        {
+            append_failure(&mut self.failure, message);
+        }
+        if self.first_observations.is_none() {
+            self.first_observations = Some(match report {
+                Some(report) => serde_json::json!({
+                    "provider": report.vad_provider, "engine": report.engine, "health": health,
+                }),
+                None => serde_json::json!({"observation": message, "health": health}),
+            });
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+fn validate_health_with_policy(
+    current: &Health,
+    admitted: &Health,
+    report: &super::NativeReport,
+    first_failure: &mut Option<serde_json::Value>,
+    policy: ValidationPolicy,
+    quality: &mut Quality,
+) -> Result<()> {
+    if !policy.is_correctness() {
+        let result = validate_health(current, admitted, report, first_failure);
+        if current.quality_faults != 0 {
+            quality.record(
+                &format!("native/provider quality faults: {}", current.quality_faults),
+                Some(report),
+                Some(current),
+            );
+        }
+        return result;
+    }
+    let result = (|| {
+        current.require_operational()?;
+        ensure!(
+            current.stamp == admitted.stamp && current.shape == admitted.shape,
+            "provider generation/gate/shape changed"
+        );
+        ensure!(
+            current.revision == admitted.revision
+                && current.generations == admitted.generations
+                && current.native_generation == admitted.native_generation,
+            "graph revision/owner/resource generation changed"
+        );
+        // Health's aggregate mixes xruns with nonfinite samples and resets.
+        // Check the raw typed-counter serialization before relaxing that gate.
+        let provider = report
+            .vad_provider
+            .as_ref()
+            .context("provider evidence unavailable")?;
+        let epoch_resets = provider
+            .pointer("/telemetry/epoch_resets")
+            .and_then(serde_json::Value::as_u64)
+            .context("provider epoch reset counter unavailable")?;
+        ensure!(epoch_resets == 0, "provider epoch reset");
+        let native = report
+            .engine
+            .as_ref()
+            .and_then(|engine| engine.get("observations"))
+            .context("native observations unavailable")?;
+        let bridges = native
+            .get("bridges")
+            .and_then(serde_json::Value::as_array)
+            .context("native bridge evidence unavailable")?;
+        // Professional VAD uses virtual boundary probes, not ClockBridge.
+        // An empty bridge array is valid only with real playback evidence;
+        // never replace missing/malformed probes with fabricated zero faults.
+        let streams = native
+            .get("streams")
+            .and_then(serde_json::Value::as_array)
+            .context("native stream evidence unavailable")?;
+        let probes = native
+            .get("boundary_probes")
+            .and_then(serde_json::Value::as_array)
+            .context("native boundary probe evidence unavailable")?;
+        let packet_frames = current
+            .shape
+            .as_ref()
+            .context("provider shape unavailable")?
+            .2;
+        ensure!(
+            packet_frames > 0
+                && provider
+                    .pointer("/snapshot/packet_frames")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(u64::from(packet_frames)),
+            "provider packet shape does not match current health"
+        );
+        let playback: Vec<_> = streams
+            .iter()
+            .filter(|stream| {
+                stream.get("kind").and_then(serde_json::Value::as_str) == Some("virtual_playback")
+            })
+            .collect();
+        ensure!(
+            !playback.is_empty(),
+            "native VirtualPlayback stream evidence unavailable"
+        );
+        let mut matched = std::collections::BTreeSet::new();
+        let mut probe_faults = Vec::new();
+        for stream in playback {
+            let node = stream
+                .get("node")
+                .and_then(serde_json::Value::as_str)
+                .filter(|node| !node.trim().is_empty())
+                .context("native VirtualPlayback node identity unavailable")?;
+            ensure!(
+                matched.insert(node),
+                "duplicate native VirtualPlayback node identity"
+            );
+            let matching: Vec<_> = probes
+                .iter()
+                .filter(|probe| probe.get("node").and_then(serde_json::Value::as_str) == Some(node))
+                .collect();
+            ensure!(
+                matching.len() == 1,
+                "native VirtualPlayback boundary probe missing or duplicated"
+            );
+            let probe = matching[0];
+            ensure!(
+                probe.get("kind").and_then(serde_json::Value::as_str) == Some("virtual_playback"),
+                "native VirtualPlayback boundary probe kind mismatch"
+            );
+            let number = |key: &str| -> Result<u64> {
+                probe
+                    .get(key)
+                    .and_then(serde_json::Value::as_u64)
+                    .filter(|count| *count != u64::MAX)
+                    .with_context(|| {
+                        format!("native boundary probe {key} unavailable or malformed")
+                    })
+            };
+            let capacity = number("capacity_frames")?;
+            ensure!(
+                capacity > 0
+                    && capacity <= u64::from(u32::MAX)
+                    && number("level_frames")? <= capacity,
+                "native boundary probe capacity/occupancy invalid"
+            );
+            match probe.get("target_frames") {
+                Some(serde_json::Value::Null) => {}
+                Some(target) => ensure!(
+                    target
+                        .as_u64()
+                        .is_some_and(|frames| frames > 0 && frames <= capacity),
+                    "native boundary probe target malformed"
+                ),
+                None => anyhow::bail!("native boundary probe target availability missing"),
+            }
+            ensure!(
+                probe
+                    .get("applied_milli_ppm")
+                    .and_then(serde_json::Value::as_i64)
+                    .is_some_and(|ppm| i32::try_from(ppm).is_ok()),
+                "native boundary probe correction unavailable or malformed"
+            );
+            for key in ["xruns", "soft_events"] {
+                let count = number(key)?;
+                if count != 0 {
+                    probe_faults.push(format!("native VirtualPlayback boundary {key}: {count}"));
+                }
+            }
+        }
+        for bridge in bridges {
+            for key in ["nonfinite_samples", "resets"] {
+                let count = bridge
+                    .pointer(&format!("/counters/{key}"))
+                    .and_then(serde_json::Value::as_u64)
+                    .with_context(|| format!("native bridge {key} unavailable"))?;
+                ensure!(count == 0, "native bridge {key}: {count}");
+            }
+            if bridge
+                .pointer("/counters/silent_frames")
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|count| count != 0)
+            {
+                quality.record("native bridge silence", Some(report), Some(current));
+            }
+        }
+        for message in probe_faults {
+            quality.record(&message, Some(report), Some(current));
+        }
+        if current.quality_faults != 0 {
+            quality.record(
+                &format!("native/provider quality faults: {}", current.quality_faults),
+                Some(report),
+                Some(current),
+            );
+        }
+        if ["/telemetry/silence_frames", "/snapshot/silence_packets"]
+            .iter()
+            .any(|path| {
+                provider
+                    .pointer(path)
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|count| count != 0)
+            })
+        {
+            quality.record("provider silence", Some(report), Some(current));
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        latch_failure_observations(first_failure, report, Some(current));
+    }
+    result
 }
 
 #[cfg(any(windows, test))]
@@ -316,6 +555,7 @@ pub(super) fn collect(
         MeasurementConfig, MeasurementPaths, MeasurementProgress, MeasurementSession,
     };
     use std::{thread, time::Instant};
+    options.validation.validate()?;
     let provenance = super::source::SourceProvenance::new(Some(&plan));
     let frames = provenance
         .schedule
@@ -340,6 +580,8 @@ pub(super) fn collect(
         failures: None,
         cleanup_failures: None,
         first_failure_observations: None,
+        policy: options.validation,
+        quality: Quality::default(),
         retired: false,
     };
     let mut last_running = None;
@@ -367,7 +609,7 @@ pub(super) fn collect(
                         .into(),
                 },
             ) {
-                Ok(measurement) => measurement,
+                Ok(measurement) => measurement.with_start_grace(guard.policy.progress_grace())?,
                 Err(mut error) => {
                     guard.measurement_preparation_capture = error.native_capture.take();
                     return Err(error.error);
@@ -393,13 +635,21 @@ pub(super) fn collect(
             };
             vad.prepare(options, name, root, Some(plan), Some(&mut abort))?;
         }
-        guard
+        let admitted = guard
             .vad
             .admission
             .as_ref()
             .context("collection admission missing")?
             .current
-            .require_present()?;
+            .clone();
+        validate_health_with_policy(
+            &admitted,
+            &admitted,
+            guard.vad.report,
+            &mut guard.first_failure_observations,
+            guard.policy,
+            &mut guard.quality,
+        )?;
         // Anchor before the call; a delayed activation return never creates a
         // fresh interval. MeasurementSession's own earlier deadline also wins.
         let activated = Instant::now();
@@ -448,13 +698,15 @@ pub(super) fn collect(
                 .context("source missing")?
                 .check()?;
             if let Some(source) = &source {
-                ensure!(
-                    !source.stopped && source.event_timeouts == 0,
-                    "source stopped or native event timeout"
-                );
+                validate_source_progress(
+                    source,
+                    guard.policy,
+                    &mut guard.quality,
+                    Some(guard.vad.report),
+                )?;
             }
             let current = guard.vad.current_health()?;
-            validate_health(
+            validate_health_with_policy(
                 &current,
                 &guard
                     .vad
@@ -464,13 +716,17 @@ pub(super) fn collect(
                     .current,
                 guard.vad.report,
                 &mut guard.first_failure_observations,
+                guard.policy,
+                &mut guard.quality,
             )?;
             last_running = Some(current);
-            match phases.tick(
+            match phases.tick_with_policy(
                 activated.elapsed(),
                 matches!(recorder, MeasurementProgress::Running { .. }),
                 recorder == MeasurementProgress::DeadlineReached,
                 source.as_ref(),
+                guard.policy,
+                &mut guard.quality,
             )? {
                 Action::ActivateSource => guard
                     .vad
@@ -499,14 +755,21 @@ pub(super) fn collect(
         );
     }
     guard.finish();
-    let source_submitted_complete = reconcile_source_outcome(
+    let source_submitted_complete = reconcile_source_outcome_with_policy(
         guard.vad.playback_outcome.as_ref(),
         frames,
         &mut guard.failures,
+        guard.policy,
+        &mut guard.quality,
     );
     if let Some(outcome) = &guard.measurement_outcome {
-        if let Some(failure) = &outcome.failure {
-            append_failure(&mut guard.failures, failure);
+        if let Err(error) =
+            validate_measurement_outcome_with_policy(outcome, guard.policy, &mut guard.quality)
+        {
+            append_failure(
+                &mut guard.failures,
+                &format!("measurement outcome: {error:#}"),
+            );
         }
         if outcome.native_capture.is_none()
             || outcome
@@ -523,7 +786,11 @@ pub(super) fn collect(
         append_failure(&mut guard.failures, "measurement outcome unavailable");
     }
     if (phases_complete || guard.vad.report.backend_diagnostics.is_some())
-        && let Err(error) = graph_summary_health(guard.vad.report.backend_diagnostics.as_ref())
+        && let Err(error) = graph_summary_health_with_policy(
+            guard.vad.report.backend_diagnostics.as_ref(),
+            guard.policy,
+            &mut guard.quality,
+        )
     {
         append_failure(
             &mut guard.failures,
@@ -557,6 +824,10 @@ pub(super) fn collect(
     };
     guard.vad.report.collection = Some(serde_json::json!({
         "schema_version": 1, "qualified": false, "status": "unqualified",
+        "validation_policy": guard.policy,
+        "quality_passed": complete && guard.quality.failure.is_none(),
+        "quality_failure": guard.quality.failure,
+        "first_quality_observations": guard.quality.first_observations,
         "config": config, "playback_source": provenance, "source": guard.vad.playback_outcome,
         "graph": { "input_kind": "VirtualPlayback", "stable_endpoint_id": options.stable_endpoint_id,
             "output_endpoint_id": options.output_endpoint, "engine_block_frames": options.engine_block_frames,
@@ -599,6 +870,8 @@ struct CollectionGuard<'a> {
     failures: Option<String>,
     cleanup_failures: Option<String>,
     first_failure_observations: Option<serde_json::Value>,
+    policy: ValidationPolicy,
+    quality: Quality,
     retired: bool,
 }
 
@@ -642,11 +915,13 @@ impl CollectionGuard<'_> {
                     if let Some(admitted) = &self.vad.admission {
                         let admitted = admitted.current.clone();
                         let health = self.vad.current_health()?;
-                        validate_health(
+                        validate_health_with_policy(
                             &health,
                             &admitted,
                             self.vad.report,
                             &mut self.first_failure_observations,
+                            self.policy,
+                            &mut self.quality,
                         )
                     } else {
                         Ok(())
@@ -703,11 +978,47 @@ impl Drop for CollectionGuard<'_> {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn reconcile_source_outcome(
     outcome: Option<&super::vad::PlaybackOutcome>,
     frames: u64,
     failures: &mut Option<String>,
+) -> bool {
+    reconcile_source_outcome_with_policy(
+        outcome,
+        frames,
+        failures,
+        ValidationPolicy::default(),
+        &mut Quality::default(),
+    )
+}
+
+#[cfg(any(windows, test))]
+fn validate_source_progress(
+    source: &PlaybackProgress,
+    policy: ValidationPolicy,
+    quality: &mut Quality,
+    report: Option<&super::NativeReport>,
+) -> Result<()> {
+    ensure!(!source.stopped, "source stopped");
+    if source.event_timeouts != 0 {
+        quality.record(
+            &format!("source native event timeouts: {}", source.event_timeouts),
+            report,
+            None,
+        );
+        ensure!(policy.is_correctness(), "source native event timeout");
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn reconcile_source_outcome_with_policy(
+    outcome: Option<&super::vad::PlaybackOutcome>,
+    frames: u64,
+    failures: &mut Option<String>,
+    policy: ValidationPolicy,
+    quality: &mut Quality,
 ) -> bool {
     let submitted_complete = outcome.is_some_and(|outcome| {
         outcome.source_progress.origin_submission_frame.is_some()
@@ -719,15 +1030,20 @@ fn reconcile_source_outcome(
             append_failure(failures, failure);
         }
         if outcome.event_timeouts != 0 {
-            append_failure(
-                failures,
-                &format!(
-                    "joined source native event timeouts: {}",
-                    outcome.event_timeouts
-                ),
+            let message = format!(
+                "joined source native event timeouts: {}",
+                outcome.event_timeouts
             );
+            let first = quality.first_observations.is_none();
+            quality.record(&message, None, None);
+            if first {
+                quality.first_observations = Some(serde_json::json!({"source": outcome}));
+            }
+            if !policy.is_correctness() {
+                append_failure(failures, &message);
+            }
         }
-        if !(outcome.started && outcome.stopped && submitted_complete) {
+        if !(outcome.started && outcome.stopped && outcome.worker_joined && submitted_complete) {
             append_failure(
                 failures,
                 "source did not retain full acknowledged schedule and clean stop",
@@ -740,13 +1056,177 @@ fn reconcile_source_outcome(
 }
 
 #[cfg(any(windows, test))]
+fn observe_measurement_quality(
+    outcome: &crate::measurement::session::MeasurementOutcome,
+    quality: &mut Quality,
+) {
+    let first = quality.first_observations.is_none();
+    if let Some(native) = &outcome.native_capture {
+        if native.timeout_wakes != 0 {
+            quality.record(
+                &format!(
+                    "measurement native event timeouts: {}",
+                    native.timeout_wakes
+                ),
+                None,
+                None,
+            );
+        }
+        if let Some(evidence) = native.evidence_metadata
+            && (evidence.dropped_frames != 0
+                || evidence.silent_frames != 0
+                || evidence.overflow_packets != 0
+                || evidence.gap_events != 0
+                || evidence.gap_frames != 0
+                || evidence.discontinuity_events != 0
+                || evidence.timestamp_error_packets != 0)
+        {
+            quality.record(
+                "measurement evidence loss, silence or discontinuity",
+                None,
+                None,
+            );
+        }
+    }
+    if outcome
+        .sink
+        .as_ref()
+        .is_some_and(|sink| sink.sequence_gaps != 0)
+    {
+        quality.record("measurement sink sequence gaps", None, None);
+    }
+    if first && quality.first_observations.is_some() {
+        quality.first_observations = Some(serde_json::json!({
+            "measurement": {"info": measurement_info(&outcome.info),
+                "native_capture": outcome.native_capture, "sink": outcome.sink,
+                "failure": outcome.failure}
+        }));
+    }
+}
+
+#[cfg(any(windows, test))]
+fn validate_measurement_outcome_with_policy(
+    outcome: &crate::measurement::session::MeasurementOutcome,
+    policy: ValidationPolicy,
+    quality: &mut Quality,
+) -> Result<()> {
+    observe_measurement_quality(outcome, quality);
+    if !policy.is_correctness() {
+        ensure!(
+            outcome.failure.is_none(),
+            "{}",
+            outcome.failure.as_deref().unwrap_or_default()
+        );
+        return Ok(());
+    }
+    let native = outcome
+        .native_capture
+        .as_ref()
+        .context("measurement native evidence missing")?;
+    let sink = outcome
+        .sink
+        .as_ref()
+        .context("measurement sink evidence missing")?;
+    let summary = native
+        .evidence_metadata
+        .context("measurement evidence summary missing")?;
+    ensure!(
+        outcome.activation_elapsed.is_some()
+            && native.stream_started
+            && native.stop_succeeded
+            && native.failure.is_none()
+            && sink.failure.is_none()
+            && !sink.cancelled,
+        "measurement activation/native Start/Stop/storage failure"
+    );
+    ensure!(
+        sink.schema_version == 1
+            && sink.sample_rate == outcome.info.sample_rate
+            && sink.channels == outcome.info.channels
+            && summary.sample_rate == outcome.info.sample_rate
+            && summary.channels == outcome.info.channels,
+        "measurement evidence schema/format mismatch"
+    );
+    ensure!(
+        sink.nonfinite_samples == 0
+            && sink.incomplete_packets == 0
+            && !sink.counters_saturated
+            && !summary.counters_saturated
+            && !summary.sequence_exhausted
+            && summary.position_overflow_packets == 0
+            && summary.reader_abandoned_packets == 0,
+        "measurement nonfinite, malformed, abandoned or exhausted evidence"
+    );
+    // The ring admits or drops whole packets before the sink sees them. Missing
+    // sequence numbers are quality loss only when the native overflow counts
+    // explain them; missing persisted PCM/metadata is still a hard failure.
+    ensure!(
+        summary.stored_frames > 0
+            && sink.written_frames == summary.stored_frames
+            && summary.stored_frames.checked_add(summary.dropped_frames)
+                == Some(summary.observed_frames)
+            && summary.packets.checked_sub(summary.overflow_packets) == Some(sink.complete_packets)
+            && sink.complete_packets > 0
+            && sink.missing_packets <= summary.overflow_packets
+            && sink.sequence_gaps <= sink.missing_packets
+            && (sink.missing_packets == 0) == (sink.sequence_gaps == 0)
+            && summary.silent_frames <= summary.observed_frames,
+        "measurement persisted frames/packets missing or inconsistent"
+    );
+    ensure!(
+        (summary.dropped_frames == 0) == (summary.overflow_packets == 0),
+        "measurement loss counters inconsistent"
+    );
+    let continuity_fault = summary.dropped_frames != 0
+        || summary.overflow_packets != 0
+        || summary.gap_events != 0
+        || summary.discontinuity_events != 0
+        || summary.timestamp_error_packets != 0;
+    // Reconstruct the exact aggregate validate_outcome can generate from these
+    // typed soft counters after every other cause above has been ruled out.
+    // A prefix/substring filter could conceal a join, owner or storage failure.
+    let mut expected = None;
+    if continuity_fault {
+        append_failure(
+            &mut expected,
+            "measurement evidence has loss or invalid continuity/timestamps",
+        );
+    }
+    if sink.missing_packets != 0 || sink.complete_packets != summary.packets {
+        append_failure(
+            &mut expected,
+            "measurement sink and final native evidence are not complete and consistent",
+        );
+    }
+    ensure!(
+        outcome.failure.is_none() || outcome.failure == expected,
+        "measurement operational failure: {}",
+        outcome.failure.as_deref().unwrap_or_default()
+    );
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
 fn measurement_info(info: &crate::measurement::session::MeasurementInfo) -> serde_json::Value {
     serde_json::json!({"input_endpoint_id": info.input_endpoint_id, "sample_rate": info.sample_rate,
         "channels": info.channels, "ring_frames": info.ring_frames, "max_frames": info.max_frames})
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn graph_summary_health(summary: Option<&serde_json::Value>) -> Result<()> {
+    graph_summary_health_with_policy(
+        summary,
+        ValidationPolicy::default(),
+        &mut Quality::default(),
+    )
+}
+
+#[cfg(any(windows, test))]
+fn graph_summary_health_with_policy(
+    summary: Option<&serde_json::Value>,
+    policy: ValidationPolicy,
+    quality: &mut Quality,
+) -> Result<()> {
     let summary = summary.context("graph native summary unknown")?;
     ensure!(
         summary
@@ -754,6 +1234,13 @@ fn graph_summary_health(summary: Option<&serde_json::Value>) -> Result<()> {
             .is_some_and(serde_json::Value::is_null),
         "graph native failure or unknown outcome"
     );
+    if let Some(version) = summary.get("schema_version") {
+        match version.as_u64() {
+            Some(2) => return final_graph_schema2_health(summary, policy, quality),
+            Some(1) => {}
+            _ => anyhow::bail!("unsupported graph native summary schema"),
+        }
+    }
     let render = summary
         .get("render")
         .filter(|render| !render.is_null())
@@ -773,13 +1260,390 @@ fn graph_summary_health(summary: Option<&serde_json::Value>) -> Result<()> {
         "graph native render start/stop/failure"
     );
     for key in ["bridge_shortfall_frames", "timeout_wakes"] {
+        let count = render
+            .pointer(&format!("/stats/{key}"))
+            .and_then(serde_json::Value::as_u64)
+            .with_context(|| format!("graph native {key} unknown"))?;
+        if count != 0 {
+            let first = quality.first_observations.is_none();
+            quality.record(&format!("graph native {key}: {count}"), None, None);
+            if first {
+                quality.first_observations = Some(serde_json::json!({"native_summary": summary}));
+            }
+            ensure!(policy.is_correctness(), "graph native {key} nonzero");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn final_graph_schema2_health(
+    summary: &serde_json::Value,
+    policy: ValidationPolicy,
+    quality: &mut Quality,
+) -> Result<()> {
+    use serde_json::Value;
+    let number = |value: &Value, key: &str| -> Result<u64> {
+        value
+            .get(key)
+            .and_then(Value::as_u64)
+            .filter(|count| *count != u64::MAX)
+            .with_context(|| format!("final graph {key} missing, malformed or saturated"))
+    };
+    let flag = |value: &Value, key: &str| -> Result<bool> {
+        value
+            .get(key)
+            .and_then(Value::as_bool)
+            .with_context(|| format!("final graph {key} missing or malformed"))
+    };
+    let node = |value: &Value| -> Result<String> {
+        value
+            .get("node")
+            .and_then(Value::as_str)
+            .filter(|node| !node.trim().is_empty())
+            .map(str::to_owned)
+            .context("final graph node identity missing or malformed")
+    };
+    let array = |value: &Value, key: &str| -> Result<Vec<Value>> {
+        value
+            .get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .with_context(|| format!("final graph {key} missing or malformed"))
+    };
+    ensure!(
+        summary.get("observation_scope").and_then(Value::as_str) == Some("final_after_owner_join"),
+        "graph summary is not a final joined-owner observation"
+    );
+    let generation = number(summary, "owner_generation")?;
+    ensure!(generation > 0, "final graph owner generation unavailable");
+    let professional = summary
+        .get("professional")
+        .context("final professional observation missing")?;
+    let native = summary
+        .get("native")
+        .context("final native observation missing")?;
+    for observation in [professional, native] {
         ensure!(
-            render
-                .pointer(&format!("/stats/{key}"))
-                .and_then(serde_json::Value::as_u64)
-                == Some(0),
-            "graph native {key} nonzero or unknown"
+            number(observation, "owner_generation")? == generation
+                && !flag(observation, "running")?,
+            "final graph observation generation changed or owner still running"
         );
+    }
+    // The composing owner attests Closed/revision/failure against admission;
+    // these retained DTOs prove the same generation and its post-join counters.
+    let streams = array(native, "streams")?;
+    let professional_streams = array(professional, "streams")?;
+    ensure!(
+        !streams.is_empty() && streams.len() == professional_streams.len(),
+        "final native/professional stream identities incomplete"
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    let mut master = None;
+    let mut virtual_inputs = std::collections::BTreeSet::new();
+    let mut soft = Vec::new();
+    for stream in &professional_streams {
+        let id = node(stream)?;
+        ensure!(
+            seen.insert(id.clone()),
+            "duplicate final professional node identity"
+        );
+        let matching: Vec<_> = streams
+            .iter()
+            .filter(|candidate| candidate.get("node") == stream.get("node"))
+            .collect();
+        ensure!(
+            matching.len() == 1,
+            "final native/professional node mismatch"
+        );
+        let observed = matching[0];
+        let kind = observed
+            .get("kind")
+            .and_then(Value::as_str)
+            .context("final native stream kind missing")?;
+        let (input, is_master, virtual_stream) = match kind {
+            "master_output" => (false, true, false),
+            "follower_output" => (false, false, false),
+            "physical_input" => (true, false, false),
+            "process_input" => (true, false, true),
+            "virtual_playback" => (true, false, true),
+            "virtual_microphone" => (false, false, true),
+            _ => anyhow::bail!("unknown final native stream kind"),
+        };
+        ensure!(
+            flag(stream, "input")? == input && flag(stream, "master")? == is_master,
+            "final graph native/professional stream shape mismatch"
+        );
+        let actual = stream
+            .get("actual")
+            .context("final stream actual format missing")?;
+        let rate = number(actual, "sample_rate")?;
+        let channels = number(actual, "channels")?;
+        let buffer = number(actual, "buffer_frames")?;
+        ensure!(
+            (8_000..=384_000).contains(&rate) && (1..=32).contains(&channels),
+            "final stream negotiated sample rate/channels invalid"
+        );
+        let callbacks = number(stream, "native_callbacks")?;
+        let written_frames = number(stream, "native_written_frames")?;
+        number(stream, "native_wait_wakes")?;
+        if virtual_stream {
+            ensure!(
+                buffer == 0 && observed.get("timing").is_some_and(Value::is_null),
+                "virtual stream cannot claim a physical native buffer/timing"
+            );
+        } else {
+            ensure!(
+                (1..=65536).contains(&buffer),
+                "final physical stream buffer invalid"
+            );
+            let timing = observed
+                .get("timing")
+                .context("final physical stream timing missing")?;
+            ensure!(
+                number(timing, "sample_rate")? == rate
+                    && number(timing, "capacity_frames")? == buffer,
+                "final physical timing disagrees with negotiated format"
+            );
+            match timing.get("period_frames") {
+                Some(Value::Null) => {}
+                Some(period) => ensure!(
+                    period
+                        .as_u64()
+                        .is_some_and(|frames| frames > 0 && frames <= u64::from(u32::MAX)),
+                    "final physical period malformed"
+                ),
+                None => anyhow::bail!("final physical period availability missing"),
+            }
+        }
+        if is_master {
+            // WASAPI publishes writes; ASIO publishes callbacks. Neither
+            // backend's unimplemented counter is evidence of stalled output.
+            ensure!(
+                master.is_none() && (written_frames > 0 || callbacks > 0),
+                "final physical master missing writes/callbacks or duplicated"
+            );
+            master = Some(id.clone());
+        }
+        if kind == "virtual_playback" {
+            virtual_inputs.insert(id.clone());
+        }
+        for key in [
+            "dropped_frames",
+            "silent_frames",
+            "native_dropped_frames",
+            "native_silent_frames",
+            "native_wait_timeouts",
+        ] {
+            let count = number(stream, key)?;
+            if count != 0 {
+                soft.push(format!("final professional {id} {key}: {count}"));
+            }
+        }
+    }
+    master.context("final graph physical master output missing")?;
+    ensure!(
+        !virtual_inputs.is_empty(),
+        "final graph VirtualPlayback input missing"
+    );
+    // VAD normally has no clock-bridge entries: its carrier evidence is the
+    // boundary probe. Validate every bridge that is actually present instead
+    // of inventing a render timeout or requiring Process-only bridge evidence.
+    let mut bridge_nodes = std::collections::BTreeSet::new();
+    for bridge in array(native, "bridges")? {
+        let id = node(&bridge)?;
+        ensure!(
+            seen.contains(&id) && bridge_nodes.insert(id.clone()),
+            "final bridge identity unknown or duplicated"
+        );
+        let counters = bridge
+            .get("counters")
+            .context("final native bridge counters missing")?;
+        for key in [
+            "captured_frames",
+            "written_frames",
+            "dropped_frames",
+            "silent_frames",
+            "nonfinite_samples",
+            "discontinuities",
+            "timestamp_errors",
+            "last_device_position_frames",
+            "last_qpc_100ns",
+            "output_frames",
+            "priming_frames",
+            "prime_discarded_frames",
+            "backlog_discarded_frames",
+            "backlog_recoveries",
+            "age_discarded_frames",
+            "age_recoveries",
+            "low_water_guard_frames",
+            "underrun_frames",
+            "last_underrun_at_output_frame",
+            "resets",
+            "fill_frames",
+            "min_fill_frames",
+            "max_fill_frames",
+        ] {
+            let count = number(counters, key)?;
+            if matches!(key, "nonfinite_samples" | "resets") {
+                ensure!(count == 0, "final native bridge {id} {key}: {count}");
+            } else if count != 0
+                && matches!(
+                    key,
+                    "dropped_frames"
+                        | "silent_frames"
+                        | "discontinuities"
+                        | "timestamp_errors"
+                        | "backlog_discarded_frames"
+                        | "backlog_recoveries"
+                        | "age_discarded_frames"
+                        | "age_recoveries"
+                        | "underrun_frames"
+                )
+            {
+                soft.push(format!("final native bridge {id} {key}: {count}"));
+            }
+        }
+        flag(counters, "last_underrun_producer_finished")?;
+        ensure!(
+            counters
+                .get("correction_ppm")
+                .and_then(Value::as_f64)
+                .is_some_and(f64::is_finite),
+            "final native bridge correction nonfinite or missing"
+        );
+        let delivery = counters
+            .get("native_delivery")
+            .context("final bridge delivery availability missing")?;
+        if !delivery.is_null() {
+            for key in [
+                "packets",
+                "max_packet_frames",
+                "max_callback_burst_frames",
+                "gap_samples",
+                "max_gap_100ns",
+                "packet_bound_violations",
+                "gap_bound_violations",
+                "unavailable_clocks",
+                "regressed_clocks",
+            ] {
+                let count = number(delivery, key)?;
+                if count != 0
+                    && matches!(
+                        key,
+                        "packet_bound_violations"
+                            | "gap_bound_violations"
+                            | "unavailable_clocks"
+                            | "regressed_clocks"
+                    )
+                {
+                    soft.push(format!("final native delivery {id} {key}: {count}"));
+                }
+            }
+        }
+    }
+    let mut probes = std::collections::BTreeSet::new();
+    for probe in array(native, "boundary_probes")? {
+        let id = node(&probe)?;
+        ensure!(
+            seen.contains(&id) && probes.insert(id.clone()),
+            "final boundary probe identity unknown or duplicated"
+        );
+        let observed = streams
+            .iter()
+            .find(|stream| stream.get("node") == probe.get("node"))
+            .context("final boundary stream missing")?;
+        ensure!(
+            probe.get("kind") == observed.get("kind")
+                && matches!(
+                    probe.get("kind").and_then(Value::as_str),
+                    Some("virtual_playback" | "virtual_microphone")
+                ),
+            "final boundary probe kind mismatch"
+        );
+        let capacity = number(&probe, "capacity_frames")?;
+        ensure!(
+            capacity > 0
+                && capacity <= u64::from(u32::MAX)
+                && number(&probe, "level_frames")? <= capacity,
+            "final boundary capacity/occupancy invalid"
+        );
+        match probe.get("target_frames") {
+            Some(Value::Null) => {}
+            Some(target) => ensure!(
+                target
+                    .as_u64()
+                    .is_some_and(|frames| frames > 0 && frames <= capacity),
+                "final boundary target malformed"
+            ),
+            None => anyhow::bail!("final boundary target availability missing"),
+        }
+        ensure!(
+            probe
+                .get("applied_milli_ppm")
+                .and_then(Value::as_i64)
+                .is_some_and(|ppm| i32::try_from(ppm).is_ok()),
+            "final boundary correction missing or malformed"
+        );
+        for key in ["xruns", "soft_events"] {
+            let count = number(&probe, key)?;
+            if count != 0 {
+                soft.push(format!("final boundary {id} {key}: {count}"));
+            }
+        }
+    }
+    ensure!(
+        virtual_inputs.is_subset(&probes),
+        "final VirtualPlayback boundary probe missing"
+    );
+    let mut renders = std::collections::BTreeSet::new();
+    for render in array(native, "render_padding")? {
+        let id = node(&render)?;
+        let output = streams
+            .iter()
+            .find(|stream| stream.get("node") == render.get("node"));
+        ensure!(
+            output.is_some_and(|stream| matches!(
+                stream.get("kind").and_then(Value::as_str),
+                Some("master_output" | "follower_output")
+            )) && renders.insert(id),
+            "final render padding identity unknown or duplicated"
+        );
+        let sample = render
+            .get("sample")
+            .context("final render padding availability missing")?;
+        if !sample.is_null() {
+            let capacity = number(sample, "capacity_frames")?;
+            ensure!(
+                capacity > 0
+                    && capacity <= u64::from(u32::MAX)
+                    && number(sample, "padding_frames")? <= capacity
+                    && number(sample, "sequence")? > 0,
+                "final render padding sample invalid"
+            );
+            for key in ["sample_rate", "period_frames"] {
+                match sample.get(key) {
+                    Some(Value::Null) => {}
+                    Some(value) => ensure!(
+                        value
+                            .as_u64()
+                            .is_some_and(|number| number > 0 && number <= u64::from(u32::MAX)),
+                        "final render padding {key} malformed"
+                    ),
+                    None => anyhow::bail!("final render padding {key} availability missing"),
+                }
+            }
+        }
+    }
+    // Validate every structural/hard field before returning on a soft gate.
+    // The raw report stays intact, including explicit unavailable padding.
+    for message in soft {
+        let first = quality.first_observations.is_none();
+        quality.record(&message, None, None);
+        if first {
+            quality.first_observations = Some(serde_json::json!({"native_summary": summary}));
+        }
+        ensure!(policy.is_correctness(), "{message}");
     }
     Ok(())
 }
@@ -807,6 +1671,7 @@ impl Phases {
             });
         }
     }
+    #[cfg(test)]
     fn tick(
         &mut self,
         now: Duration,
@@ -814,12 +1679,37 @@ impl Phases {
         recorder_deadline: bool,
         source: Option<&PlaybackProgress>,
     ) -> Result<Action> {
+        self.tick_with_policy(
+            now,
+            recorder_running,
+            recorder_deadline,
+            source,
+            ValidationPolicy::default(),
+            &mut Quality::default(),
+        )
+    }
+
+    fn tick_with_policy(
+        &mut self,
+        now: Duration,
+        recorder_running: bool,
+        recorder_deadline: bool,
+        source: Option<&PlaybackProgress>,
+        policy: ValidationPolicy,
+        quality: &mut Quality,
+    ) -> Result<Action> {
         ensure!(
             !recorder_deadline && now < self.ceiling,
             "incomplete collection: recorder deadline"
         );
         if self.recorder_ready.is_none() {
-            ensure!(now < Duration::from_secs(5), "recorder Start deadline");
+            progress_deadline(
+                now,
+                Duration::from_secs(5),
+                "recorder Start deadline",
+                policy,
+                quality,
+            )?;
             if recorder_running {
                 self.recorder_ready = Some(now);
                 self.stamp("recorder_running", now);
@@ -839,17 +1729,26 @@ impl Phases {
         if let Some(requested) = self.source_requested {
             let age = now.saturating_sub(requested);
             if !self.source_started {
-                ensure!(age < Duration::from_secs(5), "source Start deadline");
+                progress_deadline(
+                    age,
+                    Duration::from_secs(5),
+                    "source Start deadline",
+                    policy,
+                    quality,
+                )?;
                 if source.is_some_and(|source| source.started) {
                     self.source_started = true;
                     self.stamp("source_started_observed", now);
                 }
             }
             if self.completed.is_none() {
-                ensure!(
-                    age < Duration::from_secs(7) + self.source_duration,
-                    "source completion deadline"
-                );
+                progress_deadline(
+                    age,
+                    Duration::from_secs(7).saturating_add(self.source_duration),
+                    "source completion deadline",
+                    policy,
+                    quality,
+                )?;
                 if source.is_some_and(|s| {
                     s.started
                         && s.source.origin_submission_frame.is_some()
@@ -876,9 +1775,1063 @@ impl Phases {
     }
 }
 
+#[cfg(any(windows, test))]
+fn progress_deadline(
+    age: Duration,
+    deadline: Duration,
+    message: &str,
+    policy: ValidationPolicy,
+    quality: &mut Quality,
+) -> Result<()> {
+    if age >= deadline {
+        quality.record(message, None, None);
+    }
+    ensure!(
+        age < deadline.saturating_add(policy.progress_grace()),
+        "{message}"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn correctness() -> super::super::validation_policy::ValidationPolicy {
+        super::super::validation_policy::ValidationPolicy {
+            mode: super::super::validation_policy::ValidationMode::Correctness,
+            jitter_tolerance_ms: 3000,
+        }
+    }
+
+    fn raw_health_report() -> super::super::NativeReport {
+        let mut native = final_schema2()["native"].clone();
+        native["running"] = true.into();
+        native["bridges"] = serde_json::json!([{
+            "node": "source", "counters": moiren_windows_audio::clock_bridge::BridgeSnapshot::default()
+        }]);
+        super::super::NativeReport {
+            vad_provider: Some(serde_json::json!({
+                "telemetry": {"epoch_resets": 0, "silence_frames": 0},
+                "snapshot": {"packet_frames": 480, "silence_packets": 0}
+            })),
+            engine: Some(serde_json::json!({"observations": native})),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn correctness_health_accepts_real_vad_boundary_evidence_without_clock_bridges() {
+        let admitted = healthy();
+        let mut report = raw_health_report();
+        report.engine.as_mut().unwrap()["observations"]["bridges"] = serde_json::json!([]);
+        let original = report.engine.clone();
+        let mut quality = Quality::default();
+        let mut first_failure = None;
+        validate_health_with_policy(
+            &admitted,
+            &admitted,
+            &report,
+            &mut first_failure,
+            correctness(),
+            &mut quality,
+        )
+        .unwrap();
+        assert!(quality.failure.is_none());
+        assert!(first_failure.is_none());
+        assert_eq!(report.engine, original);
+
+        let mut current = admitted.clone();
+        current.quality_faults = 3;
+        report.engine.as_mut().unwrap()["observations"]["boundary_probes"][0]["xruns"] = 3.into();
+        validate_health_with_policy(
+            &current,
+            &admitted,
+            &report,
+            &mut first_failure,
+            correctness(),
+            &mut quality,
+        )
+        .unwrap();
+        assert!(quality.failure.is_some());
+        assert!(first_failure.is_none());
+        let first = quality.first_observations.as_ref().unwrap();
+        assert_eq!(
+            first["engine"]["observations"]["bridges"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            first["engine"]["observations"]["boundary_probes"][0]["xruns"],
+            3
+        );
+        assert!(validate_health(&current, &admitted, &report, &mut first_failure).is_err());
+    }
+
+    #[test]
+    fn correctness_health_empty_bridges_do_not_hide_missing_or_malformed_vad_probes() {
+        let admitted = healthy();
+        for variant in 0..16 {
+            let mut report = raw_health_report();
+            let native = &mut report.engine.as_mut().unwrap()["observations"];
+            native["bridges"] = serde_json::json!([]);
+            match variant {
+                0 => {
+                    native.as_object_mut().unwrap().remove("boundary_probes");
+                }
+                1 => native["boundary_probes"] = serde_json::json!([]),
+                2 => native["boundary_probes"] = serde_json::json!("unavailable"),
+                3 => native["boundary_probes"][0]["kind"] = "physical_input".into(),
+                4 => native["boundary_probes"][0]["node"] = "different-source".into(),
+                5 => native["boundary_probes"][0]["capacity_frames"] = 0.into(),
+                6 => native["boundary_probes"][0]["level_frames"] = 1025.into(),
+                7 => native["boundary_probes"][0]["target_frames"] = 1025.into(),
+                8 => {
+                    native["boundary_probes"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("xruns");
+                }
+                9 => native["boundary_probes"][0]["xruns"] = serde_json::Value::Null,
+                10 => native["boundary_probes"][0]["soft_events"] = (-1).into(),
+                11 => native["boundary_probes"][0]["applied_milli_ppm"] = "NaN".into(),
+                12 => native["streams"][1]["kind"] = "physical_input".into(),
+                13 => native["streams"] = serde_json::Value::Null,
+                14 => {
+                    let duplicate = native["boundary_probes"][0].clone();
+                    native["boundary_probes"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(duplicate);
+                }
+                _ => {
+                    report.vad_provider.as_mut().unwrap()["snapshot"]["packet_frames"] = 479.into()
+                }
+            }
+            let original = report.engine.clone();
+            let mut first_failure = None;
+            assert!(
+                validate_health_with_policy(
+                    &admitted,
+                    &admitted,
+                    &report,
+                    &mut first_failure,
+                    correctness(),
+                    &mut Quality::default(),
+                )
+                .is_err(),
+                "variant {variant}"
+            );
+            assert!(first_failure.is_some(), "variant {variant}");
+            assert_eq!(report.engine, original);
+        }
+    }
+
+    #[test]
+    fn correctness_health_retains_soft_faults_without_relaxing_strict_validation() {
+        let admitted = healthy();
+        let mut current = admitted.clone();
+        current.quality_faults = 17;
+        let mut report = raw_health_report();
+        report.vad_provider.as_mut().unwrap()["telemetry"]["dropped_packets"] = 17.into();
+        let mut quality = Quality::default();
+        let mut first_failure = None;
+        validate_health_with_policy(
+            &current,
+            &admitted,
+            &report,
+            &mut first_failure,
+            correctness(),
+            &mut quality,
+        )
+        .unwrap();
+        assert!(first_failure.is_none());
+        assert!(quality.failure.is_some());
+        let first = quality.first_observations.clone().unwrap();
+        assert_eq!(first["health"]["quality_faults"], 17);
+        assert_eq!(first["provider"]["telemetry"]["dropped_packets"], 17);
+        current.quality_faults = 23;
+        validate_health_with_policy(
+            &current,
+            &admitted,
+            &report,
+            &mut first_failure,
+            correctness(),
+            &mut quality,
+        )
+        .unwrap();
+        assert_eq!(quality.first_observations.as_ref(), Some(&first));
+        assert!(validate_health(&current, &admitted, &report, &mut first_failure).is_err());
+        assert_eq!(
+            report.vad_provider.as_ref().unwrap()["telemetry"]["dropped_packets"],
+            17
+        );
+    }
+
+    #[test]
+    fn correctness_health_keeps_identity_lifecycle_and_nonfinite_failures_hard() {
+        let admitted = healthy();
+        for variant in 0..18 {
+            let mut current = admitted.clone();
+            let mut report = raw_health_report();
+            match variant {
+                0..=4 => current.stamp.as_mut().unwrap()[variant] += 1,
+                5 => current.shape.as_mut().unwrap().2 += 1,
+                6 => current.provider_ready = false,
+                7 => current.provider_error = Some("QUERY failed".into()),
+                8 => current.revision = Some(2),
+                9 => current.generations[0] += 1,
+                10 => current.engine_running = false,
+                11 => current.engine_fault = true,
+                12 => current.native_running = false,
+                13 => current.quality_known = false,
+                14 => {
+                    report.engine.as_mut().unwrap()["observations"]["bridges"][0]["counters"]["nonfinite_samples"] =
+                        1.into()
+                }
+                15 => {
+                    report.engine.as_mut().unwrap()["observations"]["bridges"][0]["counters"]["resets"] =
+                        1.into()
+                }
+                16 => report.vad_provider.as_mut().unwrap()["telemetry"]["epoch_resets"] = 1.into(),
+                _ => report.engine = None,
+            }
+            let mut first_failure = None;
+            assert!(
+                validate_health_with_policy(
+                    &current,
+                    &admitted,
+                    &report,
+                    &mut first_failure,
+                    correctness(),
+                    &mut Quality::default(),
+                )
+                .is_err(),
+                "variant {variant}"
+            );
+            assert!(first_failure.is_some(), "variant {variant}");
+        }
+    }
+
+    #[test]
+    fn correctness_graph_summary_soft_faults_do_not_hide_missing_or_failed_evidence() {
+        let summary = serde_json::json!({"failure": null, "render": {
+            "failure": null, "stream_started": true, "stop_succeeded": true,
+            "stats": {"bridge_shortfall_frames": 42, "timeout_wakes": 3}
+        }});
+        let mut quality = Quality::default();
+        graph_summary_health_with_policy(Some(&summary), correctness(), &mut quality).unwrap();
+        assert!(quality.failure.is_some());
+        assert!(graph_summary_health(Some(&summary)).is_err());
+        for pointer in ["/failure", "/render/failure", "/render/stats/timeout_wakes"] {
+            let mut malformed = summary.clone();
+            *malformed.pointer_mut(pointer).unwrap() = serde_json::json!("unknown failure");
+            assert!(
+                graph_summary_health_with_policy(Some(&malformed), correctness(), &mut quality)
+                    .is_err()
+            );
+        }
+        assert!(graph_summary_health_with_policy(None, correctness(), &mut quality).is_err());
+        assert_eq!(summary["render"]["stats"]["bridge_shortfall_frames"], 42);
+    }
+
+    fn final_schema2() -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 2, "observation_scope": "final_after_owner_join",
+            "failure": null, "owner_generation": 7,
+            "professional": {"owner_generation": 7, "running": false, "streams": [
+                {"node": "output", "input": false, "master": true,
+                    "actual": {"sample_rate": 48_000, "channels": 2, "buffer_frames": 480},
+                    "native_callbacks": 8, "dropped_frames": 0, "silent_frames": 0,
+                    "native_wait_wakes": 8, "native_wait_timeouts": 0, "native_written_frames": 0,
+                    "native_dropped_frames": 0, "native_silent_frames": 0},
+                {"node": "source", "input": true, "master": false,
+                    "actual": {"sample_rate": 48_000, "channels": 2, "buffer_frames": 0},
+                    "native_callbacks": 0, "dropped_frames": 0, "silent_frames": 0,
+                    "native_wait_wakes": 0, "native_wait_timeouts": 0, "native_written_frames": 0,
+                    "native_dropped_frames": 0, "native_silent_frames": 0}
+            ]},
+            "native": {"owner_generation": 7, "running": false, "streams": [
+                {"node": "output", "kind": "master_output", "timing": {
+                    "sample_rate": 48_000, "capacity_frames": 480, "period_frames": null},
+                    "shared_period": null, "render_queue": null, "input_queue": null,
+                    "virtual_budget": null},
+                {"node": "source", "kind": "virtual_playback", "timing": null,
+                    "shared_period": null, "render_queue": null, "input_queue": null,
+                    "virtual_budget": null}
+            ], "bridges": [], "boundary_probes": [
+                {"node": "source", "kind": "virtual_playback", "capacity_frames": 1024,
+                    "target_frames": null, "level_frames": 0, "applied_milli_ppm": 0,
+                    "xruns": 0, "soft_events": 0}
+            ], "render_padding": [{"node": "output", "sample": null}]}
+        })
+    }
+
+    fn final_schema2_with_bridge() -> serde_json::Value {
+        let mut summary = final_schema2();
+        summary["native"]["bridges"] = serde_json::json!([{
+            "node": "source", "counters": moiren_windows_audio::clock_bridge::BridgeSnapshot::default()
+        }]);
+        summary
+    }
+
+    #[test]
+    fn collection_final_schema2_accepts_joined_physical_master_without_legacy_render_fields() {
+        let summary = final_schema2();
+        graph_summary_health(Some(&summary)).unwrap();
+        let mut quality = Quality::default();
+        graph_summary_health_with_policy(Some(&summary), correctness(), &mut quality).unwrap();
+        assert!(quality.failure.is_none());
+        assert!(summary.get("render").is_none());
+        assert_eq!(summary["native"]["bridges"], serde_json::json!([]));
+        assert_eq!(
+            summary["professional"]["streams"][1]["actual"]["buffer_frames"],
+            0
+        );
+    }
+
+    #[test]
+    fn collection_final_schema2_wasapi_writes_succeed_without_asio_callbacks() {
+        let mut summary = final_schema2();
+        summary["professional"]["streams"][0]["native_callbacks"] = 0.into();
+        summary["professional"]["streams"][0]["native_written_frames"] = 3840.into();
+        let original = summary.clone();
+        graph_summary_health(Some(&summary)).unwrap();
+        let mut quality = Quality::default();
+        graph_summary_health_with_policy(Some(&summary), correctness(), &mut quality).unwrap();
+        assert!(quality.failure.is_none());
+        assert_eq!(summary, original);
+
+        summary["professional"]["streams"][0]["native_wait_timeouts"] = 3.into();
+        graph_summary_health_with_policy(Some(&summary), correctness(), &mut quality).unwrap();
+        assert!(
+            quality
+                .failure
+                .as_ref()
+                .unwrap()
+                .contains("native_wait_timeouts: 3")
+        );
+        let first = quality.first_observations.as_ref().unwrap();
+        assert_eq!(
+            first["native_summary"]["professional"]["streams"][0]["native_callbacks"],
+            0
+        );
+        assert_eq!(
+            first["native_summary"]["professional"]["streams"][0]["native_written_frames"],
+            3840
+        );
+        assert_eq!(
+            first["native_summary"]["professional"]["streams"][0]["native_wait_timeouts"],
+            3
+        );
+        assert!(graph_summary_health(Some(&summary)).is_err());
+    }
+
+    #[test]
+    fn collection_final_schema2_asio_callbacks_succeed_without_wasapi_writes() {
+        let mut summary = final_schema2();
+        summary["professional"]["streams"][0]["native_wait_wakes"] = 0.into();
+        assert_eq!(
+            summary["professional"]["streams"][0]["native_written_frames"],
+            0
+        );
+        graph_summary_health(Some(&summary)).unwrap();
+        let mut quality = Quality::default();
+        graph_summary_health_with_policy(Some(&summary), correctness(), &mut quality).unwrap();
+        assert!(quality.failure.is_none());
+        assert_eq!(summary["professional"]["streams"][0]["native_callbacks"], 8);
+
+        summary["professional"]["streams"][0]["native_callbacks"] = 0.into();
+        summary["professional"]["streams"][0]["native_wait_wakes"] = 8.into();
+        assert!(graph_summary_health(Some(&summary)).is_err());
+        assert!(
+            graph_summary_health_with_policy(Some(&summary), correctness(), &mut quality).is_err()
+        );
+    }
+
+    #[test]
+    fn collection_final_schema2_late_quality_counters_are_soft_only_in_correctness() {
+        for pointer in [
+            "/professional/streams/0/dropped_frames",
+            "/professional/streams/0/silent_frames",
+            "/professional/streams/0/native_dropped_frames",
+            "/professional/streams/0/native_silent_frames",
+            "/professional/streams/0/native_wait_timeouts",
+            "/professional/streams/1/dropped_frames",
+            "/native/boundary_probes/0/xruns",
+            "/native/boundary_probes/0/soft_events",
+            "/native/bridges/0/counters/dropped_frames",
+            "/native/bridges/0/counters/silent_frames",
+            "/native/bridges/0/counters/underrun_frames",
+            "/native/bridges/0/counters/discontinuities",
+            "/native/bridges/0/counters/timestamp_errors",
+            "/native/bridges/0/counters/backlog_discarded_frames",
+            "/native/bridges/0/counters/age_discarded_frames",
+        ] {
+            let mut summary = final_schema2_with_bridge();
+            *summary.pointer_mut(pointer).unwrap() = 23.into();
+            let original = summary.clone();
+            let mut quality = Quality::default();
+            graph_summary_health_with_policy(Some(&summary), correctness(), &mut quality).unwrap();
+            assert!(
+                quality.failure.as_ref().unwrap().contains("23"),
+                "{pointer}"
+            );
+            assert_eq!(
+                quality.first_observations.as_ref().unwrap()["native_summary"],
+                original
+            );
+            assert!(graph_summary_health(Some(&summary)).is_err(), "{pointer}");
+            assert_eq!(summary, original);
+        }
+    }
+
+    #[test]
+    fn collection_final_schema2_hard_shape_and_owner_faults_cannot_hide_behind_xruns() {
+        let mut missing_failure = final_schema2();
+        missing_failure.as_object_mut().unwrap().remove("failure");
+        assert!(
+            graph_summary_health_with_policy(
+                Some(&missing_failure),
+                correctness(),
+                &mut Quality::default(),
+            )
+            .is_err()
+        );
+        for pointer in [
+            "/schema_version",
+            "/observation_scope",
+            "/owner_generation",
+            "/professional/owner_generation",
+            "/professional/running",
+            "/professional/streams",
+            "/professional/streams/0/node",
+            "/professional/streams/0/input",
+            "/professional/streams/0/master",
+            "/professional/streams/0/actual/sample_rate",
+            "/professional/streams/0/actual/channels",
+            "/professional/streams/0/actual/buffer_frames",
+            "/professional/streams/0/native_callbacks",
+            "/professional/streams/0/native_wait_wakes",
+            "/professional/streams/0/native_wait_timeouts",
+            "/professional/streams/0/native_written_frames",
+            "/professional/streams/0/dropped_frames",
+            "/native/owner_generation",
+            "/native/running",
+            "/native/streams",
+            "/native/streams/0/kind",
+            "/native/streams/0/timing",
+            "/native/bridges",
+            "/native/bridges/0/counters/nonfinite_samples",
+            "/native/bridges/0/counters/resets",
+            "/native/bridges/0/counters/correction_ppm",
+            "/native/boundary_probes",
+            "/native/boundary_probes/0/xruns",
+            "/native/render_padding",
+        ] {
+            let mut summary = final_schema2_with_bridge();
+            summary["professional"]["streams"][0]["silent_frames"] = 9.into();
+            *summary.pointer_mut(pointer).unwrap() = serde_json::Value::Null;
+            assert!(
+                graph_summary_health_with_policy(
+                    Some(&summary),
+                    correctness(),
+                    &mut Quality::default()
+                )
+                .is_err(),
+                "{pointer}"
+            );
+        }
+        for (pointer, value) in [
+            ("/schema_version", serde_json::json!(3)),
+            ("/failure", serde_json::json!("native Stop failed")),
+            ("/observation_scope", serde_json::json!("before_owner_join")),
+            ("/owner_generation", serde_json::json!(0)),
+            ("/professional/owner_generation", serde_json::json!(8)),
+            ("/native/owner_generation", serde_json::json!(8)),
+            ("/professional/running", serde_json::json!(true)),
+            ("/native/running", serde_json::json!(true)),
+            (
+                "/professional/streams/0/native_callbacks",
+                serde_json::json!(0),
+            ),
+            (
+                "/professional/streams/0/actual/buffer_frames",
+                serde_json::json!(0),
+            ),
+            (
+                "/professional/streams/0/actual/sample_rate",
+                serde_json::json!(0),
+            ),
+            (
+                "/professional/streams/0/actual/channels",
+                serde_json::json!(33),
+            ),
+            (
+                "/native/streams/0/timing/sample_rate",
+                serde_json::json!(44_100),
+            ),
+            (
+                "/native/bridges/0/counters/nonfinite_samples",
+                serde_json::json!(1),
+            ),
+            ("/native/bridges/0/counters/resets", serde_json::json!(1)),
+            ("/native/boundary_probes/0/xruns", serde_json::json!(-1)),
+            (
+                "/native/boundary_probes/0/xruns",
+                serde_json::json!(u64::MAX),
+            ),
+            (
+                "/professional/streams/0/dropped_frames",
+                serde_json::json!(0.5),
+            ),
+            (
+                "/native/boundary_probes/0/capacity_frames",
+                serde_json::json!(0),
+            ),
+        ] {
+            let mut summary = final_schema2_with_bridge();
+            summary["native"]["boundary_probes"][0]["xruns"] = 9.into();
+            *summary.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                graph_summary_health_with_policy(
+                    Some(&summary),
+                    correctness(),
+                    &mut Quality::default()
+                )
+                .is_err(),
+                "{pointer}"
+            );
+        }
+    }
+
+    #[test]
+    fn collection_final_schema2_requires_matching_master_and_virtual_probe_identity() {
+        for variant in 0..7 {
+            let mut summary = final_schema2();
+            match variant {
+                0 => summary["native"]["streams"][0]["node"] = "different-output".into(),
+                1 => summary["native"]["streams"][1]["kind"] = "physical_input".into(),
+                2 => summary["native"]["boundary_probes"] = serde_json::json!([]),
+                3 => summary["native"]["boundary_probes"][0]["node"] = "different-source".into(),
+                4 => summary["professional"]["streams"][1]["node"] = "output".into(),
+                5 => summary["native"]["streams"][0]["kind"] = "follower_output".into(),
+                _ => summary["native"]["render_padding"][0]["node"] = "different-output".into(),
+            }
+            assert!(
+                graph_summary_health_with_policy(
+                    Some(&summary),
+                    correctness(),
+                    &mut Quality::default()
+                )
+                .is_err(),
+                "variant {variant}"
+            );
+        }
+    }
+
+    #[test]
+    fn correctness_progress_grace_expires_without_extending_total_ceiling() {
+        let mut quality = Quality::default();
+        let mut phases = Phases::new(config(), 48_000, 20);
+        assert_eq!(
+            phases
+                .tick_with_policy(
+                    Duration::from_secs(5),
+                    false,
+                    false,
+                    None,
+                    correctness(),
+                    &mut quality
+                )
+                .unwrap(),
+            Action::Wait
+        );
+        assert!(quality.failure.is_some());
+        assert!(
+            phases
+                .tick_with_policy(
+                    Duration::from_secs(8),
+                    false,
+                    false,
+                    None,
+                    correctness(),
+                    &mut quality
+                )
+                .is_err()
+        );
+
+        let mut phases = Phases::new(config(), 48_000, 20);
+        phases
+            .tick_with_policy(
+                Duration::ZERO,
+                true,
+                false,
+                None,
+                correctness(),
+                &mut quality,
+            )
+            .unwrap();
+        assert_eq!(
+            phases
+                .tick_with_policy(
+                    Duration::from_millis(100),
+                    true,
+                    false,
+                    None,
+                    correctness(),
+                    &mut quality
+                )
+                .unwrap(),
+            Action::ActivateSource
+        );
+        let source = PlaybackProgress {
+            started: true,
+            ..Default::default()
+        };
+        phases
+            .tick_with_policy(
+                Duration::from_millis(5100),
+                true,
+                false,
+                Some(&source),
+                correctness(),
+                &mut quality,
+            )
+            .unwrap();
+        phases
+            .tick_with_policy(
+                Duration::from_millis(8100),
+                true,
+                false,
+                Some(&source),
+                correctness(),
+                &mut quality,
+            )
+            .unwrap();
+        assert!(
+            phases
+                .tick_with_policy(
+                    Duration::from_millis(11100),
+                    true,
+                    false,
+                    Some(&source),
+                    correctness(),
+                    &mut quality
+                )
+                .is_err()
+        );
+
+        let mut phases = Phases::new(config(), 48_000, 6);
+        assert!(
+            phases
+                .tick_with_policy(
+                    Duration::from_secs(6),
+                    false,
+                    false,
+                    None,
+                    correctness(),
+                    &mut quality
+                )
+                .is_err()
+        );
+        let mut phases = Phases::new(config(), 48_000, 20);
+        assert!(
+            phases
+                .tick_with_policy(
+                    Duration::ZERO,
+                    true,
+                    true,
+                    None,
+                    correctness(),
+                    &mut quality
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn correctness_quality_diagnostics_are_bounded_and_first_report_is_retained() {
+        let report = raw_health_report();
+        let mut quality = Quality::default();
+        for index in 0..2000 {
+            quality.record(
+                &format!("observation {index}: {}", "x".repeat(100)),
+                Some(&report),
+                Some(&healthy()),
+            );
+        }
+        assert!(quality.failure.as_ref().unwrap().len() <= 16 * 1024);
+        assert!(
+            quality
+                .failure
+                .as_ref()
+                .unwrap()
+                .starts_with("observation 0:")
+        );
+        assert_eq!(
+            quality.first_observations.as_ref().unwrap()["health"]["stamp"],
+            serde_json::json!([1, 2, 3, 4, 5])
+        );
+        assert_eq!(report.engine, raw_health_report().engine);
+    }
+
+    #[test]
+    fn correctness_source_timeout_is_quality_but_stopped_owner_is_hard() {
+        let mut source = PlaybackProgress {
+            event_timeouts: 2,
+            ..Default::default()
+        };
+        let mut quality = Quality::default();
+        validate_source_progress(
+            &source,
+            correctness(),
+            &mut quality,
+            Some(&raw_health_report()),
+        )
+        .unwrap();
+        assert!(quality.failure.as_deref().unwrap().contains("timeouts: 2"));
+        assert!(
+            validate_source_progress(&source, ValidationPolicy::default(), &mut quality, None)
+                .is_err()
+        );
+        source.stopped = true;
+        assert!(validate_source_progress(&source, correctness(), &mut quality, None).is_err());
+        assert_eq!(source.event_timeouts, 2);
+    }
+
+    #[test]
+    fn correctness_retirement_soft_health_does_not_become_cleanup_failure() {
+        let admitted = healthy();
+        let mut final_health = admitted.clone();
+        final_health.quality_faults = 9;
+        let report = raw_health_report();
+        let mut first_failure = None;
+        let mut quality = Quality::default();
+        let mut cleanup_failure = None;
+        let mut events = Vec::new();
+        retire(
+            |stage| {
+                events.push(stage);
+                if stage == Retirement::Observe {
+                    validate_health_with_policy(
+                        &final_health,
+                        &admitted,
+                        &report,
+                        &mut first_failure,
+                        correctness(),
+                        &mut quality,
+                    )?;
+                }
+                Ok(())
+            },
+            &mut cleanup_failure,
+        );
+        assert!(cleanup_failure.is_none());
+        assert!(first_failure.is_none());
+        assert!(quality.failure.is_some());
+        assert_eq!(events.last(), Some(&Retirement::FinishMeasurement));
+
+        retire(
+            |stage| {
+                if stage == Retirement::FinishMeasurement {
+                    anyhow::bail!("storage flush failed");
+                }
+                Ok(())
+            },
+            &mut cleanup_failure,
+        );
+        assert!(cleanup_failure.unwrap().contains("storage flush failed"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn correctness_joined_source_late_timeout_retains_successful_operational_completion() {
+        let mut source = super::super::vad::PlaybackOutcome {
+            info: None,
+            submitted_frames: 48_480,
+            playback_source: super::super::source::SourceProvenance::new(None),
+            source_progress: super::super::source::SourceProgress {
+                native_preroll_frames: 480,
+                native_submitted_frames: 48_480,
+                origin_submission_frame: Some(480),
+                acknowledged_source_frames: 48_000,
+                schedule_submitted_complete: true,
+            },
+            event_timeouts: 3,
+            elapsed_seconds: 1.3,
+            started: true,
+            stopped: true,
+            worker_joined: true,
+            native_stop_attempted: Some(true),
+            native_stop_succeeded: Some(true),
+            failure: None,
+        };
+        let mut failures = None;
+        let mut quality = Quality::default();
+        assert!(reconcile_source_outcome_with_policy(
+            Some(&source),
+            48_000,
+            &mut failures,
+            correctness(),
+            &mut quality
+        ));
+        assert!(failures.is_none());
+        assert!(quality.failure.as_ref().unwrap().contains("timeouts: 3"));
+        assert_eq!(source.event_timeouts, 3);
+
+        source.failure = Some("native Stop error".into());
+        reconcile_source_outcome_with_policy(
+            Some(&source),
+            48_000,
+            &mut failures,
+            correctness(),
+            &mut quality,
+        );
+        assert!(failures.unwrap().contains("native Stop error"));
+        assert_eq!(source.failure.as_deref(), Some("native Stop error"));
+
+        source.failure = None;
+        source.source_progress.acknowledged_source_frames -= 1;
+        let mut failures = None;
+        assert!(!reconcile_source_outcome_with_policy(
+            Some(&source),
+            48_000,
+            &mut failures,
+            correctness(),
+            &mut quality
+        ));
+        assert!(failures.is_some());
+    }
+
+    #[cfg(windows)]
+    fn measurement_outcome() -> crate::measurement::session::MeasurementOutcome {
+        use crate::measurement::session::{MeasurementInfo, MeasurementOutcome};
+        use crate::measurement_sink::SinkReport;
+        use moiren_windows_audio::{
+            SessionDuration,
+            capture::{CaptureReport, CaptureSource, PcmEvidenceSummary},
+        };
+        let mut native = CaptureReport::new(CaptureSource::Physical, SessionDuration::UntilStopped);
+        native.stream_started = true;
+        native.stop_succeeded = true;
+        native.evidence_metadata = Some(PcmEvidenceSummary {
+            sample_rate: 48_000,
+            channels: 2,
+            packets: 1,
+            observed_frames: 2,
+            stored_frames: 2,
+            ..Default::default()
+        });
+        MeasurementOutcome {
+            info: MeasurementInfo {
+                input_endpoint_id: "independent".into(),
+                sample_rate: 48_000,
+                channels: 2,
+                ring_frames: 8,
+                max_frames: 48_000,
+            },
+            native_capture: Some(native),
+            sink: Some(SinkReport {
+                schema_version: 1,
+                sample_rate: 48_000,
+                channels: 2,
+                written_frames: 2,
+                written_pcm_bytes: 16,
+                written_metadata_bytes: 180,
+                complete_packets: 1,
+                sequence_gaps: 0,
+                missing_packets: 0,
+                incomplete_packets: 0,
+                nonfinite_samples: 0,
+                counters_saturated: false,
+                cancelled: false,
+                failure: None,
+            }),
+            activation_elapsed: Some(Duration::from_secs(1)),
+            failure: None,
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn correctness_measurement_continuity_retains_raw_outcome_without_operational_failure() {
+        let mut outcome = measurement_outcome();
+        let summary = outcome
+            .native_capture
+            .as_mut()
+            .unwrap()
+            .evidence_metadata
+            .as_mut()
+            .unwrap();
+        summary.dropped_frames = 7;
+        summary.observed_frames = 9;
+        summary.overflow_packets = 1;
+        summary.packets = 2;
+        outcome.failure = Some(
+            concat!(
+                "measurement evidence has loss or invalid continuity/timestamps; ",
+                "measurement sink and final native evidence are not complete and consistent",
+            )
+            .into(),
+        );
+        let mut quality = Quality::default();
+        validate_measurement_outcome_with_policy(&outcome, correctness(), &mut quality).unwrap();
+        assert!(quality.failure.is_some());
+        assert_eq!(
+            quality.first_observations.as_ref().unwrap()["measurement"]["native_capture"]["evidence_metadata"]
+                ["dropped_frames"],
+            7
+        );
+        assert!(
+            validate_measurement_outcome_with_policy(
+                &outcome,
+                ValidationPolicy::default(),
+                &mut quality
+            )
+            .is_err()
+        );
+        assert_eq!(
+            outcome.failure.as_deref(),
+            Some(concat!(
+                "measurement evidence has loss or invalid continuity/timestamps; ",
+                "measurement sink and final native evidence are not complete and consistent",
+            ))
+        );
+        assert_eq!(
+            outcome
+                .native_capture
+                .as_ref()
+                .unwrap()
+                .evidence_metadata
+                .unwrap()
+                .dropped_frames,
+            7
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn correctness_measurement_soft_fault_cannot_conceal_storage_owner_or_missing_evidence() {
+        for variant in 0..19 {
+            let mut outcome = measurement_outcome();
+            outcome
+                .native_capture
+                .as_mut()
+                .unwrap()
+                .evidence_metadata
+                .as_mut()
+                .unwrap()
+                .gap_events = 1;
+            outcome.failure =
+                Some("measurement evidence has loss or invalid continuity/timestamps".into());
+            match variant {
+                0 => outcome.activation_elapsed = None,
+                1 => outcome.native_capture.as_mut().unwrap().stop_succeeded = false,
+                2 => {
+                    outcome.native_capture.as_mut().unwrap().failure =
+                        Some("native owner failed".into())
+                }
+                3 => outcome.sink.as_mut().unwrap().failure = Some("PCM flush failed".into()),
+                4 => outcome.sink.as_mut().unwrap().nonfinite_samples = 1,
+                5 => outcome.sink.as_mut().unwrap().cancelled = true,
+                6 => outcome.sink.as_mut().unwrap().written_frames = 1,
+                7 => outcome.sink.as_mut().unwrap().missing_packets = 1,
+                8 => outcome.sink.as_mut().unwrap().incomplete_packets = 1,
+                9 => outcome.sink.as_mut().unwrap().complete_packets = 0,
+                10 => outcome.sink.as_mut().unwrap().sample_rate = 44_100,
+                11 => outcome.native_capture.as_mut().unwrap().evidence_metadata = None,
+                12 => outcome
+                    .failure
+                    .as_mut()
+                    .unwrap()
+                    .push_str("; native stop failed"),
+                13 => outcome.failure = Some("unknown owner failure".into()),
+                14 => {
+                    outcome
+                        .native_capture
+                        .as_mut()
+                        .unwrap()
+                        .evidence_metadata
+                        .as_mut()
+                        .unwrap()
+                        .position_overflow_packets = 1
+                }
+                15 => {
+                    outcome
+                        .native_capture
+                        .as_mut()
+                        .unwrap()
+                        .evidence_metadata
+                        .as_mut()
+                        .unwrap()
+                        .sequence_exhausted = true
+                }
+                16 => {
+                    outcome
+                        .native_capture
+                        .as_mut()
+                        .unwrap()
+                        .evidence_metadata
+                        .as_mut()
+                        .unwrap()
+                        .reader_abandoned_packets = 1
+                }
+                17 => outcome.native_capture = None,
+                _ => outcome.sink = None,
+            }
+            assert!(
+                validate_measurement_outcome_with_policy(
+                    &outcome,
+                    correctness(),
+                    &mut Quality::default()
+                )
+                .is_err(),
+                "variant {variant}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn correctness_whole_packet_ring_loss_is_soft_but_unexplained_persistence_loss_is_hard() {
+        let mut outcome = measurement_outcome();
+        let summary = outcome
+            .native_capture
+            .as_mut()
+            .unwrap()
+            .evidence_metadata
+            .as_mut()
+            .unwrap();
+        summary.packets = 2;
+        summary.observed_frames = 9;
+        summary.dropped_frames = 7;
+        summary.overflow_packets = 1;
+        outcome.sink.as_mut().unwrap().missing_packets = 1;
+        outcome.sink.as_mut().unwrap().sequence_gaps = 1;
+        outcome.failure = Some(
+            concat!(
+                "measurement evidence has loss or invalid continuity/timestamps; ",
+                "measurement sink and final native evidence are not complete and consistent",
+            )
+            .into(),
+        );
+        let mut quality = Quality::default();
+        validate_measurement_outcome_with_policy(&outcome, correctness(), &mut quality).unwrap();
+        assert!(quality.failure.is_some());
+        let retained = quality.first_observations.clone();
+        outcome.sink.as_mut().unwrap().written_frames = 1;
+        assert!(
+            validate_measurement_outcome_with_policy(&outcome, correctness(), &mut quality)
+                .is_err()
+        );
+        outcome.sink.as_mut().unwrap().written_frames = 2;
+        outcome.sink.as_mut().unwrap().complete_packets = 0;
+        assert!(
+            validate_measurement_outcome_with_policy(&outcome, correctness(), &mut quality)
+                .is_err()
+        );
+        assert_eq!(quality.first_observations, retained);
+    }
 
     #[cfg(windows)]
     #[test]

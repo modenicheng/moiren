@@ -1,4 +1,5 @@
 //! Owned marker source only; independent collection is a separate caller.
+use super::validation_policy::{ValidationMode, ValidationPolicy};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -73,6 +74,8 @@ pub(crate) struct Receipt {
     pub(crate) identity: Identity,
     pub(crate) source_endpoint: String,
     pub(crate) seconds: u64,
+    #[serde(default)]
+    pub(super) validation: ValidationPolicy,
     pub(crate) schedule: super::source::SourceSchedule,
     /// Exact serialized native DTO; no source/played claims are fabricated.
     pub(crate) playback: Value,
@@ -92,6 +95,8 @@ pub(crate) struct Progress {
 
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct Outcome {
+    pub(super) validation: ValidationPolicy,
+    pub(crate) quality_passed: bool,
     pub(crate) source_endpoint: Option<String>,
     pub(crate) seconds: Option<u64>,
     pub(crate) schedule: Option<super::source::SourceSchedule>,
@@ -216,7 +221,7 @@ fn validate_receipt_budget(
     // diagnostic/name space before spawning, not after native preparation.
     let envelope = serde_json::json!({
         "schema_version": 1, "phase": "final", "source_endpoint": config.source_endpoint,
-        "seconds": config.seconds, "schedule": schedule,
+        "seconds": config.seconds, "validation": config.validation, "schedule": schedule,
         "identity": {"pid": u32::MAX, "creation_time_100ns": u64::MAX,
             "executable_name": "\0".repeat(260)},
         "playback": {"mmdevice_id": config.source_endpoint,
@@ -293,6 +298,7 @@ fn validate_receipt(
     ensure!(
         receipt.source_endpoint == config.source_endpoint
             && receipt.seconds == config.seconds
+            && receipt.validation == config.validation
             && receipt.schedule == *schedule,
         "source receipt configuration/schedule mismatch"
     );
@@ -326,9 +332,13 @@ fn validate_receipt(
         return Ok(());
     }
     ensure!(
-        data["started"].as_bool() == Some(true) && data["event_timeouts"].as_u64() == Some(0),
-        "source not started or event timeout"
+        data["started"].as_bool() == Some(true),
+        "source not started"
     );
+    let timeouts = data["event_timeouts"]
+        .as_u64()
+        .context("source event timeout counter missing")?;
+    validate_event_timeouts(timeouts, config.validation)?;
     let progress = if phase == Phase::Final {
         &data["source_progress"]
     } else {
@@ -431,6 +441,23 @@ fn finalize(outcome: &mut Outcome) {
         append(&mut outcome.failure, "source phase evidence incomplete");
     }
     outcome.valid = outcome.failure.is_none();
+    outcome.quality_passed = outcome.valid
+        && [
+            outcome.progress.running_receipt.as_ref(),
+            outcome.progress.submitted_receipt.as_ref(),
+            outcome.final_receipt.as_ref(),
+        ]
+        .into_iter()
+        .all(|receipt| receipt.is_some_and(|r| r.playback["event_timeouts"].as_u64() == Some(0)));
+}
+
+fn validate_event_timeouts(count: u64, validation: ValidationPolicy) -> Result<()> {
+    validation.validate()?;
+    ensure!(
+        count == 0 || validation.is_correctness(),
+        "process source event timeout"
+    );
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -438,10 +465,12 @@ pub(crate) struct Config {
     pub(crate) source_endpoint: String,
     pub(crate) source_schedule: PathBuf,
     pub(crate) seconds: u64,
+    pub(super) validation: ValidationPolicy,
 }
 
 impl Config {
     fn validate(&self) -> Result<()> {
+        self.validation.validate()?;
         ensure!(
             (1..=600).contains(&self.seconds),
             "source lifetime must be 1..600 seconds"
@@ -462,8 +491,8 @@ impl Config {
 
 fn parse(arguments: Vec<String>) -> Result<(Config, PathBuf)> {
     ensure!(
-        arguments.len() == 8,
-        "process source worker requires four separate option pairs"
+        arguments.len() >= 8 && arguments.len() <= 12 && arguments.len().is_multiple_of(2),
+        "process source worker requires bounded separate option pairs"
     );
     let mut values = BTreeMap::new();
     for pair in arguments.as_chunks::<2>().0 {
@@ -472,7 +501,9 @@ fn parse(arguments: Vec<String>) -> Result<(Config, PathBuf)> {
                 "--source-endpoint",
                 "--source-schedule",
                 "--run-directory",
-                "--seconds"
+                "--seconds",
+                "--validation-mode",
+                "--jitter-tolerance-ms",
             ]
             .contains(&pair[0].as_str()),
             "unknown source worker option {}",
@@ -494,10 +525,26 @@ fn parse(arguments: Vec<String>) -> Result<(Config, PathBuf)> {
         !raw.is_empty() && raw.bytes().all(|b| b.is_ascii_digit()),
         "source seconds require decimal digits"
     );
+    let mut validation = ValidationPolicy::default();
+    if let Some(mode) = values.get("--validation-mode") {
+        validation.mode = match *mode {
+            "latency-sensitive" => ValidationMode::LatencySensitive,
+            "correctness" => ValidationMode::Correctness,
+            _ => anyhow::bail!("invalid source validation mode"),
+        };
+    }
+    if let Some(raw) = values.get("--jitter-tolerance-ms") {
+        ensure!(
+            !raw.is_empty() && raw.bytes().all(|b| b.is_ascii_digit()),
+            "source jitter tolerance requires decimal digits"
+        );
+        validation.jitter_tolerance_ms = raw.parse()?;
+    }
     let config = Config {
         source_endpoint: required("--source-endpoint")?.into(),
         source_schedule: required("--source-schedule")?.into(),
         seconds: raw.parse()?,
+        validation,
     };
     config.validate()?;
     let directory = PathBuf::from(required("--run-directory")?);

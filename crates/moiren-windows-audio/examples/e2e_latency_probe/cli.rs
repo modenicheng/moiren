@@ -24,6 +24,9 @@ Independent native capture retains bounded raw PCM/packet metadata; never claims
     [--measurement-pcm FILE --schedule FILE] [--calibration FILE]
     [--input-target-frames N --input-capacity-frames N --input-jitter-frames N]
     [--render-target-frames N --wake-margin-frames N --callback-budget-frames N]
+    [--validation-mode latency-sensitive|correctness --jitter-tolerance-ms 0..3000]
+Correctness requires --vad-collection or owned --process-collection; timing faults are retained without early abort.
+Correctness exit 0 means operational collection and cleanup completed; quality_passed and qualified stay separate.
     [--report FILE --manifest FILE --run-id ID --mode disabled|summary|trace]
     [--diagnostic-soak --seconds 1..7200 --observation-interval-seconds 5..60]
 Diagnostic soak disables capture PCM; bounded periodic JSON observations do not qualify waveform continuity or physical latency.
@@ -37,7 +40,7 @@ With --packets, schema_version=2 validates measurement_sink JSONL against all st
 Metadata uses --max-input-bytes (hard cap 256 MiB), --max-packets (1..1000000), 1024 bytes/record.
 Lost/reordered/reset/unknown-timestamp/silent packet windows are invalidated; failures are retained.
 Native epoch, hardware clock provenance, marker startup phase and physical boundary are not inferred.
-Outputs must be new files. Exit 0=accepted analysis/evaluation, 1=failed marker/unqualified,
+Outputs must be new files. Exit 0=accepted analysis/evaluation or completed correctness collection, 1=failed/incomplete/unqualified,
 2=invalid input or IO error. Live mode never claims physical qualification without a native
 source, measurement artifact and independently supplied calibration.";
 
@@ -95,6 +98,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         return crate::controlled_load::run_worker(arguments[1..].to_vec());
     }
     if matches!(command.as_str(), "live-process-loopback" | "live-vad") {
+        if arguments[1..] == ["--help"] {
+            return live::run(vec!["--help".into()]);
+        }
         let mut live_arguments = arguments[1..].to_vec();
         if command == "live-vad" {
             live_arguments.insert(0, "--source-kind".into());

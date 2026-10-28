@@ -114,6 +114,7 @@ pub(crate) struct MeasurementSession {
     sink: Option<Box<dyn SinkOwner>>,
     info: MeasurementInfo,
     config: MeasurementConfig,
+    start_grace: Duration,
     activated: Option<Instant>,
     stopping: bool,
     activation_failed: bool,
@@ -262,6 +263,7 @@ impl MeasurementSession {
             sink: None,
             config,
             info,
+            start_grace: Duration::ZERO,
             activated: None,
             stopping: false,
             activation_failed: false,
@@ -271,6 +273,21 @@ impl MeasurementSession {
 
     pub(crate) fn info(&self) -> &MeasurementInfo {
         &self.info
+    }
+
+    /// Extend only the initial Start acknowledgement, never the activation
+    /// anchor or total active duration. Configure before handing off activation.
+    pub(crate) fn with_start_grace(mut self, grace: Duration) -> Result<Self> {
+        ensure!(
+            grace <= Duration::from_secs(3),
+            "measurement Start grace must be 0..3 seconds"
+        );
+        ensure!(
+            self.activated.is_none() && !self.stopping && !self.activation_failed,
+            "measurement Start grace must be set before activation or stop"
+        );
+        self.start_grace = grace;
+        Ok(self)
     }
 
     #[cfg(windows)]
@@ -340,8 +357,9 @@ impl MeasurementSession {
             };
             if !native.has_started() {
                 ensure!(
-                    elapsed < START_TIMEOUT,
-                    "measurement native Start acknowledgement exceeded 5 seconds"
+                    elapsed < START_TIMEOUT.saturating_add(self.start_grace),
+                    "measurement native Start acknowledgement exceeded {:?}",
+                    START_TIMEOUT.saturating_add(self.start_grace)
                 );
                 ensure!(
                     elapsed < self.config.max_active_duration,
@@ -1066,6 +1084,66 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn start_grace_extends_only_start_acknowledgement_and_expires_at_eight_seconds() {
+        let (owner, state) = session();
+        let mut owner = owner.with_start_grace(Duration::from_secs(3)).unwrap();
+        owner.activate().unwrap();
+        for elapsed in [Duration::from_secs(5), Duration::from_millis(7999)] {
+            assert_eq!(
+                owner.check_elapsed(Some(elapsed)).unwrap(),
+                MeasurementProgress::Starting
+            );
+        }
+        assert!(owner.check_elapsed(Some(Duration::from_secs(8))).is_err());
+        state.started.store(true, Ordering::Relaxed);
+        assert_eq!(
+            owner.check_elapsed(Some(Duration::from_secs(10))).unwrap(),
+            MeasurementProgress::DeadlineReached
+        );
+        assert_eq!(owner.config.max_active_duration, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn start_grace_cannot_exceed_three_seconds_or_restart_after_activation() {
+        for grace in [Duration::from_millis(3001), Duration::from_secs(u64::MAX)] {
+            let (owner, state) = session();
+            assert!(owner.with_start_grace(grace).is_err());
+            assert!(!state.log.lock().unwrap().contains(&"activate"));
+        }
+        let (mut owner, _) = session();
+        owner.activate().unwrap();
+        assert!(owner.with_start_grace(Duration::ZERO).is_err());
+        let (mut owner, _) = session();
+        owner.request_stop().unwrap();
+        assert!(owner.with_start_grace(Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn start_grace_still_obeys_earlier_total_deadline_and_owner_sink_failures() {
+        let (owner, _) = session();
+        let mut owner = owner.with_start_grace(Duration::from_secs(3)).unwrap();
+        owner.config.max_active_duration = Duration::from_secs(6);
+        owner.activate().unwrap();
+        assert_eq!(
+            owner.check_elapsed(Some(Duration::from_secs(5))).unwrap(),
+            MeasurementProgress::Starting
+        );
+        assert!(owner.check_elapsed(Some(Duration::from_secs(6))).is_err());
+        for native_exit in [true, false] {
+            let (owner, state) = session();
+            let mut owner = owner.with_start_grace(Duration::from_secs(3)).unwrap();
+            owner.activate().unwrap();
+            if native_exit {
+                state.native_finished.store(true, Ordering::Relaxed);
+            } else {
+                state.sink_finished.store(true, Ordering::Relaxed);
+            }
+            assert!(owner.check_elapsed(Some(Duration::from_secs(5))).is_err());
+            assert!(owner.failures.borrow().is_some());
+        }
     }
 
     #[test]

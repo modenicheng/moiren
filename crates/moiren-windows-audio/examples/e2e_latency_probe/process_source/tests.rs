@@ -341,6 +341,221 @@ fn owned_process_source_rejects_malformed_cli_and_duration() {
     assert!(parse(duplicate).is_err());
 }
 
+#[test]
+fn owned_process_source_worker_protocol_accepts_explicit_correctness_policy() {
+    let arguments = [
+        "--source-endpoint",
+        "Exact Endpoint ",
+        "--source-schedule",
+        "schedule.json",
+        "--run-directory",
+        "new dir",
+        "--seconds",
+        "5",
+        "--validation-mode",
+        "correctness",
+        "--jitter-tolerance-ms",
+        "3000",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert!(
+        parse(arguments).is_ok(),
+        "the owned child must receive the parent's validation intent"
+    );
+}
+
+#[test]
+fn owned_process_source_correctness_receipts_admit_timeouts_but_not_policy_or_identity_changes() {
+    let policy = ValidationPolicy {
+        mode: ValidationMode::Correctness,
+        jitter_tolerance_ms: 3000,
+    };
+    let mut config = config();
+    config.validation = policy;
+    assert!(validate_event_timeouts(1, ValidationPolicy::default()).is_err());
+    assert!(validate_event_timeouts(9, policy).is_ok());
+    for phase in [Phase::Running, Phase::Submitted, Phase::Final] {
+        let mut value = receipt(phase);
+        value.validation = policy;
+        value.playback["event_timeouts"] = 9.into();
+        assert!(validate_receipt(&value, phase, &value.identity, &config, &value.schedule).is_ok());
+        let expected_identity = value.identity.clone();
+        value.identity.creation_time_100ns += 1;
+        assert!(
+            validate_receipt(&value, phase, &expected_identity, &config, &value.schedule).is_err()
+        );
+        value.identity = expected_identity;
+        value.validation = ValidationPolicy::default();
+        assert!(
+            validate_receipt(&value, phase, &value.identity, &config, &value.schedule).is_err()
+        );
+    }
+}
+
+#[test]
+fn owned_process_source_correctness_parent_continues_and_retains_raw_timeout_quality() {
+    let directory = Directory::new();
+    let policy = ValidationPolicy {
+        mode: ValidationMode::Correctness,
+        jitter_tolerance_ms: 3000,
+    };
+    let mut source = session(&directory, false);
+    source.config.validation = policy;
+    let mut ready = receipt(Phase::Ready);
+    ready.validation = policy;
+    publish(&directory.0, "ready.json", &ready).unwrap();
+    source.await_ready(&mut TestTime(Duration::ZERO)).unwrap();
+    source.activate().unwrap();
+    for (phase, count) in [(Phase::Running, 2), (Phase::Submitted, 5)] {
+        let mut value = receipt(phase);
+        value.validation = policy;
+        value.playback["event_timeouts"] = count.into();
+        publish(&directory.0, phase.file(), &value).unwrap();
+        source.check().unwrap();
+    }
+    assert!(source.progress.submitted);
+    assert!(
+        !directory.0.join("stop").exists(),
+        "soft timeout must not stop the producer"
+    );
+    source.request_stop().unwrap();
+    let mut final_value = receipt(Phase::Final);
+    final_value.validation = policy;
+    final_value.playback["event_timeouts"] = 11.into();
+    publish(&directory.0, "final.json", &final_value).unwrap();
+    source.child.exited = true;
+    let outcome = source.finish(&mut TestTime(Duration::ZERO));
+    assert!(outcome.valid && outcome.joined && outcome.failure.is_none());
+    assert!(!outcome.quality_passed);
+    assert_eq!(outcome.validation, policy);
+    assert_eq!(
+        outcome.progress.running_receipt.unwrap().playback["event_timeouts"],
+        2
+    );
+    assert_eq!(
+        outcome.progress.submitted_receipt.unwrap().playback["event_timeouts"],
+        5
+    );
+    assert_eq!(
+        outcome.final_receipt.unwrap().playback["event_timeouts"],
+        11
+    );
+}
+
+#[test]
+fn owned_process_source_correctness_retains_hard_frame_native_stop_and_storage_checks() {
+    let policy = ValidationPolicy {
+        mode: ValidationMode::Correctness,
+        jitter_tolerance_ms: 3000,
+    };
+    let mut config = config();
+    config.validation = policy;
+    for fault in [
+        "frames",
+        "stop",
+        "native",
+        "missing_timeouts",
+        "counter_type",
+    ] {
+        let mut value = receipt(Phase::Final);
+        value.validation = policy;
+        value.playback["event_timeouts"] = 7.into();
+        match fault {
+            "frames" => {
+                value.playback["source_progress"]["acknowledged_source_frames"] = 9999.into()
+            }
+            "stop" => value.playback["native_stop_succeeded"] = false.into(),
+            "native" => value.playback["failure"] = "ReleaseBuffer failed".into(),
+            "missing_timeouts" => {
+                value
+                    .playback
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("event_timeouts");
+            }
+            "counter_type" => value.playback["event_timeouts"] = "7".into(),
+            _ => unreachable!(),
+        }
+        assert!(
+            validate_receipt(
+                &value,
+                Phase::Final,
+                &value.identity,
+                &config,
+                &value.schedule
+            )
+            .is_err(),
+            "{fault} softened"
+        );
+    }
+    let mut arguments = vec![
+        "--source-endpoint",
+        "exact",
+        "--source-schedule",
+        "plan",
+        "--run-directory",
+        "dir",
+        "--seconds",
+        "5",
+        "--validation-mode",
+        "correctness",
+        "--jitter-tolerance-ms",
+        "3001",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    assert!(parse(arguments.clone()).is_err());
+    *arguments.last_mut().unwrap() = "3000".into();
+    arguments.extend(["--validation-mode".into(), "latency-sensitive".into()]);
+    assert!(parse(arguments).is_err());
+}
+
+#[test]
+fn owned_process_source_legacy_protocol_defaults_strict_and_correctness_never_renews_lifetime() {
+    let args = [
+        "--source-endpoint",
+        "exact",
+        "--source-schedule",
+        "plan",
+        "--run-directory",
+        "dir",
+        "--seconds",
+        "5",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    assert_eq!(
+        parse(args).unwrap().0.validation,
+        ValidationPolicy::default()
+    );
+    let mut serialized = serde_json::to_value(receipt(Phase::Running)).unwrap();
+    serialized.as_object_mut().unwrap().remove("validation");
+    assert_eq!(
+        serde_json::from_value::<Receipt>(serialized)
+            .unwrap()
+            .validation,
+        ValidationPolicy::default()
+    );
+    let directory = Directory::new();
+    let mut source = session(&directory, false);
+    source.config.validation = ValidationPolicy {
+        mode: ValidationMode::Correctness,
+        jitter_tolerance_ms: 3000,
+    };
+    source.elapsed = Duration::from_secs(5);
+    assert!(
+        source
+            .check()
+            .unwrap_err()
+            .to_string()
+            .contains("finite lifetime")
+    );
+}
+
 fn receipt(phase: Phase) -> Receipt {
     Receipt {
         schema_version: 1,
@@ -352,6 +567,7 @@ fn receipt(phase: Phase) -> Receipt {
         },
         source_endpoint: "Exact Endpoint ".into(),
         seconds: 5,
+        validation: ValidationPolicy::default(),
         schedule: super::super::source::SourceSchedule {
             schema_version: 1,
             schedule_id: "owned-test".into(),
@@ -384,6 +600,7 @@ fn config() -> Config {
         source_endpoint: "Exact Endpoint ".into(),
         source_schedule: "schedule.json".into(),
         seconds: 5,
+        validation: ValidationPolicy::default(),
     }
 }
 
@@ -433,6 +650,8 @@ fn owned_process_source_receipts_reject_recycled_identity_and_late_faults() {
 #[test]
 fn owned_process_source_partial_evidence_and_forced_exit_never_become_valid() {
     let mut outcome = Outcome {
+        validation: ValidationPolicy::default(),
+        quality_passed: false,
         source_endpoint: None,
         seconds: None,
         schedule: None,

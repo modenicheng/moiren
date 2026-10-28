@@ -84,6 +84,7 @@ impl ProcessSourceSession {
         *partial = None;
         let source_endpoint = config.source_endpoint.clone();
         let seconds = config.seconds;
+        let validation = config.validation;
         let result = Self::prepare_owned(config, run_directory, before_join, partial);
         if let Err(error) = &result
             && partial.is_none()
@@ -91,6 +92,7 @@ impl ProcessSourceSession {
             *partial = Some(Outcome {
                 source_endpoint: Some(source_endpoint),
                 seconds: Some(seconds),
+                validation,
                 failure: Some(format!(
                     "source preparation before child ownership: {error:#}"
                 )),
@@ -133,6 +135,14 @@ impl ProcessSourceSession {
             .arg(&directory)
             .arg("--seconds")
             .arg(config.seconds.to_string())
+            .arg("--validation-mode")
+            .arg(if config.validation.is_correctness() {
+                "correctness"
+            } else {
+                "latency-sensitive"
+            })
+            .arg("--jitter-tolerance-ms")
+            .arg(config.validation.jitter_tolerance_ms.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -153,6 +163,7 @@ impl ProcessSourceSession {
                     let mut outcome = Outcome {
                         source_endpoint: Some(config.source_endpoint.clone()),
                         seconds: Some(config.seconds),
+                        validation: config.validation,
                         schedule: Some(schedule.clone()),
                         child_pid: Some(child.id()),
                         ..Outcome::default()
@@ -304,6 +315,7 @@ pub(super) fn run(config: Config, directory: PathBuf) -> Result<i32> {
             identity: identity.clone(),
             source_endpoint: config.source_endpoint.clone(),
             seconds: config.seconds,
+            validation: config.validation,
             schedule: schedule.clone(),
             playback,
             stop_requested,
@@ -333,7 +345,7 @@ pub(super) fn run(config: Config, directory: PathBuf) -> Result<i32> {
                 activated = true;
             }
             if let Some(progress) = owner.check()? {
-                ensure!(progress.event_timeouts == 0, "process source event timeout");
+                validate_event_timeouts(progress.event_timeouts, config.validation)?;
                 if progress.started && !running {
                     ensure!(activated, "source started before activation");
                     publish(
@@ -375,8 +387,11 @@ pub(super) fn run(config: Config, directory: PathBuf) -> Result<i32> {
         match owner.finish() {
             Ok(outcome) => {
                 append_option(&mut failure, outcome.failure.as_deref());
-                if outcome.event_timeouts != 0 {
+                if let Err(error) =
+                    validate_event_timeouts(outcome.event_timeouts, config.validation)
+                {
                     append(&mut failure, "final source event timeout");
+                    append(&mut failure, &error.to_string());
                 }
                 serde_json::to_value(outcome)?
             }
@@ -397,6 +412,7 @@ pub(super) fn run(config: Config, directory: PathBuf) -> Result<i32> {
         identity,
         source_endpoint: config.source_endpoint,
         seconds: config.seconds,
+        validation: config.validation,
         schedule,
         playback,
         stop_requested,

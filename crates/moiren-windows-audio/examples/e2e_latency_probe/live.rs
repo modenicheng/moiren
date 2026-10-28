@@ -33,6 +33,10 @@ use std::{
 #[path = "source.rs"]
 mod source;
 
+#[path = "validation_policy.rs"]
+mod validation_policy;
+use validation_policy::{ValidationMode, ValidationPolicy};
+
 #[path = "process_source.rs"]
 #[cfg(any(windows, test))]
 pub(crate) mod process_source;
@@ -78,6 +82,7 @@ const DEFAULT_CALLBACK_BUDGET_FRAMES: u32 = 48;
 
 #[derive(Debug, Clone)]
 struct LiveOptions {
+    validation: ValidationPolicy,
     source_kind: EvidenceSourceKind,
     source_pid: u32,
     source_pid_explicit: bool,
@@ -122,6 +127,7 @@ struct LiveOptions {
 impl Default for LiveOptions {
     fn default() -> Self {
         Self {
+            validation: ValidationPolicy::default(),
             source_kind: EvidenceSourceKind::ProcessLoopback,
             source_pid: 0,
             source_pid_explicit: false,
@@ -167,6 +173,7 @@ impl Default for LiveOptions {
 
 #[derive(Debug, Serialize)]
 struct LiveRunManifest {
+    validation: ValidationPolicy,
     schema_version: u32,
     mode: &'static str,
     run_id: String,
@@ -191,6 +198,7 @@ struct LiveRunManifest {
 
 #[derive(Debug, Serialize)]
 struct LiveRunReport {
+    validation: ValidationPolicy,
     schema_version: u32,
     mode: &'static str,
     run_id: String,
@@ -278,6 +286,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
              live-vad --stable-endpoint-id ID --name NAME --output ENDPOINT --artifact-dir DIR [options]\n\
              live-vad --source-schedule FILE --vad-collection FILE opts into bounded source +\n\
              production graph + independent waveform collection. --seconds is its total ceiling.\n\
+             --validation-mode latency-sensitive|correctness [--jitter-tolerance-ms 0..3000]\n\
+             Correctness retains jitter/underruns without early quality abort; never latency qualification.\n\
+             Correctness exit 0 means collection and cleanup completed, even if quality_passed=false.\n\
              All runs remain unqualified. --dry-run validates/persists inputs without native IO."
         );
         return Ok(0);
@@ -350,6 +361,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         .clone()
         .unwrap_or_else(|| format!("live-{}-{}", std::process::id(), unix_seconds()));
     let mut gaps = Vec::new();
+    if options.validation.is_correctness() {
+        gaps.push("correctness mode continues through recorded timing/quality faults; excluded from latency qualification".into());
+    }
     if options.diagnostic_soak {
         gaps.push("bounded diagnostic soak does not qualify continuous waveform, controlled load, markers or physical latency; PCM recording is disabled".into());
     }
@@ -515,6 +529,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         gaps.push("live capture PCM artifact was not produced".into());
     }
 
+    let exit_code = collection_exit_code(&options, &native, collection.as_ref());
     let artifacts = artifact_report(&paths, &options, &measurement);
     let qualification = build_qualification_report(
         &options,
@@ -525,6 +540,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         &measurement,
     );
     let report = LiveRunReport {
+        validation: options.validation,
         schema_version: LIVE_SCHEMA_VERSION,
         mode: mode_name(options.source_kind),
         run_id: run_id.clone(),
@@ -553,6 +569,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         gaps: gaps.clone(),
     };
     let manifest = LiveRunManifest {
+        validation: options.validation,
         schema_version: LIVE_SCHEMA_VERSION,
         mode: mode_name(options.source_kind),
         run_id,
@@ -606,12 +623,35 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         write_json(&paths.report, &report)?;
         write_json(&paths.manifest, &manifest)?;
     }
-    Ok(1)
+    Ok(exit_code)
+}
+
+fn collection_exit_code(
+    options: &LiveOptions,
+    native: &NativeReport,
+    collection: Option<&Value>,
+) -> i32 {
+    let completed = collection.is_some_and(|collection| {
+        collection
+            .get("collection_complete")
+            .and_then(Value::as_bool)
+            == Some(true)
+            && collection.get("cleanup_complete").and_then(Value::as_bool) == Some(true)
+            && collection.get("failure").is_some_and(Value::is_null)
+    });
+    i32::from(
+        !options.validation.is_correctness()
+            || options.dry_run
+            || native.error.is_some()
+            || !completed,
+    )
 }
 
 fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
     let mut options = LiveOptions::default();
     let mut source_kind_seen = false;
+    let mut validation_seen = false;
+    let mut tolerance_seen = false;
     let mut iter = arguments.into_iter();
     while let Some(flag) = iter.next() {
         let value = match flag.as_str() {
@@ -653,6 +693,8 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             | "--wake-margin-frames"
             | "--callback-budget-frames"
             | "--engine-block-frames"
+            | "--validation-mode"
+            | "--jitter-tolerance-ms"
             | "--mode"
             | "--run-id"
             | "--source-revision"
@@ -666,6 +708,21 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             _ => bail!("unknown live option {flag}"),
         };
         match flag.as_str() {
+            "--validation-mode" => {
+                ensure!(!validation_seen, "duplicate --validation-mode");
+                validation_seen = true;
+                options.validation.mode = match value.as_str() {
+                    "latency-sensitive" => ValidationMode::LatencySensitive,
+                    "correctness" => ValidationMode::Correctness,
+                    _ => bail!("validation mode must be latency-sensitive or correctness"),
+                };
+            }
+            "--jitter-tolerance-ms" => {
+                ensure!(!tolerance_seen, "duplicate --jitter-tolerance-ms");
+                tolerance_seen = true;
+                options.validation.jitter_tolerance_ms =
+                    value.parse().context("invalid jitter tolerance")?;
+            }
             "--source-kind" => {
                 ensure!(!source_kind_seen, "duplicate --source-kind");
                 source_kind_seen = true;
@@ -789,6 +846,13 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
 }
 
 fn validate(options: &LiveOptions) -> Result<()> {
+    options.validation.validate()?;
+    ensure!(
+        !options.validation.is_correctness()
+            || options.vad_collection.is_some()
+            || options.process_collection.is_some(),
+        "correctness mode requires a supervised VAD or owned Process collection"
+    );
     let owned = options.process_collection.is_some() || options.source_output.is_some();
     if owned {
         ensure!(
@@ -1462,9 +1526,13 @@ fn build_qualification_report(
     native: &NativeReport,
     measurement: &MeasurementEvidence,
 ) -> Option<QualificationReport> {
-    if options.vad_collection.is_some() || options.process_collection.is_some() {
+    if options.validation.is_correctness()
+        || options.vad_collection.is_some()
+        || options.process_collection.is_some()
+    {
         // Negotiated recorder format and partial counts live in collection.
         // There is no analyzed waveform/calibration to feed the legacy builder.
+        // Correctness runs must never produce promotable latency evidence.
         return None;
     }
     let (source_identity, source_details) = match options.source_kind {
@@ -2062,6 +2130,9 @@ mod native {
             host: None,
             observer: None,
             observations: None,
+            professional_observations: None,
+            retained_native: None,
+            retained_professional: None,
             playback_info: None,
             startup_samples: Vec::with_capacity(STARTUP_SAMPLE_LIMIT),
             observation_clock: control_observation::ControlObservationClock::prepare(),
@@ -2175,6 +2246,11 @@ mod native {
         host: Option<EngineHost<f32>>,
         observer: Option<moiren_engine::host::EngineObserver>,
         observations: Option<moiren_windows_audio::engine_backend::NativeObservations>,
+        professional_observations:
+            Option<moiren_windows_audio::engine_backend::ProfessionalObservations>,
+        retained_native: Option<moiren_windows_audio::engine_backend::NativeObservationReadHandle>,
+        retained_professional:
+            Option<moiren_windows_audio::engine_backend::ProfessionalObservationReadHandle>,
         playback_info: Option<Value>,
         startup_samples: Vec<Value>,
         observation_clock: control_observation::ControlObservationClock,
@@ -2362,6 +2438,7 @@ mod native {
                 .with_telemetry(options.telemetry)
                 .with_virtual_provider(self.provider.clone());
             self.observations = Some(backend.native_observations());
+            self.professional_observations = Some(backend.observations());
             let host = EngineHost::open(HostConfig::default(), project, backend)
                 .context("open VAD EngineHost")?;
             self.observer = Some(host.observer());
@@ -2404,6 +2481,14 @@ mod native {
                 )
                 .context("open VAD export gate")?;
             let admitted = self.current_health()?;
+            self.retained_native = self
+                .observations
+                .as_ref()
+                .and_then(|view| view.retain_session());
+            self.retained_professional = self
+                .professional_observations
+                .as_ref()
+                .and_then(|view| view.retain_session());
             self.admission = Some(vad_collection::Admission {
                 before_gate,
                 current: admitted,
@@ -2498,12 +2583,32 @@ mod native {
         }
 
         fn shutdown_host(&mut self) -> Result<()> {
+            // Pin this exact owner before live registries are cleared. Reading
+            // after the host joins retains trailing counters, not a pre-stop
+            // estimate or another generation's observations.
+            let native = self.retained_native.take().or_else(|| {
+                self.observations
+                    .as_ref()
+                    .and_then(|view| view.retain_session())
+            });
+            let professional = self.retained_professional.take().or_else(|| {
+                self.professional_observations
+                    .as_ref()
+                    .and_then(|view| view.retain_session())
+            });
+            let expected_generation = self
+                .admission
+                .as_ref()
+                .map(|admission| admission.current.generations[0]);
             drop(self.host.take());
-            // Professional exposes typed observations; the removed backend's
-            // serialized render report is unavailable, rather than zero faults.
-            self.report.backend_diagnostics = None;
-            if let Some(observer) = &self.observer {
-                let snapshot = observer.snapshot();
+            let closed = self.observer.as_ref().map(|observer| observer.snapshot());
+            self.report.backend_diagnostics = Some(final_backend_evidence(
+                native.map(|view| view.snapshot()),
+                professional.map(|view| view.snapshot()),
+                closed.as_ref(),
+                expected_generation,
+            ));
+            if let Some(snapshot) = closed {
                 self.report.engine_cleanup = Some(engine_snapshot_value(&snapshot));
                 if let Some(error) = snapshot.cleanup_error {
                     bail!("VAD EngineHost cleanup: {error}");
@@ -2511,6 +2616,10 @@ mod native {
                 ensure!(
                     snapshot.host == moiren_engine::host::HostState::Closed,
                     "VAD EngineHost did not confirm Closed after shutdown"
+                );
+                ensure!(
+                    snapshot.fault.is_none(),
+                    "VAD EngineHost retained a terminal fault after shutdown"
                 );
             }
             Ok(())
@@ -2531,6 +2640,157 @@ mod native {
                 bail!("VAD provider reported cleanup error: {error}");
             }
             Ok(())
+        }
+    }
+
+    fn final_backend_evidence(
+        native: Option<moiren_windows_audio::engine_backend::NativeObservationSnapshot>,
+        professional: Option<moiren_windows_audio::engine_backend::ProfessionalObservationSnapshot>,
+        closed: Option<&moiren_engine::host::HostSnapshot>,
+        expected_generation: Option<u64>,
+    ) -> Value {
+        let failure = (|| -> Result<()> {
+            let expected = expected_generation.context("VAD final admitted generation missing")?;
+            let native = native
+                .as_ref()
+                .context("VAD final native observations missing")?;
+            let professional = professional
+                .as_ref()
+                .context("VAD final professional observations missing")?;
+            let closed = closed.context("VAD final host snapshot missing")?;
+            ensure!(
+                closed.host == moiren_engine::host::HostState::Closed
+                    && closed.cleanup_error.is_none()
+                    && closed.fault.is_none(),
+                "VAD final host did not join cleanly"
+            );
+            ensure!(
+                native.owner_generation == expected
+                    && professional.owner_generation == expected
+                    && closed.owner_generation == expected,
+                "VAD final observation owner generation mismatch"
+            );
+            ensure!(
+                !native.running && !professional.running,
+                "VAD final observations still report Running"
+            );
+            Ok(())
+        })()
+        .err()
+        .map(|error| format!("{error:#}"));
+        let professional = professional.as_ref().map(|snapshot| {
+            serde_json::json!({
+                "owner_generation": snapshot.owner_generation,
+                "running": snapshot.running,
+                "streams": snapshot.streams.iter().map(|stream| serde_json::json!({
+                    "node": format!("{:?}", stream.node),
+                    "input": stream.input, "master": stream.master,
+                    "actual": {"sample_rate": stream.actual.sample_rate,
+                        "channels": stream.actual.channels,
+                        "buffer_frames": stream.actual.buffer_frames},
+                    "native_callbacks": stream.native_callbacks,
+                    "native_wait_wakes": stream.native_wait_wakes,
+                    "native_wait_timeouts": stream.native_wait_timeouts,
+                    "native_written_frames": stream.native_written_frames,
+                    "dropped_frames": stream.dropped_frames,
+                    "silent_frames": stream.silent_frames,
+                    "native_dropped_frames": stream.native_dropped_frames,
+                    "native_silent_frames": stream.native_silent_frames,
+                })).collect::<Vec<_>>(),
+            })
+        });
+        serde_json::json!({
+            "schema_version": 2,
+            "observation_scope": "final_after_owner_join",
+            "owner_generation": expected_generation,
+            "failure": failure,
+            "professional": professional,
+            "native": native,
+        })
+    }
+
+    #[cfg(test)]
+    mod final_evidence_tests {
+        use super::*;
+        use moiren_windows_audio::engine_backend::{
+            NativeObservationSnapshot, ProfessionalObservationSnapshot,
+        };
+
+        fn closed() -> moiren_engine::host::HostSnapshot {
+            moiren_engine::host::HostSnapshot {
+                host: moiren_engine::host::HostState::Closed,
+                execution: ExecutionState::Dormant,
+                desired_revision: 1,
+                active_revision: None,
+                plan_revision: None,
+                owner_generation: 7,
+                resource_generation: 1,
+                timeline: None,
+                update: moiren_engine::host::UpdateState::Idle,
+                fault: None,
+                cleanup_error: None,
+            }
+        }
+
+        fn native() -> NativeObservationSnapshot {
+            NativeObservationSnapshot {
+                owner_generation: 7,
+                running: false,
+                streams: Vec::new(),
+                bridges: Vec::new(),
+                boundary_probes: Vec::new(),
+                render_padding: Vec::new(),
+            }
+        }
+
+        fn professional() -> ProfessionalObservationSnapshot {
+            ProfessionalObservationSnapshot {
+                owner_generation: 7,
+                running: false,
+                streams: Vec::new(),
+            }
+        }
+
+        #[test]
+        fn final_diagnostics_require_joined_host_and_matching_retained_sessions() {
+            let value = final_backend_evidence(
+                Some(native()),
+                Some(professional()),
+                Some(&closed()),
+                Some(7),
+            );
+            assert_eq!(value["schema_version"], 2);
+            assert_eq!(value["observation_scope"], "final_after_owner_join");
+            assert!(value["failure"].is_null());
+            assert_eq!(value["native"]["owner_generation"], 7);
+            assert_eq!(value["professional"]["owner_generation"], 7);
+            assert!(
+                value.get("render").is_none(),
+                "do not synthesize the legacy render report"
+            );
+            for case in 0..7 {
+                let mut native = Some(native());
+                let mut professional = Some(professional());
+                let mut closed = closed();
+                let mut expected = Some(7);
+                match case {
+                    0 => native = None,
+                    1 => professional = None,
+                    2 => native.as_mut().unwrap().owner_generation = 8,
+                    3 => professional.as_mut().unwrap().running = true,
+                    4 => closed.host = moiren_engine::host::HostState::Open,
+                    5 => {
+                        closed.cleanup_error = Some(moiren_engine::host::BackendError::Failed(
+                            "Stop failed".into(),
+                        ))
+                    }
+                    _ => expected = None,
+                }
+                assert!(
+                    final_backend_evidence(native, professional, Some(&closed), expected)["failure"].is_string(),
+                    "accepted invalid final evidence case {case}"
+                );
+            }
         }
     }
 

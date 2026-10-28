@@ -118,6 +118,8 @@ impl<C: supervision::ChildOwner> Session<C> {
         let mut outcome = Outcome {
             source_endpoint: Some(self.config.source_endpoint.clone()),
             seconds: Some(self.config.seconds),
+            validation: self.config.validation,
+            quality_passed: false,
             schedule: Some(self.schedule.clone()),
             child_pid: Some(self.child.id()),
             pinned_identity: Some(Identity::from(&self.identity)),

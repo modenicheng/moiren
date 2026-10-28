@@ -353,6 +353,769 @@ fn process_collection_active_missing_delivery_evidence_is_not_zero_faults() {
 }
 
 #[test]
+fn process_collection_nonfinite_is_hard_even_when_a_soft_drop_was_seen_first() {
+    let mut value = observation();
+    value["bridge"]["dropped_frames"] = json!(3);
+    value["bridge"]["nonfinite_samples"] = json!(1);
+    let error = validate_bridge_observation(&value, false).unwrap_err();
+    assert!(
+        error.to_string().contains("nonfinite_samples"),
+        "a soft drop must not hide the hard nonfinite failure: {error}"
+    );
+}
+
+fn correctness_policy(grace_ms: u64) -> super::super::validation_policy::ValidationPolicy {
+    use super::super::validation_policy::{ValidationMode, ValidationPolicy};
+    ValidationPolicy {
+        mode: ValidationMode::Correctness,
+        jitter_tolerance_ms: grace_ms,
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn process_collection_correctness_soft_fault_continues_all_phases_without_quality_pass() {
+    let mut guard = Guard::with_policy(correctness_policy(3000));
+    let mut phases = phases();
+    let mut value = active_observation();
+    value["bridge"]["underrun_frames"] = json!(3);
+    assert!(
+        validate_graph_observation(&value, false).is_err(),
+        "strict aborts the same observation"
+    );
+    assert!(guard.observe_graph(&value, false).unwrap());
+    assert_eq!(guard.first_failure, Some(value.clone()));
+    let mut health = Health {
+        graph_started: true,
+        recorder_running: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        phases
+            .tick_with_policy(Duration::ZERO, health, guard.policy, &mut guard.quality)
+            .unwrap(),
+        Action::Wait
+    );
+    assert_eq!(
+        phases
+            .tick_with_policy(
+                Duration::from_millis(100),
+                health,
+                guard.policy,
+                &mut guard.quality
+            )
+            .unwrap(),
+        Action::ActivateSource
+    );
+    health.source_running = true;
+    assert_eq!(
+        phases
+            .tick_with_policy(
+                Duration::from_secs(1),
+                health,
+                guard.policy,
+                &mut guard.quality
+            )
+            .unwrap(),
+        Action::Wait
+    );
+    health.source_submitted = true;
+    assert_eq!(
+        phases
+            .tick_with_policy(
+                Duration::from_secs(2),
+                health,
+                guard.policy,
+                &mut guard.quality
+            )
+            .unwrap(),
+        Action::Wait
+    );
+    assert_eq!(
+        phases
+            .tick_with_policy(
+                Duration::from_millis(2100),
+                health,
+                guard.policy,
+                &mut guard.quality
+            )
+            .unwrap(),
+        Action::Complete
+    );
+    value["bridge"]["underrun_frames"] = json!(19);
+    guard.finish_with(|guard, stage| {
+        if stage == Retirement::JoinGraph {
+            guard.final_observation = Some(value.clone());
+        }
+        Ok(())
+    });
+    assert!(guard.failures.is_none());
+    assert!(
+        guard.collection_complete(true),
+        "completion describes operation, not quality"
+    );
+    assert!(!guard.quality_passed(true));
+    assert_eq!(
+        guard.first_failure.as_ref().unwrap()["bridge"]["underrun_frames"],
+        3
+    );
+    assert_eq!(
+        guard.final_observation.as_ref().unwrap()["bridge"]["underrun_frames"],
+        19
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn process_collection_correctness_still_rejects_hard_schema_nonfinite_and_identity_errors() {
+    for pointer in [
+        "/bridge/nonfinite_samples",
+        "/bridge/dropped_frames",
+        "/timeline/epoch",
+        "/capture_finished",
+    ] {
+        let mut value = active_observation();
+        *value.pointer_mut(pointer).unwrap() = match pointer {
+            "/capture_finished" => json!(true),
+            "/bridge/dropped_frames" => Value::Null,
+            _ => json!(2),
+        };
+        let mut guard = Guard::with_policy(correctness_policy(3000));
+        assert!(
+            guard.observe_graph(&value, true).is_err(),
+            "hard {pointer} was softened"
+        );
+    }
+}
+
+#[test]
+fn process_collection_correctness_progress_grace_is_bounded_and_never_renews_total_ceiling() {
+    for grace in [0, 1, 1000, 3000] {
+        let policy = correctness_policy(grace);
+        let mut phases = phases();
+        phases.activated = Some(Duration::ZERO);
+        let health = Health {
+            graph_started: true,
+            recorder_running: true,
+            source_running: true,
+            ..Default::default()
+        };
+        let mut quality = QualityDiagnostics::default();
+        if grace > 0 {
+            assert_eq!(
+                phases
+                    .tick_with_policy(
+                        Duration::from_millis(5000 + grace - 1),
+                        health,
+                        policy,
+                        &mut quality
+                    )
+                    .unwrap(),
+                Action::Wait
+            );
+            assert!(
+                quality.failure.is_some(),
+                "late observation must remain a quality fault"
+            );
+        }
+        phases.running = None;
+        assert!(
+            phases
+                .tick_with_policy(
+                    Duration::from_millis(5000 + grace),
+                    health,
+                    policy,
+                    &mut quality
+                )
+                .is_err()
+        );
+        phases.running = Some(Duration::from_secs(1));
+        assert!(
+            phases
+                .tick_with_policy(
+                    Duration::from_millis(8000 + grace),
+                    health,
+                    policy,
+                    &mut quality
+                )
+                .is_err()
+        );
+        assert!(
+            phases
+                .tick_with_policy(Duration::from_secs(20), health, policy, &mut quality)
+                .is_err()
+        );
+    }
+    let mut phases = phases();
+    assert!(
+        phases
+            .tick_with_policy(
+                Duration::ZERO,
+                Health::default(),
+                correctness_policy(3001),
+                &mut QualityDiagnostics::default()
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn process_collection_correctness_final_timeouts_are_quality_not_lifecycle_failure() {
+    let (mut capture, mut render, identity) = final_graph();
+    capture["timeout_wakes"] = json!(7);
+    render["stats"]["bridge_shortfall_frames"] = json!(23);
+    let mut quality = QualityDiagnostics::default();
+    assert!(validate_final_graph(&capture, &render, &identity).is_err());
+    validate_final_graph_with_policy(
+        &capture,
+        &render,
+        &identity,
+        correctness_policy(3000),
+        &mut quality,
+    )
+    .unwrap();
+    assert!(quality.failure.as_ref().unwrap().contains("timeout_wakes"));
+    assert!(
+        quality
+            .failure
+            .as_ref()
+            .unwrap()
+            .contains("bridge_shortfall_frames")
+    );
+    capture["process"]["pid"] = json!(99);
+    assert!(
+        validate_final_graph_with_policy(
+            &capture,
+            &render,
+            &identity,
+            correctness_policy(3000),
+            &mut quality
+        )
+        .is_err()
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn process_collection_quality_diagnostics_are_bounded_without_truncating_raw_final_counters() {
+    let mut guard = Guard::with_policy(correctness_policy(3000));
+    let mut value = active_observation();
+    for count in 1..=2000 {
+        value["bridge"]["underrun_frames"] = json!(count);
+        guard.observe_graph(&value, true).unwrap();
+    }
+    assert!(guard.quality.failure.as_ref().unwrap().len() <= 16 * 1024);
+    assert_eq!(
+        guard.first_failure.as_ref().unwrap()["bridge"]["underrun_frames"],
+        1
+    );
+    assert_eq!(value["bridge"]["underrun_frames"], 2000);
+}
+
+#[cfg(windows)]
+fn measurement_outcome() -> crate::measurement::session::MeasurementOutcome {
+    use crate::measurement::session::{MeasurementInfo, MeasurementOutcome};
+    use crate::measurement_sink::SinkReport;
+    use moiren_windows_audio::{
+        SessionDuration,
+        capture::{CaptureReport, CaptureSource, CaptureStatus, PcmEvidenceSummary},
+    };
+    let mut native = CaptureReport::new(CaptureSource::Physical, SessionDuration::UntilStopped);
+    native.stream_started = true;
+    native.stop_succeeded = true;
+    native.status = CaptureStatus::Stopped;
+    native.evidence_metadata = Some(PcmEvidenceSummary {
+        sample_rate: 48_000,
+        channels: 2,
+        packets: 1,
+        observed_frames: 2,
+        stored_frames: 2,
+        ..Default::default()
+    });
+    MeasurementOutcome {
+        info: MeasurementInfo {
+            input_endpoint_id: "independent-recorder".into(),
+            sample_rate: 48_000,
+            channels: 2,
+            ring_frames: 8,
+            max_frames: 48_000,
+        },
+        native_capture: Some(native),
+        sink: Some(SinkReport {
+            schema_version: 1,
+            sample_rate: 48_000,
+            channels: 2,
+            written_frames: 2,
+            written_pcm_bytes: 16,
+            written_metadata_bytes: 180,
+            complete_packets: 1,
+            sequence_gaps: 0,
+            missing_packets: 0,
+            incomplete_packets: 0,
+            nonfinite_samples: 0,
+            counters_saturated: false,
+            cancelled: false,
+            failure: None,
+        }),
+        activation_elapsed: Some(Duration::from_secs(1)),
+        failure: None,
+    }
+}
+
+#[cfg(windows)]
+fn measurement_loss_outcome() -> crate::measurement::session::MeasurementOutcome {
+    let mut outcome = measurement_outcome();
+    let summary = outcome
+        .native_capture
+        .as_mut()
+        .unwrap()
+        .evidence_metadata
+        .as_mut()
+        .unwrap();
+    summary.packets = 2;
+    summary.observed_frames = 9;
+    summary.dropped_frames = 7;
+    summary.overflow_packets = 1;
+    let sink = outcome.sink.as_mut().unwrap();
+    sink.missing_packets = 1;
+    sink.sequence_gaps = 1;
+    outcome.failure = Some(
+        concat!(
+            "measurement evidence has loss or invalid continuity/timestamps; ",
+            "measurement sink and final native evidence are not complete and consistent",
+        )
+        .into(),
+    );
+    outcome
+}
+
+#[cfg(windows)]
+#[test]
+fn process_collection_recorder_quality_aggregate_does_not_invalidate_correctness_completion() {
+    let outcome = measurement_loss_outcome();
+    let mut quality = QualityDiagnostics::default();
+    assert!(validate_measurement_outcome(&outcome, Default::default(), &mut quality).is_err());
+    let mut guard = Guard::with_policy(correctness_policy(3000));
+    validate_measurement_outcome(&outcome, guard.policy, &mut guard.quality).unwrap();
+    assert!(guard.collection_complete(true));
+    assert!(!guard.quality_passed(true));
+    assert!(
+        guard
+            .quality
+            .failure
+            .as_ref()
+            .unwrap()
+            .contains("dropped_frames=7")
+    );
+    assert_eq!(
+        outcome
+            .native_capture
+            .as_ref()
+            .unwrap()
+            .evidence_metadata
+            .unwrap()
+            .dropped_frames,
+        7
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn process_collection_recorder_quality_cannot_hide_stop_io_nonfinite_or_unknown_failure() {
+    for fault in [
+        "stop",
+        "io",
+        "nonfinite",
+        "unknown",
+        "schema",
+        "missing",
+        "persisted_frames",
+    ] {
+        let mut outcome = measurement_outcome();
+        match fault {
+            "stop" => outcome.native_capture.as_mut().unwrap().stop_succeeded = false,
+            "io" => outcome.sink.as_mut().unwrap().failure = Some("flush failed".into()),
+            "nonfinite" => outcome.sink.as_mut().unwrap().nonfinite_samples = 1,
+            "unknown" => outcome.failure = Some(
+                "measurement evidence has loss or invalid continuity/timestamps; native join panic"
+                    .into(),
+            ),
+            "schema" => outcome.sink.as_mut().unwrap().schema_version = 2,
+            "missing" => outcome.native_capture = None,
+            "persisted_frames" => outcome.sink.as_mut().unwrap().written_frames = 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            validate_measurement_outcome(
+                &outcome,
+                correctness_policy(3000),
+                &mut QualityDiagnostics::default()
+            )
+            .is_err(),
+            "{fault} was softened"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn process_collection_correctness_rejects_malformed_or_unreconciled_packet_persistence() {
+    for fault in [
+        "missing_packets",
+        "incomplete_packets",
+        "reader_abandoned_packets",
+        "packet_count_mismatch",
+        "sink_aggregate",
+        "unexplained_continuity_aggregate",
+    ] {
+        let mut outcome = measurement_outcome();
+        match fault {
+            "missing_packets" => outcome.sink.as_mut().unwrap().missing_packets = 1,
+            "incomplete_packets" => outcome.sink.as_mut().unwrap().incomplete_packets = 1,
+            "reader_abandoned_packets" => {
+                outcome
+                    .native_capture
+                    .as_mut()
+                    .unwrap()
+                    .evidence_metadata
+                    .as_mut()
+                    .unwrap()
+                    .reader_abandoned_packets = 1;
+            }
+            "packet_count_mismatch" => outcome.sink.as_mut().unwrap().complete_packets = 0,
+            "sink_aggregate" => {
+                outcome.failure = Some(
+                    "measurement sink and final native evidence are not complete and consistent"
+                        .into(),
+                );
+            }
+            "unexplained_continuity_aggregate" => {
+                outcome.failure =
+                    Some("measurement evidence has loss or invalid continuity/timestamps".into());
+            }
+            _ => unreachable!(),
+        }
+        let mut guard = Guard::with_policy(correctness_policy(3000));
+        let error = validate_measurement_outcome(&outcome, guard.policy, &mut guard.quality)
+            .expect_err(&format!("{fault} was softened"));
+        append_failure(&mut guard.failures, &format!("{error:#}"));
+        assert!(!guard.collection_complete(true), "{fault} completed");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn process_collection_correctness_retains_native_loss_and_sequence_gaps_as_quality() {
+    let outcome = measurement_loss_outcome();
+    let mut guard = Guard::with_policy(correctness_policy(3000));
+    validate_measurement_outcome(&outcome, guard.policy, &mut guard.quality).unwrap();
+    assert!(guard.collection_complete(true));
+    assert!(!guard.quality_passed(true));
+    let diagnostics = guard.quality.failure.as_ref().unwrap();
+    assert!(diagnostics.contains("dropped_frames=7"));
+    assert!(diagnostics.contains("sequence_gaps=1"));
+    assert_eq!(outcome.sink.as_ref().unwrap().sequence_gaps, 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn process_collection_correctness_whole_packet_loss_cannot_hide_corrupt_accounting() {
+    for fault in [
+        "written_frames",
+        "incomplete_packets",
+        "reader_abandoned_packets",
+        "complete_packets",
+        "missing_packets",
+        "sequence_gaps",
+        "missing_sequence_gap",
+        "observed_frames",
+        "frame_overflow",
+        "packet_underflow",
+        "loss_counters",
+        "silent_frames",
+        "unknown_aggregate",
+        "partial_aggregate",
+    ] {
+        let mut outcome = measurement_loss_outcome();
+        let summary = outcome
+            .native_capture
+            .as_mut()
+            .unwrap()
+            .evidence_metadata
+            .as_mut()
+            .unwrap();
+        let sink = outcome.sink.as_mut().unwrap();
+        match fault {
+            "written_frames" => sink.written_frames = 1,
+            "incomplete_packets" => sink.incomplete_packets = 1,
+            "reader_abandoned_packets" => summary.reader_abandoned_packets = 1,
+            "complete_packets" => sink.complete_packets = 0,
+            "missing_packets" => sink.missing_packets = 2,
+            "sequence_gaps" => sink.sequence_gaps = 2,
+            "missing_sequence_gap" => sink.sequence_gaps = 0,
+            "observed_frames" => summary.observed_frames = 8,
+            "frame_overflow" => {
+                summary.stored_frames = u64::MAX;
+                sink.written_frames = u64::MAX;
+            }
+            "packet_underflow" => summary.overflow_packets = 3,
+            "loss_counters" => {
+                summary.dropped_frames = 0;
+                summary.observed_frames = summary.stored_frames;
+            }
+            "silent_frames" => summary.silent_frames = summary.observed_frames + 1,
+            "unknown_aggregate" => outcome
+                .failure
+                .as_mut()
+                .unwrap()
+                .push_str("; disk write failed"),
+            "partial_aggregate" => {
+                outcome.failure =
+                    Some("measurement evidence has loss or invalid continuity/timestamps".into());
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            validate_measurement_outcome(
+                &outcome,
+                correctness_policy(3000),
+                &mut QualityDiagnostics::default(),
+            )
+            .is_err(),
+            "{fault} was softened"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn process_collection_correctness_reconciles_real_ring_and_sink_whole_packet_overflow() {
+    use crate::measurement_sink::{EvidenceSink, SinkLimits};
+    use moiren_windows_audio::capture::{
+        PcmEvidenceConfig, PcmEvidencePacket, pcm_evidence_stream,
+    };
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    for trailing in [false, true] {
+        let directory = std::env::temp_dir().join(format!(
+            "moiren-process-overflow-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        fs::create_dir(&directory).unwrap();
+        let pcm = directory.join("measurement.f32le");
+        let metadata = directory.join("measurement.jsonl");
+        let (mut writer, reader) = pcm_evidence_stream(
+            PcmEvidenceConfig {
+                capacity_frames: 2,
+                detect_position_gaps: false,
+            },
+            48_000,
+            2,
+        )
+        .unwrap();
+        // No consumer runs until recording is closed. Oversized packets must
+        // drop whole, independently of sink scheduling or hardware timing.
+        let mut position = 0;
+        for frames in if trailing { [2, 3] } else { [3, 2] } {
+            assert_eq!(
+                writer
+                    .record_packet(
+                        &[0; 24][..frames as usize * 8],
+                        PcmEvidencePacket {
+                            frames,
+                            flags: 0,
+                            device_position_frames: position,
+                            qpc_100ns: 42 + position,
+                        },
+                    )
+                    .unwrap(),
+                if frames == 2 { 2 } else { 0 },
+            );
+            position += u64::from(frames);
+        }
+        writer.close();
+        let summary = writer.snapshot();
+        let mut sink = EvidenceSink::create(
+            reader,
+            48_000,
+            2,
+            &pcm,
+            &metadata,
+            SinkLimits {
+                max_frames: 2,
+                max_pcm_bytes: 16,
+                max_metadata_bytes: 1024,
+                max_packets: 1,
+            },
+        )
+        .unwrap();
+        let report = sink.finish().unwrap();
+        assert_eq!((summary.packets, summary.overflow_packets), (2, 1));
+        assert_eq!((summary.stored_frames, summary.dropped_frames), (2, 3));
+        assert_eq!(summary.observed_frames, 5);
+        assert_eq!((report.complete_packets, report.written_frames), (1, 2));
+        assert_eq!(report.missing_packets, u64::from(!trailing));
+        assert_eq!(report.sequence_gaps, u64::from(!trailing));
+        assert!(report.failure.is_none());
+        assert_eq!(fs::read(&pcm).unwrap(), [0; 16]);
+        assert_eq!(fs::read_to_string(&metadata).unwrap().lines().count(), 1);
+
+        let mut outcome = measurement_loss_outcome();
+        outcome.info.ring_frames = 2;
+        outcome.native_capture.as_mut().unwrap().evidence_metadata = Some(summary);
+        outcome.sink = Some(report);
+        let mut strict_quality = QualityDiagnostics::default();
+        assert!(
+            validate_measurement_outcome(&outcome, Default::default(), &mut strict_quality)
+                .is_err()
+        );
+        let mut guard = Guard::with_policy(correctness_policy(3000));
+        validate_measurement_outcome(&outcome, guard.policy, &mut guard.quality).unwrap();
+        assert!(guard.collection_complete(true));
+        assert!(!guard.quality_passed(true));
+        assert!(
+            guard
+                .quality
+                .failure
+                .as_ref()
+                .unwrap()
+                .contains("dropped_frames=3")
+        );
+        assert_eq!(
+            outcome
+                .native_capture
+                .as_ref()
+                .unwrap()
+                .evidence_metadata
+                .unwrap()
+                .dropped_frames,
+            3
+        );
+        fs::remove_file(pcm).unwrap();
+        fs::remove_file(metadata).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn process_collection_correctness_soft_fault_keeps_full_retirement_after_later_cleanup_failure() {
+    let mut guard = Guard::with_policy(correctness_policy(3000));
+    let mut value = active_observation();
+    value["bridge"]["dropped_frames"] = json!(9);
+    guard.observe_graph(&value, true).unwrap();
+    let mut seen = Vec::new();
+    guard.finish_with(|_, stage| {
+        seen.push(stage);
+        if stage == Retirement::StopGraph {
+            anyhow::bail!("injected stop failed");
+        }
+        Ok(())
+    });
+    assert_eq!(
+        seen.len(),
+        8,
+        "soft quality and failed stop do not bypass other stops/joins"
+    );
+    assert!(guard.failures.as_ref().unwrap().contains("stop failed"));
+    assert!(!guard.collection_complete(true));
+    assert!(!guard.cleanup_complete());
+}
+
+#[test]
+fn process_collection_correctness_cannot_submit_without_running_or_ignore_recorder_deadline() {
+    let mut phases = phases();
+    phases.activated = Some(Duration::ZERO);
+    let mut health = Health {
+        graph_started: true,
+        recorder_running: true,
+        source_submitted: true,
+        ..Default::default()
+    };
+    assert!(
+        phases
+            .tick_with_policy(
+                Duration::from_secs(1),
+                health,
+                correctness_policy(3000),
+                &mut QualityDiagnostics::default()
+            )
+            .is_err()
+    );
+    health.source_running = true;
+    health.recorder_deadline = true;
+    assert!(
+        phases
+            .tick_with_policy(
+                Duration::from_secs(1),
+                health,
+                correctness_policy(3000),
+                &mut QualityDiagnostics::default()
+            )
+            .is_err()
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn process_collection_source_timeouts_keep_first_receipt_and_operational_result_separate() {
+    use super::super::{
+        process_source::{Phase, Receipt},
+        source::SourceSchedule,
+    };
+    let mut receipt = Receipt {
+        schema_version: 1,
+        phase: Phase::Running,
+        identity: super::super::process_source::Identity {
+            pid: 42,
+            creation_time_100ns: 71,
+            executable_name: "probe.exe".into(),
+        },
+        source_endpoint: "source-output".into(),
+        seconds: 20,
+        validation: correctness_policy(3000),
+        schedule: SourceSchedule {
+            schema_version: 1,
+            schedule_id: "test".into(),
+            waveform_version: super::super::source::WAVEFORM_VERSION.into(),
+            sample_rate: 48_000,
+            channels: 2,
+            marker_frames: 32,
+            marker_amplitude: 0.1,
+            total_source_frames: 64,
+            starts: vec![0],
+        },
+        playback: json!({"event_timeouts":2}),
+        stop_requested: false,
+        failure: None,
+    };
+    assert!(Guard::default().observe_source_receipt(&receipt).is_err());
+    let mut guard = Guard::with_policy(correctness_policy(3000));
+    guard.observe_source_receipt(&receipt).unwrap();
+    receipt.playback["event_timeouts"] = json!(17);
+    guard.observe_source_receipt(&receipt).unwrap();
+    assert!(guard.collection_complete(true));
+    assert!(!guard.quality_passed(true));
+    assert_eq!(
+        guard.first_failure.as_ref().unwrap()["receipt"]["playback"]["event_timeouts"],
+        2
+    );
+    assert!(
+        guard
+            .quality
+            .failure
+            .as_ref()
+            .unwrap()
+            .contains("event_timeouts=17")
+    );
+}
+
+#[test]
 fn process_collection_setup_cannot_activate_without_remaining_source_budget() {
     let mut phases = phases();
     phases.ceiling = Duration::from_secs(8);

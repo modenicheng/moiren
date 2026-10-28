@@ -1,5 +1,7 @@
 //! Owned Process collection; control-side orchestration, never qualification.
 
+#[cfg(any(windows, test))]
+use super::validation_policy::ValidationPolicy;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -146,7 +148,25 @@ struct Phases {
 
 #[cfg(any(windows, test))]
 impl Phases {
+    #[cfg(test)]
     fn tick(&mut self, now: Duration, health: Health) -> Result<Action> {
+        self.tick_with_policy(
+            now,
+            health,
+            ValidationPolicy::default(),
+            &mut QualityDiagnostics::default(),
+        )
+    }
+
+    fn tick_with_policy(
+        &mut self,
+        now: Duration,
+        health: Health,
+        policy: ValidationPolicy,
+        quality: &mut QualityDiagnostics,
+    ) -> Result<Action> {
+        policy.validate()?;
+        let grace = policy.progress_grace();
         ensure!(
             now < self.ceiling,
             "incomplete Process collection: initial total deadline"
@@ -161,16 +181,19 @@ impl Phases {
                     .map_or(Duration::ZERO, |ready| now.saturating_sub(ready)),
             ) + Duration::from_secs(7)
                 + self.source_duration
-                + self.postroll;
+                + self.postroll
+                + grace;
             ensure!(
                 now.saturating_add(remaining) < self.ceiling,
                 "incomplete Process collection: remaining source phase budget"
             );
             if self.ready.is_none() {
-                ensure!(
-                    now.saturating_sub(self.start_requested) < Duration::from_secs(5),
-                    "Process graph/recorder Start deadline"
-                );
+                quality.progress_deadline(
+                    now.saturating_sub(self.start_requested),
+                    Duration::from_secs(5),
+                    policy,
+                    "Process graph/recorder Start deadline",
+                )?;
             }
             if !health.graph_started || !health.recorder_running {
                 return Ok(Action::Wait);
@@ -190,7 +213,12 @@ impl Phases {
         // Receipt presence is not proof it was observed before the deadline.
         // Enforce each first-observation bound before accepting a late receipt.
         if self.running.is_none() {
-            ensure!(elapsed < Duration::from_secs(5), "source Start deadline");
+            quality.progress_deadline(
+                elapsed,
+                Duration::from_secs(5),
+                policy,
+                "source Start deadline",
+            )?;
             if health.source_running {
                 self.running = Some(now);
             }
@@ -203,10 +231,12 @@ impl Phases {
             );
         }
         if self.submitted.is_none() {
-            ensure!(
-                elapsed < Duration::from_secs(7) + self.source_duration,
-                "source submission deadline"
-            );
+            quality.progress_deadline(
+                elapsed,
+                Duration::from_secs(7) + self.source_duration,
+                policy,
+                "source submission deadline",
+            )?;
         }
         if health.source_submitted {
             let submitted = *self.submitted.get_or_insert(now);
@@ -271,8 +301,58 @@ fn append_failure(failure: &mut Option<String>, message: &str) {
     }
 }
 
+/// Diagnostic faults never replace operational failures or raw final reports.
+/// Text is bounded independently of run duration and cumulative native counters.
 #[cfg(any(windows, test))]
+#[derive(Default, Serialize)]
+struct QualityDiagnostics {
+    failure: Option<String>,
+}
+
+#[cfg(any(windows, test))]
+impl QualityDiagnostics {
+    fn fault(&mut self, policy: ValidationPolicy, message: &str) -> Result<()> {
+        append_failure(&mut self.failure, message);
+        ensure!(policy.is_correctness(), "{message}");
+        Ok(())
+    }
+
+    fn progress_deadline(
+        &mut self,
+        elapsed: Duration,
+        base: Duration,
+        policy: ValidationPolicy,
+        message: &str,
+    ) -> Result<()> {
+        ensure!(
+            elapsed < base.saturating_add(policy.progress_grace()),
+            "{message}"
+        );
+        if elapsed >= base {
+            self.fault(policy, message)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(windows, test))]
+#[cfg(test)]
 fn validate_graph_observation(value: &Value, running_required: bool) -> Result<bool> {
+    validate_graph_with_policy(
+        value,
+        running_required,
+        ValidationPolicy::default(),
+        &mut QualityDiagnostics::default(),
+    )
+}
+
+#[cfg(any(windows, test))]
+fn validate_graph_with_policy(
+    value: &Value,
+    running_required: bool,
+    policy: ValidationPolicy,
+    quality: &mut QualityDiagnostics,
+) -> Result<bool> {
     let boolean = |name: &str| {
         value
             .get(name)
@@ -288,14 +368,30 @@ fn validate_graph_observation(value: &Value, running_required: bool) -> Result<b
         !running_required || started,
         "Process graph lost Start acknowledgement"
     );
-    validate_bridge_observation(value, running_required)?;
+    validate_bridge_with_policy(value, running_required, policy, quality)?;
     Ok(started)
 }
 
 #[cfg(any(windows, test))]
+#[cfg(test)]
 fn validate_bridge_observation(value: &Value, delivery_required: bool) -> Result<()> {
+    validate_bridge_with_policy(
+        value,
+        delivery_required,
+        ValidationPolicy::default(),
+        &mut QualityDiagnostics::default(),
+    )
+}
+
+#[cfg(any(windows, test))]
+fn validate_bridge_with_policy(
+    value: &Value,
+    delivery_required: bool,
+    policy: ValidationPolicy,
+    quality: &mut QualityDiagnostics,
+) -> Result<()> {
     let bridge = value.get("bridge").context("graph bridge missing")?;
-    for key in [
+    let bridge_keys = [
         "dropped_frames",
         "nonfinite_samples",
         "discontinuities",
@@ -304,35 +400,33 @@ fn validate_bridge_observation(value: &Value, delivery_required: bool) -> Result
         "age_discarded_frames",
         "underrun_frames",
         "resets",
-    ] {
-        ensure!(
-            bridge
-                .get(key)
-                .and_then(Value::as_u64)
-                .with_context(|| format!("missing bridge {key}"))?
-                == 0,
-            "Process bridge fault: {key}"
-        );
+    ];
+    // Validate the entire schema and hard faults before any soft quality return.
+    for key in bridge_keys {
+        let count = bridge
+            .get(key)
+            .and_then(Value::as_u64)
+            .with_context(|| format!("missing bridge {key}"))?;
+        if key == "nonfinite_samples" {
+            ensure!(count == 0, "Process bridge fault: {key}");
+        }
     }
     let delivery = bridge.get("native_delivery").filter(|v| !v.is_null());
     if delivery_required {
         ensure!(delivery.is_some(), "Process delivery evidence unavailable");
     }
+    let delivery_keys = [
+        "packet_bound_violations",
+        "gap_bound_violations",
+        "unavailable_clocks",
+        "regressed_clocks",
+    ];
     if let Some(delivery) = delivery {
-        for key in [
-            "packet_bound_violations",
-            "gap_bound_violations",
-            "unavailable_clocks",
-            "regressed_clocks",
-        ] {
-            ensure!(
-                delivery
-                    .get(key)
-                    .and_then(Value::as_u64)
-                    .with_context(|| format!("missing delivery {key}"))?
-                    == 0,
-                "Process delivery fault: {key}"
-            );
+        for key in delivery_keys {
+            delivery
+                .get(key)
+                .and_then(Value::as_u64)
+                .with_context(|| format!("missing delivery {key}"))?;
         }
     }
     let timeline = value
@@ -344,11 +438,41 @@ fn validate_bridge_observation(value: &Value, delivery_required: bool) -> Result
             && timeline.get("revision").and_then(Value::as_u64) == Some(1),
         "Process graph epoch/revision changed or unavailable"
     );
+    for key in bridge_keys {
+        if bridge[key].as_u64() != Some(0) {
+            quality.fault(policy, &format!("Process bridge fault: {key}"))?;
+        }
+    }
+    if let Some(delivery) = delivery {
+        for key in delivery_keys {
+            if delivery[key].as_u64() != Some(0) {
+                quality.fault(policy, &format!("Process delivery fault: {key}"))?;
+            }
+        }
+    }
     Ok(())
 }
 
 #[cfg(any(windows, test))]
+#[cfg(test)]
 fn validate_final_graph(capture: &Value, render: &Value, identity: &Value) -> Result<()> {
+    validate_final_graph_with_policy(
+        capture,
+        render,
+        identity,
+        ValidationPolicy::default(),
+        &mut QualityDiagnostics::default(),
+    )
+}
+
+#[cfg(any(windows, test))]
+fn validate_final_graph_with_policy(
+    capture: &Value,
+    render: &Value,
+    identity: &Value,
+    policy: ValidationPolicy,
+    quality: &mut QualityDiagnostics,
+) -> Result<()> {
     for (name, report) in [("capture", capture), ("render", render)] {
         ensure!(
             report.get("failure").is_some_and(Value::is_null),
@@ -405,10 +529,16 @@ fn validate_final_graph(capture: &Value, render: &Value, identity: &Value) -> Re
         ),
     ] {
         for pointer in pointers {
-            ensure!(
-                report.pointer(pointer).and_then(Value::as_u64) == Some(0),
-                "final graph missing/fault counter {pointer}"
-            );
+            let count = report
+                .pointer(pointer)
+                .and_then(Value::as_u64)
+                .with_context(|| format!("final graph missing/fault counter {pointer}"))?;
+            if count != 0 {
+                quality.fault(
+                    policy,
+                    &format!("final graph missing/fault counter {pointer}"),
+                )?;
+            }
         }
     }
     ensure!(
@@ -426,6 +556,128 @@ fn validate_final_graph(capture: &Value, render: &Value, identity: &Value) -> Re
 }
 
 #[cfg(any(windows, test))]
+fn validate_measurement_outcome(
+    outcome: &crate::measurement::session::MeasurementOutcome,
+    policy: ValidationPolicy,
+    quality: &mut QualityDiagnostics,
+) -> Result<()> {
+    // Strict mode retains the session's complete fail-fast reconciliation.
+    if !policy.is_correctness() {
+        ensure!(
+            outcome.failure.is_none(),
+            "recorder final: {}",
+            outcome.failure.as_deref().unwrap_or_default()
+        );
+        return Ok(());
+    }
+    let native = outcome
+        .native_capture
+        .as_ref()
+        .context("recorder final native report missing")?;
+    let sink = outcome
+        .sink
+        .as_ref()
+        .context("recorder final sink report missing")?;
+    let summary = native
+        .evidence_metadata
+        .context("recorder final evidence summary missing")?;
+    ensure!(
+        outcome.activation_elapsed.is_some()
+            && native.stream_started
+            && native.stop_succeeded
+            && native.failure.is_none()
+            && sink.failure.is_none()
+            && !sink.cancelled,
+        "recorder final activation/Start/Stop/persistence failed"
+    );
+    ensure!(
+        sink.schema_version == 1
+            && summary.sample_rate == outcome.info.sample_rate
+            && summary.channels == outcome.info.channels
+            && sink.sample_rate == outcome.info.sample_rate
+            && sink.channels == outcome.info.channels,
+        "recorder final schema/format mismatch"
+    );
+    ensure!(
+        sink.nonfinite_samples == 0
+            && sink.incomplete_packets == 0
+            && summary.reader_abandoned_packets == 0,
+        "recorder final nonfinite, malformed or abandoned evidence"
+    );
+    ensure!(
+        !summary.counters_saturated
+            && !summary.sequence_exhausted
+            && summary.position_overflow_packets == 0
+            && !sink.counters_saturated,
+        "recorder final evidence counter overflow/exhaustion"
+    );
+    // Native packet sequences include whole packets rejected by the ring.
+    // Account for those drops, but never soften missing persisted PCM/metadata.
+    ensure!(
+        summary.stored_frames > 0
+            && sink.written_frames == summary.stored_frames
+            && summary.stored_frames.checked_add(summary.dropped_frames)
+                == Some(summary.observed_frames)
+            && summary.packets.checked_sub(summary.overflow_packets) == Some(sink.complete_packets)
+            && sink.complete_packets > 0
+            && sink.missing_packets <= summary.overflow_packets
+            && sink.sequence_gaps <= sink.missing_packets
+            && (sink.missing_packets == 0) == (sink.sequence_gaps == 0)
+            && summary.silent_frames <= summary.observed_frames,
+        "recorder final persisted frames/packets missing or inconsistent"
+    );
+    ensure!(
+        (summary.dropped_frames == 0) == (summary.overflow_packets == 0),
+        "recorder final loss counters inconsistent"
+    );
+    let continuity_fault = summary.dropped_frames != 0
+        || summary.overflow_packets != 0
+        || summary.gap_events != 0
+        || summary.discontinuity_events != 0
+        || summary.timestamp_error_packets != 0;
+    // Reconstruct the session's exact aggregate only after structured checks
+    // explain all missing packets as ring loss. A prefix filter could hide IO
+    // or lifecycle errors alongside either quality diagnostic.
+    let mut expected = None;
+    if continuity_fault {
+        append_failure(
+            &mut expected,
+            "measurement evidence has loss or invalid continuity/timestamps",
+        );
+    }
+    if sink.missing_packets != 0 || sink.complete_packets != summary.packets {
+        append_failure(
+            &mut expected,
+            "measurement sink and final native evidence are not complete and consistent",
+        );
+    }
+    if let Some(failure) = &outcome.failure {
+        ensure!(
+            Some(failure) == expected.as_ref(),
+            "recorder final: {failure}"
+        );
+        quality.fault(policy, failure)?;
+    }
+    for (name, count) in [
+        ("timeout_wakes", native.timeout_wakes),
+        ("dropped_frames", summary.dropped_frames),
+        ("overflow_packets", summary.overflow_packets),
+        ("gap_events", summary.gap_events),
+        ("gap_frames", summary.gap_frames),
+        ("discontinuity_events", summary.discontinuity_events),
+        ("timestamp_error_packets", summary.timestamp_error_packets),
+        ("sequence_gaps", sink.sequence_gaps),
+        ("missing_packets", sink.missing_packets),
+    ] {
+        if count != 0 {
+            quality.fault(policy, &format!("recorder final quality: {name}={count}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+#[cfg(test)]
 fn validate_and_latch(value: &Value, running: bool, first: &mut Option<Value>) -> Result<bool> {
     validate_graph_observation(value, running).inspect_err(|_| {
         if first.is_none() {
@@ -468,6 +720,7 @@ pub(super) fn collect(
     use std::time::Instant;
 
     let initial = Instant::now();
+    options.validation.validate()?;
     let provenance = super::source::SourceProvenance::new(Some(plan));
     let frames = provenance
         .schedule
@@ -490,7 +743,7 @@ pub(super) fn collect(
         running: None,
         submitted: None,
     };
-    let mut guard = Guard::default();
+    let mut guard = Guard::with_policy(options.validation);
     let mut complete = false;
     let mut phase_stamps = Vec::with_capacity(8);
     let mut active_frame = None;
@@ -519,7 +772,7 @@ pub(super) fn collect(
                         .into(),
                 },
             ) {
-                Ok(owner) => owner,
+                Ok(owner) => owner.with_start_grace(options.validation.progress_grace())?,
                 Err(mut failure) => {
                     guard.preparation_capture = failure.native_capture.take();
                     return Err(failure.error);
@@ -543,6 +796,7 @@ pub(super) fn collect(
                     .context("retained source schedule missing")?
                     .into(),
                 seconds: options.seconds,
+                validation: options.validation,
             },
             &Path::new(&paths.directory).join("process-source"),
             || {
@@ -600,11 +854,8 @@ pub(super) fn collect(
             );
             let observation = guard.graph.as_ref().context("graph missing")?.observation();
             guard.last_observation = Some(observation.clone());
-            let graph_started = match validate_and_latch(
-                &observation,
-                phases.submitted.is_some(),
-                &mut guard.first_failure,
-            ) {
+            let graph_started = match guard.observe_graph(&observation, phases.submitted.is_some())
+            {
                 Ok(started) => started,
                 Err(error) => {
                     guard.latch(&observation);
@@ -622,6 +873,7 @@ pub(super) fn collect(
                 matches!(measurement, MeasurementProgress::DeadlineReached),
                 || guard.source.as_mut().context("source missing")?.check(),
             )?;
+            guard.observe_source(&source)?;
             if let Some(load) = guard.load.as_mut() {
                 load.check()?;
             }
@@ -637,7 +889,7 @@ pub(super) fn collect(
                     Path::new(&paths.directory).join("controlled-load.result.json"),
                 )?);
             }
-            let action = phases.tick(
+            let action = phases.tick_with_policy(
                 initial.elapsed(),
                 Health {
                     graph_started,
@@ -646,7 +898,12 @@ pub(super) fn collect(
                     source_running: source.running,
                     source_submitted: source.submitted,
                 },
+                guard.policy,
+                &mut guard.quality,
             )?;
+            if guard.quality.failure.is_some() {
+                guard.latch(&observation);
+            }
             if phases.activated.is_some()
                 && let Some(frame) = observation
                     .pointer("/timeline/frame")
@@ -708,7 +965,19 @@ pub(super) fn collect(
                     .as_ref()
                     .context("final graph render report missing")?,
             )?;
-            validate_final_graph(&capture, &render, identity)
+            let result = validate_final_graph_with_policy(
+                &capture,
+                &render,
+                identity,
+                guard.policy,
+                &mut guard.quality,
+            );
+            if guard.quality.failure.is_some() && guard.first_failure.is_none() {
+                guard.first_failure = Some(
+                    json!({"stage":"final_graph", "capture":capture, "render":render, "identity":identity}),
+                );
+            }
+            result
         })();
         if let Err(error) = validation {
             append_failure(&mut guard.failures, &format!("final graph: {error:#}"));
@@ -745,6 +1014,7 @@ pub(super) fn collect(
     native.collection = Some(
         json!({"schema_version":1,"status":"unqualified","qualified":false,
         "collection_complete":guard.collection_complete(complete),"cleanup_complete":guard.cleanup_complete(),
+        "validation":guard.policy,"quality_passed":guard.quality_passed(complete),"quality_diagnostics":guard.quality,
         "config":config,"playback_source":provenance,"owned_source":source,"source_identity":guard.identity,
         "source_output_endpoint_id":options.source_output,"graph_output_endpoint_id":options.output_endpoint,
         "measurement":measurement,"measurement_preparation_capture":guard.preparation_capture,
@@ -763,6 +1033,8 @@ pub(super) fn collect(
 #[cfg(windows)]
 #[derive(Default)]
 struct Guard {
+    policy: ValidationPolicy,
+    quality: QualityDiagnostics,
     measurement: Option<crate::measurement::session::MeasurementSession>,
     measurement_outcome: Option<crate::measurement::session::MeasurementOutcome>,
     preparation_capture: Option<Box<moiren_windows_audio::capture::CaptureReport>>,
@@ -808,6 +1080,45 @@ fn stop_peers(
 
 #[cfg(windows)]
 impl Guard {
+    fn with_policy(policy: ValidationPolicy) -> Self {
+        let mut guard = Self::default();
+        guard.policy = policy;
+        guard
+    }
+    fn observe_graph(&mut self, value: &Value, running: bool) -> Result<bool> {
+        let result = validate_graph_with_policy(value, running, self.policy, &mut self.quality);
+        if result.is_err() || self.quality.failure.is_some() {
+            self.latch(value);
+        }
+        result
+    }
+    fn observe_source(&mut self, progress: &super::process_source::Progress) -> Result<()> {
+        for receipt in [&progress.running_receipt, &progress.submitted_receipt]
+            .into_iter()
+            .flatten()
+        {
+            self.observe_source_receipt(receipt)?;
+        }
+        Ok(())
+    }
+    fn observe_source_receipt(&mut self, receipt: &super::process_source::Receipt) -> Result<()> {
+        let timeouts = receipt.playback["event_timeouts"]
+            .as_u64()
+            .context("source event timeout counter missing")?;
+        if timeouts != 0 {
+            if self.first_failure.is_none() {
+                self.first_failure = Some(json!({"stage":"source_quality", "receipt":receipt}));
+            }
+            self.quality.fault(
+                self.policy,
+                &format!("source quality: event_timeouts={timeouts}"),
+            )?;
+        }
+        Ok(())
+    }
+    fn quality_passed(&self, phases_complete: bool) -> bool {
+        self.collection_complete(phases_complete) && self.quality.failure.is_none()
+    }
     fn record_graph_persistence(&mut self, result: Result<()>) {
         if let Err(error) = result {
             append_failure(
@@ -845,7 +1156,7 @@ impl Guard {
         }
         if let Some(graph) = &self.graph {
             let value = graph.observation();
-            if let Err(error) = validate_and_latch(&value, false, &mut self.first_failure) {
+            if let Err(error) = self.observe_graph(&value, false) {
                 append_failure(&mut self.failures, &format!("pre-stop graph: {error:#}"));
             }
             self.last_observation = Some(value);
@@ -859,7 +1170,8 @@ impl Guard {
             self.final_observation = Some(graph.observation());
         }
         if let Some(value) = &self.final_observation
-            && let Err(error) = validate_bridge_observation(value, true)
+            && let Err(error) =
+                validate_bridge_with_policy(value, true, self.policy, &mut self.quality)
         {
             // Owner finished/absent is expected after joins. Reconcile the
             // final counters and timeline independently, retaining earlier raw.
@@ -867,6 +1179,9 @@ impl Guard {
                 self.first_failure = Some(value.clone());
             }
             append_failure(&mut self.failures, &format!("final bridge: {error:#}"));
+        }
+        if self.quality.failure.is_some() && self.first_failure.is_none() {
+            self.first_failure = self.final_observation.clone();
         }
         self.retired = true;
     }
@@ -908,6 +1223,13 @@ impl Guard {
                         s.failure.as_deref().unwrap_or("invalid final outcome")
                     );
                 }
+                if let Some(receipt) = self
+                    .source_outcome
+                    .as_ref()
+                    .and_then(|source| source.final_receipt.clone())
+                {
+                    self.observe_source_receipt(&receipt)?;
+                }
             }
             Retirement::FinishLoad => {
                 if let Some(l) = self.load.take() {
@@ -926,11 +1248,7 @@ impl Guard {
                     self.measurement_outcome = Some(m.finish()?);
                 }
                 if let Some(m) = &self.measurement_outcome {
-                    ensure!(
-                        m.failure.is_none(),
-                        "recorder final: {}",
-                        m.failure.as_deref().unwrap_or_default()
-                    );
+                    validate_measurement_outcome(m, self.policy, &mut self.quality)?;
                 }
             }
         }
