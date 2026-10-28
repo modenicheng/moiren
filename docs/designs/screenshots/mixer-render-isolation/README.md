@@ -115,15 +115,14 @@ Follow-up: `cargo test --locked -p moiren-app --features ui-profiler`
 (391 passed, four opt-in ignored), strict Clippy with `ui-profiler`/all app
 targets, and red/green tests for window-scoped diagnostics and sample reset.
 
-## Windows 240 Hz follow-up (2026-10-28)
+## Removed native-clock experiment (historical, 2026-10-28)
 
-The default Windows Mixer path now owns an absolute-deadline 240 Hz demand
-clock. A high-resolution one-shot kernel timer supplies a bounded, coalescing
-wakeup to the foreground meter view. Native GPUI paint/present remains the
-renderer; there is no busy wait, global timer-resolution change, priority
-escalation, dependency patch, or display-mode change. Missed intervals are
-skipped, not replayed in a burst. Non-Windows, headless windows, and native
-initialization/worker failures retain GPUI animation-frame fallback.
+This section records an experiment that has been removed. Its dedicated
+high-resolution timer, worker and bounded wakeups are not part of the current
+implementation. Live Mixer meters now request animation frames through GPUI;
+the application does not impose a fixed 240 Hz cadence or maintain a second
+render clock. The historical measurements below must not be read as current
+behavior.
 
 Toolbar and status are separately cached siblings on Mixer only, retaining
 their allocated full width. Service notifications still update them, but
@@ -165,4 +164,5 @@ deadlines, chrome width and cache isolation. Full app tests with `ui-profiler`
 pass **403 tests, four opt-in tests ignored** (`--test-threads=2`), together
 with strict Clippy/all app targets, workspace/all-targets check and rustfmt.
 An initial unconstrained-parallel run hit an unrelated Graph spring-timing
-assertion; its isolated rerun and the complete two-thread run both pass.
+assertion; its isolated rerun and the complete two-thread run both pass. These
+results describe the removed experiment, not the current GPUI-scheduled path.

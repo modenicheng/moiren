@@ -1,7 +1,6 @@
 //! Developer-only capture of the production shell through GPUI's native renderer.
 use super::*;
 use crate::service::test_backend as meter_backend;
-mod mixer_clock;
 mod mixer_states;
 
 fn meter_service() -> anyhow::Result<ServiceRuntime> {
@@ -205,8 +204,6 @@ pub fn run_ui_capture() -> anyhow::Result<()> {
                             snapshot.graph.nodes.iter().filter(|node| shell.node_meters.channel_levels(node.id).is_some()).count(),
                             shell.node_meter_points.borrow().len(), snapshot.graph.nodes.len());
                     });
-                    mixer_clock::check(window, &shell, &directory, cx)
-                        .await.expect("Mixer native clock lifecycle");
                     if std::env::var_os("MOIREN_CAPTURE_STATES").is_some() {
                         mixer_states::capture(window, &shell, &directory, &capture, cx)
                             .await.expect("Mixer state captures");
