@@ -338,6 +338,466 @@ fn json_byte_caps_unknown_and_duplicate_options_are_enforced() {
     }
 }
 
+fn packet_fixture() -> Vec<Value> {
+    (0..50_u64)
+        .map(|index| {
+            json!({
+                "packet_sequence": index + 1, "flags": 0,
+                "device_position_frames": index * 32,
+                "qpc_100ns": 1_000_000 + index * 32 * 10_000_000 / 48000,
+                "frames": 32, "stored_start_frame": index * 32
+            })
+        })
+        .collect()
+}
+
+fn packet_analysis(raw: Vec<u8>, packets: &[Value]) -> (i32, Value) {
+    let fixture = Fixture::new();
+    let raw_path = fixture.path("capture.f32le");
+    fs::write(&raw_path, raw).unwrap();
+    let settings = fixture.json("schedule.json", &schedule());
+    let metadata = fixture.path("packets.jsonl");
+    let records: String = packets.iter().map(|packet| format!("{packet}\n")).collect();
+    fs::write(&metadata, records).unwrap();
+    let output = fixture.path("analysis.json");
+    let mut args = run_arguments(
+        "analyze-pcm",
+        &[
+            ("--pcm", &raw_path),
+            ("--schedule", &settings),
+            ("--packets", &metadata),
+        ],
+        &output,
+    );
+    args.extend(["--max-packets".into(), "50".into()]);
+    let code = cli::run(args).unwrap();
+    (
+        code,
+        serde_json::from_slice(&fs::read(output).unwrap()).unwrap(),
+    )
+}
+
+#[test]
+fn packet_analysis_known_delay_and_drift_stay_diagnostic_with_legacy_unchanged() {
+    let (code, value) = packet_analysis(raw_fixture(false), &packet_fixture());
+    assert_eq!(code, 0);
+    assert_eq!(value["schema_version"], 2);
+    assert_eq!(value["qualification"], "not_evaluated");
+    assert_eq!(value["packet_evidence"]["native_epoch"], "not_recorded");
+    assert_eq!(value["distribution_scope"], "successful_windows_only");
+    for (index, delay) in [0, 64, 128].into_iter().enumerate() {
+        assert_eq!(value["results"][index]["delay_frames"], delay);
+    }
+    assert_eq!(value["distribution"]["marker_count"], 3);
+    let legacy = serde_json::to_value(analyze(raw_fixture(false), schedule()).unwrap()).unwrap();
+    assert_eq!(legacy["schema_version"], 1);
+    assert!(legacy.get("packet_evidence").is_none());
+}
+
+#[test]
+fn packet_analysis_retains_failures_for_loss_reorder_and_epoch_like_resets() {
+    for fault in [
+        "sequence_gap",
+        "sequence_repeat",
+        "position_repeat",
+        "position_rewind",
+        "qpc_repeat",
+        "qpc_rewind",
+        "discontinuity",
+        "timestamp_error",
+    ] {
+        let mut packets = packet_fixture();
+        let index = 20;
+        match fault {
+            "sequence_gap" => {
+                for packet in &mut packets[index..] {
+                    packet["packet_sequence"] =
+                        json!(packet["packet_sequence"].as_u64().unwrap() + 1);
+                }
+            }
+            "sequence_repeat" => {
+                packets[index]["packet_sequence"] = packets[index - 1]["packet_sequence"].clone()
+            }
+            "position_repeat" => {
+                packets[index]["device_position_frames"] =
+                    packets[index - 1]["device_position_frames"].clone()
+            }
+            "position_rewind" => packets[index]["device_position_frames"] = json!(0),
+            "qpc_repeat" => packets[index]["qpc_100ns"] = packets[index - 1]["qpc_100ns"].clone(),
+            "qpc_rewind" => packets[index]["qpc_100ns"] = json!(1),
+            "discontinuity" => packets[index]["flags"] = json!(1),
+            "timestamp_error" => packets[index]["flags"] = json!(4),
+            _ => unreachable!(),
+        }
+        let (code, value) = packet_analysis(raw_fixture(false), &packets);
+        assert_eq!(code, 1, "accepted {fault}");
+        assert_eq!(value["failed_markers"], 1, "{fault}: {value}");
+        assert!(value["results"][1]["delay_frames"].is_null(), "{fault}");
+        assert!(
+            value["results"][1]["error"]
+                .as_str()
+                .unwrap()
+                .contains("packet")
+        );
+        assert_eq!(value["distribution"]["marker_count"], 2);
+        assert!(
+            !value["packet_evidence"]["observations"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn packet_analysis_detects_actual_dropped_pcm_and_metadata_coverage_failures() {
+    let mut packets = packet_fixture();
+    packets.remove(20);
+    for packet in &mut packets[20..] {
+        packet["stored_start_frame"] = json!(packet["stored_start_frame"].as_u64().unwrap() - 32);
+    }
+    let mut raw = raw_fixture(false);
+    raw.drain(640 * 8..672 * 8);
+    let (code, value) = packet_analysis(raw, &packets);
+    assert_eq!(code, 1);
+    assert!(value["results"][1]["delay_frames"].is_null());
+    assert_eq!(value["results"].as_array().unwrap().len(), 3);
+    for fault in ["missing_record", "overlap", "tail"] {
+        let mut packets = packet_fixture();
+        match fault {
+            "missing_record" => {
+                packets.remove(20);
+            }
+            "overlap" => packets[20]["stored_start_frame"] = json!(608),
+            "tail" => {
+                packets.pop();
+            }
+            _ => unreachable!(),
+        }
+        let (code, value) = packet_analysis(raw_fixture(false), &packets);
+        assert_eq!(code, 1, "accepted {fault}");
+        assert_eq!(value["packet_evidence"]["coverage_complete"], false);
+    }
+}
+
+#[test]
+fn packet_analysis_silence_unknown_timestamps_and_startup_are_not_qualified() {
+    let (code, value) = packet_analysis(vec![0; 1600 * 8], &packet_fixture());
+    assert_eq!(code, 1);
+    assert_eq!(value["failed_markers"], 3);
+    assert!(value["distribution"].is_null());
+    let mut packets = packet_fixture();
+    for packet in &mut packets {
+        packet["qpc_100ns"] = json!(0);
+        packet["device_position_frames"] = json!(0);
+    }
+    let (code, value) = packet_analysis(raw_fixture(false), &packets);
+    assert_eq!(code, 1);
+    assert_eq!(value["packet_evidence"]["unknown_timestamp_packets"], 50);
+    assert_eq!(
+        value["packet_evidence"]["timestamp_provenance"],
+        "unverified_native_packet_fields_not_hardware_or_acoustics"
+    );
+    let mut packets = packet_fixture();
+    packets[0]["flags"] = json!(1);
+    let (_, value) = packet_analysis(raw_fixture(false), &packets);
+    assert!(
+        !value["packet_evidence"]["startup"]["issues"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        value["packet_evidence"]["observations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(value["failed_markers"], 1);
+    assert_eq!(value["qualification"], "not_evaluated");
+}
+
+fn packet_jsonl(packets: &[Value]) -> Vec<u8> {
+    packets
+        .iter()
+        .flat_map(|packet| format!("{packet}\n").into_bytes())
+        .collect()
+}
+
+#[test]
+fn packet_parser_enforces_sink_shape_byte_packet_line_and_arithmetic_bounds() {
+    let raw = packet_jsonl(&packet_fixture());
+    let parse = |raw: Vec<u8>, limit, cap| {
+        pcm::PacketTimeline::read(Cursor::new(raw), limit, cap, 1600, 48000)
+    };
+    assert!(parse(raw.clone(), raw.len() as u64, 50).is_ok());
+    assert!(parse(raw.clone(), raw.len() as u64 - 1, 50).is_err());
+    assert!(parse(raw.clone(), raw.len() as u64, 49).is_err());
+    assert!(parse(raw.clone(), 0, 50).is_err());
+    assert!(parse(raw.clone(), 256 * 1024 * 1024 + 1, 50).is_err());
+    assert!(parse(raw.clone(), 1048576, 0).is_err());
+    assert!(parse(raw.clone(), 1048576, 1_000_001).is_err());
+    for invalid in [
+        vec![],
+        b"\n".to_vec(),
+        b"{}\n".to_vec(),
+        b"{} {}\n".to_vec(),
+        raw[..raw.len() - 1].to_vec(),
+        vec![b' '; 1025],
+    ] {
+        assert!(parse(invalid, 1048576, 50).is_err());
+    }
+    for fault in [
+        "unknown_epoch",
+        "missing_field",
+        "zero_frames",
+        "oversized_frames",
+        "negative_qpc",
+        "float_position",
+        "zero_sequence",
+        "stored_overflow",
+        "duplicate_key",
+    ] {
+        let mut packet = packet_fixture().remove(0);
+        match fault {
+            "unknown_epoch" => packet["epoch"] = json!(1),
+            "missing_field" => {
+                packet.as_object_mut().unwrap().remove("qpc_100ns");
+            }
+            "zero_frames" => packet["frames"] = json!(0),
+            "oversized_frames" => packet["frames"] = json!(u64::MAX),
+            "negative_qpc" => packet["qpc_100ns"] = json!(-1),
+            "float_position" => packet["device_position_frames"] = json!(1.5),
+            "zero_sequence" => packet["packet_sequence"] = json!(0),
+            "stored_overflow" => packet["stored_start_frame"] = json!(u64::MAX),
+            "duplicate_key" => {}
+            _ => unreachable!(),
+        }
+        let mut encoded = packet_jsonl(&[packet]);
+        if fault == "duplicate_key" {
+            encoded = String::from_utf8(encoded)
+                .unwrap()
+                .replacen('{', "{\"frames\":32,", 1)
+                .into_bytes();
+        }
+        assert!(parse(encoded, 1048576, 50).is_err(), "accepted {fault}");
+    }
+}
+
+#[test]
+fn packet_parser_stops_a_growing_stream_and_an_overlong_line_before_allocation() {
+    struct CountingReader {
+        reads: usize,
+        byte: u8,
+    }
+    impl std::io::Read for CountingReader {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += output.len();
+            output.fill(self.byte);
+            Ok(output.len())
+        }
+    }
+    let mut reader = CountingReader {
+        reads: 0,
+        byte: b' ',
+    };
+    assert!(pcm::PacketTimeline::read(&mut reader, 20, 50, 1600, 48000).is_err());
+    assert_eq!(reader.reads, 21);
+    let mut reader = CountingReader {
+        reads: 0,
+        byte: b' ',
+    };
+    assert!(pcm::PacketTimeline::read(&mut reader, 1048576, 50, 1600, 48000).is_err());
+    assert!(reader.reads <= 8192, "read an unbounded line");
+}
+
+#[test]
+fn packet_analysis_all_zero_positions_are_unknown_and_small_clock_drift_is_not_a_reset() {
+    let mut packets = packet_fixture();
+    for (index, packet) in packets.iter_mut().enumerate() {
+        packet["device_position_frames"] = json!(0);
+        // 250 ppm packet clock drift is not a delay estimate or an epoch.
+        packet["qpc_100ns"] = json!(1_000_000 + index as u64 * 32 * 10_002_500 / 48000);
+    }
+    let (code, value) = packet_analysis(raw_fixture(false), &packets);
+    assert_eq!(code, 0);
+    assert_eq!(value["packet_evidence"]["unknown_position_packets"], 50);
+    assert_eq!(value["packet_evidence"]["unknown_timestamp_packets"], 0);
+    assert_eq!(value["packet_evidence"]["native_epoch"], "not_recorded");
+    assert_eq!(value["qualification"], "not_evaluated");
+}
+
+#[test]
+fn packet_analysis_fixed_delay_fixture_does_not_replace_sample_alignment_with_packet_clocks() {
+    let mut marker = vec![0.0; 255];
+    MarkerGenerator::new(255, 0.1).unwrap().fill(&mut marker);
+    let mut raw = vec![0; 1600 * 8];
+    for window in [0, 512, 1024] {
+        for (index, sample) in marker.iter().enumerate() {
+            let reference = (window + 7 + index) * 8;
+            let processed = (window + 7 + 64 + index) * 8 + 4;
+            raw[reference..reference + 4].copy_from_slice(&sample.to_le_bytes());
+            raw[processed..processed + 4].copy_from_slice(&sample.to_le_bytes());
+        }
+    }
+    let (code, value) = packet_analysis(raw, &packet_fixture());
+    assert_eq!(code, 0);
+    for result in value["results"].as_array().unwrap() {
+        assert_eq!(result["delay_frames"], 64);
+    }
+    for percentile in ["p50_ms", "p95_ms", "p99_ms", "max_ms"] {
+        assert!((value["distribution"][percentile].as_f64().unwrap() - 64.0 / 48.0).abs() < 1e-10);
+    }
+}
+
+#[test]
+fn packet_analysis_observes_faults_outside_windows_without_hiding_marker_failures() {
+    let mut packets = packet_fixture();
+    packets[48]["flags"] = json!(1);
+    let (code, value) = packet_analysis(raw_fixture(false), &packets);
+    assert_eq!(code, 1);
+    assert_eq!(value["failed_markers"], 0);
+    assert_eq!(value["distribution"]["marker_count"], 3);
+    assert_eq!(
+        value["packet_evidence"]["observations"][0]["stored_start_frame"],
+        1536
+    );
+    packets[20]["flags"] = json!(1);
+    let (_, value) = packet_analysis(raw_fixture(true), &packets);
+    let error = value["results"][1]["error"].as_str().unwrap();
+    assert!(
+        error.contains("processed") && error.contains("packet"),
+        "{error}"
+    );
+}
+
+#[test]
+fn packet_analysis_rejects_silent_flags_unknown_flags_overflow_and_missing_prefix() {
+    for fault in ["silent", "unknown_flags", "position_overflow", "prefix"] {
+        let mut packets = packet_fixture();
+        match fault {
+            "silent" => packets[20]["flags"] = json!(2),
+            "unknown_flags" => packets[20]["flags"] = json!(8),
+            "position_overflow" => packets[20]["device_position_frames"] = json!(u64::MAX),
+            "prefix" => {
+                for packet in &mut packets {
+                    packet["packet_sequence"] =
+                        json!(packet["packet_sequence"].as_u64().unwrap() + 1);
+                }
+            }
+            _ => unreachable!(),
+        }
+        let (code, value) = packet_analysis(raw_fixture(false), &packets);
+        assert_eq!(code, 1, "{fault}");
+        assert_eq!(value["failed_markers"], 1, "{fault}");
+    }
+}
+
+#[test]
+fn packet_cli_requires_a_paired_packet_cap_and_preserves_create_new_output() {
+    let fixture = Fixture::new();
+    let raw = fixture.path("capture.raw");
+    fs::write(&raw, raw_fixture(false)).unwrap();
+    let settings = fixture.json("schedule.json", &schedule());
+    let packets = fixture.path("packets.jsonl");
+    fs::write(&packets, packet_jsonl(&packet_fixture())).unwrap();
+    let output = fixture.path("analysis.json");
+    let args = run_arguments(
+        "analyze-pcm",
+        &[
+            ("--pcm", &raw),
+            ("--schedule", &settings),
+            ("--packets", &packets),
+        ],
+        &output,
+    );
+    assert!(cli::run(args.clone()).is_err());
+    let mut args = args;
+    args.extend(["--max-packets".into(), "50".into()]);
+    assert_eq!(cli::run(args.clone()).unwrap(), 0);
+    let retained = fs::read(&output).unwrap();
+    assert!(cli::run(args).is_err());
+    assert_eq!(fs::read(&output).unwrap(), retained);
+    let mut args = run_arguments(
+        "analyze-pcm",
+        &[("--pcm", &raw), ("--schedule", &settings)],
+        &fixture.path("orphan-cap.json"),
+    );
+    args.extend(["--max-packets".into(), "50".into()]);
+    assert!(cli::run(args).is_err());
+}
+
+#[test]
+fn packet_analysis_qpc_forward_jump_is_not_silently_treated_as_a_continuous_capture() {
+    let mut packets = packet_fixture();
+    for packet in &mut packets[20..] {
+        packet["qpc_100ns"] = json!(packet["qpc_100ns"].as_u64().unwrap() + 10_000_000);
+    }
+    let (code, value) = packet_analysis(raw_fixture(false), &packets);
+    assert_eq!(code, 1);
+    assert_eq!(value["failed_markers"], 1);
+    assert!(value["results"][1]["delay_frames"].is_null());
+    assert_eq!(value["results"][2]["delay_frames"], 128);
+    assert_eq!(
+        value["packet_evidence"]["observations"][0]["qpc_100ns"],
+        packets[20]["qpc_100ns"]
+    );
+}
+
+#[test]
+fn packet_analysis_persistent_capture_reset_invalidates_crossing_not_later_clean_windows() {
+    let mut packets = packet_fixture();
+    for (index, packet) in packets[20..].iter_mut().enumerate() {
+        packet["packet_sequence"] = json!(index + 1);
+        packet["device_position_frames"] = json!(index * 32);
+        packet["qpc_100ns"] = json!(1 + index as u64 * 32 * 10_000_000 / 48000);
+    }
+    let (code, value) = packet_analysis(raw_fixture(false), &packets);
+    assert_eq!(code, 1);
+    assert_eq!(value["failed_markers"], 1);
+    assert_eq!(value["results"][0]["delay_frames"], 0);
+    assert!(value["results"][1]["delay_frames"].is_null());
+    assert_eq!(value["results"][2]["delay_frames"], 128);
+    assert_eq!(value["packet_evidence"]["native_epoch"], "not_recorded");
+}
+
+#[test]
+fn packet_analysis_tracks_small_resampled_clock_drift_or_retains_an_unresolvable_window() {
+    let mut marker = vec![0.0; 255];
+    MarkerGenerator::new(255, 0.1).unwrap().fill(&mut marker);
+    let encode = |ratio: f64| {
+        let mut frames = vec![[0.0_f32; 2]; 1600];
+        for window in [0, 512, 1024] {
+            let origin = window + 7;
+            for (offset, sample) in marker.iter().enumerate() {
+                frames[origin + offset][0] = *sample;
+            }
+            for (frame, samples) in frames.iter_mut().enumerate() {
+                let offset = (frame as f64 - 64.0) / ratio - origin as f64;
+                if offset >= 0.0 && offset < 254.0 {
+                    let low = offset.floor() as usize;
+                    let fraction = (offset - low as f64) as f32;
+                    samples[1] = marker[low] * (1.0 - fraction) + marker[low + 1] * fraction;
+                }
+            }
+        }
+        frames
+            .into_iter()
+            .flatten()
+            .flat_map(f32::to_le_bytes)
+            .collect()
+    };
+    let (code, value) = packet_analysis(encode(1.0002), &packet_fixture());
+    assert_eq!(code, 0);
+    for result in value["results"].as_array().unwrap() {
+        assert_eq!(result["delay_frames"], 64);
+    }
+    let (code, value) = packet_analysis(encode(1.02), &packet_fixture());
+    assert_eq!(code, 1);
+    assert_eq!(value["failed_markers"], 3);
+    assert!(value["distribution"].is_null());
+}
+
 #[test]
 fn live_vad_dry_run_retains_stable_identity_and_stays_unqualified_without_calibration() {
     let fixture = Fixture::new();

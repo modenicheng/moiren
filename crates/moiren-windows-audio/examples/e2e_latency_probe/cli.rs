@@ -1,5 +1,5 @@
 use super::live;
-use super::pcm::{PcmSchedule, analyze};
+use super::pcm::{PacketTimeline, PcmSchedule, analyze};
 use anyhow::{Context, Result, bail, ensure};
 use moiren_windows_audio::latency::qualification::{
     QualificationExpectation, QualificationLevel, QualificationReport, evaluate_qualification,
@@ -14,7 +14,7 @@ use std::{
 
 const HELP: &str = "Offline evidence analysis plus an explicitly qualified live Process Loopback harness.
 evaluate --reports FILE --expectation FILE --level experimental|default --max-input-bytes N --max-runs N --output FILE
-analyze-pcm --pcm FILE --schedule FILE --max-input-bytes N --output FILE
+analyze-pcm --pcm FILE --schedule FILE --max-input-bytes N --output FILE [--packets FILE --max-packets N]
 live-process-loopback --source-pid PID --output ENDPOINT --artifact-dir DIR [--seconds 1..600]
 live-vad --stable-endpoint-id ID --name NAME --output ENDPOINT --artifact-dir DIR [--seconds 1..600]
 record-measurement --input ENDPOINT --artifact-dir NEW_DIR --seconds 1..7200
@@ -32,6 +32,11 @@ Schedule: schema_version=1, sample_rate, reference_channel, processed_channel, m
 marker_amplitude, reference_search_frames, max_delay_frames, max_marker_frames, max_window_frames,
 max_markers, max_pcm_frames, max_correlation_samples_per_marker, max_total_correlation_samples,
 max_total_window_frames, min_correlation, min_peak_margin, min_rms, windows:[{start_frame}].
+Without --packets, legacy schema_version=1 reports successful markers only, not capture continuity.
+With --packets, schema_version=2 validates measurement_sink JSONL against all stored PCM frames.
+Metadata uses --max-input-bytes (hard cap 256 MiB), --max-packets (1..1000000), 1024 bytes/record.
+Lost/reordered/reset/unknown-timestamp/silent packet windows are invalidated; failures are retained.
+Native epoch, hardware clock provenance, marker startup phase and physical boundary are not inferred.
 Outputs must be new files. Exit 0=accepted analysis/evaluation, 1=failed marker/unqualified,
 2=invalid input or IO error. Live mode never claims physical qualification without a native
 source, measurement artifact and independently supplied calibration.";
@@ -109,7 +114,14 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             "--max-runs",
             "--output",
         ][..],
-        "analyze-pcm" => &["--pcm", "--schedule", "--max-input-bytes", "--output"][..],
+        "analyze-pcm" => &[
+            "--pcm",
+            "--schedule",
+            "--max-input-bytes",
+            "--output",
+            "--packets",
+            "--max-packets",
+        ][..],
         _ => bail!("unknown offline command: {command}"),
     };
     ensure!(
@@ -132,8 +144,15 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         );
     }
     for name in permitted {
+        if matches!(*name, "--packets" | "--max-packets") {
+            continue;
+        }
         ensure!(options.contains_key(name), "missing {name}");
     }
+    ensure!(
+        options.contains_key("--packets") == options.contains_key("--max-packets"),
+        "--packets and --max-packets must be supplied together"
+    );
     let limit: u64 = options["--max-input-bytes"]
         .parse()
         .context("parse JSON byte cap")?;
@@ -161,9 +180,31 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         let schedule: PcmSchedule = read_json(options["--schedule"], limit)?;
         let mut file = File::open(options["--pcm"]).context("open stereo PCM capture")?;
         let length = file.metadata()?.len();
-        let analysis = analyze(&mut file, length, schedule)?;
-        let code = i32::from(analysis.failed_markers != 0);
-        write_json(output, &analysis)?;
-        Ok(code)
+        if let Some(path) = options.get("--packets") {
+            let max_packets = options["--max-packets"]
+                .parse()
+                .context("parse packet cap")?;
+            let metadata = File::open(path).context("open packet metadata")?;
+            ensure!(
+                metadata.metadata()?.len() <= limit,
+                "packet metadata byte cap exceeded"
+            );
+            let timeline = PacketTimeline::read(
+                metadata,
+                limit,
+                max_packets,
+                length / 8,
+                schedule.sample_rate,
+            )?;
+            let analysis = timeline.analyze(&mut file, length, schedule)?;
+            let code = i32::from(analysis.failed());
+            write_json(output, &analysis)?;
+            Ok(code)
+        } else {
+            let analysis = analyze(&mut file, length, schedule)?;
+            let code = i32::from(analysis.failed_markers != 0);
+            write_json(output, &analysis)?;
+            Ok(code)
+        }
     }
 }

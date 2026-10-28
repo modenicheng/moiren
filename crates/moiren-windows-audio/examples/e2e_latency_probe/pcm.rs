@@ -6,6 +6,10 @@ use moiren_windows_audio::latency::{
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek, SeekFrom};
 
+#[path = "pcm/packets.rs"]
+mod packets;
+pub use packets::PacketTimeline;
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PcmSchedule {
