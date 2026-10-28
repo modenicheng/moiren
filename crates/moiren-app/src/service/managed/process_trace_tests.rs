@@ -289,25 +289,49 @@ fn managed_prefix_multiple_or_missing_process_sources_are_explicitly_bounded() {
 #[test]
 fn managed_prefix_running_refusal_is_visible_without_stop_and_current_settings_changes_are_fenced()
 {
-    struct Refused;
+    struct Refused {
+        artifact: ProcessTraceArchive,
+        archive_reads: Arc<AtomicUsize>,
+    }
     impl Collection for Refused {
         fn poll(&mut self) {}
         fn refusal(&self) -> Option<String> {
             Some("EventLimit".into())
         }
         fn artifact(&self) -> ProcessTraceArchive {
-            panic!("live status must not clone an archive")
+            self.archive_reads.fetch_add(1, Ordering::SeqCst);
+            self.artifact.clone()
         }
         fn ordered_trace(&self) -> Result<ObservedProcessTrace, String> {
-            panic!("not finalized")
+            Err("EventLimit".into())
         }
     }
     let mut r = Rig::new();
     start_process(&mut r);
     install(&mut r);
     let origin = r.driver.process_trace.take().unwrap().origin;
-    r.driver.process_trace = Some(SessionTrace::new(origin, Box::new(Refused)));
+    let artifact = ProcessTraceCollector::new(
+        origin.process.clone(),
+        origin.native_owner_generation,
+        48_000,
+        48_000,
+        4,
+    )
+    .artifact();
+    let archive_reads = Arc::new(AtomicUsize::new(0));
+    r.driver.process_trace = Some(SessionTrace::new(
+        origin,
+        Box::new(Refused {
+            artifact,
+            archive_reads: archive_reads.clone(),
+        }),
+    ));
     r.tick();
+    assert_eq!(
+        archive_reads.load(Ordering::SeqCst),
+        0,
+        "live status must not clone an archive"
+    );
     assert!(
         r.c.process_trace_status
             .as_ref()
