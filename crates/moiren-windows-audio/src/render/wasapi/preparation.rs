@@ -50,6 +50,13 @@ pub struct RenderPreparationAbortFailure<A> {
     legacy_error: RenderError,
 }
 
+#[derive(Debug)]
+pub struct RenderCancellation {
+    pub report: Option<RenderReport>,
+    pub stop_error: Option<RenderError>,
+    pub join_error: Option<RenderError>,
+}
+
 pub struct RenderAttachAbortFailure<A> {
     pub error: RenderError,
     pub renderer: DemandRenderer,
@@ -144,8 +151,23 @@ impl PreparedNativeRender {
         self.padding.clone()
     }
     pub fn cancel_with_report(self) -> Result<RenderReport, RenderError> {
-        let _ = self.session.request_stop();
-        self.session.join_owner().map(|exit| exit.report)
+        let cancellation = self.cancel_with_report_returning();
+        match (cancellation.report, cancellation.join_error) {
+            (Some(report), None) => Ok(report),
+            (_, Some(error)) => Err(error),
+            (None, None) => Err(RenderError::WorkerPanicked),
+        }
+    }
+
+    /// Stop and join the prepared owner while retaining every cleanup result.
+    pub fn cancel_with_report_returning(self) -> RenderCancellation {
+        let stop_error = self.session.request_stop().err();
+        let (exit, join_error) = self.session.join_owner_returning();
+        RenderCancellation {
+            report: exit.map(|exit| exit.report),
+            stop_error,
+            join_error,
+        }
     }
     pub fn attach(
         self,

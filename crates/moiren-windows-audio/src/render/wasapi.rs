@@ -26,7 +26,7 @@ mod preparation;
 mod stream;
 pub use preparation::{
     NativeRenderInfo, PreparedNativeRender, RenderAttachAbortFailure, RenderAttachFailure,
-    RenderPreparationAbortFailure, prepare_render_native_with_gate,
+    RenderCancellation, RenderPreparationAbortFailure, prepare_render_native_with_gate,
     prepare_render_native_with_gate_returning_with_abort,
 };
 #[cfg(test)]

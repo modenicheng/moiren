@@ -3161,3 +3161,36 @@ The same application binary was run again only to distinguish its result on
 the verified current driver; as neither the application rename reader nor its
 acceptance logic changed, the topology/FriendlyName diagnosis still needs a
 host-side fix and focused failure-first tests before another VM run.
+
+### 2026-10-28 pre-activation render preflight cleanup contract
+
+The uncommitted `shared_render_preflight` diagnostic was corrected before any
+native execution. `PreparedNativeRender::cancel_with_report_returning` now
+retains the stop request result, owner join result and any final render report
+independently. The existing `cancel_with_report` API retains its previous
+behavior of prioritizing the joined report/join outcome rather than turning a
+stop-signal error into a new error for existing callers. The preflight records
+`initialized` from `RenderReport::format_supported`, so a failure after WASAPI
+Initialize is not mislabeled as an initialization failure. `initialized` is
+null when no final owner report exists, because worker loss does not prove that
+WASAPI initialization was never reached. Cleanup is true only when stop and
+join succeeded, a report exists, and the stream never started; a failed
+preparation report can still represent complete cleanup.
+
+Failure-first verification caught and corrected an initially missing API, the
+prepared-cancel report's actual `Failed` status, a moved test fixture and JSON
+serialization/ownership mistakes. Final focused Windows-target results:
+render preparation **23/23**, preflight CLI/evidence **5/5**, complete
+`moiren-windows-audio` target suite **511 library passed, 2 ignored, all
+integration/doc tests passed**, crate all-target strict Clippy, format and diff
+checks passed. The immutable `4811362` matrix above remains 13/14 with its
+recorded `rt-fmt` failure; none of these later checks rewrites that receipt.
+
+The VM was inspected read-only after the software checks: `DRIVER-TEST`,
+29.996 GiB free, empty `C:\MoirenVadTest`, no Moiren/VAD/probe process, and
+`ROOT\MEDIA\0000` status `OK`. No VM files were created or deleted; the
+approximately 302 MiB `C:\DriverTest`, installed/rollback packages, Windows
+and WDK data remain untouched. No native preflight was run: the host-side probe
+still needs the independent review checkpoint and authorized bounded native
+gate. This work establishes no PCM, physical delay, VAD/Process comparison or
+Stage 7 stability result.

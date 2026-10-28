@@ -732,6 +732,26 @@ fn prepared_padding_observer_stays_unknown_and_is_invalidated_after_native_exit(
 }
 
 #[test]
+fn prepared_cancellation_retains_stop_join_and_pre_activation_report() {
+    let stop = StopSignal::new().unwrap();
+    let gate = ActivationGate::new(stop.clone()).unwrap();
+    let prepared = fake_prepared(stop, gate, Outcome::Run).unwrap();
+
+    let cancellation = prepared.cancel_with_report_returning();
+
+    assert_eq!(cancellation.stop_error, None);
+    assert_eq!(cancellation.join_error, None);
+    let report = cancellation.report.expect("joined owner report");
+    assert_eq!(report.status, RenderStatus::Failed);
+    assert!(!report.stream_started);
+    assert!(!report.stop_succeeded);
+    assert_eq!(
+        report.failure.as_deref(),
+        Some("render preparation was cancelled")
+    );
+}
+
+#[test]
 fn deferred_render_failure_panic_and_metadata_loss_cancel_peers_before_returning() {
     for (outcome, expected) in [
         (Outcome::FailBeforeMetadata, RenderError::UnsupportedFormat),
