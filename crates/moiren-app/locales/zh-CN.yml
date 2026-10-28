@@ -1947,3 +1947,57 @@ _version: 2
 "Parameters are outside their valid range":
   en: "Parameters are outside their valid range"
   zh-CN: "参数超出有效范围"
+"Measured Process input":
+  en: "Measured Process input"
+  zh-CN: "实测进程输入"
+"Process source":
+  en: "Process source"
+  zh-CN: "进程输入源"
+"Apply measured budget and restart":
+  en: "Apply measured budget and restart"
+  zh-CN: "应用实测预算并重启音频"
+"Uses this running source's observed delivery and whole-wake demand. Restart replaces the owner; it does not qualify continuous output or physical latency.":
+  en: "Uses this running source's observed delivery and whole-wake demand. Restart replaces the owner; it does not qualify continuous output or physical latency."
+  zh-CN: "使用当前输入源观测到的传输时序和整次唤醒需求。重启将替换音频会话；这不代表连续输出或物理端到端延迟已通过验收。"
+"Ready to validate the measured input budget and restart audio.":
+  en: "Ready to validate the measured input budget and restart audio."
+  zh-CN: "可以校验实测输入预算并重启音频。"
+"Waiting for the current audio transaction.":
+  en: "Waiting for the current audio transaction."
+  zh-CN: "正在等待当前音频操作完成。"
+"Save or discard other settings drafts before applying a measured budget.":
+  en: "Save or discard other settings drafts before applying a measured budget."
+  zh-CN: "应用实测预算前，请先保存或放弃其他设置草稿。"
+"Measured selection requires a matching running graph and saved settings.":
+  en: "Measured selection requires a matching running graph and saved settings."
+  zh-CN: "选择实测配置需要运行中的音频图与已保存设置一致。"
+"Select a running Process source.":
+  en: "Select a running Process source."
+  zh-CN: "请选择运行中的进程输入源。"
+"Matching live Process observations are unavailable.":
+  en: "Matching live Process observations are unavailable."
+  zh-CN: "当前没有与该进程输入匹配的实时观测数据。"
+"Measured Process selection is only supported on Windows.":
+  en: "Measured Process selection is only supported on Windows."
+  zh-CN: "实测进程输入配置仅支持 Windows。"
+"Restarting audio; waiting for the measured budget to become active.":
+  en: "Restarting audio; waiting for the measured budget to become active."
+  zh-CN: "正在重启音频，等待实测预算生效。"
+"Measured activation was not confirmed within 30 seconds. Check Diagnostics; audio may still change later.":
+  en: "Measured activation was not confirmed within 30 seconds. Check Diagnostics; audio may still change later."
+  zh-CN: "30 秒内未确认实测预算生效。请查看诊断；音频状态仍可能随后改变。"
+"Settings changed while applying the measured budget.":
+  en: "Settings changed while applying the measured budget."
+  zh-CN: "应用实测预算期间，设置发生了变化。"
+"Measured budget was refused or replaced. Your draft is retained.":
+  en: "Measured budget was refused or replaced. Your draft is retained."
+  zh-CN: "实测预算被拒绝或已被其他请求替换，草稿已保留。"
+"Audio stopped before the measured budget became active.":
+  en: "Audio stopped before the measured budget became active."
+  zh-CN: "实测预算生效前，音频已停止。"
+"The graph changed while applying the measured budget.":
+  en: "The graph changed while applying the measured budget."
+  zh-CN: "应用实测预算期间，音频图发生了变化。"
+"Measured budget is active; physical latency remains unqualified.":
+  en: "Measured budget is active; physical latency remains unqualified."
+  zh-CN: "实测预算已生效；物理端到端延迟仍未验收。"

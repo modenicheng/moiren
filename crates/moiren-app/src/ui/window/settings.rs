@@ -10,6 +10,9 @@ use moiren_engine::audio_config::{
 use moiren_engine::node::DeviceMode;
 
 mod fields;
+mod measured;
+#[cfg(all(test, windows, feature = "gpui-test"))]
+mod measured_ui_tests;
 mod model;
 #[cfg(test)]
 mod model_tests;

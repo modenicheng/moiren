@@ -91,4 +91,26 @@ mod tests {
         );
         assert_eq!(rust_i18n::t!("No sends", locale = ENGLISH), "No sends");
     }
+
+    #[test]
+    fn measured_input_actions_and_limits_translate_without_a_qualification_claim() {
+        assert_eq!(
+            rust_i18n::t!("Measured Process input", locale = SIMPLIFIED_CHINESE),
+            "实测进程输入"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Apply measured budget and restart",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "应用实测预算并重启音频"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Measured budget is active; physical latency remains unqualified.",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "实测预算已生效；物理端到端延迟仍未验收。"
+        );
+    }
 }

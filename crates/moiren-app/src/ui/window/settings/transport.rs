@@ -76,6 +76,7 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .flex()
         .flex_col()
         .gap(px(18.))
+        .child(super::measured::editor(shell, cx))
         .child(heading(t!("Expert input buffers")))
         .child(
             div()

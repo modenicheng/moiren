@@ -651,3 +651,21 @@ A Playback export can only bind an input node	-	BindExport 方向/节点类型�
 A Microphone export can only bind an output node	-	BindExport 方向/节点类型不匹配
 The virtual export and graph node have different channel counts	-	BindExport 声道数校验
 Bind	-	设备页虚拟导出行快捷绑定按钮（未选中态）
+Measured Process input	-	设置页会话内实测进程输入配置
+Process source	-	实测输入源选择
+Apply measured budget and restart	-	显式替换音频会话，不是保存设置
+Uses this running source's observed delivery and whole-wake demand. Restart replaces the owner; it does not qualify continuous output or physical latency.	-	实测预算适用范围与验收限制
+Ready to validate the measured input budget and restart audio.	-	实测配置预检通过
+Waiting for the current audio transaction.	-	音频操作期间禁止重复应用
+Save or discard other settings drafts before applying a measured budget.	-	实测操作与设置草稿冲突
+Measured selection requires a matching running graph and saved settings.	-	实测选择的图及设置前置条件
+Select a running Process source.	-	未选中可用进程输入源
+Matching live Process observations are unavailable.	-	观测身份或实时状态不匹配
+Measured Process selection is only supported on Windows.	-	非 Windows 平台拒绝实测操作
+Restarting audio; waiting for the measured budget to become active.	-	请求已入队但尚未确认生效
+Measured activation was not confirmed within 30 seconds. Check Diagnostics; audio may still change later.	-	界面等待超时，不代表已取消服务操作
+Settings changed while applying the measured budget.	-	请求期间配置发生变化
+Measured budget was refused or replaced. Your draft is retained.	-	拒绝或其他请求覆盖，保留草稿
+Audio stopped before the measured budget became active.	-	生效前会话停止
+The graph changed while applying the measured budget.	-	请求期间图修订发生变化
+Measured budget is active; physical latency remains unqualified.	-	服务确认生效但未验收物理延迟

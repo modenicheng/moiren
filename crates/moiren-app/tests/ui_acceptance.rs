@@ -178,10 +178,44 @@ fn expert_input_buffers_are_explicit_drafts_with_unqualified_latency(
         );
         assert!(window.try_find("process-expert-fields").is_none());
         assert!(window.try_find("vad-expert-fields").is_none());
+        // Input Buffers also contains the measured selection above these drafts.
+        // Exercise real scrolling rather than assuming the section fits at once.
+        for _ in 0..16 {
+            let target = window.find("process-policy-1");
+            let viewport = window.find("settings-scroll").bounds();
+            if target.visible()
+                && target.bounds().origin.y + target.bounds().size.height
+                    < viewport.origin.y + viewport.size.height - px(12.)
+            {
+                break;
+            }
+            window.scroll(
+                "settings-scroll",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-180.))),
+                cx,
+            );
+        }
+        assert!(window.find("process-policy-1").visible());
         window.click("process-policy-1", cx);
         assert!(window.try_find("process-expert-fields").is_some());
         window.click("process-policy-0", cx);
         assert!(window.try_find("process-expert-fields").is_none());
+        for _ in 0..16 {
+            let target = window.find("vad-policy-1");
+            let viewport = window.find("settings-scroll").bounds();
+            if target.visible()
+                && target.bounds().origin.y + target.bounds().size.height
+                    < viewport.origin.y + viewport.size.height - px(12.)
+            {
+                break;
+            }
+            window.scroll(
+                "settings-scroll",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-180.))),
+                cx,
+            );
+        }
+        assert!(window.find("vad-policy-1").visible());
         window.click("vad-policy-1", cx);
         assert!(window.try_find("vad-expert-fields").is_some());
         window.click("close-settings", cx);

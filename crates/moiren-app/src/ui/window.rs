@@ -598,6 +598,7 @@ mod tray_mixer;
 impl Render for StudioShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.finish_settings_save(cx);
+        self.finish_measured_process(cx);
         self.keep_settings_focus(window, cx);
         self.finish_node_spawn(cx);
         self.sync_node_name(window, cx);

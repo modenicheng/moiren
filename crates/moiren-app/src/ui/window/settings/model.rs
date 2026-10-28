@@ -275,6 +275,7 @@ fn rebase_audio(
 }
 
 pub(in super::super) struct SettingsEditor {
+    pub(super) measured: super::measured::MeasuredEditor,
     pub global: Draft,
     pub device: Draft,
     pub focus: FocusHandle,
@@ -297,6 +298,7 @@ impl SettingsEditor {
             preferences.transport_latency,
         );
         Self {
+            measured: Default::default(),
             global: draft.clone(),
             device: draft,
             focus: cx.focus_handle(),
@@ -321,7 +323,7 @@ impl SettingsEditor {
     }
 
     pub fn busy(&self) -> bool {
-        self.global.pending.is_some() || self.device.pending.is_some()
+        self.global.pending.is_some() || self.device.pending.is_some() || self.measured.busy()
     }
 }
 
