@@ -3195,3 +3195,37 @@ code review after commit `3eea229`; the reviewer found no blocking issues and
 did not run tests or native IO. No native preflight was run: the bounded native
 gate still requires separate explicit authorization. This work establishes no
 PCM, physical delay, VAD/Process comparison or Stage 7 stability result.
+
+### 2026-10-28 Stage 7 continuation: formatter remediation and VM re-inventory
+
+The immutable accepted-source receipt remains unchanged: snapshot
+`481136255235586fe9012046ef412fe7745d0289`, 13/14 commands passed, with only
+`rt-fmt` failing because rustfmt requested layout changes in
+`crates/moiren-windows-audio/src/professional/asio_rt_tests.rs`. Commit
+`0fe08b134818c98aafa62ab140352164f7db44cf` contains that formatting-only
+repair; rerunning
+`cargo fmt --manifest-path tools/rt-check/Cargo.toml --all -- --check`
+on the current branch passed. This follow-up does not rewrite or relabel the
+immutable matrix result.
+
+A fresh read-only SSH inventory at `2026-10-28T08:31+08:00` confirmed the
+target is `driver-test` / `DRIVER-TEST`, not the development host. Its C: volume
+is 67,599,593,472 bytes (about 62.95 GiB) with 32,207,589,376 bytes (about
+29.99 GiB) free; the earlier multi-terabyte output came from a malformed
+remote command and was not the VM's capacity. `C:\MoirenVadTest` is empty and
+there are no matching Moiren/VAD/preflight processes. The present render
+endpoint is VMware High Definition Audio
+`{0.0.0.00000000}.{71789A68-9934-4137-9E1A-BA0A5730AA68}`; it is the default
+for Console, Multimedia and Communications. It is therefore not a permitted
+non-default virtual endpoint for the reviewed render preflight. No Moiren VAD
+audio endpoint is currently present. The capture endpoint is VMware High
+Definition Audio
+`{0.0.1.00000000}.{55E7D663-AD05-4729-A5D8-CEA7688D9A92}`.
+
+No native preflight, endpoint/default change, driver operation, or VM file
+write/delete was performed. Preserve `C:\DriverTest` (316,666,881 bytes,
+about 302 MiB), which contains WDK/driver deployment and remote-debugging
+tools; no obsolete owned VM artifact was found to clean. The next native
+preflight remains gated on a suitable active non-default virtual render
+endpoint and its explicit selection. Stage 7 physical calibration, matched
+VAD/Process comparison, and long-duration stability gates remain incomplete.
