@@ -6,6 +6,7 @@ use crate::{
     ui::presentation::export_diagnostic_rows,
 };
 use moiren_engine::node::VirtualEndpointId;
+use moiren_windows_audio::latency::packet_service::{PacketServiceSnapshot, PacketStampOrigin};
 use moiren_windows_audio::vad::VadPcmTelemetrySnapshot;
 
 fn export() -> ExportStatus {
@@ -29,7 +30,7 @@ fn export() -> ExportStatus {
             native_stamp: Some([1, 2, 3, 0, 5]),
             transport_prepared: true,
             telemetry: Some(VadPcmTelemetrySnapshot {
-                schema_version: 3,
+                schema_version: 4,
                 packet_frames: 128,
                 max_packet_frames: 256,
                 submission_attempts: u64::MAX,
@@ -172,6 +173,263 @@ fn provider_diagnostics_preserve_all_counters_and_observed_timing_units() {
 }
 
 #[test]
+fn packet_service_rows_distinguish_stamp_origin_and_preserve_exact_u64_and_raw_100ns() {
+    let mut status = export();
+    let telemetry = status
+        .diagnostics
+        .as_mut()
+        .unwrap()
+        .telemetry
+        .as_mut()
+        .unwrap();
+    telemetry.playback_transfer_service = PacketServiceSnapshot {
+        origin: PacketStampOrigin::DriverTransfer,
+        qpc_frequency_hz: Some((1 << 53) + 9),
+        observations: (1 << 53) + 1,
+        unavailable_clocks: u64::MAX,
+        future_stamps: (1 << 53) + 3,
+        conversion_overflows: (1 << 53) + 5,
+        min_delay_100ns: Some((1 << 53) + 7),
+        max_delay_100ns: Some(u64::MAX),
+    };
+    telemetry.microphone_submission_service = PacketServiceSnapshot {
+        origin: PacketStampOrigin::HostSubmission,
+        qpc_frequency_hz: Some(10_000_000),
+        observations: 17,
+        unavailable_clocks: 19,
+        future_stamps: 23,
+        conversion_overflows: 29,
+        min_delay_100ns: Some(31),
+        max_delay_100ns: Some(37),
+    };
+    for direction in [ExportDirection::Playback, ExportDirection::Microphone] {
+        status.intent.direction = direction;
+        let rows = export_diagnostic_rows(&status);
+        assert_eq!(
+            value(&rows, "Playback packet service"),
+            "Driver transfer -> owner collection; 9007199254740993 observations; min 9007199254740999 / max 18446744073709551615 x 100 ns"
+        );
+        assert_eq!(
+            value(&rows, "Microphone packet service"),
+            "Host submission -> owner collection; 17 observations; min 31 / max 37 x 100 ns"
+        );
+        assert_eq!(
+            value(&rows, "Playback service clock diagnostics"),
+            "QPC 9007199254741001 Hz; unavailable 18446744073709551615 / future stamps 9007199254740995 / conversion overflows 9007199254740997"
+        );
+        assert_eq!(
+            value(&rows, "Microphone service clock diagnostics"),
+            "QPC 10000000 Hz; unavailable 19 / future stamps 23 / conversion overflows 29"
+        );
+        assert_eq!(
+            value(&rows, "Packet service observation scope"),
+            "Completion service delay only; not source sample age or physical latency; independent live summaries."
+        );
+        assert_eq!(value(&rows, "Gate admission"), "Closed");
+        assert_eq!(value(&rows, "Engine-confirmed binding"), "Inactive");
+    }
+}
+
+#[test]
+fn packet_service_default_and_legacy_values_are_unknown_not_zero_latency() {
+    let mut status = export();
+    let legacy: VadPcmTelemetrySnapshot = serde_json::from_value(serde_json::json!({
+        "schema_version": 3,
+        "completed_packets": 123,
+        "max_completion_interval_100ns": 456
+    }))
+    .unwrap();
+    for telemetry in [VadPcmTelemetrySnapshot::default(), legacy] {
+        status.diagnostics.as_mut().unwrap().telemetry = Some(telemetry);
+        let rows = export_diagnostic_rows(&status);
+        for key in ["Playback packet service", "Microphone packet service"] {
+            assert_eq!(
+                value(&rows, key),
+                "Unknown stamp origin; 0 observations; service delay unknown"
+            );
+            assert!(!value(&rows, key).contains("min 0"));
+            assert!(!value(&rows, key).contains("max 0"));
+        }
+        for key in [
+            "Playback service clock diagnostics",
+            "Microphone service clock diagnostics",
+        ] {
+            assert_eq!(
+                value(&rows, key),
+                "QPC Unknown; unavailable 0 / future stamps 0 / conversion overflows 0"
+            );
+        }
+    }
+}
+
+#[test]
+fn packet_service_unqualified_or_incomplete_ranges_keep_counts_but_unknown_delay() {
+    for fault in [
+        "origin",
+        "frequency",
+        "zero_frequency",
+        "observations",
+        "minimum",
+        "maximum",
+        "reversed",
+    ] {
+        let mut status = export();
+        let telemetry = status
+            .diagnostics
+            .as_mut()
+            .unwrap()
+            .telemetry
+            .as_mut()
+            .unwrap();
+        let summary = &mut telemetry.playback_transfer_service;
+        *summary = PacketServiceSnapshot {
+            origin: PacketStampOrigin::DriverTransfer,
+            qpc_frequency_hz: Some(10_000_000),
+            observations: 5,
+            unavailable_clocks: 7,
+            future_stamps: 11,
+            conversion_overflows: 13,
+            min_delay_100ns: Some(17),
+            max_delay_100ns: Some(19),
+        };
+        match fault {
+            "origin" => summary.origin = PacketStampOrigin::Unknown,
+            "frequency" => summary.qpc_frequency_hz = None,
+            "zero_frequency" => summary.qpc_frequency_hz = Some(0),
+            "observations" => summary.observations = 0,
+            "minimum" => summary.min_delay_100ns = None,
+            "maximum" => summary.max_delay_100ns = None,
+            "reversed" => summary.min_delay_100ns = Some(20),
+            _ => unreachable!(),
+        }
+        let count = summary.observations;
+        let rows = export_diagnostic_rows(&status);
+        let text = value(&rows, "Playback packet service");
+        assert!(text.ends_with("service delay unknown"), "{fault}: {text}");
+        assert!(
+            text.contains(&format!("{count} observations")),
+            "{fault}: {text}"
+        );
+        assert!(!text.contains("min "), "{fault}: {text}");
+        assert!(
+            value(&rows, "Playback service clock diagnostics")
+                .ends_with("unavailable 7 / future stamps 11 / conversion overflows 13")
+        );
+    }
+}
+
+#[test]
+fn packet_service_known_zero_delay_requires_real_observations_and_origin_is_not_inferred() {
+    let mut status = export();
+    let telemetry = status
+        .diagnostics
+        .as_mut()
+        .unwrap()
+        .telemetry
+        .as_mut()
+        .unwrap();
+    telemetry.playback_transfer_service = PacketServiceSnapshot {
+        origin: PacketStampOrigin::HostSubmission,
+        qpc_frequency_hz: Some(10_000_000),
+        observations: 1,
+        min_delay_100ns: Some(0),
+        max_delay_100ns: Some(0),
+        ..Default::default()
+    };
+    let rows = export_diagnostic_rows(&status);
+    assert_eq!(
+        value(&rows, "Playback packet service"),
+        "Host submission -> owner collection; 1 observations; min 0 / max 0 x 100 ns"
+    );
+    assert_eq!(
+        value(&rows, "Microphone packet service"),
+        "Unknown stamp origin; 0 observations; service delay unknown"
+    );
+}
+
+#[test]
+fn packet_service_rows_are_absent_when_provider_evidence_is_unavailable() {
+    let mut status = export();
+    for missing_diagnostics in [false, true] {
+        if missing_diagnostics {
+            status.diagnostics = None;
+        } else {
+            status.diagnostics.as_mut().unwrap().telemetry = None;
+        }
+        let rows = export_diagnostic_rows(&status);
+        for key in [
+            "Playback packet service",
+            "Microphone packet service",
+            "Packet service observation scope",
+        ] {
+            assert!(!rows.iter().any(|(label, _)| label == key), "{key}");
+        }
+    }
+}
+
+#[test]
+fn packet_service_labels_scope_unknowns_and_exact_units_are_localized() {
+    let locale = crate::i18n::SIMPLIFIED_CHINESE;
+    for (key, expected) in [
+        ("Playback packet service", "播放数据包服务"),
+        ("Microphone packet service", "麦克风数据包服务"),
+        ("Playback service clock diagnostics", "播放服务时钟诊断"),
+        ("Microphone service clock diagnostics", "麦克风服务时钟诊断"),
+        ("Packet service observation scope", "数据包服务观测范围"),
+        (
+            "Driver transfer -> owner collection",
+            "驱动传输 -> 所有者收集",
+        ),
+        (
+            "Host submission -> owner collection",
+            "主机提交 -> 所有者收集",
+        ),
+        ("Unknown stamp origin", "时间戳来源未知"),
+        (
+            "Completion service delay only; not source sample age or physical latency; independent live summaries.",
+            "仅为完成服务延迟；非源样本年龄或物理延迟；各实时摘要独立观测。",
+        ),
+    ] {
+        assert_eq!(rust_i18n::t!(key, locale = locale), expected, "{key}");
+    }
+    assert_eq!(
+        rust_i18n::t!(
+            "%{origin}; %{count} observations; min %{min} / max %{max} x 100 ns",
+            locale = locale,
+            origin = "驱动传输 -> 所有者收集",
+            count = (1_u64 << 53) + 1,
+            min = (1_u64 << 53) + 7,
+            max = u64::MAX,
+        ),
+        "驱动传输 -> 所有者收集；9007199254740993 次观测；最小 9007199254740999 / 最大 18446744073709551615 x 100 ns"
+    );
+    assert_eq!(
+        rust_i18n::t!(
+            "%{origin}; %{count} observations; service delay unknown",
+            locale = locale,
+            origin = "时间戳来源未知",
+            count = 0,
+        ),
+        "时间戳来源未知；0 次观测；服务延迟未知"
+    );
+    assert_eq!(
+        rust_i18n::t!(
+            "QPC %{frequency}; unavailable %{unavailable} / future stamps %{future} / conversion overflows %{overflows}",
+            locale = locale,
+            frequency = "10000000 Hz",
+            unavailable = u64::MAX,
+            future = 7,
+            overflows = 11,
+        ),
+        "QPC 10000000 Hz；时钟不可用 18446744073709551615 / 未来时间戳 7 / 换算溢出 11"
+    );
+    assert_eq!(
+        rust_i18n::t!("%{hz} Hz", locale = locale, hz = u64::MAX),
+        "18446744073709551615 Hz"
+    );
+}
+
+#[test]
 fn provider_sequence_gaps_preserve_exact_u64_counters_without_claiming_signal_loss() {
     let mut status = export();
     let telemetry = status
@@ -191,7 +449,7 @@ fn provider_sequence_gaps_preserve_exact_u64_counters_without_claiming_signal_lo
     );
     assert!(!text.contains("frames"));
     assert!(!text.contains("latency"));
-    assert_eq!(value(&rows, "Provider telemetry schema"), "3");
+    assert_eq!(value(&rows, "Provider telemetry schema"), "4");
     assert_eq!(
         value(&rows, "Cumulative packet drops"),
         "Driver 17 / quota 19 / carrier 23 / total 13 packets",

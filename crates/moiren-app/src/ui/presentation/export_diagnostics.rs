@@ -117,6 +117,7 @@ pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
         ]);
         if let Some(telemetry) = &diagnostics.telemetry {
             rows.extend(telemetry_rows(telemetry));
+            rows.extend(packet_service_rows(telemetry));
             // Only playback stamps carry the native sequence. Microphone
             // stamps describe host submissions and cannot establish these holes.
             if status.intent.direction == ExportDirection::Playback {
@@ -154,6 +155,91 @@ pub fn export_diagnostic_rows(status: &ExportStatus) -> Vec<(String, String)> {
         ),
     ]);
     rows
+}
+
+#[cfg(windows)]
+fn packet_service_rows(
+    telemetry: &moiren_windows_audio::vad::VadPcmTelemetrySnapshot,
+) -> [(String, String); 5] {
+    [
+        (
+            t!("Playback packet service").into(),
+            packet_service_text(&telemetry.playback_transfer_service),
+        ),
+        (
+            t!("Playback service clock diagnostics").into(),
+            packet_service_clock_text(&telemetry.playback_transfer_service),
+        ),
+        (
+            t!("Microphone packet service").into(),
+            packet_service_text(&telemetry.microphone_submission_service),
+        ),
+        (
+            t!("Microphone service clock diagnostics").into(),
+            packet_service_clock_text(&telemetry.microphone_submission_service),
+        ),
+        (
+            t!("Packet service observation scope").into(),
+            t!("Completion service delay only; not source sample age or physical latency; independent live summaries.").into(),
+        ),
+    ]
+}
+
+#[cfg(windows)]
+fn packet_service_text(
+    summary: &moiren_windows_audio::latency::packet_service::PacketServiceSnapshot,
+) -> String {
+    use moiren_windows_audio::latency::packet_service::PacketStampOrigin;
+    // The field's direction does not supply missing timestamp provenance.
+    let origin = match summary.origin {
+        PacketStampOrigin::Unknown => t!("Unknown stamp origin"),
+        PacketStampOrigin::DriverTransfer => t!("Driver transfer -> owner collection"),
+        PacketStampOrigin::HostSubmission => t!("Host submission -> owner collection"),
+    };
+    match (summary.min_delay_100ns, summary.max_delay_100ns) {
+        (Some(min), Some(max))
+            if summary.origin != PacketStampOrigin::Unknown
+                && summary.qpc_frequency_hz.is_some_and(|hz| hz > 0)
+                && summary.observations > 0
+                && min <= max =>
+        {
+            // No floating-point conversion or ms-derived sample-age claim:
+            // retain every integer digit and the raw summary's 100 ns units.
+            t!(
+                "%{origin}; %{count} observations; min %{min} / max %{max} x 100 ns",
+                origin = origin,
+                count = summary.observations,
+                min = min,
+                max = max,
+            )
+            .into()
+        }
+        _ => t!(
+            "%{origin}; %{count} observations; service delay unknown",
+            origin = origin,
+            count = summary.observations,
+        )
+        .into(),
+    }
+}
+
+#[cfg(windows)]
+fn packet_service_clock_text(
+    summary: &moiren_windows_audio::latency::packet_service::PacketServiceSnapshot,
+) -> String {
+    let frequency = summary
+        .qpc_frequency_hz
+        .filter(|&hz| hz > 0)
+        .map(|hz| t!("%{hz} Hz", hz = hz).to_string())
+        .unwrap_or_else(|| t!("Unknown").into());
+    t!(
+        "QPC %{frequency}; unavailable %{unavailable} / future stamps %{future} / conversion overflows %{overflows}",
+        frequency = frequency,
+        unavailable = summary.unavailable_clocks,
+        future = summary.future_stamps,
+        overflows = summary.conversion_overflows,
+    )
+    .into()
 }
 
 pub fn windows_name_match_text(status: &ExportStatus) -> String {

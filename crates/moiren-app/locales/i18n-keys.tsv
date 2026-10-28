@@ -592,6 +592,19 @@ Maximum observed packet	-	观测到的最大数据包
 Completion interval observations	-	完成间隔观测数
 0 observations; timing unknown	-	无完成间隔观测时序未知
 %{count} observations; max %{ticks} x 100 ns	count,ticks	完成间隔保持 100 ns 原生单位
+Playback packet service	-	播放完成服务摘要，非源样本年龄或物理延迟
+Microphone packet service	-	麦克风完成服务摘要，非源样本年龄或物理延迟
+Playback service clock diagnostics	-	播放服务时钟频率与未知、未来及溢出计数
+Microphone service clock diagnostics	-	麦克风服务时钟频率与未知、未来及溢出计数
+Packet service observation scope	-	明确各服务摘要独立且不证明样本年龄或物理延迟
+Driver transfer -> owner collection	-	时间戳来源为驱动传输，终点为所有者收集
+Host submission -> owner collection	-	时间戳来源为主机提交，终点为所有者收集
+Unknown stamp origin	-	不按播放或麦克风方向臆造时间戳来源
+Completion service delay only; not source sample age or physical latency; independent live summaries.	-	完成服务延迟的证据范围与独立实时摘要限制
+%{origin}; %{count} observations; min %{min} / max %{max} x 100 ns	origin,count,min,max	保留来源、完整整数位与100ns最小最大服务延迟
+%{origin}; %{count} observations; service delay unknown	origin,count	保留来源与观测数但不把未知服务延迟显示为零
+QPC %{frequency}; unavailable %{unavailable} / future stamps %{future} / conversion overflows %{overflows}	frequency,unavailable,future,overflows	保留QPC频率及服务时钟异常完整计数
+%{hz} Hz	hz	完整整数时钟频率
 Cumulative submissions	-	累计提交
 %{attempts} attempts / %{submitted} submitted packets	attempts,submitted	提交尝试与数据包计数
 Cumulative completions	-	累计完成

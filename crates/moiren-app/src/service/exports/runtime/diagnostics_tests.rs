@@ -1,4 +1,5 @@
 use super::*;
+use moiren_windows_audio::latency::packet_service::{PacketServiceSnapshot, PacketStampOrigin};
 use moiren_windows_audio::vad::{
     Channels, Intent, PdoState, StreamState, VadExportDiagnosticProvenance, VadExportObservation,
     VadPcmTelemetrySnapshot,
@@ -6,7 +7,7 @@ use moiren_windows_audio::vad::{
 
 fn telemetry() -> VadPcmTelemetrySnapshot {
     VadPcmTelemetrySnapshot {
-        schema_version: 3,
+        schema_version: 4,
         packet_frames: 128,
         max_packet_frames: 256,
         submission_attempts: u64::MAX,
@@ -26,7 +27,103 @@ fn telemetry() -> VadPcmTelemetrySnapshot {
         silence_frames: (1 << 53) + 37,
         epoch_resets: 41,
         recovery_events: 43,
+        playback_transfer_service: PacketServiceSnapshot {
+            origin: PacketStampOrigin::DriverTransfer,
+            qpc_frequency_hz: Some((1 << 53) + 53),
+            observations: (1 << 53) + 59,
+            unavailable_clocks: 61,
+            future_stamps: 67,
+            conversion_overflows: 71,
+            min_delay_100ns: Some((1 << 53) + 73),
+            max_delay_100ns: Some(u64::MAX),
+        },
+        microphone_submission_service: PacketServiceSnapshot {
+            origin: PacketStampOrigin::HostSubmission,
+            qpc_frequency_hz: Some(10_000_000),
+            observations: 79,
+            unavailable_clocks: 83,
+            future_stamps: 89,
+            conversion_overflows: 97,
+            min_delay_100ns: Some(101),
+            max_delay_100ns: Some(103),
+        },
     }
+}
+
+#[test]
+fn packet_service_summaries_pass_through_native_mapping_and_runtime_without_gate_authority() {
+    let (graph, intent) = runtime_graph();
+    let mut runtime = Runtime::default();
+    let mut service = ExportService::default();
+    service.set_available(true);
+    let native = NativeObservation::from(provider_view(&intent));
+    let expected = telemetry();
+    assert_eq!(
+        native.diagnostics.as_ref().unwrap().telemetry,
+        Some(expected)
+    );
+    assert!(complete_native(&mut runtime, &mut service, native).is_empty());
+    let status = service.statuses(&graph).remove(0);
+    let observed = status.diagnostics.unwrap().telemetry.unwrap();
+    assert_eq!(
+        observed.playback_transfer_service,
+        expected.playback_transfer_service
+    );
+    assert_eq!(
+        observed.microphone_submission_service,
+        expected.microphone_submission_service
+    );
+    let json = serde_json::to_value(observed).unwrap();
+    assert_eq!(
+        json["playback_transfer_service"]["origin"],
+        "driver_transfer"
+    );
+    assert_eq!(
+        json["microphone_submission_service"]["origin"],
+        "host_submission"
+    );
+    assert_eq!(
+        json["playback_transfer_service"]["observations"].as_u64(),
+        Some((1 << 53) + 59)
+    );
+    assert_eq!(
+        json["playback_transfer_service"]["max_delay_100ns"].as_u64(),
+        Some(u64::MAX)
+    );
+    assert!(!status.gate_open);
+    assert_eq!(status.active_revision, None);
+}
+
+#[test]
+fn packet_service_legacy_telemetry_stays_unknown_in_provider_mapping() {
+    let (_, intent) = runtime_graph();
+    let legacy: VadPcmTelemetrySnapshot = serde_json::from_value(serde_json::json!({
+        "schema_version": 3,
+        "completed_packets": 7,
+        "max_completion_interval_100ns": 123456
+    }))
+    .unwrap();
+    assert_eq!(
+        legacy.playback_transfer_service,
+        PacketServiceSnapshot::default()
+    );
+    assert_eq!(
+        legacy.microphone_submission_service,
+        PacketServiceSnapshot::default()
+    );
+    let mut view = provider_view(&intent);
+    view.telemetry = Some(legacy);
+    let observed = NativeObservation::from(view)
+        .diagnostics
+        .unwrap()
+        .telemetry
+        .unwrap();
+    assert_eq!(observed, legacy);
+    assert_eq!(
+        observed.playback_transfer_service.origin,
+        PacketStampOrigin::Unknown
+    );
+    assert_eq!(observed.microphone_submission_service.min_delay_100ns, None);
 }
 
 fn provider_view(intent: &ExportIntent) -> VadExportObservation {

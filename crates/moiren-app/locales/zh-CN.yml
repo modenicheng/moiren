@@ -1621,6 +1621,45 @@ _version: 2
 "%{count} observations; max %{ticks} x 100 ns":
   en: "%{count} observations; max %{ticks} x 100 ns"
   zh-CN: "%{count} 次观测；最大间隔 %{ticks} x 100 ns"
+"Playback packet service":
+  en: Playback packet service
+  zh-CN: 播放数据包服务
+"Microphone packet service":
+  en: Microphone packet service
+  zh-CN: 麦克风数据包服务
+"Playback service clock diagnostics":
+  en: Playback service clock diagnostics
+  zh-CN: 播放服务时钟诊断
+"Microphone service clock diagnostics":
+  en: Microphone service clock diagnostics
+  zh-CN: 麦克风服务时钟诊断
+"Packet service observation scope":
+  en: Packet service observation scope
+  zh-CN: 数据包服务观测范围
+"Driver transfer -> owner collection":
+  en: Driver transfer -> owner collection
+  zh-CN: 驱动传输 -> 所有者收集
+"Host submission -> owner collection":
+  en: Host submission -> owner collection
+  zh-CN: 主机提交 -> 所有者收集
+"Unknown stamp origin":
+  en: Unknown stamp origin
+  zh-CN: 时间戳来源未知
+"Completion service delay only; not source sample age or physical latency; independent live summaries.":
+  en: Completion service delay only; not source sample age or physical latency; independent live summaries.
+  zh-CN: 仅为完成服务延迟；非源样本年龄或物理延迟；各实时摘要独立观测。
+"%{origin}; %{count} observations; min %{min} / max %{max} x 100 ns":
+  en: "%{origin}; %{count} observations; min %{min} / max %{max} x 100 ns"
+  zh-CN: "%{origin}；%{count} 次观测；最小 %{min} / 最大 %{max} x 100 ns"
+"%{origin}; %{count} observations; service delay unknown":
+  en: "%{origin}; %{count} observations; service delay unknown"
+  zh-CN: "%{origin}；%{count} 次观测；服务延迟未知"
+"QPC %{frequency}; unavailable %{unavailable} / future stamps %{future} / conversion overflows %{overflows}":
+  en: "QPC %{frequency}; unavailable %{unavailable} / future stamps %{future} / conversion overflows %{overflows}"
+  zh-CN: "QPC %{frequency}；时钟不可用 %{unavailable} / 未来时间戳 %{future} / 换算溢出 %{overflows}"
+"%{hz} Hz":
+  en: "%{hz} Hz"
+  zh-CN: "%{hz} Hz"
 "Cumulative submissions":
   en: Cumulative submissions
   zh-CN: 累计提交
