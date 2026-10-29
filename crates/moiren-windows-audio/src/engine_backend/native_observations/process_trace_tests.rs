@@ -614,3 +614,334 @@ fn pinned_final_measurement_replays_exact_empirical_options_with_retained_origin
         "observation-owner provenance is not hardware qualification"
     );
 }
+
+struct WindowFixture {
+    f: Fixture,
+    consumer: crate::latency::events::EventHistoryWriter,
+    delivery: crate::latency::InputDeliveryRecorder,
+}
+
+impl WindowFixture {
+    fn new() -> Self {
+        let mut f = Fixture::new();
+        let (ingress, source, bridge) = capture_bridge(ClockBridgeConfig {
+            capacity_frames: 2048,
+            target_fill_frames: 128,
+            detect_position_gaps: false,
+            ..Default::default()
+        })
+        .unwrap();
+        f.ingress = ingress;
+        f.source = source;
+        let (consumer, observer) = crate::latency::events::event_history();
+        let mut metadata = f.registry.retain_session().unwrap().0.process_delivery[0].clone();
+        metadata.bridge = bridge;
+        metadata.consumer = Some(observer);
+        metadata.prepared_consumer_demand_frames = 96;
+        f.registry
+            .publish_with_process(7, vec![], vec![], vec![], vec![], vec![metadata]);
+        Self {
+            f,
+            consumer,
+            delivery: crate::latency::InputDeliveryRecorder::new(None).unwrap(),
+        }
+    }
+
+    fn collector(&self) -> NativeProcessTraceCollector {
+        self.f
+            .registry
+            .retain_session()
+            .unwrap()
+            .process_trace_collector(self.f.node, &self.f.process, 7)
+            .unwrap()
+    }
+
+    fn packet(&mut self, n: u64) {
+        self.packet_with_bracket(n, 1);
+    }
+
+    fn packet_with_bracket(&mut self, n: u64, width_100ns: u64) {
+        let stamp = 1_000_000 + n * 20_000;
+        let mut publication = stamp;
+        self.f
+            .ingress
+            .push_packet_with_publication_clock(
+                &[],
+                crate::clock_bridge::CapturePacket {
+                    frames: 96,
+                    flags: crate::stats::SILENT,
+                    device_position_frames: 0,
+                    qpc_100ns: 0,
+                },
+                || {
+                    let now = publication;
+                    publication += width_100ns;
+                    Some(now)
+                },
+            )
+            .unwrap();
+    }
+
+    fn complete_delivery(&mut self, n: u64) {
+        let stamp = 1_000_000 + n * 20_000;
+        self.delivery.packet(96, Some(stamp + 20));
+        self.delivery.callback_burst(96);
+        self.f
+            .ingress
+            .record_native_delivery_event(96, Some(stamp + 100));
+        self.f
+            .ingress
+            .publish_native_delivery(self.delivery.snapshot());
+    }
+
+    fn read(&mut self, n: u64) {
+        let stamp = 1_001_000 + n * 20_000;
+        // Two graph segments still represent one complete native wake.
+        self.f
+            .source
+            .read_interleaved_with_publication_clock(&mut [0.; 96], || Some(stamp))
+            .unwrap();
+        self.f
+            .source
+            .read_interleaved_with_publication_clock(&mut [0.; 96], || Some(stamp + 1))
+            .unwrap();
+    }
+
+    fn event(&mut self, n: u64) {
+        self.packet(n);
+        self.complete_delivery(n);
+        self.read(n);
+        self.consumer.record(96, Some(1_001_000 + n * 20_000));
+    }
+
+    fn populate(&mut self) {
+        for n in 0..12 {
+            self.event(n);
+        }
+    }
+}
+
+fn window_input() -> crate::latency::transport::TransportInputPolicy {
+    crate::latency::transport::TransportInputPolicy::Target {
+        capacity_frames: 2048,
+        target_frames: 256,
+        jitter_frames: 0,
+    }
+}
+
+#[test]
+fn prepared_native_window_pins_source_and_freezes_evidence_before_worker_evaluation() {
+    let mut f = WindowFixture::new();
+    let mut collector = f.collector();
+    f.populate();
+    f.f.registry.clear(7);
+    f.f.registry.publish(8, vec![], vec![], vec![]);
+    let prepared = collector
+        .prepare_live_window(window_input(), live_policy())
+        .unwrap();
+    // In-flight malformed later data must not be sampled by the worker.
+    f.packet(12);
+    f.read(12);
+    let candidate = std::thread::spawn(move || prepared.evaluate())
+        .join()
+        .unwrap()
+        .unwrap();
+    let report = candidate.report();
+    assert_eq!(report.trace_origin, ProcessTraceOrigin::RetainedNativeOwner);
+    assert_eq!(report.owner_generation, 7);
+    assert!(report.process.same_process(&f.f.process));
+    assert!(!report.qualified);
+    assert_eq!(
+        report.status,
+        crate::process_loopback::ReplayWindowStatus::NoViolationInWindow
+    );
+    assert_eq!(report.prefix.as_ref().unwrap().observed_packet_events, 12);
+    assert!(!report.prefix.as_ref().unwrap().packet_writer_finished);
+    assert!(!report.prefix.as_ref().unwrap().read_writer_finished);
+    let options = candidate.options();
+    assert_eq!(options, report.options);
+    assert_eq!(options, report.replay.as_ref().unwrap().report.options);
+    assert_eq!(
+        options.max_demand_frames, 96,
+        "whole wake, not 48-frame segments"
+    );
+    assert_eq!(options.delivery.unwrap().max_gap_frames, 97);
+    assert_eq!(
+        options,
+        candidate
+            .measurement()
+            .admit_for_consumer(&f.f.process, 7, window_input(), 48_000, 96)
+            .unwrap()
+    );
+    assert_eq!(candidate.clone().measurement().owner_generation(), 7);
+    assert!(
+        collector.final_measurement().is_err(),
+        "closure is still required"
+    );
+}
+
+#[test]
+fn prepared_native_window_refuses_original_ingress_intent() {
+    let mut f = WindowFixture::new();
+    let mut metadata = f.f.registry.retain_session().unwrap().0.process_delivery[0].clone();
+    metadata.admitted_bridge.max_ingress_elapsed_100ns = Some(1);
+    f.f.registry
+        .publish_with_process(7, vec![], vec![], vec![], vec![], vec![metadata]);
+    let mut collector = f.collector();
+    f.populate();
+    let error = collector
+        .prepare_live_window(window_input(), live_policy())
+        .err()
+        .expect("original freshness intent must refuse replacement");
+    assert!(error.contains("ingress"), "{error}");
+}
+
+#[test]
+fn prepared_native_window_refuses_missing_delivery_or_whole_wake_evidence() {
+    for missing_consumer in [false, true] {
+        let mut f = WindowFixture::new();
+        if missing_consumer {
+            let mut metadata = f.f.registry.retain_session().unwrap().0.process_delivery[0].clone();
+            metadata.consumer = None;
+            f.f.registry
+                .publish_with_process(7, vec![], vec![], vec![], vec![], vec![metadata]);
+        }
+        let mut collector = f.collector();
+        for n in 0..12 {
+            f.packet(n);
+            if missing_consumer {
+                f.complete_delivery(n);
+            }
+            f.read(n);
+            f.consumer.record(96, Some(1_001_000 + n * 20_000));
+        }
+        let error = collector
+            .prepare_live_window(window_input(), live_policy())
+            .err()
+            .expect("queue segments cannot replace native measurement");
+        let expected = if missing_consumer {
+            "whole-wake"
+        } else {
+            "delivery"
+        };
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn prepared_native_window_refuses_target_that_only_fits_graph_segments() {
+    let mut f = WindowFixture::new();
+    let mut collector = f.collector();
+    f.populate();
+    let input = crate::latency::transport::TransportInputPolicy::Target {
+        capacity_frames: 2048,
+        target_frames: 160,
+        jitter_frames: 0,
+    };
+    assert!(
+        collector.prepare_live_window(input, live_policy()).is_err(),
+        "160 fits a 48-frame segment plus 97-frame gap, but not a 96-frame wake"
+    );
+}
+
+#[test]
+fn prepared_native_window_requires_full_archive_delivery_and_whole_wake_coverage() {
+    for missing_delivery in [false, true] {
+        let mut f = WindowFixture::new();
+        let mut collector = f.collector();
+        f.populate();
+        f.packet(12);
+        if !missing_delivery {
+            f.complete_delivery(12);
+        }
+        f.read(12);
+        if missing_delivery {
+            f.consumer.record(96, Some(1_241_000));
+        }
+        let error = collector
+            .prepare_live_window(window_input(), live_policy())
+            .err()
+            .expect("an incomplete tail must not understate admission evidence");
+        assert!(error.contains("cover"), "{error}");
+    }
+}
+
+#[test]
+fn prepared_native_window_refuses_violation_and_inconclusive_actual_replays() {
+    for inconclusive in [false, true] {
+        let mut f = WindowFixture::new();
+        let mut collector = f.collector();
+        f.populate();
+        let mut policy = live_policy();
+        if inconclusive {
+            policy.min_output_frames = u64::MAX;
+        } else {
+            policy.max_initial_unserved_frames = 0;
+        }
+        let prepared = collector
+            .prepare_live_window(window_input(), policy)
+            .unwrap();
+        let error = prepared.evaluate().unwrap_err();
+        let expected = if inconclusive {
+            "Inconclusive"
+        } else {
+            "ObservedViolation"
+        };
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
+#[test]
+fn prepared_native_window_refuses_either_measured_history_overwrite_below_archive_limit() {
+    for overwrite_producer in [false, true] {
+        let mut f = WindowFixture::new();
+        let mut collector = f.collector();
+        for n in 0..257 {
+            if overwrite_producer || n < 12 {
+                f.packet(n);
+                f.complete_delivery(n);
+            }
+            if !overwrite_producer || n % 2 == 0 {
+                f.read(n);
+                f.consumer.record(96, Some(1_001_000 + n * 20_000));
+            }
+            if n.is_multiple_of(32) {
+                collector.poll();
+            }
+        }
+        let error = collector
+            .prepare_live_window(window_input(), live_policy())
+            .err()
+            .expect("suffix evidence must not cover an 8192-event archive");
+        assert!(
+            error.contains("overwrite") && error.contains("256"),
+            "{error}"
+        );
+        let artifact = collector.artifact();
+        assert_eq!(artifact.collection_refusal, None);
+        assert!(artifact.packet_history.events.len() < 8192);
+        assert!(artifact.queue_history.events.len() < 8192);
+    }
+}
+
+#[test]
+fn prepared_native_window_widens_gap_using_unsealed_full_artifact_tail() {
+    let mut f = WindowFixture::new();
+    let mut collector = f.collector();
+    for n in 0..11 {
+        f.event(n);
+    }
+    f.packet_with_bracket(11, 501);
+    f.complete_delivery(11);
+    f.read(11);
+    f.consumer.record(96, Some(1_221_000));
+    let candidate = collector
+        .prepare_live_window(window_input(), live_policy())
+        .unwrap()
+        .evaluate()
+        .unwrap();
+    assert_eq!(candidate.options().delivery.unwrap().max_gap_frames, 99);
+    let prefix = candidate.report().prefix.as_ref().unwrap();
+    assert_eq!(prefix.observed_packet_events, 12);
+    assert_eq!(prefix.replayed_packet_events, 11);
+}

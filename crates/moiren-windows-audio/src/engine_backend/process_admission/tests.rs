@@ -165,6 +165,161 @@ fn evaluated_backend_refuses_growth_beyond_the_exact_replayed_rate_and_whole_wak
 }
 
 #[test]
+fn prepared_native_window_candidate_preserves_production_native_demand_envelope() {
+    use crate::{
+        clock_bridge::{CapturePacket, ClockBridgeConfig, capture_bridge},
+        engine_backend::native_observations::ProcessDeliverySource,
+        process_loopback::{ProcessTraceOrigin, ReplayWindowPolicy, ReplayWindowStatus},
+    };
+
+    let mut graph = moiren_core::graph::LogicalGraph::new();
+    let node = graph
+        .create_node(moiren_core::graph::NodeKind::Source, 2)
+        .unwrap();
+    let process = ProcessIdentity {
+        pid: 42,
+        creation_time_100ns: 123,
+        executable_name: "pinned.exe".into(),
+    };
+    let (mut ingress, mut source, bridge) = capture_bridge(ClockBridgeConfig {
+        capacity_frames: 2048,
+        target_fill_frames: 128,
+        detect_position_gaps: false,
+        ..Default::default()
+    })
+    .unwrap();
+    let (mut consumer, observer) = event_history();
+    let registry = NativeObservations::default();
+    registry.publish_with_process(
+        7,
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![ProcessDeliverySource {
+            node,
+            process: process.clone(),
+            input_sample_rate: 48_000,
+            consumer_sample_rate: 48_000,
+            prepared_consumer_demand_frames: 96,
+            admitted_bridge: ProcessBridgeOptions {
+                max_demand_frames: 96,
+                ..Default::default()
+            },
+            measured_source_generation: None,
+            bridge,
+            consumer: Some(observer),
+        }],
+    );
+    let mut collector = registry
+        .retain_session()
+        .unwrap()
+        .process_trace_collector(node, &process, 7)
+        .unwrap();
+    let mut delivery = InputDeliveryRecorder::new(None).unwrap();
+    for n in 0..12 {
+        let stamp = 1_000_000 + n * 20_000;
+        let mut publication = stamp;
+        ingress
+            .push_packet_with_publication_clock(
+                &[],
+                CapturePacket {
+                    frames: 96,
+                    flags: crate::stats::SILENT,
+                    device_position_frames: 0,
+                    qpc_100ns: 0,
+                },
+                || {
+                    let now = publication;
+                    publication += 1;
+                    Some(now)
+                },
+            )
+            .unwrap();
+        delivery.packet(96, Some(stamp + 20));
+        delivery.callback_burst(96);
+        ingress.record_native_delivery_event(96, Some(stamp + 100));
+        ingress.publish_native_delivery(delivery.snapshot());
+        // The actual graph reads are segments, not the native whole-wake bound.
+        for offset in [1000, 1001] {
+            source
+                .read_interleaved_with_publication_clock(&mut [0.; 96], || Some(stamp + offset))
+                .unwrap();
+        }
+        consumer.record(96, Some(stamp + 1000));
+    }
+    let candidate = collector
+        .prepare_live_window(
+            target(),
+            ReplayWindowPolicy {
+                max_initial_unserved_frames: 1000,
+                max_initial_prime_discarded_frames: 1000,
+                min_output_frames: 4,
+                min_output_reads: 2,
+                min_output_span_100ns: 1,
+            },
+        )
+        .unwrap()
+        .evaluate()
+        .unwrap();
+    assert_eq!(
+        candidate.report().trace_origin,
+        ProcessTraceOrigin::RetainedNativeOwner
+    );
+    assert_eq!(
+        candidate.report().status,
+        ReplayWindowStatus::NoViolationInWindow
+    );
+    let options = candidate.options();
+    assert_eq!(options.max_demand_frames, 96);
+    assert_eq!(
+        options,
+        candidate.report().replay.as_ref().unwrap().report.options
+    );
+    let identity = (process.pid, process.creation_time_100ns);
+    let backend = ProfessionalBackend::<f32>::new()
+        .unwrap()
+        .with_evaluated_process_bridge(
+            node,
+            &process,
+            candidate.measurement().owner_generation(),
+            candidate.measurement().clone(),
+            options,
+        )
+        .unwrap();
+    for demand in [48, 96] {
+        assert_eq!(
+            backend
+                .process_bridge_for(node, identity, 48_000, demand)
+                .unwrap(),
+            options,
+            "native negotiation must retain the exact replayed envelope"
+        );
+    }
+    assert!(
+        candidate
+            .measurement()
+            .admit_for_consumer(&process, 7, target(), 48_000, 128)
+            .is_ok(),
+        "the target fits 128; only the evaluated envelope must forbid growth"
+    );
+    let error = backend
+        .process_bridge_for(node, identity, 48_000, 128)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("evaluated rate/whole-wake envelope")
+    );
+    assert!(
+        backend
+            .process_bridge_for(node, identity, 96_000, 96)
+            .is_err(),
+        "a new rate is outside the exact historical replay"
+    );
+}
+
+#[test]
 fn ingress_elapsed_measured_builders_refuse_global_policy_before_recording_override() {
     let mut graph = moiren_core::graph::LogicalGraph::new();
     let node = graph

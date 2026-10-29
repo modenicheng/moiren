@@ -15,7 +15,9 @@ use std::sync::{
 
 #[path = "native_observations/process_trace.rs"]
 mod process_trace;
-pub use process_trace::NativeProcessTraceCollector;
+pub use process_trace::{
+    NativeProcessTraceCollector, NativeProcessWindowCandidate, PreparedNativeProcessWindow,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
