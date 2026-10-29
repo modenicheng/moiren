@@ -1356,6 +1356,8 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
     }
 
     fn invalidate_admission(&mut self) -> Result<()> {
+        // Shared atomic stop intent for both exports, before native Stop. Gate
+        // closure alone performs QUERY/IO and does not invalidate this ticket.
         self.provider.set_active_revision(None);
         Ok(())
     }

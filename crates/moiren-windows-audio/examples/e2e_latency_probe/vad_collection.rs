@@ -701,12 +701,15 @@ fn retire_with_route(
     mut step: impl FnMut(Retirement) -> Result<()>,
     failures: &mut Option<String>,
 ) {
-    // A microphone recorder owns a client on the export being removed. Stop
-    // both producers first, then release that client before driver retirement.
+    // Retain active evidence first, then revoke shared admission without a
+    // native QUERY before either native Stop can cancel active PCM. Broadcast
+    // both stops before joins or gate IO. A microphone recorder must also
+    // release its client before removal of the export it was recording.
     let microphone = route == super::vad_route::RouteKind::Microphone;
     for stage in [
         Retirement::Observe,
         Retirement::ObserveFinal,
+        Retirement::Invalidate,
         Retirement::StopSource,
         Retirement::StopMeasurement,
         Retirement::JoinSource,
@@ -714,11 +717,6 @@ fn retire_with_route(
         Retirement::ShutdownHost,
         if microphone {
             Retirement::FinishMeasurement
-        } else {
-            Retirement::Invalidate
-        },
-        if microphone {
-            Retirement::Invalidate
         } else {
             Retirement::Retire
         },
@@ -3698,7 +3696,8 @@ mod tests {
         assert!(index(Retirement::StopSource) < index(Retirement::JoinSource));
         assert!(index(Retirement::StopMeasurement) < index(Retirement::JoinSource));
         assert!(index(Retirement::ShutdownHost) < index(Retirement::FinishMeasurement));
-        assert!(index(Retirement::FinishMeasurement) < index(Retirement::Invalidate));
+        assert!(index(Retirement::Invalidate) < index(Retirement::StopSource));
+        assert!(index(Retirement::Invalidate) < index(Retirement::StopMeasurement));
         assert!(index(Retirement::FinishMeasurement) < index(Retirement::Retire));
         assert_eq!(events.len(), 10);
         for stage in events {
@@ -4094,10 +4093,11 @@ mod tests {
         worker.join().unwrap();
         assert!(reached_sink.is_ok() && still_joining);
         assert_eq!(
-            &snapshot[..5],
+            &snapshot[..6],
             &[
                 Retirement::Observe,
                 Retirement::ObserveFinal,
+                Retirement::Invalidate,
                 Retirement::StopSource,
                 Retirement::StopMeasurement,
                 Retirement::JoinSource
@@ -4275,10 +4275,11 @@ mod tests {
                 .contains("first retirement QUERY failure")
         );
         assert_eq!(
-            &events[..5],
+            &events[..6],
             &[
                 Retirement::Observe,
                 Retirement::ObserveFinal,
+                Retirement::Invalidate,
                 Retirement::StopSource,
                 Retirement::StopMeasurement,
                 Retirement::JoinSource,
@@ -4353,12 +4354,12 @@ mod tests {
             [
                 Retirement::Observe,
                 Retirement::ObserveFinal,
+                Retirement::Invalidate,
                 Retirement::StopSource,
                 Retirement::StopMeasurement,
                 Retirement::JoinSource,
                 Retirement::CloseGate,
                 Retirement::ShutdownHost,
-                Retirement::Invalidate,
                 Retirement::Retire,
                 Retirement::FinishMeasurement
             ]
@@ -4373,5 +4374,91 @@ mod tests {
         let mut failure = Some("x".repeat(16 * 1024 - 5));
         append_failure(&mut failure, "\u{1f642}tail");
         assert!(failure.unwrap().len() <= 16 * 1024);
+    }
+
+    #[test]
+    fn retirement_intent_precedes_both_native_stops_for_both_routes() {
+        use super::super::vad_route::RouteKind;
+        for route in [RouteKind::Physical, RouteKind::Microphone] {
+            let mut events = Vec::new();
+            let mut invalidated = false;
+            let mut stops = 0;
+            let mut failures = None;
+            retire_with_route(
+                route,
+                |stage| {
+                    events.push(stage);
+                    match stage {
+                        Retirement::Invalidate => invalidated = true,
+                        Retirement::StopSource | Retirement::StopMeasurement => {
+                            ensure!(invalidated, "native stop before explicit retirement intent");
+                            stops += 1;
+                        }
+                        Retirement::JoinSource => ensure!(stops == 2, "join before both stops"),
+                        _ => {}
+                    }
+                    Ok(())
+                },
+                &mut failures,
+            );
+            assert!(failures.is_none(), "{route:?}: {failures:?}");
+            assert_eq!(events.len(), 10);
+            assert_eq!(events[2], Retirement::Invalidate);
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|stage| **stage == Retirement::Invalidate)
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn retirement_intent_errors_and_panics_never_skip_broadcast_or_drain() {
+        use super::super::vad_route::RouteKind;
+        for route in [RouteKind::Physical, RouteKind::Microphone] {
+            let mut expected = vec![
+                Retirement::Observe,
+                Retirement::ObserveFinal,
+                Retirement::Invalidate,
+                Retirement::StopSource,
+                Retirement::StopMeasurement,
+                Retirement::JoinSource,
+                Retirement::CloseGate,
+                Retirement::ShutdownHost,
+            ];
+            if route == RouteKind::Microphone {
+                expected.extend([Retirement::FinishMeasurement, Retirement::Retire]);
+            } else {
+                expected.extend([Retirement::Retire, Retirement::FinishMeasurement]);
+            }
+            for failed_stage in &expected {
+                for panics in [false, true] {
+                    let mut events = Vec::new();
+                    let mut failures = Some("original collection failure".into());
+                    retire_with_route(
+                        route,
+                        |stage| {
+                            events.push(stage);
+                            if stage == *failed_stage {
+                                assert!(!panics, "injected {stage:?} panic");
+                                anyhow::bail!("injected {stage:?} failure");
+                            }
+                            Ok(())
+                        },
+                        &mut failures,
+                    );
+                    assert_eq!(
+                        events, expected,
+                        "{route:?}, {failed_stage:?}, panic={panics}"
+                    );
+                    let text = failures.unwrap();
+                    assert!(text.contains("original collection failure"));
+                    assert!(text.contains(&format!("{failed_stage:?}")));
+                    assert!(text.contains(if panics { "panicked" } else { "failure" }));
+                }
+            }
+        }
     }
 }
