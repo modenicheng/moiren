@@ -50,6 +50,7 @@ fn boundary_snapshot(target_frames: Option<u32>) -> AppSnapshot {
                         applied_milli_ppm: -12_345,
                         xruns: 4_294_967_307,
                         soft_events: 4_294_967_319,
+                        playback_events: None,
                     },
                 )
                     .into(),
