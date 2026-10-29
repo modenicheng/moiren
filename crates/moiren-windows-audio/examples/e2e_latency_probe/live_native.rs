@@ -32,6 +32,10 @@ const STARTUP_SAMPLE_INTERVAL: Duration = Duration::from_millis(10);
 #[path = "vad_engine_health.rs"]
 mod engine_health;
 
+#[path = "vad_source_admission.rs"]
+mod source_admission;
+use source_admission::playback_reads_ready;
+
 fn vad_engine_running(engine: Option<&moiren_engine::host::HostSnapshot>) -> bool {
     engine_health::running(engine)
 }
@@ -1184,7 +1188,68 @@ impl VadCleanup<'_> {
                 );
             }
         }
+        self.confirm_playback_reads()?;
         Ok(())
+    }
+
+    fn confirm_playback_reads(&mut self) -> Result<()> {
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(5);
+        let mut evidence = serde_json::json!({
+            "scope": "probe-owned Paused source; accepted READ submissions, not native queue depth or physical latency",
+            "required_reads": moiren_windows_audio::vad::REQUEST_SLOTS,
+            "deadline_ms": 5000,
+            "ready": false,
+            "observations": 0,
+        });
+        let mut baseline = None;
+        let result = wait_initial_recorder(
+            deadline,
+            Instant::now,
+            || {
+                let current = self
+                    .provider
+                    .export_observations()
+                    .into_iter()
+                    .find(|view| view.endpoint_id == self.endpoint_id)
+                    .context("VAD playback disappeared before source Start")?;
+                evidence["observations"] =
+                    (evidence["observations"].as_u64().unwrap_or(0) + 1).into();
+                evidence["last_observation"] = vad_observation_json(&current);
+                let admitted = self.admission.as_ref().context("VAD admission missing")?;
+                ensure!(
+                    current.snapshot.is_some_and(|snapshot| {
+                        Some(snapshot_stamp(snapshot)) == admitted.current.stamp
+                            && Some(snapshot_shape(snapshot)) == admitted.current.shape
+                    }),
+                    "VAD playback identity changed before source Start"
+                );
+                let engine = self
+                    .observer
+                    .as_ref()
+                    .context("Engine observer missing")?
+                    .snapshot();
+                self.engine_health
+                    .as_mut()
+                    .context("Engine progress guard missing")?
+                    .observe(Some(&engine))?;
+                let before = baseline.get_or_insert_with(|| current.clone());
+                if evidence.get("initial_observation").is_none() {
+                    evidence["initial_observation"] = vad_observation_json(before);
+                }
+                Ok(playback_reads_ready(before, &current)?.then_some(()))
+            },
+            thread::sleep,
+        );
+        evidence["elapsed_seconds"] = started.elapsed().as_secs_f64().into();
+        evidence["ready"] = result.is_ok().into();
+        if let Err(error) = &result {
+            evidence["failure"] = format!("{error:#}").into();
+        }
+        self.report
+            .engine
+            .get_or_insert_with(|| serde_json::json!({}))["source_start_admission"] = evidence;
+        result.context("VAD READ admission before source Start")
     }
 
     pub(super) fn confirm_recorder_started(&mut self, deadline: Instant) -> Result<()> {
@@ -1406,7 +1471,11 @@ fn replace_engine_observation(evidence: &mut Option<Value>, mut observation: Val
     // Admission belongs to the pre-gate decision, not the latest poll or
     // teardown generation. Keep it separate while existing live fields advance.
     if let Some(previous) = evidence.as_ref() {
-        for key in ["physical_render_request", "physical_render_admission"] {
+        for key in [
+            "physical_render_request",
+            "physical_render_admission",
+            "source_start_admission",
+        ] {
             if let Some(retained) = previous.get(key) {
                 observation[key] = retained.clone();
             }
@@ -2281,6 +2350,142 @@ mod tests {
         .unwrap();
         assert_eq!(observations.get(), 3);
         assert_eq!(elapsed, Duration::from_millis(20));
+    }
+
+    #[test]
+    fn source_start_requires_four_accepted_reads_before_native_start() {
+        let before = endpoint_view(Intent::Playback, StreamState::Paused);
+        for submitted in 0..=4 {
+            let mut current = before.clone();
+            let telemetry = current.telemetry.as_mut().unwrap();
+            telemetry.packet_frames = 48;
+            telemetry.submission_attempts = submitted;
+            telemetry.submitted_packets = submitted;
+            assert_eq!(
+                playback_reads_ready(&before, &current).unwrap(),
+                submitted == 4,
+                "Engine Running cannot establish native READ readiness: {submitted}"
+            );
+        }
+    }
+
+    fn ready_playback() -> moiren_windows_audio::vad::VadExportObservation {
+        let mut current = endpoint_view(Intent::Playback, StreamState::Paused);
+        let t = current.telemetry.as_mut().unwrap();
+        t.packet_frames = 48;
+        t.submission_attempts = 4;
+        t.submitted_packets = 4;
+        current
+    }
+
+    #[test]
+    fn source_start_waits_for_acceptance_not_attempts_or_wrong_packet_shape() {
+        let baseline = endpoint_view(Intent::Playback, StreamState::Paused);
+        let mut current = ready_playback();
+        current.telemetry.as_mut().unwrap().submitted_packets = 3;
+        assert!(!playback_reads_ready(&baseline, &current).unwrap());
+        current = ready_playback();
+        current.telemetry.as_mut().unwrap().packet_frames = 144;
+        assert!(!playback_reads_ready(&baseline, &current).unwrap());
+        assert!(playback_reads_ready(&baseline, &ready_playback()).unwrap());
+    }
+
+    #[test]
+    fn source_start_refuses_stale_identity_faults_or_already_running_source() {
+        use moiren_windows_audio::vad::VadExportDiagnosticProvenance;
+        let baseline = endpoint_view(Intent::Playback, StreamState::Paused);
+        for case in 0..20 {
+            let mut current = ready_playback();
+            match case {
+                0 => current.error = Some("QUERY failed".into()),
+                1 => current.removing = true,
+                2 => current.transport_prepared = false,
+                3 => {
+                    current.diagnostic_provenance =
+                        VadExportDiagnosticProvenance::CachedAfterQueryFailure
+                }
+                4 => current.snapshot = None,
+                5 => current.telemetry = None,
+                6 => current.endpoint_id = VirtualEndpointId::from_bytes([99; 16]),
+                7 => {
+                    current.snapshot =
+                        endpoint_view(Intent::Playback, StreamState::Running).snapshot
+                }
+                8 => {
+                    current.snapshot =
+                        endpoint_view_at(Intent::Playback, StreamState::Paused, true, 18, 20)
+                            .snapshot
+                }
+                9 => {
+                    current.snapshot =
+                        endpoint_view_at(Intent::Playback, StreamState::Paused, false, 17, 20)
+                            .snapshot
+                }
+                10 => current.telemetry.as_mut().unwrap().completed_packets = 1,
+                11 => current.telemetry.as_mut().unwrap().quota_dropped_packets = 1,
+                12 => current.telemetry.as_mut().unwrap().epoch_resets = 1,
+                13 => current.telemetry.as_mut().unwrap().recovery_events = 1,
+                14 => current.telemetry.as_mut().unwrap().stale_packets = 1,
+                15 => current.telemetry.as_mut().unwrap().silence_frames = 1,
+                16 => current.telemetry.as_mut().unwrap().missing_sequence_slots = 1,
+                17 => current.telemetry.as_mut().unwrap().submission_attempts = 5,
+                18 => current.telemetry.as_mut().unwrap().submitted_packets = 5,
+                19 => current.telemetry.as_mut().unwrap().carrier_dropped_packets = 1,
+                _ => unreachable!(),
+            }
+            assert!(
+                playback_reads_ready(&baseline, &current).is_err(),
+                "case {case}"
+            );
+        }
+        let mut regressed = ready_playback();
+        regressed.telemetry.as_mut().unwrap().submitted_packets = 3;
+        assert!(playback_reads_ready(&ready_playback(), &regressed).is_err());
+    }
+
+    #[test]
+    fn source_start_wait_is_bounded_and_rejects_late_ready_observation() {
+        let origin = Instant::now();
+        let clock = Cell::new(origin);
+        let polls = Cell::new(0);
+        let before = endpoint_view(Intent::Playback, StreamState::Paused);
+        let result = wait_initial_recorder(
+            origin + Duration::from_millis(20),
+            || clock.get(),
+            || {
+                polls.set(polls.get() + 1);
+                let current = if polls.get() == 2 {
+                    ready_playback()
+                } else {
+                    before.clone()
+                };
+                if polls.get() == 2 {
+                    clock.set(origin + Duration::from_millis(20));
+                }
+                Ok(playback_reads_ready(&before, &current)?.then_some(()))
+            },
+            |duration| clock.set(clock.get() + duration),
+        );
+        assert!(result.is_err());
+        assert_eq!(polls.get(), 2);
+        assert_eq!(
+            clock.get().duration_since(origin),
+            Duration::from_millis(20)
+        );
+    }
+
+    #[test]
+    fn source_start_admission_survives_later_and_final_engine_snapshots() {
+        let admission = serde_json::json!({"ready":false,"failure":"READ deadline","last_observation":{"submitted":3}});
+        let mut report = Some(serde_json::json!({"source_start_admission":admission}));
+        for frame in [10, 20, 30] {
+            replace_engine_observation(&mut report, serde_json::json!({"timeline":frame}));
+            assert_eq!(
+                report.as_ref().unwrap()["source_start_admission"],
+                admission
+            );
+            assert_eq!(report.as_ref().unwrap()["timeline"], frame);
+        }
     }
 
     #[test]
