@@ -147,6 +147,7 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         .child(
             div()
                 .id("measured-process-feedback")
+                .role(Role::Label)
                 .aria_label(feedback.clone())
                 .text_size(px(theme::TEXT_SM))
                 .text_color(if measured.error.is_some() {
@@ -187,6 +188,7 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
 fn summary(id: &'static str, title: &str, value: String) -> AnyElement {
     div()
         .id(id)
+        .role(Role::Label)
         .aria_label(format!("{title}: {value}"))
         .text_size(px(theme::TEXT_SM))
         .child(format!("{title}: {value}"))
