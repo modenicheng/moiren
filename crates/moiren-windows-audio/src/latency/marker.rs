@@ -6,6 +6,12 @@
 //! measurement boundary, clock calibration, or physical end-to-end latency.
 use thiserror::Error;
 
+mod rate;
+pub use rate::{
+    MarkerRateCorrelation, MarkerRateSearchConfig, PreparedMarkerRateSearch,
+    analyze_rate_aware_marker,
+};
+
 const MIN_MARKER_FRAMES: usize = 32;
 
 /// Explicit memory/input and work admission limits; there is no unbounded mode.

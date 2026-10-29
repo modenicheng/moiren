@@ -12,8 +12,9 @@ pub mod queue;
 mod telemetry;
 
 pub use marker::{
-    MarkerAnalysisConfig, MarkerAnalysisError, MarkerCorrelation, MarkerGenerator, analyze_marker,
-    frames_to_seconds,
+    MarkerAnalysisConfig, MarkerAnalysisError, MarkerCorrelation, MarkerGenerator,
+    MarkerRateCorrelation, MarkerRateSearchConfig, PreparedMarkerRateSearch, analyze_marker,
+    analyze_rate_aware_marker, frames_to_seconds,
 };
 pub mod transport;
 pub use delivery::{InputDeliveryRecorder, InputDeliverySnapshot};
