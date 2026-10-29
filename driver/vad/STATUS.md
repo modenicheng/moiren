@@ -27,6 +27,23 @@ These are bounded target results, not stable-repeatability or complete product
 qualification: earlier timer runs aborted on real long-stall epoch mismatches,
 and a fresh-OS installation has not been qualified.
 
+## Short timer packet progress - 2026-10-29
+
+Local `9cba24b` fixes a reproduced source-level starvation:48/49-frame timer
+packets with1.1ms callbacks could continuously rebase with zero progress.
+Short packets now admit one bounded quantum of residual debt (capped by mapped
+frames), while every callback retains one-packet/three-span/one-transfer work
+bounds. Larger packets, event mode, queues and microphone freshness remain
+unchanged. Overload still quiesces and records loss; timely redue service and
+native PCM retention are not guaranteed by this software policy.
+
+All10 MSVC host suites, WDK analyzed build and native INF validation pass.
+Two independent final source reviews find no Important/Critical issue. The
+generated unsigned development package is neither installed nor deployed; no
+native audio or target qualification occurs. Hardware gates and prior run
+verdicts are unchanged. Exact RED/GREEN, bounds and final artifact hashes:
+[`2026-10-29-vad-short-timer-progress.md`](../../docs/validation/2026-10-29-vad-short-timer-progress.md).
+
 ## Audit follow-up - 2026-10-21
 
 The reported Removing-state retry defect is absent in the current source:

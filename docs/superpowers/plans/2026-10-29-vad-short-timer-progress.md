@@ -51,11 +51,11 @@ Keep local atomic commits and batch remote updates; preserve `gate.log`.
 
 ## Verification And Local Preservation
 
-- [ ] Run all10 portable MSVC driver suites, WDK `build.ps1 -Analyze`, INF
+- [x] Run all10 portable MSVC driver suites, WDK `build.ps1 -Analyze`, INF
   verifier, independent review and diff checks; fix reproduced findings.
-- [ ] Record exact bounds, tests, package hashes and unqualified target gates
+- [x] Record exact bounds, tests, package hashes and unqualified target gates
   in validation ledger and canonical driver status; make scoped local commits.
-- [ ] Leave this batch local pending a meaningful integration push. Do not
+- [x] Leave this batch local pending a meaningful integration push. Do not
   install any generated package or infer target stability from host suites.
 
 Full S1-S3 and stable physical IO/Bus below10ms remain unproven.
