@@ -64,6 +64,14 @@ gates remain unqualified. VM timing qualification stays deferred; these
 physical results do not erase its historical failures or prove naming
 propagation while a native external client holds an endpoint.
 
+The later [native recorder/Process follow-up](../../docs/validation/2026-10-29-native-process-followup.md)
+reproduces the independent recorder's raw first-packet discontinuity without a
+Process graph. Later packet adjacency has no observed mismatch; startup prefix
+integrity is still unknown, and the strict quality failure is not exempted.
+Native app parameter replacement now has separate bounded evidence, retaining
+later delivery-envelope violations. Neither finding changes the VAD provider,
+physical continuity, calibration or long-soak verdicts.
+
 ## Audit follow-up - 2026-10-21
 
 The reported Removing-state retry defect is absent in the current source:

@@ -105,8 +105,20 @@ explicit live-window target2048 refuses the actual complete-wake budget with
 cleanup complete and no fallback. All121 final evidence files are host-verified.
 The subsequent idle shared-target clean removes12,280 files /6.1GiB and leaves
 target bytes0, D free272,451,121,152 bytes; final deployed hashes/driver remain
-verified and no test/build process is left running. The build cache is not
-retained merely to re-prove binaries already copied outside target.
+verified and no test/build process is left running. That cache-discard
+decision is historical and superseded by the current retention policy.
+
+The [native follow-up](2026-10-29-native-process-followup.md) isolates the
+recorder's first-packet raw discontinuity in three standalone baselines and
+retains exact Shared/Exclusive128 preparation refusals without bypassing them.
+Actual app per-wake and explicitly selected live-window4096 requests now
+activate in a new native-backed session and complete bounded run/cleanup.
+Later gap-envelope violations remain visible; the finite replay is not a
+future-service or physical-quality guarantee. This supersedes only the earlier
+absence of successful native window activation, not the original2048 refusal,
+desktop-click acceptance, recorder quality or missing calibrated reference.
+All127 files in the two new archives are host-verified. No build or cache clean
+occurs in this follow-up; default, volume and mute settings remain unchanged.
 
 ## Basis and interpretation
 
@@ -128,9 +140,11 @@ revisions; they are not fresh validation of work now in progress.
 "Implemented" below means the bounded software behavior and recorded host
 regressions exist. It does not mean native acceptance, a successful acquired
 waveform, a calibrated physical delay distribution, or an overall S1-S3 PASS.
-S1 remains partial because native acceptance and acquired measurement
-evidence are missing. Physical-input orchestration and common physical-render
-controls now have separate software receipts below, without native acceptance.
+S1 remains partial because the acquired native recordings do not establish
+clean waveform continuity, a common pre-route reference or calibrated delay.
+Selected native routes now have acceptance or refusal receipts; physical-input
+orchestration and common physical-render controls have separate receipts below
+without qualifying new lower settings.
 The exact virtual IO/Bus
 collector now has the separate bounded software receipt below. S2's bounded
 software mechanisms are present under their
@@ -138,8 +152,9 @@ declared/admitted conditions; native/lower-setting qualification remains open.
 S3's original bounded configuration/replacement paths exist in the actual
 desktop and CLI. The separately selected [desktop live-window controls](2026-10-29-desktop-live-process-window.md)
 are now implemented in `e195bfe`, with fresh full app/Clippy verification and
-independent review and verified deployment; successful native window activation
-remains unproved because the target2048 request refuses its budget. Bounded
+independent review and verified deployment; the later explicit4096 diagnostic
+has native CLI/service activation evidence, while2048 still refuses and native
+desktop-click acceptance remains unproved. Bounded
 live-window service/CLI
 admission, the live-prefix core/native API and audited probe repair have
 separate software receipts below. Checkpointed long windows, combining
