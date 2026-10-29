@@ -32,8 +32,9 @@ The exact virtual IO/Bus
 collector now has the separate bounded software receipt below. S2's bounded
 software mechanisms are present under their
 declared/admitted conditions; native/lower-setting qualification remains open.
-S3 remains partial because the live observed-window tier, freshness composition
-and source-time provenance remain open. The audited probe repair now has the
+S3 remains partial because live observed-window application admission,
+checkpointed long windows, freshness composition and source-time provenance
+remain open. The bounded live-prefix core/native API and audited probe repair have
 separate bounded software receipt below.
 
 ## Completed bounded software slices
@@ -50,6 +51,7 @@ separate bounded software receipt below.
 | E2E VAD source period | The actual [E2E minimum-period option](2026-10-29-e2e-vad-minimum-period.md), source receipt `1d3e691`, supports `live-vad --vad-minimum-period`, preserves omission/default behavior, refuses invalid selection without fallback, and retains alignment/partial-failure evidence. | The 15 focused passing period tests establish host selection/evidence behavior, not actual device acceptance or packet cadence. This option is for the external VAD source, not physical render mode/period. |
 | S3 app/API | Validated independent target/capacity/jitter through API, declared and two-phase measured monitor CLI, actual desktop measured selection, prepared owner replacement and truthful requested/active confirmation. See [monitor CLI](2026-10-29-process-monitor-cli.md) and [desktop measured selection](2026-10-29-desktop-measured-process.md). | Desktop/service regressions are distinct from CLI coverage. Experimental 1024/512/256-frame candidates are not qualified presets. Source/sample-age requests are explicitly refused. |
 | S3 retained evaluation | Pinned exact-prefix collection, bounded ordered replay/inventory, finite-window assessment, conservative final whole-drain/whole-wake measurement and opaque retained-native candidate with explicit desktop Apply. See [retained evaluation/Apply](2026-10-29-retained-process-apply.md). | This software workflow is present, not a missing UI button. Imported JSON remains caller-supplied; finite historical approval does not authenticate future service or physical latency. |
+| S3 live-prefix assessment | The [bounded live Process prefix core and pinned native API](2026-10-29-live-process-prefix.md), source `5df48d0`, seal and replay a sequence-one prefix through the production queue while actual writers remain open. Reports preserve explicit policy, origin, actual closure, refusal and observed loss. | Diagnostic reports are not Apply tokens. App/CLI admission and checkpointed continuation beyond 8192 events per writer remain open; no future service or physical latency guarantee follows. |
 | S3 production wake reserve | The production backend/Pump admits and publishes complete native-wake demand independently of segmented source reads. See [whole-wake regression](2026-10-29-process-whole-wake.md). | That production receipt does not certify the two separate E2E probe preparation callers; their audit finding is tracked below. |
 | S3 host residence | Optional positive [host-ingress elapsed enforcement](2026-10-29-process-ingress-elapsed.md), finite-prefix recovery, separate loss accounting, exact app persistence/selector/CLI forwarding and requested/active state. `None` preserves compatibility. | This is time since publication began, not source age or hardware presentation. Measured/evaluated/replay combinations currently refuse enabled policy explicitly rather than clearing it. |
 
@@ -101,16 +103,20 @@ those historical runs a fully matched comparison.
   These close the audited software defect, not actual native acceptance or
   waveform qualification. The simpler probe does not copy the production
   Pump's distinct prefetch/rounding reserve.
-- **Observed-window demand/delivery density admission:** live measured app/CLI
-  admission currently checks per-wake envelopes, not whether ordered producer
-  supply sustains consumer density over an observed window. The audit's finite
-  counterexample admits five 96-frame producer events spaced 2 ms apart against
-  one hundred 96-frame consumer events spaced 0.1 ms apart. Existing retained
-  closed-window evaluation/Apply is already implemented; it is not this missing
-  live tier. A new feasible/inconclusive/violation tier needs genuine ordered
-  inventory, exact epoch/held/SRC state and explicit exposure. If observation
-  extends beyond the 8192-event-per-writer prefix cap, use bounded checkpoint
-  state rather than inventing an empty/full queue at each chunk boundary.
+- **Observed-window demand/delivery density admission - core implemented,
+  application integration remains:** the [live-prefix receipt](2026-10-29-live-process-prefix.md)
+  records actual ordered production-queue replay with preserved held/SRC/servo
+  state, explicit exposure and feasible/inconclusive/violation outcomes for a
+  sealed sequence-one prefix. Its regression detects repeated demand that
+  exhausts supply even though each individual wake fits. The pinned native API
+  retains its original source/generation; editable archives remain diagnostic.
+  Live measured app/CLI admission still checks per-wake envelopes. It needs
+  explicit window policy and opaque evidence binding, with exact source,
+  settings, rate and demand rechecks before owner replacement. Existing stopped
+  retained evaluation/Apply remains a separate implemented workflow. The new
+  bounded core refuses capped/incomplete evidence. Continuation beyond 8192
+  events per writer still needs checkpoint state rather than an invented
+  empty/full queue at each chunk boundary.
 - **Freshness composition:** measured/evaluated/replay paths honestly refuse
   enabled host-ingress elapsed intent. They do not yet combine the independent
   features. Current queue histories retain the outside read clock endpoints,
@@ -188,5 +194,8 @@ and route receipts record their own fresh Cargo checks and local delivery.
 The physical IO receipt separately records 471 final probe tests, 831 audio
 tests / 3 ignored, strict Clippy and Linux compile-only checks, including the
 repaired test-profile portability failure; these are not native results.
-None performs native audio, VM or driver operations or pushes. Unrelated
+The live-prefix receipt separately records 842 audio passed / 3 ignored,
+471 probe passed and 193 RT harness passed, strict Windows Clippy and Linux
+compile-only checks with the disclosed cfg warnings and repaired RT compile
+failure. None performs native audio, VM or driver operations or pushes. Unrelated
 `gate.log` remains untouched.
