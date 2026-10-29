@@ -1,8 +1,8 @@
 # S1-S3 software status and evidence boundaries
 
 Date: 2026-10-29. Worktree: `minimal-io-latency`.
-The baseline reconciliation is supplemented by the linked probe repair and
-VAD software-route receipts.
+The baseline reconciliation is supplemented by the linked probe repair,
+VAD software-route and common physical-render-request receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
 ## Basis and interpretation
@@ -24,8 +24,9 @@ revisions; they are not fresh validation of work now in progress.
 "Implemented" below means the bounded software behavior and recorded host
 regressions exist. It does not mean native acceptance, a successful acquired
 waveform, a calibrated physical delay distribution, or an overall S1-S3 PASS.
-S1 remains partial because common physical render controls, physical-input
-orchestration and measurement evidence are missing. The exact virtual IO/Bus
+S1 remains partial because physical-input orchestration and measurement
+evidence are missing. Common physical-render controls now have a separate
+software receipt below, without native acceptance. The exact virtual IO/Bus
 collector now has the separate bounded software receipt below. S2's bounded
 software mechanisms are present under their
 declared/admitted conditions; native/lower-setting qualification remains open.
@@ -38,6 +39,7 @@ separate bounded software receipt below.
 | Area | Implemented / recorded software evidence | Boundary of the result |
 | --- | --- | --- |
 | S1 analysis | Packet-aware changing-marker correlation, bounded parsing, invalidation around loss/reset/silence/unknown clocks, optional rate search, segmented relative-delay trends and known-delay/drift regressions. See [rate-aware analysis](2026-10-29-rate-aware-marker-analysis.md) and [segmented trends](2026-10-29-segmented-marker-trends.md). | Synthetic/model recovery and delay slopes are not physical calibration, native epoch proof or an acquired common reference. |
+| S1 common physical render request | [Common mode/period forwarding and exact-observation refusal](2026-10-29-common-physical-render-request.md), source `32b537d`, covers ordinary/owned Process and VAD physical output; final example suite 442 passed. Requests and immutable pre-gate acceptance/refusal snapshots survive later observation changes. | Omission preserves defaults; explicit Shared compatibility/conversion or unknown/mismatched period refuses. Native acceptance, matched A/B settings and actual delay remain unqualified. |
 | S1 observations | Bounded packet/queue/wake/padding/reset/loss evidence, VAD sequence diagnostics, and separate [completion service-clock summaries](2026-10-29-vad-completion-clock.md). | Driver transfer-service and host submission-service stamps are not source sample time. Unknown age, hardware provenance and unavailable closure remain unknown. |
 | S1 virtual IO/Bus collector | The actual [VAD playback -> Bus -> microphone collector](2026-10-29-vad-software-route.md) now selects two exact owned IDs on one control root, uses the production virtual-realtime graph, records the selected microphone and retires both exports after recorder release. | Host route/identity/health/lifecycle regressions are not native acceptance, acquired PCM, an independent common reference or physical latency qualification. |
 | S2 operating budget | Independent target/capacity; packet, Engine transfer, FIR, whole wake and bounded recovery admission; playback prime/servo and microphone occupancy/phase/reprime. Requested/admitted values and later actual packet-shape validation are present. See [reprime budget](2026-10-29-microphone-reprime-budget.md) and [app recovery-cap integration](2026-10-29-app-vad-recovery-cap.md). | Conditional on declared delivery/wake bounds and later native-shape admission. Model packet/block/phase tests do not select a lower production setting or prove real scheduling/waveform continuity. |
@@ -61,14 +63,14 @@ separate bounded software receipt below.
    export removal. Hardware-free injected-failure/identity/startup tests do not
    prove native acceptance, acquired waveform or calibrated route delay; those
    gates remain open for a separately authorized suitable target.
-2. **Missing common explicit physical-render mode/period selection in both
-   probe paths.** The audit found default Shared/default DeviceOptions in the
-   ordinary Process render owner and VAD physical-output project. Queue target,
-   capacity and Engine block size are not native period selection.
-   `--vad-minimum-period` controls the VAD source only. Forward one validated
-   render request consistently through both physical graphs; preserve omitted
-   defaults, requested versus negotiated/aligned values, and explicit refusal
-   without silent fallback. This is software plumbing, not a new target PASS.
+2. **Common explicit physical-render mode/period software gap closed.** The
+   [new receipt](2026-10-29-common-physical-render-request.md) records one
+   validated request through ordinary Process, owned Process and VAD physical
+   output. It preserves omitted defaults, requested versus actual evidence,
+   exact-observation refusal and an immutable VAD pre-gate decision snapshot.
+   Queue target, capacity and Engine block size remain distinct from native
+   period; `--vad-minimum-period` controls the source only. Actual target
+   acceptance and matched A/B conditions remain open, not a new native PASS.
 3. **Physical-input-through-graph orchestration remains absent in the audited
    probe.** Production input types and standalone `record-measurement` do not
    themselves implement the required supported physical input/output route.
