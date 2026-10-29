@@ -122,3 +122,55 @@ settings and an independent calibrated reference. No VAD/Process latency
 winner, stable smaller default, or stable sub-10-ms result is established.
 Correctness progress grace remains diagnostic only; hard IO/resource/identity
 and cleanup errors are not converted to quality-only warnings.
+
+## Follow-up deployment and cancellation repair
+
+The final replacement application/probe manifest records source
+`2905045e7bdea37c05700cc59ae8fafc973ea390`. All four transferred binaries
+(`moiren-app`, `vad_integration`, `e2e_latency_probe`, `vad_native`) were
+verified by length and SHA-256 before replacement. The initial binaries remain
+under `rollback-0118a54`; the driver package/SYS is unchanged. Commit `af3a33a`
+only changes equivalent publication-parity expressions after that build.
+
+Commits `acf459e` and `94cc6ce` preserve typed terminal VAD cancellation and
+revoke the probe's shared admission before stopping its native source.
+Same-generation cancellation while still admitted remains an error; cleanup
+must attempt all peers and retain work/close/drain faults rather than turn
+them into successful PCM. An intermediate broad native-stop exception was
+rejected and never deployed.
+
+The two final exact VAD playback -> Bus -> microphone collections both return
+exit 0 with collection and cleanup complete. The minimum-event run retains
+240,000 source frames and 256,800 recorded frames; the one-period recovery-cap
+candidate retains 240,000 and 257,760 respectively. Neither passes quality.
+Both retain 32 initial-prime muted frames, zero recovery-prime muted frames,
+zero short-read callbacks and zero boundary xruns. This new raw classification
+does not erase other native/provider/measurement faults or modify the original
+`soft_events` totals. The app-service PCM exercise also returns exit 0 after
+replacement; it remains a Gain(0.5) functional test, not a minimal-route test.
+
+The final four Process monitor attempts all refuse preparation and complete
+cleanup; their owned source workers stop/join with exit 0. A single raw ABI
+query per attempt retains HRESULT, poisoned initial output, changed output and
+checked byte count. Compatible, measured-1024 and measured-512 return `S_OK`
+with changed output equal to zero; measured-256 returns `S_OK` with 6,684,721
+frames / 53,477,768 bytes. These observations do not establish a usable native
+capacity or period. The 8-MiB guard is not enlarged and no fallback is presented
+as an observed native capacity. Activation, packet bounds and the distinction
+between native capacity and a separate processing limit remain under audit.
+
+## Integrated host verification after repair
+
+The archived logs in `target/physical-1921681297-20261029` retain:
+
+- Full Windows-audio package: 866 passed / 3 ignored.
+- Full E2E example: 482 passed.
+- RT harness: 203 passed.
+- Strict app/audio all-target Clippy: passed.
+- Full app with `gpui-test`, serial rerun: 623 passed / 4 ignored.
+
+The earlier parallel app run has one curved-wire selection failure (560 passed
+/ 1 failed / 3 ignored in the library). Its unchanged isolated rerun and the
+full serial rerun pass. The failed run is preserved, not relabeled a pass;
+parallel UI-test isolation is still a residual risk. These software results do
+not close the separate native/waveform/physical S1-S3 acceptance gates.
