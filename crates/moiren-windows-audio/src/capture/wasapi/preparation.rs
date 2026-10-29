@@ -3,7 +3,7 @@ use super::Startup;
 use crate::{
     capture::{CaptureError, CaptureReport},
     clock_bridge::{CaptureIngress, ClockBridgeConfig, capture_bridge_with_clock},
-    latency::{NativeStreamTiming, clock::QpcClock},
+    latency::clock::QpcClock,
 };
 use std::sync::mpsc;
 
@@ -16,7 +16,7 @@ pub(super) enum CapturePreparation {
 impl CapturePreparation {
     pub(super) fn prepare(
         &self,
-        timing: NativeStreamTiming,
+        sample_rate: u32,
         channels: usize,
         report: &mut CaptureReport,
         age_clock: Option<QpcClock>,
@@ -33,9 +33,9 @@ impl CapturePreparation {
             && report
                 .shared_period
                 .mix_format
-                .is_none_or(|mix| mix.sample_rate == timing.sample_rate);
+                .is_none_or(|mix| mix.sample_rate == sample_rate);
         let config = ClockBridgeConfig {
-            input_sample_rate: timing.sample_rate,
+            input_sample_rate: sample_rate,
             input_channels: channels,
             detect_position_gaps,
             ..*config
@@ -46,7 +46,7 @@ impl CapturePreparation {
             .send(Ok(Startup {
                 source,
                 observer,
-                sample_rate: timing.sample_rate,
+                sample_rate,
                 channels,
             }))
             .map_err(|_| CaptureError::StartupLost)?;

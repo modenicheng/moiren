@@ -54,7 +54,7 @@ fn target_exit_wakes_without_audio_and_stop_wins_all_signals() {
         Wake::Stop
     );
 }
-use super::packet::transfer_packet;
+use super::packet::{PacketBound, transfer_packet};
 use crate::{
     clock_bridge::{ClockBridgeConfig, capture_bridge},
     owner::OwnedHandle,
@@ -163,7 +163,14 @@ fn capture_lease_releases_complete_packet_on_success_silence_and_validation_fail
         .into();
         let (mut input, _source, observer) = capture_bridge(ClockBridgeConfig::default()).unwrap();
         assert_eq!(
-            transfer_packet(&client, 2, &mut input, None, None).is_err(),
+            transfer_packet(
+                &client,
+                PacketBound::NativeCapacity(2),
+                &mut input,
+                None,
+                None
+            )
+            .is_err(),
             fails
         );
         assert_eq!(
@@ -194,9 +201,15 @@ fn published_packet_evidence_survives_release_failure_without_healing_native_err
         crate::latency::QpcClock::new(),
     )
     .unwrap();
-    let error = transfer_packet(&client, 2, &mut input, None, None)
-        .err()
-        .unwrap();
+    let error = transfer_packet(
+        &client,
+        PacketBound::NativeCapacity(2),
+        &mut input,
+        None,
+        None,
+    )
+    .err()
+    .unwrap();
     assert_eq!(
         error,
         CaptureError::Api {
@@ -255,7 +268,13 @@ fn capture_lease_copies_raw_evidence_before_release_without_allocating() {
         )
         .unwrap();
         let (result, counts) = allocation_guard::count_allocations(|| {
-            transfer_packet(&client, 2, &mut ingress, None, Some(&mut writer))
+            transfer_packet(
+                &client,
+                PacketBound::NativeCapacity(2),
+                &mut ingress,
+                None,
+                Some(&mut writer),
+            )
         });
         assert_eq!(counts, (0, 0));
         assert_eq!(result.is_err(), fails);
@@ -290,6 +309,91 @@ fn capture_lease_copies_raw_evidence_before_release_without_allocating() {
             assert!(reader.pop().is_none());
         }
     }
+}
+
+#[test]
+fn process_bounded_packet_checks_non_silent_length_before_pointer_or_evidence() {
+    use super::packet::PROCESS_PACKET_SAFETY_BOUND_BYTES;
+    for fail_release in [false, true] {
+        let frames = (PROCESS_PACKET_SAFETY_BOUND_BYTES / 8 + 1) as u32;
+        let releases = Rc::new(RefCell::new(Vec::with_capacity(1)));
+        let client: IAudioCaptureClient = FakeCapture {
+            data: Rc::new(UnsafeCell::new([0.0; 4])),
+            releases: releases.clone(),
+            frames,
+            flags: 0,
+            null_buffer: true,
+            fail_release,
+        }
+        .into();
+        let (mut ingress, _source, observer) =
+            capture_bridge(ClockBridgeConfig::default()).unwrap();
+        let (result, counts) = allocation_guard::count_allocations(|| {
+            transfer_packet(
+                &client,
+                PacketBound::ProcessSafety,
+                &mut ingress,
+                None,
+                None,
+            )
+        });
+        assert_eq!(counts, (0, 0));
+        assert_eq!(
+            result.err(),
+            Some(CaptureError::ProcessPacketBound {
+                frames,
+                frame_bytes: 8,
+                packet_bytes: Some(frames as usize * 8),
+                limit_bytes: PROCESS_PACKET_SAFETY_BOUND_BYTES,
+                release_hresult: fail_release
+                    .then_some(windows::Win32::Foundation::E_NOINTERFACE.0),
+            })
+        );
+        assert_eq!(releases.borrow().as_slice(), [frames]);
+        assert_eq!(observer.snapshot().captured_frames, 0);
+    }
+}
+
+#[test]
+fn process_bounded_packet_copies_real_non_silent_samples_without_allocating() {
+    let releases = Rc::new(RefCell::new(Vec::with_capacity(1)));
+    let client: IAudioCaptureClient = FakeCapture {
+        data: Rc::new(UnsafeCell::new([0.25, -0.25, 0.5, -0.5])),
+        releases: releases.clone(),
+        frames: 2,
+        flags: 0,
+        null_buffer: false,
+        fail_release: false,
+    }
+    .into();
+    let (mut ingress, mut source, _) = capture_bridge(ClockBridgeConfig {
+        target_fill_frames: 2,
+        trim_on_prime: false,
+        max_correction_ppm: 0.0,
+        ..Default::default()
+    })
+    .unwrap();
+    let (result, counts) = allocation_guard::count_allocations(|| {
+        transfer_packet(
+            &client,
+            PacketBound::ProcessSafety,
+            &mut ingress,
+            None,
+            None,
+        )
+    });
+    assert_eq!(counts, (0, 0));
+    assert_eq!(result.unwrap().accepted_frames, 2);
+    assert_eq!(releases.borrow().as_slice(), [2]);
+    let mut pcm = [0.0; 2];
+    assert_eq!(
+        source
+            .read_interleaved(&mut pcm)
+            .unwrap()
+            .transferred_frames,
+        1
+    );
+    assert_eq!(pcm, [0.25, -0.25]);
 }
 
 #[test]
@@ -343,10 +447,10 @@ fn prepared_capture_publishes_bridge_before_gate_and_cancel_never_runs() {
         let report = prepared.session.join().unwrap();
         assert_eq!(report.stream_started, !cancel);
         assert_eq!(runs.load(Ordering::SeqCst), usize::from(!cancel));
-        assert_eq!(report.schema_version, 10);
+        assert_eq!(report.schema_version, 11);
         assert_eq!(report.requested_seconds, None);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 10);
+        assert_eq!(json["schema_version"], 11);
         assert_eq!(json["delivery"]["packets"], 0);
         assert!(json["delivery_bound"].is_null());
         assert_eq!(json["shared_period"]["requested_period_frames"], 240);
@@ -371,7 +475,7 @@ fn capture_preparation_failure_joins_owner_before_returning() {
         );
         let report = stream::finish(Err(CaptureError::UnsupportedFormat), &stop, &sender, report);
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 10);
+        assert_eq!(json["schema_version"], 11);
         assert_eq!(json["requested_seconds"], 10.0);
         owner_exited.store(true, std::sync::atomic::Ordering::Release);
         report

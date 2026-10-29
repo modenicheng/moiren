@@ -16,20 +16,7 @@ fn ingress_elapsed_native_preparation_refuses_missing_host_clock() {
         CaptureSource::ProcessLoopback,
         SessionDuration::UntilStopped,
     );
-    assert!(
-        preparation
-            .prepare(
-                NativeStreamTiming {
-                    sample_rate: 48_000,
-                    period_frames: None,
-                    capacity_frames: 480
-                },
-                2,
-                &mut report,
-                None
-            )
-            .is_err()
-    );
+    assert!(preparation.prepare(48_000, 2, &mut report, None).is_err());
 }
 
 #[test]
@@ -62,18 +49,7 @@ fn configured_process_preparation_changes_real_priming_and_reports_the_attached_
         CaptureSource::ProcessLoopback,
         SessionDuration::UntilStopped,
     );
-    let mut ingress = preparation
-        .prepare(
-            NativeStreamTiming {
-                sample_rate: 48_000,
-                period_frames: None,
-                capacity_frames: 480,
-            },
-            2,
-            &mut report,
-            None,
-        )
-        .unwrap();
+    let mut ingress = preparation.prepare(48_000, 2, &mut report, None).unwrap();
     let startup = receiver.recv().unwrap().unwrap();
     let mut source = startup.source;
     assert_eq!(source.prepared_input(), Some(options.prepare().unwrap()));
@@ -150,18 +126,7 @@ fn configured_position_clock_requires_physical_capture_and_matching_units() {
                 channel_mask: None,
                 floating_point: true,
             });
-            let mut ingress = preparation
-                .prepare(
-                    NativeStreamTiming {
-                        sample_rate: 48_000,
-                        period_frames: None,
-                        capacity_frames: 64,
-                    },
-                    2,
-                    &mut report,
-                    None,
-                )
-                .unwrap();
+            let mut ingress = preparation.prepare(48_000, 2, &mut report, None).unwrap();
             let startup = receiver.recv().unwrap().unwrap();
             for index in 0..2u64 {
                 ingress

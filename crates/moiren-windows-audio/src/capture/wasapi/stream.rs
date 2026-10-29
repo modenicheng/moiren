@@ -3,12 +3,14 @@
 #[path = "stream_live_tests.rs"]
 mod live_tests;
 use super::{
-    Startup, Wake, api, handle, packet::transfer_packet, preparation::CapturePreparation,
+    Startup, Wake, api, handle,
+    packet::{PROCESS_PACKET_SAFETY_BOUND_BYTES, PacketBound, transfer_packet},
+    preparation::CapturePreparation,
     wait_target,
 };
 use crate::{
     Activation, ActivationGate, SessionDuration,
-    capture::{CaptureBufferSizeQuery, CaptureError, CaptureReport, CaptureStatus},
+    capture::{CaptureBufferSizeQuery, CaptureError, CaptureReport, CaptureSource, CaptureStatus},
     latency::{
         CallbackObservation, InputDeliveryRecorder, LatencyRecorder, TelemetryMode, clock::QpcClock,
     },
@@ -64,6 +66,9 @@ pub(super) fn run_prepared(
     preparation: &CapturePreparation,
     report: &mut CaptureReport,
 ) -> Result<CaptureStatus, CaptureError> {
+    if report.source == CaptureSource::ProcessLoopback {
+        report.process_packet_safety_bound_bytes = Some(PROCESS_PACKET_SAFETY_BOUND_BYTES as u64);
+    }
     // The generated binding hides nonnegative HRESULTs and zeroes its output.
     // Call the same ABI directly once so a refused Process client preserves
     // both the status and the output instead of looking like a budget choice.
@@ -91,13 +96,7 @@ pub(super) fn run_prepared(
             hresult: status.0,
         });
     }
-    if status != S_OK
-        || !query.output_changed
-        || capacity == 0
-        || query
-            .raw_bytes
-            .is_none_or(|bytes| bytes == 0 || bytes > 8 * 1024 * 1024)
-    {
+    if status != S_OK {
         return Err(CaptureError::InvalidBufferSize {
             hresult: query.hresult,
             raw_frames: query.raw_frames,
@@ -105,7 +104,35 @@ pub(super) fn run_prepared(
             output_changed: query.output_changed,
         });
     }
-    report.buffer_frames = Some(capacity);
+    let packet_bound = if report.source == CaptureSource::ProcessLoopback {
+        // A successful virtual-client query is retained as raw evidence only,
+        // including zero, implausible, plausible, and unchanged output. Process
+        // packets have a separate fixed safety contract, not a capacity fallback.
+        // Chromium also defers its Process query until the first sample-ready
+        // event because of a Windows bug (crbug.com/411452039):
+        // src@623c32009e03672597ac3967474a7f8e8a87b1ce,
+        // media/audio/win/audio_low_latency_input_win.cc:1972-1982.
+        // Keep native timing unknown instead; never Start ahead of our gate to
+        // obtain a trustworthy capacity. The independent bridge is preallocated.
+        report.buffer_frames = None;
+        PacketBound::ProcessSafety
+    } else {
+        if !query.output_changed
+            || capacity == 0
+            || query
+                .raw_bytes
+                .is_none_or(|bytes| bytes == 0 || bytes > 8 * 1024 * 1024)
+        {
+            return Err(CaptureError::InvalidBufferSize {
+                hresult: query.hresult,
+                raw_frames: query.raw_frames,
+                raw_bytes: query.raw_bytes,
+                output_changed: query.output_changed,
+            });
+        }
+        report.buffer_frames = Some(capacity);
+        PacketBound::NativeCapacity(capacity)
+    };
     report.stream_latency_100ns = unsafe { input.client.GetStreamLatency() }.ok();
     let mut telemetry = LatencyRecorder::new(input.latency_telemetry);
     // Scalar live observations need QPC even when trace collection is disabled.
@@ -126,16 +153,7 @@ pub(super) fn run_prepared(
     // rejected artifact configuration must never look like a live capture to
     // the control side.
     report.prepare_artifact(input.artifact, input.sample_rate, input.channels)?;
-    let mut ingress = preparation.prepare(
-        crate::latency::NativeStreamTiming {
-            sample_rate: input.sample_rate,
-            period_frames: report.shared_period.actual_period_frames,
-            capacity_frames: capacity,
-        },
-        input.channels,
-        report,
-        clock,
-    )?;
+    let mut ingress = preparation.prepare(input.sample_rate, input.channels, report, clock)?;
     let activation = input.gate.wait_with_target(input.target)?;
     // A process can exit during preparation. Stop still wins over that exit.
     match wait_target(handle(input.stop), input.audio, input.target, 0)? {
@@ -198,7 +216,7 @@ pub(super) fn run_prepared(
                     }
                     let transfer = transfer_packet(
                         &capture,
-                        capacity,
+                        packet_bound,
                         &mut ingress,
                         report.artifact_recorder.as_mut(),
                         report.evidence_recorder.as_mut(),

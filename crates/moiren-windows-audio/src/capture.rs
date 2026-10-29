@@ -46,6 +46,16 @@ pub enum CaptureError {
         raw_bytes: Option<u64>,
         output_changed: bool,
     },
+    #[error(
+        "Process capture packet exceeds its {limit_bytes}-byte processing safety bound (frames={frames}, frame_bytes={frame_bytes}, packet_bytes={packet_bytes:?}, release_hresult={release_hresult:?}); this bound is not native capacity or delivery timing"
+    )]
+    ProcessPacketBound {
+        frames: u32,
+        frame_bytes: usize,
+        packet_bytes: Option<usize>,
+        limit_bytes: usize,
+        release_hresult: Option<i32>,
+    },
     #[error(transparent)]
     Bridge(#[from] ClockBridgeError),
     #[error("{stage} failed (HRESULT 0x{hresult:08X})")]
@@ -149,6 +159,8 @@ pub struct CaptureReport {
     pub delivery_bound: Option<crate::latency::transport::InputDeliveryTiming>,
     pub delivery: crate::latency::InputDeliverySnapshot,
     pub input_queue: Option<crate::latency::PreparedInputQueue>,
+    /// Version 11 separates untrusted Process buffer-size query evidence from
+    /// its packet processing bound; Process native capacity remains unknown.
     pub schema_version: u32,
     pub latency: crate::latency::LatencySnapshot,
     pub shared_period: crate::format::SharedPeriodReport,
@@ -163,9 +175,14 @@ pub struct CaptureReport {
     pub elapsed_seconds: f64,
     pub sample_rate: Option<u32>,
     pub channels: Option<usize>,
+    /// Trusted native capacity, unavailable for pre-event Process Loopback.
     pub buffer_frames: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub buffer_size_query: Option<CaptureBufferSizeQuery>,
+    /// Fixed host-side packet processing safety limit, never an observed
+    /// native capacity, queue target, delivery reserve, or period.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_packet_safety_bound_bytes: Option<u64>,
     pub stream_started: bool,
     pub stop_succeeded: bool,
     pub stop_hresult: Option<i32>,
@@ -180,7 +197,7 @@ pub struct CaptureReport {
 impl CaptureReport {
     pub fn new(source: CaptureSource, duration: SessionDuration) -> Self {
         Self {
-            schema_version: 10,
+            schema_version: 11,
             artifact: None,
             artifact_metadata: None,
             artifact_recorder: None,
@@ -205,6 +222,7 @@ impl CaptureReport {
             channels: None,
             buffer_frames: None,
             buffer_size_query: None,
+            process_packet_safety_bound_bytes: None,
             stream_started: false,
             stop_succeeded: false,
             stop_hresult: None,
