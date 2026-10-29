@@ -16,3 +16,20 @@ log = "0.4"
 rtrb = "=0.4.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# Exact pin: this crate family's public API exposes `windows::core` types,
+# so a second version in the graph fails compilation instead of degrading.
+# windows-core is also declared by the crates whose `#[implement]` macro
+# expansions reference `::windows_core` directly.
+windows = "=0.62.2"
+windows-core = "=0.62.2"
+
+[workspace.lints.rust]
+# Deny locally what CI denies with `-D warnings`, so lint drift cannot pass
+# a local run and only fail in CI. Additive over the default lint set.
+future_incompatible = "deny"
+unused = "deny"
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }

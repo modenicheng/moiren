@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "Engine-backed WASAPI Shared capture/render, clock adaptation and opt-in probes"
 
+[lints]
+workspace = true
+
 [dependencies]
 moiren-core = { path = "../moiren-core" }
 moiren-engine = { path = "../moiren-engine" }
@@ -59,8 +62,10 @@ name = "vad_active_lifecycle"
 required-features = ["vad-probe"]
 
 [target.'cfg(windows)'.dependencies]
-windows-core = "=0.62.2"
-windows = { version = "=0.62.2", features = [
+# windows-core is not referenced by handwritten code: the #[implement]
+# macro's expansion references `::windows_core` directly.
+windows-core = { workspace = true }
+windows = { workspace = true, features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_Enumeration_Pnp",
     "Win32_Devices_FunctionDiscovery",
