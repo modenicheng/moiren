@@ -73,6 +73,22 @@ Deployed binaries, driver and rollback, source worktrees and evidence remain.
 The linked receipt records the failed FXC auto-discovery, single-path task
 override, successful build retry, exact native outcomes and post-clean checks.
 
+The subsequent [Process artifact applicability repair](2026-10-29-process-artifact-position.md),
+source `5382369`, supersedes only the unresolved position-gap semantics above.
+CaptureReport schema 12 / artifact metadata 2 explicitly mark Process position
+checks inapplicable while retaining actual timestamp/native/overflow faults.
+Fresh native Process4 captures confirm repeated position 0 no longer creates
+534 synthetic gaps: Compatible and explicit 2048 complete collection/cleanup
+with zero artifact gaps and bridge underruns/drops/resets. Both independent
+recordings still retain one discontinuity and fail quality. Explicit 1536/1024
+refuse the complete native-wake budget before capture; their missing/not-started
+receipts still report cleanup false. Neither refusal is a successful run.
+The separate probe deployment and all 128 evidence files are host-verified;
+the application remains at `45a084e` until its next verified deployment.
+The earlier post-clean zero-target receipt is historical: the shared target is
+reused for this next bounded build/test phase and requires another idle clean
+after final copies and archival. No new physical latency claim follows.
+
 ## Basis and interpretation
 
 Requirements are in

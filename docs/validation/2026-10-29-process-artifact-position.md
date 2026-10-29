@@ -67,8 +67,43 @@ suite; it is not the RED result. The subsequent Process-owned wrapper retains
 actual waited exit codes and test failures. Full-suite results above are from
 the exact formatted patch, not from previous deployed binaries.
 
-Native redeployment, repeated-zero-position confirmation in fresh captured
-packets and independent recorder continuity remain separately required. The
-previous recorder discontinuity is not erased by correcting artifact position
-applicability. S1-S3, continuous replay, freshness composition and physical
-sub-10-ms qualification are not completed by this repair.
+## Fresh native confirmation
+
+The separate physical target `LAPTOP-NP49RG6H` ran the release probe built from
+clean `5382369973361e0e3750c769c85a7476439163a6`. Its deployed SHA-256 is
+`B10E0EB92F6B7DBC4E82450F42F0E851C2F03601E7D2328BCAA386E8880C7B0F`.
+The installed driver and application were unchanged. No compiler, application
+UI or other test acquisition ran concurrently. The output remained muted;
+volume, default roles and target clock were not changed.
+
+| Process4 case | Collection / cleanup | Actual capture evidence | Quality |
+| --- | --- | --- | --- |
+| Compatible | Complete / complete | 535 packets, 256,800 frames; metadata 2, position checks false, zero artifact gaps | Fails: independent recorder discontinuity 1 |
+| Explicit target 2048, capacity 8192, jitter 96 | Complete / complete | 536 packets, 257,280 frames; metadata 2, position checks false, zero artifact gaps | Fails: independent recorder discontinuity 1 |
+| Explicit target 1536 | Refused before capture | Cannot cover complete native render wake, capture gap, jitter and lookahead | No qualifying capture |
+| Explicit target 1024 | Refused before capture | Same complete-wake admission refusal; no silent target enlargement | No qualifying capture |
+
+For the two completed cases, the raw last device position remains 0. Capture
+artifact timestamp errors, discontinuities, dropped/overflow and silent frames
+are zero, and bridge underruns, drops and resets are zero. This confirms the
+invalid position-gap comparison is removed, not that continuity is established
+for the independent recorder or that physical latency passes. Both recorder
+reports retain the actual discontinuity. Raw GetBufferSize returns S_OK with 0;
+Process native capacity remains explicitly unknown.
+
+The two refused cases currently report collection/cleanup false, with additional
+missing/not-started source, recorder and graph receipt diagnostics. Preserve
+that verdict: a pre-start refusal is not a successful cleanup receipt merely
+because subsequent process inspection finds no acquisition left running.
+All four watchdogs remain false. No accepted lower preset follows from these
+runs, and neither route has a calibrated comparison or latency distribution.
+
+The complete Process4/build evidence archive is copied to the host and each
+member length and SHA-256 verified: `evidence-process4-5382369.zip`, 2,845,533
+bytes, 128 files / 129 entries including its manifest, SHA-256
+`09A1257D8224F19CC58341FF6AEB83E446D795E1AFF25597B17F949CCAE9A272`.
+Host receipt: `target/physical-1921681297-20261029/`.
+
+Independent recorder continuity, continuous replay, freshness composition and
+calibrated physical sub-10-ms qualification remain open. This native repair
+confirmation does not complete S1-S3 or erase earlier failure evidence.
