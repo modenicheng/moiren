@@ -5,6 +5,52 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+## Physical-target follow-up
+
+The [physical deployment receipt](2026-10-29-physical-target-deployment.md)
+records authorized work on `LAPTOP-NP49RG6H` / `192.168.12.97`, separate from
+the deferred VM. It supersedes baseline statements that no native route has
+been acquired: exact VAD software-route recordings and cleanup now complete,
+including explicit 2048/1024 operating targets with independent capacity.
+They still fail waveform/provider quality and are not physical latency results.
+Muted Realtek output and the lack of a calibrated common reference remain
+explicit blockers; no path winner or smaller default is selected.
+
+Three bounded software repairs follow those native observations:
+
+- `792f99e` accepts the Engine's legitimate initial resource generation 0 in
+  the physical collector, pins that exact value, and still refuses subsequent
+  identity/resource/plan changes. Focused physical regressions: 39 passed.
+- `a64739d` retains the first classified playback startup snapshot, raw totals,
+  checked steady deltas and stopped final conservation. It does not subtract
+  a fixed 32-frame allowance, hide recovery/short-read/xrun faults or invent
+  missing classification. Focused boundary regressions: 10 passed.
+- `2ad3df3` separates Process packet processing safety from an untrustworthy
+  pre-first-event `GetBufferSize` result. Raw query evidence remains; Process
+  capacity/period remain unknown. Actual packets are bounded before borrowing,
+  with the existing 8-MiB limit, complete lease release and retained dual faults.
+  Physical native-capacity admission is unchanged. CaptureReport is schema 11;
+  the final library suite passes 607 / 2 ignored. This is not observed native
+  delivery admission or a buffer-latency claim.
+
+The latter decision is corroborated by Chromium's documented Windows Process
+Loopback pre-first-event query bug in
+`media/audio/win/audio_low_latency_input_win.cc` at upstream revision
+`623c32009e03672597ac3967474a7f8e8a87b1ce` (crbug.com/411452039). The patch does
+not start a source ahead of the activation gate to obtain a capacity.
+Native retesting and integrated test counts belong to their own later
+receipts; the focused passes do not relabel prior failed runs as successful.
+
+The real native desktop idle renderer/catalog capture also completes with
+26 screenshots, using isolated preferences and no audio Start. It does not
+prove desktop live-window Apply, actual desktop audio or physical latency.
+Suitable integrated tests/builds now move to a separate target worktree;
+the clean remote main remains untouched. Target/temp/download caches stay on
+D:, one Cargo target is reused, space is checked between phases, and only idle
+verified Cargo outputs are cleaned. Audio acquisition never overlaps heavy
+builds. The first explicit remote clean reclaims 1.1 GiB without deleting
+driver rollback or measurement evidence.
+
 ## Basis and interpretation
 
 Requirements are in
