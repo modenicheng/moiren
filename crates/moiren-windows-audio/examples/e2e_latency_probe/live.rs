@@ -65,6 +65,10 @@ mod control_observation;
 mod vad;
 
 #[cfg(any(windows, test))]
+#[path = "vad_period.rs"]
+mod vad_period;
+
+#[cfg(any(windows, test))]
 #[path = "soak.rs"]
 mod soak;
 
@@ -113,6 +117,7 @@ struct LiveOptions {
     max_packet_frames: u32,
     max_gap_frames: u32,
     vad_recovery_cap_periods: Option<u64>,
+    vad_minimum_period: bool,
     render_target_frames: Option<u32>,
     wake_margin_frames: u32,
     callback_budget_frames: u32,
@@ -159,6 +164,7 @@ impl Default for LiveOptions {
             max_packet_frames: DEFAULT_MAX_PACKET_FRAMES,
             max_gap_frames: DEFAULT_MAX_GAP_FRAMES,
             vad_recovery_cap_periods: None,
+            vad_minimum_period: false,
             render_target_frames: None,
             wake_margin_frames: DEFAULT_WAKE_MARGIN_FRAMES,
             callback_budget_frames: DEFAULT_CALLBACK_BUDGET_FRAMES,
@@ -191,6 +197,8 @@ struct LiveRunManifest {
     source_name: Option<String>,
     source_identity: Option<Value>,
     playback_source: Option<source::SourceProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_minimum_period: Option<bool>,
     collection: Option<Value>,
     output_endpoint_id: String,
     measurement_boundary: EvidenceBoundary,
@@ -243,6 +251,8 @@ struct SourceReport {
     requested_name: Option<String>,
     identity: Option<Value>,
     playback_source: Option<source::SourceProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_minimum_period: Option<bool>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -307,6 +317,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
              production graph + independent waveform collection. --seconds is its total ceiling.\n\
              live-vad accepts --vad-recovery-cap-periods 1..8; omitted preserves 8.\n\
              This limits virtual-clock catch-up only, not physical whole-wake demand or measured latency; smaller caps may discard more overdue periods.\n\
+             --vad-minimum-period requests the queried exclusive VAD minimum; omitted preserves the default request.\n\
+             Period requests are unqualified; actual buffer and provider packet observations remain separate.\n\
              --validation-mode latency-sensitive|correctness [--jitter-tolerance-ms 0..3000]\n\
              Correctness retains jitter/underruns without early quality abort; never latency qualification.\n\
              Correctness exit 0 means collection and cleanup completed, even if quality_passed=false.\n\
@@ -581,6 +593,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             playback_source: (options.source_kind == EvidenceSourceKind::VadPlayback
                 || options.process_collection.is_some())
             .then(|| source::SourceProvenance::new(source_plan)),
+            vad_minimum_period: options.vad_minimum_period.then_some(true),
         },
         output_endpoint_id: options.output_endpoint.clone(),
         measurement_boundary: options.measurement_boundary,
@@ -610,6 +623,7 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         playback_source: (options.source_kind == EvidenceSourceKind::VadPlayback
             || options.process_collection.is_some())
         .then(|| source::SourceProvenance::new(source_plan)),
+        vad_minimum_period: options.vad_minimum_period.then_some(true),
         collection: collection.clone(),
         output_endpoint_id: options.output_endpoint.clone(),
         measurement_boundary: options.measurement_boundary,
@@ -686,6 +700,14 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
     let mut iter = arguments.into_iter();
     while let Some(flag) = iter.next() {
         let value = match flag.as_str() {
+            "--vad-minimum-period" => {
+                ensure!(
+                    !options.vad_minimum_period,
+                    "duplicate --vad-minimum-period"
+                );
+                options.vad_minimum_period = true;
+                continue;
+            }
             "--diagnostic-soak" => {
                 ensure!(!options.diagnostic_soak, "duplicate --diagnostic-soak");
                 options.diagnostic_soak = true;
@@ -887,6 +909,10 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
 
 fn validate(options: &LiveOptions) -> Result<()> {
     options.validation.validate()?;
+    ensure!(
+        !options.vad_minimum_period || options.source_kind == EvidenceSourceKind::VadPlayback,
+        "--vad-minimum-period is only valid for live-vad"
+    );
     if let Some(cap) = options.vad_recovery_cap_periods {
         ensure!(
             options.source_kind == EvidenceSourceKind::VadPlayback,
@@ -2519,6 +2545,7 @@ mod native {
                         stable_from_virtual(self.endpoint_id),
                         root,
                         source_plan,
+                        options.vad_minimum_period,
                         abort,
                         &mut self.playback_outcome,
                     )
@@ -2527,6 +2554,8 @@ mod native {
                         stable_from_virtual(self.endpoint_id),
                         root,
                         source_plan,
+                        options.vad_minimum_period,
+                        &mut self.playback_outcome,
                     )
                 }
                 .context("prepare VAD native playback")?,
@@ -3303,6 +3332,69 @@ mod tests {
             "--artifact-dir".into(),
             directory.to_string_lossy().into_owned(),
         ]
+    }
+
+    #[test]
+    fn vad_minimum_period_parser_accepts_only_one_vad_switch() {
+        let directory = temp_dir("vad-min-period-parser");
+        let mut args = source_test_args(&directory);
+        args.push("--vad-minimum-period".into());
+        let options = parse(args.clone()).expect("explicit minimum period must parse");
+        validate(&options).unwrap();
+        args.push("--vad-minimum-period".into());
+        assert!(parse(args).is_err());
+
+        for source in ["process-loopback", "vad"] {
+            let args = [
+                "--source-kind",
+                source,
+                "--source-pid",
+                "42",
+                "--output",
+                "out",
+                "--artifact-dir",
+                "unused",
+                "--vad-minimum-period",
+            ];
+            assert!(
+                parse(args.map(str::to_owned).to_vec())
+                    .and_then(|options| validate(&options))
+                    .is_err(),
+                "{source}"
+            );
+        }
+        let mut value = source_test_args(&directory);
+        value.extend(["--vad-minimum-period".into(), "true".into()]);
+        assert!(parse(value).is_err(), "the option is a switch");
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn vad_minimum_period_dry_reports_retain_intent_without_native_evidence() {
+        for minimum in [false, true] {
+            let directory = temp_dir(&format!("vad-min-period-dry-{minimum}"));
+            let mut args = source_test_args(&directory);
+            if minimum {
+                args.push("--vad-minimum-period".into());
+            }
+            assert_eq!(run(args).unwrap(), 1);
+            let manifest: Value =
+                serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap())
+                    .unwrap();
+            let report: Value =
+                serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+            if minimum {
+                assert_eq!(manifest["vad_minimum_period"], true);
+                assert_eq!(report["source"]["vad_minimum_period"], true);
+            } else {
+                assert!(manifest.get("vad_minimum_period").is_none());
+                assert!(report["source"].get("vad_minimum_period").is_none());
+            }
+            assert_eq!(manifest["status"], "unqualified");
+            assert_eq!(report["qualified"], false);
+            assert!(report["native"]["vad_playback"].is_null());
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]

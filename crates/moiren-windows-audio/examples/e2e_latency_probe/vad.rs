@@ -6,6 +6,7 @@
 
 use super::source::{PreparedSource, SourceCursor, SourceProgress, SourceProvenance};
 use super::vad_collection::PlaybackProgress;
+use super::vad_period::{self, PeriodEvidence};
 use anyhow::{Context, Result, ensure};
 use moiren_windows_audio::vad::{
     Channels, DeviceInterface, Intent, MAX_PACKET_FRAMES, SampleFormat, StableEndpointId,
@@ -63,6 +64,8 @@ const CONTROL_START_TIMEOUT: Duration = Duration::from_secs(15);
 pub struct PlaybackOutcome {
     #[serde(flatten)]
     pub info: Option<PlaybackInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period_request: Option<PeriodEvidence>,
     pub submitted_frames: u64,
     pub playback_source: SourceProvenance,
     pub source_progress: SourceProgress,
@@ -96,6 +99,7 @@ enum PlaybackTarget {
     Vad {
         stable_id: StableEndpointId,
         root: String,
+        minimum_period: bool,
     },
     Shared {
         endpoint: String,
@@ -116,6 +120,7 @@ pub struct PlaybackSession {
 #[derive(Default)]
 struct WorkerState {
     info: Option<PlaybackInfo>,
+    period_request: Option<PeriodEvidence>,
     provenance: Option<SourceProvenance>,
     progress: PlaybackProgress,
     elapsed_seconds: f64,
@@ -165,14 +170,24 @@ impl PlaybackSession {
         stable_id: StableEndpointId,
         root_instance: String,
         source_plan: Option<PreparedSource>,
+        minimum_period: bool,
+        partial: &mut Option<PlaybackOutcome>,
     ) -> Result<Self> {
-        Self::prepare_with_abort(stable_id, root_instance, source_plan, || {}, &mut None)
+        Self::prepare_with_abort(
+            stable_id,
+            root_instance,
+            source_plan,
+            minimum_period,
+            || {},
+            partial,
+        )
     }
 
     pub(super) fn prepare_with_abort(
         stable_id: StableEndpointId,
         root_instance: String,
         source_plan: Option<PreparedSource>,
+        minimum_period: bool,
         before_join: impl FnMut(),
         partial: &mut Option<PlaybackOutcome>,
     ) -> Result<Self> {
@@ -180,6 +195,7 @@ impl PlaybackSession {
             PlaybackTarget::Vad {
                 stable_id,
                 root: root_instance,
+                minimum_period,
             },
             source_plan,
             before_join,
@@ -214,7 +230,17 @@ impl PlaybackSession {
     ) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let activate = Arc::new(AtomicBool::new(false));
-        let latest = Arc::new(Mutex::new(WorkerState::default()));
+        let latest = Arc::new(Mutex::new(WorkerState {
+            period_request: matches!(
+                target,
+                PlaybackTarget::Vad {
+                    minimum_period: true,
+                    ..
+                }
+            )
+            .then(PeriodEvidence::new),
+            ..WorkerState::default()
+        }));
         let provenance = SourceProvenance::new(source_plan.as_ref());
         let worker_stop = stop.clone();
         let worker_activate = activate.clone();
@@ -373,6 +399,7 @@ fn join_outcome(
     let state = latest.lock().unwrap_or_else(|poison| poison.into_inner());
     PlaybackOutcome {
         info: state.info.clone(),
+        period_request: state.period_request,
         submitted_frames: state.progress.source.native_submitted_frames,
         playback_source: state.provenance.clone().unwrap_or(provenance),
         source_progress: state.progress.source.clone(),
@@ -661,8 +688,40 @@ struct Stream {
     shared: bool,
 }
 
+fn prepare_alignment_retry(
+    latest: &Mutex<WorkerState>,
+    buffer_size: impl FnOnce() -> Result<u32>,
+) -> Result<i64> {
+    if let Some(evidence) = latest
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .period_request
+        .as_mut()
+    {
+        // The alignment error already requires recovery. If its size query
+        // fails, retain that intent and the last known request unchanged.
+        evidence.alignment_retry = true;
+    }
+    let frames = buffer_size()?;
+    ensure!(
+        (1..=MAX_PACKET_FRAMES * 2).contains(&frames),
+        "aligned buffer out of bounds"
+    );
+    let period = (u64::from(frames) * 10_000_000).div_ceil(48_000) as i64;
+    if let Some(evidence) = latest
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .period_request
+        .as_mut()
+    {
+        // Publish before fresh activation/initialization can fail.
+        evidence.record_alignment_retry(period);
+    }
+    Ok(period)
+}
+
 impl Stream {
-    fn prepare(device: &IMMDevice) -> Result<Self> {
+    fn prepare(device: &IMMDevice, latest: &Mutex<WorkerState>) -> Result<Self> {
         let mut selected = None;
         for format in [SampleFormat::Float32, SampleFormat::Pcm16] {
             let wave = descriptor(format);
@@ -678,12 +737,25 @@ impl Stream {
         }
         let (mut client, wave, format) =
             selected.context("VAD MMDevice has no exact Float32/PCM16 format")?;
-        let mut period = 0;
-        unsafe { client.GetDevicePeriod(Some(&mut period), None)? };
-        ensure!(
-            (1_000..=1_000_000).contains(&period),
-            "native period out of bounds: {period}"
-        );
+        let mut evidence = latest
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .period_request;
+        let (mut default_hns, mut minimum_hns) = (0, 0);
+        // Keep the legacy query shape unless explicitly requesting a minimum.
+        // This query is evidence of a request, not the actual packet cadence.
+        unsafe {
+            client.GetDevicePeriod(
+                Some(&mut default_hns),
+                evidence.as_ref().map(|_| &mut minimum_hns as *mut i64),
+            )?
+        };
+        let selection = vad_period::select_period(default_hns, minimum_hns, evidence.as_mut());
+        latest
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .period_request = evidence;
+        let mut period = selection?;
         let initialize = |client: &IAudioClient, period| unsafe {
             client.Initialize(
                 AUDCLNT_SHAREMODE_EXCLUSIVE,
@@ -699,12 +771,10 @@ impl Stream {
             .as_ref()
             .is_err_and(|error| error.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED)
         {
-            let frames = unsafe { client.GetBufferSize()? };
-            ensure!(
-                (1..=MAX_PACKET_FRAMES * 2).contains(&frames),
-                "aligned buffer out of bounds"
-            );
-            period = (u64::from(frames) * 10_000_000).div_ceil(48_000) as i64;
+            period = prepare_alignment_retry(latest, || {
+                // SAFETY: apartment-local client after the alignment error.
+                Ok(unsafe { client.GetBufferSize()? })
+            })?;
             drop(client);
             client = unsafe { device.Activate(CLSCTX_ALL, None)? };
             initialize(&client, period).context("Initialize aligned VAD playback")?;
@@ -873,7 +943,9 @@ fn run_worker(
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
     let (device, mmdevice_id, observed_name, adapter_instance, stable_endpoint_id, shared) =
         match target {
-            PlaybackTarget::Vad { stable_id, root } => {
+            PlaybackTarget::Vad {
+                stable_id, root, ..
+            } => {
                 let (device, id, name, adapter) = wait_playback(&enumerator, stable_id, &root)?;
                 (device, id, name, adapter, stable_id.to_string(), false)
             }
@@ -904,7 +976,7 @@ fn run_worker(
     let mut stream = if shared {
         Stream::prepare_shared(&device)?
     } else {
-        Stream::prepare(&device)?
+        Stream::prepare(&device, &latest)?
     };
     let mut source = SourceCursor::new(source_plan);
     latest.lock().unwrap_or_else(|p| p.into_inner()).provenance = Some(source.provenance());
@@ -1298,5 +1370,122 @@ mod tests {
         let outcome = partial.unwrap();
         assert_eq!(outcome.source_progress.native_preroll_frames, 480);
         assert!(outcome.failure.unwrap().contains("abort callback panicked"));
+    }
+
+    #[test]
+    fn minimum_period_join_retains_request_evidence_after_preparation_failure() {
+        for alignment_retry in [false, true] {
+            let mut evidence = PeriodEvidence::new();
+            if alignment_retry {
+                vad_period::select_period(100_000, 10_000, Some(&mut evidence)).unwrap();
+                evidence.record_alignment_retry(106_667);
+            } else {
+                assert!(vad_period::select_period(100_000, 0, Some(&mut evidence)).is_err());
+            }
+            let latest = Mutex::new(WorkerState {
+                period_request: Some(evidence),
+                ..WorkerState::default()
+            });
+            let worker = thread::spawn(|| anyhow::bail!("injected Initialize failure"));
+            let outcome = join_outcome(worker, &latest, SourceProvenance::new(None));
+            let json = serde_json::to_value(outcome).unwrap();
+            assert_eq!(json["period_request"]["default_hns"], 100_000);
+            assert_eq!(
+                json["period_request"]["qualification"],
+                "unqualified-request-only"
+            );
+            if alignment_retry {
+                assert_eq!(json["period_request"]["initial_request_hns"], 10_000);
+                assert_eq!(json["period_request"]["final_request_hns"], 106_667);
+                assert_eq!(json["period_request"]["alignment_retry"], true);
+            } else {
+                assert_eq!(json["period_request"]["minimum_hns"], 0);
+                assert!(json["period_request"]["initial_request_hns"].is_null());
+                assert!(json["period_request"]["final_request_hns"].is_null());
+            }
+            assert!(json["failure"].as_str().unwrap().contains("Initialize"));
+            assert_eq!(json["worker_joined"], true);
+            assert_eq!(json["started"], false);
+            assert!(json.get("native_buffer_frames").is_none());
+            assert!(json.get("actual_period_hns").is_none());
+        }
+    }
+
+    #[test]
+    fn minimum_period_legacy_outcome_omits_request_evidence() {
+        let outcome = join_outcome(
+            thread::spawn(|| Ok(())),
+            &Mutex::new(WorkerState::default()),
+            SourceProvenance::new(None),
+        );
+        assert!(
+            serde_json::to_value(outcome)
+                .unwrap()
+                .get("period_request")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn minimum_period_failed_alignment_query_retains_recovery_intent() {
+        for frames in [None, Some(0), Some(MAX_PACKET_FRAMES * 2 + 1)] {
+            let mut evidence = PeriodEvidence::new();
+            vad_period::select_period(100_000, 10_000, Some(&mut evidence)).unwrap();
+            let latest = Mutex::new(WorkerState {
+                period_request: Some(evidence),
+                ..WorkerState::default()
+            });
+            let request = prepare_alignment_retry(&latest, || {
+                let state = latest.try_lock().expect("native query runs without a lock");
+                assert!(
+                    state.period_request.unwrap().alignment_retry,
+                    "retain alignment recovery intent before querying buffer size"
+                );
+                drop(state);
+                frames.context("injected GetBufferSize failure")
+            });
+            assert!(request.is_err());
+            let outcome = join_outcome(
+                thread::spawn(move || request.map(|_| ())),
+                &latest,
+                SourceProvenance::new(None),
+            );
+            let json = serde_json::to_value(outcome).unwrap();
+            assert_eq!(json["period_request"]["alignment_retry"], true);
+            assert_eq!(json["period_request"]["initial_request_hns"], 10_000);
+            assert_eq!(json["period_request"]["final_request_hns"], 10_000);
+            assert!(json["failure"].is_string());
+            assert!(json.get("native_buffer_frames").is_none());
+        }
+    }
+
+    #[test]
+    fn minimum_period_alignment_retry_preserves_legacy_buffer_bounds() {
+        for minimum in [false, true] {
+            for frames in [1, 48, 512, MAX_PACKET_FRAMES * 2] {
+                let mut evidence = minimum.then(PeriodEvidence::new);
+                vad_period::select_period(100_000, 10_000, evidence.as_mut()).unwrap();
+                let latest = Mutex::new(WorkerState {
+                    period_request: evidence,
+                    ..WorkerState::default()
+                });
+                let period = prepare_alignment_retry(&latest, || {
+                    assert!(latest.try_lock().is_ok());
+                    Ok(frames)
+                })
+                .unwrap();
+                let expected = (u64::from(frames) * 10_000_000).div_ceil(48_000) as i64;
+                assert_eq!(period, expected);
+                let state = latest.lock().unwrap();
+                if minimum {
+                    let evidence = state.period_request.unwrap();
+                    assert!(evidence.alignment_retry);
+                    assert_eq!(evidence.initial_request_hns, Some(10_000));
+                    assert_eq!(evidence.final_request_hns, Some(expected));
+                } else {
+                    assert!(state.period_request.is_none());
+                }
+            }
+        }
     }
 }
