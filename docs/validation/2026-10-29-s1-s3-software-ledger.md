@@ -53,6 +53,16 @@ Realtek output; common physical reference/calibration remains unavailable.
 This adds waveform evidence without rebuilding, repeating the buffer matrix,
 reinstalling the driver, cleaning caches or claiming S1-S3 complete.
 
+The [2026-10-30 native desktop controls receipt](2026-10-30-native-desktop-controls.md)
+adds real UI Automation Stop, settings navigation, targeted scrolling and
+normal Quit on deployed app `e195bfe` in the physical target's console session.
+Native owner cleanup/reaping and final process exit 0 are verified. Hidden
+startup and off-viewport invocation mistakes remain retained harness failures;
+the final run scrolls Quit fully into view. The black hidden-window image is
+not visual evidence. No Process budget Apply, native selection confirmation,
+waveform or latency pass is inferred. All eight terminal helper tasks are
+removed after archival; Cargo caches, deployed binaries and driver are retained.
+
 Three bounded software repairs follow those native observations:
 
 - `792f99e` accepts the Engine's legitimate initial resource generation 0 in
