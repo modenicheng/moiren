@@ -72,6 +72,14 @@ Native app parameter replacement now has separate bounded evidence, retaining
 later delivery-envelope violations. Neither finding changes the VAD provider,
 physical continuity, calibration or long-soak verdicts.
 
+The [packet-period / Engine-block matrix](../../docs/validation/2026-10-29-vad-period-block-matrix.md)
+observes144/480-frame playback packets with128/256-frame Engine blocks at
+target1024/capacity4800. Three operation/cleanup cases complete; all four fail
+recorder quality, and the fourth also retains microphone drop/silence and a
+diagnosed probe Running/timeline-availability conflation. Original failed
+receipts remain unchanged. No kernel fix, physical latency verdict, lower
+default or long-soak qualification follows from this bounded software route.
+
 ## Audit follow-up - 2026-10-21
 
 The reported Removing-state retry defect is absent in the current source:

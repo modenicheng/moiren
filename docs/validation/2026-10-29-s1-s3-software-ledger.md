@@ -21,6 +21,16 @@ They still fail waveform/provider quality and are not physical latency results.
 Muted Realtek output and the lack of a calibrated common reference remain
 explicit blockers; no path winner or smaller default is selected.
 
+The [native packet-period / Engine-block matrix](2026-10-29-vad-period-block-matrix.md)
+adds observed144/480-frame VAD playback packets with128/256-frame Engine
+blocks at explicit target1024/capacity4800. Three cases complete operation
+and cleanup; all four retain recorder quality failures. The fourth also
+retains microphone drop/silence and a premature probe failure: execution is
+Running with a null optional timeline, but health calls it stopped. Its
+original collection/cleanup failures are preserved separately from successful
+underlying native retirement. This software-route matrix is not calibrated
+physical delay, lower-default qualification or S1-S3 completion.
+
 Three bounded software repairs follow those native observations:
 
 - `792f99e` accepts the Engine's legitimate initial resource generation 0 in
