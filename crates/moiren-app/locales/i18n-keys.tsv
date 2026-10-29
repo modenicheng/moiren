@@ -698,3 +698,8 @@ Stop a collected Process session to evaluate its closed prefix.	-	缺少闭合�
 The selected source is not the retained Process source.	-	选择与历史不符
 A finite-window evaluation is already running.	-	禁止并发评估
 Evaluation discarded: predecessor, candidate or policy changed.	-	过期结果已丢弃
+VAD recovery cap	-	虚拟时钟追赶周期上限
+Compatible (8 periods)	-	保持兼容追赶上限
+%{periods} periods	periods	显式追赶周期数
+Limits virtual-clock catch-up only. Does not reduce physical output wake demand or guarantee latency. Smaller caps may discard more overdue periods.	-	追赶上限不是延迟保证
+%{input}; virtual-clock recovery cap: %{cap}	input,cap	请求与生效追赶上限

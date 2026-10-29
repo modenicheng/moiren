@@ -251,6 +251,26 @@ fn vad_recovery_cap_rebases_independently_and_conflicts_without_losing_draft() {
 }
 
 #[test]
+fn vad_summary_distinguishes_compatible_and_explicit_recovery_intent() {
+    use crate::service::TransportLatencySettings;
+    let compatible = super::transport::vad_summary(TransportLatencySettings::default());
+    assert!(
+        compatible.contains("Compatible (8 periods)"),
+        "{compatible}"
+    );
+    let explicit = super::transport::vad_summary(TransportLatencySettings {
+        vad_recovery_cap_periods: Some(1),
+        ..Default::default()
+    });
+    assert!(
+        explicit.contains("virtual-clock recovery cap: 1 periods"),
+        "{explicit}"
+    );
+    assert!(!explicit.contains("8 periods"), "{explicit}");
+    assert!(!explicit.contains("ms"), "{explicit}");
+}
+
+#[test]
 fn device_draft_does_not_overwrite_new_transport_intent_and_commit_tracks_it() {
     use crate::service::{ExpertInputBuffer, TransportLatencySettings};
     let mut device = draft(AudioSettings::default());

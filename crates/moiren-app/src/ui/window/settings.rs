@@ -442,7 +442,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
         ))
         .child(detail(
             &t!("Requested VAD input"),
-            transport::summary(snapshot.transport_latency.vad),
+            transport::vad_summary(snapshot.transport_latency),
         ))
         .child(div().mt(px(12.)).child(heading(t!("Active session"))))
         .child(detail(
@@ -476,7 +476,7 @@ fn diagnostics(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             ))
             .child(detail(
                 &t!("Active VAD request"),
-                transport::summary(active.vad),
+                transport::vad_summary(active),
             ));
     }
     view = view.child(label(t!(

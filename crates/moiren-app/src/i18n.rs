@@ -75,6 +75,26 @@ mod tests {
     }
 
     #[test]
+    fn vad_recovery_cap_translates_without_promising_latency() {
+        assert_eq!(
+            rust_i18n::t!("VAD recovery cap", locale = SIMPLIFIED_CHINESE),
+            "VAD 追赶周期上限"
+        );
+        assert_eq!(
+            rust_i18n::t!("Compatible (8 periods)", locale = SIMPLIFIED_CHINESE),
+            "兼容（8 周期）"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "%{periods} periods",
+                locale = SIMPLIFIED_CHINESE,
+                periods = 1
+            ),
+            "1 周期"
+        );
+    }
+
+    #[test]
     fn mixer_routes_translate_interpolation_and_meter_preferences() {
         assert_eq!(
             rust_i18n::t!(

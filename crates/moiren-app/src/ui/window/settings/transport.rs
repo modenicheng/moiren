@@ -121,6 +121,28 @@ fn input_editor(shell: &StudioShell, input: Input, cx: &Context<StudioShell>) ->
             },
             cx,
         ));
+    if matches!(input, Input::Vad) {
+        view = view
+            .child(field(
+                &t!("VAD recovery cap"),
+                choices(
+                    shell,
+                    Editor::Global,
+                    "vad-recovery-cap",
+                    shell.settings.global.transport.vad_recovery_cap_periods,
+                    std::iter::once((None, t!("Compatible (8 periods)").into())).chain(
+                        (1..=8).map(|periods| {
+                            (Some(periods), t!("%{periods} periods", periods = periods).into())
+                        }),
+                    ),
+                    |draft, cap| draft.transport.vad_recovery_cap_periods = cap,
+                    cx,
+                ),
+            ))
+            .child(label(t!(
+                "Limits virtual-clock catch-up only. Does not reduce physical output wake demand or guarantee latency. Smaller caps may discard more overdue periods."
+            )));
+    }
     if let Some(mut selected) = selected {
         let mut fields = div()
             .id(SharedString::from(format!("{prefix}-expert-fields")))
@@ -208,4 +230,16 @@ pub(super) fn summary(input: Option<ExpertInputBuffer>) -> String {
             }
         ).into(),
     }
+}
+
+pub(super) fn vad_summary(settings: crate::service::TransportLatencySettings) -> String {
+    t!(
+        "%{input}; virtual-clock recovery cap: %{cap}",
+        input = summary(settings.vad),
+        cap = settings.vad_recovery_cap_periods.map_or_else(
+            || t!("Compatible (8 periods)").to_string(),
+            |periods| t!("%{periods} periods", periods = periods).to_string()
+        )
+    )
+    .into()
 }

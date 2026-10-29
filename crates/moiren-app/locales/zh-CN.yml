@@ -2106,3 +2106,18 @@ _version: 2
 "A stopped matching evaluated native candidate is required.":
   en: "A stopped matching evaluated native candidate is required."
   zh-CN: "需要已停止且身份匹配的原生评估候选配置。"
+"VAD recovery cap":
+  en: "VAD recovery cap"
+  zh-CN: "VAD 追赶周期上限"
+"Compatible (8 periods)":
+  en: "Compatible (8 periods)"
+  zh-CN: "兼容（8 周期）"
+"%{periods} periods":
+  en: "%{periods} periods"
+  zh-CN: "%{periods} 周期"
+"Limits virtual-clock catch-up only. Does not reduce physical output wake demand or guarantee latency. Smaller caps may discard more overdue periods.":
+  en: "Limits virtual-clock catch-up only. Does not reduce physical output wake demand or guarantee latency. Smaller caps may discard more overdue periods."
+  zh-CN: "仅限制虚拟时钟追赶，不减少物理输出整次唤醒需求，也不保证延迟。较小上限可能丢弃更多逾期周期。"
+"%{input}; virtual-clock recovery cap: %{cap}":
+  en: "%{input}; virtual-clock recovery cap: %{cap}"
+  zh-CN: "%{input}；虚拟时钟追赶周期上限：%{cap}"
