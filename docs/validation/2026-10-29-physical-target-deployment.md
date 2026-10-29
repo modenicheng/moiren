@@ -278,3 +278,103 @@ above 50 GiB. Release executables must be copied and hash-verified outside
 the Cargo target before idle `cargo clean`; preserve source worktrees,
 installed driver, rollback packages, logs and acquired PCM. Never clean a
 target being compiled or overlap compilation with native audio acquisition.
+
+The first remote release-app attempt fails in dependency
+`gpui-pre-windows 0.3.9`, before application deployment: its build script
+passes the entire successful `where.exe fxc.exe` output as one executable
+path. The target PATH contains both SDK x64 and x86 FXC, so the resulting
+newline-containing path raises Windows error 123. An explicit invocation of
+the installed x64 FXC compiles the same `quad_vertex` shader with exit 0.
+The retry sets `GPUI_FXC_PATH` to that single x64 path in the task process
+only, without changing global PATH, dependency source or release optimization.
+Original failed logs remain in `logs\45a084e-final`; release retry logs use
+`logs\45a084e-release-fxc` and require the exact same green source-verification
+receipts before building. A retry is not itself a successful release receipt.
+
+## Final redeployment and native repair retest
+
+All three explicit-FXC release stages complete with exit 0 at source
+`45a084e`, with no timeout. The four executable copies are verified by length
+and SHA-256 before replacement and again after Cargo cleanup:
+
+| Executable | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `moiren-app.exe` | 33,348,096 | `0A53DAB209929F0BE84DFB4A163A42176D4415C8DF5E866A393F0341ED1BC196` |
+| `e2e_latency_probe.exe` | 6,950,912 | `36CC3848AA1CDBD4D231D85F0D042E77417A424C0F00DF27F0C2E4393E04F7BE` |
+| `vad_native.exe` | 521,216 | `00E4EBF097C8527BC67AFF689D391F748490A8084E8DB0124E17686ACFBDF232` |
+| `vad_integration.exe` | 7,259,136 | `2E10B490A6827666E69E5ECC9B53C829B3773D43C46A6A117CCE4D419CE2AB0B` |
+
+The deployment remains `D:\MoirenTest\20261029-0118a54\bin`, with explicit
+new provenance `final-binary-manifest-45a084e.json`. Previous deployed
+`2905045` binaries are retained under `rollback-2905045`, separately from
+the original rollback. The loaded driver is unchanged, Running, and has
+the previously verified SYS hash. No reinstall, reboot, default-device
+change, volume change or unmute is performed.
+
+With every Cargo/compiler/link process finished, the bounded correctness
+batch (3000-ms progress grace) obtains:
+
+- `physical-io2-functional-muted`: exit 0, collection and cleanup complete;
+  valid initial resource generation 0 no longer fails collector admission.
+  Final owner is Closed and host drop returned. This Intel input -> Bus ->
+  muted Realtek route retains native timeouts (input 10, output 5), one input
+  discontinuity and 3072 input silent frames. The unrelated recorder stores
+  228,480 entirely zero frames with a discontinuity. Quality fails; this
+  recorder is not a common reference for the actual physical route.
+- `software4-classified-target-2048` and `-1024`: both exit 0 with collection
+  and cleanup complete. Capacity stays 4800; exact target readback matches.
+  Both use native exclusive event source buffer 144 frames and submit all
+  240,000 scheduled frames. Recordings contain 256,320 and 255,840 frames,
+  respectively, with changing nonzero PCM. Both still fail recorder continuity
+  (one discontinuity each); the 2048 run additionally records provider faults.
+  Nonzero PCM is functional evidence, not a delay or lossless-output result.
+- Both VAD classifications retain 32 initial-prime muted frames, explicit
+  original-prime completion, zero recovery/short-read/xrun counters and zero
+  steady classified deltas through joined final evidence. Live classification
+  is unavailable on 17/14 polls respectively, retained as unknown rather than
+  converted to zeros or collection failure. Other quality faults remain.
+- `process3-owned-compatible`: exit 0, collection and cleanup complete. Its
+  schema-11 capture starts/stops successfully despite raw `S_OK` buffer query
+  output 0; published native capacity/period remain unknown and the separate
+  processing bound remains 8 MiB. It retains 535 packets / 256,800 frames,
+  actual maximum packet and wake burst 480, and zero bridge underrun/drop/
+  reset/discontinuity counters. Independent recording retains 257,760 frames
+  and a discontinuity. Artifact metadata also reports 534 position gaps while
+  Process device position stays zero: these are unresolved evidence semantics,
+  not proof of 534 audible losses or valid source-position timing. Quality
+  remains failed; do not hide the gaps or claim physical qualification.
+- Actual app `monitor3-compatible`: exit 0, no reported monitor failure.
+  Experimental measured targets 1024/512/256 all refuse the observed budget
+  (render demand, capture gap, jitter and lookahead) with exit 1. They are not
+  silently enlarged or promoted. All four finite owned sources stop/join
+  with exit 0; all runs finish within their watchdogs.
+
+These results close the three repaired native orchestration blockers, not
+S1-S3 or the stable sub-10-ms target. Playback's observed Windows name remains
+the generic Chinese speaker label plus Moiren adapter suffix, not the
+requested playback name. The muted output, missing calibrated common
+reference, failed quality gates and remaining S3 integration gaps still apply.
+
+## Verified archival and final cache cleanup
+
+`evidence-45a084e-final.zip` is 2,188,004 bytes, SHA-256
+`09F508FACD2802BF669AAEDD994F82A50D87A8A92BC569715260E8B8DD13BBF8`.
+All 173 evidence files (174 archive entries including the manifest) are
+verified individually by length and SHA-256 after download. It retains both
+the original FXC failure and successful release retry logs, manifests, native
+reports, PCM, packet metadata and monitor refusals. Target originals remain.
+
+Only after this host-side verification and checking all four deployed copies,
+with no build or audio process active, explicit `cargo clean --manifest-path
+D:\MoirenBuild\s1-s3\Cargo.toml --target-dir D:\MoirenBuild\target` removes
+12,234 files / 6.1 GiB. Reported target bytes fall from 6,601,987,171 to 0;
+D-drive free space changes from 266,388,742,144 to 272,547,938,304 bytes.
+The first cleanup guard refused before mutation because Windows PowerShell
+wrapped the deserialized manifest array; fixing only that array handling
+allows all hash/path/process guards to complete before cleaning.
+
+Post-clean verification confirms all deployed hashes still match, the same
+driver is Running, no test/build process remains, and `D:\moiren` main stays
+clean at `497ac7c`. Sources, required rollback, driver package and evidence
+are preserved. Do not rebuild merely to reverify files already copied outside
+Cargo target; use the retained receipts and deployed hash checks instead.

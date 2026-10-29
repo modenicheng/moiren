@@ -56,6 +56,23 @@ verified Cargo outputs are cleaned. Audio acquisition never overlaps heavy
 builds. The first explicit remote clean reclaims 1.1 GiB without deleting
 driver rollback or measurement evidence.
 
+Final native repair retesting at source `45a084e` now completes collection
+and cleanup for physical IO, both VAD software targets and owned Process
+Compatible. The real app Compatible monitor also exits 0; measured targets
+1024/512/256 refuse the actual observed budget rather than expanding it.
+The physical route and independent recordings still fail quality. VAD has
+explicitly completed initial prime and zero classified steady deltas, but
+recorder discontinuities remain; Process artifact position gaps with repeated
+zero device position remain unresolved evidence semantics. None is promoted
+to a stable preset, physical latency distribution or path comparison.
+
+The final remote release is deployed with verified hashes and all 173 evidence
+files are archived and host-verified. An idle explicit shared-target
+`cargo clean` then removes 12,234 files / 6.1 GiB; final target bytes are 0.
+Deployed binaries, driver and rollback, source worktrees and evidence remain.
+The linked receipt records the failed FXC auto-discovery, single-path task
+override, successful build retry, exact native outcomes and post-clean checks.
+
 ## Basis and interpretation
 
 Requirements are in
