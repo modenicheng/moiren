@@ -72,7 +72,7 @@ impl BoundaryProbe {
     /// no CAS retry: readers either see one complete publication or unknown.
     fn observe_playback_events(&self, initial: u64, recovery: u64, short_reads: u64) {
         let version = self.playback_events_version.load(Ordering::SeqCst);
-        let Some(next) = version.checked_add(2).filter(|_| version % 2 == 0) else {
+        let Some(next) = version.checked_add(2).filter(|_| version.is_multiple_of(2)) else {
             self.playback_events_version
                 .store(u64::MAX, Ordering::SeqCst);
             return;
@@ -96,7 +96,7 @@ impl BoundaryProbe {
 
     fn playback_events_snapshot(&self) -> Option<PlaybackBoundaryEvents> {
         let before = self.playback_events_version.load(Ordering::SeqCst);
-        if before == 0 || before % 2 != 0 {
+        if before == 0 || !before.is_multiple_of(2) {
             return None;
         }
         let events = PlaybackBoundaryEvents {
