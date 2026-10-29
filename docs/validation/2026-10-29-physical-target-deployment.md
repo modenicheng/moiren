@@ -236,7 +236,11 @@ target directory. Redirect task temporary files and new Cargo downloads to D:.
 Run compilation/portable tests separately from native audio acquisition so
 build pressure is not misclassified as target audio behavior.
 
-The user also requires regular remote cache cleanup. With no build/audio
+The original storage instruction called for regular remote cache cleanup;
+the later [cache-retention correction](2026-10-29-remote-build-cache-policy.md)
+supersedes routine cleaning. Keep the shared target between builds unless
+actual pressure, corruption or an explicit clean-build requirement justifies
+cleanup. The following receipts remain historical. With no build/audio
 process active, the first path-checked `cargo clean` on `D:\moiren\target`
 removed 4,138 files / 1.1 GiB; reported D-drive free space increased from
 273,237,856,256 to 274,271,608,832 bytes. Source, driver package/rollback and
@@ -273,11 +277,13 @@ and one shared `D:\MoirenBuild\target`. Serial completed stages record:
   all-target Clippy: passed.
 
 These are software verification results, not new native route acceptance.
-Build phases refuse less than 60 GiB of free D-drive space or a target tree
-above 50 GiB. Release executables must be copied and hash-verified outside
-the Cargo target before idle `cargo clean`; preserve source worktrees,
-installed driver, rollback packages, logs and acquired PCM. Never clean a
-target being compiled or overlap compilation with native audio acquisition.
+Build phases pause below 60 GiB of free D-drive space or above a 50-GiB target
+tree for usage inspection, not automatic whole-target cleaning. Release
+executables must be copied and hash-verified outside the Cargo target before
+any justified cleanup; preserve source worktrees, installed driver, rollback
+packages, logs and acquired PCM. Never clean a target being compiled or
+overlap compilation with native audio acquisition. Ordinary completed builds
+retain their reusable outputs under the current cache-retention policy.
 
 The first remote release-app attempt fails in dependency
 `gpui-pre-windows 0.3.9`, before application deployment: its build script

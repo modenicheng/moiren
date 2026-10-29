@@ -5,6 +5,11 @@ The baseline reconciliation is supplemented by the linked probe repair,
 VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
+Current remote build policy: [retain reusable caches](2026-10-29-remote-build-cache-policy.md).
+Do not clean after each build, deployment or archive; inspect disk pressure
+and reclaim only justified obsolete artifacts. Earlier cleanup receipts below
+record history, not a recurring requirement or a completion gate.
+
 ## Physical-target follow-up
 
 The [physical deployment receipt](2026-10-29-physical-target-deployment.md)
@@ -88,8 +93,9 @@ the application was still at `45a084e` at that Process4 receipt. The later
 `e195bfe` software verification does not itself update that deployed copy;
 release, deployment, smoke, archival and cleanup have separate receipts.
 The earlier post-clean zero-target receipt is historical: the shared target is
-reused for this next bounded build/test phase and requires another idle clean
-after final copies and archival. No new physical latency claim follows.
+reused for this next bounded build/test phase. Subsequent cleanup receipts
+record what occurred, but the current retention policy no longer requires
+another idle clean after copies or archival. No new physical latency claim follows.
 
 The later [desktop integration/deployment receipt](2026-10-29-desktop-live-process-window.md)
 records clean source `e195bfe`, all630 app tests /4 ignored, strict Clippy and
