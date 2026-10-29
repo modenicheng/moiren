@@ -224,6 +224,10 @@ struct LiveRunReport {
     native: NativeReport,
     collection: Option<Value>,
     qualification: Option<QualificationReport>,
+    /// Retain opt-in rate hypotheses alongside any uncorrected distribution.
+    /// Otherwise a downstream reader loses the analysis model and resolution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rate_search_measurement: Option<PcmAnalysis>,
     gaps: Vec<String>,
 }
 
@@ -579,6 +583,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         native,
         collection: collection.clone(),
         qualification,
+        rate_search_measurement: measurement
+            .analysis
+            .filter(|analysis| analysis.schedule.rate_search.is_some()),
         gaps: gaps.clone(),
     };
     let manifest = LiveRunManifest {

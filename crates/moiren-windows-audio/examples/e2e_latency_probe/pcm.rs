@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, ensure};
 use moiren_windows_audio::latency::{
-    MarkerAnalysisConfig, MarkerCorrelation, MarkerGenerator, analyze_marker,
+    MarkerAnalysisConfig, MarkerCorrelation, MarkerGenerator, MarkerRateCorrelation,
+    MarkerRateSearchConfig, analyze_marker, analyze_rate_aware_marker,
     qualification::{MarkerDistribution, marker_distribution},
 };
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,10 @@ use std::io::{Read, Seek, SeekFrom};
 #[path = "pcm/packets.rs"]
 mod packets;
 pub use packets::PacketTimeline;
+
+#[cfg(test)]
+#[path = "pcm/rate_tests.rs"]
+mod rate_tests;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +36,8 @@ pub struct PcmSchedule {
     pub min_correlation: f64,
     pub min_peak_margin: f64,
     pub min_rms: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_search: Option<MarkerRateSearchConfig>,
     pub windows: Vec<MarkerWindow>,
 }
 
@@ -51,6 +58,8 @@ pub struct PcmAnalysis {
     pub failed_markers: usize,
     pub results: Vec<WindowResult>,
     pub distribution: Option<MarkerDistribution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_search_scope: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +68,20 @@ pub struct Alignment {
     pub confidence: f64,
     pub peak_margin: f64,
     pub inverted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_hypothesis: Option<RateHypothesis>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RateHypothesis {
+    pub template_rate_ppm: i32,
+    pub hypothesis_count: usize,
+    pub rate_grid_step_ppm: u32,
+    pub template_rate_peak_margin: f64,
+    pub template_rate_ties: usize,
+    pub grid_edge: bool,
+    /// Resolution of the integer onset search, not physical uncertainty.
+    pub onset_resolution_frames: usize,
 }
 
 impl Alignment {
@@ -68,6 +91,22 @@ impl Alignment {
             confidence: detection.confidence,
             peak_margin: detection.peak_margin,
             inverted: detection.inverted,
+            rate_hypothesis: None,
+        }
+    }
+
+    fn rate(origin: u64, detection: MarkerRateCorrelation) -> Self {
+        Self {
+            rate_hypothesis: Some(RateHypothesis {
+                template_rate_ppm: detection.template_rate_ppm,
+                hypothesis_count: detection.hypothesis_count,
+                rate_grid_step_ppm: detection.rate_grid_step_ppm,
+                template_rate_peak_margin: detection.template_rate_peak_margin,
+                template_rate_ties: detection.template_rate_ties,
+                grid_edge: detection.grid_edge,
+                onset_resolution_frames: detection.onset_resolution_frames,
+            }),
+            ..Self::new(origin, detection.alignment)
         }
     }
 }
@@ -118,8 +157,8 @@ impl PcmSchedule {
                 .all(|value| value.is_finite() && *value > 0.0 && *value <= 1.0),
             "invalid analysis thresholds"
         );
-        let window = self
-            .marker_frames
+        let template_frames = self.template_frames()?;
+        let window = template_frames
             .checked_add(self.reference_search_frames)
             .and_then(|value| value.checked_add(self.max_delay_frames))
             .context("window overflow")?;
@@ -128,13 +167,27 @@ impl PcmSchedule {
             "window frame limit exceeded"
         );
         window.checked_mul(8).context("window byte overflow")?;
-        let pairs = self
-            .reference_search_frames
-            .checked_add(1)
-            .and_then(|value| value.checked_add(self.max_delay_frames))
-            .and_then(|value| value.checked_add(1))
-            .and_then(|value| value.checked_mul(self.marker_frames))
-            .context("correlation work overflow")?;
+        let pairs = if let Some(rates) = self.rate_search {
+            rates
+                .prepare(
+                    self.marker_frames,
+                    self.config(self.reference_search_frames),
+                )?
+                .correlation_samples
+                .checked_add(
+                    rates
+                        .prepare(self.marker_frames, self.config(self.max_delay_frames))?
+                        .correlation_samples,
+                )
+                .context("rate correlation work overflow")?
+        } else {
+            self.reference_search_frames
+                .checked_add(1)
+                .and_then(|value| value.checked_add(self.max_delay_frames))
+                .and_then(|value| value.checked_add(1))
+                .and_then(|value| value.checked_mul(self.marker_frames))
+                .context("correlation work overflow")?
+        };
         ensure!(
             pairs <= self.max_correlation_samples_per_marker,
             "per-marker work limit exceeded"
@@ -168,6 +221,17 @@ impl PcmSchedule {
         Ok(window)
     }
 
+    fn template_frames(&self) -> Result<usize> {
+        self.rate_search.map_or(Ok(self.marker_frames), |rates| {
+            Ok(rates
+                .prepare(
+                    self.marker_frames,
+                    self.config(self.reference_search_frames.max(self.max_delay_frames)),
+                )?
+                .max_template_frames)
+        })
+    }
+
     fn config(&self, delay: usize) -> MarkerAnalysisConfig {
         MarkerAnalysisConfig {
             max_marker_frames: self.max_marker_frames,
@@ -194,6 +258,23 @@ pub fn analyze(
     let mut processed = vec![0.0; window_frames];
     let mut results = Vec::with_capacity(schedule.windows.len());
     let mut delays = Vec::with_capacity(schedule.windows.len());
+    let template_frames = schedule.template_frames()?;
+    let mut template_scratch = if schedule.rate_search.is_some() {
+        vec![0.0; template_frames]
+    } else {
+        Vec::new()
+    };
+    let mut onset_scores = if schedule.rate_search.is_some() {
+        vec![
+            0.0;
+            schedule
+                .reference_search_frames
+                .max(schedule.max_delay_frames)
+                + 1
+        ]
+    } else {
+        Vec::new()
+    };
     for (index, entry) in schedule.windows.iter().enumerate() {
         let mut result = WindowResult {
             index,
@@ -223,28 +304,42 @@ pub fn analyze(
                 reference[index] = channel(schedule.reference_channel);
                 processed[index] = channel(schedule.processed_channel);
             }
-            let reference_length = schedule.marker_frames + schedule.reference_search_frames;
-            let reference_detection = analyze_marker(
-                &marker,
+            let reference_length = template_frames + schedule.reference_search_frames;
+            let mut detect =
+                |recording: &[f32], search, origin| -> Result<(MarkerCorrelation, Alignment)> {
+                    if let Some(rates) = schedule.rate_search {
+                        let hit = analyze_rate_aware_marker(
+                            &marker,
+                            recording,
+                            &mut template_scratch,
+                            &mut onset_scores,
+                            schedule.config(search),
+                            rates,
+                        )?;
+                        Ok((hit.alignment, Alignment::rate(origin, hit)))
+                    } else {
+                        let hit = analyze_marker(&marker, recording, schedule.config(search))?;
+                        Ok((hit, Alignment::new(origin, hit)))
+                    }
+                };
+            let (reference_detection, alignment) = detect(
                 &reference[..reference_length],
-                schedule.config(schedule.reference_search_frames),
+                schedule.reference_search_frames,
+                entry.start_frame,
             )
             .context("reference channel")?;
-            result.reference = Some(Alignment::new(entry.start_frame, reference_detection));
+            result.reference = Some(alignment);
             let origin = reference_detection.delay_frames;
-            let end = origin + schedule.marker_frames + schedule.max_delay_frames;
+            let end = origin + template_frames + schedule.max_delay_frames;
             // Search from the observed reference origin so submit/schedule time
             // cannot substitute for source sample generation on the common clock.
-            let processed_detection = analyze_marker(
-                &marker,
+            let (processed_detection, alignment) = detect(
                 &processed[origin..end],
-                schedule.config(schedule.max_delay_frames),
+                schedule.max_delay_frames,
+                entry.start_frame + origin as u64,
             )
             .context("processed channel")?;
-            result.processed = Some(Alignment::new(
-                entry.start_frame + origin as u64,
-                processed_detection,
-            ));
+            result.processed = Some(alignment);
             result.delay_frames = Some(processed_detection.delay_frames);
             Ok(MarkerCorrelation {
                 confidence: reference_detection
@@ -272,14 +367,15 @@ pub fn analyze(
         )?)
     };
     Ok(PcmAnalysis {
-        schema_version: 1,
-        mode: "offline_stereo_f32le_marker_windows",
+        schema_version: if schedule.rate_search.is_some() {3} else {1},
+        mode: if schedule.rate_search.is_some() {"offline_stereo_f32le_rate_grid_marker_windows"} else {"offline_stereo_f32le_marker_windows"},
         qualification: "not_evaluated",
         gaps: [
             "Marker windows do not verify full-waveform continuity or runtime quality counters.",
             "Calibration, physical measurement boundary and artifact provenance require independent evidence.",
             "No live recording/source mode, controlled-load soak or complete Stage 7 harness is implemented.",
         ],
+        rate_search_scope: schedule.rate_search.map(|_| "explicit_linear_template_grid_not_clock_calibration; positive_ppm_stretches; raw_common_recorder_onsets_not_detrended; integer_resolution_not_physical_uncertainty; off_grid_or_time_varying_drift_may_refuse"),
         capture_frames: bytes / 8,
         failed_markers: results.len() - delays.len(),
         schedule,

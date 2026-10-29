@@ -308,13 +308,22 @@ impl PacketTimeline {
                 analysis.schedule.max_markers,
             )?)
         };
-        analysis.schema_version = 2;
-        analysis.mode = "offline_stereo_f32le_packet_validated_marker_windows";
+        let rate_search = analysis.schedule.rate_search.is_some();
+        analysis.schema_version = if rate_search { 4 } else { 2 };
+        analysis.mode = if rate_search {
+            "offline_stereo_f32le_packet_validated_rate_grid_marker_windows"
+        } else {
+            "offline_stereo_f32le_packet_validated_marker_windows"
+        };
         Ok(PacketAnalysis {
             analysis,
             packet_evidence: self.evidence,
             distribution_scope: "successful_windows_only",
-            delay_basis: "per_window_common_pcm_sample_offsets_at_schedule_rate; drift is not resampled; no physical boundary, calibration or startup phase inferred",
+            delay_basis: if rate_search {
+                "per_window_common_pcm_onsets_at_schedule_rate; explicit_linear_template_rate_grid_not_clock_calibration; raw_delay_not_detrended; no_physical_boundary_or_epoch_inferred"
+            } else {
+                "per_window_common_pcm_sample_offsets_at_schedule_rate; drift is not resampled; no physical boundary, calibration or startup phase inferred"
+            },
         })
     }
 }

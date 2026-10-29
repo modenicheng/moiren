@@ -51,6 +51,11 @@ Schedule: schema_version=1, sample_rate, reference_channel, processed_channel, m
 marker_amplitude, reference_search_frames, max_delay_frames, max_marker_frames, max_window_frames,
 max_markers, max_pcm_frames, max_correlation_samples_per_marker, max_total_correlation_samples,
 max_total_window_frames, min_correlation, min_peak_margin, min_rms, windows:[{start_frame}].
+Optional rate_search:{min_rate_ppm,max_rate_ppm,rate_step_ppm,max_hypotheses,max_total_correlation_samples}.
+Positive ppm stretches a zero-extended linear template; explicit grid max129 hypotheses. Full warped windows and both-channel
+work (including a second rate-score pass) must fit schedule limits before reading PCM. Selected ppm is a template hypothesis,
+not clock calibration; integer onset resolution is not physical uncertainty. Raw common-recorder delays are never detrended.
+Opt-in rate search reports schema3 (PCM) or4 (packet-validated); omitted retains legacy schemas1/2 and behavior.
 Without --packets, legacy schema_version=1 reports successful markers only, not capture continuity.
 With --packets, schema_version=2 validates measurement_sink JSONL against all stored PCM frames.
 Metadata uses --max-input-bytes (hard cap 256 MiB), --max-packets (1..1000000), 1024 bytes/record.
