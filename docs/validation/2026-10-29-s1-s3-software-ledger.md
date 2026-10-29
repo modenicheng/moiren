@@ -1,7 +1,8 @@
 # S1-S3 software status and evidence boundaries
 
 Date: 2026-10-29. Worktree: `minimal-io-latency`.
-The baseline reconciliation is supplemented by the linked probe repair receipt.
+The baseline reconciliation is supplemented by the linked probe repair and
+VAD software-route receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
 ## Basis and interpretation
@@ -23,8 +24,10 @@ revisions; they are not fresh validation of work now in progress.
 "Implemented" below means the bounded software behavior and recorded host
 regressions exist. It does not mean native acceptance, a successful acquired
 waveform, a calibrated physical delay distribution, or an overall S1-S3 PASS.
-S1 remains partial because exact route/control integration and measurement
-evidence are missing. S2's bounded software mechanisms are present under their
+S1 remains partial because common physical render controls, physical-input
+orchestration and measurement evidence are missing. The exact virtual IO/Bus
+collector now has the separate bounded software receipt below. S2's bounded
+software mechanisms are present under their
 declared/admitted conditions; native/lower-setting qualification remains open.
 S3 remains partial because the live observed-window tier, freshness composition
 and source-time provenance remain open. The audited probe repair now has the
@@ -36,6 +39,7 @@ separate bounded software receipt below.
 | --- | --- | --- |
 | S1 analysis | Packet-aware changing-marker correlation, bounded parsing, invalidation around loss/reset/silence/unknown clocks, optional rate search, segmented relative-delay trends and known-delay/drift regressions. See [rate-aware analysis](2026-10-29-rate-aware-marker-analysis.md) and [segmented trends](2026-10-29-segmented-marker-trends.md). | Synthetic/model recovery and delay slopes are not physical calibration, native epoch proof or an acquired common reference. |
 | S1 observations | Bounded packet/queue/wake/padding/reset/loss evidence, VAD sequence diagnostics, and separate [completion service-clock summaries](2026-10-29-vad-completion-clock.md). | Driver transfer-service and host submission-service stamps are not source sample time. Unknown age, hardware provenance and unavailable closure remain unknown. |
+| S1 virtual IO/Bus collector | The actual [VAD playback -> Bus -> microphone collector](2026-10-29-vad-software-route.md) now selects two exact owned IDs on one control root, uses the production virtual-realtime graph, records the selected microphone and retires both exports after recorder release. | Host route/identity/health/lifecycle regressions are not native acceptance, acquired PCM, an independent common reference or physical latency qualification. |
 | S2 operating budget | Independent target/capacity; packet, Engine transfer, FIR, whole wake and bounded recovery admission; playback prime/servo and microphone occupancy/phase/reprime. Requested/admitted values and later actual packet-shape validation are present. See [reprime budget](2026-10-29-microphone-reprime-budget.md) and [app recovery-cap integration](2026-10-29-app-vad-recovery-cap.md). | Conditional on declared delivery/wake bounds and later native-shape admission. Model packet/block/phase tests do not select a lower production setting or prove real scheduling/waveform continuity. |
 | S2 short packets | The [short-timer progress fix](2026-10-29-vad-short-timer-progress.md) removes the 48/49-frame repeated zero-progress case, bounds debt by mapped history, and retains one-packet/three-span/one-transfer callback work. | Timely synthetic redue and patterned-copy tests do not prove Windows/provider replenishment at that cadence. Overload still counts/quiesces/rebases. |
 | E2E VAD source period | The actual [E2E minimum-period option](2026-10-29-e2e-vad-minimum-period.md), source receipt `1d3e691`, supports `live-vad --vad-minimum-period`, preserves omission/default behavior, refuses invalid selection without fallback, and retains alignment/partial-failure evidence. | The 15 focused passing period tests establish host selection/evidence behavior, not actual device acceptance or packet cadence. This option is for the external VAD source, not physical render mode/period. |
@@ -48,16 +52,15 @@ separate bounded software receipt below.
 
 ### S1 route and experiment controls
 
-1. **Missing exact VAD playback -> Bus -> VAD microphone E2E collection route.**
-   The audited E2E harness constructs the two physical-output graphs but cannot
-   select this separate required software route. The related app integration
-   example uses Gain(0.5), not the specified IO/Bus graph, and is not a substitute.
-   Reuse the existing provider/backend and recorder: resolve both export IDs,
-   select the virtual microphone sink, record that exact native endpoint,
-   preserve dual-owner retirement/partial failures, and validate pure-virtual
-   pacing without waiving the physical route's checks globally. Host route,
-   identity, lifecycle and injected-failure regressions precede any authorized
-   target run.
+1. **Exact VAD playback -> Bus -> VAD microphone collector - bounded software
+   integration implemented.** The [route receipt](2026-10-29-vad-software-route.md)
+   supersedes the baseline missing-route finding. The actual E2E harness now
+   assembles this separate required route without Gain or a dummy physical
+   master, resolves the exact owned recorder on the same root, retains paired
+   admission/health/cleanup evidence and releases its native recorder before
+   export removal. Hardware-free injected-failure/identity/startup tests do not
+   prove native acceptance, acquired waveform or calibrated route delay; those
+   gates remain open for a separately authorized suitable target.
 2. **Missing common explicit physical-render mode/period selection in both
    probe paths.** The audit found default Shared/default DeviceOptions in the
    ordinary Process render owner and VAD physical-output project. Queue target,
@@ -173,6 +176,6 @@ combine remote updates at meaningful verified integration checkpoints; verify
 the remote SHA at those batch checkpoints, not after every small slice.
 Older immediate-push receipts are history, not the current delivery policy.
 The baseline docs reconciliation did not rerun tests; the linked probe repair
-receipt records its own fresh Cargo checks and local delivery. Neither performs
-native audio, VM or driver operations or pushes. Unrelated `gate.log` remains
-untouched.
+and route receipts record their own fresh Cargo checks and local delivery.
+None performs native audio, VM or driver operations or pushes. Unrelated
+`gate.log` remains untouched.
