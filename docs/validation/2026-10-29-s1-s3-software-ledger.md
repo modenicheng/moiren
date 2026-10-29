@@ -21,10 +21,15 @@ Three bounded software repairs follow those native observations:
 - `792f99e` accepts the Engine's legitimate initial resource generation 0 in
   the physical collector, pins that exact value, and still refuses subsequent
   identity/resource/plan changes. Focused physical regressions: 39 passed.
-- `a64739d` retains the first classified playback startup snapshot, raw totals,
-  checked steady deltas and stopped final conservation. It does not subtract
-  a fixed 32-frame allowance, hide recovery/short-read/xrun faults or invent
-  missing classification. Focused boundary regressions: 10 passed.
+- `a64739d`, completed by review repair `45a084e`, retains raw playback totals,
+  an explicitly completed startup snapshot, checked steady deltas and stopped
+  final conservation. The source publishes completion of the original prime;
+  a multi-callback initial mute is not frozen at its first publication, and
+  an interrupted initial prime followed by recovery cannot satisfy completion.
+  A contended one-attempt live read remains unavailable, with prior evidence
+  retained as historical; stopped final evidence is still mandatory. No fixed
+  32-frame allowance, recovery/short-read/xrun erasure or invented classification
+  is used. The final integrated probe suite passes 499 tests on the target.
 - `2ad3df3` separates Process packet processing safety from an untrustworthy
   pre-first-event `GetBufferSize` result. Raw query evidence remains; Process
   capacity/period remain unknown. Actual packets are bounded before borrowing,

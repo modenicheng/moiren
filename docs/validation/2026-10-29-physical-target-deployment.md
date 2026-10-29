@@ -243,3 +243,38 @@ removed 4,138 files / 1.1 GiB; reported D-drive free space increased from
 test evidence were not removed. Check space before and after each build
 phase; do not accumulate per-agent target trees or overlap clean with a
 running build. Archive and verify evidence before any evidence pruning.
+
+## Final reviewed source and remote verification
+
+The final reviewed source is `45a084e`. It accepts the physical collector's
+valid initial resource generation 0 without weakening subsequent identity
+fences, and separates the Process packet processing limit from untrustworthy
+pre-first-event native capacity. The latter stays unknown; one raw query and
+the existing 8-MiB checked packet bound remain, without early native Start or
+allocation fallback. CaptureReport is schema 11.
+
+Playback classification now publishes an explicit source-local
+`initial_prime_complete` latch with the counters. Startup may span callbacks;
+only completion of the original initial mute freezes its baseline. Recovery
+cannot substitute for interrupted initial completion. A contended live read
+records unavailable classification rather than manufacturing a zero or
+stopping correctness collection; stopped final classification remains
+required. Recovery, short reads and xruns remain faults from the beginning.
+
+The detached remote worktree at `D:\MoirenBuild\s1-s3` verifies this exact
+revision using jobs 3, no incremental compilation, no dev/test debug symbols,
+and one shared `D:\MoirenBuild\target`. Serial completed stages record:
+
+- Full Windows-audio package: 874 passed / 3 ignored (31 result groups).
+- Full E2E example: 499 passed.
+- RT harness: 203 passed.
+- Full app with `gpui-test`, serial execution: 623 passed / 4 ignored.
+- Explicit startup regression, workspace formatting and strict app/audio
+  all-target Clippy: passed.
+
+These are software verification results, not new native route acceptance.
+Build phases refuse less than 60 GiB of free D-drive space or a target tree
+above 50 GiB. Release executables must be copied and hash-verified outside
+the Cargo target before idle `cargo clean`; preserve source worktrees,
+installed driver, rollback packages, logs and acquired PCM. Never clean a
+target being compiled or overlap compilation with native audio acquisition.
