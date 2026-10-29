@@ -45,6 +45,7 @@ pub(in crate::live) struct RenderOptions {
 #[derive(Clone, Copy)]
 pub(in crate::live) struct NativeRenderInfo {
     pub timing: NativeStreamTiming,
+    pub queue: PreparedRenderQueue,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -363,18 +364,95 @@ impl PreparedNativeRender {
             abort_panicked,
         }))
     }
-    pub(in crate::live) fn cancel_with_report(mut self) -> Result<RenderReport> {
+    pub(in crate::live) fn cancel_retaining_report(mut self) -> (Option<RenderReport>, Result<()>) {
+        // The parked owner cannot finish until attachment is disconnected.
+        // Stop failure must not suppress its join or discard its final report.
         self.renderer.take();
         let mut session = self.session.take().expect("prepared native session");
         let stopped = session
             .stop
             .request_stop()
             .context("cancel prepared render");
-        let joined = session.join_exit();
-        stopped?;
-        Ok(joined?.report)
+        let joined = session.join_exit().map(|exit| exit.report);
+        retain_cancelled_report(stopped, joined)
     }
 }
+
+fn retain_cancelled_report<T>(stopped: Result<()>, joined: Result<T>) -> (Option<T>, Result<()>) {
+    let (report, joined) = match joined {
+        Ok(report) => (Some(report), Ok(())),
+        Err(error) => (None, Err(error)),
+    };
+    (report, crate::live::soak_cleanup::combine(stopped, joined))
+}
+
+#[cfg(test)]
+impl PreparedNativeRender {
+    /// Exercise real attachment/cancellation ownership without opening COM/audio.
+    pub(in crate::live) fn parked_fixture(
+        info: NativeRenderInfo,
+        stop: StopSignal,
+        requested_queue: RenderQueuePolicy,
+    ) -> Self {
+        let (sender, receiver) = mpsc::sync_channel::<DemandRenderer>(1);
+        let report = RenderReport {
+            schema_version: 3,
+            endpoint_id: "parked-no-native-owner".into(),
+            status: RenderStatus::Stopped,
+            requested_seconds: None,
+            elapsed_seconds: 0.0,
+            sample_rate: Some(info.timing.sample_rate),
+            channels: Some(2),
+            timing: Some(info.timing),
+            shared_period: None,
+            requested_queue,
+            queue: Some(info.queue),
+            stream_started: false,
+            stop_succeeded: true,
+            mmcss_registered: false,
+            mmcss_hresult: None,
+            stats: RenderStats::default(),
+            native_stats: None,
+            latency: LatencyRecorder::new(TelemetryMode::Disabled).snapshot(),
+            diagnostics: RenderDiagnosticsSnapshot::default(),
+            clock_frequency: None,
+            clock_frequency_hresult: None,
+            own_session_ducking_opt_out: None,
+            primary_failure: None,
+            stop_error: None,
+            release_error: None,
+            failure: None,
+            terminal_callback: None,
+        };
+        let worker = thread::spawn(move || {
+            let renderer = match receiver.recv_timeout(Duration::from_secs(2)) {
+                Ok(renderer) => Some(renderer),
+                Err(mpsc::RecvTimeoutError::Disconnected) => None,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("parked owner joined before attachment was disconnected")
+                }
+            };
+            OwnerExit {
+                report,
+                renderer,
+                _staging: Vec::new(),
+                _scratch: Vec::new(),
+            }
+        });
+        Self {
+            session: Some(RenderSession {
+                stop,
+                started: Arc::new(AtomicBool::new(false)),
+                worker: Some(worker),
+            }),
+            renderer: Some(sender),
+            info,
+            padding: RenderPaddingObserver::new(),
+            queue: requested_queue,
+        }
+    }
+}
+
 impl Drop for PreparedNativeRender {
     fn drop(&mut self) {
         // Disconnect attachment before RenderSession::drop joins a parked owner.
@@ -525,7 +603,7 @@ fn owner(
         ready
             .take()
             .expect("startup sender")
-            .send(Ok((NativeRenderInfo { timing }, padding.clone())))
+            .send(Ok((NativeRenderInfo { timing, queue }, padding.clone())))
             .map_err(|_| anyhow!("native preparation receiver lost"))?;
         let Ok(attached) = attachment.recv() else {
             return Ok(RenderStatus::Stopped);
@@ -764,6 +842,67 @@ mod tests {
     use super::*;
     use moiren_engine::host::BackendError;
     use moiren_windows_audio::native::NativeStreamInfo;
+
+    #[test]
+    fn cancelled_report_survives_stop_failure() {
+        let (report, result) =
+            retain_cancelled_report(Err(anyhow!("injected stop failure")), Ok(42));
+        assert_eq!(report, Some(42));
+        assert!(format!("{:#}", result.unwrap_err()).contains("injected stop failure"));
+    }
+
+    #[test]
+    fn cancelled_report_keeps_stop_and_join_failures() {
+        let (report, result) = retain_cancelled_report::<u64>(
+            Err(anyhow!("injected stop failure").context("cancel prepared render")),
+            Err(anyhow!("injected join failure").context("join prepared render")),
+        );
+        assert_eq!(report, None);
+        assert_eq!(
+            format!("{:#}", result.unwrap_err()),
+            "cancel prepared render: injected stop failure; join prepared render: injected join failure"
+        );
+    }
+
+    #[test]
+    fn cancelled_report_preserves_join_failure_without_inventing_report() {
+        let (report, result) =
+            retain_cancelled_report::<u64>(Ok(()), Err(anyhow!("injected join failure")));
+        assert_eq!(report, None);
+        assert_eq!(result.unwrap_err().to_string(), "injected join failure");
+    }
+
+    #[test]
+    fn cancelled_report_preserves_successful_report() {
+        let (report, result) = retain_cancelled_report(Ok(()), Ok(42));
+        assert_eq!(report, Some(42));
+        result.unwrap();
+    }
+
+    #[test]
+    fn cancelled_report_disconnects_real_parked_owner_before_join() {
+        let timing = NativeStreamTiming {
+            sample_rate: 48_000,
+            period_frames: Some(48),
+            capacity_frames: 512,
+        };
+        let queue = PreparedRenderQueue {
+            capacity_frames: 512,
+            target_frames: 256,
+            deadline_budget_frames: Some(96),
+        };
+        let prepared = PreparedNativeRender::parked_fixture(
+            NativeRenderInfo { timing, queue },
+            StopSignal::new().unwrap(),
+            RenderQueuePolicy::FullCapacity,
+        );
+        let (report, result) = prepared.cancel_retaining_report();
+        result.unwrap();
+        let report = report.expect("parked owner report must survive cancellation");
+        assert_eq!(report.endpoint_id, "parked-no-native-owner");
+        assert_eq!(report.queue, Some(queue));
+        assert!(!report.stream_started);
+    }
 
     struct ShortWrites {
         received: Vec<StereoFrame>,

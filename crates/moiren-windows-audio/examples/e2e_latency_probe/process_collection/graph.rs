@@ -14,7 +14,10 @@ use moiren_engine::{
 };
 use moiren_windows_audio::{
     ActivationGate, SessionDuration, StopSignal,
-    capture::{CaptureReport, CaptureSession, PcmArtifact, PcmArtifactConfig, PreparedCapture},
+    capture::{
+        CapturePreparationAbortFailure, CaptureReport, CaptureSession, PcmArtifact,
+        PcmArtifactConfig, PreparedCapture,
+    },
     clock_bridge::{BridgeObserver, ClockSource},
     latency::RenderQueuePolicy,
     process_loopback::{
@@ -73,6 +76,7 @@ pub(super) struct Graph {
     bridge: Option<BridgeObserver>,
     timeline: Option<TimelineObserver>,
     trace: Option<ProcessTraceCollector>,
+    process_admission: Option<super::super::process_admission::ProcessAdmissionEvidence>,
     pub(super) capture_report: Option<CaptureReport>,
     pub(super) render_report: Option<RenderReport>,
     pub(super) aborts: Vec<Value>,
@@ -93,6 +97,7 @@ impl Graph {
             bridge: None,
             timeline: None,
             trace: None,
+            process_admission: None,
             capture_report: None,
             render_report: None,
             aborts: Vec::with_capacity(3),
@@ -108,40 +113,41 @@ impl Graph {
         identity: ProcessIdentity,
         mut stop_peers: impl FnMut() -> Option<String>,
     ) -> Result<()> {
-        // Renderer splits every native wake into at most one Engine block per
-        // actual source read. This records read demand, not per-wake admission.
-        self.trace = Some(ProcessTraceCollector::new(
-            identity.clone(),
-            1,
-            48_000,
-            48_000,
-            options.engine_block_frames,
-        ));
-        let capture = match prepare_process_capture_with_gate_returning_with_abort(
-            ProcessLoopbackOptions {
-                artifact: Some(PcmArtifactConfig::new(
-                    usize::try_from(options.seconds)?
-                        .checked_mul(48_000)
-                        .context("capture artifact cap overflow")?,
-                )),
-                bridge: *bridge,
+        // Prepare while gated, then budget the entire empty-padding wake.
+        // Rendering that wake in Engine-sized segments cannot reduce reserve.
+        let render = match prepare_render_native_with_gate_returning_with_abort(
+            RenderOptions {
+                queue,
+                endpoint_id: options.output_endpoint.clone(),
                 latency_telemetry: options.telemetry,
-                target: identity,
                 duration: SessionDuration::UntilStopped,
             },
             self.stop.clone(),
             self.gate.clone(),
             &mut stop_peers,
         ) {
-            Ok(prepared) => prepared,
+            Ok(render) => render,
             Err(mut error) => {
-                self.capture_report = error.report.take();
-                self.aborts.push(json!({"stage":"capture_prepare", "error":error.error.to_string(),
-                    "stop_error":error.stop_error.map(|e|e.to_string()), "join_error":error.join_error.map(|e|e.to_string()),
-                    "abort":error.abort, "abort_panicked":error.abort_panicked}));
-                anyhow::bail!("prepare owned Process capture: {}", error.error);
+                self.aborts.push(error.evidence("render_prepare"));
+                self.render_report = error.report.take();
+                anyhow::bail!("prepare owned render: {}", error.error);
             }
         };
+        let capture = self.prepare_capture_after_render(
+            render,
+            options,
+            *bridge,
+            identity,
+            &mut stop_peers,
+            |capture, stop, gate, before_join| {
+                prepare_process_capture_with_gate_returning_with_abort(
+                    capture,
+                    stop,
+                    gate,
+                    before_join,
+                )
+            },
+        )?;
         let PreparedCapture {
             session,
             source,
@@ -155,26 +161,6 @@ impl Graph {
         ensure!(
             sample_rate == 48_000 && channels == 2,
             "Process graph negotiation is not 48k stereo"
-        );
-        self.prepared_render = Some(
-            match prepare_render_native_with_gate_returning_with_abort(
-                RenderOptions {
-                    queue,
-                    endpoint_id: options.output_endpoint.clone(),
-                    latency_telemetry: options.telemetry,
-                    duration: SessionDuration::UntilStopped,
-                },
-                self.stop.clone(),
-                self.gate.clone(),
-                &mut stop_peers,
-            ) {
-                Ok(render) => render,
-                Err(mut error) => {
-                    self.aborts.push(error.evidence("render_prepare"));
-                    self.render_report = error.report.take();
-                    anyhow::bail!("prepare owned render: {}", error.error);
-                }
-            },
         );
         let renderer = build_renderer(options, source)?.with_bridge_observer(
             self.bridge
@@ -197,6 +183,90 @@ impl Graph {
             }
         }
         Ok(())
+    }
+
+    fn prepare_capture_after_render(
+        &mut self,
+        render: PreparedNativeRender,
+        options: &LiveOptions,
+        bridge: ProcessBridgeOptions,
+        identity: ProcessIdentity,
+        mut stop_peers: impl FnMut() -> Option<String>,
+        prepare_capture: impl FnOnce(
+            ProcessLoopbackOptions,
+            StopSignal,
+            ActivationGate,
+            &mut dyn FnMut() -> Option<String>,
+        ) -> std::result::Result<
+            PreparedCapture,
+            Box<CapturePreparationAbortFailure<Option<String>>>,
+        >,
+    ) -> Result<PreparedCapture> {
+        let info = render.info();
+        // Retain the parked owner before any fallible admission/capture work,
+        // so the control-side finish path can preserve its final report.
+        self.prepared_render = Some(render);
+        let (_, capture) = super::super::process_admission::prepare_capture_for_render_recording(
+            bridge,
+            info.timing,
+            info.queue,
+            &mut self.process_admission,
+            |bridge| {
+                self.trace = Some(ProcessTraceCollector::new(
+                    identity.clone(),
+                    1,
+                    48_000,
+                    48_000,
+                    bridge.max_demand_frames,
+                ));
+                let mut before_join = || {
+                    // Broadcast peer cancellation before joining either owner.
+                    // Even a panicking peer hook must release the parked render;
+                    // then let capture's abort guard retain the panic evidence.
+                    let peers = catch_unwind(AssertUnwindSafe(&mut stop_peers));
+                    let cancelled =
+                        cancel_prepared_render(&mut self.prepared_render, &mut self.render_report);
+                    if let Some(failure) = &cancelled {
+                        append_failure(&mut self.failures, failure);
+                    }
+                    match peers {
+                        Ok(mut failures) => {
+                            if let Some(failure) = cancelled {
+                                append_failure(&mut failures, &failure);
+                            }
+                            failures
+                        }
+                        Err(panic) => std::panic::resume_unwind(panic),
+                    }
+                };
+                match prepare_capture(
+                    ProcessLoopbackOptions {
+                        artifact: Some(PcmArtifactConfig::new(
+                            usize::try_from(options.seconds)?
+                                .checked_mul(48_000)
+                                .context("capture artifact cap overflow")?,
+                        )),
+                        bridge,
+                        latency_telemetry: options.telemetry,
+                        target: identity,
+                        duration: SessionDuration::UntilStopped,
+                    },
+                    self.stop.clone(),
+                    self.gate.clone(),
+                    &mut before_join,
+                ) {
+                    Ok(prepared) => Ok(prepared),
+                    Err(mut error) => {
+                        self.capture_report = error.report.take();
+                        self.aborts.push(json!({"stage":"capture_prepare", "error":error.error.to_string(),
+                            "stop_error":error.stop_error.map(|e|e.to_string()), "join_error":error.join_error.map(|e|e.to_string()),
+                            "abort":error.abort, "abort_panicked":error.abort_panicked}));
+                        Err(error.error).context("prepare owned Process capture")
+                    }
+                }
+            },
+        )?;
+        Ok(capture)
     }
 
     pub(super) fn activate(&mut self) -> Result<()> {
@@ -226,24 +296,24 @@ impl Graph {
     pub(super) fn finish(&mut self) -> Result<()> {
         self.poll_trace();
         if let Some(capture) = self.capture.take() {
-            match catch_unwind(AssertUnwindSafe(|| capture.join())) {
-                Ok(Ok(report)) => self.capture_report = Some(report),
-                Ok(Err(error)) => {
-                    append_failure(&mut self.failures, &format!("join capture: {error}"))
+            match catch_unwind(AssertUnwindSafe(|| capture.join_retaining_report())) {
+                Ok((report, error)) => {
+                    self.capture_report = report;
+                    if let Some(error) = error {
+                        append_failure(&mut self.failures, &format!("join capture: {error}"));
+                    }
+                    if self.capture_report.is_none() {
+                        append_failure(&mut self.failures, "capture report missing after join");
+                    }
                 }
                 Err(_) => append_failure(&mut self.failures, "join capture panic"),
             }
         }
         self.poll_trace();
-        if let Some(render) = self.prepared_render.take() {
-            match catch_unwind(AssertUnwindSafe(|| render.cancel_with_report())) {
-                Ok(Ok(report)) => self.render_report = Some(report),
-                Ok(Err(error)) => append_failure(
-                    &mut self.failures,
-                    &format!("cancel prepared render: {error}"),
-                ),
-                Err(_) => append_failure(&mut self.failures, "cancel prepared render panic"),
-            }
+        if let Some(failure) =
+            cancel_prepared_render(&mut self.prepared_render, &mut self.render_report)
+        {
+            append_failure(&mut self.failures, &failure);
         }
         if let Some(render) = self.render.take() {
             match catch_unwind(AssertUnwindSafe(|| render.join_with_renderer())) {
@@ -289,6 +359,7 @@ impl Graph {
         paths: &ArtifactPaths,
         report: &mut super::super::NativeReport,
     ) -> Result<()> {
+        report.process_admission = self.process_admission.clone();
         match (&self.bridge, &self.trace) {
             (Some(_), Some(trace)) => {
                 super::super::process_trace::export_collector_into(report, paths, trace)
@@ -301,6 +372,22 @@ impl Graph {
                 Ok(())
             }
         }
+    }
+}
+
+fn cancel_prepared_render(
+    prepared: &mut Option<PreparedNativeRender>,
+    retained: &mut Option<RenderReport>,
+) -> Option<String> {
+    let render = prepared.take()?;
+    match catch_unwind(AssertUnwindSafe(|| render.cancel_retaining_report())) {
+        Ok((report, result)) => {
+            *retained = report;
+            result
+                .err()
+                .map(|error| format!("cancel prepared render: {error:#}"))
+        }
+        Err(_) => Some(String::from("cancel prepared render panic")),
     }
 }
 

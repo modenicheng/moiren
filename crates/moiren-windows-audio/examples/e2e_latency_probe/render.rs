@@ -7,6 +7,8 @@ mod owner;
 #[path = "render/renderer.rs"]
 mod renderer;
 
+#[cfg(all(windows, test))]
+pub(super) use owner::NativeRenderInfo;
 #[cfg(windows)]
 pub(super) use owner::{
     PreparedNativeRender, RenderOptions, RenderReport, RenderSession,

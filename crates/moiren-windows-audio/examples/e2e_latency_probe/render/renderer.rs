@@ -89,13 +89,17 @@ impl DemandRenderer {
     }
 
     #[cfg(windows)]
-    pub(super) fn counters(&self) -> &DemandCounters {
+    pub(in crate::live) fn counters(&self) -> &DemandCounters {
         &self.counters
     }
 
     /// Caller prepares scratch once, before activation. The successful path
     /// renders and copies bounded blocks without allocating or destroying DSP.
-    pub(super) fn render(&mut self, output: &mut [[f64; 2]], scratch: &mut [f32]) -> Result<()> {
+    pub(in crate::live) fn render(
+        &mut self,
+        output: &mut [[f64; 2]],
+        scratch: &mut [f32],
+    ) -> Result<()> {
         ensure!(
             scratch.len() >= self.engine.config().max_block_frames * 2,
             "probe renderer scratch is smaller than one engine block"

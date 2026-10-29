@@ -42,6 +42,10 @@ mod process_trace;
 mod validation_policy;
 use validation_policy::{ValidationMode, ValidationPolicy};
 
+#[cfg(any(windows, test))]
+#[path = "process_admission.rs"]
+mod process_admission;
+
 #[path = "process_source.rs"]
 #[cfg(any(windows, test))]
 pub(crate) mod process_source;
@@ -258,6 +262,11 @@ struct SourceReport {
 #[derive(Debug, Default, Serialize)]
 struct NativeReport {
     capture: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_failure: Option<Value>,
+    #[cfg(any(windows, test))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    process_admission: Option<process_admission::ProcessAdmissionEvidence>,
     render: Option<Value>,
     render_failure: Option<Value>,
     bridge: Option<Value>,
@@ -1966,7 +1975,8 @@ mod native {
         engine_backend::ProfessionalBackend,
         latency::RenderQueuePolicy,
         process_loopback::{
-            ProcessLoopbackOptions, inspect_process, prepare_process_capture_with_gate,
+            ProcessLoopbackOptions, inspect_process,
+            prepare_process_capture_with_gate_returning_with_abort,
         },
         vad::{Channels, Intent, PdoState, WindowsVadProvider},
     };
@@ -1977,10 +1987,84 @@ mod native {
         time::{Duration, Instant},
     };
 
-    use super::render::{RenderOptions, prepare_render_native_with_gate_returning_with_abort};
+    use super::render::{
+        PreparedNativeRender, RenderOptions, prepare_render_native_with_gate_returning_with_abort,
+    };
 
     const STARTUP_SAMPLE_LIMIT: usize = 256;
     const STARTUP_SAMPLE_INTERVAL: Duration = Duration::from_millis(10);
+
+    fn retain_native_value(destination: &mut Option<Value>, value: impl Serialize) -> Result<()> {
+        *destination = Some(serde_json::to_value(value)?);
+        Ok(())
+    }
+
+    fn retain_capture_join(
+        native: &mut NativeReport,
+        outcome: (
+            Option<moiren_windows_audio::capture::CaptureReport>,
+            Option<moiren_windows_audio::capture::CaptureError>,
+        ),
+        persist: impl FnOnce(&moiren_windows_audio::capture::CaptureReport) -> Result<()>,
+    ) -> Result<()> {
+        let (report, error) = outcome;
+        let mut result = if let Some(error) = error {
+            native.capture_failure = Some(serde_json::json!({
+                "stage": "capture_join", "error": error.to_string(),
+                "partial_report_retained": report.is_some(),
+            }));
+            Err(anyhow::Error::new(error)).context("join Process Loopback capture")
+        } else {
+            Ok(())
+        };
+        if let Some(report) = report {
+            result = soak_cleanup::combine(result, persist(&report));
+            result =
+                soak_cleanup::combine(result, retain_native_value(&mut native.capture, report));
+        } else {
+            result = soak_cleanup::combine(result, Err(anyhow::anyhow!("capture report missing")));
+        }
+        result
+    }
+
+    fn prepare_process_input<T>(
+        bridge: ProcessBridgeOptions,
+        render: &mut Option<PreparedNativeRender>,
+        report: &mut NativeReport,
+        prepare: impl FnOnce(
+            ProcessBridgeOptions,
+            &mut Option<PreparedNativeRender>,
+            &mut NativeReport,
+        ) -> Result<T>,
+    ) -> Result<(ProcessBridgeOptions, T)> {
+        let info = render.as_ref().context("prepared render missing")?.info();
+        let mut evidence = None;
+        let capture = process_admission::prepare_capture_for_render_recording(
+            bridge,
+            info.timing,
+            info.queue,
+            &mut evidence,
+            |bridge| prepare(bridge, render, report),
+        );
+        report.process_admission = evidence;
+        match capture {
+            Ok(capture) => Ok(capture),
+            Err(error) => {
+                let mut result = Err(error);
+                if let Some(render) = render.take() {
+                    let (retained, cancelled) = render.cancel_retaining_report();
+                    result = soak_cleanup::combine(result, cancelled);
+                    if let Some(retained) = retained {
+                        result = soak_cleanup::combine(
+                            result,
+                            retain_native_value(&mut report.render, retained),
+                        );
+                    }
+                }
+                result.map(|()| unreachable!("capture preparation failed"))
+            }
+        }
+    }
 
     pub fn run(
         options: &LiveOptions,
@@ -2000,38 +2084,6 @@ mod native {
         let mut journal = diagnostic_journal(options, paths)?;
         let stop = StopSignal::new().context("create shared stop signal")?;
         let gate = ActivationGate::new(stop.clone()).context("create activation gate")?;
-        let capture = prepare_process_capture_with_gate(
-            ProcessLoopbackOptions {
-                artifact: if options.diagnostic_soak {
-                    None
-                } else {
-                    Some(moiren_windows_audio::capture::PcmArtifactConfig::new(
-                        usize::try_from(options.seconds)
-                            .ok()
-                            .and_then(|seconds| seconds.checked_mul(48_000))
-                            .ok_or_else(|| anyhow::anyhow!("capture artifact size overflow"))?,
-                    ))
-                },
-                bridge: *bridge,
-                latency_telemetry: options.telemetry,
-                target: identity.clone(),
-                duration,
-            },
-            stop.clone(),
-            gate.clone(),
-        )
-        .context("prepare Process Loopback capture")?;
-        // Archive from the empty, gated bridge, not from a late realtime suffix.
-        // Generation 1 belongs only to this one probe invocation.
-        let bridge_observer = capture.observer.clone();
-        let mut trace = moiren_windows_audio::process_loopback::ProcessTraceCollector::new(
-            identity.clone(),
-            1,
-            48_000,
-            48_000,
-            options.engine_block_frames,
-        );
-        trace.poll(&bridge_observer);
         let render = match prepare_render_native_with_gate_returning_with_abort(
             RenderOptions {
                 queue,
@@ -2046,65 +2098,194 @@ mod native {
             Ok(render) => render,
             Err(error) => {
                 native_report.render_failure = Some(error.evidence("render_prepare"));
-                native_report.render = error.report.map(serde_json::to_value).transpose()?;
-                return Err(error.error).context("prepare WASAPI render");
+                let mut result = Err(error.error).context("prepare WASAPI render");
+                if let Some(report) = error.report {
+                    result = soak_cleanup::combine(
+                        result,
+                        retain_native_value(&mut native_report.render, report),
+                    );
+                }
+                return soak_cleanup::combine(result, finish_journal(&mut journal, native_report));
             }
         };
         let render_info = render.info();
         let padding = render.padding_observer();
-        let prepared = capture;
-        let renderer = process_collection::graph::build_renderer(options, prepared.source)?
-            .with_bridge_observer(bridge_observer.clone());
-        let timeline = renderer.timeline_observer();
-        let prepared_render = match render.attach_returning_with_abort(renderer, queue, || ()) {
-            Ok(render) => render,
+        let mut render = Some(render);
+        let capture = prepare_process_input(
+            *bridge,
+            &mut render,
+            native_report,
+            |bridge, render, native_report| {
+                let capture = prepare_process_capture_with_gate_returning_with_abort(
+                    ProcessLoopbackOptions {
+                        artifact: if options.diagnostic_soak {
+                            None
+                        } else {
+                            Some(moiren_windows_audio::capture::PcmArtifactConfig::new(
+                                usize::try_from(options.seconds)?
+                                    .checked_mul(48_000)
+                                    .context("capture artifact size overflow")?,
+                            ))
+                        },
+                        bridge,
+                        latency_telemetry: options.telemetry,
+                        target: identity.clone(),
+                        duration,
+                    },
+                    stop.clone(),
+                    gate.clone(),
+                    // Disconnect and stop the parked peer before capture join.
+                    || render.take().map(|render| render.cancel_retaining_report()),
+                );
+                match capture {
+                    Ok(capture) => Ok(capture),
+                    Err(mut failure) => {
+                        native_report.capture_failure = Some(serde_json::json!({
+                            "stage":"capture_prepare", "error":failure.error.to_string(),
+                            "stop_error":failure.stop_error.as_ref().map(ToString::to_string),
+                            "join_error":failure.join_error.as_ref().map(ToString::to_string),
+                            "abort_panicked":failure.abort_panicked,
+                        }));
+                        let mut result = Err(anyhow::anyhow!(failure.error))
+                            .context("prepare Process Loopback capture");
+                        if let Some(report) = failure.report.take() {
+                            result = soak_cleanup::combine(
+                                result,
+                                retain_native_value(&mut native_report.capture, report),
+                            );
+                        }
+                        if let Some(Some((report, cancelled))) = failure.abort.take() {
+                            result = soak_cleanup::combine(result, cancelled);
+                            if let Some(report) = report {
+                                result = soak_cleanup::combine(
+                                    result,
+                                    retain_native_value(&mut native_report.render, report),
+                                );
+                            }
+                        }
+                        if let Some(error) = failure.stop_error {
+                            result = soak_cleanup::combine(result, Err(error.into()));
+                        }
+                        if let Some(error) = failure.join_error {
+                            result = soak_cleanup::combine(result, Err(error.into()));
+                        }
+                        if failure.abort_panicked {
+                            result = soak_cleanup::combine(
+                                result,
+                                Err(anyhow::anyhow!("capture preparation abort panicked")),
+                            );
+                        }
+                        result.map(|()| unreachable!("capture preparation failed"))
+                    }
+                }
+            },
+        );
+        let (admitted_bridge, prepared) = match capture {
+            Ok(prepared) => prepared,
             Err(error) => {
-                native_report.render_failure = Some(error.evidence("render_attach"));
-                native_report.render = error.report.map(serde_json::to_value).transpose()?;
-                return Err(error.error).context("attach Engine renderer");
+                return soak_cleanup::combine(
+                    Err(error),
+                    finish_journal(&mut journal, native_report),
+                );
             }
         };
+        // Keep full-wake admission metadata even though actual source reads
+        // are segmented. Archive from the empty gated bridge, not a late tail.
+        let bridge_observer = prepared.observer.clone();
+        let mut trace = moiren_windows_audio::process_loopback::ProcessTraceCollector::new(
+            identity.clone(),
+            1,
+            48_000,
+            48_000,
+            admitted_bridge.max_demand_frames,
+        );
         trace.poll(&bridge_observer);
-        gate.activate().context("activate capture/render gate")?;
         let capture_session = prepared.session;
-        let render_session = prepared_render.into_session();
-        let mut controlled_load = if let Some(load_id) = options.controlled_load_id.as_deref() {
-            let startup_deadline = Instant::now() + Duration::from_secs(5);
-            while !(capture_session.has_started() && render_session.has_started()) {
-                trace.poll(&bridge_observer);
-                ensure!(
-                    !capture_session.is_finished() && !render_session.is_finished(),
-                    "native owner stopped before controlled load startup"
-                );
-                ensure!(
-                    Instant::now() < startup_deadline,
-                    "native owners did not start before controlled load startup deadline"
-                );
-                thread::sleep(Duration::from_millis(10));
+        let mut render_session = None;
+        let mut controlled_load = None;
+        // Keep every native owner outside the fallible continuation. A graph,
+        // attachment, activation, or load-start error still reaches explicit
+        // cancellation/joins and retains reports instead of relying on Drop.
+        let collection = (|| -> Result<()> {
+            ensure!(
+                prepared.sample_rate == 48_000 && prepared.channels == 2,
+                "Process graph negotiation is not 48k stereo"
+            );
+            let renderer = process_collection::graph::build_renderer(options, prepared.source)?
+                .with_bridge_observer(bridge_observer.clone());
+            let timeline = renderer.timeline_observer();
+            match render
+                .take()
+                .expect("prepared render retained until attachment")
+                .attach_returning_with_abort(renderer, queue, || {
+                    stop.request_stop().err().map(|error| error.to_string())
+                }) {
+                Ok(render) => render_session = Some(render.into_session()),
+                Err(mut error) => {
+                    native_report.render_failure = Some(error.evidence("render_attach"));
+                    let mut result = Err(error.error).context("attach Engine renderer");
+                    if let Some(report) = error.report.take() {
+                        result = soak_cleanup::combine(
+                            result,
+                            retain_native_value(&mut native_report.render, report),
+                        );
+                    }
+                    if let Some(error) = error.stop_error {
+                        result = soak_cleanup::combine(result, Err(error));
+                    }
+                    if let Some(error) = error.join_error {
+                        result = soak_cleanup::combine(result, Err(error));
+                    }
+                    if let Some(Some(error_stop)) = error.abort {
+                        result = soak_cleanup::combine(result, Err(anyhow::anyhow!(error_stop)));
+                    }
+                    if error.abort_panicked {
+                        result = soak_cleanup::combine(
+                            result,
+                            Err(anyhow::anyhow!("render attachment abort panicked")),
+                        );
+                    }
+                    return result;
+                }
             }
-            let directory = Path::new(&paths.directory);
-            Some(controlled_load::Supervisor::start(
-                load_id,
-                options.seconds,
-                directory.join("controlled-load.stop"),
-                directory.join("controlled-load.result.json"),
-            )?)
-        } else {
-            None
-        };
-        trace.poll(&bridge_observer);
-        let collection = if journal.is_some() || controlled_load.is_some() {
-            let duration = Duration::from_secs(options.seconds);
-            let interval = Duration::from_secs(options.observation_interval_seconds);
-            let mut next_observation = Duration::ZERO;
-            soak_control::run_until(
-                duration,
-                |elapsed| {
+            let render_session = render_session.as_ref().expect("attached render session");
+            trace.poll(&bridge_observer);
+            gate.activate().context("activate capture/render gate")?;
+            if let Some(load_id) = options.controlled_load_id.as_deref() {
+                let startup_deadline = Instant::now() + Duration::from_secs(5);
+                while !(capture_session.has_started() && render_session.has_started()) {
                     trace.poll(&bridge_observer);
-                    if let Some(journal) = journal.as_mut() {
-                        journal.check()?;
-                        if elapsed >= next_observation {
-                            journal.record(&serde_json::json!({
+                    ensure!(
+                        !capture_session.is_finished() && !render_session.is_finished(),
+                        "native owner stopped before controlled load startup"
+                    );
+                    ensure!(
+                        Instant::now() < startup_deadline,
+                        "native owners did not start before controlled load startup deadline"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                let directory = Path::new(&paths.directory);
+                controlled_load = Some(controlled_load::Supervisor::start(
+                    load_id,
+                    options.seconds,
+                    directory.join("controlled-load.stop"),
+                    directory.join("controlled-load.result.json"),
+                )?);
+            }
+            trace.poll(&bridge_observer);
+            if journal.is_some() || controlled_load.is_some() {
+                let duration = Duration::from_secs(options.seconds);
+                let interval = Duration::from_secs(options.observation_interval_seconds);
+                let mut next_observation = Duration::ZERO;
+                soak_control::run_until(
+                    duration,
+                    |elapsed| {
+                        trace.poll(&bridge_observer);
+                        if let Some(journal) = journal.as_mut() {
+                            journal.check()?;
+                            if elapsed >= next_observation {
+                                journal.record(&serde_json::json!({
                                 "schema_version": 1, "source_kind": options.source_kind,
                                 "elapsed_seconds": elapsed.as_secs_f64(),
                                 "capture_started": capture_session.has_started(),
@@ -2117,33 +2298,38 @@ mod native {
                                     "frame": value.frame, "epoch": value.epoch, "revision": value.revision,
                                 })),
                             }))?;
-                            next_observation = elapsed.saturating_add(interval);
+                                next_observation = elapsed.saturating_add(interval);
+                            }
                         }
-                    }
-                    if let Some(load) = controlled_load.as_mut() {
-                        load.check()?;
-                    }
-                    ensure!(
-                        !capture_session.is_finished() && !render_session.is_finished(),
-                        "native owner stopped before supervised deadline"
-                    );
-                    Ok(())
-                },
-                || stop.request_stop().context("stop supervised native owners"),
-            )
-        } else {
-            process_trace::poll_finite(
-                Duration::from_secs(options.seconds),
-                || trace.poll(&bridge_observer),
-                || capture_session.is_finished() && render_session.is_finished(),
-                || {
-                    stop.request_stop()
-                        .context("stop finite Process owners at deadline")
-                },
-            )
-        };
+                        if let Some(load) = controlled_load.as_mut() {
+                            load.check()?;
+                        }
+                        ensure!(
+                            !capture_session.is_finished() && !render_session.is_finished(),
+                            "native owner stopped before supervised deadline"
+                        );
+                        Ok(())
+                    },
+                    || stop.request_stop().context("stop supervised native owners"),
+                )
+            } else {
+                process_trace::poll_finite(
+                    Duration::from_secs(options.seconds),
+                    || trace.poll(&bridge_observer),
+                    || capture_session.is_finished() && render_session.is_finished(),
+                    || {
+                        stop.request_stop()
+                            .context("stop finite Process owners at deadline")
+                    },
+                )
+            }
+        })();
         trace.poll(&bridge_observer);
-        let mut collection = collection;
+        let mut collection = soak_cleanup::combine(
+            collection,
+            stop.request_stop()
+                .context("stop Process owners before cleanup"),
+        );
         if let Some(load) = controlled_load.take() {
             // This blocking wait, like the joins below, can outlast the realtime
             // history window. Polling is best-effort: the next poll latches any
@@ -2158,7 +2344,10 @@ mod native {
                         collection =
                             soak_cleanup::combine(collection, Err(anyhow::anyhow!(failure)));
                     }
-                    native_report.controlled_load = Some(serde_json::to_value(evidence)?);
+                    collection = soak_cleanup::combine(
+                        collection,
+                        retain_native_value(&mut native_report.controlled_load, evidence),
+                    );
                 }
                 Err(error) => {
                     native_report.controlled_load = Some(serde_json::json!({
@@ -2175,27 +2364,43 @@ mod native {
                 }
             }
         }
-        trace.poll(&bridge_observer);
-        let capture_result = capture_session.join();
-        trace.poll(&bridge_observer);
-        let render_result = render_session.join();
-        trace.poll(&bridge_observer);
-        match capture_result {
-            Ok(report) => {
-                if let Err(error) = persist_capture_artifact(paths, &report) {
-                    gaps.push(format!("persist capture PCM artifact: {error:#}"));
-                }
-                native_report.capture = Some(serde_json::to_value(report)?);
+        if let Some(render) = render.take() {
+            let (report, cancelled) = render.cancel_retaining_report();
+            collection = soak_cleanup::combine(collection, cancelled);
+            if let Some(report) = report {
+                collection = soak_cleanup::combine(
+                    collection,
+                    retain_native_value(&mut native_report.render, report),
+                );
             }
-            Err(error) => gaps.push(format!("join Process Loopback capture: {error}")),
         }
+        trace.poll(&bridge_observer);
+        let capture_result = capture_session.join_retaining_report();
+        trace.poll(&bridge_observer);
+        let render_result = render_session.map(|render| render.join());
+        trace.poll(&bridge_observer);
+        collection = soak_cleanup::combine(
+            collection,
+            retain_capture_join(native_report, capture_result, |report| {
+                persist_capture_artifact(paths, report)
+            }),
+        );
         match render_result {
-            Ok(report) => native_report.render = Some(serde_json::to_value(report)?),
-            Err(error) => gaps.push(format!("join WASAPI render: {error}")),
+            Some(Ok(report)) => {
+                collection = soak_cleanup::combine(
+                    collection,
+                    retain_native_value(&mut native_report.render, report),
+                );
+            }
+            Some(Err(error)) => gaps.push(format!("join WASAPI render: {error}")),
+            None => {}
         }
         // Keep the observer alive across both joins so this is the final
         // runtime state, rather than the all-zero pre-activation snapshot.
-        native_report.bridge = Some(serde_json::to_value(bridge_observer.snapshot())?);
+        collection = soak_cleanup::combine(
+            collection,
+            retain_native_value(&mut native_report.bridge, bridge_observer.snapshot()),
+        );
         // The source and renderer have been destroyed by both joins. Preserve
         // actual writer-closure/truncation facts, never infer successful cleanup
         // or complete history from the registry/owner being stopped.
@@ -3131,6 +3336,168 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        fn parked_render() -> PreparedNativeRender {
+            let timing = moiren_windows_audio::latency::NativeStreamTiming {
+                sample_rate: 48_000,
+                period_frames: Some(48),
+                capacity_frames: 512,
+            };
+            let queue = moiren_windows_audio::latency::prepare_render_queue(
+                timing,
+                RenderQueuePolicy::FullCapacity,
+            )
+            .unwrap();
+            PreparedNativeRender::parked_fixture(
+                super::super::render::NativeRenderInfo { timing, queue },
+                StopSignal::new().unwrap(),
+                RenderQueuePolicy::FullCapacity,
+            )
+        }
+
+        fn bridge_target(target_frames: u32) -> ProcessBridgeOptions {
+            ProcessBridgeOptions {
+                input: TransportInputPolicy::Target {
+                    capacity_frames: 2048,
+                    target_frames,
+                    jitter_frames: 0,
+                },
+                delivery: Some(InputDeliveryTiming {
+                    sample_rate: 48_000,
+                    max_packet_frames: 32,
+                    max_gap_frames: 32,
+                    source: DeliveryTimingSource::Declared,
+                }),
+                max_demand_frames: 64,
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn ordinary_process_refusal_never_prepares_capture_and_joins_parked_render() {
+            let mut render = Some(parked_render());
+            let mut report = NativeReport::default();
+            let mut called = false;
+            let result =
+                prepare_process_input(bridge_target(128), &mut render, &mut report, |_, _, _| {
+                    called = true;
+                    Ok(())
+                });
+            assert!(result.is_err());
+            assert!(!called);
+            assert!(render.is_none());
+            let value = serde_json::to_value(report).unwrap();
+            assert_eq!(value["render"]["stream_started"], false);
+            assert_eq!(value["render"]["queue"]["target_frames"], 512);
+            assert_eq!(value["process_admission"]["failure"]["stage"], "admission");
+            assert!(
+                value["process_admission"]["admitted_complete_native_wake_fixed_48khz"].is_null()
+            );
+        }
+
+        #[test]
+        fn ordinary_process_capture_failure_keeps_admission_partial_capture_and_render_reports() {
+            let mut render = Some(parked_render());
+            let mut report = NativeReport::default();
+            let result = prepare_process_input::<()>(
+                bridge_target(546),
+                &mut render,
+                &mut report,
+                |admitted, _, report| {
+                    assert_eq!(admitted.max_demand_frames, 512);
+                    report.capture = Some(serde_json::json!({"partial":true}));
+                    Err(anyhow::anyhow!("injected capture preparation refusal"))
+                },
+            );
+            assert!(format!("{:#}", result.unwrap_err()).contains("injected capture"));
+            assert!(render.is_none());
+            let value = serde_json::to_value(report).unwrap();
+            assert_eq!(value["capture"]["partial"], true);
+            assert_eq!(value["render"]["stream_started"], false);
+            assert_eq!(value["process_admission"]["failure"]["stage"], "capture");
+            assert_eq!(
+                value["process_admission"]["admitted_complete_native_wake_fixed_48khz"]["max_demand_frames"],
+                512
+            );
+        }
+
+        #[test]
+        fn ordinary_process_success_leaves_render_parked_for_real_attachment() {
+            let mut render = Some(parked_render());
+            let mut report = NativeReport::default();
+            let (admitted, capture) = prepare_process_input(
+                bridge_target(546),
+                &mut render,
+                &mut report,
+                |admitted, render, _| {
+                    assert!(render.is_some());
+                    assert_eq!(admitted.max_demand_frames, 512);
+                    Ok("injected capture")
+                },
+            )
+            .unwrap();
+            assert_eq!(capture, "injected capture");
+            assert_eq!(admitted.max_demand_frames, 512);
+            assert!(report.render.is_none());
+            assert!(report.process_admission.unwrap().failure.is_none());
+            let (report, result) = render.take().unwrap().cancel_retaining_report();
+            result.unwrap();
+            assert!(report.is_some());
+        }
+
+        #[test]
+        fn ordinary_capture_join_retains_panic_report_even_if_artifact_persistence_fails() {
+            use moiren_windows_audio::capture::{CaptureError, CaptureReport, CaptureSource};
+            let mut report = CaptureReport::new(
+                CaptureSource::ProcessLoopback,
+                SessionDuration::UntilStopped,
+            );
+            report.failure = Some("partial report from post-ready panic".into());
+            let mut native = NativeReport::default();
+            let mut persisted = false;
+            let error = retain_capture_join(
+                &mut native,
+                (Some(report), Some(CaptureError::WorkerPanicked)),
+                |report| {
+                    persisted = true;
+                    assert_eq!(
+                        report.failure.as_deref(),
+                        Some("partial report from post-ready panic")
+                    );
+                    Err(anyhow::anyhow!("injected PCM disk failure"))
+                },
+            )
+            .unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains("panicked"));
+            assert!(message.contains("injected PCM disk failure"));
+            assert!(persisted);
+            assert_eq!(
+                native.capture.unwrap()["failure"],
+                "partial report from post-ready panic"
+            );
+            let failure = native.capture_failure.unwrap();
+            assert_eq!(failure["stage"], "capture_join");
+            assert_eq!(failure["partial_report_retained"], true);
+        }
+
+        #[test]
+        fn ordinary_capture_join_without_report_refuses_and_never_persists() {
+            use moiren_windows_audio::capture::CaptureError;
+            let mut native = NativeReport::default();
+            let error = retain_capture_join(
+                &mut native,
+                (None, Some(CaptureError::WorkerPanicked)),
+                |_| panic!("missing report cannot supply PCM"),
+            )
+            .unwrap_err();
+            assert!(format!("{error:#}").contains("capture report missing"));
+            assert!(native.capture.is_none());
+            assert_eq!(
+                native.capture_failure.unwrap()["partial_report_retained"],
+                false
+            );
+        }
 
         #[test]
         fn startup_timeline_keeps_epoch_revision_and_frame_or_explicitly_unknown() {

@@ -36,7 +36,8 @@ pub(super) fn export_collector_into(
             "collection_refusal": artifact.collection_refusal,
             "replayable": validation.is_ok(), "refusal": validation.err().map(|e| e.to_string()),
             "cleanup_verified": false,
-            "meaning": "bounded control-polled boundary prefix; per-read demand, not whole-wake admission; cleanup remains in native reports"
+            "prepared_consumer_demand_frames": artifact.prepared_consumer_demand_frames,
+            "meaning": "bounded control-polled boundary prefix; prepared whole-wake demand with segmented read events; not sustained admission or sample age; cleanup remains in native reports"
         }))
     })();
     retain_export_result(report, result)
