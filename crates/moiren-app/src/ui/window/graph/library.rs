@@ -35,25 +35,42 @@ pub(in crate::ui::window) fn library(
         count += 1;
         if group != template.group() {
             group = template.group();
-            items = items.child(div().mt(px(14.)).mb(px(4.)).child(label(t!(group))));
+            items = items.child(div().mt(px(14.)).mb(px(2.)).child(label(t!(group))));
         }
         let enabled = template.kind().is_some() && shell.pending_node_spawn.is_none();
         let this = cx.entity();
-        let row = div()
-            .id(SharedString::from(format!("library-{template:?}")))
+        let tint = template.tint();
+        // One card per template: the tinted icon tile, title and description
+        // share a single surface that is itself the click and drag target, so
+        // hover, pointer and drop geometry all agree on the same bounds.
+        let card = div()
+            .id(SharedString::from(format!("add-{}", template.title())))
+            .w_full()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .py(px(8.))
+            .gap(px(theme::SPACE_2))
+            .px(px(theme::SPACE_2))
+            .py(px(6.))
+            .rounded(px(theme::RADIUS_SM))
             .child(
-                component::Icon::default()
-                    .path(format!("icons/{}.svg", template.icon()))
-                    .size(px(18.))
-                    .text_color(if enabled {
-                        template.tint().opacity(0.7)
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(26.))
+                    .rounded(px(theme::RADIUS_SM))
+                    .bg(if enabled {
+                        theme::soft(tint)
                     } else {
-                        theme::TEXT_FAINT
-                    }),
+                        theme::soft(theme::TEXT_FAINT)
+                    })
+                    .child(
+                        component::Icon::default()
+                            .path(format!("icons/{}.svg", template.icon()))
+                            .size(px(15.))
+                            .text_color(if enabled { tint } else { theme::TEXT_FAINT }),
+                    ),
             )
             .child(
                 div()
@@ -61,33 +78,46 @@ pub(in crate::ui::window) fn library(
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(3.))
+                    .gap(px(2.))
                     .child(
-                        button(
-                            SharedString::from(format!("add-{}", template.title())),
-                            t!(template.title()),
-                        )
-                        .variant(ButtonVariant::Ghost)
-                        .disabled(!enabled)
-                        .on_click(move |_, _, cx| {
-                            this.update(cx, |shell, cx| {
-                                shell.spawn_template_at_center(template, cx);
-                            });
-                        }),
+                        div()
+                            .text_size(px(theme::TEXT_SM))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(if enabled {
+                                theme::TEXT
+                            } else {
+                                theme::TEXT_FAINT
+                            })
+                            .child(t!(template.title())),
                     )
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(px(theme::TEXT_XS))
                             .text_color(theme::TEXT_FAINT)
                             .child(t!(template.description())),
                     ),
             )
-            .when(enabled, |row| {
-                row.cursor_move()
+            .when(enabled, |card| {
+                card.cursor_pointer()
+                    .hover(|style| style.bg(theme::SURFACE_3))
+                    .on_click(move |_, _, cx| {
+                        this.update(cx, |shell, cx| {
+                            shell.spawn_template_at_center(template, cx);
+                        });
+                    })
                     .on_drag(template, |template, _, _, cx| cx.new(|_| *template))
             })
             .gpui_test_observe();
-        items = items.child(row);
+        // The harness addresses drop origins by `library-{template:?}` while
+        // the card answers to `add-{title}`; the wrapper carries the former
+        // at exactly the card's bounds.
+        items = items.child(
+            div()
+                .id(SharedString::from(format!("library-{template:?}")))
+                .w_full()
+                .child(card)
+                .gpui_test_observe(),
+        );
     }
     if count == 0 {
         items = items.child(label(t!("No matching nodes")));
