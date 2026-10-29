@@ -97,6 +97,27 @@ fn project_native(snapshot: NativeObservationSnapshot) -> Result<NativeObservati
     })
 }
 
+fn project_professional(
+    s: &moiren_windows_audio::engine_backend::ProfessionalStreamObservation,
+) -> Stream {
+    Stream {
+        node: format!("{:?}", s.node),
+        input: s.input,
+        master: s.master,
+        mode: s.requested.mode,
+        actual: NativeStreamInfoView::from(s.actual),
+        callbacks: s.native_callbacks,
+        wakes: s.native_wait_wakes,
+        written: s.native_written_frames,
+        timeouts: s.native_wait_timeouts,
+        dropped: s.dropped_frames,
+        silent: s.silent_frames,
+        native_dropped: s.native_dropped_frames,
+        native_silent: s.native_silent_frames,
+        capture_quality: s.native_capture_quality,
+    }
+}
+
 impl Adapter<'_> {
     fn pin_and_observe(&mut self) -> Result<GraphObservation> {
         let project = self
@@ -163,21 +184,7 @@ impl Adapter<'_> {
             streams: professional
                 .streams
                 .iter()
-                .map(|s| Stream {
-                    node: format!("{:?}", s.node),
-                    input: s.input,
-                    master: s.master,
-                    mode: s.requested.mode,
-                    actual: NativeStreamInfoView::from(s.actual),
-                    callbacks: s.native_callbacks,
-                    wakes: s.native_wait_wakes,
-                    written: s.native_written_frames,
-                    timeouts: s.native_wait_timeouts,
-                    dropped: s.dropped_frames,
-                    silent: s.silent_frames,
-                    native_dropped: s.native_dropped_frames,
-                    native_silent: s.native_silent_frames,
-                })
+                .map(project_professional)
                 .collect(),
             native: project_native(native)?,
         })
@@ -383,6 +390,7 @@ impl Operations for Adapter<'_> {
             "recorder_endpoint_id":self.config.input_endpoint_id,"expected_host":self.expected_host.map(|v|format!("{v:?}")),
             "expected_owner_generation":self.expected_owner,"physical_admission":self.tracker.as_ref().and_then(|t|t.admission.as_ref()),
             "startup_counters":self.tracker.as_ref().and_then(|t|t.startup.as_ref()),
+            "capture_quality_observed_all_samples":self.tracker.as_ref().is_some_and(GraphTracker::capture_quality_observed_all_samples),
             "latest":self.tracker.as_ref().and_then(|t|t.latest.as_ref()),
             "final_after_host_drop":self.tracker.as_ref().and_then(|t|t.final_observation.as_ref()),
             "graph_final":self.graph_final,"recorder_info":self.recorder_info,"recorder_final":self.recorder_final,"preparation_failure":self.preparation_failure})
@@ -397,6 +405,53 @@ mod tests {
         engine_backend::NativeStreamObservation,
         latency::{NativeStreamTiming, PreparedRenderQueue},
     };
+
+    #[test]
+    fn physical_capture_quality_projection_preserves_unknown_and_exact_native_flags() {
+        use moiren_windows_audio::{
+            engine_backend::ProfessionalStreamObservation, native::NativeCaptureQuality,
+        };
+        let mut graph = LogicalGraph::new();
+        let node = graph.create_node(NodeKind::Source, 2).unwrap();
+        let mut stream = ProfessionalStreamObservation {
+            node,
+            input: true,
+            master: false,
+            requested: Default::default(),
+            actual: moiren_windows_audio::native::NativeStreamInfo {
+                sample_rate: 48_000,
+                format: moiren_engine::audio_config::SampleFormat::Float32,
+                buffer_frames: 256,
+                channels: 2,
+            },
+            dropped_frames: 3,
+            silent_frames: 5,
+            native_callbacks: 0,
+            native_wait_wakes: 7,
+            native_written_frames: 0,
+            native_wait_timeouts: 11,
+            native_dropped_frames: 13,
+            native_silent_frames: 17,
+            native_capture_quality: None,
+            driver_latency: None,
+        };
+        assert_eq!(project_professional(&stream).capture_quality, None);
+        stream.native_capture_quality = Some(NativeCaptureQuality {
+            discontinuities: 19,
+            timestamp_errors: 23,
+            silent_frames: (1 << 53) + 29,
+        });
+        let projected = project_professional(&stream);
+        assert_eq!(projected.capture_quality, stream.native_capture_quality);
+        assert_eq!(
+            projected.native_silent, 17,
+            "render silence stays separate from capture flags"
+        );
+        assert_eq!(
+            serde_json::to_value(projected).unwrap()["capture_quality"]["silent_frames"].as_u64(),
+            Some((1 << 53) + 29)
+        );
+    }
 
     #[test]
     fn physical_native_projection_preserves_raw_snapshot_and_all_prepared_metadata() {

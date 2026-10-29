@@ -628,6 +628,7 @@ impl EngineBackend<f64> for MockBackend {
                 native_wait_timeouts: 0,
                 native_dropped_frames: 0,
                 native_silent_frames: 0,
+                native_capture_quality: None,
                 driver_latency: None,
             },
             counters,

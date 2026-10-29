@@ -283,6 +283,7 @@ fn professional_timing_uses_actual_format_and_hides_stale_generation() {
                 native_written_frames: 0,
                 native_dropped_frames: 3,
                 native_silent_frames: 5,
+                native_capture_quality: None,
                 driver_latency: Some(moiren_windows_audio::native::NativeLatency {
                     input_frames: 32,
                     output_frames: 64,

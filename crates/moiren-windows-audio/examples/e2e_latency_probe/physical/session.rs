@@ -10,7 +10,7 @@ use moiren_engine::{
 };
 use moiren_windows_audio::{
     latency::{NativeStreamTiming, shared_period::SharedPeriodReport},
-    native::NativeStreamInfo,
+    native::{NativeCaptureQuality, NativeStreamInfo},
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -31,6 +31,7 @@ pub(super) struct Stream {
     pub silent: u64,
     pub native_dropped: u64,
     pub native_silent: u64,
+    pub capture_quality: Option<NativeCaptureQuality>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -107,9 +108,17 @@ pub(super) struct GraphTracker {
     pinned: Option<GraphObservation>,
     previous: Option<GraphObservation>,
     baseline: Option<GraphObservation>,
+    last_capture_quality: Option<NativeCaptureQuality>,
+    capture_quality_incomplete: bool,
     progress: [Duration; 3],
 }
 impl GraphTracker {
+    pub fn capture_quality_observed_all_samples(&self) -> bool {
+        !self.capture_quality_incomplete
+            && self.baseline.is_some()
+            && self.final_observation.is_some()
+            && self.last_capture_quality.is_some()
+    }
     pub fn new(input: NodeId, output: NodeId) -> Self {
         Self {
             input,
@@ -121,6 +130,8 @@ impl GraphTracker {
             pinned: None,
             previous: None,
             baseline: None,
+            last_capture_quality: None,
+            capture_quality_incomplete: false,
             progress: [Duration::ZERO; 3],
         }
     }
@@ -145,6 +156,11 @@ impl GraphTracker {
         result?;
         let input = self.stream(sample, self.input)?;
         let output = self.stream(sample, self.output)?;
+        if let Some(capture) = input.capture_quality {
+            self.last_capture_quality = Some(capture);
+        } else {
+            self.capture_quality_incomplete = true;
+        }
         let frame = sample.timeline.expect("validated timeline")[2];
         // Validate the interval since the last observed progress before a new
         // counter advance can refresh it. Late recovery cannot erase an expired
@@ -225,6 +241,9 @@ impl GraphTracker {
         // Preserve even malformed/regressed final observations before deriving
         // any checked deltas or returning an admission/teardown failure.
         self.final_observation = Some(value.clone());
+        if self.stream(sample, self.input)?.capture_quality.is_none() {
+            self.capture_quality_incomplete = true;
+        }
         if let Some(baseline) = &self.baseline {
             value["steady_deltas"] = Value::Array([self.input,self.output].iter().map(|node| {
                 let current = self.stream(sample,*node)?;
@@ -233,7 +252,8 @@ impl GraphTracker {
                 Ok(json!({"node":current.node,"callbacks":delta(current.callbacks,old.callbacks)?,"wakes":delta(current.wakes,old.wakes)?,
                     "written":delta(current.written,old.written)?,"timeouts":delta(current.timeouts,old.timeouts)?,
                     "dropped":delta(current.dropped,old.dropped)?,"silent":delta(current.silent,old.silent)?,
-                    "native_dropped":delta(current.native_dropped,old.native_dropped)?,"native_silent":delta(current.native_silent,old.native_silent)?}))
+                    "native_dropped":delta(current.native_dropped,old.native_dropped)?,"native_silent":delta(current.native_silent,old.native_silent)?,
+                    "capture_quality":capture_delta(current.capture_quality,old.capture_quality)?}))
             }).collect::<Result<Vec<_>>>()?);
         }
         self.final_observation = Some(value);
@@ -372,6 +392,15 @@ impl GraphTracker {
                 "physical counter saturated"
             );
         }
+        if let Some(current) = self.stream(sample, self.input)?.capture_quality {
+            ensure!(
+                capture_counts(current).iter().all(|v| *v != u64::MAX),
+                "physical capture quality counter saturated"
+            );
+            if let Some(previous) = self.last_capture_quality {
+                capture_delta(Some(current), Some(previous))?;
+            }
+        }
         if let Some(previous) = &self.previous {
             for node in [self.input, self.output] {
                 ensure!(
@@ -402,6 +431,7 @@ impl GraphTracker {
         for node in [self.input, self.output] {
             let stream = self.stream(sample, node)?;
             let old = self.stream(baseline, node)?;
+            let baseline_capture = old.capture_quality;
             let current = [
                 stream.timeouts,
                 stream.dropped,
@@ -446,9 +476,74 @@ impl GraphTracker {
                     )?;
                 }
             }
+            if node == self.input {
+                // Unknown baseline cannot establish a steady delta. Retain it
+                // as unknown, but known cumulative faults still fail quality.
+                let observed = capture_delta(stream.capture_quality, baseline_capture)?;
+                let faults = if startup {
+                    stream.capture_quality
+                } else {
+                    observed.or(stream.capture_quality)
+                };
+                if let Some(faults) = faults {
+                    for (name, count) in [
+                        "capture_discontinuities",
+                        "capture_timestamp_errors",
+                        "capture_silent_frames",
+                    ]
+                    .into_iter()
+                    .zip(capture_counts(faults))
+                    {
+                        if count != 0 {
+                            quality.fault(
+                                options.validation,
+                                &format!(
+                                    "physical {node:?} {name} {}={count}",
+                                    if startup {
+                                        "startup"
+                                    } else if observed.is_some() {
+                                        "steady_delta"
+                                    } else {
+                                        "cumulative_without_known_baseline"
+                                    }
+                                ),
+                            )?;
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
+}
+
+fn capture_counts(quality: NativeCaptureQuality) -> [u64; 3] {
+    [
+        quality.discontinuities,
+        quality.timestamp_errors,
+        quality.silent_frames,
+    ]
+}
+
+fn capture_delta(
+    current: Option<NativeCaptureQuality>,
+    baseline: Option<NativeCaptureQuality>,
+) -> Result<Option<NativeCaptureQuality>> {
+    current
+        .zip(baseline)
+        .map(|(current, baseline)| {
+            let delta = |current: u64, baseline: u64| {
+                current
+                    .checked_sub(baseline)
+                    .ok_or_else(|| anyhow::anyhow!("physical capture quality counter regressed"))
+            };
+            Ok(NativeCaptureQuality {
+                discontinuities: delta(current.discontinuities, baseline.discontinuities)?,
+                timestamp_errors: delta(current.timestamp_errors, baseline.timestamp_errors)?,
+                silent_frames: delta(current.silent_frames, baseline.silent_frames)?,
+            })
+        })
+        .transpose()
 }
 
 fn stream_counts(s: &Stream) -> [u64; 8] {
@@ -465,10 +560,18 @@ fn stream_counts(s: &Stream) -> [u64; 8] {
 }
 
 fn graph_value(s: &GraphObservation) -> Value {
+    let capture = s
+        .streams
+        .iter()
+        .find(|stream| stream.input)
+        .and_then(|stream| stream.capture_quality);
     json!({"host_id":s.host_id,"host":format!("{:?}",s.host),"execution":format!("{:?}",s.execution),
         "owner_generation":s.owner,"resource_generation":s.resource,"desired_revision":s.desired,"active_revision":s.active,"plan_revision":s.plan,
         "timeline":s.timeline,"fault":s.fault,"professional_owner_generation":s.professional_owner,"professional_running":s.professional_running,
-        "streams":s.streams,"native":s.native.raw,"graph_capture_discontinuities":null,"graph_capture_timestamp_errors":null,"graph_capture_silent_frames":null})
+        "streams":s.streams,"native":s.native.raw,
+        "graph_capture_discontinuities":capture.map(|v|v.discontinuities),
+        "graph_capture_timestamp_errors":capture.map(|v|v.timestamp_errors),
+        "graph_capture_silent_frames":capture.map(|v|v.silent_frames)})
 }
 
 pub(super) trait Operations {
@@ -638,11 +741,22 @@ pub(super) fn collect(options: &Options, operations: &mut impl Operations) -> Va
             Value::Null
         }
     };
+    let capture_quality_observed = evidence["capture_quality_observed_all_samples"] == true;
+    let unavailable_graph_counters: &[&str] = if capture_quality_observed {
+        &[]
+    } else {
+        &[
+            "capture_discontinuities",
+            "capture_timestamp_errors",
+            "capture_silent_frames",
+        ]
+    };
     json!({"collection_complete":complete,"cleanup_complete":cleanup_complete,
         "quality_passed":complete && cleanup_complete && failure.is_none() && quality.failure.is_none(),"quality_diagnostics":quality,
-        "quality_scope":"available graph counters and independent recorder only",
+        "quality_scope":"available graph counters and independent recorder only; native capture flags are not signal-loss proof; no complete duplicated/missing PCM or calibrated physical continuity proof",
         "quality_complete":false,"qualified":false,"physical_boundary_verified":false,
-        "unavailable_graph_counters":["capture_discontinuities","capture_timestamp_errors","capture_silent_frames"],
+        "graph_capture_quality_observed_all_samples":capture_quality_observed,
+        "unavailable_graph_counters":unavailable_graph_counters,
         "failure":failure,"first_failure":first_failure,"startup_elapsed_seconds":startup_elapsed,
         "startup_ceiling_seconds":startup_limit.as_secs_f64(),"total_collection_ceiling_seconds":total_limit.as_secs_f64(),
         "graph_final":graph,"recorder_final":recorder,"observations":evidence})
@@ -691,6 +805,7 @@ mod tests {
         fail: Option<&'static str>,
         panic_at: Option<&'static str>,
         soft_fault: bool,
+        capture_quality_observed: bool,
     }
     impl Fake {
         fn step(&mut self, name: &'static str) -> Result<()> {
@@ -746,7 +861,7 @@ mod tests {
             Ok(json!({"joined":true}))
         }
         fn evidence(&self) -> Value {
-            json!({"elapsed":self.now.as_secs_f64()})
+            json!({"elapsed":self.now.as_secs_f64(),"capture_quality_observed_all_samples":self.capture_quality_observed})
         }
     }
 
@@ -876,6 +991,7 @@ mod tests {
             silent: 0,
             native_dropped: 0,
             native_silent: 0,
+            capture_quality: None,
         };
         let native = |node, kind| {
             let timing = Some(NativeStreamTiming {
@@ -929,6 +1045,266 @@ mod tests {
                 },
             },
         )
+    }
+
+    fn capture_quality(
+        discontinuities: u64,
+        timestamp_errors: u64,
+        silent_frames: u64,
+    ) -> NativeCaptureQuality {
+        NativeCaptureQuality {
+            discontinuities,
+            timestamp_errors,
+            silent_frames,
+        }
+    }
+
+    #[test]
+    fn physical_capture_quality_known_zero_and_unknown_are_distinct() {
+        let (mut tracker, mut sample) = graph();
+        let mut quality = QualityDiagnostics::default();
+        tracker
+            .observe(&options(), &sample, Duration::ZERO, &mut quality)
+            .unwrap();
+        assert_eq!(
+            tracker.startup.as_ref().unwrap()["graph_capture_timestamp_errors"],
+            Value::Null
+        );
+        sample.streams[0].capture_quality = Some(NativeCaptureQuality::default());
+        let raw = graph_value(&sample);
+        assert_eq!(raw["graph_capture_discontinuities"], 0);
+        assert_eq!(raw["graph_capture_timestamp_errors"], 0);
+        assert_eq!(raw["graph_capture_silent_frames"], 0);
+        sample.streams[0].capture_quality = Some(capture_quality(7, 11, (1 << 53) + 13));
+        assert_eq!(
+            graph_value(&sample)["graph_capture_silent_frames"].as_u64(),
+            Some((1 << 53) + 13)
+        );
+    }
+
+    #[test]
+    fn physical_capture_quality_startup_and_steady_faults_follow_validation_policy() {
+        for correctness in [false, true] {
+            for startup in [false, true] {
+                for counter in 0..3 {
+                    let (mut tracker, mut sample) = graph();
+                    let mut options = options();
+                    if correctness {
+                        options.validation.mode = ValidationMode::Correctness;
+                    }
+                    let mut quality = QualityDiagnostics::default();
+                    sample.streams[0].capture_quality = Some(NativeCaptureQuality::default());
+                    if !startup {
+                        tracker
+                            .observe(&options, &sample, Duration::ZERO, &mut quality)
+                            .unwrap();
+                    }
+                    sample.streams[0].capture_quality = Some(match counter {
+                        0 => capture_quality(1, 0, 0),
+                        1 => capture_quality(0, 1, 0),
+                        _ => capture_quality(0, 0, 1),
+                    });
+                    assert_eq!(
+                        tracker
+                            .observe(&options, &sample, Duration::from_millis(100), &mut quality)
+                            .is_ok(),
+                        correctness,
+                        "correctness={correctness}, startup={startup}, counter={counter}"
+                    );
+                    assert!(quality.failure.is_some());
+                    assert!(quality.failure.as_ref().unwrap().contains(if startup {
+                        "startup"
+                    } else {
+                        "steady_delta"
+                    }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn physical_capture_quality_final_join_preserves_startup_and_checked_deltas() {
+        for correctness in [false, true] {
+            let (mut tracker, mut sample) = graph();
+            let mut options = options();
+            options.validation.mode = ValidationMode::Correctness;
+            let mut quality = QualityDiagnostics::default();
+            sample.streams[0].capture_quality = Some(capture_quality(2, 3, 5));
+            tracker
+                .observe(&options, &sample, Duration::ZERO, &mut quality)
+                .unwrap();
+            assert_eq!(
+                tracker.startup.as_ref().unwrap()["graph_capture_discontinuities"],
+                2
+            );
+            let mut final_quality = QualityDiagnostics::default();
+            sample.host = HostState::Closed;
+            sample.execution = ExecutionState::Dormant;
+            sample.active = None;
+            sample.plan = None;
+            sample.timeline = None;
+            sample.professional_running = false;
+            sample.native.running = false;
+            sample.streams[0].capture_quality = Some(capture_quality(7, 11, 13));
+            options.validation.mode = if correctness {
+                ValidationMode::Correctness
+            } else {
+                ValidationMode::LatencySensitive
+            };
+            assert_eq!(
+                tracker
+                    .finish(&options, &sample, &mut final_quality)
+                    .is_ok(),
+                correctness
+            );
+            let final_value = tracker.final_observation.as_ref().unwrap();
+            assert_eq!(final_value["graph_capture_discontinuities"], 7);
+            assert_eq!(
+                final_value["steady_deltas"][0]["capture_quality"],
+                json!({"discontinuities":5,"timestamp_errors":8,"silent_frames":8})
+            );
+            assert!(final_quality.failure.is_some());
+            assert!(tracker.capture_quality_observed_all_samples());
+        }
+    }
+
+    #[test]
+    fn physical_capture_quality_regression_and_saturation_are_hard_even_across_unknown() {
+        for counter in 0..3 {
+            for unknown_between in [false, true] {
+                let (mut tracker, mut sample) = graph();
+                let mut options = options();
+                options.validation.mode = ValidationMode::Correctness;
+                let mut quality = QualityDiagnostics::default();
+                sample.streams[0].capture_quality = Some(capture_quality(7, 11, 13));
+                tracker
+                    .observe(&options, &sample, Duration::ZERO, &mut quality)
+                    .unwrap();
+                if unknown_between {
+                    sample.streams[0].capture_quality = None;
+                    tracker
+                        .observe(&options, &sample, Duration::from_millis(10), &mut quality)
+                        .unwrap();
+                }
+                sample.streams[0].capture_quality = Some(match counter {
+                    0 => capture_quality(6, 11, 13),
+                    1 => capture_quality(7, 10, 13),
+                    _ => capture_quality(7, 11, 12),
+                });
+                let error = tracker
+                    .observe(&options, &sample, Duration::from_millis(20), &mut quality)
+                    .unwrap_err();
+                assert!(format!("{error:#}").contains("capture quality counter regressed"));
+            }
+            let (mut tracker, mut sample) = graph();
+            sample.streams[0].capture_quality = Some(match counter {
+                0 => capture_quality(u64::MAX, 0, 0),
+                1 => capture_quality(0, u64::MAX, 0),
+                _ => capture_quality(0, 0, u64::MAX),
+            });
+            assert!(
+                tracker
+                    .observe(
+                        &options(),
+                        &sample,
+                        Duration::ZERO,
+                        &mut QualityDiagnostics::default()
+                    )
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn physical_capture_quality_unknown_baseline_does_not_invent_steady_zero() {
+        let (mut tracker, mut sample) = graph();
+        let mut options = options();
+        options.validation.mode = ValidationMode::Correctness;
+        let mut quality = QualityDiagnostics::default();
+        tracker
+            .observe(&options, &sample, Duration::ZERO, &mut quality)
+            .unwrap();
+        sample.streams[0].capture_quality = Some(capture_quality(1, 2, 3));
+        sample.host = HostState::Closed;
+        sample.execution = ExecutionState::Dormant;
+        sample.active = None;
+        sample.plan = None;
+        sample.timeline = None;
+        sample.professional_running = false;
+        sample.native.running = false;
+        tracker.finish(&options, &sample, &mut quality).unwrap();
+        let final_value = tracker.final_observation.as_ref().unwrap();
+        assert_eq!(
+            final_value["steady_deltas"][0]["capture_quality"],
+            Value::Null
+        );
+        assert_eq!(final_value["graph_capture_timestamp_errors"], 2);
+        assert!(
+            quality.failure.is_some(),
+            "known cumulative faults still remain visible"
+        );
+        assert!(!tracker.capture_quality_observed_all_samples());
+    }
+
+    #[test]
+    fn physical_capture_quality_unknown_poll_or_final_stays_incomplete() {
+        for unknown_final in [false, true] {
+            let (mut tracker, mut sample) = graph();
+            let mut quality = QualityDiagnostics::default();
+            sample.streams[0].capture_quality = Some(NativeCaptureQuality::default());
+            tracker
+                .observe(&options(), &sample, Duration::ZERO, &mut quality)
+                .unwrap();
+            sample.streams[0].capture_quality = None;
+            if !unknown_final {
+                tracker
+                    .observe(&options(), &sample, Duration::from_millis(10), &mut quality)
+                    .unwrap();
+                sample.streams[0].capture_quality = Some(NativeCaptureQuality::default());
+            }
+            sample.host = HostState::Closed;
+            sample.execution = ExecutionState::Dormant;
+            sample.active = None;
+            sample.plan = None;
+            sample.timeline = None;
+            sample.professional_running = false;
+            sample.native.running = false;
+            tracker.finish(&options(), &sample, &mut quality).unwrap();
+            assert!(!tracker.capture_quality_observed_all_samples());
+            if unknown_final {
+                assert_eq!(
+                    tracker.final_observation.as_ref().unwrap()["steady_deltas"][0]["capture_quality"],
+                    Value::Null
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn physical_capture_quality_report_distinguishes_available_flags_from_full_quality() {
+        for known in [false, true] {
+            let mut io = Fake {
+                capture_quality_observed: known,
+                ..Default::default()
+            };
+            let report = collect(&options(), &mut io);
+            assert_eq!(report["graph_capture_quality_observed_all_samples"], known);
+            assert_eq!(
+                report["unavailable_graph_counters"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                if known { 0 } else { 3 }
+            );
+            assert_eq!(report["quality_complete"], false);
+            assert_eq!(report["qualified"], false);
+            assert!(
+                report["quality_scope"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not signal-loss proof")
+            );
+        }
     }
 
     #[test]

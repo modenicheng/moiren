@@ -602,6 +602,7 @@ fn observation_snapshot_exposes_native_metadata_fields() {
         native_written_frames: 0,
         native_dropped_frames: 0,
         native_silent_frames: 0,
+        native_capture_quality: None,
         driver_latency: None,
     };
     assert_eq!(observation.node, node);

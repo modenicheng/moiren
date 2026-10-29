@@ -906,6 +906,7 @@ fn observation(
         native_wait_timeouts: 0,
         native_dropped_frames: 0,
         native_silent_frames: 0,
+        native_capture_quality: None,
         driver_latency: None,
     }
 }
@@ -1055,6 +1056,7 @@ fn prepare_process<S: ProcessingSample>(
             native_wait_timeouts: 0,
             native_dropped_frames: 0,
             native_silent_frames: 0,
+            native_capture_quality: None,
             driver_latency: None,
         },
         Arc::default(),

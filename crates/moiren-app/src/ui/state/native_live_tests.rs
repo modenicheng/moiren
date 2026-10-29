@@ -132,6 +132,7 @@ fn professional_and_native_diagnostics_coexist_and_filter_stale_publishers_indep
                 native_written_frames: 0,
                 native_dropped_frames: 0,
                 native_silent_frames: 0,
+                native_capture_quality: None,
                 driver_latency: None,
             }],
         },

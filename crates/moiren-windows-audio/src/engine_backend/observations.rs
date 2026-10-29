@@ -8,7 +8,7 @@ use std::sync::{
 
 #[cfg(any(windows, test))]
 use crate::native::NativeStreamStats;
-use crate::native::{NativeLatency, NativeStreamInfo};
+use crate::native::{NativeCaptureQuality, NativeLatency, NativeStreamInfo};
 
 #[derive(Debug, Clone)]
 pub struct ProfessionalStreamObservation {
@@ -29,6 +29,7 @@ pub struct ProfessionalStreamObservation {
     pub native_wait_timeouts: u64,
     pub native_dropped_frames: u64,
     pub native_silent_frames: u64,
+    pub native_capture_quality: Option<NativeCaptureQuality>,
     pub driver_latency: Option<NativeLatency>,
 }
 
@@ -54,12 +55,29 @@ pub(crate) struct Counters {
     native_wait_timeouts: AtomicU64,
     native_dropped: AtomicU64,
     native_silent: AtomicU64,
+    capture_discontinuities: AtomicU64,
+    capture_timestamp_errors: AtomicU64,
+    capture_silent_frames: AtomicU64,
+    capture_quality_valid: AtomicBool,
     latency_sequence: AtomicU64,
     latency: AtomicU64,
     latency_valid: AtomicBool,
 }
 
 impl Counters {
+    fn capture_quality(&self) -> Option<NativeCaptureQuality> {
+        let before = self.latency_sequence.load(Ordering::SeqCst);
+        let valid = self.capture_quality_valid.load(Ordering::SeqCst);
+        let quality = NativeCaptureQuality {
+            discontinuities: self.capture_discontinuities.load(Ordering::SeqCst),
+            timestamp_errors: self.capture_timestamp_errors.load(Ordering::SeqCst),
+            silent_frames: self.capture_silent_frames.load(Ordering::SeqCst),
+        };
+        (valid
+            && before.is_multiple_of(2)
+            && before == self.latency_sequence.load(Ordering::SeqCst))
+        .then_some(quality)
+    }
     #[cfg(any(windows, test))]
     pub fn publish_native(&self, stats: NativeStreamStats, latency: Option<NativeLatency>) {
         self.native_callbacks
@@ -74,8 +92,22 @@ impl Counters {
             .store(stats.capture_dropped_frames, Ordering::Relaxed);
         self.native_silent
             .store(stats.render_silent_frames, Ordering::Relaxed);
-        // One native owner writes; readers use a bounded seqlock snapshot.
-        self.latency_sequence.fetch_add(1, Ordering::SeqCst);
+        // One native owner writes. Capture flags share the bounded atomic
+        // publication with latency; a contended/unsupported sample is unknown.
+        let sequence = self.latency_sequence.load(Ordering::SeqCst);
+        let Some(next) = sequence.checked_add(2) else {
+            self.latency_sequence.store(u64::MAX, Ordering::SeqCst);
+            return;
+        };
+        self.latency_sequence.store(sequence + 1, Ordering::SeqCst);
+        self.capture_discontinuities
+            .store(stats.capture_discontinuities, Ordering::SeqCst);
+        self.capture_timestamp_errors
+            .store(stats.capture_timestamp_errors, Ordering::SeqCst);
+        self.capture_silent_frames
+            .store(stats.capture_silent_frames, Ordering::SeqCst);
+        self.capture_quality_valid
+            .store(stats.capture_quality_available, Ordering::SeqCst);
         if let Some(latency) = latency {
             self.latency.store(
                 (u64::from(latency.input_frames) << 32) | u64::from(latency.output_frames),
@@ -84,7 +116,7 @@ impl Counters {
         }
         self.latency_valid
             .store(latency.is_some(), Ordering::SeqCst);
-        self.latency_sequence.fetch_add(1, Ordering::SeqCst);
+        self.latency_sequence.store(next, Ordering::SeqCst);
     }
 
     fn driver_latency(&self) -> Option<NativeLatency> {
@@ -137,6 +169,7 @@ impl ProfessionalObservationReadHandle {
                         counters.native_wait_timeouts.load(Ordering::Relaxed);
                     stream.native_dropped_frames = counters.native_dropped.load(Ordering::Relaxed);
                     stream.native_silent_frames = counters.native_silent.load(Ordering::Relaxed);
+                    stream.native_capture_quality = counters.capture_quality();
                     stream.driver_latency = counters.driver_latency();
                     stream
                 })
@@ -253,6 +286,30 @@ mod tests {
     }
 
     #[test]
+    fn capture_quality_requires_explicit_native_support_and_coherent_publication() {
+        let counters = Counters::default();
+        assert_eq!(counters.capture_quality(), None);
+        counters.publish_native(NativeStreamStats::default(), None);
+        assert_eq!(counters.capture_quality(), None);
+        counters.publish_native(
+            NativeStreamStats {
+                capture_quality_available: true,
+                ..Default::default()
+            },
+            None,
+        );
+        assert_eq!(
+            counters.capture_quality(),
+            Some(NativeCaptureQuality::default())
+        );
+        counters.latency_sequence.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(counters.capture_quality(), None, "contended is unknown");
+        counters.latency_sequence.fetch_add(1, Ordering::SeqCst);
+        counters.publish_native(NativeStreamStats::default(), None);
+        assert_eq!(counters.capture_quality(), None, "unsupported is not zero");
+    }
+
+    #[test]
     fn native_diagnostics_are_separate_from_bridge_and_generation_fenced() {
         let mut graph = moiren_core::graph::LogicalGraph::new();
         let node = graph
@@ -280,6 +337,7 @@ mod tests {
             native_wait_timeouts: 0,
             native_dropped_frames: 0,
             native_silent_frames: 0,
+            native_capture_quality: None,
             driver_latency: None,
         };
         observations.publish(1, vec![(stream.clone(), old.clone())]);
@@ -288,6 +346,8 @@ mod tests {
         let retained = observations.retain_session().unwrap();
         old.publish_native(
             NativeStreamStats {
+                capture_quality_available: true,
+                capture_discontinuities: 999,
                 callbacks: 999,
                 wait_wakes: 997,
                 written_frames: 99_999,
@@ -299,6 +359,10 @@ mod tests {
         fresh.dropped.store(3, Ordering::Relaxed);
         fresh.publish_native(
             NativeStreamStats {
+                capture_quality_available: true,
+                capture_discontinuities: 7,
+                capture_timestamp_errors: 11,
+                capture_silent_frames: (1 << 53) + 13,
                 callbacks: 0,
                 wait_wakes: 5,
                 written_frames: 480,
@@ -322,6 +386,21 @@ mod tests {
         assert_eq!(actual.native_wait_timeouts, 2);
         assert_eq!(actual.native_dropped_frames, 11);
         assert_eq!(actual.native_silent_frames, 13);
+        assert_eq!(
+            actual.native_capture_quality,
+            Some(NativeCaptureQuality {
+                discontinuities: 7,
+                timestamp_errors: 11,
+                silent_frames: (1 << 53) + 13,
+            })
+        );
+        assert_eq!(
+            old_read.snapshot().streams[0]
+                .native_capture_quality
+                .unwrap()
+                .discontinuities,
+            999
+        );
         assert_eq!(actual.driver_latency.unwrap().output_frames, 64);
         assert_eq!(old_read.snapshot().streams[0].native_callbacks, 999);
         let old_stream = &old_read.snapshot().streams[0];
@@ -338,6 +417,10 @@ mod tests {
         // Preserve those independent measurements even after live clear.
         fresh.publish_native(
             NativeStreamStats {
+                capture_quality_available: true,
+                capture_discontinuities: 17,
+                capture_timestamp_errors: 19,
+                capture_silent_frames: (1 << 53) + 23,
                 callbacks: 0,
                 wait_wakes: 19,
                 written_frames: 960,
@@ -366,6 +449,14 @@ mod tests {
         assert_eq!(final_stream.native_wait_timeouts, 3);
         assert_eq!(final_stream.native_dropped_frames, 23);
         assert_eq!(final_stream.native_silent_frames, 29);
+        assert_eq!(
+            final_stream.native_capture_quality,
+            Some(NativeCaptureQuality {
+                discontinuities: 17,
+                timestamp_errors: 19,
+                silent_frames: (1 << 53) + 23,
+            })
+        );
         assert_eq!(final_stream.driver_latency.unwrap().output_frames, 37);
         fresh.publish_native(NativeStreamStats::default(), None);
         let cleared = retained.snapshot();
@@ -374,5 +465,6 @@ mod tests {
         assert_eq!(cleared.streams[0].native_wait_wakes, 0);
         assert_eq!(cleared.streams[0].native_written_frames, 0);
         assert_eq!(cleared.streams[0].native_wait_timeouts, 0);
+        assert_eq!(cleared.streams[0].native_capture_quality, None);
     }
 }

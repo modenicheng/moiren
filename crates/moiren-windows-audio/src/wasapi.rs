@@ -1282,7 +1282,10 @@ impl NativeStream for WasapiStream {
         Ok(count)
     }
     fn stats(&self) -> NativeStreamStats {
-        self.stats
+        NativeStreamStats {
+            capture_quality_available: self.capture.is_some(),
+            ..self.stats
+        }
     }
     fn release(&mut self) -> Result<(), BackendError> {
         if let Some(owner) = self.padding_owner.as_mut() {

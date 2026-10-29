@@ -10,6 +10,15 @@ use moiren_engine::{audio_config::SampleFormat, host::BackendError};
 
 pub type StereoFrame = [f64; 2];
 
+/// Native capture flags, not proof that non-silent signal was lost. Unsupported
+/// adapters and an unavailable publication expose None, never fabricated zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct NativeCaptureQuality {
+    pub discontinuities: u64,
+    pub timestamp_errors: u64,
+    pub silent_frames: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeStreamInfo {
     pub sample_rate: u32,
@@ -27,6 +36,8 @@ pub struct NativeStreamStats {
     pub zero_writes: u64,
     pub callbacks: u64,
     pub capture_dropped_frames: u64,
+    /// True only when the adapter actually observes all three capture flags.
+    pub capture_quality_available: bool,
     pub capture_discontinuities: u64,
     pub capture_timestamp_errors: u64,
     pub capture_silent_frames: u64,
