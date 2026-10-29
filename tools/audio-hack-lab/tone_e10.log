@@ -1,4 +1,0 @@
-PID=44452 MODE=tone freq=440 dur=20
-render endpoint: {0.0.0.00000000}.{3543a63a-4a4d-48ae-ba27-f2155d619370}
-mix format: 2ch 96000Hz 32bits tag=0xfffe
-tone done
