@@ -11,6 +11,10 @@ use std::{fs::File, io::Read, path::Path};
 #[cfg(any(windows, test))]
 use super::validation_policy::ValidationPolicy;
 
+#[cfg(any(windows, test))]
+#[path = "vad_collection/boundary_quality.rs"]
+mod boundary_quality;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Config {
@@ -351,10 +355,16 @@ impl Health {
 struct Quality {
     failure: Option<String>,
     first_observations: Option<serde_json::Value>,
+    playback_boundary: Option<boundary_quality::Tracker>,
 }
 
 #[cfg(any(windows, test))]
 impl Quality {
+    fn boundary_evidence(&self) -> serde_json::Value {
+        serde_json::json!({"qualified": false, "quality_complete": false,
+            "playback": self.playback_boundary})
+    }
+
     fn record(
         &mut self,
         message: &str,
@@ -391,6 +401,43 @@ fn validate_health_with_policy(
     policy: ValidationPolicy,
     quality: &mut Quality,
 ) -> Result<()> {
+    if quality.playback_boundary.is_some() {
+        let result = (|| -> Result<()> {
+            current.require_operational()?;
+            current.validate_identity(admitted)?;
+            let native = report
+                .engine
+                .as_ref()
+                .and_then(|engine| engine.get("observations"))
+                .context("classified playback native observations unavailable")?;
+            ensure!(
+                native
+                    .get("owner_generation")
+                    .and_then(serde_json::Value::as_u64)
+                    == current.native_generation,
+                "classified playback owner differs from admitted native owner"
+            );
+            let faults = quality
+                .playback_boundary
+                .as_mut()
+                .unwrap()
+                .observe(native, false)?;
+            for message in faults {
+                quality.record(&message, Some(report), Some(current));
+                ensure!(policy.is_correctness(), "{message}");
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            quality.record(
+                &format!("playback boundary: {error:#}"),
+                Some(report),
+                Some(current),
+            );
+            latch_failure_observations(first_failure, report, Some(current));
+            return Err(error);
+        }
+    }
     if !policy.is_correctness() {
         let result = validate_health(current, admitted, report, first_failure);
         if current.quality_faults != 0 {
@@ -569,7 +616,10 @@ fn validate_health_with_policy(
             );
             for key in ["xruns", "soft_events"] {
                 let count = number(key)?;
-                if count != 0 {
+                let classified_playback = quality.playback_boundary.is_some()
+                    && stream.get("kind").and_then(serde_json::Value::as_str)
+                        == Some("virtual_playback");
+                if count != 0 && !(key == "soft_events" && classified_playback) {
                     probe_faults.push(format!("native {} boundary {key}: {count}", stream["kind"]));
                 }
             }
@@ -793,7 +843,10 @@ pub(super) fn collect(
         cleanup_failures: None,
         first_failure_observations: None,
         policy: options.validation,
-        quality: Quality::default(),
+        quality: Quality {
+            playback_boundary: Some(boundary_quality::Tracker::default()),
+            ..Default::default()
+        },
         retired: false,
     };
     let mut last_running = None;
@@ -1147,6 +1200,8 @@ pub(super) fn collect(
         "schema_version": 1, "qualified": false, "status": "unqualified",
         "validation_policy": guard.policy,
         "quality_passed": complete && guard.quality.failure.is_none(),
+        "quality_complete": false,
+        "boundary_quality": guard.quality.boundary_evidence(),
         "quality_failure": guard.quality.failure,
         "first_quality_observations": guard.quality.first_observations,
         "config": config, "playback_source": provenance, "source": guard.vad.playback_outcome,
@@ -1593,11 +1648,28 @@ fn graph_summary_health_with_route(
     );
     if let Some(version) = summary.get("schema_version") {
         match version.as_u64() {
-            Some(2) => return final_graph_schema2_health(summary, route, policy, quality),
+            Some(2) => {
+                let result = final_graph_schema2_health(summary, route, policy, quality);
+                if quality.playback_boundary.is_some()
+                    && let Err(error) = &result
+                {
+                    let first = quality.first_observations.is_none();
+                    quality.record(&format!("final graph evidence: {error:#}"), None, None);
+                    if first {
+                        quality.first_observations =
+                            Some(serde_json::json!({"native_summary": summary}));
+                    }
+                }
+                return result;
+            }
             Some(1) => {}
             _ => anyhow::bail!("unsupported graph native summary schema"),
         }
     }
+    ensure!(
+        quality.playback_boundary.is_none(),
+        "classified playback collection requires schema2 joined-owner evidence"
+    );
     ensure!(
         route == super::vad_route::RouteKind::Physical,
         "microphone route requires schema2 final virtual boundary observations"
@@ -1974,7 +2046,9 @@ fn final_graph_schema2_health(
         );
         for key in ["xruns", "soft_events"] {
             let count = number(&probe, key)?;
-            if count != 0 {
+            let classified_playback = quality.playback_boundary.is_some()
+                && probe.get("kind").and_then(Value::as_str) == Some("virtual_playback");
+            if count != 0 && !(key == "soft_events" && classified_playback) {
                 soft.push(format!("final boundary {id} {key}: {count}"));
             }
         }
@@ -2030,6 +2104,9 @@ fn final_graph_schema2_health(
     }
     // Validate every structural/hard field before returning on a soft gate.
     // The raw report stays intact, including explicit unavailable padding.
+    if let Some(tracker) = &mut quality.playback_boundary {
+        soft.extend(tracker.observe(native, true)?);
+    }
     for message in soft {
         let first = quality.first_observations.is_none();
         quality.record(&message, None, None);
@@ -2216,14 +2293,14 @@ fn progress_deadline(
 mod tests {
     use super::*;
 
-    fn correctness() -> super::super::validation_policy::ValidationPolicy {
+    pub(super) fn correctness() -> super::super::validation_policy::ValidationPolicy {
         super::super::validation_policy::ValidationPolicy {
             mode: super::super::validation_policy::ValidationMode::Correctness,
             jitter_tolerance_ms: 3000,
         }
     }
 
-    fn raw_health_report() -> super::super::NativeReport {
+    pub(super) fn raw_health_report() -> super::super::NativeReport {
         let mut native = final_schema2()["native"].clone();
         native["running"] = true.into();
         native["bridges"] = serde_json::json!([{
@@ -2492,7 +2569,7 @@ mod tests {
         assert_eq!(summary["render"]["stats"]["bridge_shortfall_frames"], 42);
     }
 
-    fn final_schema2() -> serde_json::Value {
+    pub(super) fn final_schema2() -> serde_json::Value {
         serde_json::json!({
             "schema_version": 2, "observation_scope": "final_after_owner_join",
             "failure": null, "owner_generation": 7,
@@ -4141,7 +4218,7 @@ mod tests {
         assert!(graph_summary_health(Some(&missing)).is_err());
     }
 
-    fn healthy() -> Health {
+    pub(super) fn healthy() -> Health {
         Health {
             stamp: Some([1, 2, 3, 4, 5]),
             shape: Some(("Stereo".into(), "Some(Float32)".into(), 480)),
