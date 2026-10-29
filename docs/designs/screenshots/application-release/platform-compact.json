@@ -1,0 +1,1556 @@
+[
+  {
+    "event": "draw",
+    "draw_ms": 20.0624,
+    "signal_wait_ms": 19.096700000000002,
+    "layout_ms": 2.6466,
+    "prepaint_ms": 12.697999999999999,
+    "paint_ms": 4.022,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": null,
+    "present_ms": 0.16469999999999999
+  },
+  {
+    "event": "draw",
+    "draw_ms": 22.4374,
+    "signal_wait_ms": 18.5181,
+    "layout_ms": 3.7072,
+    "prepaint_ms": 14.3774,
+    "paint_ms": 3.7058999999999997,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 23.0618,
+    "present_ms": 0.146
+  },
+  {
+    "event": "draw",
+    "draw_ms": 21.214199999999998,
+    "signal_wait_ms": 20.6298,
+    "layout_ms": 2.8817,
+    "prepaint_ms": 14.938699999999999,
+    "paint_ms": 2.6702000000000004,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.849,
+    "present_ms": 0.1338
+  },
+  {
+    "event": "draw",
+    "draw_ms": 25.6046,
+    "signal_wait_ms": 17.826700000000002,
+    "layout_ms": 2.7626999999999997,
+    "prepaint_ms": 17.921499999999998,
+    "paint_ms": 4.3305,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 27.664,
+    "present_ms": 1.6488
+  },
+  {
+    "event": "draw",
+    "draw_ms": 38.449400000000004,
+    "signal_wait_ms": 23.7309,
+    "layout_ms": 15.174999999999999,
+    "prepaint_ms": 20.3287,
+    "paint_ms": 2.4882,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 39.3147,
+    "present_ms": 0.19799999999999998
+  },
+  {
+    "event": "draw",
+    "draw_ms": 15.6233,
+    "signal_wait_ms": 34.763799999999996,
+    "layout_ms": 3.3556,
+    "prepaint_ms": 10.1996,
+    "paint_ms": 1.6535,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 16.0854,
+    "present_ms": 0.12469999999999999
+  },
+  {
+    "event": "draw",
+    "draw_ms": 28.7526,
+    "signal_wait_ms": 13.3745,
+    "layout_ms": 10.176,
+    "prepaint_ms": 14.9217,
+    "paint_ms": 3.0579,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 29.3929,
+    "present_ms": 0.1444
+  },
+  {
+    "event": "draw",
+    "draw_ms": 19.7629,
+    "signal_wait_ms": 26.861,
+    "layout_ms": 3.0372,
+    "prepaint_ms": 13.354700000000001,
+    "paint_ms": 2.6839,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 20.4698,
+    "present_ms": 0.23709999999999998
+  },
+  {
+    "event": "draw",
+    "draw_ms": 17.5273,
+    "signal_wait_ms": 17.5917,
+    "layout_ms": 2.4385000000000003,
+    "prepaint_ms": 12.033999999999999,
+    "paint_ms": 2.5203,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 18.578,
+    "present_ms": 0.4718
+  },
+  {
+    "event": "draw",
+    "draw_ms": 15.034799999999999,
+    "signal_wait_ms": 15.6653,
+    "layout_ms": 1.8888,
+    "prepaint_ms": 10.998600000000001,
+    "paint_ms": 1.7267000000000001,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 16.5578,
+    "present_ms": 0.3535
+  },
+  {
+    "event": "draw",
+    "draw_ms": 14.547600000000001,
+    "signal_wait_ms": 15.8632,
+    "layout_ms": 1.7881,
+    "prepaint_ms": 10.0878,
+    "paint_ms": 2.1369000000000002,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 15.3248,
+    "present_ms": 0.1806
+  },
+  {
+    "event": "draw",
+    "draw_ms": 15.927899999999998,
+    "signal_wait_ms": 13.812899999999999,
+    "layout_ms": 2.1733,
+    "prepaint_ms": 10.291099999999998,
+    "paint_ms": 3.0302,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 16.5487,
+    "present_ms": 0.1736
+  },
+  {
+    "event": "draw",
+    "draw_ms": 17.0297,
+    "signal_wait_ms": 13.3742,
+    "layout_ms": 3.1768,
+    "prepaint_ms": 11.532399999999999,
+    "paint_ms": 1.9178000000000002,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 17.5931,
+    "present_ms": 0.19340000000000002
+  },
+  {
+    "event": "draw",
+    "draw_ms": 19.659699999999997,
+    "signal_wait_ms": 15.071,
+    "layout_ms": 2.6272,
+    "prepaint_ms": 12.167000000000002,
+    "paint_ms": 3.8345,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.3384,
+    "present_ms": 0.292
+  },
+  {
+    "event": "draw",
+    "draw_ms": 40.808499999999995,
+    "signal_wait_ms": 20.2219,
+    "layout_ms": 8.766599999999999,
+    "prepaint_ms": 29.6038,
+    "paint_ms": 1.8388,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 42.617200000000004,
+    "present_ms": 0.21780000000000002
+  },
+  {
+    "event": "draw",
+    "draw_ms": 16.7958,
+    "signal_wait_ms": 40.548,
+    "layout_ms": 1.7519,
+    "prepaint_ms": 11.7249,
+    "paint_ms": 2.693,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 17.656100000000002,
+    "present_ms": 0.15510000000000002
+  },
+  {
+    "event": "draw",
+    "draw_ms": 25.5773,
+    "signal_wait_ms": 16.7266,
+    "layout_ms": 3.0328,
+    "prepaint_ms": 15.8048,
+    "paint_ms": 3.435,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 26.2517,
+    "present_ms": 0.3079
+  },
+  {
+    "event": "draw",
+    "draw_ms": 29.5652,
+    "signal_wait_ms": 22.6055,
+    "layout_ms": 3.3428,
+    "prepaint_ms": 23.2748,
+    "paint_ms": 2.0523,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 30.3494,
+    "present_ms": 0.2233
+  },
+  {
+    "event": "draw",
+    "draw_ms": 30.4849,
+    "signal_wait_ms": 28.7363,
+    "layout_ms": 1.7228,
+    "prepaint_ms": 21.1316,
+    "paint_ms": 5.4109,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 31.532799999999998,
+    "present_ms": 0.3725
+  },
+  {
+    "event": "draw",
+    "draw_ms": 29.4559,
+    "signal_wait_ms": 29.486700000000003,
+    "layout_ms": 3.5975,
+    "prepaint_ms": 17.7049,
+    "paint_ms": 7.657,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 30.0654,
+    "present_ms": 0.2359
+  },
+  {
+    "event": "draw",
+    "draw_ms": 29.491,
+    "signal_wait_ms": 30.890500000000003,
+    "layout_ms": 4.0905000000000005,
+    "prepaint_ms": 18.2271,
+    "paint_ms": 5.325,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 31.534,
+    "present_ms": 0.5722
+  },
+  {
+    "event": "draw",
+    "draw_ms": 83.526,
+    "signal_wait_ms": 30.6335,
+    "layout_ms": 19.9162,
+    "prepaint_ms": 59.403,
+    "paint_ms": 3.4317,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 84.8062,
+    "present_ms": 0.1618
+  },
+  {
+    "event": "draw",
+    "draw_ms": 27.1709,
+    "signal_wait_ms": 87.2193,
+    "layout_ms": 10.5011,
+    "prepaint_ms": 12.5407,
+    "paint_ms": 3.5204,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 34.5984,
+    "present_ms": 0.2076
+  },
+  {
+    "event": "draw",
+    "draw_ms": 18.5091,
+    "signal_wait_ms": 22.519199999999998,
+    "layout_ms": 2.6056,
+    "prepaint_ms": 12.1137,
+    "paint_ms": 3.0387999999999997,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 19.141499999999997,
+    "present_ms": 0.1292
+  },
+  {
+    "event": "draw",
+    "draw_ms": 21.0849,
+    "signal_wait_ms": 17.8272,
+    "layout_ms": 2.9316,
+    "prepaint_ms": 13.9769,
+    "paint_ms": 3.4489,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.95,
+    "present_ms": 0.1846
+  },
+  {
+    "event": "draw",
+    "draw_ms": 23.2513,
+    "signal_wait_ms": 20.0393,
+    "layout_ms": 3.3256,
+    "prepaint_ms": 16.203100000000003,
+    "paint_ms": 3.1546,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 24.3093,
+    "present_ms": 0.159
+  },
+  {
+    "event": "draw",
+    "draw_ms": 19.606599999999997,
+    "signal_wait_ms": 21.9664,
+    "layout_ms": 3.0374999999999996,
+    "prepaint_ms": 12.4172,
+    "paint_ms": 3.3737,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 20.238300000000002,
+    "present_ms": 0.14550000000000002
+  },
+  {
+    "event": "draw",
+    "draw_ms": 19.6573,
+    "signal_wait_ms": 17.4392,
+    "layout_ms": 2.821,
+    "prepaint_ms": 13.5605,
+    "paint_ms": 2.67,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 20.3797,
+    "present_ms": 0.1608
+  },
+  {
+    "event": "draw",
+    "draw_ms": 113.49,
+    "signal_wait_ms": 17.051299999999998,
+    "layout_ms": 25.8082,
+    "prepaint_ms": 83.2226,
+    "paint_ms": 3.5446,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 114.19980000000001,
+    "present_ms": 0.1655
+  },
+  {
+    "event": "draw",
+    "draw_ms": 21.2025,
+    "signal_wait_ms": 110.6782,
+    "layout_ms": 3.3275,
+    "prepaint_ms": 13.8825,
+    "paint_ms": 2.7685,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.9351,
+    "present_ms": 0.1562
+  },
+  {
+    "event": "draw",
+    "draw_ms": 22.7506,
+    "signal_wait_ms": 20.5791,
+    "layout_ms": 3.0628,
+    "prepaint_ms": 15.0712,
+    "paint_ms": 3.9859999999999998,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 23.3517,
+    "present_ms": 0.1651
+  },
+  {
+    "event": "draw",
+    "draw_ms": 20.7099,
+    "signal_wait_ms": 22.3872,
+    "layout_ms": 3.4259,
+    "prepaint_ms": 14.2497,
+    "paint_ms": 2.5612999999999997,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.7664,
+    "present_ms": 0.4091
+  },
+  {
+    "event": "draw",
+    "draw_ms": 16.8685,
+    "signal_wait_ms": 19.388099999999998,
+    "layout_ms": 1.9135,
+    "prepaint_ms": 11.926499999999999,
+    "paint_ms": 2.263,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 18.0878,
+    "present_ms": 0.2107
+  },
+  {
+    "event": "draw",
+    "draw_ms": 14.4187,
+    "signal_wait_ms": 17.233600000000003,
+    "layout_ms": 2.197,
+    "prepaint_ms": 9.8405,
+    "paint_ms": 1.9673999999999998,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 15.200999999999999,
+    "present_ms": 0.2947
+  },
+  {
+    "event": "draw",
+    "draw_ms": 30.5181,
+    "signal_wait_ms": 17.3536,
+    "layout_ms": 7.7467999999999995,
+    "prepaint_ms": 17.7167,
+    "paint_ms": 4.1574,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 37.4891,
+    "present_ms": 0.1375
+  },
+  {
+    "event": "draw",
+    "draw_ms": 82.7534,
+    "signal_wait_ms": 30.1481,
+    "layout_ms": 8.635800000000001,
+    "prepaint_ms": 71.0927,
+    "paint_ms": 2.476,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 86.3892,
+    "present_ms": 0.2173
+  },
+  {
+    "event": "draw",
+    "draw_ms": 20.6388,
+    "signal_wait_ms": 81.329,
+    "layout_ms": 2.83,
+    "prepaint_ms": 14.8068,
+    "paint_ms": 2.3920999999999997,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.3858,
+    "present_ms": 0.203
+  },
+  {
+    "event": "draw",
+    "draw_ms": 18.3844,
+    "signal_wait_ms": 19.1876,
+    "layout_ms": 2.5077,
+    "prepaint_ms": 11.962800000000001,
+    "paint_ms": 3.4117,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 18.9178,
+    "present_ms": 0.16670000000000001
+  },
+  {
+    "event": "draw",
+    "draw_ms": 17.7425,
+    "signal_wait_ms": 16.2417,
+    "layout_ms": 2.682,
+    "prepaint_ms": 9.9546,
+    "paint_ms": 4.5483,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 18.441200000000002,
+    "present_ms": 0.1571
+  },
+  {
+    "event": "draw",
+    "draw_ms": 16.1297,
+    "signal_wait_ms": 18.099899999999998,
+    "layout_ms": 2.5638,
+    "prepaint_ms": 9.447600000000001,
+    "paint_ms": 3.6396,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 16.7545,
+    "present_ms": 0.1712
+  },
+  {
+    "event": "draw",
+    "draw_ms": 208.9014,
+    "signal_wait_ms": 19.0935,
+    "layout_ms": 52.607,
+    "prepaint_ms": 144.4237,
+    "paint_ms": 10.8278,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 215.5772,
+    "present_ms": 1.3448
+  },
+  {
+    "event": "draw",
+    "draw_ms": 32.251599999999996,
+    "signal_wait_ms": 210.02100000000002,
+    "layout_ms": 3.9982,
+    "prepaint_ms": 22.712699999999998,
+    "paint_ms": 4.5577,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 33.3749,
+    "present_ms": 0.1742
+  },
+  {
+    "event": "draw",
+    "draw_ms": 58.5516,
+    "signal_wait_ms": 30.391399999999997,
+    "layout_ms": 9.7269,
+    "prepaint_ms": 34.62670000000001,
+    "paint_ms": 12.6947,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 60.500699999999995,
+    "present_ms": 0.8109000000000001
+  },
+  {
+    "event": "draw",
+    "draw_ms": 16.8238,
+    "signal_wait_ms": 59.2532,
+    "layout_ms": 2.8785,
+    "prepaint_ms": 10.0244,
+    "paint_ms": 3.4835000000000003,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 18.8011,
+    "present_ms": 0.1482
+  },
+  {
+    "event": "draw",
+    "draw_ms": 20.773799999999998,
+    "signal_wait_ms": 13.2148,
+    "layout_ms": 3.5243,
+    "prepaint_ms": 13.4328,
+    "paint_ms": 3.0956,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.408900000000003,
+    "present_ms": 0.2094
+  },
+  {
+    "event": "draw",
+    "draw_ms": 49.8802,
+    "signal_wait_ms": 19.9345,
+    "layout_ms": 10.3752,
+    "prepaint_ms": 36.812999999999995,
+    "paint_ms": 2.1734,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 52.0409,
+    "present_ms": 0.1192
+  },
+  {
+    "event": "draw",
+    "draw_ms": 25.4651,
+    "signal_wait_ms": 49.8169,
+    "layout_ms": 7.846900000000001,
+    "prepaint_ms": 14.1606,
+    "paint_ms": 2.9994,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 26.62,
+    "present_ms": 0.1613
+  },
+  {
+    "event": "draw",
+    "draw_ms": 19.307100000000002,
+    "signal_wait_ms": 25.653,
+    "layout_ms": 2.3757,
+    "prepaint_ms": 10.4537,
+    "paint_ms": 4.2977,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 19.8824,
+    "present_ms": 0.16349999999999998
+  },
+  {
+    "event": "draw",
+    "draw_ms": 17.392500000000002,
+    "signal_wait_ms": 16.4772,
+    "layout_ms": 3.1204,
+    "prepaint_ms": 11.9309,
+    "paint_ms": 1.9242000000000001,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 17.9514,
+    "present_ms": 0.127
+  },
+  {
+    "event": "draw",
+    "draw_ms": 15.7998,
+    "signal_wait_ms": 13.6641,
+    "layout_ms": 2.2098,
+    "prepaint_ms": 10.9846,
+    "paint_ms": 2.1368,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 16.3445,
+    "present_ms": 0.2084
+  },
+  {
+    "event": "draw",
+    "draw_ms": 17.2679,
+    "signal_wait_ms": 13.447600000000001,
+    "layout_ms": 2.3344,
+    "prepaint_ms": 12.3623,
+    "paint_ms": 2.143,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 18.7277,
+    "present_ms": 1.0465
+  },
+  {
+    "event": "draw",
+    "draw_ms": 16.1859,
+    "signal_wait_ms": 16.339,
+    "layout_ms": 2.6943,
+    "prepaint_ms": 10.6989,
+    "paint_ms": 1.6313,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 17.0065,
+    "present_ms": 0.4102
+  },
+  {
+    "event": "draw",
+    "draw_ms": 16.4717,
+    "signal_wait_ms": 16.8725,
+    "layout_ms": 3.0509999999999997,
+    "prepaint_ms": 10.463099999999999,
+    "paint_ms": 2.4156999999999997,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 17.9419,
+    "present_ms": 0.2622
+  },
+  {
+    "event": "draw",
+    "draw_ms": 20.0331,
+    "signal_wait_ms": 17.0456,
+    "layout_ms": 3.0318,
+    "prepaint_ms": 13.9063,
+    "paint_ms": 2.5803000000000003,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 20.7727,
+    "present_ms": 0.1573
+  },
+  {
+    "event": "draw",
+    "draw_ms": 16.268,
+    "signal_wait_ms": 17.957,
+    "layout_ms": 1.9895,
+    "prepaint_ms": 10.841099999999999,
+    "paint_ms": 2.9175,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 16.883599999999998,
+    "present_ms": 0.152
+  },
+  {
+    "event": "draw",
+    "draw_ms": 19.742099999999997,
+    "signal_wait_ms": 13.7579,
+    "layout_ms": 4.7233,
+    "prepaint_ms": 12.353100000000001,
+    "paint_ms": 2.1407000000000003,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 20.7647,
+    "present_ms": 0.1507
+  },
+  {
+    "event": "draw",
+    "draw_ms": 13.311200000000001,
+    "signal_wait_ms": 16.062199999999997,
+    "layout_ms": 2.4318,
+    "prepaint_ms": 8.7587,
+    "paint_ms": 1.7077,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 13.8925,
+    "present_ms": 0.13660000000000003
+  },
+  {
+    "event": "draw",
+    "draw_ms": 14.4623,
+    "signal_wait_ms": 11.252099999999999,
+    "layout_ms": 1.9081000000000001,
+    "prepaint_ms": 9.713899999999999,
+    "paint_ms": 2.4387,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 15.3219,
+    "present_ms": 0.1416
+  },
+  {
+    "event": "draw",
+    "draw_ms": 13.158299999999999,
+    "signal_wait_ms": 13.121799999999999,
+    "layout_ms": 1.8301999999999998,
+    "prepaint_ms": 8.742899999999999,
+    "paint_ms": 2.1713999999999998,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 13.6637,
+    "present_ms": 0.1307
+  },
+  {
+    "event": "draw",
+    "draw_ms": 12.770399999999999,
+    "signal_wait_ms": 10.4174,
+    "layout_ms": 2.0338000000000003,
+    "prepaint_ms": 8.8126,
+    "paint_ms": 1.4916,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 13.5657,
+    "present_ms": 0.2132
+  },
+  {
+    "event": "draw",
+    "draw_ms": 39.2004,
+    "signal_wait_ms": 12.1748,
+    "layout_ms": 2.8103,
+    "prepaint_ms": 29.001800000000003,
+    "paint_ms": 6.7805,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 39.9682,
+    "present_ms": 0.17320000000000002
+  },
+  {
+    "event": "draw",
+    "draw_ms": 24.7204,
+    "signal_wait_ms": 38.9921,
+    "layout_ms": 4.0173,
+    "prepaint_ms": 16.1869,
+    "paint_ms": 3.9709999999999996,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 25.482000000000003,
+    "present_ms": 0.148
+  },
+  {
+    "event": "draw",
+    "draw_ms": 34.9365,
+    "signal_wait_ms": 22.0563,
+    "layout_ms": 6.915100000000001,
+    "prepaint_ms": 22.081500000000002,
+    "paint_ms": 5.3298,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 35.4908,
+    "present_ms": 0.1328
+  },
+  {
+    "event": "draw",
+    "draw_ms": 24.272,
+    "signal_wait_ms": 34.003400000000006,
+    "layout_ms": 4.1098,
+    "prepaint_ms": 16.1,
+    "paint_ms": 3.0701,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 25.793300000000002,
+    "present_ms": 0.1327
+  },
+  {
+    "event": "draw",
+    "draw_ms": 24.6698,
+    "signal_wait_ms": 22.102,
+    "layout_ms": 5.0985,
+    "prepaint_ms": 14.713199999999999,
+    "paint_ms": 3.9547999999999996,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 25.3189,
+    "present_ms": 0.135
+  },
+  {
+    "event": "draw",
+    "draw_ms": 20.6848,
+    "signal_wait_ms": 22.4476,
+    "layout_ms": 3.0222,
+    "prepaint_ms": 13.433,
+    "paint_ms": 3.5005,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.3338,
+    "present_ms": 0.1348
+  },
+  {
+    "event": "draw",
+    "draw_ms": 16.8974,
+    "signal_wait_ms": 18.7678,
+    "layout_ms": 3.6305,
+    "prepaint_ms": 11.1428,
+    "paint_ms": 1.6712,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 17.556800000000003,
+    "present_ms": 0.1873
+  },
+  {
+    "event": "draw",
+    "draw_ms": 13.5013,
+    "signal_wait_ms": 16.1163,
+    "layout_ms": 1.8285,
+    "prepaint_ms": 9.0735,
+    "paint_ms": 2.038,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 15.1164,
+    "present_ms": 0.36900000000000005
+  },
+  {
+    "event": "draw",
+    "draw_ms": 12.6624,
+    "signal_wait_ms": 13.3463,
+    "layout_ms": 2.2416,
+    "prepaint_ms": 8.177200000000001,
+    "paint_ms": 1.8079999999999998,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 13.3825,
+    "present_ms": 0.1577
+  },
+  {
+    "event": "draw",
+    "draw_ms": 14.2743,
+    "signal_wait_ms": 9.8293,
+    "layout_ms": 2.3825000000000003,
+    "prepaint_ms": 9.184899999999999,
+    "paint_ms": 2.0321,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 14.745899999999999,
+    "present_ms": 0.1255
+  },
+  {
+    "event": "draw",
+    "draw_ms": 26.290999999999997,
+    "signal_wait_ms": 12.9857,
+    "layout_ms": 4.924600000000001,
+    "prepaint_ms": 16.9313,
+    "paint_ms": 3.7063,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 26.9694,
+    "present_ms": 0.1509
+  },
+  {
+    "event": "draw",
+    "draw_ms": 15.4484,
+    "signal_wait_ms": 26.4582,
+    "layout_ms": 2.3931,
+    "prepaint_ms": 10.4774,
+    "paint_ms": 2.0713,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 16.5874,
+    "present_ms": 0.2017
+  },
+  {
+    "event": "draw",
+    "draw_ms": 18.6703,
+    "signal_wait_ms": 13.5073,
+    "layout_ms": 5.2692,
+    "prepaint_ms": 10.344199999999999,
+    "paint_ms": 2.5675,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 19.6338,
+    "present_ms": 0.5688
+  },
+  {
+    "event": "draw",
+    "draw_ms": 27.2693,
+    "signal_wait_ms": 17.0674,
+    "layout_ms": 10.1448,
+    "prepaint_ms": 13.2733,
+    "paint_ms": 2.3754,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 27.872799999999998,
+    "present_ms": 0.16
+  },
+  {
+    "event": "draw",
+    "draw_ms": 21.6831,
+    "signal_wait_ms": 24.1828,
+    "layout_ms": 2.5574999999999997,
+    "prepaint_ms": 14.3636,
+    "paint_ms": 4.2096,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 22.532799999999998,
+    "present_ms": 0.3409
+  },
+  {
+    "event": "draw",
+    "draw_ms": 17.5042,
+    "signal_wait_ms": 20.9724,
+    "layout_ms": 2.4579,
+    "prepaint_ms": 12.458,
+    "paint_ms": 2.1176,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 17.9967,
+    "present_ms": 0.1008
+  },
+  {
+    "event": "draw",
+    "draw_ms": 18.0285,
+    "signal_wait_ms": 14.3422,
+    "layout_ms": 2.6991,
+    "prepaint_ms": 12.0332,
+    "paint_ms": 2.7391,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 18.974700000000002,
+    "present_ms": 0.1846
+  },
+  {
+    "event": "draw",
+    "draw_ms": 25.583000000000002,
+    "signal_wait_ms": 17.1299,
+    "layout_ms": 8.1405,
+    "prepaint_ms": 13.9853,
+    "paint_ms": 2.7377000000000002,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 26.355300000000003,
+    "present_ms": 0.15880000000000002
+  },
+  {
+    "event": "draw",
+    "draw_ms": 21.255300000000002,
+    "signal_wait_ms": 23.3469,
+    "layout_ms": 3.1756,
+    "prepaint_ms": 14.4162,
+    "paint_ms": 3.0414,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.8832,
+    "present_ms": 0.1407
+  },
+  {
+    "event": "draw",
+    "draw_ms": 25.5518,
+    "signal_wait_ms": 18.961100000000002,
+    "layout_ms": 2.0197000000000003,
+    "prepaint_ms": 20.279,
+    "paint_ms": 2.6382,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 27.1628,
+    "present_ms": 0.1404
+  },
+  {
+    "event": "draw",
+    "draw_ms": 21.6001,
+    "signal_wait_ms": 21.5993,
+    "layout_ms": 3.189,
+    "prepaint_ms": 14.480500000000001,
+    "paint_ms": 3.0624,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 22.3702,
+    "present_ms": 0.19349999999999998
+  },
+  {
+    "event": "draw",
+    "draw_ms": 20.705000000000002,
+    "signal_wait_ms": 19.583099999999998,
+    "layout_ms": 3.1343,
+    "prepaint_ms": 14.1318,
+    "paint_ms": 2.8092,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.363699999999998,
+    "present_ms": 0.16699999999999998
+  },
+  {
+    "event": "draw",
+    "draw_ms": 20.5925,
+    "signal_wait_ms": 20.3216,
+    "layout_ms": 2.6917999999999997,
+    "prepaint_ms": 13.9526,
+    "paint_ms": 3.0812999999999997,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.4493,
+    "present_ms": 0.1513
+  },
+  {
+    "event": "draw",
+    "draw_ms": 18.682000000000002,
+    "signal_wait_ms": 20.0049,
+    "layout_ms": 3.1698999999999997,
+    "prepaint_ms": 11.8304,
+    "paint_ms": 3.1969,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 19.279700000000002,
+    "present_ms": 0.1255
+  },
+  {
+    "event": "draw",
+    "draw_ms": 17.4251,
+    "signal_wait_ms": 19.0635,
+    "layout_ms": 3.0165,
+    "prepaint_ms": 11.626100000000001,
+    "paint_ms": 2.2973,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 18.4027,
+    "present_ms": 0.5509
+  },
+  {
+    "event": "draw",
+    "draw_ms": 69.1691,
+    "signal_wait_ms": 15.9871,
+    "layout_ms": 5.7316,
+    "prepaint_ms": 60.326,
+    "paint_ms": 2.4484,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 69.79599999999999,
+    "present_ms": 0.237
+  },
+  {
+    "event": "draw",
+    "draw_ms": 51.1453,
+    "signal_wait_ms": 69.3232,
+    "layout_ms": 10.663,
+    "prepaint_ms": 37.8541,
+    "paint_ms": 2.1445000000000003,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 51.9311,
+    "present_ms": 0.1967
+  },
+  {
+    "event": "draw",
+    "draw_ms": 34.6961,
+    "signal_wait_ms": 52.1922,
+    "layout_ms": 7.2769,
+    "prepaint_ms": 23.5842,
+    "paint_ms": 2.8711,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 36.4152,
+    "present_ms": 0.13019999999999998
+  },
+  {
+    "event": "draw",
+    "draw_ms": 24.9218,
+    "signal_wait_ms": 32.8773,
+    "layout_ms": 3.2355,
+    "prepaint_ms": 17.9602,
+    "paint_ms": 3.1052,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 26.0974,
+    "present_ms": 0.1409
+  },
+  {
+    "event": "draw",
+    "draw_ms": 20.405099999999997,
+    "signal_wait_ms": 24.9514,
+    "layout_ms": 2.9974,
+    "prepaint_ms": 13.3111,
+    "paint_ms": 3.4941,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.0948,
+    "present_ms": 0.1581
+  },
+  {
+    "event": "draw",
+    "draw_ms": 19.5707,
+    "signal_wait_ms": 16.8529,
+    "layout_ms": 2.7356,
+    "prepaint_ms": 12.750900000000001,
+    "paint_ms": 3.1588,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 20.1491,
+    "present_ms": 0.131
+  },
+  {
+    "event": "draw",
+    "draw_ms": 21.9774,
+    "signal_wait_ms": 17.5273,
+    "layout_ms": 3.4756,
+    "prepaint_ms": 14.4438,
+    "paint_ms": 3.4824,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 22.8886,
+    "present_ms": 0.1518
+  },
+  {
+    "event": "draw",
+    "draw_ms": 21.8301,
+    "signal_wait_ms": 19.1659,
+    "layout_ms": 3.3404,
+    "prepaint_ms": 14.908100000000001,
+    "paint_ms": 2.7184000000000004,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 22.589399999999998,
+    "present_ms": 0.31339999999999996
+  },
+  {
+    "event": "draw",
+    "draw_ms": 57.5617,
+    "signal_wait_ms": 20.6618,
+    "layout_ms": 6.7609,
+    "prepaint_ms": 48.276399999999995,
+    "paint_ms": 1.9792999999999998,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 58.5775,
+    "present_ms": 0.1853
+  },
+  {
+    "event": "draw",
+    "draw_ms": 16.1262,
+    "signal_wait_ms": 54.3427,
+    "layout_ms": 3.1453,
+    "prepaint_ms": 9.960999999999999,
+    "paint_ms": 2.5565,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 17.230999999999998,
+    "present_ms": 0.19790000000000002
+  },
+  {
+    "event": "draw",
+    "draw_ms": 20.7297,
+    "signal_wait_ms": 13.5934,
+    "layout_ms": 3.068,
+    "prepaint_ms": 13.1287,
+    "paint_ms": 3.6241,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.4775,
+    "present_ms": 0.2275
+  },
+  {
+    "event": "draw",
+    "draw_ms": 18.689,
+    "signal_wait_ms": 21.4787,
+    "layout_ms": 2.8485,
+    "prepaint_ms": 12.325199999999999,
+    "paint_ms": 2.7077999999999998,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 19.3841,
+    "present_ms": 0.1478
+  },
+  {
+    "event": "draw",
+    "draw_ms": 19.2284,
+    "signal_wait_ms": 17.0168,
+    "layout_ms": 2.6469,
+    "prepaint_ms": 13.3897,
+    "paint_ms": 2.4649,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 20.0231,
+    "present_ms": 0.1749
+  },
+  {
+    "event": "draw",
+    "draw_ms": 21.911,
+    "signal_wait_ms": 21.128999999999998,
+    "layout_ms": 8.767900000000001,
+    "prepaint_ms": 10.3111,
+    "paint_ms": 2.4181,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 24.2641,
+    "present_ms": 0.10490000000000001
+  },
+  {
+    "event": "draw",
+    "draw_ms": 12.5633,
+    "signal_wait_ms": 18.7639,
+    "layout_ms": 1.8154,
+    "prepaint_ms": 8.465800000000002,
+    "paint_ms": 1.7862,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 13.703800000000001,
+    "present_ms": 0.6612
+  },
+  {
+    "event": "draw",
+    "draw_ms": 17.6051,
+    "signal_wait_ms": 13.1026,
+    "layout_ms": 3.3016,
+    "prepaint_ms": 12.2261,
+    "paint_ms": 1.6726,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 20.0173,
+    "present_ms": 0.25999999999999995
+  },
+  {
+    "event": "draw",
+    "draw_ms": 19.6911,
+    "signal_wait_ms": 14.7798,
+    "layout_ms": 3.6645,
+    "prepaint_ms": 12.701799999999999,
+    "paint_ms": 2.7896,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 20.330299999999998,
+    "present_ms": 0.1108
+  },
+  {
+    "event": "draw",
+    "draw_ms": 16.6025,
+    "signal_wait_ms": 19.0258,
+    "layout_ms": 1.8137999999999999,
+    "prepaint_ms": 12.2156,
+    "paint_ms": 2.1643,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 17.252799999999997,
+    "present_ms": 0.1733
+  },
+  {
+    "event": "draw",
+    "draw_ms": 16.098399999999998,
+    "signal_wait_ms": 15.2697,
+    "layout_ms": 1.8824,
+    "prepaint_ms": 11.6966,
+    "paint_ms": 1.8326,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 17.1814,
+    "present_ms": 0.1291
+  },
+  {
+    "event": "draw",
+    "draw_ms": 17.7501,
+    "signal_wait_ms": 15.555,
+    "layout_ms": 2.5669999999999997,
+    "prepaint_ms": 11.163499999999999,
+    "paint_ms": 3.5828,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 18.3584,
+    "present_ms": 0.12029999999999999
+  },
+  {
+    "event": "draw",
+    "draw_ms": 17.6533,
+    "signal_wait_ms": 17.785800000000002,
+    "layout_ms": 2.2063,
+    "prepaint_ms": 11.744599999999998,
+    "paint_ms": 3.0730000000000004,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 18.1855,
+    "present_ms": 0.1614
+  },
+  {
+    "event": "draw",
+    "draw_ms": 19.185299999999998,
+    "signal_wait_ms": 14.5573,
+    "layout_ms": 2.6673999999999998,
+    "prepaint_ms": 12.8629,
+    "paint_ms": 3.0187,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 19.776,
+    "present_ms": 0.1646
+  },
+  {
+    "event": "draw",
+    "draw_ms": 19.6961,
+    "signal_wait_ms": 17.716099999999997,
+    "layout_ms": 2.8891,
+    "prepaint_ms": 13.0782,
+    "paint_ms": 3.1473999999999998,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 20.457,
+    "present_ms": 0.2503
+  },
+  {
+    "event": "draw",
+    "draw_ms": 15.491,
+    "signal_wait_ms": 18.3987,
+    "layout_ms": 2.5365,
+    "prepaint_ms": 10.0625,
+    "paint_ms": 2.4617,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 16.6763,
+    "present_ms": 0.1225
+  },
+  {
+    "event": "draw",
+    "draw_ms": 21.135399999999997,
+    "signal_wait_ms": 13.2203,
+    "layout_ms": 2.3804,
+    "prepaint_ms": 15.095799999999999,
+    "paint_ms": 3.2493000000000003,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 21.6231,
+    "present_ms": 0.1733
+  },
+  {
+    "event": "draw",
+    "draw_ms": 15.8655,
+    "signal_wait_ms": 18.8325,
+    "layout_ms": 3.1821,
+    "prepaint_ms": 10.165799999999999,
+    "paint_ms": 2.0227,
+    "refresh_ms": 4.1666669999999995
+  },
+  {
+    "event": "present",
+    "gap_ms": 16.4627,
+    "present_ms": 0.1739
+  }
+]
