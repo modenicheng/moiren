@@ -2,7 +2,7 @@
 
 Date: 2026-10-29. Worktree: `minimal-io-latency`.
 The baseline reconciliation is supplemented by the linked probe repair,
-VAD software-route and common physical-render-request receipts.
+VAD software-route, common physical-render-request and physical IO receipts.
 **S1-S3 remain incomplete; stable output below 10 ms is not established.**
 
 ## Basis and interpretation
@@ -12,8 +12,9 @@ Requirements are in
 S1-S3. Reconciliation uses the three completion audits under
 `target/s1-s3-20261028/{s1,s2,s3}-completion-audit-20261029.md`, the historical
 [`2026-10-28-s1-s3.md`](2026-10-28-s1-s3.md), and the linked slice receipts below.
-The audits describe baseline `b17929e`; no Git operation was used here to
-independently verify a revision or the current worktree/index state.
+The audits describe baseline `b17929e`. The original reconciliation used no
+Git operation to independently verify that baseline or the then-current index;
+later slice receipts record their own source revisions and delivery checks.
 
 Older chronological statements that desktop measured selection, retained
 evaluation/Apply, or the E2E VAD minimum-period switch are missing are
@@ -24,9 +25,10 @@ revisions; they are not fresh validation of work now in progress.
 "Implemented" below means the bounded software behavior and recorded host
 regressions exist. It does not mean native acceptance, a successful acquired
 waveform, a calibrated physical delay distribution, or an overall S1-S3 PASS.
-S1 remains partial because physical-input orchestration and measurement
-evidence are missing. Common physical-render controls now have a separate
-software receipt below, without native acceptance. The exact virtual IO/Bus
+S1 remains partial because native acceptance and acquired measurement
+evidence are missing. Physical-input orchestration and common physical-render
+controls now have separate software receipts below, without native acceptance.
+The exact virtual IO/Bus
 collector now has the separate bounded software receipt below. S2's bounded
 software mechanisms are present under their
 declared/admitted conditions; native/lower-setting qualification remains open.
@@ -42,6 +44,7 @@ separate bounded software receipt below.
 | S1 common physical render request | [Common mode/period forwarding and exact-observation refusal](2026-10-29-common-physical-render-request.md), source `32b537d`, covers ordinary/owned Process and VAD physical output; final example suite 442 passed. Requests and immutable pre-gate acceptance/refusal snapshots survive later observation changes. | Omission preserves defaults; explicit Shared compatibility/conversion or unknown/mismatched period refuses. Native acceptance, matched A/B settings and actual delay remain unqualified. |
 | S1 observations | Bounded packet/queue/wake/padding/reset/loss evidence, VAD sequence diagnostics, and separate [completion service-clock summaries](2026-10-29-vad-completion-clock.md). | Driver transfer-service and host submission-service stamps are not source sample time. Unknown age, hardware provenance and unavailable closure remain unknown. |
 | S1 virtual IO/Bus collector | The actual [VAD playback -> Bus -> microphone collector](2026-10-29-vad-software-route.md) now selects two exact owned IDs on one control root, uses the production virtual-realtime graph, records the selected microphone and retires both exports after recorder release. | Host route/identity/health/lifecycle regressions are not native acceptance, acquired PCM, an independent common reference or physical latency qualification. |
+| S1 physical IO/Bus collector | The actual [physical Input -> Bus -> Output collector](2026-10-29-physical-io-probe.md), source `f83f3a5`, uses production EngineHost/ProfessionalBackend, independent bounded recording, separate startup/steady supervision and pinned post-join evidence; final probe suite 471 passed. | Post-activation admission and portable lifecycle/health regressions do not establish endpoint acceptance, complete capture quality, acquired changing PCM or calibrated physical delay. |
 | S2 operating budget | Independent target/capacity; packet, Engine transfer, FIR, whole wake and bounded recovery admission; playback prime/servo and microphone occupancy/phase/reprime. Requested/admitted values and later actual packet-shape validation are present. See [reprime budget](2026-10-29-microphone-reprime-budget.md) and [app recovery-cap integration](2026-10-29-app-vad-recovery-cap.md). | Conditional on declared delivery/wake bounds and later native-shape admission. Model packet/block/phase tests do not select a lower production setting or prove real scheduling/waveform continuity. |
 | S2 short packets | The [short-timer progress fix](2026-10-29-vad-short-timer-progress.md) removes the 48/49-frame repeated zero-progress case, bounds debt by mapped history, and retains one-packet/three-span/one-transfer callback work. | Timely synthetic redue and patterned-copy tests do not prove Windows/provider replenishment at that cadence. Overload still counts/quiesces/rebases. |
 | E2E VAD source period | The actual [E2E minimum-period option](2026-10-29-e2e-vad-minimum-period.md), source receipt `1d3e691`, supports `live-vad --vad-minimum-period`, preserves omission/default behavior, refuses invalid selection without fallback, and retains alignment/partial-failure evidence. | The 15 focused passing period tests establish host selection/evidence behavior, not actual device acceptance or packet cadence. This option is for the external VAD source, not physical render mode/period. |
@@ -71,11 +74,14 @@ separate bounded software receipt below.
    Queue target, capacity and Engine block size remain distinct from native
    period; `--vad-minimum-period` controls the source only. Actual target
    acceptance and matched A/B conditions remain open, not a new native PASS.
-3. **Physical-input-through-graph orchestration remains absent in the audited
-   probe.** Production input types and standalone `record-measurement` do not
-   themselves implement the required supported physical input/output route.
-   Route orchestration is software work; physical acquisition depends on the
-   supported target/setup.
+3. **Physical-input-through-graph orchestration software gap closed.** The
+   [physical IO receipt](2026-10-29-physical-io-probe.md) supersedes the baseline
+   missing-route finding. `live-physical` builds the exact production
+   Input(Follower) -> Bus -> Output(Master) route with independent recording,
+   separate direction requests, bounded startup/full steady duration and
+   pinned native/professional evidence after host join. This goes beyond
+   standalone `record-measurement`. Actual endpoint acceptance, changing PCM,
+   common reference and calibrated physical measurements remain open.
 
 A matched A/B must also retain source application mode/rate/buffer, the same
 physical output device/mode/period, graph, clock roles and load, and disclose
@@ -179,5 +185,8 @@ the remote SHA at those batch checkpoints, not after every small slice.
 Older immediate-push receipts are history, not the current delivery policy.
 The baseline docs reconciliation did not rerun tests; the linked probe repair
 and route receipts record their own fresh Cargo checks and local delivery.
+The physical IO receipt separately records 471 final probe tests, 831 audio
+tests / 3 ignored, strict Clippy and Linux compile-only checks, including the
+repaired test-profile portability failure; these are not native results.
 None performs native audio, VM or driver operations or pushes. Unrelated
 `gate.log` remains untouched.

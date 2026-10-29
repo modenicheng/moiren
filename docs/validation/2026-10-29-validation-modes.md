@@ -17,7 +17,8 @@ The original IO/Bus goal remains in
 ## Explicit test intent
 
 The supervised `live-vad --vad-collection FILE` and owned
-`live-process-loopback --process-collection FILE` probe routes support:
+`live-process-loopback --process-collection FILE` probe routes, plus the
+separate `live-physical --recorder-config FILE` route, support:
 
 | Mode | Timing/continuity faults | Progress deadlines | Meaning |
 | --- | --- | --- | --- |
@@ -49,6 +50,12 @@ Existing clock anchors are preserved: owned Process uses its initial setup
 anchor, while VAD uses the recorder activation request after preparation.
 VAD's `--seconds` is therefore an activation-relative collection ceiling, not
 a wall-clock cap that includes driver discovery, CREATE/preparation and joins.
+The new physical route instead uses a single startup window anchored before
+recorder preparation and treats `--seconds` as the full steady duration.
+Its fixed overall ceiling is startup allowance plus steady duration; it does
+not reset startup deadlines between recorder and graph owners. See the
+[physical IO receipt](2026-10-29-physical-io-probe.md) for that command's
+separate observation and retirement contract.
 
 Identity, generation/revision/shape changes, missing or malformed mandatory
 evidence, nonfinite samples, unexpected owner termination, native API failures,
