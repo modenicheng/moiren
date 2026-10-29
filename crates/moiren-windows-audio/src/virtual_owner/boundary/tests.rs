@@ -27,6 +27,63 @@ fn reset_at_transfer_return(epoch: Arc<AtomicU64>) {
     });
 }
 
+#[test]
+fn playback_event_classes_check_overflow_and_never_publish_unknown_as_zero() {
+    let probe = BoundaryProbe::default();
+    assert_eq!(probe.snapshot().playback_events, None);
+    probe.observe_playback_events(u64::MAX, 7, 9);
+    probe.observe_playback_events(1, 2, 3);
+    let events = probe.snapshot().playback_events.unwrap();
+    assert_eq!(events.initial_prime_muted_frames, u64::MAX);
+    assert_eq!(events.recovery_prime_muted_frames, 9);
+    assert_eq!(events.short_read_callbacks, 12);
+    assert!(events.saturated);
+    probe.playback_events_version.store(5, Ordering::SeqCst);
+    assert_eq!(
+        probe.snapshot().playback_events,
+        None,
+        "in-flight publication is unknown"
+    );
+    probe
+        .playback_events_version
+        .store(u64::MAX - 1, Ordering::SeqCst);
+    probe.observe_playback_events(0, 0, 0);
+    assert_eq!(
+        probe.snapshot().playback_events,
+        None,
+        "version exhaustion cannot alias an old snapshot"
+    );
+}
+
+#[test]
+fn playback_event_classes_concurrent_samples_are_coherent_or_unknown() {
+    let probe = Arc::new(BoundaryProbe::default());
+    let writer = probe.clone();
+    let thread = std::thread::spawn(move || {
+        for _ in 0..10_000 {
+            writer.observe_playback_events(1, 2, 3);
+        }
+    });
+    while !thread.is_finished() {
+        if let Some(events) = probe.snapshot().playback_events {
+            assert_eq!(
+                events.recovery_prime_muted_frames,
+                events.initial_prime_muted_frames * 2
+            );
+            assert_eq!(
+                events.short_read_callbacks,
+                events.initial_prime_muted_frames * 3
+            );
+            assert!(!events.saturated);
+        }
+    }
+    thread.join().unwrap();
+    let final_events = probe.snapshot().playback_events.unwrap();
+    assert_eq!(final_events.initial_prime_muted_frames, 10_000);
+    assert_eq!(final_events.recovery_prime_muted_frames, 20_000);
+    assert_eq!(final_events.short_read_callbacks, 30_000);
+}
+
 fn render_through_boundaries(
     channels: usize,
     input: &[f32],

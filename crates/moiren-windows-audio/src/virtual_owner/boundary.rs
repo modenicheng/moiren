@@ -8,7 +8,7 @@ use moiren_engine::{
 };
 use std::sync::{
     Arc,
-    atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering},
 };
 
 use crate::NATIVE_SAMPLE_RATE;
@@ -29,6 +29,22 @@ pub struct BoundaryProbe {
     applied_milli_ppm: AtomicI32,
     xruns: AtomicU64,
     soft_events: AtomicU64,
+    playback_events_version: AtomicU64,
+    initial_prime_muted_frames: AtomicU64,
+    recovery_prime_muted_frames: AtomicU64,
+    short_read_callbacks: AtomicU64,
+    playback_events_saturated: AtomicBool,
+}
+
+/// Source-local classification, not a collector startup/steady-state decision.
+/// Muting is counted in Engine output frames; short reads count carrier calls.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct PlaybackBoundaryEvents {
+    pub initial_prime_muted_frames: u64,
+    pub recovery_prime_muted_frames: u64,
+    pub short_read_callbacks: u64,
+    /// At least one classified counter exhausted u64. Values never wrap to zero.
+    pub saturated: bool,
 }
 
 /// Latest probe sample. `level_frames` is queued content (occupancy, not
@@ -46,9 +62,52 @@ pub struct BoundaryProbeSample {
     pub applied_milli_ppm: i32,
     pub xruns: u64,
     pub soft_events: u64,
+    /// None before a playback carrier read, for microphone probes, or while a
+    /// one-attempt classified snapshot is unavailable. Never an inferred zero.
+    pub playback_events: Option<PlaybackBoundaryEvents>,
 }
 
 impl BoundaryProbe {
+    /// The attached playback source is the unique writer. Fixed scalar work,
+    /// no CAS retry: readers either see one complete publication or unknown.
+    fn observe_playback_events(&self, initial: u64, recovery: u64, short_reads: u64) {
+        let version = self.playback_events_version.load(Ordering::SeqCst);
+        let Some(next) = version.checked_add(2).filter(|_| version % 2 == 0) else {
+            self.playback_events_version
+                .store(u64::MAX, Ordering::SeqCst);
+            return;
+        };
+        self.playback_events_version
+            .store(version + 1, Ordering::SeqCst);
+        for (counter, delta) in [
+            (&self.initial_prime_muted_frames, initial),
+            (&self.recovery_prime_muted_frames, recovery),
+            (&self.short_read_callbacks, short_reads),
+        ] {
+            let previous = counter.load(Ordering::SeqCst);
+            let value = previous.checked_add(delta).unwrap_or_else(|| {
+                self.playback_events_saturated.store(true, Ordering::SeqCst);
+                u64::MAX
+            });
+            counter.store(value, Ordering::SeqCst);
+        }
+        self.playback_events_version.store(next, Ordering::SeqCst);
+    }
+
+    fn playback_events_snapshot(&self) -> Option<PlaybackBoundaryEvents> {
+        let before = self.playback_events_version.load(Ordering::SeqCst);
+        if before == 0 || before % 2 != 0 {
+            return None;
+        }
+        let events = PlaybackBoundaryEvents {
+            initial_prime_muted_frames: self.initial_prime_muted_frames.load(Ordering::SeqCst),
+            recovery_prime_muted_frames: self.recovery_prime_muted_frames.load(Ordering::SeqCst),
+            short_read_callbacks: self.short_read_callbacks.load(Ordering::SeqCst),
+            saturated: self.playback_events_saturated.load(Ordering::SeqCst),
+        };
+        (self.playback_events_version.load(Ordering::SeqCst) == before).then_some(events)
+    }
+
     /// Preparation only. Both builder orders publish the final carrier
     /// geometry before streaming, without pretending to observe live content.
     fn prepare(&self, capacity_frames: usize, target_frames: Option<usize>) {
@@ -85,6 +144,7 @@ impl BoundaryProbe {
             applied_milli_ppm: self.applied_milli_ppm.load(Ordering::Relaxed),
             xruns: self.xruns.load(Ordering::Relaxed),
             soft_events: self.soft_events.load(Ordering::Relaxed),
+            playback_events: self.playback_events_snapshot(),
         }
     }
 }
@@ -307,6 +367,10 @@ pub struct VirtualPlaybackSource {
     probe: Option<Arc<BoundaryProbe>>,
     /// Frames of exact-zero recovery edge remaining after a prime (re)arm.
     resume_mute: usize,
+    /// This source lifetime's first prime is startup; epoch resets and
+    /// starvation never turn a subsequent prime into another initial prime.
+    playback_primed_once: bool,
+    resume_mute_is_initial: bool,
 }
 
 impl VirtualPlaybackSource {
@@ -354,6 +418,8 @@ impl VirtualPlaybackSource {
             handshake: None,
             probe: None,
             resume_mute: 0,
+            playback_primed_once: false,
+            resume_mute_is_initial: false,
         })
     }
 
@@ -537,6 +603,8 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
                 // first FIR length is the honest recovery edge: counted as
                 // silence downstream, never as corrupted content.
                 self.resume_mute = SRC_HEADROOM_FRAMES;
+                self.resume_mute_is_initial = !self.playback_primed_once;
+                self.playback_primed_once = true;
             }
             self.resampler
                 .as_mut()
@@ -623,6 +691,16 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
                 return short(output.frames());
             }
             if let Some(probe) = &self.probe {
+                let (initial, recovery) = if self.resume_mute_is_initial {
+                    (muted as u64, 0)
+                } else {
+                    (0, muted as u64)
+                };
+                probe.observe_playback_events(
+                    initial,
+                    recovery,
+                    u64::from(transferred < required_input),
+                );
                 probe.observe(
                     self.carrier.available_frames(),
                     self.drift
@@ -650,6 +728,11 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
             return short(output.frames());
         }
         if let Some(probe) = &self.probe {
+            probe.observe_playback_events(
+                0,
+                0,
+                u64::from(report.transferred_frames < required_input),
+            );
             probe.observe(self.carrier.available_frames(), 0.0, report.xruns, 0);
         }
         report

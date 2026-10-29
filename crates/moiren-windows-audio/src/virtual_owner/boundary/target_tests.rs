@@ -7,6 +7,115 @@ use moiren_engine::{
 const BUDGET: usize = 1 << 20;
 
 #[test]
+fn playback_event_classes_keep_preparation_unknown_and_initial_mute_separate() {
+    for rate in [44_100, 48_000, 88_200, 96_000] {
+        for explicit in [false, true] {
+            let (mut producer, reader) = audio_bridge(2, 1024, BUDGET).unwrap();
+            let probe = Arc::new(BoundaryProbe::default());
+            let source = VirtualPlaybackSource::new(reader, 2, 16, rate, BUDGET).unwrap();
+            let mut source = if explicit {
+                source.with_clock_drift_target(384).unwrap()
+            } else {
+                source.with_clock_drift().unwrap()
+            }
+            .with_probe(probe.clone());
+            assert_eq!(probe.snapshot().playback_events, None);
+            let mut buffer = CallbackBuffer::<f32>::new(16, rate);
+            assert_eq!(buffer.read_source(&mut source).transferred_frames, 0);
+            assert_eq!(
+                probe.snapshot().playback_events,
+                None,
+                "prime wait is not a carrier read"
+            );
+            producer.write_interleaved_exact(&pcm(1024)).unwrap();
+            for callback in 0..4 {
+                assert_eq!(buffer.read_source(&mut source).xruns, 0);
+                let sample = probe.snapshot();
+                let events = sample.playback_events.unwrap();
+                assert_eq!(
+                    events.initial_prime_muted_frames,
+                    ((callback + 1) * 16).min(32)
+                );
+                assert_eq!(events.recovery_prime_muted_frames, 0);
+                assert_eq!(events.short_read_callbacks, 0);
+                assert!(!events.saturated);
+                assert_eq!(sample.soft_events, events.initial_prime_muted_frames);
+            }
+        }
+    }
+}
+
+#[test]
+fn playback_event_classes_preserve_short_reads_and_recovery_without_resetting_initial() {
+    let (mut producer, reader) = audio_bridge(2, 1024, BUDGET).unwrap();
+    let probe = Arc::new(BoundaryProbe::default());
+    let epoch = Arc::new(AtomicU64::new(0));
+    let mut source = VirtualPlaybackSource::new(reader, 2, 128, 48_000, BUDGET)
+        .unwrap()
+        .with_clock_drift_target(384)
+        .unwrap()
+        .with_reset_epoch(epoch.clone())
+        .with_probe(probe.clone());
+    let mut buffer = CallbackBuffer::<f64>::new(128, 48_000);
+    producer.write_interleaved_exact(&pcm(384)).unwrap();
+    buffer.read_source(&mut source);
+    while source.carrier.available_frames() > 0 {
+        buffer.read_source(&mut source);
+    }
+    buffer.read_source(&mut source);
+    let starved = probe.snapshot();
+    let events = starved.playback_events.unwrap();
+    assert_eq!(events.initial_prime_muted_frames, 32);
+    assert_eq!(events.recovery_prime_muted_frames, 0);
+    assert!(events.short_read_callbacks > 0);
+    assert!(starved.xruns > 0);
+    assert_eq!(starved.soft_events, 32 + events.short_read_callbacks);
+    producer.write_interleaved_exact(&pcm(384)).unwrap();
+    buffer.read_source(&mut source);
+    let recovered = probe.snapshot();
+    let recovery = recovered.playback_events.unwrap();
+    assert_eq!(recovery.initial_prime_muted_frames, 32);
+    assert_eq!(recovery.recovery_prime_muted_frames, 32);
+    assert_eq!(recovery.short_read_callbacks, events.short_read_callbacks);
+    assert_eq!(recovered.soft_events, 64 + recovery.short_read_callbacks);
+    epoch.store(1, Ordering::Release);
+    buffer.read_source(&mut source);
+    producer.write_interleaved_exact(&pcm(384)).unwrap();
+    buffer.read_source(&mut source);
+    let reset = probe.snapshot().playback_events.unwrap();
+    assert_eq!(reset.initial_prime_muted_frames, 32);
+    assert_eq!(reset.recovery_prime_muted_frames, 64);
+    assert_eq!(reset.short_read_callbacks, events.short_read_callbacks);
+}
+
+#[test]
+fn playback_event_classes_do_not_relabel_unadapted_short_reads_or_microphone_events() {
+    let (_producer, reader) = audio_bridge(2, 1024, BUDGET).unwrap();
+    let probe = Arc::new(BoundaryProbe::default());
+    let mut source = VirtualPlaybackSource::new(reader, 2, 128, 48_000, BUDGET)
+        .unwrap()
+        .with_probe(probe.clone());
+    let mut buffer = CallbackBuffer::<f32>::new(128, 48_000);
+    assert!(buffer.read_source(&mut source).xruns > 0);
+    let sample = probe.snapshot();
+    let events = sample.playback_events.unwrap();
+    assert_eq!(events.initial_prime_muted_frames, 0);
+    assert_eq!(events.recovery_prime_muted_frames, 0);
+    assert_eq!(events.short_read_callbacks, 1);
+    assert_eq!(
+        sample.soft_events, 0,
+        "legacy unadapted accounting stays unchanged"
+    );
+    let (writer, _consumer) = audio_bridge(2, 1024, BUDGET).unwrap();
+    let microphone = Arc::new(BoundaryProbe::default());
+    let mut sink = VirtualMicrophoneSink::new(writer, 2, 128, 48_000, BUDGET)
+        .unwrap()
+        .with_probe(microphone.clone());
+    buffer.write_sink(&mut sink);
+    assert_eq!(microphone.snapshot().playback_events, None);
+}
+
+#[test]
 fn probe_preparation_metadata_is_total_content_and_builder_order_independent() {
     let empty = BoundaryProbe::default().snapshot();
     assert_eq!(empty.capacity_frames, 0);

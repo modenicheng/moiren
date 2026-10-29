@@ -17,7 +17,8 @@ mod provider;
 mod reprime;
 
 pub use boundary::{
-    BoundaryProbe, BoundaryProbeSample, VirtualMicrophoneSink, VirtualPlaybackSource,
+    BoundaryProbe, BoundaryProbeSample, PlaybackBoundaryEvents, VirtualMicrophoneSink,
+    VirtualPlaybackSource,
 };
 pub use budget::{PreparedVirtualBudget, VirtualBufferOptions};
 #[allow(unused_imports)]

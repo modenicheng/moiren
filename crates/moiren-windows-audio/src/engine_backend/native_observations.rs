@@ -4,7 +4,7 @@ use crate::{
     clock_bridge::{BridgeObserver, BridgeSnapshot},
     latency::shared_period::SharedPeriodReport,
     latency::{NativeStreamTiming, PreparedInputQueue, PreparedRenderQueue},
-    virtual_owner::{BoundaryProbeSample, PreparedVirtualBudget},
+    virtual_owner::{BoundaryProbeSample, PlaybackBoundaryEvents, PreparedVirtualBudget},
 };
 use moiren_core::graph::NodeId;
 use serde::Serialize;
@@ -209,6 +209,7 @@ pub struct NativeBoundaryProbe {
     pub applied_milli_ppm: i32,
     pub xruns: u64,
     pub soft_events: u64,
+    pub playback_events: Option<PlaybackBoundaryEvents>,
 }
 
 impl From<(NodeId, NativeStreamKind, BoundaryProbeSample)> for NativeBoundaryProbe {
@@ -222,6 +223,7 @@ impl From<(NodeId, NativeStreamKind, BoundaryProbeSample)> for NativeBoundaryPro
             applied_milli_ppm: sample.applied_milli_ppm,
             xruns: sample.xruns,
             soft_events: sample.soft_events,
+            playback_events: sample.playback_events,
         }
     }
 }
@@ -693,6 +695,37 @@ mod tests {
             "unknown target must be retained explicitly"
         );
         assert!(json["target_frames"].is_null());
+    }
+
+    #[test]
+    fn native_playback_event_classes_keep_exact_counts_and_unknown() {
+        let node = LogicalGraph::new()
+            .create_node(NodeKind::Source, 2)
+            .unwrap();
+        for events in [
+            None,
+            Some(PlaybackBoundaryEvents {
+                initial_prime_muted_frames: 32,
+                recovery_prime_muted_frames: (1 << 53) + 7,
+                short_read_callbacks: u64::MAX,
+                saturated: true,
+            }),
+        ] {
+            let sample = BoundaryProbeSample {
+                soft_events: 47,
+                playback_events: events,
+                ..Default::default()
+            };
+            let native =
+                NativeBoundaryProbe::from((node, NativeStreamKind::VirtualPlayback, sample));
+            assert_eq!(native.playback_events, events);
+            assert_eq!(native.soft_events, 47);
+            let json = serde_json::to_value(native).unwrap();
+            assert_eq!(
+                json["playback_events"],
+                serde_json::to_value(events).unwrap()
+            );
+        }
     }
 
     #[test]
