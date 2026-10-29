@@ -476,6 +476,24 @@ Independent common-clock reference capture and calibration remain absent.
 No physical delay distribution, VAD/Process latency winner, smaller default,
 continuous-waveform pass or stable sub-10-ms result follows from this work.
 
+### Production VAD app output PCM
+
+The [production VAD app receipt](2026-10-30-dawn-vad-app-pcm.md) now retains
+actual source-tree and app-tree PCM from a separate source rendering to the
+owned VAD endpoint, through exactly Input -> unity Bus -> pinned DAWN. This
+supersedes the missing VAD app-output recording, not the diagnostic-soak
+quality counters or calibrated physical gate. Each35-second capture stores
+1,679,040 frames with zero artifact loss/overflow/discontinuity/timestamp
+errors and detects35 markers. Source intervals are48,000 frames; app intervals
+are47,989..47,997, with other waveform differences retained. Independent
+origins and absent production-provider quality counters prevent a full
+continuity, absolute delay or smaller-default qualification.
+
+The original pre-Start publication timeout and forced owned-app cleanup are
+retained separately. The corrected run has normal source/app Stop/join/Quit,
+unchanged output/default state and no overlapping build. Both exact tasks are
+removed, caches are kept, and all53 evidence files are host-verified.
+
 ## Checkpoint retention
 
 All three completed attempt directories and the watchdog build logs are

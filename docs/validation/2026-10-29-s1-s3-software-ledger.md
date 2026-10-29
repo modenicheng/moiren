@@ -12,6 +12,14 @@ record history, not a recurring requirement or a completion gate.
 
 ## Physical-target follow-up
 
+The [production VAD app PCM follow-up](2026-10-30-dawn-vad-app-pcm.md) closes
+the missing actual VAD -> Bus -> DAWN app-output recording. Separate source
+and app process-tree captures each retain35 markers, zero artifact loss and
+normal cleanup in a35-second window. Small output marker-spacing/waveform
+differences remain; graph-provider quality counters and an independent
+calibrated physical reference are not acquired. This advances S1 acquisition,
+not S1-S3 completion, matched source comparison or a sub-10ms claim.
+
 The [physical deployment receipt](2026-10-29-physical-target-deployment.md)
 records authorized work on `LAPTOP-NP49RG6H` / `192.168.12.97`, separate from
 the deferred VM. It supersedes baseline statements that no native route has
