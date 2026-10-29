@@ -108,11 +108,32 @@ upper safety ceiling, not proof that Windows retained a specific PCM interval.
 
 Actual lower-period negotiation and stable waveform playback on suitable
 hardware, source-age provenance, sustained service and matched physical IO/Bus
-below10ms remain unqualified. The actual e2e VAD probe still uses the default
-period; adding opt-in queried-minimum period/evidence there is another software
-integration gap, separate from standalone `vad_native --minimum-period`.
+below10ms remain unqualified. The earlier missing E2E minimum-period request
+was a historical integration gap, not current remaining work. The actual
+`e2e_latency_probe live-vad --vad-minimum-period` path was added in `1d3e691`:
+it queries/selects the minimum only on explicit request, preserves omitted
+default behavior, refuses invalid selection without fallback, and retains
+request/alignment/partial-failure evidence. The recorded receipt includes 15
+focused passing period tests; no device acceptance or actual packet cadence
+is inferred. See
+[`2026-10-29-e2e-vad-minimum-period.md`](2026-10-29-e2e-vad-minimum-period.md).
+
+That option selects the external VAD source client's period, not the physical
+render endpoint's mode or period. The completion audits separately identify
+the missing exact VAD playback -> Bus -> VAD microphone E2E collection route
+and common explicit physical-render mode/period selection in both physical
+probe paths. These are software integration work, distinct from later native
+negotiation, waveform/reference acquisition and calibrated physical evidence.
+The reconciled software status and precise remaining gates are in
+[`2026-10-29-s1-s3-software-ledger.md`](2026-10-29-s1-s3-software-ledger.md).
+
+Bounded admission and counted recovery under declared/observed conditions do
+not require a universal guarantee of future Windows scheduling. Finite software
+tests likewise do not establish sustained native service or physical latency.
 
 Correctness0..3000ms progress grace versus latency-sensitive fail-fast remains
 unchanged. Grace is not audio latency and does not enlarge production buffers.
-This work stays in scoped local commits; no push or new CI trigger occurs.
-Unrelated `gate.log` is preserved.
+Keep scoped atomic commits local and batch remote updates only at meaningful
+verified integration checkpoints, per the user's current delivery instruction.
+This documentation reconciliation performs no Git, Cargo, native audio, VM or
+driver operation. Unrelated `gate.log` is preserved.

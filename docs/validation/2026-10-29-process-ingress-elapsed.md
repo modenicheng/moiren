@@ -146,7 +146,7 @@ grace remain unchanged. The diagnostic 0..3000 ms correctness grace is not an
 audio latency allowance or production queue setting.
 
 Actual QPC/device behavior, measured-versus-declared delivery under load,
-source-age provenance, sustained future-safe admission, actual lower native
-period acceptance, matched physical routes, and stable real IO/Bus output
-below 10 ms remain open or target-dependent. Passing host tests does not close
-those gates; VM timing qualification remains deferred.
+source-age provenance, observed-window demand/delivery density admission,
+actual lower native period acceptance, matched physical routes, and stable real
+IO/Bus output below 10 ms remain open or target-dependent. Passing host tests
+does not close those gates; VM timing qualification remains deferred.
