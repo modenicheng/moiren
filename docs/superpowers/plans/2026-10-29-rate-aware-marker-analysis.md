@@ -20,25 +20,30 @@ Whole-wake production admission and correctness/strict test policy unchanged.
 
 ## Core Detector
 
-- [ ] Add tests for actual resampled long markers at positive/negative rate
+- [x] Add tests for actual resampled long markers at positive/negative rate
   offsets, known delay, rigid-detector refusal, ambiguity across rates, silence,
   clipping/nonfinite input, truncation, invalid grid, exact work/scratch limits.
-- [ ] Implement preparation with checked frame/work arithmetic before scanning.
-- [ ] Implement search with caller scratch; reject ambiguity/partial markers.
-- [ ] Verify and commit/push the core slice with full remote SHA comparison.
+- [x] Implement preparation with checked frame/work arithmetic before scanning.
+- [x] Implement search with caller scratch; reject ambiguity/partial markers.
+- [x] Verify and commit/push the core slice with full remote SHA comparison.
 
 ## Actual Offline Entry Point
 
-- [ ] Add failing analyze-pcm tests for explicit rate-search schedules, exact
+- [x] Add failing analyze-pcm tests for explicit rate-search schedules, exact
   preserved offsets, legacy compatibility, whole work/window admission.
-- [ ] Integrate independent reference/processed detection with expanded bounds,
+- [x] Integrate independent reference/processed detection with expanded bounds,
   requested search config and selected hypothesis/resolution in reports.
-- [ ] Retain packet loss/reset invalidation and failing marker details.
-- [ ] Update CLI help, verify and commit/push the integration slice.
+- [x] Retain packet loss/reset invalidation and failing marker details.
+- [x] Update CLI help, verify and commit/push the integration slice.
+- [x] Retain the opt-in full analysis in live imported-measurement reports;
+  preserve legacy report shape. Test global accumulated resampling drift.
 
 ## Verification
 
-- [ ] Independent review of algorithm, budgets and provenance.
-- [ ] Run focused/full audio/probe tests, app dependent checks, strict Clippy,
+- [x] Independent review of algorithm, budgets and provenance.
+- [x] Run focused/full audio/probe tests, app dependent checks, strict Clippy,
   root/scoped fmt and diff checks; correct reproducible findings.
-- [ ] Record evidence and remaining physical/sustained S1-S3 gaps; commit/push.
+- [x] Record evidence and remaining physical/sustained S1-S3 gaps; commit/push.
+
+This software slice does not complete full S1-S3. No physical, native period,
+sustained/future-safe service or source-age qualification is inferred.
