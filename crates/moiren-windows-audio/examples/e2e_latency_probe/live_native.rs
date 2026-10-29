@@ -29,6 +29,13 @@ use super::render::{
 const STARTUP_SAMPLE_LIMIT: usize = 256;
 const STARTUP_SAMPLE_INTERVAL: Duration = Duration::from_millis(10);
 
+#[path = "vad_engine_health.rs"]
+mod engine_health;
+
+fn vad_engine_running(engine: Option<&moiren_engine::host::HostSnapshot>) -> bool {
+    engine_health::running(engine)
+}
+
 fn validate_initial_recorder_transition(
     before: [u64; 5],
     before_shape: &(String, String, u32),
@@ -679,6 +686,7 @@ pub fn run_vad(
         playback_outcome: None,
         admission: None,
         last_health: None,
+        engine_health: None,
     };
     if let Some(config) = collection_config {
         return vad_collection::collect(
@@ -802,6 +810,7 @@ pub(super) struct VadCleanup<'a> {
     pub(super) playback_outcome: Option<vad::PlaybackOutcome>,
     pub(super) admission: Option<vad_collection::Admission>,
     pub(super) last_health: Option<vad_collection::Health>,
+    engine_health: Option<engine_health::Tracker>,
 }
 
 impl VadCleanup<'_> {
@@ -879,6 +888,11 @@ impl VadCleanup<'_> {
                     }
                 }
         });
+        let progress = self
+            .engine_health
+            .as_mut()
+            .context("Engine progress guard not prepared")?
+            .observe(engine.as_ref());
         let health = vad_collection::Health {
             route,
             microphone,
@@ -890,10 +904,11 @@ impl VadCleanup<'_> {
             generations: engine.as_ref().map_or([0, 0], |engine| {
                 [engine.owner_generation, engine.resource_generation]
             }),
-            engine_running: engine.as_ref().is_some_and(|engine| {
-                engine.execution == ExecutionState::Running
-                    && engine.timeline.is_some_and(|timeline| timeline.frame > 0)
-            }),
+            engine_running: vad_engine_running(engine.as_ref()),
+            engine_progress_overdue: self
+                .engine_health
+                .as_ref()
+                .is_some_and(|guard| guard.overdue()),
             engine_fault: engine
                 .as_ref()
                 .is_some_and(|engine| engine.fault.is_some() || engine.cleanup_error.is_some()),
@@ -911,6 +926,11 @@ impl VadCleanup<'_> {
         if let Some(engine) = &engine {
             let mut value = engine_snapshot_value(engine);
             value["observations"] = serde_json::json!(native);
+            value["progress_health"] = self
+                .engine_health
+                .as_ref()
+                .map(|guard| guard.evidence())
+                .into();
             replace_engine_observation(&mut self.report.engine, value);
         }
         if self.startup_samples.len() < STARTUP_SAMPLE_LIMIT {
@@ -923,6 +943,7 @@ impl VadCleanup<'_> {
             }));
         }
         self.last_health = Some(health.clone());
+        progress?;
         Ok(health)
     }
 
@@ -1040,8 +1061,8 @@ impl VadCleanup<'_> {
         self.observer = Some(host.observer());
         self.host = Some(host);
         let observer = self.observer.as_ref().expect("prepared host observer");
-        wait_engine_running(observer)?;
-        let active = observer.snapshot();
+        let active = wait_engine_running(observer)?;
+        self.engine_health = Some(engine_health::Tracker::new(&active, options.validation)?);
         if let Some(expected_node) = physical_output {
             let native = self.observations.as_ref().and_then(|view| view.snapshot());
             retain_and_validate_physical_render(
@@ -1272,6 +1293,9 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
                 "timestamp_scope": control_observation::SCOPE,
                 "samples": self.startup_samples,
             });
+            if let Some(progress) = self.engine_health.as_ref() {
+                engine["progress_health"] = progress.evidence();
+            }
             replace_engine_observation(&mut self.report.engine, engine);
         }
         let exports = self.provider.export_observations();
@@ -1722,15 +1746,20 @@ fn wait_vad_ready(
     }
 }
 
-fn wait_engine_running(observer: &moiren_engine::host::EngineObserver) -> Result<()> {
+fn wait_engine_running(
+    observer: &moiren_engine::host::EngineObserver,
+) -> Result<moiren_engine::host::HostSnapshot> {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let snapshot = observer.snapshot();
         if snapshot.execution == ExecutionState::Running
             && snapshot.active_revision == Some(1)
+            && snapshot.host == moiren_engine::host::HostState::Open
+            && snapshot.fault.is_none()
+            && snapshot.cleanup_error.is_none()
             && snapshot.timeline.is_some_and(|timeline| timeline.frame > 0)
         {
-            return Ok(());
+            return Ok(snapshot);
         }
         ensure!(
             Instant::now() < deadline,
@@ -1910,6 +1939,41 @@ mod tests {
             }],
         };
         (expected, active, native)
+    }
+
+    #[test]
+    fn vad_engine_health_transient_unknown_timeline_retains_raw_unknown() {
+        let (_, mut active, _) = physical_admission_fixture();
+        let admitted = vad_collection::Health {
+            stamp: Some([1, 2, 3, 4, 5]),
+            shape: Some(("Stereo".into(), "Some(Float32)".into(), 480)),
+            provider_ready: true,
+            revision: active.active_revision,
+            generations: [active.owner_generation, active.resource_generation],
+            engine_running: vad_engine_running(Some(&active)),
+            native_generation: Some(active.owner_generation),
+            native_running: true,
+            quality_known: true,
+            ..Default::default()
+        };
+        admitted.validate(&admitted).unwrap();
+        active.timeline = None;
+        let mut current = admitted.clone();
+        current.engine_running = vad_engine_running(Some(&active));
+
+        let retained = engine_snapshot_value(&active);
+        assert_eq!(retained["execution"], "Running");
+        assert_eq!(retained["active_revision"], 1);
+        assert_eq!(retained["plan_revision"], 1);
+        assert_eq!(retained["fault"], "None");
+        assert_eq!(retained["cleanup_error"], "None");
+        assert!(retained["timeline"].is_null());
+        let validation = current.validate(&admitted);
+        assert!(
+            validation.is_ok(),
+            "transient unknown timeline must not stop a confirmed Running owner: {validation:?}"
+        );
+        assert!(active.timeline.is_none());
     }
 
     #[test]

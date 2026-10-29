@@ -237,6 +237,7 @@ pub(super) struct Health {
     pub revision: Option<u64>,
     pub generations: [u64; 2],
     pub engine_running: bool,
+    pub engine_progress_overdue: bool,
     pub engine_fault: bool,
     pub native_generation: Option<u64>,
     pub native_running: bool,
@@ -267,6 +268,10 @@ pub(super) struct Admission {
 impl Health {
     pub(super) fn require_present(&self) -> Result<()> {
         self.require_operational()?;
+        ensure!(
+            !self.engine_progress_overdue,
+            "Engine progress base deadline exceeded"
+        );
         ensure!(
             self.quality_faults == 0
                 && self
@@ -401,6 +406,13 @@ fn validate_health_with_policy(
     policy: ValidationPolicy,
     quality: &mut Quality,
 ) -> Result<()> {
+    if current.engine_progress_overdue {
+        quality.record(
+            "Engine progress base deadline exceeded",
+            Some(report),
+            Some(current),
+        );
+    }
     if quality.playback_boundary.is_some() {
         let result = (|| -> Result<()> {
             current.require_operational()?;
@@ -1311,7 +1323,17 @@ impl CollectionGuard<'_> {
                         && let Some(admitted) = &self.vad.admission
                     {
                         let admitted = admitted.current.clone();
-                        let health = self.vad.current_health()?;
+                        let health = match self.vad.current_health() {
+                            Ok(health) => health,
+                            Err(error) => {
+                                latch_failure_observations(
+                                    &mut self.first_failure_observations,
+                                    self.vad.report,
+                                    self.vad.last_health.as_ref(),
+                                );
+                                return Err(error);
+                            }
+                        };
                         validate_health_with_policy(
                             &health,
                             &admitted,
@@ -2314,6 +2336,55 @@ mod tests {
             engine: Some(serde_json::json!({"observations": native})),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn engine_health_correctness_progress_grace_keeps_quality_failure_after_recovery() {
+        let admitted = healthy();
+        let mut current = admitted.clone();
+        current.engine_progress_overdue = true;
+        let report = raw_health_report();
+        let mut quality = Quality::default();
+        let mut first_failure = None;
+        validate_health_with_policy(
+            &current,
+            &admitted,
+            &report,
+            &mut first_failure,
+            correctness(),
+            &mut quality,
+        )
+        .unwrap();
+        assert!(
+            quality
+                .failure
+                .as_deref()
+                .unwrap()
+                .contains("Engine progress base deadline")
+        );
+        current.engine_progress_overdue = false;
+        validate_health_with_policy(
+            &current,
+            &admitted,
+            &report,
+            &mut first_failure,
+            correctness(),
+            &mut quality,
+        )
+        .unwrap();
+        assert!(quality.failure.is_some());
+        current.engine_progress_overdue = true;
+        assert!(
+            validate_health_with_policy(
+                &current,
+                &admitted,
+                &report,
+                &mut first_failure,
+                ValidationPolicy::default(),
+                &mut quality,
+            )
+            .is_err()
+        );
     }
 
     #[test]
