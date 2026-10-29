@@ -18,8 +18,11 @@ the deferred VM. It supersedes baseline statements that no native route has
 been acquired: exact VAD software-route recordings and cleanup now complete,
 including explicit 2048/1024 operating targets with independent capacity.
 They still fail waveform/provider quality and are not physical latency results.
-Muted Realtek output and the lack of a calibrated common reference remain
-explicit blockers; no path winner or smaller default is selected.
+Those early physical-render runs used muted Realtek. The later
+[DAWN follow-up](2026-10-30-dawn-native-process.md) has a user-authorized,
+explicitly pinned headphone output; no other speaker state is changed.
+An independent calibrated common reference remains unavailable; no path
+winner or smaller default is selected.
 
 The [native packet-period / Engine-block matrix](2026-10-29-vad-period-block-matrix.md)
 adds observed144/480-frame VAD playback packets with128/256-frame Engine
