@@ -35,18 +35,32 @@ different native owner. Neither is an acceptable shortcut.
 
 ## Tasks
 
-- [ ] Test-first original-source final measurement across clear/replacement and
+- [x] Test-first original-source final measurement across clear/replacement and
   late writes; refuse missing/inconsistent consumer evidence. Add the narrow
   collector API in native_observations/process_trace.rs and actual bridge tests.
-- [ ] Preserve final measured delivery/refusal separately through SessionTrace
+- [x] Preserve final measured delivery/refusal separately through SessionTrace
   cleanup. Add immutable assessed candidate types/profile constructor and tests
   for native provenance, exact options, whole-wake refusal, window outcomes.
-- [ ] Add stopped candidate Apply request/service fencing using the existing
+- [x] Add stopped candidate Apply request/service fencing using the existing
   replacement factories. Test real managed software host lifecycle for both
   precisions and stale predecessor/document/source/settings/pending/refusal.
-- [ ] Extend the single background evaluation and Settings page with explicit
+- [x] Extend the single background evaluation and Settings page with explicit
   conservative admission status and Apply. Retain diagnostic results separately;
   test actual clicks, no automatic Apply, draft/policy fences and confirmation.
-- [ ] Run audio/app/probe/RT and relevant integration checks, strict Clippy/fmt,
+- [x] Run audio/app/probe/RT and relevant integration checks, strict Clippy/fmt,
   independent review and scoped commits/push. Record remaining physical gates;
   do not mark all S1-S3 complete without required evidence.
+
+## Completion record
+
+The three implementation commits are `507c496` (audio), `d6c63fa` (service)
+and `d408d0d` (desktop). Each is pushed and full-remote-SHA checked. Positive
+retained-owner evidence is tested within the audio crate's private seam;
+application software tokens remain test-only CallerSupplied fixtures, while
+production rejects that origin. No public provenance bypass was introduced.
+
+Captured-settings mutate-back, publication-envelope rounding, credit retries
+and superseding ApplyGraph have reviewed regression coverage. Fresh counts,
+corrected attempts and deferred physical gates are recorded in
+`docs/validation/2026-10-29-retained-process-apply.md`. The bounded software
+slice is complete; the overall S1-S3 goal remains active and unqualified.
