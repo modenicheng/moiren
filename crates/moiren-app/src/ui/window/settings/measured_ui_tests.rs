@@ -2,8 +2,8 @@
 //! tests prove UI dispatch/confirmation, not native replacement or audio quality.
 use crate::service::{
     AppRequest, AppSnapshot, InputSelection, JobPool, MeasuredProcessRequest,
-    NativeSessionObservations, RoundBudget, RunLimit, ServiceContext, ServiceDriver,
-    ServiceRuntime, SessionPhase, SessionSpec,
+    NativeSessionObservations, ProcessWindowPolicy, RoundBudget, RunLimit, ServiceContext,
+    ServiceDriver, ServiceRuntime, SessionPhase, SessionSpec,
     measured_process::{MeasuredProcessProfile, tests::observation},
 };
 use crate::ui::{
@@ -48,6 +48,8 @@ struct Control {
     clear_active: bool,
     retain_prefix: bool,
     measured_prefix: bool,
+    finish_live_window: bool,
+    wrong_live_policy: bool,
     confirmation: Option<Confirmation>,
 }
 
@@ -59,6 +61,7 @@ struct MeasuredDriver {
     initialized: bool,
     spec: SessionSpec,
     selected: Option<MeasuredProcessProfile>,
+    pending_window: Option<(MeasuredProcessRequest, ProcessWindowPolicy)>,
 }
 
 impl MeasuredDriver {
@@ -121,6 +124,21 @@ impl MeasuredDriver {
         }
         context.native_observations =
             (!matches!(self.evidence, Evidence::MissingNative)).then_some(native);
+        context.process_trace_status = Some(crate::service::ProcessTraceCollectionStatus {
+            origin: Some(crate::service::ProcessTraceSessionOrigin {
+                generation,
+                document: 9,
+                node,
+                process: observation(node).process,
+                native_owner_generation: 7,
+                host_revision: graph.candidate_revision,
+                graph_revision: graph.candidate_revision,
+                audio_settings: context.audio_settings.clone(),
+                transport_latency: context.transport_latency,
+                latency_profile: context.latency_profile,
+            }),
+            refusal: None,
+        });
     }
 
     fn confirm(&mut self, context: &mut ServiceContext, confirmation: Confirmation) {
@@ -179,6 +197,18 @@ impl MeasuredDriver {
 impl ServiceDriver for MeasuredDriver {
     fn request(&mut self, context: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
         self.log.lock().unwrap().push(request.clone());
+        if let AppRequest::ApplyWindowedProcessBridge { request, policy } = request {
+            if self.control.lock().unwrap().reject {
+                context.graph.record_error(
+                    "fixture live Process window refused: measurement history overwritten",
+                );
+            } else {
+                // Holding this completion exercises the real mailbox/UI seam;
+                // it does not issue a native token or replace an audio owner.
+                self.pending_window = Some((request, policy));
+            }
+            return;
+        }
         if let AppRequest::ApplyEvaluatedProcessBridge(candidate) = &request {
             let profile = candidate.profile(17).unwrap();
             context.measured_process = Some(profile.clone());
@@ -205,6 +235,24 @@ impl ServiceDriver for MeasuredDriver {
         if !self.initialized {
             self.initialized = true;
             self.initialize(context);
+        }
+        let (finish_window, wrong_policy) = {
+            let mut control = self.control.lock().unwrap();
+            (
+                std::mem::take(&mut control.finish_live_window),
+                control.wrong_live_policy,
+            )
+        };
+        if finish_window && let Some((request, mut policy)) = self.pending_window.take() {
+            if wrong_policy {
+                policy.min_output_reads += 1;
+            }
+            let profile = software_live_window_profile(context, request, policy);
+            context.measured_process = Some(profile.clone());
+            self.selected = Some(profile);
+            context
+                .graph
+                .preparing(context.core.generation(), request.graph_revision);
         }
         if self.control.lock().unwrap().retain_prefix && context.last_cleanup.is_none() {
             let node = context
@@ -257,6 +305,7 @@ impl ServiceDriver for MeasuredDriver {
 
     fn begin_exit(&mut self, context: &mut ServiceContext, _: &mut JobPool) {
         self.selected = None;
+        self.pending_window = None;
         if let Some(generation) = context.core.owner_generation() {
             context.core.owner_reaped(generation);
         }
@@ -265,7 +314,7 @@ impl ServiceDriver for MeasuredDriver {
     fn is_drained(&self) -> bool {
         // A held stopped Apply still has a confirmation to publish. Do not let
         // the service park indefinitely before the fixture releases it.
-        self.selected.is_none()
+        self.selected.is_none() && self.pending_window.is_none()
     }
 }
 
@@ -278,6 +327,66 @@ fn active_node(context: &ServiceContext) -> NodeId {
         .find(|node| matches!(node.source, Some(InputSelection::Process { .. })))
         .unwrap()
         .id
+}
+
+fn software_live_window_profile(
+    context: &ServiceContext,
+    request: MeasuredProcessRequest,
+    policy: ProcessWindowPolicy,
+) -> MeasuredProcessProfile {
+    // Actual replay and profile checks, through the existing cfg(test) seam.
+    // This fixture's archive remains CallerSupplied; it proves UI behavior,
+    // not issuance of production native proof or successful audio replacement.
+    let observed = observation(request.node);
+    let measurement = observed
+        .measured(&observed.process, request.native_owner_generation)
+        .unwrap();
+    let options = measurement
+        .admit_for_consumer(
+            &observed.process,
+            request.native_owner_generation,
+            moiren_windows_audio::latency::transport::TransportInputPolicy::Target {
+                capacity_frames: request.capacity_frames,
+                target_frames: request.target_frames,
+                jitter_frames: request.jitter_frames,
+            },
+            observed.consumer_sample_rate,
+            observed.prepared_consumer_demand_frames,
+        )
+        .unwrap();
+    let evidence = crate::service::process_trace::tests::evidence(request.node);
+    let report = evidence
+        .artifact()
+        .replay_live_window(
+            &observed.process,
+            request.native_owner_generation,
+            options,
+            policy.native(),
+        )
+        .unwrap();
+    assert_eq!(
+        report.trace_origin,
+        moiren_windows_audio::process_loopback::ProcessTraceOrigin::CallerSupplied
+    );
+    crate::service::measured_process::live::LiveProcessEvaluation::software(
+        measurement,
+        report,
+        true,
+    )
+    .profile(
+        17,
+        request,
+        policy,
+        context
+            .process_trace_status
+            .as_ref()
+            .unwrap()
+            .origin
+            .as_ref()
+            .unwrap()
+            .clone(),
+    )
+    .unwrap()
 }
 
 #[gpui_kit::test]
@@ -441,6 +550,7 @@ impl Fixture {
                 max_block_frames: 256,
             },
             selected: None,
+            pending_window: None,
         })
         .unwrap();
         let initial = wait_for(Duration::from_secs(2), || {
@@ -914,6 +1024,362 @@ fn measured_unrelated_confirmation_cannot_satisfy_captured_request_or_generation
             fixture.requests(),
             vec![AppRequest::ApplyMeasuredProcessBridge(expected)]
         );
+        fixture.finish();
+    }
+}
+
+fn live_window_policy() -> ProcessWindowPolicy {
+    ProcessWindowPolicy {
+        max_initial_unserved_frames: 4096,
+        max_initial_prime_discarded_frames: 4096,
+        min_output_frames: 96,
+        min_output_reads: 2,
+        min_output_span_100ns: 10_000,
+    }
+}
+
+fn open_live_window(cx: &mut VisualTestContext) {
+    reveal(cx, "measured-live-window-open");
+    cx.update(|window, cx| {
+        assert!(
+            window.find("measured-live-window-open").visible(),
+            "live observed-window mode requires an explicit opt-in action"
+        );
+        window.click("measured-live-window-open", cx);
+        window.render_frame(cx);
+    });
+}
+
+fn choose_live_window_policy(cx: &mut VisualTestContext) {
+    for id in [
+        "measured-live-window-policy-0-2",
+        "measured-live-window-policy-1-2",
+        "measured-live-window-policy-2-0",
+        "measured-live-window-policy-3-0",
+        "measured-live-window-policy-4-0",
+    ] {
+        reveal(cx, id);
+        cx.update(|window, cx| window.click(id, cx));
+    }
+}
+
+#[gpui_kit::test]
+fn desktop_live_window_requires_opt_in_and_each_policy_field_before_dispatch(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(Evidence::Current, false);
+    let (_, cx) = fixture.shell(cx);
+    select_target(cx);
+    assert!(fixture.requests().is_empty());
+    open_live_window(cx);
+    let feedback = row(cx, "measured-live-window-feedback");
+    assert!(feedback.contains("all five"), "{feedback}");
+    reveal(cx, "measured-live-window-apply");
+    cx.update(|window, cx| window.click("measured-live-window-apply", cx));
+    for id in [
+        "measured-live-window-policy-0-2",
+        "measured-live-window-policy-1-2",
+        "measured-live-window-policy-2-0",
+        "measured-live-window-policy-3-0",
+    ] {
+        reveal(cx, id);
+        cx.update(|window, cx| window.click(id, cx));
+    }
+    reveal(cx, "measured-live-window-apply");
+    cx.update(|window, cx| window.click("measured-live-window-apply", cx));
+    assert!(
+        fixture.requests().is_empty(),
+        "the fifth field must not be guessed from diagnostic defaults"
+    );
+    assert!(row(cx, "measured-live-window-feedback").contains("all five"));
+    fixture.finish();
+}
+
+#[gpui_kit::test]
+fn desktop_live_window_click_dispatches_exact_policy_and_waits_for_async_selection_and_owner(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(Evidence::Current, true);
+    let expected = fixture.expected();
+    let (view, cx) = fixture.shell(cx);
+    select_target(cx);
+    open_live_window(cx);
+    choose_live_window_policy(cx);
+    reveal(cx, "measured-live-window-apply");
+    cx.update(|window, cx| {
+        window.click("measured-live-window-apply", cx);
+        window.click("measured-live-window-apply", cx);
+    });
+    wait_snapshot(&view, cx, |snapshot| snapshot.consumed_request_id.0 > 0);
+    let expected_request = AppRequest::ApplyWindowedProcessBridge {
+        request: expected,
+        policy: live_window_policy(),
+    };
+    assert_eq!(fixture.requests(), vec![expected_request.clone()]);
+    view.update(cx, |shell, cx| {
+        assert!(!shell.state.read(cx).pending_request);
+        assert!(
+            shell.settings.measured.busy(),
+            "asynchronous replay has not yet selected a new profile"
+        );
+        assert_eq!(
+            shell
+                .state
+                .read(cx)
+                .snapshot
+                .active_measured_process
+                .as_ref()
+                .unwrap()
+                .selection_id,
+            16
+        );
+    });
+    reveal(cx, "measured-live-window-apply");
+    cx.update(|window, cx| window.click("measured-live-window-apply", cx));
+    fixture.control.lock().unwrap().finish_live_window = true;
+    wait_snapshot(&view, cx, |snapshot| {
+        snapshot
+            .measured_process
+            .as_ref()
+            .is_some_and(|s| s.selection_id == 17)
+    });
+    view.update(cx, |shell, _| {
+        assert!(shell.settings.measured.busy(), "requested is not active")
+    });
+    let requested = row(cx, "measured-live-window-requested");
+    assert!(
+        requested.contains("4096 / 4096 / 96 / 2 / 10000"),
+        "{requested}"
+    );
+    assert!(!row(cx, "measured-live-window-active").contains("4096 / 4096 / 96 / 2 / 10000"));
+    fixture.control.lock().unwrap().confirmation = Some(Confirmation::Exact);
+    wait_until(Duration::from_secs(3), || {
+        poll(&view, cx);
+        view.update(cx, |shell, _| !shell.settings.measured.busy())
+    });
+    view.update(cx, |shell, cx| {
+        assert!(
+            shell.settings.measured.error.is_none(),
+            "{:?}",
+            shell.settings.measured.error
+        );
+        let snapshot = &shell.state.read(cx).snapshot;
+        assert_ne!(snapshot.generation, expected.session_generation);
+        assert_eq!(snapshot.measured_process, snapshot.active_measured_process);
+        assert_eq!(
+            snapshot
+                .active_measured_process
+                .as_ref()
+                .unwrap()
+                .observed_window
+                .as_ref()
+                .unwrap()
+                .policy,
+            live_window_policy()
+        );
+    });
+    let active = row(cx, "measured-live-window-active");
+    assert!(active.contains("4096 / 4096 / 96 / 2 / 10000"), "{active}");
+    let feedback = row(cx, "measured-live-window-feedback");
+    assert!(feedback.contains("unqualified"), "{feedback}");
+    assert_eq!(
+        fixture.requests(),
+        vec![expected_request],
+        "no ApplyGraph, Stop, fallback or second apply"
+    );
+    fixture.finish();
+}
+
+#[gpui_kit::test]
+fn desktop_live_window_refresh_catalog_receipt_preserves_pending_until_exact_new_owner(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(Evidence::Current, true);
+    let expected = fixture.expected();
+    let original = fixture.initial.measured_process.clone();
+    let (view, cx) = fixture.shell(cx);
+    select_target(cx);
+    open_live_window(cx);
+    choose_live_window_policy(cx);
+    reveal(cx, "measured-live-window-apply");
+    cx.update(|window, cx| window.click("measured-live-window-apply", cx));
+    wait_snapshot(&view, cx, |snapshot| snapshot.consumed_request_id.0 > 0);
+    let apply_id = view.update(cx, |shell, cx| {
+        assert!(shell.settings.measured.busy());
+        shell.state.read(cx).snapshot.consumed_request_id
+    });
+
+    // Use the real tracked mailbox, not a fabricated receipt. The service
+    // treats catalog refresh as non-mutating and keeps the evaluation alive.
+    let refresh_id = view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.try_dispatch(AppRequest::RefreshCatalog).unwrap()
+        })
+    });
+    assert!(refresh_id > apply_id);
+    wait_snapshot(&view, cx, |snapshot| {
+        snapshot.consumed_request_id >= refresh_id
+    });
+    view.update(cx, |shell, cx| {
+        assert!(
+            shell.settings.measured.busy(),
+            "a newer harmless catalog receipt does not supersede live evaluation"
+        );
+        assert!(shell.settings.measured.error.is_none());
+        let snapshot = &shell.state.read(cx).snapshot;
+        assert_eq!(snapshot.generation, expected.session_generation);
+        assert_eq!(snapshot.measured_process, original);
+        assert_eq!(snapshot.active_measured_process, original);
+    });
+
+    fixture.control.lock().unwrap().finish_live_window = true;
+    wait_snapshot(&view, cx, |snapshot| {
+        snapshot
+            .measured_process
+            .as_ref()
+            .is_some_and(|selection| selection.selection_id == 17)
+    });
+    let second_refresh_id = view.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.try_dispatch(AppRequest::RefreshCatalog).unwrap()
+        })
+    });
+    wait_snapshot(&view, cx, |snapshot| {
+        snapshot.consumed_request_id >= second_refresh_id
+    });
+    view.update(cx, |shell, cx| {
+        assert!(
+            shell.settings.measured.busy(),
+            "catalog receipt is not replacement-owner confirmation"
+        );
+        assert!(shell.settings.measured.error.is_none());
+        let snapshot = &shell.state.read(cx).snapshot;
+        assert_eq!(snapshot.generation, expected.session_generation);
+        assert_eq!(snapshot.active_measured_process, original);
+    });
+
+    fixture.control.lock().unwrap().confirmation = Some(Confirmation::Exact);
+    wait_until(Duration::from_secs(3), || {
+        poll(&view, cx);
+        view.update(cx, |shell, _| !shell.settings.measured.busy())
+    });
+    view.update(cx, |shell, cx| {
+        assert!(
+            shell.settings.measured.error.is_none(),
+            "{:?}",
+            shell.settings.measured.error
+        );
+        assert!(shell.settings.measured.message.is_some());
+        let snapshot = &shell.state.read(cx).snapshot;
+        assert_ne!(snapshot.generation, expected.session_generation);
+        let active = snapshot.active_measured_process.as_ref().unwrap();
+        assert_eq!(active.request, expected);
+        assert_eq!(
+            active.observed_window.as_ref().unwrap().policy,
+            live_window_policy()
+        );
+        assert_eq!(snapshot.measured_process.as_ref(), Some(active));
+    });
+    assert_eq!(
+        fixture.requests(),
+        vec![
+            AppRequest::ApplyWindowedProcessBridge {
+                request: expected,
+                policy: live_window_policy(),
+            },
+            AppRequest::RefreshCatalog,
+            AppRequest::RefreshCatalog,
+        ],
+        "refresh must not cause fallback, a second apply, or a stop"
+    );
+    fixture.finish();
+}
+
+#[gpui_kit::test]
+fn desktop_live_window_refusal_retains_draft_previous_active_and_never_falls_back(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(Evidence::Current, true);
+    fixture.control.lock().unwrap().reject = true;
+    let expected = fixture.expected();
+    let old = fixture.initial.active_measured_process.clone();
+    let (view, cx) = fixture.shell(cx);
+    select_target(cx);
+    open_live_window(cx);
+    choose_live_window_policy(cx);
+    reveal(cx, "measured-live-window-apply");
+    cx.update(|window, cx| window.click("measured-live-window-apply", cx));
+    wait_snapshot(&view, cx, |snapshot| {
+        snapshot
+            .graph
+            .last_error
+            .as_ref()
+            .is_some_and(|e| e.contains("overwritten"))
+    });
+    assert!(row(cx, "measured-live-window-feedback").contains("overwritten"));
+    view.update(cx, |shell, cx| {
+        assert!(!shell.settings.measured.busy());
+        assert_eq!(shell.state.read(cx).snapshot.active_measured_process, old);
+    });
+    assert_draft(&view, cx, expected);
+    assert_eq!(
+        fixture.requests(),
+        vec![AppRequest::ApplyWindowedProcessBridge {
+            request: expected,
+            policy: live_window_policy()
+        }]
+    );
+    fixture.finish();
+}
+
+#[gpui_kit::test]
+fn desktop_live_window_different_policy_cannot_confirm_same_request(cx: &mut TestAppContext) {
+    let fixture = Fixture::new(Evidence::Current, false);
+    fixture.control.lock().unwrap().wrong_live_policy = true;
+    let (view, cx) = fixture.shell(cx);
+    select_target(cx);
+    open_live_window(cx);
+    choose_live_window_policy(cx);
+    reveal(cx, "measured-live-window-apply");
+    cx.update(|window, cx| window.click("measured-live-window-apply", cx));
+    wait_snapshot(&view, cx, |snapshot| snapshot.consumed_request_id.0 > 0);
+    fixture.control.lock().unwrap().finish_live_window = true;
+    wait_snapshot(&view, cx, |snapshot| snapshot.measured_process.is_some());
+    view.update(cx, |shell, _| {
+        assert!(!shell.settings.measured.busy());
+        assert!(
+            shell.settings.measured.error.is_some(),
+            "a different policy is not successful confirmation"
+        );
+        assert!(shell.settings.measured.message.is_none());
+    });
+    assert!(!row(cx, "measured-live-window-feedback").contains("budget is active"));
+    assert_eq!(fixture.requests().len(), 1);
+    fixture.finish();
+}
+
+#[gpui_kit::test]
+fn desktop_live_window_missing_or_stale_original_observations_do_not_dispatch(
+    cx: &mut TestAppContext,
+) {
+    for evidence in [
+        Evidence::MissingNative,
+        Evidence::MissingProducer,
+        Evidence::StaleSession,
+        Evidence::StaleOwner,
+        Evidence::ReplacedProcess,
+    ] {
+        let fixture = Fixture::new(evidence, false);
+        let (view, cx) = fixture.shell(cx);
+        select_target(cx);
+        open_live_window(cx);
+        choose_live_window_policy(cx);
+        reveal(cx, "measured-live-window-apply");
+        cx.update(|window, cx| window.click("measured-live-window-apply", cx));
+        poll(&view, cx);
+        assert!(fixture.requests().is_empty(), "{evidence:?}");
+        assert!(!row(cx, "measured-live-window-feedback").is_empty());
+        view.update(cx, |shell, _| assert!(!shell.settings.measured.busy()));
         fixture.finish();
     }
 }

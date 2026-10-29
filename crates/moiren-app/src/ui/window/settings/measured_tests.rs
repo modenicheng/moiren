@@ -309,3 +309,51 @@ fn desktop_measured_old_deadline_cannot_expire_a_newer_captured_request() {
     assert!(editor.busy());
     assert!(editor.error.is_none());
 }
+
+#[test]
+fn desktop_live_window_per_wake_confirmation_cannot_accept_a_windowed_selection() {
+    let (mut snapshot, draft) = fixture();
+    let request = draft.request(&snapshot).unwrap();
+    let mut selected = crate::service::measured_process::MeasuredProcessProfile::from_observation(
+        17,
+        request,
+        &snapshot
+            .native_observations
+            .as_ref()
+            .unwrap()
+            .observation
+            .process_delivery[0],
+    )
+    .unwrap()
+    .summary()
+    .clone();
+    selected.observed_window = Some(crate::service::MeasuredProcessWindow {
+        policy: crate::service::ProcessWindowPolicy {
+            max_initial_unserved_frames: 4096,
+            max_initial_prime_discarded_frames: 4096,
+            min_output_frames: 96,
+            min_output_reads: 2,
+            min_output_span_100ns: 1,
+        },
+        cutoff_100ns: 1_100_000,
+        replayed_packet_events: 6,
+        replayed_read_events: 6,
+    });
+    let mut editor = MeasuredEditor::default();
+    editor.begin(crate::service::RequestId(5), request, &snapshot);
+    snapshot.consumed_request_id = crate::service::RequestId(5);
+    snapshot.generation.0 += 1;
+    snapshot.native_observations.as_mut().unwrap().generation = snapshot.generation;
+    snapshot.measured_process = Some(selected.clone());
+    snapshot.active_measured_process = Some(selected);
+    editor.observe(&snapshot, None);
+    assert!(!editor.busy());
+    assert!(
+        editor.error.is_some(),
+        "exact request alone cannot change the requested admission mode"
+    );
+    assert!(
+        editor.message.is_none(),
+        "a windowed selection is not this per-wake confirmation"
+    );
+}

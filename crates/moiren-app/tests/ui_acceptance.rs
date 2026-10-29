@@ -174,6 +174,23 @@ fn expert_input_buffers_are_explicit_drafts_with_unqualified_latency(
         window.render_frame(cx);
         window.click("open-settings", cx);
         window.click("settings-transport", cx);
+        // The measured admission modes precede Expert input buffers. Reach
+        // the warning through the real viewport instead of assuming it fits.
+        for _ in 0..16 {
+            let target = window.find("transport-latency-unqualified");
+            let viewport = window.find("settings-scroll").bounds();
+            if target.visible()
+                && target.bounds().origin.y + target.bounds().size.height
+                    < viewport.origin.y + viewport.size.height - px(12.)
+            {
+                break;
+            }
+            window.scroll(
+                "settings-scroll",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-180.))),
+                cx,
+            );
+        }
         assert!(window.find("transport-latency-unqualified").visible());
         assert_eq!(
             window.find("transport-latency-unqualified").label(),

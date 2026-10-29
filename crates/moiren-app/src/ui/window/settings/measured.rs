@@ -3,6 +3,8 @@ use super::*;
 use crate::service::{AppSnapshot, InputSelection, MeasuredProcessRequest, RequestId};
 use moiren_core::graph::NodeId;
 
+#[cfg(windows)]
+mod live;
 mod state;
 #[cfg(windows)]
 mod window;
@@ -14,6 +16,10 @@ pub(super) use state::MeasuredEditor;
 pub(super) mod window_tests;
 
 pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
+    #[cfg(windows)]
+    if shell.settings.measured.live_open {
+        return live::editor(shell, cx);
+    }
     #[cfg(windows)]
     if shell.settings.measured.window_open {
         return window::editor(shell, cx);
@@ -172,7 +178,9 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
             .unwrap_or_else(|| t!("No active audio configuration").into()),
         ));
     #[cfg(windows)]
-    let view = view.child(window::open_button(cx));
+    let view = view
+        .child(live::open_button(cx))
+        .child(window::open_button(cx));
     view
 }
 

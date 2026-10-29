@@ -88,6 +88,74 @@ impl MeasuredDraft {
         Ok(request)
     }
 
+    #[cfg(windows)]
+    pub(super) fn live_request(
+        self,
+        snapshot: &AppSnapshot,
+    ) -> Result<MeasuredProcessRequest, String> {
+        let request = self.request(snapshot)?;
+        if snapshot.measured_process != snapshot.active_measured_process {
+            return Err("The original Process selection is not settled.".into());
+        }
+        let status = snapshot
+            .process_trace_status
+            .as_ref()
+            .ok_or("Original live Process collection is unavailable.")?;
+        if let Some(refusal) = &status.refusal {
+            return Err(refusal.clone());
+        }
+        let origin = status
+            .origin
+            .as_ref()
+            .ok_or("Original live Process collection identity is unavailable.")?;
+        let source = snapshot
+            .graph
+            .node(request.node)
+            .and_then(|node| node.source.as_ref());
+        if origin.generation != request.session_generation
+            || origin.native_owner_generation != request.native_owner_generation
+            || origin.graph_revision != request.graph_revision
+            || origin.node != request.node
+            || origin.audio_settings != snapshot.audio_settings
+            || origin.transport_latency != snapshot.transport_latency
+            || origin.latency_profile != snapshot.latency_profile
+            || source
+                != Some(&InputSelection::Process {
+                    pid: origin.process.pid,
+                    creation_time_100ns: origin.process.creation_time_100ns,
+                })
+        {
+            return Err("Original live Process collection, source or settings changed.".into());
+        }
+        if snapshot
+            .transport_latency
+            .process_max_ingress_elapsed_100ns
+            .is_some()
+        {
+            return Err(
+                "Observed-window admission cannot replay ingress elapsed enforcement.".into(),
+            );
+        }
+        let native = &snapshot.native_observations.as_ref().unwrap().observation;
+        let matching: Vec<_> = native
+            .process_delivery
+            .iter()
+            .filter(|p| p.node == request.node)
+            .collect();
+        if matching.len() != 1 || !matching[0].process.same_process(&origin.process) {
+            return Err("Original live Process observations are missing or ambiguous.".into());
+        }
+        for history in [&matching[0].producer, &matching[0].consumer] {
+            let history = history
+                .as_ref()
+                .ok_or("Original live Process measurement history is unavailable.")?;
+            if history.overwritten_events != 0 {
+                return Err("Original live Process measurement history was overwritten; no per-wake fallback.".into());
+            }
+        }
+        Ok(request)
+    }
+
     #[cfg(not(windows))]
     pub(in crate::ui::window::settings) fn request(
         self,
@@ -108,6 +176,11 @@ struct Pending {
     previous_graph_error: Option<String>,
     began: Instant,
     retained: bool,
+    window_policy: Option<crate::service::ProcessWindowPolicy>,
+    #[cfg(windows)]
+    previous_summary: Option<crate::service::MeasuredProcessSummary>,
+    #[cfg(windows)]
+    window_origin: Option<crate::service::ProcessTraceSessionOrigin>,
 }
 
 #[derive(Default)]
@@ -119,6 +192,10 @@ pub(in crate::ui::window::settings) struct MeasuredEditor {
     pub(super) window_open: bool,
     #[cfg(windows)]
     pub(super) window: super::window_state::WindowEditor,
+    #[cfg(windows)]
+    pub(super) live_open: bool,
+    #[cfg(windows)]
+    pub(super) live_policy: super::live::PolicyDraft,
     pending: Option<Pending>,
     confirmed: Option<(crate::service::SessionGeneration, u64)>,
 }
@@ -164,9 +241,32 @@ impl MeasuredEditor {
             previous_graph_error: snapshot.graph.last_error.clone(),
             began: Instant::now(),
             retained: false,
+            window_policy: None,
+            #[cfg(windows)]
+            previous_summary: snapshot.measured_process.clone(),
+            #[cfg(windows)]
+            window_origin: None,
         });
         self.message =
             Some(t!("Restarting audio; waiting for the measured budget to become active.").into());
+    }
+
+    #[cfg(windows)]
+    pub(super) fn begin_live(
+        &mut self,
+        id: RequestId,
+        request: MeasuredProcessRequest,
+        policy: crate::service::ProcessWindowPolicy,
+        snapshot: &AppSnapshot,
+    ) {
+        self.begin(id, request, snapshot);
+        let pending = self.pending.as_mut().unwrap();
+        pending.window_policy = Some(policy);
+        pending.window_origin = snapshot
+            .process_trace_status
+            .as_ref()
+            .and_then(|s| s.origin.clone());
+        self.message = Some("Evaluating the original live Process window; waiting for exact policy admission and a replacement owner. Physical latency remains unqualified.".into());
     }
 
     #[cfg(windows)]
@@ -218,19 +318,80 @@ impl MeasuredEditor {
             {
                 return Err(t!("Settings changed while applying the measured budget.").into());
             }
-            let selected = snapshot
-                .measured_process
+            if snapshot.graph.candidate_revision != pending.request.graph_revision {
+                return Err(t!("The graph changed while applying the measured budget.").into());
+            }
+            if let Some(error) = snapshot
+                .graph
+                .last_error
                 .as_ref()
-                .filter(|s| {
-                    s.request == pending.request
-                        && Some(s.selection_id) != pending.previous_selection
+                .filter(|error| Some(*error) != pending.previous_graph_error.as_ref())
+            {
+                return Err(error.clone());
+            }
+            let selected = snapshot.measured_process.as_ref().filter(|s| {
+                s.request == pending.request && Some(s.selection_id) != pending.previous_selection
+            });
+            // Receipts are cumulative: a later catalog refresh is not
+            // cancellation. Keep waiting only on the exact captured evidence.
+            if pending.window_policy.is_some() && selected.is_none() && pending.selection.is_none()
+            {
+                #[cfg(windows)]
+                {
+                    // Consumption acknowledges enqueue, not background
+                    // evaluation. Only the same original settled owner may
+                    // wait without a newly selected profile.
+                    let origin = snapshot
+                        .process_trace_status
+                        .as_ref()
+                        .filter(|s| s.refusal.is_none())
+                        .and_then(|s| s.origin.as_ref());
+                    let source = snapshot
+                        .graph
+                        .node(pending.request.node)
+                        .and_then(|node| node.source.as_ref());
+                    let expected_source =
+                        pending
+                            .window_origin
+                            .as_ref()
+                            .map(|o| InputSelection::Process {
+                                pid: o.process.pid,
+                                creation_time_100ns: o.process.creation_time_100ns,
+                            });
+                    if snapshot.phase == SessionPhase::Running
+                        && snapshot.generation == pending.request.session_generation
+                        && snapshot.measured_process == pending.previous_summary
+                        && snapshot.active_measured_process == pending.previous_summary
+                        && snapshot.graph.pending_revision.is_none()
+                        && snapshot.graph.active_revision == Some(pending.request.graph_revision)
+                        && origin == pending.window_origin.as_ref()
+                        && origin.is_some()
+                        && source == expected_source.as_ref()
+                        && snapshot.native_observations.as_ref().is_some_and(|n| {
+                            n.generation == pending.request.session_generation
+                                && n.observation.running
+                                && n.observation.owner_generation
+                                    == pending.request.native_owner_generation
+                        })
+                    {
+                        return Ok(false);
+                    }
+                }
+                return Err("Original live Process collection, source or settings changed during evaluation.".into());
+            }
+            let selected = selected.ok_or_else(|| {
+                snapshot.graph.last_error.clone().unwrap_or_else(|| {
+                    t!("Measured budget was refused or replaced. Your draft is retained.").into()
                 })
-                .ok_or_else(|| {
-                    snapshot.graph.last_error.clone().unwrap_or_else(|| {
-                        t!("Measured budget was refused or replaced. Your draft is retained.")
-                            .into()
-                    })
-                })?;
+            })?;
+            if selected
+                .observed_window
+                .as_ref()
+                .map(|window| window.policy)
+                != pending.window_policy
+            {
+                return Err("Measured Process admission mode or window policy differs from the captured request.".into());
+            }
             if pending
                 .selection
                 .is_some_and(|id| id != selected.selection_id)
@@ -248,17 +409,6 @@ impl MeasuredEditor {
                 return Err(snapshot.graph.last_error.clone().unwrap_or_else(|| {
                     t!("Audio stopped before the measured budget became active.").into()
                 }));
-            }
-            if snapshot.graph.candidate_revision != pending.request.graph_revision {
-                return Err(t!("The graph changed while applying the measured budget.").into());
-            }
-            if let Some(error) = snapshot
-                .graph
-                .last_error
-                .as_ref()
-                .filter(|error| Some(*error) != pending.previous_graph_error.as_ref())
-            {
-                return Err(error.clone());
             }
             if snapshot.phase != SessionPhase::Running
                 || snapshot.generation == pending.request.session_generation
