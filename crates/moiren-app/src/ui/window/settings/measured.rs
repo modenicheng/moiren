@@ -197,6 +197,40 @@ fn conflict(shell: &StudioShell, cx: &Context<StudioShell>) -> Option<String> {
 }
 
 impl StudioShell {
+    #[cfg(all(test, windows))]
+    pub(in crate::ui::window::settings) fn inject_software_window_candidate(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.state.read(cx).snapshot.clone();
+        let measured = &mut self.settings.measured;
+        let evidence = snapshot
+            .last_cleanup
+            .as_ref()
+            .unwrap()
+            .process_trace
+            .as_ref()
+            .unwrap()
+            .clone();
+        let token = crate::service::process_trace::candidate::software_candidate(evidence);
+        let job = measured.window.begin(&snapshot, measured.draft).unwrap();
+        let result = job.evaluate();
+        measured
+            .window
+            .finish(&job, &snapshot, measured.draft, result);
+        measured
+            .window
+            .finish_admission(&job, &snapshot, measured.draft, Ok(token));
+        assert!(
+            measured
+                .window
+                .candidate(&snapshot, measured.draft)
+                .is_some()
+        );
+        assert_eq!(snapshot.phase, SessionPhase::Idle);
+        assert_eq!(conflict(self, cx), None);
+        cx.notify();
+    }
     pub(in crate::ui::window) fn apply_measured_process(&mut self, cx: &mut Context<Self>) {
         // Recheck at activation, not only render: a queued event may be stale.
         if let Some(error) = conflict(self, cx) {
@@ -219,23 +253,26 @@ impl StudioShell {
         }) {
             Ok(id) => {
                 self.settings.measured.begin(id, request, &snapshot);
-                // A deadline must wake even if preparation stops publishing.
-                // This is presentation-only expiry, never a Stop/cancellation.
-                cx.spawn(async move |this, cx| {
-                    cx.background_executor()
-                        .timer(Duration::from_secs(30))
-                        .await;
-                    let _ = this.update(cx, |shell, cx| {
-                        shell.finish_measured_process(cx);
-                        shell.settings.measured.expire(id);
-                        cx.notify();
-                    });
-                })
-                .detach();
+                self.measured_deadline(id, cx);
             }
             Err(error) => self.settings.measured.error = Some(format!("{error:?}")),
         }
         cx.notify();
+    }
+
+    fn measured_deadline(&self, id: RequestId, cx: &mut Context<Self>) {
+        // Presentation-only expiry must wake even with no new snapshots.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs(30))
+                .await;
+            let _ = this.update(cx, |shell, cx| {
+                shell.finish_measured_process(cx);
+                shell.settings.measured.expire(id);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(in crate::ui::window) fn finish_measured_process(&mut self, cx: &mut Context<Self>) {

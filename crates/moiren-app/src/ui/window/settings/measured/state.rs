@@ -107,6 +107,7 @@ struct Pending {
     profile: crate::service::AudioLatencyProfile,
     previous_graph_error: Option<String>,
     began: Instant,
+    retained: bool,
 }
 
 #[derive(Default)]
@@ -162,9 +163,21 @@ impl MeasuredEditor {
             profile: snapshot.latency_profile,
             previous_graph_error: snapshot.graph.last_error.clone(),
             began: Instant::now(),
+            retained: false,
         });
         self.message =
             Some(t!("Restarting audio; waiting for the measured budget to become active.").into());
+    }
+
+    #[cfg(windows)]
+    pub(super) fn begin_retained(
+        &mut self,
+        id: RequestId,
+        request: MeasuredProcessRequest,
+        snapshot: &AppSnapshot,
+    ) {
+        self.begin(id, request, snapshot);
+        self.pending.as_mut().unwrap().retained = true;
     }
 
     pub(in crate::ui::window::settings) fn observe(
@@ -229,11 +242,9 @@ impl MeasuredEditor {
             pending.selection = Some(selected.selection_id);
             if matches!(
                 snapshot.phase,
-                SessionPhase::Idle
-                    | SessionPhase::Failed
-                    | SessionPhase::Exiting
-                    | SessionPhase::Exited
-            ) {
+                SessionPhase::Failed | SessionPhase::Exiting | SessionPhase::Exited
+            ) || (snapshot.phase == SessionPhase::Idle && !pending.retained)
+            {
                 return Err(snapshot.graph.last_error.clone().unwrap_or_else(|| {
                     t!("Audio stopped before the measured budget became active.").into()
                 }));

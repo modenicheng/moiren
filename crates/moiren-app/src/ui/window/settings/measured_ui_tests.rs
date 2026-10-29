@@ -47,6 +47,7 @@ struct Control {
     reject: bool,
     clear_active: bool,
     retain_prefix: bool,
+    measured_prefix: bool,
     confirmation: Option<Confirmation>,
 }
 
@@ -125,12 +126,14 @@ impl MeasuredDriver {
     fn confirm(&mut self, context: &mut ServiceContext, confirmation: Confirmation) {
         let mut active = self.selected.as_ref().unwrap().summary().clone();
         if !matches!(confirmation, Confirmation::SameSession)
-            && context.core.generation() == active.request.session_generation
+            && (context.core.generation() == active.request.session_generation
+                || context.core.owner_generation().is_none())
         {
             // Only simulate the service's confirmed projection. Existing managed
             // tests, not this fixture, verify the actual replacement factories.
-            let old = context.core.owner_generation().unwrap();
-            assert!(context.core.owner_reaped(old));
+            if let Some(old) = context.core.owner_generation() {
+                assert!(context.core.owner_reaped(old));
+            }
             let next = context.core.start(self.spec.clone()).unwrap();
             assert!(context.core.activated(next));
             assert!(context.core.owner_started(next));
@@ -149,6 +152,20 @@ impl MeasuredDriver {
         context.active_transport_latency = Some(context.transport_latency);
         context.active_latency_profile = Some(context.latency_profile);
         if !matches!(confirmation, Confirmation::SameSession) {
+            if context.native_observations.is_none() {
+                context.native_observations = Some(NativeSessionObservations {
+                    generation,
+                    observation: NativeObservationSnapshot {
+                        owner_generation: 7,
+                        running: true,
+                        streams: vec![],
+                        bridges: vec![],
+                        boundary_probes: vec![],
+                        render_padding: vec![],
+                        process_delivery: vec![observation(active_node(context))],
+                    },
+                });
+            }
             let native = context.native_observations.as_mut().unwrap();
             native.generation = generation;
             // Native generations are backend-local; a new app session may
@@ -162,6 +179,12 @@ impl MeasuredDriver {
 impl ServiceDriver for MeasuredDriver {
     fn request(&mut self, context: &mut ServiceContext, _: &mut JobPool, request: AppRequest) {
         self.log.lock().unwrap().push(request.clone());
+        if let AppRequest::ApplyEvaluatedProcessBridge(candidate) = &request {
+            let profile = candidate.profile(17).unwrap();
+            context.measured_process = Some(profile.clone());
+            self.selected = Some(profile);
+            return;
+        }
         if let AppRequest::ApplyMeasuredProcessBridge(request) = request {
             if self.control.lock().unwrap().reject {
                 context.graph.record_error(REFUSAL);
@@ -192,7 +215,18 @@ impl ServiceDriver for MeasuredDriver {
                 .find(|node| matches!(node.source, Some(InputSelection::Process { .. })))
                 .unwrap()
                 .id;
-            let evidence = crate::service::process_trace::tests::evidence(node);
+            let mut evidence = crate::service::process_trace::tests::evidence(node);
+            evidence.origin.generation = context.core.generation();
+            evidence.origin.graph_revision = context.graph.snapshot().candidate_revision;
+            evidence.origin.audio_settings = context.audio_settings.clone();
+            evidence.origin.transport_latency = context.transport_latency;
+            evidence.origin.latency_profile = context.latency_profile;
+            if self.control.lock().unwrap().measured_prefix {
+                let observation = observation(node);
+                evidence.measurement = observation
+                    .measured(&observation.process, 7)
+                    .map_err(|error| error.to_string());
+            }
             context.last_cleanup = Some(crate::service::SessionCleanupObservation {
                 generation: evidence.origin().generation,
                 state: super::measured::window_tests::cleanup_state(),
@@ -222,14 +256,103 @@ impl ServiceDriver for MeasuredDriver {
     }
 
     fn begin_exit(&mut self, context: &mut ServiceContext, _: &mut JobPool) {
+        self.selected = None;
         if let Some(generation) = context.core.owner_generation() {
             context.core.owner_reaped(generation);
         }
     }
 
     fn is_drained(&self) -> bool {
-        true
+        // A held stopped Apply still has a confirmation to publish. Do not let
+        // the service park indefinitely before the fixture releases it.
+        self.selected.is_none()
     }
+}
+
+fn active_node(context: &ServiceContext) -> NodeId {
+    context
+        .graph
+        .snapshot()
+        .nodes
+        .iter()
+        .find(|node| matches!(node.source, Some(InputSelection::Process { .. })))
+        .unwrap()
+        .id
+}
+
+#[gpui_kit::test]
+fn retained_apply_settings_click_requires_separate_admission_then_confirms_new_owner(
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new(Evidence::Current, false);
+    {
+        let mut control = fixture.control.lock().unwrap();
+        control.retain_prefix = true;
+        control.measured_prefix = true;
+    }
+    let (view, cx) = fixture.shell(cx);
+    wait_snapshot(&view, cx, |snapshot| snapshot.last_cleanup.is_some());
+    select_target(cx);
+    cx.update(|window, cx| {
+        window.click("process-window-open", cx);
+        window.render_frame(cx);
+        window.click("process-window-evaluate", cx);
+    });
+    wait_until(Duration::from_secs(3), || {
+        poll(&view, cx);
+        row(cx, "process-window-admission").contains("retained native")
+    });
+    assert!(
+        fixture.requests().is_empty(),
+        "evaluation never starts audio"
+    );
+    // Only this private software fixture injects a token. Production issuance
+    // above correctly refuses CallerSupplied despite valid measured observations.
+    view.update(cx, |shell, cx| {
+        shell.inject_software_window_candidate(cx);
+    });
+    reveal(cx, "process-window-apply");
+    cx.update(|window, cx| {
+        assert!(window.find("process-window-apply").visible());
+        assert!(
+            window
+                .find("settings-scroll")
+                .bounds()
+                .contains(&window.find("process-window-apply").bounds().center())
+        );
+        window.click("process-window-apply", cx);
+        window.click("process-window-apply", cx);
+    });
+    view.update(cx, |shell, _| {
+        assert!(
+            shell.settings.measured.busy(),
+            "{:?}",
+            shell.settings.measured.error
+        );
+    });
+    wait_snapshot(&view, cx, |snapshot| snapshot.measured_process.is_some());
+    view.update(cx, |shell, _| {
+        assert!(
+            shell.settings.measured.busy(),
+            "{:?}",
+            shell.settings.measured.error
+        )
+    });
+    fixture.control.lock().unwrap().confirmation = Some(Confirmation::Exact);
+    wait_snapshot(&view, cx, |snapshot| {
+        snapshot.phase == SessionPhase::Running
+    });
+    wait_until(Duration::from_secs(3), || {
+        poll(&view, cx);
+        view.update(cx, |shell, _| !shell.settings.measured.busy())
+    });
+    assert!(row(cx, "process-window-activation").contains("budget is active"));
+    assert_eq!(fixture.requests().len(), 1);
+    assert!(matches!(
+        fixture.requests()[0],
+        AppRequest::ApplyEvaluatedProcessBridge(_)
+    ));
+    fixture.finish();
 }
 
 #[gpui_kit::test]
@@ -261,8 +384,10 @@ fn process_window_settings_click_evaluates_retained_prefix_without_audio_request
         fixture.requests().is_empty(),
         "diagnostic replay must never restart audio"
     );
+    reveal(cx, "process-window-policy-0-0");
     cx.update(|window, cx| window.click("process-window-policy-0-0", cx));
     assert!(!row(cx, "process-window-feedback").contains("No violation in this window"));
+    reveal(cx, "process-window-evaluate");
     cx.update(|window, cx| window.click("process-window-evaluate", cx));
     wait_until(Duration::from_secs(3), || {
         poll(&view, cx);
@@ -434,6 +559,7 @@ fn assert_draft(
 }
 
 fn row(cx: &mut VisualTestContext, id: &'static str) -> String {
+    reveal(cx, id);
     cx.update(|window, _| {
         let element = window.find(id);
         assert!(element.visible(), "{id} must be visible");
@@ -442,6 +568,26 @@ fn row(cx: &mut VisualTestContext, id: &'static str) -> String {
             .expect("visible diagnostic aria label")
             .to_owned()
     })
+}
+
+fn reveal(cx: &mut VisualTestContext, id: &'static str) {
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        let target = window.find(id).bounds().center();
+        let viewport = window.find("settings-scroll").bounds();
+        // Partially clipped elements are marked visible, but pointer dispatch
+        // uses their centers. Exercise the actual scrollable Settings page.
+        if !viewport.contains(&target) {
+            window.scroll(
+                "settings-scroll",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                    px(0.),
+                    viewport.center().y - target.y,
+                )),
+                cx,
+            );
+        }
+    });
 }
 
 #[gpui_kit::test]

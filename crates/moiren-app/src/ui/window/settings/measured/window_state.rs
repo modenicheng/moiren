@@ -1,6 +1,6 @@
 //! One diagnostic worker, fenced independently of live measured Apply.
 use super::state::MeasuredDraft;
-use crate::service::{AppSnapshot, ProcessTraceSessionEvidence};
+use crate::service::{AppSnapshot, EvaluatedProcessCandidate, ProcessTraceSessionEvidence};
 use moiren_windows_audio::process_loopback::{AssessedProcessReplay, ReplayWindowPolicy};
 use rust_i18n::t;
 use std::sync::Arc;
@@ -12,6 +12,14 @@ pub(super) struct WindowJob {
 }
 
 impl WindowJob {
+    pub fn admit(&self) -> Result<EvaluatedProcessCandidate, String> {
+        self.evidence.clone().evaluate_for_apply(
+            self.draft.capacity_frames,
+            self.draft.target_frames,
+            self.draft.jitter_frames,
+            self.policy,
+        )
+    }
     pub fn evaluate(&self) -> Result<AssessedProcessReplay, String> {
         self.evidence.evaluate_candidate(
             self.draft.capacity_frames,
@@ -43,6 +51,7 @@ pub(super) struct WindowEditor {
     pending: Option<(Arc<WindowJob>, bool)>,
     completed: Option<(Arc<WindowJob>, AssessedProcessReplay)>,
     failed: Option<(Arc<WindowJob>, String)>,
+    admission: Option<(Arc<WindowJob>, Result<EvaluatedProcessCandidate, String>)>,
 }
 
 impl Default for WindowEditor {
@@ -60,6 +69,7 @@ impl Default for WindowEditor {
             pending: None,
             completed: None,
             failed: None,
+            admission: None,
         }
     }
 }
@@ -76,6 +86,7 @@ impl WindowEditor {
         self.error = None;
         self.completed = None;
         self.failed = None;
+        self.admission = None;
     }
 
     pub fn available(&self, snapshot: &AppSnapshot, draft: MeasuredDraft) -> Result<(), String> {
@@ -110,6 +121,7 @@ impl WindowEditor {
         self.error = None;
         self.completed = None;
         self.failed = None;
+        self.admission = None;
         self.pending = Some((job.clone(), false));
         Ok(job)
     }
@@ -146,6 +158,48 @@ impl WindowEditor {
             .filter(|(job, _)| job.matches(snapshot, draft, self.policy))
             .map(|(_, error)| error.as_str())
             .or(self.error.as_deref())
+    }
+
+    pub fn finish_admission(
+        &mut self,
+        job: &Arc<WindowJob>,
+        snapshot: &AppSnapshot,
+        draft: MeasuredDraft,
+        result: Result<EvaluatedProcessCandidate, String>,
+    ) {
+        // Must follow the same accepted completion, never a stale discarded job.
+        if !job.matches(snapshot, draft, self.policy)
+            || self
+                .completed
+                .as_ref()
+                .is_none_or(|(completed, _)| !Arc::ptr_eq(completed, job))
+        {
+            return;
+        }
+        self.admission = Some((job.clone(), result));
+    }
+
+    pub fn candidate(
+        &self,
+        snapshot: &AppSnapshot,
+        draft: MeasuredDraft,
+    ) -> Option<&EvaluatedProcessCandidate> {
+        self.admission
+            .as_ref()
+            .filter(|(job, _)| job.matches(snapshot, draft, self.policy))?
+            .1
+            .as_ref()
+            .ok()
+    }
+
+    pub fn admission_feedback(&self, snapshot: &AppSnapshot, draft: MeasuredDraft) -> Option<&str> {
+        self.admission
+            .as_ref()
+            .filter(|(job, _)| job.matches(snapshot, draft, self.policy))?
+            .1
+            .as_ref()
+            .err()
+            .map(String::as_str)
     }
 
     pub fn result(

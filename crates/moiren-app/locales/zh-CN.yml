@@ -2031,9 +2031,9 @@ _version: 2
 "Closed Process prefix evaluation":
   en: "Closed Process prefix evaluation"
   zh-CN: "闭合进程历史前缀评估"
-"Diagnostic replay only. Declared packet/gap assumptions do not bound native drains, future delivery or sample age. Live Apply still requires independent whole-wake admission.":
-  en: "Diagnostic replay only. Declared packet/gap assumptions do not bound native drains, future delivery or sample age. Live Apply still requires independent whole-wake admission."
-  zh-CN: "仅供诊断回放。声明的包大小与间隔假设不能约束原生整批传输、后续传输或样本年龄。实际应用仍须独立校验整次唤醒需求。"
+"Diagnostic replay uses declared assumptions. Explicit Apply separately requires final whole-drain and whole-wake admission plus the exact evaluated window; future delivery and physical latency remain unqualified.":
+  en: "Diagnostic replay uses declared assumptions. Explicit Apply separately requires final whole-drain and whole-wake admission plus the exact evaluated window; future delivery and physical latency remain unqualified."
+  zh-CN: "诊断回放使用声明的假设。显式应用还须独立通过最终整批传输、整次唤醒准入与同一配置窗口评估；后续传输和物理延迟仍未验收。"
 "Capacity / target / jitter (frames)":
   en: "Capacity / target / jitter (frames)"
   zh-CN: "容量 / 运行目标 / 抖动余量（帧）"
@@ -2088,3 +2088,21 @@ _version: 2
 "Evaluation discarded: predecessor, candidate or policy changed.":
   en: "Evaluation discarded: predecessor, candidate or policy changed."
   zh-CN: "评估结果已丢弃：前序会话、候选配置或评估策略已更改。"
+"Final whole-wake admission and this window permit explicit Apply; physical latency is unqualified.":
+  en: "Final whole-wake admission and this window permit explicit Apply; physical latency is unqualified."
+  zh-CN: "最终整次唤醒准入与本窗口评估允许显式应用；物理延迟仍未验收。"
+"Empirical whole-drain / gap / whole-wake":
+  en: "Empirical whole-drain / gap / whole-wake"
+  zh-CN: "实测整批传输 / 间隔 / 整次唤醒"
+"Window policy: initial unserved / prime discard / output frames / reads / span":
+  en: "Window policy: initial unserved / prime discard / output frames / reads / span"
+  zh-CN: "窗口策略：初始未提供帧数 / 预填丢弃 / 输出帧数 / 读取次数 / 跨度"
+"No evaluated native candidate is available.":
+  en: "No evaluated native candidate is available."
+  zh-CN: "没有可应用的原生评估候选配置。"
+"Apply evaluated budget and start audio":
+  en: "Apply evaluated budget and start audio"
+  zh-CN: "应用已评估预算并启动音频"
+"A stopped matching evaluated native candidate is required.":
+  en: "A stopped matching evaluated native candidate is required."
+  zh-CN: "需要已停止且身份匹配的原生评估候选配置。"

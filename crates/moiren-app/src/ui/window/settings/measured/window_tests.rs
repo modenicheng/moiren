@@ -132,3 +132,64 @@ fn process_window_candidate_failure_does_not_follow_a_replaced_predecessor() {
     assert!(editor.feedback_error(&snapshot, draft).is_none());
     assert!(!editor.busy());
 }
+
+#[test]
+fn retained_apply_candidate_is_fenced_separately_from_diagnostic_success() {
+    let (snapshot, draft, evidence) = fixture();
+    let mut editor = WindowEditor::default();
+    let job = editor.begin(&snapshot, draft).unwrap();
+    let diagnostic = job.evaluate();
+    editor.finish(&job, &snapshot, draft, diagnostic);
+    editor.finish_admission(
+        &job,
+        &snapshot,
+        draft,
+        Err("missing final native whole wake".into()),
+    );
+    assert!(editor.result(&snapshot, draft).is_some());
+    assert!(editor.candidate(&snapshot, draft).is_none());
+    assert!(
+        editor
+            .admission_feedback(&snapshot, draft)
+            .unwrap()
+            .contains("whole wake")
+    );
+    assert_eq!(evidence.origin().node, draft.node.unwrap());
+}
+
+#[test]
+fn retained_apply_successful_candidate_cannot_follow_draft_policy_or_predecessor_changes() {
+    for change in 0..4 {
+        let (mut snapshot, mut draft, original) = fixture();
+        // Preserve the exact object installed below; software tokens are only
+        // control fixtures and their replay origin remains CallerSupplied.
+        let node = original.origin().node;
+        let mut evidence = crate::service::process_trace::tests::evidence(node);
+        let observation = crate::service::measured_process::tests::observation(node);
+        evidence.measurement = observation
+            .measured(&observation.process, 7)
+            .map_err(|e| e.to_string());
+        let owned = Arc::new(evidence);
+        snapshot.last_cleanup.as_mut().unwrap().process_trace = Some(owned.clone());
+        let token = crate::service::process_trace::candidate::software_candidate(owned);
+        let mut editor = WindowEditor::default();
+        let job = editor.begin(&snapshot, draft).unwrap();
+        editor.finish(&job, &snapshot, draft, job.evaluate());
+        editor.finish_admission(&job, &snapshot, draft, Ok(token));
+        assert!(editor.candidate(&snapshot, draft).is_some());
+        match change {
+            0 => draft.target_frames += 1,
+            1 => editor.policy.min_output_frames += 1,
+            2 => {
+                snapshot.last_cleanup.as_mut().unwrap().process_trace = Some(Arc::new(
+                    crate::service::process_trace::tests::evidence(node),
+                ))
+            }
+            _ => editor.changed(),
+        }
+        assert!(
+            editor.candidate(&snapshot, draft).is_none(),
+            "change {change}"
+        );
+    }
+}

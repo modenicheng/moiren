@@ -134,5 +134,26 @@ mod tests {
             ),
             "未通过验收：不能证明持续运行、波形正确性、样本年龄或物理延迟"
         );
+        assert_eq!(
+            rust_i18n::t!(
+                "Apply evaluated budget and start audio",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "应用已评估预算并启动音频"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "Empirical whole-drain / gap / whole-wake",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "实测整批传输 / 间隔 / 整次唤醒"
+        );
+        assert_eq!(
+            rust_i18n::t!(
+                "A stopped matching evaluated native candidate is required.",
+                locale = SIMPLIFIED_CHINESE
+            ),
+            "需要已停止且身份匹配的原生评估候选配置。"
+        );
     }
 }

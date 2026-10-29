@@ -58,6 +58,45 @@ pub(super) fn fixture() -> (crate::service::AppSnapshot, MeasuredDraft) {
 }
 
 #[test]
+fn retained_apply_confirmation_waits_in_idle_after_consumption_but_never_confirms_without_new_owner()
+ {
+    let (mut snapshot, draft) = fixture();
+    let request = draft.request(&snapshot).unwrap();
+    let selected = crate::service::measured_process::MeasuredProcessProfile::from_observation(
+        1,
+        request,
+        &snapshot
+            .native_observations
+            .as_ref()
+            .unwrap()
+            .observation
+            .process_delivery[0],
+    )
+    .unwrap()
+    .summary()
+    .clone();
+    snapshot.phase = SessionPhase::Idle;
+    snapshot.native_observations = None;
+    snapshot.active_measured_process = None;
+    let mut editor = MeasuredEditor::default();
+    editor.begin_retained(crate::service::RequestId(8), request, &snapshot);
+    snapshot.consumed_request_id = crate::service::RequestId(8);
+    snapshot.measured_process = Some(selected);
+    editor.observe(&snapshot, None);
+    assert!(
+        editor.busy(),
+        "accepted stopped Apply may still wait for resources"
+    );
+    snapshot.graph = std::sync::Arc::new(crate::service::GraphSnapshot {
+        last_error: Some("late candidate refused".into()),
+        ..(*snapshot.graph).clone()
+    });
+    editor.observe(&snapshot, None);
+    assert!(!editor.busy());
+    assert_eq!(editor.error.as_deref(), Some("late candidate refused"));
+}
+
+#[test]
 fn desktop_measured_preflight_uses_only_matching_live_origin_and_three_independent_values() {
     let (snapshot, draft) = fixture();
     let request = draft.request(&snapshot).unwrap();
