@@ -28,6 +28,21 @@ const SUBSCRIPTION_GRACE: Duration = Duration::from_millis(750);
 /// slower control-side pump without dropping intermediate peaks.
 const LEVEL_WINDOW_DEPTH: usize = 16;
 
+/// The last tick of the shared meter scale, kept in lockstep with the final
+/// `FaderScale::ANCHORS` entry (a test pins the two together). Below the tick
+/// the painted track tail is amplitude-linear, so readings this far down have
+/// effectively reached the bottom edge.
+const SCALE_TICK_DB: f32 = -72.;
+
+/// How far under the last tick a reading must fall before no layer can move
+/// a visible pixel: the tail spans 3% of the track, and −24 dB under the tick
+/// leaves every layer under a third of that tail's smallest gradation.
+const REST_BELOW_TICK_DB: f32 = 24.;
+
+/// A display parked at or under this reading is visually at the scale bottom;
+/// the animation-frame loop can stand down until fresh data lifts a layer.
+pub(super) const REST_DB: f32 = SCALE_TICK_DB - REST_BELOW_TICK_DB;
+
 mod ballistics;
 use crate::project::MeterDisplayPreferences;
 use ballistics::ChannelBallistics;
@@ -127,6 +142,15 @@ impl MeterSubscriptions {
         self.input_subscription
             .as_ref()
             .and_then(|subscription| stereo_display(subscription.display.as_deref()))
+    }
+
+    /// Whether every observed point is parked at the scale bottom, so the
+    /// display stays current without animation frames. Unobserved points
+    /// hold no subscription and cannot move anything.
+    pub fn at_rest(&self) -> bool {
+        [&self.input_subscription, &self.output_subscription]
+            .into_iter()
+            .all(|subscription| subscription.as_ref().is_none_or(MeterSubscription::at_rest))
     }
 
     /// Ballistics-smoothed output reading for presentation; `None` exactly
@@ -394,14 +418,30 @@ impl NodeMeters {
                 self.clips.remove(&id);
             }
             let status = subscription.status.clone();
+            let raw = subscription.levels.clone();
             subscription.settings = self.settings;
             let publication = subscription.poll(now);
-            changed |= publication || subscription.status != status;
+            // A publication alone must not wake the interface: a running
+            // stream publishes silence windows too, and notifying on each
+            // would repaint at the control-poll rate forever. Only a
+            // display-bearing change — raw readings, status, or a freshly
+            // latched clip — justifies a repaint.
+            changed |=
+                subscription.status != status || raw.as_deref() != subscription.levels.as_deref();
             if publication && let Some(levels) = subscription.levels.as_deref() {
-                self.clips.entry(id).or_default().observe(levels);
+                let clips = self.clips.entry(id).or_default();
+                let before = clips.0.clone();
+                clips.observe(levels);
+                changed |= before != clips.0;
             }
         }
         changed
+    }
+
+    /// Whether every observed node is parked at the scale bottom, so the
+    /// display stays current without animation frames.
+    pub fn at_rest(&self) -> bool {
+        self.subscriptions.values().all(MeterSubscription::at_rest)
     }
 
     /// Ballistics-smoothed stereo projection for presentation.
@@ -451,6 +491,12 @@ impl NodeMeters {
 }
 
 impl MeterSubscription {
+    /// Whether every layer of every channel is parked at the scale bottom:
+    /// further frames would not move anything a viewer can see.
+    fn at_rest(&self) -> bool {
+        self.ballistics.iter().all(|channel| channel.at_rest())
+    }
+
     fn new(handle: AppHandle, topic: Topic<LevelTopic>, channels: usize) -> Self {
         Self {
             sequence_fence: topic.stats().attempts,
@@ -648,6 +694,64 @@ mod tests {
     use super::*;
 
     const WINDOW: Duration = Duration::from_millis(4);
+
+    #[test]
+    fn ballistics_reach_rest_only_after_every_layer_decays_under_the_scale_bottom() {
+        let start = Instant::now();
+        let mut channel = ChannelBallistics::new();
+        assert!(channel.at_rest(), "fresh silence starts at rest");
+        channel.ingest(ChannelLevel { peak: 1., rms: 0.5 }, WINDOW, start);
+        channel.advance(start);
+        assert!(!channel.at_rest(), "a loud window breaks rest");
+        // Digital silence at the real publication cadence: windows keep
+        // arriving every 4 ms, the bar falls at the default Fast 40 dB/s,
+        // the marker holds 0 dBFS for the default half second, and the RMS
+        // body glides down with its integrator.
+        for tick in 1..=800u32 {
+            let now = start + WINDOW * tick;
+            channel.ingest(ChannelLevel { peak: 0., rms: 0. }, WINDOW, now);
+            channel.advance(now);
+            if matches!(tick * 4, 100 | 200 | 400 | 800) {
+                assert!(!channel.at_rest(), "still decaying at {} ms", tick * 4);
+            }
+        }
+        assert!(
+            channel.at_rest(),
+            "every layer parks at the scale bottom eventually"
+        );
+    }
+
+    #[test]
+    fn sub_visible_readings_keep_the_display_at_rest() {
+        let start = Instant::now();
+        let mut channel = ChannelBallistics::new();
+        channel.ingest(
+            ChannelLevel {
+                peak: 10f32.powf(REST_DB / 20.),
+                rms: 0.,
+            },
+            WINDOW,
+            start,
+        );
+        channel.advance(start);
+        assert!(
+            channel.at_rest(),
+            "a reading already under the visible bottom cannot move a pixel"
+        );
+    }
+
+    #[test]
+    fn rest_threshold_tracks_the_shared_fader_scale_floor() {
+        use crate::ui::widgets::fader::FaderScale;
+        let &(tick, _) = FaderScale::ANCHORS.last().expect("non-empty");
+        assert_eq!(
+            tick as f32, SCALE_TICK_DB,
+            "the rest threshold must follow the painted scale's last tick"
+        );
+        const {
+            assert!(REST_DB < SCALE_TICK_DB);
+        }
+    }
 
     #[test]
     fn clip_hold_retains_each_channel_until_explicit_reset() {

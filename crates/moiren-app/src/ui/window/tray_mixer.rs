@@ -120,10 +120,13 @@ impl TrayMixer {
 impl Render for TrayMixer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_faders(window, cx);
-        // Frame-driven meters: keep the vsync loop running while the flyout
-        // is alive; the desktop poll covers snapshot changes.
+        // Frame-driven meters while motion lasts; the desktop poll both
+        // covers snapshot changes and re-arms these frames once fresh data
+        // lifts a strip off the scale bottom, so silence costs no vsync.
         self.pump_meters(cx);
-        window.request_animation_frame();
+        if !self.node_meters.at_rest() {
+            window.request_animation_frame();
+        }
 
         let state = self.state.read(cx);
         let graph = &state.snapshot.graph;
