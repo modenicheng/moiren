@@ -21,7 +21,7 @@ fn run() -> anyhow::Result<()> {
         match arg.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "Moiren\nUsage: moiren-app [--gain 0..16]\nStarts the GUI; --gain runs the offline software IO demo.\nUse moiren-app render --help for a Windows output, or monitor --help for physical/process input monitoring."
+                    "Moiren\nUsage: moiren-app [--gain 0..16]\nStarts the GUI; --gain runs the offline software IO demo."
                 );
                 return Ok(());
             }
