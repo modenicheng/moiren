@@ -1,8 +1,10 @@
 # DAWN native Process desktop follow-up
 
 Host date: 2026-10-30, Asia/Shanghai. Physical target:
-`LAPTOP-NP49RG6H` / `192.168.12.97`. The target's unchanged clock reports
-2026-10-25; no cross-machine wall-clock subtraction is used.
+`LAPTOP-NP49RG6H` / `192.168.12.97`. Early target receipts report
+2026-10-25. During the later PCM run, its wall clock advances to2026-10-30;
+this task performs no clock-setting operation. Preserve both observations;
+no cross-machine or across-jump wall-clock subtraction is used.
 
 This receipt continues the native desktop controls audit. It is not a
 waveform-continuity, physical latency or S1-S3 completion certificate.
@@ -153,6 +155,129 @@ This closes the baseline S3 production-desktop Apply/exact-confirmation gap.
 The diagnostic4096-frame target is not a low-latency default or measured delay.
 Hidden-window UIA evidence is not visual acceptance, nor does this run acquire
 continuous PCM or a physical reference.
+
+## Actual Process graph-output PCM
+
+`desktop-dawn-process-pcm1` repeats the native production desktop
+`Process Loopback -> unity Bus -> pinned DAWN` route using app3ac8484,
+48 kHz Float32/block256. The actual measured Apply again confirms exact
+target4096/capacity16384/jitter96 and owner replacement1->2. The source
+is a separate process outside the app's tree. The new
+[capture-only recorder](2026-10-30-process-output-recording.md) selects the
+app's exact PID/creation timestamp, so its PCM contains app graph output,
+without the independent source's direct render stream.
+
+Recorder source9313364 passes all517 example tests on both host and remote
+release builds, plus strict host example Clippy and independent read-only
+review. The deployed recorder is6,974,464bytes, SHA-256
+`9E9C9D161EC99DD974FBCC59E3BDD744E58053D9C9C6B5428D3F6B7875EE1B5C`.
+The original f72e03c probe and app binaries remain retained unchanged.
+No compiler runs during acquisition.
+
+The recorder completes and stops normally after35.0017597seconds. It retains
+3,497 packets /1,678,560 frames /13,428,480bytes, equivalent to34.97seconds
+at the nominal48 kHz rate. Artifact dropped/overflow, discontinuity and
+timestamp-error counts are zero. Process position-gap detection is explicitly
+inapplicable; zero gap counters cannot certify waveform continuity. Every
+frame is also counted as dropped by the deliberately unused compatibility
+bridge, separately from the native PCM tap's zero artifact loss.
+
+Single-channel known-template analysis finds25 markers using absolute
+normalized correlation>=0.5 and a24,000-frame minimum peak separation.
+Detected intervals range from47,999 to194,860frames (the latter about4.06s).
+PCM is finite/nonempty, peak absolute0.0363084413, with identical stereo
+channels. This is not a waveform-continuity pass or a physical delay
+distribution. Detection thresholds, rate/phase sensitivity and lack of an
+independent reference remain explicit. The two identical channels cannot
+measure whole-route delay.
+
+The source's final receipt acknowledges3,899,424 scheduled frames during
+93.1044804seconds of source operation; that is materially below nominal
+48 kHz progress, across a window broader than the recorder's. Its event
+timeout count and native failure are zero. Successful ReleaseBuffer and
+zero100ms event timeouts therefore do not demonstrate continuous supply.
+The actual source versus graph contribution needs a separate boundary test.
+The target also emits a system-settings event and changes its displayed wall
+clock during the run, so retain this as diagnostic evidence, not a controlled
+timing baseline. Monotonic owner durations are retained without deriving a
+wall-clock delay or assigning a cause to the change.
+
+App/source exit0; recorder exits1 as explicitly unqualified. Stop, owner
+cleanup and Quit all complete normally without forced termination. All
+render volume/mute states and default roles are unchanged.
+
+`dawn-process-pcm1.zip` is186,947bytes, SHA-256
+`9AC94879859BC42292D13AD0928C3C11768B287C56D70B6F8E4524689F411D43`.
+All44 files /45 entries are downloaded and individually verified by exact
+file set, length and SHA-256. Raw PCM SHA-256 is
+`7F67980D990336826C069F4C3A4F5518B401F723A0EE5C2671E58279D4ABFAAE`.
+Both exact terminal build/native scheduled tasks are unregistered; remote
+evidence and shared Cargo caches remain retained.
+
+### Source-only boundary control
+
+`dawn-source-pcm1` renders the same marker template/amplitude to the same
+pinned DAWN using the unchanged f72e03c source worker, with no graph app or
+compiler running. The recorder selects that source process directly. Native
+capture completes/stops after35.0013363seconds, retaining3,497 packets /
+1,678,560 frames, with zero artifact overflow/drop, discontinuity or
+timestamp errors and position-gap detection still inapplicable.
+
+The same detector finds34 full markers, with all33 adjacent intervals
+exactly48,000frames. Source acknowledgement is1,710,720frames over
+35.6433363seconds, close to nominal progress; no100ms event timeout or native
+failure is reported. This establishes a useful idle source boundary
+diagnostic. It does not explain the earlier app run's gaps or certify the
+source under that different load. A simultaneous source/app recording is
+needed before assigning those gaps to a particular component. The source is
+intentionally stopped before its40-second schedule completes.
+
+Both children exit normally (source0, unqualified recorder1), with unchanged
+render volume/mute and default roles. The recorded start/end wall clocks
+both remain on2026-10-30. `dawn-source-pcm1.zip` is48,850bytes, SHA-256
+`EE805BD55C3F721D1B55A1301F2419DBB9000696733831632C0EE3D3AE1D0FE0`;
+all31 files /32 entries are downloaded and individually verified. Raw PCM
+SHA-256 is
+`43084ABC9EEA29FABD6EFB07B5BE36B0979BAAD3972B3A38C925BD21AD8A5114`.
+Its terminal scheduled task is unregistered after verification; evidence
+and caches are retained.
+
+### Simultaneous source/app boundary recording
+
+`desktop-dawn-process-pcm2` repeats the same production desktop setup and
+measured4096/16384/96 Apply. Two capture-only clients select the separate
+source and app process identities. Both complete/stop normally at about35
+seconds and each retains3,498 packets /1,679,040 frames /13,432,320bytes.
+Both artifact reports retain zero drop/overflow, discontinuity and timestamp
+errors, with Process position-gap detection inapplicable. No build runs.
+
+The source recording has34 detected markers: its first27 intervals are
+48,000frames, followed by48,384,48,384,48,000,48,000,101,472 and57,600.
+The app recording has33 detected markers, with matching large intervals:
+48,383 twice and101,471frames. Earlier intervals differ by only a few frames
+under the graph's rate adaptation. The final source marker is near the end
+of its recording; different capture origins and windows mean the raw
+34-versus33 count is not itself evidence of an additional graph loss.
+No delay is inferred from the two independently started recordings.
+
+The approximately2.11-second marker spacing is already present upstream
+of Moiren's Process input. In this run, the graph does not originate that
+particular gap. This narrows the investigation to the source/native-render
+side or shared scheduling conditions, without claiming a universal cause
+for every prior VAD or Process fault. The source acknowledges4,210,944frames
+over89.8138631seconds, again below nominal progress;100ms event timeouts
+are still zero. Code inspection finds that this example-local external
+source worker omits the Audio MMCSS registration used by capture, render
+and provider workers. The next single-variable diagnostic repair registers
+and reports that source worker; its effect still requires another native run.
+
+All four processes exit normally (app/source0, recorders1/unqualified).
+Output volume/mute and default roles remain unchanged.
+`dawn-process-pcm2.zip` is253,124bytes, SHA-256
+`404FB222D5EA9DF5F7176D49E2980CC123609DFC74A428065804946F07A79DF9`.
+All49 files /50 entries are downloaded and verified individually. Raw PCM:
+source`454370B9AE1B83A62AD928DC2CD7C616E22EFC37E25263BEB3B40972E8F27BC7`;
+app`E991F8EF715F40617D65AB9BB3D5F51FFB0A6AA2583556CC98CF61A0A9BC89F3`.
 
 ## VAD to DAWN diagnostic baseline
 

@@ -34,6 +34,13 @@ VAD -> Bus -> DAWN diagnostic completes submission and cleanup with zero
 reported in-run provider loss/recovery and playback xruns/short reads. It has
 no acquired PCM or calibrated reference and remains explicitly unqualified.
 Original native failures are preserved, not relabeled as successful runs.
+The later capture-only production-app recording now retains actual
+Process graph-output PCM and normal cleanup, but its known-template markers
+have irregular spacing and the source's own submitted progress is below
+nominal. The two smaller VAD/DAWN budget candidates also retain native gaps
+and playback xruns in an idle-audited window. These diagnostic acquisitions
+close an evidence-collection gap, not the waveform/stability gates. See the
+same DAWN receipt for exact durations, raw hashes and clock-change context.
 
 The [native packet-period / Engine-block matrix](2026-10-29-vad-period-block-matrix.md)
 adds observed144/480-frame VAD playback packets with128/256-frame Engine

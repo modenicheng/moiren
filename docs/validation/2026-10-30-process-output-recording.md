@@ -51,3 +51,8 @@ missing/duplicate/unknown options, existing-evidence preservation, exact raw
 PCM/metadata, capacity mismatch, metadata retention after PCM refusal, and
 self-target refusal before native capture. Strict example Clippy passes.
 These are software receipts; native acquisition is recorded separately.
+
+The [DAWN native receipt](2026-10-30-dawn-native-process.md) now retains a
+completed production-app recording, with partial-quality boundaries kept:
+nonempty PCM and zero artifact loss do not turn irregular marker spacing
+into a continuity or physical latency pass.
