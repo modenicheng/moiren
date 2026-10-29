@@ -378,3 +378,20 @@ driver is Running, no test/build process remains, and `D:\moiren` main stays
 clean at `497ac7c`. Sources, required rollback, driver package and evidence
 are preserved. Do not rebuild merely to reverify files already copied outside
 Cargo target; use the retained receipts and deployed hash checks instead.
+
+## Later Process artifact and desktop updates
+
+The [Process artifact receipt](2026-10-29-process-artifact-position.md) records
+the separate `5382369` probe update and fresh native repeated-zero-position
+confirmation, without hiding the independent recorder discontinuity. The
+[desktop receipt](2026-10-29-desktop-live-process-window.md) records the later
+`e195bfe` release app, exact hash/rollback, Compatible native monitor success,
+explicit window-target refusal and verified121-file archive. These supersede
+the app/probe revisions in the historical four-file45a manifest, not its driver
+or original results. The other two diagnostic executables remain at45a.
+
+After verified final copies and archival, another explicit idle `cargo clean`
+removes12,280 files /6.1GiB and leaves the shared target empty. Final checks
+retain source, rollback and evidence, the installed driver/hash, and clean
+remote main497ac7c; no build/acquisition is left running. No native quality or
+calibrated physical latency gate is promoted by these updates.

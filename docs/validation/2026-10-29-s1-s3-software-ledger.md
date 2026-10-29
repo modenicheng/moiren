@@ -91,6 +91,17 @@ The earlier post-clean zero-target receipt is historical: the shared target is
 reused for this next bounded build/test phase and requires another idle clean
 after final copies and archival. No new physical latency claim follows.
 
+The later [desktop integration/deployment receipt](2026-10-29-desktop-live-process-window.md)
+records clean source `e195bfe`, all630 app tests /4 ignored, strict Clippy and
+committed7-test confirmation, followed by the successful release build and
+hash-verified app replacement. Fresh Compatible monitor completes run/cleanup;
+explicit live-window target2048 refuses the actual complete-wake budget with
+cleanup complete and no fallback. All121 final evidence files are host-verified.
+The subsequent idle shared-target clean removes12,280 files /6.1GiB and leaves
+target bytes0, D free272,451,121,152 bytes; final deployed hashes/driver remain
+verified and no test/build process is left running. The build cache is not
+retained merely to re-prove binaries already copied outside target.
+
 ## Basis and interpretation
 
 Requirements are in
@@ -121,7 +132,8 @@ declared/admitted conditions; native/lower-setting qualification remains open.
 S3's original bounded configuration/replacement paths exist in the actual
 desktop and CLI. The separately selected [desktop live-window controls](2026-10-29-desktop-live-process-window.md)
 are now implemented in `e195bfe`, with fresh full app/Clippy verification and
-independent review; native deployment/activation remain separate. Bounded
+independent review and verified deployment; successful native window activation
+remains unproved because the target2048 request refuses its budget. Bounded
 live-window service/CLI
 admission, the live-prefix core/native API and audited probe repair have
 separate software receipts below. Checkpointed long windows, combining
@@ -144,7 +156,7 @@ scope. Their refusal boundaries remain binding and must stay visible.
 | S3 app/API | Validated independent target/capacity/jitter through API, declared and two-phase measured monitor CLI, actual desktop measured selection, prepared owner replacement and truthful requested/active confirmation. See [monitor CLI](2026-10-29-process-monitor-cli.md) and [desktop measured selection](2026-10-29-desktop-measured-process.md). | Desktop/service regressions are distinct from CLI coverage. Experimental 1024/512/256-frame candidates are not qualified presets. Source/sample-age requests are explicitly refused. |
 | S3 retained evaluation | Pinned exact-prefix collection, bounded ordered replay/inventory, finite-window assessment, conservative final whole-drain/whole-wake measurement and opaque retained-native candidate with explicit desktop Apply. See [retained evaluation/Apply](2026-10-29-retained-process-apply.md). | This software workflow is present, not a missing UI button. Imported JSON remains caller-supplied; finite historical approval does not authenticate future service or physical latency. |
 | S3 live-prefix assessment | The [bounded live Process prefix core and pinned native API](2026-10-29-live-process-prefix.md), source `5df48d0`, seal and replay a sequence-one prefix through the production queue while actual writers remain open. Reports preserve explicit policy, origin, actual closure, refusal and observed loss. | Diagnostic reports are not Apply tokens. The separately linked service/CLI slice adds opaque native admission; checkpointed continuation beyond8192 events remains open. No future service or physical latency guarantee follows. |
-| S3 live-window application admission | The [explicit service/CLI workflow](2026-10-29-windowed-process-admission.md), sources `88853ab`/`75481a8`, freezes opaque native measured evidence, replays on the bounded Prepare worker and binds successful policy/options to owner replacement with source/settings/predecessor fences. The [desktop opt-in page](2026-10-29-desktop-live-process-window.md), source `e195bfe`, requires all five policy choices and exact asynchronous confirmation. Fresh full app suite 633 passed /4 ignored; strict Clippy passed. | Existing per-wake and stopped Apply remain separate. Either 256-event measured history overwriting refuses even below the 8192-event archive cap. Longer checkpointed windows and unsupported policy combinations are explicit limits, not hidden fallback or extra baseline scope. No native/physical qualification follows. |
+| S3 live-window application admission | The [explicit service/CLI workflow](2026-10-29-windowed-process-admission.md), sources `88853ab`/`75481a8`, freezes opaque native measured evidence, replays on the bounded Prepare worker and binds successful policy/options to owner replacement with source/settings/predecessor fences. The [desktop opt-in page](2026-10-29-desktop-live-process-window.md), source `e195bfe`, requires all five policy choices and exact asynchronous confirmation. Fresh full app suite 630 passed /4 ignored; strict Clippy passed. | Existing per-wake and stopped Apply remain separate. Either 256-event measured history overwriting refuses even below the 8192-event archive cap. Longer checkpointed windows and unsupported policy combinations are explicit limits, not hidden fallback or extra baseline scope. No native/physical qualification follows. |
 | S3 production wake reserve | The production backend/Pump admits and publishes complete native-wake demand independently of segmented source reads. See [whole-wake regression](2026-10-29-process-whole-wake.md). | That production receipt does not certify the two separate E2E probe preparation callers; their audit finding is tracked below. |
 | S3 host residence | Optional positive [host-ingress elapsed enforcement](2026-10-29-process-ingress-elapsed.md), finite-prefix recovery, separate loss accounting, exact app persistence/selector/CLI forwarding and requested/active state. `None` preserves compatibility. | This is time since publication began, not source age or hardware presentation. Measured/evaluated/replay combinations currently refuse enabled policy explicitly rather than clearing it. |
 

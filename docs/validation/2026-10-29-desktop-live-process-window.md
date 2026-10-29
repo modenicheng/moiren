@@ -91,7 +91,7 @@ audio acquisition or local heavy compilation:
 | Exact RefreshCatalog regression after repair |1 passed |
 | Existing Expert viewport acceptance |1 passed |
 | All measured regressions |68 passed |
-| Full app with gpui-test, serial |633 passed /4 ignored;13 summaries |
+| Full app with gpui-test, serial |630 passed /4 ignored;13 summaries |
 | Strict app all-target Clippy with gpui-test |Passed |
 | Workspace formatting and scoped diff |Passed |
 
@@ -102,3 +102,52 @@ evidence remain separate from these software checks. Logs:
 Do not interpret the fixture's software service as native audio evidence. It
 preserves CallerSupplied trace origin and uses the existing cfg(test) proof
 seam; production proof issuance and owner replacement are separate.
+
+## Committed release, deployment and native smoke
+
+Clean source `e195bfef96774c5730ecab9105eaaf8cdb16ebc0` is transferred by a
+hash-verified Git bundle, after reversing only the exact verified owned patch.
+The separate main worktree stays clean at `497ac7c`. Committed formatting and
+all7 desktop tests pass again. Release-app build exits0, no watchdog, using
+the existing task-local explicit FXC path; no native acquisition overlaps it.
+
+The new `moiren-app.exe` is deployed under
+`D:\MoirenTest\20261029-0118a54\bin`, 33,385,984 bytes, SHA-256
+`09A0053326179928FB20E6F90DD1472501EF4A7F2D10907BEE0E9C550566F93A`.
+The old app and manifest remain in `rollback-app-45a084e`. The probe remains
+at `5382369`; the unchanged test-signed driver remains Running with the same
+installed SYS hash. No reboot, default-role, volume or mute change is made.
+
+Two bounded real-app monitor runs follow the completed build:
+
+- `monitor4-final-compatible`: exit0, run/cleanup complete, observed Running
+  3002ms, failure null; qualified remains false.
+- `monitor4-final-window-2048`: exit1 after1000ms baseline; exact capacity8192,
+  target2048, jitter96 and all five explicit policy values survive in JSON.
+  The actual complete-wake admission refuses render demand, capture gap,
+  jitter and lookahead. Run is incomplete, cleanup complete, active measured
+  selection null and qualified false; no per-wake or larger-target fallback.
+- Both owned sources stop/join with exit0. All watchdogs are false. These are
+  CLI native smoke results, not proof of a successful native desktop click,
+  continuous waveform quality or calibrated latency.
+
+## Verified archive and idle cache cleanup
+
+`evidence-desktop-live-window-e195bfe.zip` is161,462 bytes, SHA-256
+`7A22E182F4EFB207D3F09CA78929B0C6A1D1460CD1DE64C049C53BD0D8A770BE`.
+All121 files /122 entries including the manifest are host-verified by length
+and SHA-256. The archive retains original RED failures, the viewport failure,
+review repair, final full checks, committed release logs, deployment manifests
+and both native monitor results. Process4 PCM stays in its separate verified
+archive; source/deployment/rollback/evidence are not part of Cargo target.
+
+Only after this verification and checking all four deployed executable hashes,
+with no build/acquisition active, explicit shared-target `cargo clean` removes
+12,280 files /6.1GiB. Target bytes change from6,592,445,642 to0; D free changes
+from266,294,476,800 to272,451,121,152 bytes. Post-clean app/probe hashes and
+installed driver match, both worktrees are clean, and no test/build process
+remains. C free is4,138,881,024 bytes and D free272,460,034,048 at final check;
+build target/temp/cache stay on D rather than consuming the small system disk.
+
+This closes the selected bounded software/deployment work, not the failed
+recorder continuity, absent common physical reference or sub-10-ms gate.
