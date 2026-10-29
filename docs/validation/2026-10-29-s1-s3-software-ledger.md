@@ -31,6 +31,17 @@ original collection/cleanup failures are preserved separately from successful
 underlying native retirement. This software-route matrix is not calibrated
 physical delay, lower-default qualification or S1-S3 completion.
 
+The [progress-health repair and retest](2026-10-29-vad-engine-progress-health.md)
+separates confirmed execution from optional timeline data and bounds renewed
+identity-matched progress without fabricating fresh observations. Final509
+probe tests and strict Clippy/fmt pass; the unchanged audio suite passes899 /
+3 ignored. Only the repaired probe is redeployed. A single480-packet/128-block
+native retest completes collection/cleanup and the240,000-frame schedule, but
+retains the recorder's first-packet discontinuity and qualityfalse. No transient
+null timeline recurs in that run; deterministic RED/GREEN owns that branch's
+regression proof. Driver/app remain unchanged and ~0.85 GiB reusable build
+outputs are retained, not cleaned after archiving.
+
 Three bounded software repairs follow those native observations:
 
 - `792f99e` accepts the Engine's legitimate initial resource generation 0 in

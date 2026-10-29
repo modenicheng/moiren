@@ -80,6 +80,14 @@ diagnosed probe Running/timeline-availability conflation. Original failed
 receipts remain unchanged. No kernel fix, physical latency verdict, lower
 default or long-soak qualification follows from this bounded software route.
 
+Probe-only [progress-health repair](../../docs/validation/2026-10-29-vad-engine-progress-health.md)
+`f72e03c` now separates transient unknown timeline data from confirmed Running
+state, with pinned identity and bounded progress deadlines. Final509 probe
+tests pass. A new480-packet/128-block/target1024 native retest completes its
+schedule/collection/cleanup but still fails recorder continuity; no transient
+null recurs in this run. Installed driver and application are unchanged, build
+caches are retained, and physical/long-soak qualification remains open.
+
 ## Audit follow-up - 2026-10-21
 
 The reported Removing-state retry defect is absent in the current source:
