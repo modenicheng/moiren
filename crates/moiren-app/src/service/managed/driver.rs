@@ -61,6 +61,18 @@ impl ServiceDriver for ManagedDriver {
                     Err(error) => c.graph.record_error(error),
                 }
             }
+            #[cfg(windows)]
+            AppRequest::ApplyEvaluatedProcessBridge(candidate) => {
+                match self.select_evaluated_process(c, &candidate) {
+                    Ok(()) => {
+                        self.automatic_startup = false;
+                        self.auto_apply_deadline = None;
+                        self.apply_settings = Some(ApplySettings::capture(c));
+                        self.apply = true;
+                    }
+                    Err(error) => c.graph.record_error(error),
+                }
+            }
             AppRequest::RefreshCatalog => self.catalog.request(),
             AppRequest::Start(spec) => {
                 self.automatic_startup = false;

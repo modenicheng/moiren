@@ -14,9 +14,19 @@ pub(super) trait Collection: Send {
     }
     fn artifact(&self) -> ProcessTraceArchive;
     fn ordered_trace(&self) -> Result<ObservedProcessTrace, String>;
+    fn final_measurement(
+        &self,
+    ) -> Result<moiren_windows_audio::process_loopback::MeasuredProcessDelivery, String> {
+        Err("final native Process measurement is unavailable".into())
+    }
 }
 
 impl Collection for NativeProcessTraceCollector {
+    fn final_measurement(
+        &self,
+    ) -> Result<moiren_windows_audio::process_loopback::MeasuredProcessDelivery, String> {
+        self.final_measurement()
+    }
     fn refusal(&self) -> Option<String> {
         self.collection_refusal()
             .map(|error| format!("Process trace collection refused: {error:?}"))
@@ -99,11 +109,17 @@ impl SessionTrace {
                 None
             }
         };
+        let measurement = if self.refusal.is_none() {
+            self.collection.final_measurement()
+        } else {
+            Err(self.refusal.clone().unwrap())
+        };
         Arc::new(ProcessTraceSessionEvidence {
             origin: self.origin,
             artifact: self.collection.artifact(),
             refusal: self.refusal,
             trace,
+            measurement,
         })
     }
 }

@@ -352,6 +352,11 @@ impl ServiceDriver for CoreDriver {
                     "measured Process application requires the managed native service",
                 );
             }
+            #[cfg(windows)]
+            AppRequest::ApplyEvaluatedProcessBridge(_) => {
+                c.graph
+                    .record_error("No native audio backend is configured");
+            }
             AppRequest::EditGraph(edit) => {
                 let _ = c.graph.edit(edit);
             }

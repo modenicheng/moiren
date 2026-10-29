@@ -88,6 +88,8 @@ pub enum AppRequest {
     SetTransportLatency(super::TransportLatencySettings),
     /// Select current native evidence and rebuild; never mutates a live queue.
     ApplyMeasuredProcessBridge(super::MeasuredProcessRequest),
+    #[cfg(windows)]
+    ApplyEvaluatedProcessBridge(super::EvaluatedProcessCandidate),
     EditGraph(super::GraphEdit),
     /// Restore the candidate content recorded before the last user edit.
     UndoGraph,

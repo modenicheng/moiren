@@ -24,6 +24,15 @@ struct SoftwareCollection {
 }
 
 impl Collection for SoftwareCollection {
+    fn final_measurement(
+        &self,
+    ) -> Result<moiren_windows_audio::process_loopback::MeasuredProcessDelivery, String> {
+        assert!(
+            self.stops.stops.load(Ordering::SeqCst) != 0,
+            "measurement must follow host join"
+        );
+        Err("software final-measurement marker after join".into())
+    }
     fn refusal(&self) -> Option<String> {
         self.collector
             .collection_refusal()
@@ -552,5 +561,9 @@ fn managed_prefix_final_evidence_is_immutable_and_projects_diagnostics_while_sto
     assert_eq!(
         report.owner_generation,
         evidence.origin().native_owner_generation
+    );
+    assert_eq!(
+        evidence.measurement.as_ref().unwrap_err(),
+        "software final-measurement marker after join"
     );
 }

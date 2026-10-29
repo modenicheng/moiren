@@ -5,7 +5,9 @@ use moiren_windows_audio::process_loopback::{
     ObservedProcessTrace, ProcessIdentity, ProcessTraceArchive,
 };
 
+pub(crate) mod candidate;
 mod evaluation;
+pub use candidate::EvaluatedProcessCandidate;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -38,6 +40,8 @@ pub struct ProcessTraceSessionEvidence {
     pub(crate) artifact: ProcessTraceArchive,
     pub(crate) refusal: Option<String>,
     pub(crate) trace: Option<ObservedProcessTrace>,
+    pub(crate) measurement:
+        Result<moiren_windows_audio::process_loopback::MeasuredProcessDelivery, String>,
 }
 
 impl ProcessTraceSessionEvidence {

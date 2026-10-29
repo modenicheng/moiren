@@ -11,6 +11,9 @@ mod measured_tests;
 mod process_trace_tests;
 #[path = "rename_tests.rs"]
 mod rename_tests;
+#[cfg(windows)]
+#[path = "retained_apply_tests.rs"]
+mod retained_apply_tests;
 #[path = "transport_tests.rs"]
 mod transport_tests;
 

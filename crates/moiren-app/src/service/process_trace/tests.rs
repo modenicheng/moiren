@@ -75,7 +75,41 @@ fn evidence_with_shape(
         artifact,
         refusal: None,
         trace: Some(trace),
+        measurement: Err("software fixture has no native final measurement".into()),
     }
+}
+
+#[test]
+fn retained_apply_requires_final_whole_wake_measurement_and_never_promotes_caller_trace() {
+    let mut graph = moiren_core::graph::LogicalGraph::new();
+    let node = graph
+        .create_node(moiren_core::graph::NodeKind::Source, 2)
+        .unwrap();
+    let evidence = std::sync::Arc::new(evidence(node));
+    assert!(
+        evidence
+            .clone()
+            .evaluate_for_apply(2048, 256, 0, policy())
+            .unwrap_err()
+            .contains("native")
+    );
+    assert!(
+        evidence.evaluate_candidate(2048, 256, 0, policy()).is_ok(),
+        "missing measured evidence must not erase diagnostic replay"
+    );
+    let mut supplied = self::evidence(node);
+    let observation = crate::service::measured_process::tests::observation(node);
+    supplied.measurement = observation
+        .measured(&observation.process, 7)
+        .map_err(|error| error.to_string());
+    let supplied = std::sync::Arc::new(supplied);
+    let error = supplied
+        .evaluate_for_apply(2048, 256, 0, policy())
+        .unwrap_err();
+    assert!(
+        error.contains("retained native"),
+        "valid structural measured evidence must not authenticate caller trace: {error}"
+    );
 }
 
 #[test]

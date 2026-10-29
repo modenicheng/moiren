@@ -97,6 +97,32 @@ impl ManagedDriver {
             .as_ref()
             .expect("Apply captures the requested audio configuration")
             .clone();
+        #[cfg(windows)]
+        if self.owner.is_none()
+            && let Some(candidate) = requested
+                .measured_process
+                .as_ref()
+                .and_then(|profile| profile.evaluated_candidate())
+        {
+            let origin = candidate.evidence().origin();
+            let validation = if requested.audio != origin.audio_settings
+                || requested.transport != origin.transport_latency
+                || requested.profile != origin.latency_profile
+            {
+                Err(
+                    "captured evaluated Process settings differ from the evaluated predecessor"
+                        .into(),
+                )
+            } else {
+                self.validate_evaluated_process(c, candidate)
+            };
+            if let Err(error) = validation {
+                c.graph.record_error(error);
+                self.apply = false;
+                self.apply_settings = None;
+                return;
+            }
+        }
         let settings = requested.audio;
         let block = settings.processing.block_frames as usize;
         let project =
@@ -242,16 +268,18 @@ impl ManagedDriver {
             if let Some(spec) = &mut summary {
                 spec.max_block_frames = block;
             }
-            if c.core.managed_graph_desired(summary).is_err() {
-                self.apply = false;
-                return;
-            }
             let Ok(cleanup) = c.try_reserve_cleanup() else {
                 return;
             };
             let Ok(completion) = self.queue().port().try_reserve() else {
                 return;
             };
+            // Backpressure must not consume the stopped candidate's Idle
+            // admission before the permits needed to open its owner exist.
+            if c.core.managed_graph_desired(summary).is_err() {
+                self.apply = false;
+                return;
+            }
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.open_host(
                     requested.profile,

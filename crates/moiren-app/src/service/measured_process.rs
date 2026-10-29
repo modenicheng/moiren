@@ -66,6 +66,10 @@ pub(crate) struct MeasuredProcessProfile {
     summary: MeasuredProcessSummary,
     #[cfg(windows)]
     evidence: moiren_windows_audio::process_loopback::MeasuredProcessDelivery,
+    #[cfg(windows)]
+    evaluated_envelope: Option<moiren_windows_audio::process_loopback::ProcessBridgeOptions>,
+    #[cfg(windows)]
+    evaluated: Option<super::EvaluatedProcessCandidate>,
 }
 
 impl MeasuredProcessProfile {
@@ -109,13 +113,35 @@ impl MeasuredProcessProfile {
         let evidence = observation
             .measured(&observation.process, request.native_owner_generation)
             .map_err(|error| error.to_string())?;
+        Self::from_evidence(
+            selection_id,
+            request,
+            evidence,
+            observation.consumer_sample_rate,
+            observation.prepared_consumer_demand_frames,
+        )
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn from_evidence(
+        selection_id: u64,
+        request: MeasuredProcessRequest,
+        evidence: moiren_windows_audio::process_loopback::MeasuredProcessDelivery,
+        consumer_rate: u32,
+        demand: u32,
+    ) -> Result<Self, String> {
+        request.validate()?;
+        if selection_id == 0 {
+            return Err("measured selection identity is zero".into());
+        }
+        let process = evidence.process();
         let options = evidence
             .admit_for_consumer(
-                &observation.process,
+                process,
                 request.native_owner_generation,
                 Self::policy(request),
-                observation.consumer_sample_rate,
-                observation.prepared_consumer_demand_frames,
+                consumer_rate,
+                demand,
             )
             .map_err(|error| error.to_string())?;
         let bound = options
@@ -125,8 +151,8 @@ impl MeasuredProcessProfile {
             summary: MeasuredProcessSummary {
                 selection_id,
                 request,
-                process_pid: observation.process.pid,
-                process_creation_time_100ns: observation.process.creation_time_100ns,
+                process_pid: process.pid,
+                process_creation_time_100ns: process.creation_time_100ns,
                 delivery: MeasuredDeliveryBound {
                     sample_rate: bound.sample_rate,
                     max_packet_frames: bound.max_packet_frames,
@@ -134,7 +160,32 @@ impl MeasuredProcessProfile {
                 },
             },
             evidence,
+            evaluated_envelope: None,
+            evaluated: None,
         })
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn with_evaluated_envelope(
+        mut self,
+        options: moiren_windows_audio::process_loopback::ProcessBridgeOptions,
+    ) -> Self {
+        self.evaluated_envelope = Some(options);
+        self
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn with_evaluated_candidate(
+        mut self,
+        candidate: super::EvaluatedProcessCandidate,
+    ) -> Self {
+        self.evaluated = Some(candidate);
+        self
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn evaluated_candidate(&self) -> Option<&super::EvaluatedProcessCandidate> {
+        self.evaluated.as_ref()
     }
 
     #[cfg(windows)]
@@ -145,6 +196,15 @@ impl MeasuredProcessProfile {
         moiren_windows_audio::engine_backend::ProfessionalBackend<S>,
         moiren_engine::host::BackendError,
     > {
+        if let Some(options) = self.evaluated_envelope {
+            return backend.with_evaluated_process_bridge(
+                self.summary.request.node,
+                self.evidence.process(),
+                self.summary.request.native_owner_generation,
+                self.evidence.clone(),
+                options,
+            );
+        }
         backend.with_measured_process_bridge(
             self.summary.request.node,
             self.evidence.process(),

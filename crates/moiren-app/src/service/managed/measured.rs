@@ -4,6 +4,46 @@ use crate::service::measured_process::MeasuredProcessProfile;
 
 impl ManagedDriver {
     #[cfg(windows)]
+    pub(super) fn validate_evaluated_process(
+        &self,
+        context: &ServiceContext,
+        candidate: &super::super::EvaluatedProcessCandidate,
+    ) -> Result<(), String> {
+        if self.exiting
+            || self.owner.is_some()
+            || self.cleaning != 0
+            || self.auto_apply_deadline.is_some()
+            || !self.edits.is_empty()
+            || self.confirm_parameters.is_some()
+            || !self.parameters.is_empty()
+            || !self.unsent.is_empty()
+            || !self.confirmation_values.is_empty()
+        {
+            return Err("evaluated Process Apply requires a settled stopped owner".into());
+        }
+        candidate.validate_stopped(context, self.document)
+    }
+
+    #[cfg(windows)]
+    pub(super) fn select_evaluated_process(
+        &mut self,
+        context: &mut ServiceContext,
+        candidate: &super::super::EvaluatedProcessCandidate,
+    ) -> Result<(), String> {
+        if self.apply {
+            return Err("another Apply is pending".into());
+        }
+        self.validate_evaluated_process(context, candidate)?;
+        let id = self
+            .measured_selection_id
+            .checked_add(1)
+            .ok_or("measured selection identity exhausted")?;
+        let profile = candidate.profile(id)?;
+        self.measured_selection_id = id;
+        context.measured_process = Some(profile);
+        Ok(())
+    }
+    #[cfg(windows)]
     fn owner_for_measurement(
         &self,
         context: &ServiceContext,
