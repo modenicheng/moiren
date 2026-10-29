@@ -159,8 +159,8 @@ pub struct CaptureReport {
     pub delivery_bound: Option<crate::latency::transport::InputDeliveryTiming>,
     pub delivery: crate::latency::InputDeliverySnapshot,
     pub input_queue: Option<crate::latency::PreparedInputQueue>,
-    /// Version 11 separates untrusted Process buffer-size query evidence from
-    /// its packet processing bound; Process native capacity remains unknown.
+    /// Version 12 retains artifact position-check applicability and timestamp
+    /// errors. Process device position does not establish sample continuity.
     pub schema_version: u32,
     pub latency: crate::latency::LatencySnapshot,
     pub shared_period: crate::format::SharedPeriodReport,
@@ -197,7 +197,7 @@ pub struct CaptureReport {
 impl CaptureReport {
     pub fn new(source: CaptureSource, duration: SessionDuration) -> Self {
         Self {
-            schema_version: 11,
+            schema_version: 12,
             artifact: None,
             artifact_metadata: None,
             artifact_recorder: None,
@@ -247,7 +247,21 @@ impl CaptureReport {
         channels: usize,
     ) -> Result<(), CaptureError> {
         self.artifact_recorder = config
-            .map(|config| PcmRecorder::new(config, sample_rate, channels))
+            .map(|config| {
+                // Match bridge/evidence semantics: Process positions are not
+                // a hardware clock, nor are converted-rate physical positions.
+                let detect_position_gaps = self.source == CaptureSource::Physical
+                    && self
+                        .shared_period
+                        .mix_format
+                        .is_none_or(|mix| mix.sample_rate == sample_rate);
+                PcmRecorder::new_with_position_gaps(
+                    config,
+                    sample_rate,
+                    channels,
+                    detect_position_gaps,
+                )
+            })
             .transpose()?;
         Ok(())
     }

@@ -41,9 +41,12 @@ pub struct PcmArtifactMetadata {
     pub dropped_frames: u64,
     pub silent_frames: u64,
     pub overflow_events: u64,
+    /// False means gap counters cannot establish device-position continuity.
+    pub detect_position_gaps: bool,
     pub gap_events: u64,
     pub gap_frames: u64,
     pub discontinuity_events: u64,
+    pub timestamp_error_packets: u64,
 }
 
 /// A completed, bounded PCM capture. The byte payload is deliberately kept
@@ -83,6 +86,15 @@ impl PcmRecorder {
         sample_rate: u32,
         channels: usize,
     ) -> Result<Self, PcmArtifactError> {
+        Self::new_with_position_gaps(config, sample_rate, channels, true)
+    }
+
+    pub(crate) fn new_with_position_gaps(
+        config: PcmArtifactConfig,
+        sample_rate: u32,
+        channels: usize,
+        detect_position_gaps: bool,
+    ) -> Result<Self, PcmArtifactError> {
         if config.capacity_frames == 0 {
             return Err(PcmArtifactError::ZeroCapacity);
         }
@@ -101,10 +113,11 @@ impl PcmRecorder {
             .ok_or(PcmArtifactError::StorageOverflow)?;
         Ok(Self {
             metadata: PcmArtifactMetadata {
-                schema_version: 1,
+                schema_version: 2,
                 sample_rate,
                 channels,
                 capacity_frames: config.capacity_frames,
+                detect_position_gaps,
                 ..PcmArtifactMetadata::default()
             },
             frame_bytes,
@@ -142,8 +155,10 @@ impl PcmRecorder {
                 self.metadata.discontinuity_events.saturating_add(1);
         }
         if flags & TIMESTAMP_ERROR != 0 {
+            self.metadata.timestamp_error_packets =
+                self.metadata.timestamp_error_packets.saturating_add(1);
             self.next_position = None;
-        } else {
+        } else if self.metadata.detect_position_gaps {
             if let Some(expected) = self.next_position
                 && expected != device_position_frames
             {

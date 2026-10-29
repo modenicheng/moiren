@@ -614,7 +614,7 @@ fn process_bounded_packet_s_ok_query_is_never_native_capacity() {
         assert_eq!(report.delivery.max_packet_frames, 8);
         assert_eq!(released, [8, 8]);
         let json = serde_json::to_value(report).unwrap();
-        assert_eq!(json["schema_version"], 11);
+        assert_eq!(json["schema_version"], 12);
         assert!(json.as_object().unwrap().contains_key("buffer_frames"));
         assert!(json["buffer_frames"].is_null(), "unknown stays explicit");
         assert_eq!(json["buffer_size_query"]["raw_frames"], query.raw_frames);
@@ -684,7 +684,7 @@ fn process_bounded_packet_split_preserves_physical_capacity_enforcement() {
     assert_eq!(report.buffer_frames, Some(64));
     assert_eq!(released, [8, 8]);
     let json = serde_json::to_value(&report).unwrap();
-    assert_eq!(json["schema_version"], 11);
+    assert_eq!(json["schema_version"], 12);
     assert_eq!(json["buffer_frames"], 64);
     assert!(json.get("process_packet_safety_bound_bytes").is_none());
     let (result, report, released) =

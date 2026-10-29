@@ -1159,7 +1159,8 @@ fn final_graph() -> (Value, Value, Value) {
     let capture = json!({"failure":null,"stream_started":true,"stop_succeeded":true,"status":"stopped",
         "sample_rate":48000,"channels":2,"process":identity,"timeout_wakes":0,"packets":10,
         "delivery":{"packet_bound_violations":0,"gap_bound_violations":0,"unavailable_clocks":0,"regressed_clocks":0},
-        "artifact_metadata":{"dropped_frames":0,"overflow_events":0,"gap_events":0,"discontinuity_events":0}});
+        "artifact_metadata":{"schema_version":2,"detect_position_gaps":false,"timestamp_error_packets":0,
+            "dropped_frames":0,"overflow_events":0,"gap_events":0,"discontinuity_events":0}});
     let render = json!({"failure":null,"stream_started":true,"stop_succeeded":true,"status":"stopped",
         "sample_rate":48000,"channels":2,"stats":{"timeout_wakes":0,"processed_frames":48000,"bridge_shortfall_frames":0}});
     (capture, render, identity)
@@ -1189,6 +1190,31 @@ fn process_collection_final_graph_rejects_late_failure_stop_timeout_or_changed_i
     let mut render = render;
     render["stats"]["bridge_shortfall_frames"] = json!(1);
     assert!(validate_final_graph(&capture, &render, &identity).is_err());
+}
+
+#[test]
+fn process_collection_final_artifact_requires_explicit_position_semantics_and_native_flags() {
+    let (capture, render, identity) = final_graph();
+    assert!(validate_final_graph(&capture, &render, &identity).is_ok());
+    for (key, invalid) in [
+        ("schema_version", json!(1)),
+        ("schema_version", Value::Null),
+        ("detect_position_gaps", json!(true)),
+        ("detect_position_gaps", Value::Null),
+        ("timestamp_error_packets", json!(1)),
+        ("timestamp_error_packets", Value::Null),
+        ("discontinuity_events", json!(1)),
+        ("gap_events", json!(1)),
+        ("dropped_frames", json!(1)),
+        ("overflow_events", json!(1)),
+    ] {
+        let mut changed = capture.clone();
+        changed["artifact_metadata"][key] = invalid.clone();
+        assert!(
+            validate_final_graph(&changed, &render, &identity).is_err(),
+            "accepted {key}={invalid}"
+        );
+    }
 }
 
 #[test]

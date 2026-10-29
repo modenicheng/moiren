@@ -508,6 +508,19 @@ fn validate_final_graph_with_policy(
             "final capture identity mismatch: {key}"
         );
     }
+    // Process positions are not a sample clock. Old metadata cannot distinguish
+    // an unchecked zero counter from established device-position continuity.
+    ensure!(
+        capture
+            .pointer("/artifact_metadata/schema_version")
+            .and_then(Value::as_u64)
+            == Some(2)
+            && capture
+                .pointer("/artifact_metadata/detect_position_gaps")
+                .and_then(Value::as_bool)
+                == Some(false),
+        "final Process artifact position semantics unavailable or invalid"
+    );
     for (report, pointers) in [
         (
             capture,
@@ -521,6 +534,7 @@ fn validate_final_graph_with_policy(
                 "/artifact_metadata/overflow_events",
                 "/artifact_metadata/gap_events",
                 "/artifact_metadata/discontinuity_events",
+                "/artifact_metadata/timestamp_error_packets",
             ][..],
         ),
         (
