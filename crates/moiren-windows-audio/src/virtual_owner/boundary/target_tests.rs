@@ -7,6 +7,42 @@ use moiren_engine::{
 const BUDGET: usize = 1 << 20;
 
 #[test]
+fn playback_event_classes_interrupted_initial_prime_cannot_be_completed_by_recovery() {
+    let (mut producer, reader) = audio_bridge(2, 1024, BUDGET).unwrap();
+    let epoch = Arc::new(AtomicU64::new(0));
+    let probe = Arc::new(BoundaryProbe::default());
+    let mut source = VirtualPlaybackSource::new(reader, 2, 16, 48_000, BUDGET)
+        .unwrap()
+        .with_clock_drift_target(384)
+        .unwrap()
+        .with_reset_epoch(epoch.clone())
+        .with_probe(probe.clone());
+    let mut buffer = CallbackBuffer::<f32>::new(16, 48_000);
+    producer.write_interleaved_exact(&pcm(384)).unwrap();
+    buffer.read_source(&mut source);
+    assert!(
+        !probe
+            .snapshot()
+            .playback_events
+            .unwrap()
+            .initial_prime_complete
+    );
+    epoch.store(1, Ordering::Release);
+    buffer.read_source(&mut source);
+    producer.write_interleaved_exact(&pcm(384)).unwrap();
+    for _ in 0..3 {
+        buffer.read_source(&mut source);
+        let events = probe.snapshot().playback_events.unwrap();
+        assert_eq!(events.initial_prime_muted_frames, 16);
+        assert!(
+            !events.initial_prime_complete,
+            "recovery cannot finish the interrupted initial mute"
+        );
+        assert!(events.recovery_prime_muted_frames > 0);
+    }
+}
+
+#[test]
 fn playback_event_classes_keep_preparation_unknown_and_initial_mute_separate() {
     for rate in [44_100, 48_000, 88_200, 96_000] {
         for explicit in [false, true] {
@@ -39,6 +75,11 @@ fn playback_event_classes_keep_preparation_unknown_and_initial_mute_separate() {
                 assert_eq!(events.recovery_prime_muted_frames, 0);
                 assert_eq!(events.short_read_callbacks, 0);
                 assert!(!events.saturated);
+                assert_eq!(
+                    serde_json::to_value(events).unwrap()["initial_prime_complete"],
+                    callback >= 1,
+                    "the first 16-frame callback cannot complete a multi-callback prime"
+                );
                 assert_eq!(sample.soft_events, events.initial_prime_muted_frames);
             }
         }
@@ -66,6 +107,7 @@ fn playback_event_classes_preserve_short_reads_and_recovery_without_resetting_in
     let starved = probe.snapshot();
     let events = starved.playback_events.unwrap();
     assert_eq!(events.initial_prime_muted_frames, 32);
+    assert!(events.initial_prime_complete);
     assert_eq!(events.recovery_prime_muted_frames, 0);
     assert!(events.short_read_callbacks > 0);
     assert!(starved.xruns > 0);
@@ -75,6 +117,7 @@ fn playback_event_classes_preserve_short_reads_and_recovery_without_resetting_in
     let recovered = probe.snapshot();
     let recovery = recovered.playback_events.unwrap();
     assert_eq!(recovery.initial_prime_muted_frames, 32);
+    assert!(recovery.initial_prime_complete);
     assert_eq!(recovery.recovery_prime_muted_frames, 32);
     assert_eq!(recovery.short_read_callbacks, events.short_read_callbacks);
     assert_eq!(recovered.soft_events, 64 + recovery.short_read_callbacks);
@@ -84,6 +127,7 @@ fn playback_event_classes_preserve_short_reads_and_recovery_without_resetting_in
     buffer.read_source(&mut source);
     let reset = probe.snapshot().playback_events.unwrap();
     assert_eq!(reset.initial_prime_muted_frames, 32);
+    assert!(reset.initial_prime_complete);
     assert_eq!(reset.recovery_prime_muted_frames, 64);
     assert_eq!(reset.short_read_callbacks, events.short_read_callbacks);
 }
@@ -102,6 +146,10 @@ fn playback_event_classes_do_not_relabel_unadapted_short_reads_or_microphone_eve
     assert_eq!(events.initial_prime_muted_frames, 0);
     assert_eq!(events.recovery_prime_muted_frames, 0);
     assert_eq!(events.short_read_callbacks, 1);
+    assert_eq!(
+        serde_json::to_value(events).unwrap()["initial_prime_complete"],
+        true
+    );
     assert_eq!(
         sample.soft_events, 0,
         "legacy unadapted accounting stays unchanged"

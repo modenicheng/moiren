@@ -31,13 +31,14 @@ fn reset_at_transfer_return(epoch: Arc<AtomicU64>) {
 fn playback_event_classes_check_overflow_and_never_publish_unknown_as_zero() {
     let probe = BoundaryProbe::default();
     assert_eq!(probe.snapshot().playback_events, None);
-    probe.observe_playback_events(u64::MAX, 7, 9);
-    probe.observe_playback_events(1, 2, 3);
+    probe.observe_playback_events(u64::MAX, 7, 9, false);
+    probe.observe_playback_events(1, 2, 3, true);
     let events = probe.snapshot().playback_events.unwrap();
     assert_eq!(events.initial_prime_muted_frames, u64::MAX);
     assert_eq!(events.recovery_prime_muted_frames, 9);
     assert_eq!(events.short_read_callbacks, 12);
     assert!(events.saturated);
+    assert!(events.initial_prime_complete);
     probe.playback_events_version.store(5, Ordering::SeqCst);
     assert_eq!(
         probe.snapshot().playback_events,
@@ -47,7 +48,7 @@ fn playback_event_classes_check_overflow_and_never_publish_unknown_as_zero() {
     probe
         .playback_events_version
         .store(u64::MAX - 1, Ordering::SeqCst);
-    probe.observe_playback_events(0, 0, 0);
+    probe.observe_playback_events(0, 0, 0, true);
     assert_eq!(
         probe.snapshot().playback_events,
         None,
@@ -60,8 +61,8 @@ fn playback_event_classes_concurrent_samples_are_coherent_or_unknown() {
     let probe = Arc::new(BoundaryProbe::default());
     let writer = probe.clone();
     let thread = std::thread::spawn(move || {
-        for _ in 0..10_000 {
-            writer.observe_playback_events(1, 2, 3);
+        for index in 0..10_000 {
+            writer.observe_playback_events(1, 2, 3, index == 9_999);
         }
     });
     while !thread.is_finished() {
@@ -75,6 +76,10 @@ fn playback_event_classes_concurrent_samples_are_coherent_or_unknown() {
                 events.initial_prime_muted_frames * 3
             );
             assert!(!events.saturated);
+            assert_eq!(
+                events.initial_prime_complete,
+                events.initial_prime_muted_frames == 10_000
+            );
         }
     }
     thread.join().unwrap();
@@ -82,6 +87,7 @@ fn playback_event_classes_concurrent_samples_are_coherent_or_unknown() {
     assert_eq!(final_events.initial_prime_muted_frames, 10_000);
     assert_eq!(final_events.recovery_prime_muted_frames, 20_000);
     assert_eq!(final_events.short_read_callbacks, 30_000);
+    assert!(final_events.initial_prime_complete);
 }
 
 fn render_through_boundaries(

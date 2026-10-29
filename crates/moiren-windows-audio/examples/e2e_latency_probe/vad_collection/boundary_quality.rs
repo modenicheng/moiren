@@ -6,10 +6,14 @@ use serde_json::Value;
 #[derive(Default, Serialize)]
 pub(super) struct Tracker {
     identity: Option<Identity>,
+    first_observed: Option<Sample>,
     startup: Option<Sample>,
     latest: Option<Sample>,
     latest_raw: Option<Raw>,
     steady_delta: Option<Sample>,
+    unknown_observations: u64,
+    pending_initial_observations: u64,
+    classification_available: bool,
     final_after_join: bool,
 }
 
@@ -32,6 +36,7 @@ struct Sample {
     soft_events: u64,
     xruns: u64,
     initial_prime_muted_frames: u64,
+    initial_prime_complete: bool,
     recovery_prime_muted_frames: u64,
     short_read_callbacks: u64,
 }
@@ -49,6 +54,7 @@ impl Sample {
                 self.initial_prime_muted_frames,
                 before.initial_prime_muted_frames,
             )?,
+            initial_prime_complete: self.initial_prime_complete,
             recovery_prime_muted_frames: delta(
                 self.recovery_prime_muted_frames,
                 before.recovery_prime_muted_frames,
@@ -161,15 +167,25 @@ impl Tracker {
             .get("playback_events")
             .context("playback classification missing")?;
         if classified.is_null() {
-            // An early carrier read may not have published any classification.
-            // This is pending evidence, not an all-zero startup observation.
+            // One-attempt versioned reads can be contended even after startup.
+            // Retain the last coherent sample as historical evidence, not as a
+            // claim about this poll. Joined final evidence must be available.
             ensure!(
-                self.startup.is_none() && !final_after_join,
-                "playback classification unavailable after startup or owner join"
+                !final_after_join,
+                "playback classification unavailable after owner join"
             );
+            self.unknown_observations = self
+                .unknown_observations
+                .checked_add(1)
+                .context("playback unknown observation counter overflow")?;
             self.identity = Some(identity);
             self.latest_raw = Some(raw);
-            return Ok(Vec::new());
+            self.classification_available = false;
+            return Ok(if raw.xruns == 0 {
+                Vec::new()
+            } else {
+                vec!["playback boundary xruns".into()]
+            });
         }
         ensure!(
             classified.get("saturated").and_then(Value::as_bool) == Some(false),
@@ -179,6 +195,10 @@ impl Tracker {
             soft_events: raw.soft_events,
             xruns: raw.xruns,
             initial_prime_muted_frames: number(classified, "initial_prime_muted_frames")?,
+            initial_prime_complete: classified
+                .get("initial_prime_complete")
+                .and_then(Value::as_bool)
+                .context("playback initial prime completion unavailable or malformed")?,
             recovery_prime_muted_frames: number(classified, "recovery_prime_muted_frames")?,
             short_read_callbacks: number(classified, "short_read_callbacks")?,
         };
@@ -189,11 +209,15 @@ impl Tracker {
             .context("playback boundary mixed-unit legacy total overflow")?;
         if let Some(before) = self.latest {
             sample.checked_delta(before)?;
+            ensure!(
+                !before.initial_prime_complete || sample.initial_prime_complete,
+                "playback initial prime completion regressed"
+            );
         }
         if final_after_join {
             ensure!(
-                self.startup.is_some(),
-                "joined playback cannot invent a startup baseline"
+                self.startup.is_some() && sample.initial_prime_complete,
+                "joined playback requires completed live startup evidence"
             );
             // Only drift-adapted playback adds muted output *frames* and short
             // read *callbacks* to the legacy mixed-unit soft_events counter.
@@ -212,10 +236,14 @@ impl Tracker {
                 );
             }
         }
-        let startup = self.startup.unwrap_or(sample);
-        let steady_delta = sample.checked_delta(startup)?;
+        let startup = self
+            .startup
+            .or_else(|| sample.initial_prime_complete.then_some(sample));
+        let steady_delta = startup
+            .map(|before| sample.checked_delta(before))
+            .transpose()?;
         let mut faults = Vec::new();
-        if steady_delta.initial_prime_muted_frames != 0 {
+        if steady_delta.is_some_and(|delta| delta.initial_prime_muted_frames != 0) {
             faults.push("playback boundary initial-prime growth after startup baseline".into());
         }
         if sample.recovery_prime_muted_frames != 0 {
@@ -227,11 +255,19 @@ impl Tracker {
         if sample.xruns != 0 {
             faults.push("playback boundary xruns".into());
         }
+        if !sample.initial_prime_complete {
+            self.pending_initial_observations = self
+                .pending_initial_observations
+                .checked_add(1)
+                .context("playback pending initial observation counter overflow")?;
+        }
         self.identity = Some(identity);
-        self.startup = Some(startup);
+        self.first_observed.get_or_insert(sample);
+        self.startup = startup;
         self.latest = Some(sample);
         self.latest_raw = Some(raw);
-        self.steady_delta = Some(steady_delta);
+        self.steady_delta = steady_delta;
+        self.classification_available = true;
         self.final_after_join = final_after_join;
         Ok(faults)
     }

@@ -706,6 +706,7 @@ mod tests {
             None,
             Some(PlaybackBoundaryEvents {
                 initial_prime_muted_frames: 32,
+                initial_prime_complete: true,
                 recovery_prime_muted_frames: (1 << 53) + 7,
                 short_read_callbacks: u64::MAX,
                 saturated: true,

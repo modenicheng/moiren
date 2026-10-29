@@ -33,6 +33,7 @@ pub struct BoundaryProbe {
     initial_prime_muted_frames: AtomicU64,
     recovery_prime_muted_frames: AtomicU64,
     short_read_callbacks: AtomicU64,
+    initial_prime_complete: AtomicBool,
     playback_events_saturated: AtomicBool,
 }
 
@@ -41,6 +42,10 @@ pub struct BoundaryProbe {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct PlaybackBoundaryEvents {
     pub initial_prime_muted_frames: u64,
+    /// The source has finished its initial mute, including multi-callback
+    /// primes. Published coherently with the classified counters; recovery
+    /// primes and epoch resets never turn completed startup back into pending.
+    pub initial_prime_complete: bool,
     pub recovery_prime_muted_frames: u64,
     pub short_read_callbacks: u64,
     /// At least one classified counter exhausted u64. Values never wrap to zero.
@@ -70,7 +75,13 @@ pub struct BoundaryProbeSample {
 impl BoundaryProbe {
     /// The attached playback source is the unique writer. Fixed scalar work,
     /// no CAS retry: readers either see one complete publication or unknown.
-    fn observe_playback_events(&self, initial: u64, recovery: u64, short_reads: u64) {
+    fn observe_playback_events(
+        &self,
+        initial: u64,
+        recovery: u64,
+        short_reads: u64,
+        initial_prime_complete: bool,
+    ) {
         let version = self.playback_events_version.load(Ordering::SeqCst);
         let Some(next) = version.checked_add(2).filter(|_| version.is_multiple_of(2)) else {
             self.playback_events_version
@@ -91,6 +102,8 @@ impl BoundaryProbe {
             });
             counter.store(value, Ordering::SeqCst);
         }
+        self.initial_prime_complete
+            .store(initial_prime_complete, Ordering::SeqCst);
         self.playback_events_version.store(next, Ordering::SeqCst);
     }
 
@@ -101,6 +114,7 @@ impl BoundaryProbe {
         }
         let events = PlaybackBoundaryEvents {
             initial_prime_muted_frames: self.initial_prime_muted_frames.load(Ordering::SeqCst),
+            initial_prime_complete: self.initial_prime_complete.load(Ordering::SeqCst),
             recovery_prime_muted_frames: self.recovery_prime_muted_frames.load(Ordering::SeqCst),
             short_read_callbacks: self.short_read_callbacks.load(Ordering::SeqCst),
             saturated: self.playback_events_saturated.load(Ordering::SeqCst),
@@ -371,6 +385,9 @@ pub struct VirtualPlaybackSource {
     /// starvation never turn a subsequent prime into another initial prime.
     playback_primed_once: bool,
     resume_mute_is_initial: bool,
+    /// Set only when the original mute actually finishes. An interrupted
+    /// initial prime cannot be completed by a later recovery or epoch reset.
+    initial_prime_completed: bool,
 }
 
 impl VirtualPlaybackSource {
@@ -420,6 +437,7 @@ impl VirtualPlaybackSource {
             resume_mute: 0,
             playback_primed_once: false,
             resume_mute_is_initial: false,
+            initial_prime_completed: false,
         })
     }
 
@@ -690,6 +708,13 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
                 output.clear();
                 return short(output.frames());
             }
+            if self.drift.is_none()
+                || (self.playback_primed_once
+                    && self.resume_mute_is_initial
+                    && self.resume_mute == 0)
+            {
+                self.initial_prime_completed = true;
+            }
             if let Some(probe) = &self.probe {
                 let (initial, recovery) = if self.resume_mute_is_initial {
                     (muted as u64, 0)
@@ -700,6 +725,7 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
                     initial,
                     recovery,
                     u64::from(transferred < required_input),
+                    self.initial_prime_completed,
                 );
                 probe.observe(
                     self.carrier.available_frames(),
@@ -727,11 +753,13 @@ impl<S: ProcessingSample> RtAudioSource<S> for VirtualPlaybackSource {
             output.clear();
             return short(output.frames());
         }
+        self.initial_prime_completed = true;
         if let Some(probe) = &self.probe {
             probe.observe_playback_events(
                 0,
                 0,
                 u64::from(report.transferred_frames < required_input),
+                self.initial_prime_completed,
             );
             probe.observe(self.carrier.available_frames(), 0.0, report.xruns, 0);
         }

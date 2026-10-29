@@ -9,6 +9,7 @@ fn native(initial: u64, recovery: u64, short_reads: u64) -> Value {
             "target_frames": 384, "xruns": 0,
             "soft_events": initial + recovery + short_reads,
             "playback_events": {"initial_prime_muted_frames": initial,
+                "initial_prime_complete": true,
                 "recovery_prime_muted_frames": recovery,
                 "short_read_callbacks": short_reads, "saturated": false}}]})
 }
@@ -59,7 +60,8 @@ fn boundary_startup_absence_waits_but_later_initial_growth_is_not_rebased() {
     let report = serde_json::to_value(&tracker).unwrap();
     assert_eq!(report["startup"]["initial_prime_muted_frames"], 16);
     assert_eq!(report["steady_delta"]["initial_prime_muted_frames"], 16);
-    assert!(tracker.observe(&pending, false).is_err());
+    pending["boundary_probes"][0]["soft_events"] = 32.into();
+    assert!(tracker.observe(&pending, false).unwrap().is_empty());
     assert!(Tracker::default().observe(&joined(pending), true).is_err());
 }
 
@@ -107,7 +109,7 @@ fn boundary_live_mixed_publication_is_not_forced_to_equal_but_final_is_checked()
 #[test]
 fn boundary_unknown_saturated_regressed_and_changed_identity_refuse() {
     for pointer in [
-        "/boundary_probes/0/playback_events",
+        "/boundary_probes/0/playback_events/initial_prime_complete",
         "/boundary_probes/0/playback_events/initial_prime_muted_frames",
         "/boundary_probes/0/playback_events/recovery_prime_muted_frames",
         "/boundary_probes/0/playback_events/short_read_callbacks",
@@ -160,6 +162,187 @@ fn boundary_unknown_saturated_regressed_and_changed_identity_refuse() {
             .is_err(),
         "final cannot invent startup"
     );
+}
+
+#[test]
+fn boundary_live_unknown_after_startup_recovers_without_fabricating_counters() {
+    use super::super::validate_health_with_policy;
+    for policy in [
+        super::super::ValidationPolicy::default(),
+        super::super::tests::correctness(),
+    ] {
+        let health = super::super::tests::healthy();
+        let mut quality = tracked_quality();
+        for initial in [16, 32] {
+            let mut observed = native(initial, 0, 0);
+            observed["boundary_probes"][0]["playback_events"]["initial_prime_complete"] =
+                (initial == 32).into();
+            validate_health_with_policy(
+                &health,
+                &health,
+                &report(observed),
+                &mut None,
+                policy,
+                &mut quality,
+            )
+            .unwrap();
+        }
+        let mut unknown = native(32, 0, 0);
+        unknown["boundary_probes"][0]["playback_events"] = Value::Null;
+        for _ in 0..2 {
+            validate_health_with_policy(
+                &health,
+                &health,
+                &report(unknown.clone()),
+                &mut None,
+                policy,
+                &mut quality,
+            )
+            .unwrap();
+        }
+        let evidence = quality.boundary_evidence();
+        assert_eq!(evidence["playback"]["unknown_observations"], 2);
+        assert_eq!(evidence["playback"]["classification_available"], false);
+        assert_eq!(
+            evidence["playback"]["latest"]["initial_prime_muted_frames"],
+            32
+        );
+        assert!(quality.failure.is_none());
+        validate_health_with_policy(
+            &health,
+            &health,
+            &report(native(32, 0, 0)),
+            &mut None,
+            policy,
+            &mut quality,
+        )
+        .unwrap();
+        assert_eq!(
+            quality.boundary_evidence()["playback"]["classification_available"],
+            true
+        );
+    }
+    let mut tracker = Tracker::default();
+    tracker.observe(&native(32, 0, 0), false).unwrap();
+    let mut unknown = joined(native(32, 0, 0));
+    unknown["boundary_probes"][0]["playback_events"] = Value::Null;
+    assert!(tracker.observe(&unknown, true).is_err());
+}
+
+#[test]
+fn boundary_source_completion_not_frame_allowance_freezes_startup() {
+    for (first, complete) in [(16, 32), (3, 9), (0, 0)] {
+        let mut tracker = Tracker::default();
+        let mut incomplete = native(first, 0, 0);
+        incomplete["boundary_probes"][0]["playback_events"]["initial_prime_complete"] =
+            false.into();
+        assert!(tracker.observe(&incomplete, false).unwrap().is_empty());
+        let evidence = serde_json::to_value(&tracker).unwrap();
+        assert!(evidence["startup"].is_null());
+        assert!(evidence["steady_delta"].is_null());
+        assert_eq!(evidence["pending_initial_observations"], 1);
+        assert!(
+            tracker
+                .observe(&native(complete, 0, 0), false)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            tracker
+                .observe(&joined(native(complete, 0, 0)), true)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            serde_json::to_value(tracker).unwrap()["startup"]["initial_prime_muted_frames"],
+            complete
+        );
+    }
+    for fault in [native(16, 1, 0), native(16, 0, 1), {
+        let mut value = native(16, 0, 0);
+        value["boundary_probes"][0]["xruns"] = 1.into();
+        value
+    }] {
+        let mut tracker = Tracker::default();
+        let mut incomplete = fault;
+        incomplete["boundary_probes"][0]["playback_events"]["initial_prime_complete"] =
+            false.into();
+        assert!(!tracker.observe(&incomplete, false).unwrap().is_empty());
+        assert!(serde_json::to_value(tracker).unwrap()["startup"].is_null());
+    }
+}
+
+#[test]
+fn boundary_completed_prime_cannot_regress_or_finish_while_incomplete() {
+    let mut tracker = Tracker::default();
+    tracker.observe(&native(32, 0, 0), false).unwrap();
+    let mut incomplete = native(32, 0, 0);
+    incomplete["boundary_probes"][0]["playback_events"]["initial_prime_complete"] = false.into();
+    assert!(tracker.observe(&incomplete, false).is_err());
+    let mut tracker = Tracker::default();
+    tracker.observe(&incomplete, false).unwrap();
+    assert!(tracker.observe(&joined(incomplete), true).is_err());
+}
+
+#[test]
+fn boundary_pending_initial_and_unknown_do_not_hide_faults_from_either_policy() {
+    use super::super::validate_health_with_policy;
+    for policy in [
+        super::super::ValidationPolicy::default(),
+        super::super::tests::correctness(),
+    ] {
+        for fault in ["recovery", "short-read", "xrun", "unknown-xrun"] {
+            let health = super::super::tests::healthy();
+            let mut quality = tracked_quality();
+            let mut observed = match fault {
+                "recovery" => native(16, 1, 0),
+                "short-read" => native(16, 0, 1),
+                _ => native(16, 0, 0),
+            };
+            observed["boundary_probes"][0]["playback_events"]["initial_prime_complete"] =
+                false.into();
+            if fault == "xrun" || fault == "unknown-xrun" {
+                observed["boundary_probes"][0]["xruns"] = 1.into();
+            }
+            if fault == "unknown-xrun" {
+                observed["boundary_probes"][0]["playback_events"] = Value::Null;
+            }
+            let result = validate_health_with_policy(
+                &health,
+                &health,
+                &report(observed),
+                &mut None,
+                policy,
+                &mut quality,
+            );
+            assert_eq!(result.is_ok(), policy.is_correctness(), "{fault}");
+            assert!(quality.failure.is_some(), "{fault}");
+            let evidence = quality.boundary_evidence();
+            assert!(evidence["playback"]["startup"].is_null());
+            assert!(evidence["playback"]["steady_delta"].is_null());
+            assert_eq!(evidence["quality_complete"], false);
+        }
+    }
+}
+
+#[test]
+fn boundary_unknown_and_pending_diagnostic_counters_cannot_wrap() {
+    let mut tracker = Tracker {
+        unknown_observations: u64::MAX,
+        ..Default::default()
+    };
+    let mut unknown = native(0, 0, 0);
+    unknown["boundary_probes"][0]["playback_events"] = Value::Null;
+    assert!(tracker.observe(&unknown, false).is_err());
+    assert_eq!(tracker.unknown_observations, u64::MAX);
+    let mut tracker = Tracker {
+        pending_initial_observations: u64::MAX,
+        ..Default::default()
+    };
+    let mut incomplete = native(16, 0, 0);
+    incomplete["boundary_probes"][0]["playback_events"]["initial_prime_complete"] = false.into();
+    assert!(tracker.observe(&incomplete, false).is_err());
+    assert_eq!(tracker.pending_initial_observations, u64::MAX);
 }
 
 fn tracked_quality() -> super::super::Quality {
