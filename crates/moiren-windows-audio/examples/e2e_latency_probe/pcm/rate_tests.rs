@@ -260,7 +260,7 @@ fn pcm_rate_search_full_warped_observation_and_partial_failures_are_retained() {
             .contains("insufficient observation")
     );
     let mut raw = raw_fixture(1000);
-    for frame in raw[5000 * 8..9200 * 8].chunks_exact_mut(8) {
+    for frame in raw[5000 * 8..9200 * 8].as_chunks_mut::<8>().0 {
         frame[4..].fill(0);
     }
     let value = analyze(raw, schedule());

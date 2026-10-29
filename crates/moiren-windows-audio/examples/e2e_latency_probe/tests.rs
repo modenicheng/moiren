@@ -774,7 +774,7 @@ fn packet_analysis_tracks_small_resampled_clock_drift_or_retains_an_unresolvable
             }
             for (frame, samples) in frames.iter_mut().enumerate() {
                 let offset = (frame as f64 - 64.0) / ratio - origin as f64;
-                if offset >= 0.0 && offset < 254.0 {
+                if (0.0..254.0).contains(&offset) {
                     let low = offset.floor() as usize;
                     let fraction = (offset - low as f64) as f32;
                     samples[1] = marker[low] * (1.0 - fraction) + marker[low + 1] * fraction;
