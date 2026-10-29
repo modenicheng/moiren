@@ -24,6 +24,17 @@ explicitly pinned headphone output; no other speaker state is changed.
 An independent calibrated common reference remains unavailable; no path
 winner or smaller default is selected.
 
+The DAWN receipt now supersedes the original native-confirmation blocker:
+merged-main app3ac8484 passes68 measured/UI release tests and a real production
+desktop Process Apply/restart with exact requested/active UIA confirmation,
+generation2 cleanup and normal Stop/Quit. This closes that baseline S3 desktop
+integration gap, not measured delivery feasibility at smaller targets. Its
+diagnostic4096-frame target is not a low-latency preset. A separate30-second
+VAD -> Bus -> DAWN diagnostic completes submission and cleanup with zero
+reported in-run provider loss/recovery and playback xruns/short reads. It has
+no acquired PCM or calibrated reference and remains explicitly unqualified.
+Original native failures are preserved, not relabeled as successful runs.
+
 The [native packet-period / Engine-block matrix](2026-10-29-vad-period-block-matrix.md)
 adds observed144/480-frame VAD playback packets with128/256-frame Engine
 blocks at explicit target1024/capacity4800. Three cases complete operation
