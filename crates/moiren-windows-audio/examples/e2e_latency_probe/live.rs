@@ -1,4 +1,4 @@
-//! Live Process Loopback orchestration and evidence handoff.
+//! Live Process Loopback / VAD orchestration and evidence handoff.
 //!
 //! This module owns the probe's control-side lifecycle. PCM is copied into a
 //! bounded owner-local recorder and written only after the native owner joins;
@@ -33,6 +33,9 @@ use std::{
 
 #[path = "source.rs"]
 mod source;
+
+#[path = "vad_route.rs"]
+mod vad_route;
 
 #[cfg(any(windows, test))]
 #[path = "process_trace.rs"]
@@ -103,7 +106,12 @@ struct LiveOptions {
     process_collection: Option<PathBuf>,
     stable_endpoint_id: Option<String>,
     source_name: Option<String>,
+    vad_microphone_id: Option<String>,
+    vad_microphone_name: Option<String>,
     output_endpoint: String,
+    output_endpoint_explicit: bool,
+    physical_render_options_explicit: bool,
+    input_budget_options_explicit: bool,
     artifact_dir: PathBuf,
     report_path: Option<PathBuf>,
     manifest_path: Option<PathBuf>,
@@ -150,7 +158,12 @@ impl Default for LiveOptions {
             process_collection: None,
             stable_endpoint_id: None,
             source_name: None,
+            vad_microphone_id: None,
+            vad_microphone_name: None,
             output_endpoint: String::new(),
+            output_endpoint_explicit: false,
+            physical_render_options_explicit: false,
+            input_budget_options_explicit: false,
             artifact_dir: PathBuf::new(),
             report_path: None,
             manifest_path: None,
@@ -188,6 +201,54 @@ impl Default for LiveOptions {
     }
 }
 
+impl LiveOptions {
+    fn vad_route_kind(&self) -> vad_route::RouteKind {
+        if self.vad_microphone_id.is_some() {
+            vad_route::RouteKind::Microphone
+        } else {
+            vad_route::RouteKind::Physical
+        }
+    }
+
+    fn microphone_target(&self) -> Result<Option<vad_route::MicrophoneTarget>> {
+        match (&self.vad_microphone_id, &self.vad_microphone_name) {
+            (None, None) => Ok(None),
+            (Some(id), Some(name)) => Ok(Some(vad_route::microphone_target(
+                id,
+                name,
+                self.stable_endpoint_id
+                    .as_deref()
+                    .context("playback identity missing")?,
+            )?)),
+            _ => bail!("--vad-microphone-id and --vad-microphone-name must be supplied together"),
+        }
+    }
+
+    fn output_label(&self) -> String {
+        self.vad_microphone_id.as_ref().map_or_else(
+            || self.output_endpoint.clone(),
+            |id| format!("virtual-microphone:{}", id.to_ascii_lowercase()),
+        )
+    }
+
+    fn route_intent(&self) -> Option<Value> {
+        self.vad_microphone_id.as_ref().map(|id| serde_json::json!({
+            "route": "microphone", "input_kind": "virtual_playback", "bus": true,
+            "output_kind": "virtual_microphone", "clock": "virtual_realtime",
+            "playback_stable_endpoint_id": self.stable_endpoint_id,
+            "microphone_stable_endpoint_id": id.to_ascii_lowercase(),
+            "microphone_requested_name": self.vad_microphone_name,
+            "source_native_request": {"mode": "exclusive", "sample_rate": 48000, "channels": 2},
+            "recorder_native_request": {"mode": "shared", "sample_format": "float32", "sample_rate": 48000},
+            "native_request_meaning": "client modes are distinct; negotiated recorder shape is retained in measurement.info, not inferred from requests",
+            "boundary": "internal", "qualified": false,
+            "independent_reference": false,
+            "physical_render_queue_applicable": false,
+            "meaning": "requested software route; source submission and duplicated stereo are not an independent delay reference",
+        }))
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct LiveRunManifest {
     validation: ValidationPolicy,
@@ -203,6 +264,8 @@ struct LiveRunManifest {
     playback_source: Option<source::SourceProvenance>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_minimum_period: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_route: Option<Value>,
     collection: Option<Value>,
     output_endpoint_id: String,
     measurement_boundary: EvidenceBoundary,
@@ -212,7 +275,8 @@ struct LiveRunManifest {
     process_bridge: ProcessBridgeOptions,
     #[serde(skip_serializing_if = "Option::is_none")]
     virtual_buffer: Option<VirtualBufferOptions>,
-    render_queue: RenderQueuePolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    render_queue: Option<RenderQueuePolicy>,
     artifacts: ArtifactPaths,
     gaps: Vec<String>,
 }
@@ -227,6 +291,8 @@ struct LiveRunReport {
     qualified: bool,
     source: SourceReport,
     output_endpoint_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_route: Option<Value>,
     measurement_boundary: EvidenceBoundary,
     requested_seconds: u64,
     diagnostic_soak: bool,
@@ -272,7 +338,13 @@ struct NativeReport {
     bridge: Option<Value>,
     vad_playback: Option<Value>,
     vad_provider: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_microphone_provider: Option<Value>,
     vad_cleanup: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_microphone_cleanup: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vad_route: Option<Value>,
     engine: Option<Value>,
     engine_cleanup: Option<Value>,
     backend_diagnostics: Option<Value>,
@@ -323,11 +395,17 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
              live-process-loopback --source-output ENDPOINT --source-schedule FILE --process-collection FILE [options]\n\
              live-vad --stable-endpoint-id ID --name NAME --output ENDPOINT --artifact-dir DIR [options]\n\
              live-vad --source-schedule FILE --vad-collection FILE opts into bounded source +\n\
-             production graph + independent waveform collection. --seconds is its total ceiling.\n\
+             production graph + bounded raw waveform collection. --seconds is its total ceiling.\n\
+             Replace physical --output with --vad-microphone-id ID --vad-microphone-name NAME\n\
+             for the explicit playback -> Bus -> microphone software route. It requires owned\n\
+             source/collection and Internal boundary; schema2 config may omit input_endpoint_id,\n\
+             which resolves only the owned microphone. An explicit recorder ID must match exactly.\n\
+             Software capture has no independent delay reference and never qualifies physical latency.\n\
              live-vad accepts --vad-recovery-cap-periods 1..8; omitted preserves 8.\n\
              This limits virtual-clock catch-up only, not physical whole-wake demand or measured latency; smaller caps may discard more overdue periods.\n\
              --vad-minimum-period requests the queried exclusive VAD minimum; omitted preserves the default request.\n\
              Period requests are unqualified; actual buffer and provider packet observations remain separate.\n\
+             Explicit input capacity/jitter/packet/gap flags require --input-target-frames; omission preserves compatibility.\n\
              --validation-mode latency-sensitive|correctness [--jitter-tolerance-ms 0..3000]\n\
              Correctness retains jitter/underruns without early quality abort; never latency qualification.\n\
              Correctness exit 0 means collection and cleanup completed, even if quality_passed=false.\n\
@@ -357,6 +435,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             vad_collection::read_config(path, options.max_input_bytes, frames, options.seconds)
         })
         .transpose()?;
+    if let Some((_, config)) = &collection_input {
+        config.validate_route(options.vad_route_kind())?;
+    }
     let process_input = options
         .process_collection
         .as_deref()
@@ -411,6 +492,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
     }
     if options.dry_run {
         gaps.push("live source/native capture was intentionally skipped (--dry-run)".into());
+    }
+    if options.vad_route_kind() == vad_route::RouteKind::Microphone {
+        gaps.push("VAD microphone collection is an internal software route; no independent reference or physical delay is established".into());
     }
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut source_identity = source_identity(&options, &mut gaps);
@@ -604,7 +688,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             .then(|| source::SourceProvenance::new(source_plan)),
             vad_minimum_period: options.vad_minimum_period.then_some(true),
         },
-        output_endpoint_id: options.output_endpoint.clone(),
+        output_endpoint_id: options.output_label(),
+        vad_route: options.route_intent(),
         measurement_boundary: options.measurement_boundary,
         requested_seconds: options.seconds,
         diagnostic_soak: options.diagnostic_soak,
@@ -633,8 +718,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             || options.process_collection.is_some())
         .then(|| source::SourceProvenance::new(source_plan)),
         vad_minimum_period: options.vad_minimum_period.then_some(true),
+        vad_route: options.route_intent(),
         collection: collection.clone(),
-        output_endpoint_id: options.output_endpoint.clone(),
+        output_endpoint_id: options.output_label(),
         measurement_boundary: options.measurement_boundary,
         requested_seconds: options.seconds,
         diagnostic_soak: options.diagnostic_soak,
@@ -643,7 +729,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         virtual_buffer: (options.source_kind == EvidenceSourceKind::VadPlayback)
             .then(|| virtual_buffer(&options))
             .transpose()?,
-        render_queue,
+        render_queue: (options.vad_route_kind() == vad_route::RouteKind::Physical)
+            .then_some(render_queue),
         artifacts: artifact_paths(&paths, &options),
         gaps,
     };
@@ -731,6 +818,8 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             | "--source-kind"
             | "--stable-endpoint-id"
             | "--name"
+            | "--vad-microphone-id"
+            | "--vad-microphone-name"
             | "--output"
             | "--artifact-dir"
             | "--report"
@@ -818,7 +907,25 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             }
             "--stable-endpoint-id" => options.stable_endpoint_id = Some(value),
             "--name" => options.source_name = Some(value),
-            "--output" => options.output_endpoint = value,
+            "--vad-microphone-id" => {
+                ensure!(
+                    options.vad_microphone_id.is_none(),
+                    "duplicate --vad-microphone-id"
+                );
+                options.vad_microphone_id = Some(value);
+            }
+            "--vad-microphone-name" => {
+                ensure!(
+                    options.vad_microphone_name.is_none(),
+                    "duplicate --vad-microphone-name"
+                );
+                options.vad_microphone_name = Some(value);
+            }
+            "--output" => {
+                ensure!(!options.output_endpoint_explicit, "duplicate --output");
+                options.output_endpoint_explicit = true;
+                options.output_endpoint = value;
+            }
             "--artifact-dir" => options.artifact_dir = PathBuf::from(value),
             "--report" => options.report_path = Some(PathBuf::from(value)),
             "--manifest" => options.manifest_path = Some(PathBuf::from(value)),
@@ -857,18 +964,22 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
                 options.max_input_bytes = value.parse().context("invalid input byte cap")?
             }
             "--input-capacity-frames" => {
+                options.input_budget_options_explicit = true;
                 options.input_capacity_frames = value.parse().context("invalid input capacity")?
             }
             "--input-target-frames" => {
                 options.input_target_frames = Some(value.parse().context("invalid input target")?)
             }
             "--input-jitter-frames" => {
+                options.input_budget_options_explicit = true;
                 options.input_jitter_frames = value.parse().context("invalid input jitter")?
             }
             "--max-packet-frames" => {
+                options.input_budget_options_explicit = true;
                 options.max_packet_frames = value.parse().context("invalid packet bound")?
             }
             "--max-gap-frames" => {
+                options.input_budget_options_explicit = true;
                 options.max_gap_frames = value.parse().context("invalid gap bound")?
             }
             "--vad-recovery-cap-periods" => {
@@ -880,6 +991,7 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
                     Some(value.parse().context("invalid VAD recovery cap")?);
             }
             "--render-target-frames" => {
+                options.physical_render_options_explicit = true;
                 options.render_target_frames = if value == "capacity" {
                     None
                 } else {
@@ -887,9 +999,11 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
                 }
             }
             "--wake-margin-frames" => {
+                options.physical_render_options_explicit = true;
                 options.wake_margin_frames = value.parse().context("invalid wake margin")?
             }
             "--callback-budget-frames" => {
+                options.physical_render_options_explicit = true;
                 options.callback_budget_frames = value.parse().context("invalid callback budget")?
             }
             "--engine-block-frames" => {
@@ -918,6 +1032,32 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
 
 fn validate(options: &LiveOptions) -> Result<()> {
     options.validation.validate()?;
+    ensure!(
+        !options.input_budget_options_explicit || options.input_target_frames.is_some(),
+        "explicit input capacity/jitter/packet/gap options require --input-target-frames"
+    );
+    if options.microphone_target()?.is_some() {
+        ensure!(
+            options.source_kind == EvidenceSourceKind::VadPlayback
+                && options.vad_collection.is_some()
+                && options.source_schedule.is_some(),
+            "VAD microphone output requires owned live-vad --source-schedule and --vad-collection"
+        );
+        ensure!(
+            !options.output_endpoint_explicit
+                && options.output_endpoint.is_empty()
+                && !options.physical_render_options_explicit,
+            "VAD microphone output cannot mix physical --output or render queue options"
+        );
+        ensure!(
+            options.measurement_boundary == EvidenceBoundary::Internal
+                && options.calibration.is_none()
+                && options.measurement_pcm.is_none()
+                && options.measurement_schedule.is_none()
+                && !options.diagnostic_soak,
+            "VAD microphone collection is internal software evidence, not physical calibration or imported delay"
+        );
+    }
     ensure!(
         !options.vad_minimum_period || options.source_kind == EvidenceSourceKind::VadPlayback,
         "--vad-minimum-period is only valid for live-vad"
@@ -1050,7 +1190,9 @@ fn validate(options: &LiveOptions) -> Result<()> {
         }
     }
     ensure!(
-        !options.output_endpoint.trim().is_empty() && !options.output_endpoint.contains('\0'),
+        options.vad_route_kind() == vad_route::RouteKind::Microphone
+            || (!options.output_endpoint.trim().is_empty()
+                && !options.output_endpoint.contains('\0')),
         "--output must be a nonempty endpoint ID without NUL"
     );
     ensure!(
@@ -1694,7 +1836,7 @@ fn build_qualification_report(
         source_kind: options.source_kind,
         source_identity,
         source_details,
-        output_endpoint_id: options.output_endpoint.clone(),
+        output_endpoint_id: options.output_label(),
         processing_format: format.clone(),
         native_input_format: format.clone(),
         native_output_format: format.clone(),
@@ -1958,1588 +2100,226 @@ fn unix_seconds() -> u64 {
 }
 
 #[cfg(windows)]
-mod native {
-    use super::*;
-    use anyhow::{Context, bail, ensure};
-    use moiren_core::graph::{LogicalGraph, NodeKind, SendParams, edit::connect_to_new_bus_input};
-    use moiren_engine::{
-        boundary::ClockRole,
-        host::{EngineHost, EngineProject, ExecutionState, HostConfig, NodeConfig},
-        node::{
-            DeviceOptions, EndpointSelector, InputConfig, InputSource, OutputConfig, OutputTarget,
-            VirtualEndpointId,
-        },
-    };
-    use moiren_windows_audio::{
-        ActivationGate, SessionDuration, StopSignal,
-        engine_backend::ProfessionalBackend,
-        latency::RenderQueuePolicy,
-        process_loopback::{
-            ProcessLoopbackOptions, inspect_process,
-            prepare_process_capture_with_gate_returning_with_abort,
-        },
-        vad::{Channels, Intent, PdoState, WindowsVadProvider},
-    };
-    use std::{
-        str::FromStr,
-        sync::Arc,
-        thread,
-        time::{Duration, Instant},
-    };
-
-    use super::render::{
-        PreparedNativeRender, RenderOptions, prepare_render_native_with_gate_returning_with_abort,
-    };
-
-    const STARTUP_SAMPLE_LIMIT: usize = 256;
-    const STARTUP_SAMPLE_INTERVAL: Duration = Duration::from_millis(10);
-
-    fn retain_native_value(destination: &mut Option<Value>, value: impl Serialize) -> Result<()> {
-        *destination = Some(serde_json::to_value(value)?);
-        Ok(())
-    }
-
-    fn retain_capture_join(
-        native: &mut NativeReport,
-        outcome: (
-            Option<moiren_windows_audio::capture::CaptureReport>,
-            Option<moiren_windows_audio::capture::CaptureError>,
-        ),
-        persist: impl FnOnce(&moiren_windows_audio::capture::CaptureReport) -> Result<()>,
-    ) -> Result<()> {
-        let (report, error) = outcome;
-        let mut result = if let Some(error) = error {
-            native.capture_failure = Some(serde_json::json!({
-                "stage": "capture_join", "error": error.to_string(),
-                "partial_report_retained": report.is_some(),
-            }));
-            Err(anyhow::Error::new(error)).context("join Process Loopback capture")
-        } else {
-            Ok(())
-        };
-        if let Some(report) = report {
-            result = soak_cleanup::combine(result, persist(&report));
-            result =
-                soak_cleanup::combine(result, retain_native_value(&mut native.capture, report));
-        } else {
-            result = soak_cleanup::combine(result, Err(anyhow::anyhow!("capture report missing")));
-        }
-        result
-    }
-
-    fn prepare_process_input<T>(
-        bridge: ProcessBridgeOptions,
-        render: &mut Option<PreparedNativeRender>,
-        report: &mut NativeReport,
-        prepare: impl FnOnce(
-            ProcessBridgeOptions,
-            &mut Option<PreparedNativeRender>,
-            &mut NativeReport,
-        ) -> Result<T>,
-    ) -> Result<(ProcessBridgeOptions, T)> {
-        let info = render.as_ref().context("prepared render missing")?.info();
-        let mut evidence = None;
-        let capture = process_admission::prepare_capture_for_render_recording(
-            bridge,
-            info.timing,
-            info.queue,
-            &mut evidence,
-            |bridge| prepare(bridge, render, report),
-        );
-        report.process_admission = evidence;
-        match capture {
-            Ok(capture) => Ok(capture),
-            Err(error) => {
-                let mut result = Err(error);
-                if let Some(render) = render.take() {
-                    let (retained, cancelled) = render.cancel_retaining_report();
-                    result = soak_cleanup::combine(result, cancelled);
-                    if let Some(retained) = retained {
-                        result = soak_cleanup::combine(
-                            result,
-                            retain_native_value(&mut report.render, retained),
-                        );
-                    }
-                }
-                result.map(|()| unreachable!("capture preparation failed"))
-            }
-        }
-    }
-
-    pub fn run(
-        options: &LiveOptions,
-        bridge: &ProcessBridgeOptions,
-        queue: RenderQueuePolicy,
-        paths: &ArtifactPaths,
-        native_report: &mut NativeReport,
-        gaps: &mut Vec<String>,
-    ) -> Result<()> {
-        let identity =
-            inspect_process(options.source_pid).context("inspect selected source process")?;
-        let duration = if options.diagnostic_soak || options.controlled_load_id.is_some() {
-            SessionDuration::UntilStopped
-        } else {
-            SessionDuration::For(Duration::from_secs(options.seconds))
-        };
-        let mut journal = diagnostic_journal(options, paths)?;
-        let stop = StopSignal::new().context("create shared stop signal")?;
-        let gate = ActivationGate::new(stop.clone()).context("create activation gate")?;
-        let render = match prepare_render_native_with_gate_returning_with_abort(
-            RenderOptions {
-                queue,
-                endpoint_id: options.output_endpoint.clone(),
-                latency_telemetry: options.telemetry,
-                duration,
-            },
-            stop.clone(),
-            gate.clone(),
-            || (),
-        ) {
-            Ok(render) => render,
-            Err(error) => {
-                native_report.render_failure = Some(error.evidence("render_prepare"));
-                let mut result = Err(error.error).context("prepare WASAPI render");
-                if let Some(report) = error.report {
-                    result = soak_cleanup::combine(
-                        result,
-                        retain_native_value(&mut native_report.render, report),
-                    );
-                }
-                return soak_cleanup::combine(result, finish_journal(&mut journal, native_report));
-            }
-        };
-        let render_info = render.info();
-        let padding = render.padding_observer();
-        let mut render = Some(render);
-        let capture = prepare_process_input(
-            *bridge,
-            &mut render,
-            native_report,
-            |bridge, render, native_report| {
-                let capture = prepare_process_capture_with_gate_returning_with_abort(
-                    ProcessLoopbackOptions {
-                        artifact: if options.diagnostic_soak {
-                            None
-                        } else {
-                            Some(moiren_windows_audio::capture::PcmArtifactConfig::new(
-                                usize::try_from(options.seconds)?
-                                    .checked_mul(48_000)
-                                    .context("capture artifact size overflow")?,
-                            ))
-                        },
-                        bridge,
-                        latency_telemetry: options.telemetry,
-                        target: identity.clone(),
-                        duration,
-                    },
-                    stop.clone(),
-                    gate.clone(),
-                    // Disconnect and stop the parked peer before capture join.
-                    || render.take().map(|render| render.cancel_retaining_report()),
-                );
-                match capture {
-                    Ok(capture) => Ok(capture),
-                    Err(mut failure) => {
-                        native_report.capture_failure = Some(serde_json::json!({
-                            "stage":"capture_prepare", "error":failure.error.to_string(),
-                            "stop_error":failure.stop_error.as_ref().map(ToString::to_string),
-                            "join_error":failure.join_error.as_ref().map(ToString::to_string),
-                            "abort_panicked":failure.abort_panicked,
-                        }));
-                        let mut result = Err(anyhow::anyhow!(failure.error))
-                            .context("prepare Process Loopback capture");
-                        if let Some(report) = failure.report.take() {
-                            result = soak_cleanup::combine(
-                                result,
-                                retain_native_value(&mut native_report.capture, report),
-                            );
-                        }
-                        if let Some(Some((report, cancelled))) = failure.abort.take() {
-                            result = soak_cleanup::combine(result, cancelled);
-                            if let Some(report) = report {
-                                result = soak_cleanup::combine(
-                                    result,
-                                    retain_native_value(&mut native_report.render, report),
-                                );
-                            }
-                        }
-                        if let Some(error) = failure.stop_error {
-                            result = soak_cleanup::combine(result, Err(error.into()));
-                        }
-                        if let Some(error) = failure.join_error {
-                            result = soak_cleanup::combine(result, Err(error.into()));
-                        }
-                        if failure.abort_panicked {
-                            result = soak_cleanup::combine(
-                                result,
-                                Err(anyhow::anyhow!("capture preparation abort panicked")),
-                            );
-                        }
-                        result.map(|()| unreachable!("capture preparation failed"))
-                    }
-                }
-            },
-        );
-        let (admitted_bridge, prepared) = match capture {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                return soak_cleanup::combine(
-                    Err(error),
-                    finish_journal(&mut journal, native_report),
-                );
-            }
-        };
-        // Keep full-wake admission metadata even though actual source reads
-        // are segmented. Archive from the empty gated bridge, not a late tail.
-        let bridge_observer = prepared.observer.clone();
-        let mut trace = moiren_windows_audio::process_loopback::ProcessTraceCollector::new(
-            identity.clone(),
-            1,
-            48_000,
-            48_000,
-            admitted_bridge.max_demand_frames,
-        );
-        trace.poll(&bridge_observer);
-        let capture_session = prepared.session;
-        let mut render_session = None;
-        let mut controlled_load = None;
-        // Keep every native owner outside the fallible continuation. A graph,
-        // attachment, activation, or load-start error still reaches explicit
-        // cancellation/joins and retains reports instead of relying on Drop.
-        let collection = (|| -> Result<()> {
-            ensure!(
-                prepared.sample_rate == 48_000 && prepared.channels == 2,
-                "Process graph negotiation is not 48k stereo"
-            );
-            let renderer = process_collection::graph::build_renderer(options, prepared.source)?
-                .with_bridge_observer(bridge_observer.clone());
-            let timeline = renderer.timeline_observer();
-            match render
-                .take()
-                .expect("prepared render retained until attachment")
-                .attach_returning_with_abort(renderer, queue, || {
-                    stop.request_stop().err().map(|error| error.to_string())
-                }) {
-                Ok(render) => render_session = Some(render.into_session()),
-                Err(mut error) => {
-                    native_report.render_failure = Some(error.evidence("render_attach"));
-                    let mut result = Err(error.error).context("attach Engine renderer");
-                    if let Some(report) = error.report.take() {
-                        result = soak_cleanup::combine(
-                            result,
-                            retain_native_value(&mut native_report.render, report),
-                        );
-                    }
-                    if let Some(error) = error.stop_error {
-                        result = soak_cleanup::combine(result, Err(error));
-                    }
-                    if let Some(error) = error.join_error {
-                        result = soak_cleanup::combine(result, Err(error));
-                    }
-                    if let Some(Some(error_stop)) = error.abort {
-                        result = soak_cleanup::combine(result, Err(anyhow::anyhow!(error_stop)));
-                    }
-                    if error.abort_panicked {
-                        result = soak_cleanup::combine(
-                            result,
-                            Err(anyhow::anyhow!("render attachment abort panicked")),
-                        );
-                    }
-                    return result;
-                }
-            }
-            let render_session = render_session.as_ref().expect("attached render session");
-            trace.poll(&bridge_observer);
-            gate.activate().context("activate capture/render gate")?;
-            if let Some(load_id) = options.controlled_load_id.as_deref() {
-                let startup_deadline = Instant::now() + Duration::from_secs(5);
-                while !(capture_session.has_started() && render_session.has_started()) {
-                    trace.poll(&bridge_observer);
-                    ensure!(
-                        !capture_session.is_finished() && !render_session.is_finished(),
-                        "native owner stopped before controlled load startup"
-                    );
-                    ensure!(
-                        Instant::now() < startup_deadline,
-                        "native owners did not start before controlled load startup deadline"
-                    );
-                    thread::sleep(Duration::from_millis(10));
-                }
-                let directory = Path::new(&paths.directory);
-                controlled_load = Some(controlled_load::Supervisor::start(
-                    load_id,
-                    options.seconds,
-                    directory.join("controlled-load.stop"),
-                    directory.join("controlled-load.result.json"),
-                )?);
-            }
-            trace.poll(&bridge_observer);
-            if journal.is_some() || controlled_load.is_some() {
-                let duration = Duration::from_secs(options.seconds);
-                let interval = Duration::from_secs(options.observation_interval_seconds);
-                let mut next_observation = Duration::ZERO;
-                soak_control::run_until(
-                    duration,
-                    |elapsed| {
-                        trace.poll(&bridge_observer);
-                        if let Some(journal) = journal.as_mut() {
-                            journal.check()?;
-                            if elapsed >= next_observation {
-                                journal.record(&serde_json::json!({
-                                "schema_version": 1, "source_kind": options.source_kind,
-                                "elapsed_seconds": elapsed.as_secs_f64(),
-                                "capture_started": capture_session.has_started(),
-                                "render_started": render_session.has_started(),
-                                "capture_finished": capture_session.is_finished(),
-                                "render_finished": render_session.is_finished(),
-                                "bridge": bridge_observer.snapshot(),
-                                "render_padding": soak::process_padding_observation(&padding),
-                                "timeline": timeline.try_snapshot().map(|value| serde_json::json!({
-                                    "frame": value.frame, "epoch": value.epoch, "revision": value.revision,
-                                })),
-                            }))?;
-                                next_observation = elapsed.saturating_add(interval);
-                            }
-                        }
-                        if let Some(load) = controlled_load.as_mut() {
-                            load.check()?;
-                        }
-                        ensure!(
-                            !capture_session.is_finished() && !render_session.is_finished(),
-                            "native owner stopped before supervised deadline"
-                        );
-                        Ok(())
-                    },
-                    || stop.request_stop().context("stop supervised native owners"),
-                )
-            } else {
-                process_trace::poll_finite(
-                    Duration::from_secs(options.seconds),
-                    || trace.poll(&bridge_observer),
-                    || capture_session.is_finished() && render_session.is_finished(),
-                    || {
-                        stop.request_stop()
-                            .context("stop finite Process owners at deadline")
-                    },
-                )
-            }
-        })();
-        trace.poll(&bridge_observer);
-        let mut collection = soak_cleanup::combine(
-            collection,
-            stop.request_stop()
-                .context("stop Process owners before cleanup"),
-        );
-        if let Some(load) = controlled_load.take() {
-            // This blocking wait, like the joins below, can outlast the realtime
-            // history window. Polling is best-effort: the next poll latches any
-            // gap as diagnostic refusal; final closure cannot prove completeness.
-            match load.finish(Duration::from_secs(options.seconds)) {
-                Ok(evidence) => {
-                    if !evidence.valid {
-                        let failure = evidence
-                            .failure
-                            .clone()
-                            .unwrap_or_else(|| "controlled load evidence is invalid".into());
-                        collection =
-                            soak_cleanup::combine(collection, Err(anyhow::anyhow!(failure)));
-                    }
-                    collection = soak_cleanup::combine(
-                        collection,
-                        retain_native_value(&mut native_report.controlled_load, evidence),
-                    );
-                }
-                Err(error) => {
-                    native_report.controlled_load = Some(serde_json::json!({
-                        "load_id": options.controlled_load_id,
-                        "requested_seconds": options.seconds,
-                        "valid": false,
-                        "cleanup_complete": false,
-                        "failure": format!("finish controlled load: {error:#}"),
-                    }));
-                    collection = soak_cleanup::combine(
-                        collection,
-                        Err(anyhow::anyhow!("finish controlled load: {error:#}")),
-                    );
-                }
-            }
-        }
-        if let Some(render) = render.take() {
-            let (report, cancelled) = render.cancel_retaining_report();
-            collection = soak_cleanup::combine(collection, cancelled);
-            if let Some(report) = report {
-                collection = soak_cleanup::combine(
-                    collection,
-                    retain_native_value(&mut native_report.render, report),
-                );
-            }
-        }
-        trace.poll(&bridge_observer);
-        let capture_result = capture_session.join_retaining_report();
-        trace.poll(&bridge_observer);
-        let render_result = render_session.map(|render| render.join());
-        trace.poll(&bridge_observer);
-        collection = soak_cleanup::combine(
-            collection,
-            retain_capture_join(native_report, capture_result, |report| {
-                persist_capture_artifact(paths, report)
-            }),
-        );
-        match render_result {
-            Some(Ok(report)) => {
-                collection = soak_cleanup::combine(
-                    collection,
-                    retain_native_value(&mut native_report.render, report),
-                );
-            }
-            Some(Err(error)) => gaps.push(format!("join WASAPI render: {error}")),
-            None => {}
-        }
-        // Keep the observer alive across both joins so this is the final
-        // runtime state, rather than the all-zero pre-activation snapshot.
-        collection = soak_cleanup::combine(
-            collection,
-            retain_native_value(&mut native_report.bridge, bridge_observer.snapshot()),
-        );
-        // The source and renderer have been destroyed by both joins. Preserve
-        // actual writer-closure/truncation facts, never infer successful cleanup
-        // or complete history from the registry/owner being stopped.
-        let trace_export = process_trace::export_collector_into(native_report, paths, &trace);
-        // Keep the metadata read above in the report path even if the source
-        // process exits during the finite run.
-        if render_info.timing.capacity_frames == 0 {
-            gaps.push("render reported zero native capacity".into());
-        }
-        let owners = if native_report.capture.is_none() || native_report.render.is_none() {
-            Err(anyhow::anyhow!(
-                "one or more native owners did not return a report"
-            ))
-        } else {
-            Ok(())
-        };
-        // Preserve final owner/bridge reports before any wait on the sink.
-        // A stalled OS write may delay exit, never native cancellation.
-        let result = soak_cleanup::combine(collection, owners);
-        let result = soak_cleanup::combine(result, trace_export);
-        soak_cleanup::combine(result, finish_journal(&mut journal, native_report))
-    }
-
-    fn finish_journal(
-        journal: &mut Option<soak::Journal>,
-        report: &mut NativeReport,
-    ) -> Result<()> {
-        let Some(journal) = journal else {
-            return Ok(());
-        };
-        let result = journal.finish();
-        report.diagnostic_observations = journal.samples();
-        result
-    }
-
-    /// Run the production VAD playback -> Engine -> physical render path.
-    ///
-    /// The native VAD client is deliberately kept separate from EngineHost:
-    /// it is the external application source, while the provider owns the
-    /// driver's PCM worker and the backend owns the graph/render owner.
-    pub fn run_vad(
-        options: &LiveOptions,
-        paths: &ArtifactPaths,
-        source_plan: Option<source::PreparedSource>,
-        collection_config: Option<&vad_collection::Config>,
-        native_report: &mut NativeReport,
-        _gaps: &mut Vec<String>,
-    ) -> Result<()> {
-        let mut journal = diagnostic_journal(options, paths)?;
-        let stable_text = options
-            .stable_endpoint_id
-            .as_deref()
-            .context("--stable-endpoint-id is required for live-vad")?;
-        let endpoint_id = VirtualEndpointId::from_str(stable_text)
-            .map_err(|_| anyhow::anyhow!("--stable-endpoint-id must be exactly 32 hex digits"))?;
-        let name = options
-            .source_name
-            .as_deref()
-            .context("--name is required for live-vad")?;
-        let (_, root) = vad::discover_root().context("discover VAD control root")?;
-        let provider = WindowsVadProvider::discover().context("discover VAD provider")?;
-        // From CREATE onward every failure takes the same best-effort cleanup
-        // path. The journal was declared first, so even unwinding stops native
-        // owners before joining a potentially stalled filesystem worker.
-        let mut cleanup = VadCleanup {
-            provider: &provider,
-            endpoint_id,
-            playback: None,
-            host: None,
-            observer: None,
-            observations: None,
-            professional_observations: None,
-            retained_native: None,
-            retained_professional: None,
-            playback_info: None,
-            startup_samples: Vec::with_capacity(STARTUP_SAMPLE_LIMIT),
-            observation_clock: control_observation::ControlObservationClock::prepare(),
-            report: native_report,
-            playback_outcome: None,
-            admission: None,
-            last_health: None,
-        };
-        if let Some(config) = collection_config {
-            return vad_collection::collect(
-                options,
-                paths,
-                config,
-                source_plan.context("collection source missing")?,
-                root,
-                name,
-                cleanup,
-            );
-        }
-        let collection = (|| -> Result<()> {
-            cleanup.prepare(options, name, root, source_plan, None)?;
-            let observer = cleanup.observer.as_ref().expect("prepared host observer");
-            let observations = cleanup
-                .observations
-                .as_ref()
-                .expect("prepared native observations");
-            let revision = cleanup
-                .admission
-                .as_ref()
-                .expect("admission")
-                .current
-                .revision
-                .context("confirmed revision missing")?;
-            let playback = cleanup.playback.as_mut().expect("prepared VAD playback");
-            playback.activate()?;
-            cleanup.playback_info = Some(serde_json::to_value(&playback.info)?);
-            // The control side owns the interval and samples while the source still
-            // runs. Native client retirement advances stream generations and must
-            // not overwrite these running observations with cleanup counters.
-            // Retain a bounded startup trace to distinguish initial admission from
-            // later starvation. Sampling and serialization stay on this control
-            // thread; the final runtime counters still cover the entire interval.
-            let duration = Duration::from_secs(options.seconds);
-            let observation_interval = Duration::from_secs(options.observation_interval_seconds);
-            let mut next_observation = Duration::ZERO;
-            soak_control::run_until(
-                duration,
-                |elapsed| {
-                    if let Some(journal) = journal.as_ref() {
-                        journal.check()?;
-                    }
-                    if elapsed >= next_observation
-                        && let Some(journal) = journal.as_mut()
-                    {
-                        let runtime = provider
-                            .export_observations()
-                            .into_iter()
-                            .find(|view| view.endpoint_id == endpoint_id);
-                        let engine = observer.snapshot();
-                        journal.record(&serde_json::json!({
-                            "schema_version": 1, "source_kind": options.source_kind,
-                            "elapsed_seconds": elapsed.as_secs_f64(),
-                            "provider": runtime.as_ref().map(vad_observation_json),
-                            "engine": engine_snapshot_value(&engine),
-                            "native_observations": observations.snapshot(),
-                        }))?;
-                        ensure!(
-                            runtime.as_ref().is_some_and(|view| view.error.is_none()),
-                            "VAD provider failed during diagnostic collection"
-                        );
-                        ensure!(
-                            engine.execution == ExecutionState::Running
-                                && engine.active_revision == Some(revision),
-                            "Engine stopped or revision changed during diagnostic collection"
-                        );
-                        next_observation = elapsed.saturating_add(observation_interval);
-                    }
-                    if cleanup.startup_samples.len() < STARTUP_SAMPLE_LIMIT {
-                        let ((runtime, engine, native), control_observation) =
-                            cleanup.observation_clock.observe(|| {
-                                let runtime = provider
-                                    .export_observations()
-                                    .into_iter()
-                                    .find(|view| view.endpoint_id == endpoint_id);
-                                let engine = observer.snapshot();
-                                let native = observations.snapshot();
-                                (runtime, engine, native)
-                            });
-                        cleanup.startup_samples.push(serde_json::json!({
-                            "elapsed_seconds": elapsed.as_secs_f64(),
-                            "control_observation": control_observation,
-                            "timeline": engine_timeline_value(engine.timeline),
-                            "provider": runtime.as_ref().map(vad_observation_json),
-                            "boundary_probes": native.map(|snapshot| snapshot.boundary_probes),
-                        }));
-                    }
-                    Ok(())
-                },
-                || Ok(()),
-            )
-        })();
-        let result = soak_cleanup::run(collection, &mut cleanup);
-        drop(cleanup);
-        soak_cleanup::combine(result, finish_journal(&mut journal, native_report))
-    }
-
-    pub(super) struct VadCleanup<'a> {
-        provider: &'a Arc<WindowsVadProvider>,
-        endpoint_id: VirtualEndpointId,
-        pub(super) playback: Option<vad::PlaybackSession>,
-        host: Option<EngineHost<f32>>,
-        observer: Option<moiren_engine::host::EngineObserver>,
-        observations: Option<moiren_windows_audio::engine_backend::NativeObservations>,
-        professional_observations:
-            Option<moiren_windows_audio::engine_backend::ProfessionalObservations>,
-        retained_native: Option<moiren_windows_audio::engine_backend::NativeObservationReadHandle>,
-        retained_professional:
-            Option<moiren_windows_audio::engine_backend::ProfessionalObservationReadHandle>,
-        playback_info: Option<Value>,
-        startup_samples: Vec<Value>,
-        observation_clock: control_observation::ControlObservationClock,
-        pub(super) report: &'a mut NativeReport,
-        pub(super) playback_outcome: Option<vad::PlaybackOutcome>,
-        pub(super) admission: Option<vad_collection::Admission>,
-        pub(super) last_health: Option<vad_collection::Health>,
-    }
-
-    impl VadCleanup<'_> {
-        pub(super) fn current_health(&mut self) -> Result<vad_collection::Health> {
-            use moiren_windows_audio::engine_backend::NativeStreamKind;
-            let ((runtime, engine, native), control_observation) =
-                self.observation_clock.observe(|| {
-                    let runtime = self
-                        .provider
-                        .export_observations()
-                        .into_iter()
-                        .find(|view| view.endpoint_id == self.endpoint_id);
-                    let engine = self.observer.as_ref().map(|observer| observer.snapshot());
-                    let native = self
-                        .observations
-                        .as_ref()
-                        .and_then(|observations| observations.snapshot());
-                    (runtime, engine, native)
-                });
-            let snapshot = runtime.as_ref().and_then(|view| view.snapshot);
-            let telemetry = runtime.as_ref().and_then(|view| view.telemetry);
-            let mut faults = 0u64;
-            if let Some(value) = telemetry {
-                for count in [
-                    value.dropped_packets,
-                    value.driver_dropped_packets,
-                    value.quota_dropped_packets,
-                    value.carrier_dropped_packets,
-                    value.stale_packets,
-                    value.epoch_resets,
-                    value.recovery_events,
-                    value.completion_clock_regressions,
-                    value.missing_sequence_slots,
-                ] {
-                    faults = faults.saturating_add(count);
-                }
-            }
-            if let Some(value) = &native {
-                for probe in &value.boundary_probes {
-                    faults = faults.saturating_add(probe.xruns);
-                }
-                for bridge in &value.bridges {
-                    let count = bridge.counters;
-                    for fault in [
-                        count.dropped_frames,
-                        count.backlog_discarded_frames,
-                        count.age_discarded_frames,
-                        count.underrun_frames,
-                        count.nonfinite_samples,
-                        count.discontinuities,
-                        count.timestamp_errors,
-                        count.resets,
-                    ] {
-                        faults = faults.saturating_add(fault);
-                    }
-                }
-            }
-            let health = vad_collection::Health {
-                stamp: snapshot.map(snapshot_stamp),
-                shape: snapshot.map(|snapshot| {
-                    (
-                        format!("{:?}", snapshot.channels()),
-                        format!("{:?}", snapshot.sample_format()),
-                        snapshot.packet_frames(),
-                    )
-                }),
-                provider_ready: snapshot.is_some_and(|snapshot| {
-                    snapshot.state() == PdoState::Present
-                        && snapshot.policy_prepared()
-                        && snapshot.audio_ready()
-                        && snapshot.gate_open()
-                        && snapshot.channels() == Channels::Stereo
-                        && snapshot.sample_format().is_some()
-                        && snapshot.packet_frames() > 0
-                }) && runtime.as_ref().is_some_and(|view| !view.removing),
-                provider_error: runtime.as_ref().and_then(|view| view.error.clone()),
-                revision: engine.as_ref().and_then(|engine| engine.active_revision),
-                generations: engine.as_ref().map_or([0, 0], |engine| {
-                    [engine.owner_generation, engine.resource_generation]
-                }),
-                engine_running: engine.as_ref().is_some_and(|engine| {
-                    engine.execution == ExecutionState::Running
-                        && engine.timeline.is_some_and(|timeline| timeline.frame > 0)
-                }),
-                engine_fault: engine
-                    .as_ref()
-                    .is_some_and(|engine| engine.fault.is_some() || engine.cleanup_error.is_some()),
-                native_generation: native.as_ref().map(|native| native.owner_generation),
-                native_running: native.as_ref().is_some_and(|native| native.running),
-                quality_known: telemetry.is_some()
-                    && native.as_ref().is_some_and(|native| {
-                        native
-                            .streams
-                            .iter()
-                            .any(|stream| stream.kind == NativeStreamKind::MasterOutput)
-                            && native
-                                .streams
-                                .iter()
-                                .any(|stream| stream.kind == NativeStreamKind::VirtualPlayback)
-                            && native
-                                .boundary_probes
-                                .iter()
-                                .any(|probe| probe.kind == NativeStreamKind::VirtualPlayback)
-                    }),
-                quality_faults: faults,
-            };
-            // Keep the raw failing generation before cleanup changes the stream.
-            // These QUERY observations may block; this is a control policy, not a watchdog.
-            self.report.vad_provider = runtime.as_ref().map(vad_observation_json);
-            if let Some(engine) = &engine {
-                let mut value = engine_snapshot_value(engine);
-                value["observations"] = serde_json::json!(native);
-                self.report.engine = Some(value);
-            }
-            if self.startup_samples.len() < STARTUP_SAMPLE_LIMIT {
-                self.startup_samples.push(serde_json::json!({
-                    "control_observation": control_observation,
-                    "timeline": engine_timeline_value(engine.as_ref().and_then(|engine| engine.timeline)),
-                    "health": health,
-                    "provider": self.report.vad_provider,
-                    "native_observations": native,
-                }));
-            }
-            self.last_health = Some(health.clone());
-            Ok(health)
-        }
-        pub(super) fn prepare(
-            &mut self,
-            options: &LiveOptions,
-            name: &str,
-            root: String,
-            source_plan: Option<source::PreparedSource>,
-            before_join: Option<&mut dyn FnMut()>,
-        ) -> Result<()> {
-            let supervised = before_join.is_some();
-            self.provider
-                .create_export(
-                    self.endpoint_id,
-                    Intent::Playback,
-                    Channels::Stereo,
-                    name,
-                    false,
-                )
-                .context("CREATE VAD playback export")?;
-            wait_vad_ready(self.provider, self.endpoint_id)?;
-            self.playback = Some(
-                if let Some(abort) = before_join {
-                    vad::PlaybackSession::prepare_with_abort(
-                        stable_from_virtual(self.endpoint_id),
-                        root,
-                        source_plan,
-                        options.vad_minimum_period,
-                        abort,
-                        &mut self.playback_outcome,
-                    )
-                } else {
-                    vad::PlaybackSession::prepare(
-                        stable_from_virtual(self.endpoint_id),
-                        root,
-                        source_plan,
-                        options.vad_minimum_period,
-                        &mut self.playback_outcome,
-                    )
-                }
-                .context("prepare VAD native playback")?,
-            );
-            self.playback_info = self
-                .playback
-                .as_ref()
-                .map(|playback| serde_json::to_value(&playback.info))
-                .transpose()?;
-            let output = EndpointSelector::PinnedEndpoint {
-                endpoint_id: options.output_endpoint.clone(),
-                stable_id: None,
-            };
-            let mut project = minimal_vad_project(self.endpoint_id, output)?;
-            project.processing.engine.max_block_frames = options.engine_block_frames as usize;
-            let backend = ProfessionalBackend::<f32>::new()
-                .context("prepare Professional backend")?
-                .with_render_queue(render_queue(options)?)?
-                .with_virtual_buffer(virtual_buffer(options)?)?
-                .with_telemetry(options.telemetry)
-                .with_virtual_provider(self.provider.clone());
-            self.observations = Some(backend.native_observations());
-            self.professional_observations = Some(backend.observations());
-            let host = EngineHost::open(HostConfig::default(), project, backend)
-                .context("open VAD EngineHost")?;
-            self.observer = Some(host.observer());
-            self.host = Some(host);
-            let observer = self.observer.as_ref().expect("prepared host observer");
-            wait_engine_running(observer)?;
-            let active = observer.snapshot();
-            let revision = active
-                .active_revision
-                .context("VAD EngineHost has no active revision")?;
-            let current = self
-                .provider
-                .export_observations()
-                .into_iter()
-                .find(|view| view.endpoint_id == self.endpoint_id)
-                .and_then(|view| view.snapshot)
-                .context("VAD export disappeared before gate admission")?;
-            ensure!(
-                current.state() == PdoState::Present,
-                "VAD export is not Present"
-            );
-            ensure!(
-                current.policy_prepared() && current.audio_ready(),
-                "VAD export is not audio-ready"
-            );
-            let before_gate = snapshot_stamp(current);
-            let before_shape = (
-                format!("{:?}", current.channels()),
-                format!("{:?}", current.sample_format()),
-                current.packet_frames(),
-            );
-            let ticket = self.provider.set_active_revision(Some(revision));
-            self.provider
-                .set_export_gate(
-                    self.endpoint_id,
-                    snapshot_stamp(current),
-                    true,
-                    revision,
-                    ticket,
-                )
-                .context("open VAD export gate")?;
-            let admitted = self.current_health()?;
-            self.retained_native = self
-                .observations
-                .as_ref()
-                .and_then(|view| view.retain_session());
-            self.retained_professional = self
-                .professional_observations
-                .as_ref()
-                .and_then(|view| view.retain_session());
-            self.admission = Some(vad_collection::Admission {
-                before_gate,
-                current: admitted,
-            });
-            if supervised {
-                let admitted = &self.admission.as_ref().expect("retained admission").current;
-                ensure!(
-                    admitted
-                        .stamp
-                        .is_some_and(|stamp| stamp[..4] == before_gate[..4])
-                        && admitted.shape.as_ref() == Some(&before_shape)
-                        && admitted.revision == Some(revision)
-                        && admitted.generations
-                            == [active.owner_generation, active.resource_generation],
-                    "VAD stream/shape or graph changed during gate admission"
-                );
-            }
-            Ok(())
-        }
-    }
-
-    impl soak_cleanup::Cleanup for VadCleanup<'_> {
-        fn observe_final(&mut self) -> Result<()> {
-            if let Some(observer) = &self.observer {
-                let mut engine = engine_snapshot_value(&observer.snapshot());
-                engine["observations"] = serde_json::json!(
-                    self.observations
-                        .as_ref()
-                        .and_then(|handle| handle.snapshot())
-                );
-                engine["playback_info"] = serde_json::json!(self.playback_info);
-                engine["startup_trace"] = serde_json::json!({
-                    "sample_limit": STARTUP_SAMPLE_LIMIT,
-                    "sample_interval_ms": STARTUP_SAMPLE_INTERVAL.as_millis(),
-                    "scope": "bounded startup diagnostics; final counters cover the full run",
-                    "timestamp_scope": control_observation::SCOPE,
-                    "samples": self.startup_samples,
-                });
-                self.report.engine = Some(engine);
-            }
-            let observation = self
-                .provider
-                .export_observations()
-                .into_iter()
-                .find(|view| view.endpoint_id == self.endpoint_id)
-                .context("VAD export disappeared during measurement")?;
-            self.report.vad_provider = Some(vad_observation_json(&observation));
-            if let Some(error) = observation.error {
-                bail!("VAD final observation: {error}");
-            }
-            Ok(())
-        }
-
-        fn stop_source(&mut self) -> Result<()> {
-            if let Some(playback) = self.playback.take() {
-                let report = playback.stop().context("stop VAD native playback")?;
-                self.playback_outcome = Some(report);
-            }
-            if let Some(outcome) = &self.playback_outcome {
-                self.report.vad_playback = Some(serde_json::to_value(outcome)?);
-                ensure!(
-                    outcome.failure.is_none(),
-                    "VAD native playback: {}",
-                    outcome.failure.as_deref().unwrap_or_default()
-                );
-            }
-            Ok(())
-        }
-
-        fn close_gate(&mut self) -> Result<()> {
-            let view = self
-                .provider
-                .export_observations()
-                .into_iter()
-                .find(|view| view.endpoint_id == self.endpoint_id)
-                .context("VAD export disappeared before gate close")?;
-            let observed = view.error.map_or(Ok(()), |error| {
-                Err(anyhow::anyhow!("VAD gate-close observation: {error}"))
-            });
-            let closed = (|| {
-                let current = view
-                    .snapshot
-                    .context("VAD gate-close snapshot is unknown")?;
-                if current.gate_open() {
-                    self.provider
-                        .set_export_gate(self.endpoint_id, snapshot_stamp(current), false, 0, 0)
-                        .context("close VAD export gate")?;
-                }
-                Ok(())
-            })();
-            soak_cleanup::combine(observed, closed)
-        }
-
-        fn shutdown_host(&mut self) -> Result<()> {
-            // Pin this exact owner before live registries are cleared. Reading
-            // after the host joins retains trailing counters, not a pre-stop
-            // estimate or another generation's observations.
-            let native = self.retained_native.take().or_else(|| {
-                self.observations
-                    .as_ref()
-                    .and_then(|view| view.retain_session())
-            });
-            let professional = self.retained_professional.take().or_else(|| {
-                self.professional_observations
-                    .as_ref()
-                    .and_then(|view| view.retain_session())
-            });
-            let expected_generation = self
-                .admission
-                .as_ref()
-                .map(|admission| admission.current.generations[0]);
-            drop(self.host.take());
-            let closed = self.observer.as_ref().map(|observer| observer.snapshot());
-            self.report.backend_diagnostics = Some(final_backend_evidence(
-                native.map(|view| view.snapshot()),
-                professional.map(|view| view.snapshot()),
-                closed.as_ref(),
-                expected_generation,
-            ));
-            if let Some(snapshot) = closed {
-                self.report.engine_cleanup = Some(engine_snapshot_value(&snapshot));
-                if let Some(error) = snapshot.cleanup_error {
-                    bail!("VAD EngineHost cleanup: {error}");
-                }
-                ensure!(
-                    snapshot.host == moiren_engine::host::HostState::Closed,
-                    "VAD EngineHost did not confirm Closed after shutdown"
-                );
-                ensure!(
-                    snapshot.fault.is_none(),
-                    "VAD EngineHost retained a terminal fault after shutdown"
-                );
-            }
-            Ok(())
-        }
-
-        fn invalidate_admission(&mut self) -> Result<()> {
-            self.provider.set_active_revision(None);
-            Ok(())
-        }
-
-        fn retire_endpoint(&mut self) -> Result<()> {
-            let observation = retire_vad(
-                self.provider,
-                self.endpoint_id,
-                &mut self.report.vad_cleanup,
-            )?;
-            if let Some(error) = observation.error {
-                bail!("VAD provider reported cleanup error: {error}");
-            }
-            Ok(())
-        }
-    }
-
-    fn final_backend_evidence(
-        native: Option<moiren_windows_audio::engine_backend::NativeObservationSnapshot>,
-        professional: Option<moiren_windows_audio::engine_backend::ProfessionalObservationSnapshot>,
-        closed: Option<&moiren_engine::host::HostSnapshot>,
-        expected_generation: Option<u64>,
-    ) -> Value {
-        let failure = (|| -> Result<()> {
-            let expected = expected_generation.context("VAD final admitted generation missing")?;
-            let native = native
-                .as_ref()
-                .context("VAD final native observations missing")?;
-            let professional = professional
-                .as_ref()
-                .context("VAD final professional observations missing")?;
-            let closed = closed.context("VAD final host snapshot missing")?;
-            ensure!(
-                closed.host == moiren_engine::host::HostState::Closed
-                    && closed.cleanup_error.is_none()
-                    && closed.fault.is_none(),
-                "VAD final host did not join cleanly"
-            );
-            ensure!(
-                native.owner_generation == expected
-                    && professional.owner_generation == expected
-                    && closed.owner_generation == expected,
-                "VAD final observation owner generation mismatch"
-            );
-            ensure!(
-                !native.running && !professional.running,
-                "VAD final observations still report Running"
-            );
-            Ok(())
-        })()
-        .err()
-        .map(|error| format!("{error:#}"));
-        let professional = professional.as_ref().map(|snapshot| {
-            serde_json::json!({
-                "owner_generation": snapshot.owner_generation,
-                "running": snapshot.running,
-                "streams": snapshot.streams.iter().map(|stream| serde_json::json!({
-                    "node": format!("{:?}", stream.node),
-                    "input": stream.input, "master": stream.master,
-                    "actual": {"sample_rate": stream.actual.sample_rate,
-                        "channels": stream.actual.channels,
-                        "buffer_frames": stream.actual.buffer_frames},
-                    "native_callbacks": stream.native_callbacks,
-                    "native_wait_wakes": stream.native_wait_wakes,
-                    "native_wait_timeouts": stream.native_wait_timeouts,
-                    "native_written_frames": stream.native_written_frames,
-                    "dropped_frames": stream.dropped_frames,
-                    "silent_frames": stream.silent_frames,
-                    "native_dropped_frames": stream.native_dropped_frames,
-                    "native_silent_frames": stream.native_silent_frames,
-                })).collect::<Vec<_>>(),
-            })
-        });
-        serde_json::json!({
-            "schema_version": 2,
-            "observation_scope": "final_after_owner_join",
-            "owner_generation": expected_generation,
-            "failure": failure,
-            "professional": professional,
-            "native": native,
-        })
-    }
-
-    #[cfg(test)]
-    mod final_evidence_tests {
-        use super::*;
-        use moiren_windows_audio::engine_backend::{
-            NativeObservationSnapshot, ProfessionalObservationSnapshot,
-        };
-
-        fn closed() -> moiren_engine::host::HostSnapshot {
-            moiren_engine::host::HostSnapshot {
-                host: moiren_engine::host::HostState::Closed,
-                execution: ExecutionState::Dormant,
-                desired_revision: 1,
-                active_revision: None,
-                plan_revision: None,
-                owner_generation: 7,
-                resource_generation: 1,
-                timeline: None,
-                update: moiren_engine::host::UpdateState::Idle,
-                fault: None,
-                cleanup_error: None,
-            }
-        }
-
-        fn native() -> NativeObservationSnapshot {
-            NativeObservationSnapshot {
-                process_delivery: Vec::new(),
-                owner_generation: 7,
-                running: false,
-                streams: Vec::new(),
-                bridges: Vec::new(),
-                boundary_probes: Vec::new(),
-                render_padding: Vec::new(),
-            }
-        }
-
-        fn professional() -> ProfessionalObservationSnapshot {
-            ProfessionalObservationSnapshot {
-                owner_generation: 7,
-                running: false,
-                streams: Vec::new(),
-            }
-        }
-
-        #[test]
-        fn final_diagnostics_require_joined_host_and_matching_retained_sessions() {
-            let value = final_backend_evidence(
-                Some(native()),
-                Some(professional()),
-                Some(&closed()),
-                Some(7),
-            );
-            assert_eq!(value["schema_version"], 2);
-            assert_eq!(value["observation_scope"], "final_after_owner_join");
-            assert!(value["failure"].is_null());
-            assert_eq!(value["native"]["owner_generation"], 7);
-            assert_eq!(value["professional"]["owner_generation"], 7);
-            assert!(
-                value.get("render").is_none(),
-                "do not synthesize the legacy render report"
-            );
-            for case in 0..7 {
-                let mut native = Some(native());
-                let mut professional = Some(professional());
-                let mut closed = closed();
-                let mut expected = Some(7);
-                match case {
-                    0 => native = None,
-                    1 => professional = None,
-                    2 => native.as_mut().unwrap().owner_generation = 8,
-                    3 => professional.as_mut().unwrap().running = true,
-                    4 => closed.host = moiren_engine::host::HostState::Open,
-                    5 => {
-                        closed.cleanup_error = Some(moiren_engine::host::BackendError::Failed(
-                            "Stop failed".into(),
-                        ))
-                    }
-                    _ => expected = None,
-                }
-                assert!(
-                    final_backend_evidence(native, professional, Some(&closed), expected)["failure"].is_string(),
-                    "accepted invalid final evidence case {case}"
-                );
-            }
-        }
-    }
-
-    fn stable_from_virtual(id: VirtualEndpointId) -> moiren_windows_audio::vad::StableEndpointId {
-        moiren_windows_audio::vad::StableEndpointId::from_virtual_endpoint_id(id)
-    }
-
-    fn vad_observation_json(
-        observation: &moiren_windows_audio::vad::VadExportObservation,
-    ) -> Value {
-        serde_json::json!({
-            "endpoint_id": observation.endpoint_id,
-            "spec_name": observation.spec_name,
-            "transport_prepared": observation.transport_prepared,
-            "removing": observation.removing,
-            "diagnostic_provenance": format!("{:?}", observation.diagnostic_provenance),
-            "telemetry": observation.telemetry,
-            "error": observation.error,
-            "snapshot": observation.snapshot.map(|snapshot| serde_json::json!({
-                "state": format!("{:?}", snapshot.state()),
-                "gate_open": snapshot.gate_open(),
-                "policy_prepared": snapshot.policy_prepared(),
-                "audio_ready": snapshot.audio_ready(),
-                "packet_frames": snapshot.packet_frames(),
-                "stream_generation": snapshot.stream_generation(),
-                "gate_epoch": snapshot.gate_epoch(),
-                "dropped_packets": snapshot.dropped_packets(),
-                "silence_packets": snapshot.silence_packets(),
-            })),
-        })
-    }
-
-    fn snapshot_stamp(snapshot: moiren_windows_audio::vad::EndpointSnapshot) -> [u64; 5] {
-        [
-            snapshot.pdo_token().get(),
-            snapshot.session_epoch(),
-            snapshot.endpoint_generation(),
-            snapshot.stream_generation(),
-            snapshot.gate_epoch(),
-        ]
-    }
-
-    fn wait_vad_ready(
-        provider: &WindowsVadProvider,
-        endpoint_id: VirtualEndpointId,
-    ) -> Result<moiren_windows_audio::vad::EndpointSnapshot> {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            if let Some(view) = provider
-                .export_observations()
-                .into_iter()
-                .find(|view| view.endpoint_id == endpoint_id)
-            {
-                if let Some(snapshot) = view.snapshot
-                    && snapshot.state() == PdoState::Present
-                    && snapshot.policy_prepared()
-                    && snapshot.audio_ready()
-                    && view.error.is_none()
-                {
-                    return Ok(snapshot);
-                }
-                if let Some(error) = view.error {
-                    bail!("VAD CREATE failed: {error}");
-                }
-            }
-            ensure!(
-                Instant::now() < deadline,
-                "VAD export did not become audio-ready"
-            );
-            thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    fn wait_engine_running(observer: &moiren_engine::host::EngineObserver) -> Result<()> {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let snapshot = observer.snapshot();
-            if snapshot.execution == ExecutionState::Running
-                && snapshot.active_revision == Some(1)
-                && snapshot.timeline.is_some_and(|timeline| timeline.frame > 0)
-            {
-                return Ok(());
-            }
-            ensure!(
-                Instant::now() < deadline,
-                "VAD EngineHost did not reach Running; last snapshot: {:?}",
-                observer.snapshot()
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    fn engine_timeline_value(timeline: Option<moiren_engine::host::OwnerTimeline>) -> Value {
-        serde_json::json!(timeline.map(|timeline| serde_json::json!({
-            "epoch": timeline.epoch,
-            "revision": timeline.revision,
-            "frame": timeline.frame,
-        })))
-    }
-
-    fn engine_snapshot_value(snapshot: &moiren_engine::host::HostSnapshot) -> Value {
-        serde_json::json!({
-            "host": format!("{:?}", snapshot.host),
-            "execution": format!("{:?}", snapshot.execution),
-            "desired_revision": snapshot.desired_revision,
-            "active_revision": snapshot.active_revision,
-            "plan_revision": snapshot.plan_revision,
-            "owner_generation": snapshot.owner_generation,
-            "resource_generation": snapshot.resource_generation,
-            "timeline": engine_timeline_value(snapshot.timeline),
-            "update": format!("{:?}", snapshot.update),
-            "fault": format!("{:?}", snapshot.fault),
-            "cleanup_error": format!("{:?}", snapshot.cleanup_error),
-        })
-    }
-
-    fn minimal_vad_project(
-        endpoint_id: VirtualEndpointId,
-        output: EndpointSelector,
-    ) -> Result<EngineProject> {
-        let mut graph = LogicalGraph::new();
-        let source = graph.create_node(NodeKind::Source, 2)?;
-        let bus = graph.create_node(NodeKind::Bus, 2)?;
-        let sink = graph.create_node(NodeKind::Sink, 2)?;
-        let source_port = graph.get_node(source)?.outputs()[0].id();
-        let bus_port = graph.get_node(bus)?.outputs()[0].id();
-        let sink_port = graph.get_node(sink)?.inputs()[0].id();
-        connect_to_new_bus_input(&mut graph, source_port, bus, SendParams::default())?;
-        graph.connect(bus_port, sink_port, SendParams::default())?;
-        let mut project = EngineProject {
-            graph,
-            ..EngineProject::default()
-        };
-        project.nodes.insert(
-            source,
-            NodeConfig::Input(InputConfig {
-                source: InputSource::VirtualPlayback { endpoint_id },
-                channels: 2,
-                device: DeviceOptions::default(),
-            }),
-        );
-        project.nodes.insert(bus, NodeConfig::Bus);
-        project.nodes.insert(
-            sink,
-            NodeConfig::Output(OutputConfig {
-                target: OutputTarget::Physical(output),
-                channels: 2,
-                device: DeviceOptions {
-                    clock_role: ClockRole::Master,
-                    ..DeviceOptions::default()
-                },
-            }),
-        );
-        project
-            .validate()
-            .context("validate VAD Input -> Bus -> Output project")?;
-        Ok(project)
-    }
-
-    fn retire_vad(
-        provider: &WindowsVadProvider,
-        endpoint_id: VirtualEndpointId,
-        last_observation: &mut Option<Value>,
-    ) -> Result<moiren_windows_audio::vad::VadExportObservation> {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            let view = provider
-                .export_observations()
-                .into_iter()
-                .find(|view| view.endpoint_id == endpoint_id)
-                .context("VAD export missing during cleanup")?;
-            *last_observation = Some(vad_observation_json(&view));
-            let Some(snapshot) = view.snapshot else {
-                ensure!(
-                    Instant::now() < deadline,
-                    "VAD cleanup snapshot became uncertain"
-                );
-                thread::sleep(Duration::from_millis(50));
-                continue;
-            };
-            if snapshot.state() == PdoState::Removed {
-                return Ok(view);
-            }
-            if snapshot.gate_open() {
-                provider.set_export_gate(endpoint_id, snapshot_stamp(snapshot), false, 0, 0)?;
-            } else if snapshot.state() != PdoState::Removing {
-                provider.retire_export(endpoint_id, snapshot_stamp(snapshot))?;
-            }
-            ensure!(
-                Instant::now() < deadline,
-                "VAD cleanup did not reach Removed"
-            );
-            thread::sleep(Duration::from_millis(50));
-        }
-    }
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        fn parked_render() -> PreparedNativeRender {
-            let timing = moiren_windows_audio::latency::NativeStreamTiming {
-                sample_rate: 48_000,
-                period_frames: Some(48),
-                capacity_frames: 512,
-            };
-            let queue = moiren_windows_audio::latency::prepare_render_queue(
-                timing,
-                RenderQueuePolicy::FullCapacity,
-            )
-            .unwrap();
-            PreparedNativeRender::parked_fixture(
-                super::super::render::NativeRenderInfo { timing, queue },
-                StopSignal::new().unwrap(),
-                RenderQueuePolicy::FullCapacity,
-            )
-        }
-
-        fn bridge_target(target_frames: u32) -> ProcessBridgeOptions {
-            ProcessBridgeOptions {
-                input: TransportInputPolicy::Target {
-                    capacity_frames: 2048,
-                    target_frames,
-                    jitter_frames: 0,
-                },
-                delivery: Some(InputDeliveryTiming {
-                    sample_rate: 48_000,
-                    max_packet_frames: 32,
-                    max_gap_frames: 32,
-                    source: DeliveryTimingSource::Declared,
-                }),
-                max_demand_frames: 64,
-                ..Default::default()
-            }
-        }
-
-        #[test]
-        fn ordinary_process_refusal_never_prepares_capture_and_joins_parked_render() {
-            let mut render = Some(parked_render());
-            let mut report = NativeReport::default();
-            let mut called = false;
-            let result =
-                prepare_process_input(bridge_target(128), &mut render, &mut report, |_, _, _| {
-                    called = true;
-                    Ok(())
-                });
-            assert!(result.is_err());
-            assert!(!called);
-            assert!(render.is_none());
-            let value = serde_json::to_value(report).unwrap();
-            assert_eq!(value["render"]["stream_started"], false);
-            assert_eq!(value["render"]["queue"]["target_frames"], 512);
-            assert_eq!(value["process_admission"]["failure"]["stage"], "admission");
-            assert!(
-                value["process_admission"]["admitted_complete_native_wake_fixed_48khz"].is_null()
-            );
-        }
-
-        #[test]
-        fn ordinary_process_capture_failure_keeps_admission_partial_capture_and_render_reports() {
-            let mut render = Some(parked_render());
-            let mut report = NativeReport::default();
-            let result = prepare_process_input::<()>(
-                bridge_target(546),
-                &mut render,
-                &mut report,
-                |admitted, _, report| {
-                    assert_eq!(admitted.max_demand_frames, 512);
-                    report.capture = Some(serde_json::json!({"partial":true}));
-                    Err(anyhow::anyhow!("injected capture preparation refusal"))
-                },
-            );
-            assert!(format!("{:#}", result.unwrap_err()).contains("injected capture"));
-            assert!(render.is_none());
-            let value = serde_json::to_value(report).unwrap();
-            assert_eq!(value["capture"]["partial"], true);
-            assert_eq!(value["render"]["stream_started"], false);
-            assert_eq!(value["process_admission"]["failure"]["stage"], "capture");
-            assert_eq!(
-                value["process_admission"]["admitted_complete_native_wake_fixed_48khz"]["max_demand_frames"],
-                512
-            );
-        }
-
-        #[test]
-        fn ordinary_process_success_leaves_render_parked_for_real_attachment() {
-            let mut render = Some(parked_render());
-            let mut report = NativeReport::default();
-            let (admitted, capture) = prepare_process_input(
-                bridge_target(546),
-                &mut render,
-                &mut report,
-                |admitted, render, _| {
-                    assert!(render.is_some());
-                    assert_eq!(admitted.max_demand_frames, 512);
-                    Ok("injected capture")
-                },
-            )
-            .unwrap();
-            assert_eq!(capture, "injected capture");
-            assert_eq!(admitted.max_demand_frames, 512);
-            assert!(report.render.is_none());
-            assert!(report.process_admission.unwrap().failure.is_none());
-            let (report, result) = render.take().unwrap().cancel_retaining_report();
-            result.unwrap();
-            assert!(report.is_some());
-        }
-
-        #[test]
-        fn ordinary_capture_join_retains_panic_report_even_if_artifact_persistence_fails() {
-            use moiren_windows_audio::capture::{CaptureError, CaptureReport, CaptureSource};
-            let mut report = CaptureReport::new(
-                CaptureSource::ProcessLoopback,
-                SessionDuration::UntilStopped,
-            );
-            report.failure = Some("partial report from post-ready panic".into());
-            let mut native = NativeReport::default();
-            let mut persisted = false;
-            let error = retain_capture_join(
-                &mut native,
-                (Some(report), Some(CaptureError::WorkerPanicked)),
-                |report| {
-                    persisted = true;
-                    assert_eq!(
-                        report.failure.as_deref(),
-                        Some("partial report from post-ready panic")
-                    );
-                    Err(anyhow::anyhow!("injected PCM disk failure"))
-                },
-            )
-            .unwrap_err();
-            let message = format!("{error:#}");
-            assert!(message.contains("panicked"));
-            assert!(message.contains("injected PCM disk failure"));
-            assert!(persisted);
-            assert_eq!(
-                native.capture.unwrap()["failure"],
-                "partial report from post-ready panic"
-            );
-            let failure = native.capture_failure.unwrap();
-            assert_eq!(failure["stage"], "capture_join");
-            assert_eq!(failure["partial_report_retained"], true);
-        }
-
-        #[test]
-        fn ordinary_capture_join_without_report_refuses_and_never_persists() {
-            use moiren_windows_audio::capture::CaptureError;
-            let mut native = NativeReport::default();
-            let error = retain_capture_join(
-                &mut native,
-                (None, Some(CaptureError::WorkerPanicked)),
-                |_| panic!("missing report cannot supply PCM"),
-            )
-            .unwrap_err();
-            assert!(format!("{error:#}").contains("capture report missing"));
-            assert!(native.capture.is_none());
-            assert_eq!(
-                native.capture_failure.unwrap()["partial_report_retained"],
-                false
-            );
-        }
-
-        #[test]
-        fn startup_timeline_keeps_epoch_revision_and_frame_or_explicitly_unknown() {
-            let timeline = engine_timeline_value(Some(moiren_engine::host::OwnerTimeline {
-                epoch: 3,
-                revision: 7,
-                frame: 480,
-            }));
-            assert_eq!(
-                timeline,
-                serde_json::json!({"epoch": 3, "revision": 7, "frame": 480})
-            );
-            assert!(engine_timeline_value(None).is_null());
-        }
-
-        #[test]
-        fn minimal_vad_project_declares_physical_output_master() {
-            let project = minimal_vad_project(
-                VirtualEndpointId::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]),
-                EndpointSelector::PinnedEndpoint {
-                    endpoint_id: "render".into(),
-                    stable_id: None,
-                },
-            )
-            .unwrap();
-            let output = project
-                .nodes
-                .values()
-                .find_map(|node| match node {
-                    NodeConfig::Output(output) => Some(output),
-                    _ => None,
-                })
-                .expect("minimal VAD project output");
-            assert_eq!(output.device.clock_role, ClockRole::Master);
-        }
-    }
-}
+#[path = "live_native.rs"]
+mod native;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    fn microphone_route_args(directory: &Path) -> Vec<String> {
+        [
+            "--source-kind",
+            "vad-playback",
+            "--stable-endpoint-id",
+            "0123456789abcdef0123456789abcdef",
+            "--name",
+            "Playback",
+            "--vad-microphone-id",
+            "fedcba9876543210fedcba9876543210",
+            "--vad-microphone-name",
+            "Microphone",
+            "--source-schedule",
+            "source.json",
+            "--vad-collection",
+            "collection.json",
+            "--seconds",
+            "20",
+            "--dry-run",
+            "--artifact-dir",
+            directory.to_str().unwrap(),
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    }
+
+    #[test]
+    fn microphone_route_parser_accepts_exact_owned_internal_route_without_physical_output() {
+        let directory = temp_dir("microphone-route-parser");
+        let options = parse(microphone_route_args(&directory)).unwrap();
+        validate(&options).expect("owned microphone route must not require physical output");
+        assert_eq!(options.vad_route_kind(), vad_route::RouteKind::Microphone);
+        assert_eq!(
+            options.microphone_target().unwrap().unwrap().name,
+            "Microphone"
+        );
+        assert_eq!(
+            options.output_label(),
+            "virtual-microphone:fedcba9876543210fedcba9876543210"
+        );
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn microphone_route_rejects_ignored_physical_intent_and_incomplete_identity() {
+        let directory = temp_dir("microphone-route-invalid");
+        for extra in [
+            vec!["--output", "physical"],
+            vec!["--render-target-frames", "capacity"],
+            vec!["--wake-margin-frames", "96"],
+            vec!["--callback-budget-frames", "48"],
+            vec!["--measurement-boundary", "physical-cable"],
+            vec!["--calibration", "cal.json"],
+            vec!["--diagnostic-soak"],
+            vec!["--vad-microphone-id", "fedcba9876543210fedcba9876543210"],
+            vec!["--vad-microphone-name", "Other"],
+        ] {
+            let mut arguments = microphone_route_args(&directory);
+            arguments.extend(extra.into_iter().map(str::to_owned));
+            assert!(
+                parse(arguments)
+                    .and_then(|options| validate(&options))
+                    .is_err()
+            );
+        }
+        for missing in [
+            "--vad-microphone-name",
+            "--vad-microphone-id",
+            "--source-schedule",
+            "--vad-collection",
+        ] {
+            let mut arguments = microphone_route_args(&directory);
+            let index = arguments.iter().position(|value| value == missing).unwrap();
+            arguments.drain(index..index + 2);
+            assert!(
+                parse(arguments)
+                    .and_then(|options| validate(&options))
+                    .is_err(),
+                "{missing}"
+            );
+        }
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn microphone_route_rejects_empty_and_erased_explicit_physical_output() {
+        let directory = temp_dir("microphone-route-empty-output");
+        for extra in [
+            vec!["--output", ""],
+            vec!["--output", "physical", "--output", ""],
+        ] {
+            let mut arguments = microphone_route_args(&directory);
+            arguments.extend(extra.into_iter().map(str::to_owned));
+            assert!(
+                parse(arguments)
+                    .and_then(|options| validate(&options))
+                    .is_err()
+            );
+        }
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn input_budget_flags_require_explicit_target_in_both_routes() {
+        let directory = temp_dir("input-budget-orphan");
+        for pair in [
+            ["--input-capacity-frames", "8192"],
+            ["--input-jitter-frames", "96"],
+            ["--max-packet-frames", "480"],
+            ["--max-gap-frames", "480"],
+        ] {
+            for microphone in [false, true] {
+                let mut arguments = if microphone {
+                    microphone_route_args(&directory)
+                } else {
+                    [
+                        "--source-pid",
+                        "42",
+                        "--output",
+                        "physical",
+                        "--artifact-dir",
+                        directory.to_str().unwrap(),
+                    ]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+                };
+                arguments.extend(pair.into_iter().map(str::to_owned));
+                assert!(
+                    parse(arguments.clone())
+                        .and_then(|options| validate(&options))
+                        .is_err(),
+                    "{pair:?}"
+                );
+                arguments.extend(
+                    ["--input-target-frames", "2048"]
+                        .into_iter()
+                        .map(str::to_owned),
+                );
+                let options = parse(arguments).unwrap();
+                validate(&options).unwrap();
+                assert!(matches!(
+                    bridge_options(&options).unwrap().input,
+                    TransportInputPolicy::Target { .. }
+                ));
+            }
+        }
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn microphone_route_dry_run_retains_two_id_intent_without_native_or_delay_claim() {
+        let directory = temp_dir("microphone-route-dry");
+        let source_path = directory.with_extension("source.json");
+        let collection_path = directory.with_extension("collection.json");
+        fs::write(&source_path, source_plan_bytes()).unwrap();
+        let config = br#"{"schema_version":2,"ring_frames":1024,"max_pcm_bytes":1048576,"max_metadata_bytes":100000,"max_packets":1000,"preroll_ms":100,"postroll_ms":200}"#;
+        fs::write(&collection_path, config).unwrap();
+        let mut args = microphone_route_args(&directory);
+        for (flag, path) in [
+            ("--source-schedule", &source_path),
+            ("--vad-collection", &collection_path),
+        ] {
+            let index = args.iter().position(|value| value == flag).unwrap();
+            args[index + 1] = path.to_string_lossy().into_owned();
+        }
+        let outcome = run(args);
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert_eq!(outcome.unwrap(), 1);
+        for name in ["manifest.json", "report.json"] {
+            let value: Value =
+                serde_json::from_slice(&fs::read(directory.join(name)).unwrap()).unwrap();
+            let route = &value["vad_route"];
+            assert_eq!(route["route"], "microphone");
+            assert_eq!(
+                route["microphone_stable_endpoint_id"],
+                "fedcba9876543210fedcba9876543210"
+            );
+            assert_eq!(
+                route["playback_stable_endpoint_id"],
+                "0123456789abcdef0123456789abcdef"
+            );
+            assert_eq!(route["clock"], "virtual_realtime");
+            assert_eq!(route["independent_reference"], false);
+            assert_eq!(route["physical_render_queue_applicable"], false);
+            assert_eq!(route["source_native_request"]["mode"], "exclusive");
+            assert_eq!(route["recorder_native_request"]["mode"], "shared");
+            assert_eq!(
+                value["output_endpoint_id"],
+                "virtual-microphone:fedcba9876543210fedcba9876543210"
+            );
+            assert_eq!(value["measurement_boundary"], "internal");
+            assert_eq!(value["collection"]["collection_complete"], false);
+        }
+        let report: Value =
+            serde_json::from_slice(&fs::read(directory.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["qualified"], false);
+        assert!(report["native"]["engine"].is_null());
+        assert!(report["qualification"].is_null());
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap()).unwrap();
+        assert!(manifest.get("render_queue").is_none());
+        assert!(!directory.join("measurement.f32le").exists());
+        assert_eq!(
+            fs::read(directory.join("collection-config.json")).unwrap(),
+            config
+        );
+        fs::remove_file(source_path).unwrap();
+        fs::remove_file(collection_path).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn owned_process_parser_is_explicit_and_preserves_external_pid_mode() {

@@ -1,4 +1,4 @@
-//! One concrete VAD source/graph/independent-recorder run, always unqualified.
+//! One concrete VAD source/graph/recorder run, always unqualified.
 
 #[cfg(windows)]
 use crate::controlled_load;
@@ -15,6 +15,7 @@ use super::validation_policy::ValidationPolicy;
 #[serde(deny_unknown_fields)]
 pub(super) struct Config {
     schema_version: u32,
+    #[serde(default)]
     input_endpoint_id: String,
     ring_frames: usize,
     max_pcm_bytes: u64,
@@ -25,12 +26,46 @@ pub(super) struct Config {
 }
 
 impl Config {
-    fn validate(&self, frames: u64, seconds: u64) -> Result<()> {
-        ensure!(self.schema_version == 1, "unsupported collection schema");
+    pub(super) fn validate_route(&self, route: super::vad_route::RouteKind) -> Result<()> {
         ensure!(
-            !self.input_endpoint_id.trim().is_empty() && !self.input_endpoint_id.contains('\0'),
-            "collection requires explicit independent input"
+            matches!(self.schema_version, 1 | 2),
+            "unsupported collection schema"
         );
+        ensure!(
+            !self.input_endpoint_id.contains('\0')
+                && (self.input_endpoint_id.is_empty() || !self.input_endpoint_id.trim().is_empty()),
+            "collection input identity malformed"
+        );
+        ensure!(
+            !self.input_endpoint_id.is_empty()
+                || (self.schema_version == 2 && route == super::vad_route::RouteKind::Microphone),
+            "collection requires explicit input except schema2 owned microphone route"
+        );
+        Ok(())
+    }
+
+    #[cfg(any(windows, test))]
+    pub(super) fn recorder_endpoint(&self, resolved_mic: Option<&str>) -> Result<String> {
+        if let Some(resolved) = resolved_mic {
+            self.validate_route(super::vad_route::RouteKind::Microphone)?;
+            ensure!(
+                !resolved.trim().is_empty() && !resolved.contains('\0'),
+                "resolved microphone identity malformed"
+            );
+            ensure!(
+                self.input_endpoint_id.is_empty() || self.input_endpoint_id == resolved,
+                "explicit collection input must exactly match the owned microphone MMDevice"
+            );
+            return Ok(resolved.to_owned());
+        }
+        self.validate_route(super::vad_route::RouteKind::Physical)?;
+        Ok(self.input_endpoint_id.clone())
+    }
+
+    fn validate(&self, frames: u64, seconds: u64) -> Result<()> {
+        // Route validation runs before artifacts. Parsing alone permits the
+        // schema2 omission, but never weakens schema1's explicit identity.
+        self.validate_route(super::vad_route::RouteKind::Microphone)?;
         ensure!(
             self.ring_frames > 0
                 && self
@@ -120,6 +155,36 @@ pub(super) fn not_collected(
 }
 
 #[cfg(any(windows, test))]
+fn collection_render_queue(
+    options: &super::LiveOptions,
+) -> Result<Option<moiren_windows_audio::latency::RenderQueuePolicy>> {
+    (options.vad_route_kind() == super::vad_route::RouteKind::Physical)
+        .then(|| super::render_queue(options))
+        .transpose()
+}
+
+#[cfg(any(windows, test))]
+fn pin_recorder_endpoint(selected: &str, prepared: &str) -> Result<()> {
+    ensure!(
+        !selected.trim().is_empty() && !selected.contains('\0') && prepared == selected,
+        "prepared recorder input identity differs from exact selected MMDevice"
+    );
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn pin_microphone_identity(
+    selected: &serde_json::Value,
+    prepared: &serde_json::Value,
+) -> Result<()> {
+    ensure!(
+        selected == prepared,
+        "owned microphone identity changed during recorder preparation"
+    );
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
 #[derive(Clone, Debug, Default, Serialize)]
 pub(super) struct PlaybackProgress {
     pub started: bool,
@@ -159,6 +224,8 @@ struct PhaseStamp {
 #[cfg(any(windows, test))]
 #[derive(Clone, Debug, Default, Serialize)]
 pub(super) struct Health {
+    pub route: super::vad_route::RouteKind,
+    pub microphone: Option<EndpointHealth>,
     pub stamp: Option<[u64; 5]>,
     pub shape: Option<(String, String, u32)>,
     pub provider_ready: bool,
@@ -169,6 +236,18 @@ pub(super) struct Health {
     pub engine_fault: bool,
     pub native_generation: Option<u64>,
     pub native_running: bool,
+    pub quality_known: bool,
+    pub quality_faults: u64,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Debug, Default, Serialize)]
+pub(super) struct EndpointHealth {
+    pub stamp: Option<[u64; 5]>,
+    pub shape: Option<(String, String, u32)>,
+    pub stream_running: bool,
+    pub provider_ready: bool,
+    pub provider_error: Option<String>,
     pub quality_known: bool,
     pub quality_faults: u64,
 }
@@ -185,7 +264,11 @@ impl Health {
     pub(super) fn require_present(&self) -> Result<()> {
         self.require_operational()?;
         ensure!(
-            self.quality_faults == 0,
+            self.quality_faults == 0
+                && self
+                    .microphone
+                    .as_ref()
+                    .is_none_or(|mic| mic.quality_faults == 0),
             "native/provider quality faults: {}",
             self.quality_faults
         );
@@ -209,13 +292,45 @@ impl Health {
             self.native_running && self.native_generation.is_some() && self.quality_known,
             "required native quality observations unavailable"
         );
+        match self.route {
+            super::vad_route::RouteKind::Physical => ensure!(
+                self.microphone.is_none(),
+                "physical route cannot carry microphone admission"
+            ),
+            super::vad_route::RouteKind::Microphone => {
+                let mic = self
+                    .microphone
+                    .as_ref()
+                    .context("microphone health unavailable")?;
+                ensure!(
+                    mic.stamp.is_some()
+                        && mic.shape.is_some()
+                        && mic.provider_ready
+                        && mic.provider_error.is_none()
+                        && mic.quality_known
+                        && mic.stream_running,
+                    "microphone provider absent, not Running, not admitted, unknown or reported error: {:?}",
+                    mic.provider_error
+                );
+            }
+        }
         Ok(())
     }
-    pub(super) fn validate(&self, admitted: &Self) -> Result<()> {
-        self.require_present()?;
+    fn validate_identity(&self, admitted: &Self) -> Result<()> {
         ensure!(
-            self.stamp == admitted.stamp && self.shape == admitted.shape,
+            self.route == admitted.route
+                && self.stamp == admitted.stamp
+                && self.shape == admitted.shape,
             "provider generation/gate/shape changed"
+        );
+        ensure!(
+            match (&self.microphone, &admitted.microphone) {
+                (None, None) => true,
+                (Some(current), Some(before)) =>
+                    current.stamp == before.stamp && current.shape == before.shape,
+                _ => false,
+            },
+            "microphone provider generation/gate/shape changed"
         );
         ensure!(
             self.revision == admitted.revision
@@ -224,6 +339,10 @@ impl Health {
             "graph revision/owner/resource generation changed"
         );
         Ok(())
+    }
+    pub(super) fn validate(&self, admitted: &Self) -> Result<()> {
+        self.require_present()?;
+        self.validate_identity(admitted)
     }
 }
 
@@ -254,7 +373,8 @@ impl Quality {
         if self.first_observations.is_none() {
             self.first_observations = Some(match report {
                 Some(report) => serde_json::json!({
-                    "provider": report.vad_provider, "engine": report.engine, "health": health,
+                    "provider": report.vad_provider, "microphone_provider": report.vad_microphone_provider,
+                    "engine": report.engine, "health": health,
                 }),
                 None => serde_json::json!({"observation": message, "health": health}),
             });
@@ -284,16 +404,7 @@ fn validate_health_with_policy(
     }
     let result = (|| {
         current.require_operational()?;
-        ensure!(
-            current.stamp == admitted.stamp && current.shape == admitted.shape,
-            "provider generation/gate/shape changed"
-        );
-        ensure!(
-            current.revision == admitted.revision
-                && current.generations == admitted.generations
-                && current.native_generation == admitted.native_generation,
-            "graph revision/owner/resource generation changed"
-        );
+        current.validate_identity(admitted)?;
         // Health's aggregate mixes xruns with nonfinite samples and resets.
         // Check the raw typed-counter serialization before relaxing that gate.
         let provider = report
@@ -305,6 +416,27 @@ fn validate_health_with_policy(
             .and_then(serde_json::Value::as_u64)
             .context("provider epoch reset counter unavailable")?;
         ensure!(epoch_resets == 0, "provider epoch reset");
+        if let Some(mic) = &current.microphone {
+            let provider = report
+                .vad_microphone_provider
+                .as_ref()
+                .context("microphone provider evidence unavailable")?;
+            ensure!(
+                provider
+                    .pointer("/telemetry/epoch_resets")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(0),
+                "microphone provider epoch reset or counter unavailable"
+            );
+            ensure!(
+                provider
+                    .pointer("/snapshot/packet_frames")
+                    .and_then(serde_json::Value::as_u64)
+                    == mic.shape.as_ref().map(|shape| u64::from(shape.2))
+                    && mic.shape.as_ref().is_some_and(|shape| shape.2 > 0),
+                "microphone packet shape does not match current health"
+            );
+        }
         let native = report
             .engine
             .as_ref()
@@ -341,13 +473,42 @@ fn validate_health_with_policy(
         let playback: Vec<_> = streams
             .iter()
             .filter(|stream| {
-                stream.get("kind").and_then(serde_json::Value::as_str) == Some("virtual_playback")
+                matches!(
+                    stream.get("kind").and_then(serde_json::Value::as_str),
+                    Some("virtual_playback" | "virtual_microphone")
+                )
             })
             .collect();
         ensure!(
             !playback.is_empty(),
             "native VirtualPlayback stream evidence unavailable"
         );
+        if current.route == super::vad_route::RouteKind::Microphone {
+            ensure!(
+                streams.len() == 2
+                    && playback.len() == 2
+                    && probes.len() == 2
+                    && ["virtual_playback", "virtual_microphone"]
+                        .iter()
+                        .all(|kind| playback
+                            .iter()
+                            .filter(
+                                |stream| stream.get("kind").and_then(serde_json::Value::as_str)
+                                    == Some(*kind)
+                            )
+                            .count()
+                            == 1),
+                "microphone route requires exactly playback/microphone streams and probes"
+            );
+        } else {
+            ensure!(
+                playback.iter().all(|stream| stream
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("virtual_playback")),
+                "physical route cannot carry a virtual microphone stream"
+            );
+        }
         let mut matched = std::collections::BTreeSet::new();
         let mut probe_faults = Vec::new();
         for stream in playback {
@@ -370,7 +531,7 @@ fn validate_health_with_policy(
             );
             let probe = matching[0];
             ensure!(
-                probe.get("kind").and_then(serde_json::Value::as_str) == Some("virtual_playback"),
+                probe.get("kind") == stream.get("kind"),
                 "native VirtualPlayback boundary probe kind mismatch"
             );
             let number = |key: &str| -> Result<u64> {
@@ -409,7 +570,7 @@ fn validate_health_with_policy(
             for key in ["xruns", "soft_events"] {
                 let count = number(key)?;
                 if count != 0 {
-                    probe_faults.push(format!("native VirtualPlayback boundary {key}: {count}"));
+                    probe_faults.push(format!("native {} boundary {key}: {count}", stream["kind"]));
                 }
             }
         }
@@ -438,6 +599,31 @@ fn validate_health_with_policy(
                 Some(report),
                 Some(current),
             );
+        }
+        if let Some(mic) = &current.microphone {
+            if mic.quality_faults != 0 {
+                quality.record(
+                    &format!("microphone provider quality faults: {}", mic.quality_faults),
+                    Some(report),
+                    Some(current),
+                );
+            }
+            if report
+                .vad_microphone_provider
+                .as_ref()
+                .is_some_and(|provider| {
+                    ["/telemetry/silence_frames", "/snapshot/silence_packets"]
+                        .iter()
+                        .any(|path| {
+                            provider
+                                .pointer(path)
+                                .and_then(serde_json::Value::as_u64)
+                                .is_some_and(|count| count != 0)
+                        })
+                })
+            {
+                quality.record("microphone provider silence", Some(report), Some(current));
+            }
         }
         if ["/telemetry/silence_frames", "/snapshot/silence_packets"]
             .iter()
@@ -482,7 +668,8 @@ fn latch_failure_observations(
     // error provenance, and the bounded startup trace may already be full.
     if first_failure.is_none() {
         *first_failure = Some(serde_json::json!({
-            "provider": report.vad_provider, "engine": report.engine, "health": health,
+            "provider": report.vad_provider, "microphone_provider": report.vad_microphone_provider,
+            "engine": report.engine, "health": health,
         }));
     }
 }
@@ -503,7 +690,20 @@ enum Retirement {
 }
 
 #[cfg(any(windows, test))]
+#[cfg_attr(not(test), allow(dead_code))]
 fn retire(mut step: impl FnMut(Retirement) -> Result<()>, failures: &mut Option<String>) {
+    retire_with_route(super::vad_route::RouteKind::Physical, &mut step, failures);
+}
+
+#[cfg(any(windows, test))]
+fn retire_with_route(
+    route: super::vad_route::RouteKind,
+    mut step: impl FnMut(Retirement) -> Result<()>,
+    failures: &mut Option<String>,
+) {
+    // A microphone recorder owns a client on the export being removed. Stop
+    // both producers first, then release that client before driver retirement.
+    let microphone = route == super::vad_route::RouteKind::Microphone;
     for stage in [
         Retirement::Observe,
         Retirement::ObserveFinal,
@@ -512,9 +712,21 @@ fn retire(mut step: impl FnMut(Retirement) -> Result<()>, failures: &mut Option<
         Retirement::JoinSource,
         Retirement::CloseGate,
         Retirement::ShutdownHost,
-        Retirement::Invalidate,
-        Retirement::Retire,
-        Retirement::FinishMeasurement,
+        if microphone {
+            Retirement::FinishMeasurement
+        } else {
+            Retirement::Invalidate
+        },
+        if microphone {
+            Retirement::Invalidate
+        } else {
+            Retirement::Retire
+        },
+        if microphone {
+            Retirement::Retire
+        } else {
+            Retirement::FinishMeasurement
+        },
     ] {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| step(stage)))
             .unwrap_or_else(|_| Err(anyhow::anyhow!("cleanup stage panicked")));
@@ -570,6 +782,8 @@ pub(super) fn collect(
     // half-prepared source has a stop-before-join callback into this same owner.
     let mut guard = CollectionGuard {
         vad,
+        route: options.vad_route_kind(),
+        recorder_admitted: false,
         measurement: None,
         measurement_outcome: None,
         measurement_preparation_capture: None,
@@ -586,10 +800,39 @@ pub(super) fn collect(
     };
     let mut last_running = None;
     let collection = (|| -> Result<()> {
+        config.validate_route(guard.route)?;
+        let (recorder_endpoint, selected_microphone) = if let Some(target) =
+            options.microphone_target()?
+        {
+            // The guard owns partial CREATEs before exact discovery. Never
+            // replace the selected owned microphone with a default/alias.
+            let discovery_deadline = Instant::now()
+                .checked_add(Duration::from_secs(20))
+                .context("microphone discovery deadline overflow")?;
+            guard.vad.prepare_exports(options, name)?;
+            let stable_id = moiren_windows_audio::vad::StableEndpointId::from_virtual_endpoint_id(
+                target.endpoint_id,
+            );
+            let identity =
+                super::vad::wait_microphone_identity(stable_id, &root, discovery_deadline)?;
+            let selected = serde_json::to_value(&identity)?;
+            let route = guard
+                .vad
+                .report
+                .vad_route
+                .as_mut()
+                .context("microphone route metadata missing after export preparation")?;
+            route["resolved_microphone"] = selected.clone();
+            let endpoint = config.recorder_endpoint(Some(&identity.mmdevice_id))?;
+            route["recorder_endpoint_id"] = endpoint.clone().into();
+            (endpoint, Some((stable_id, selected)))
+        } else {
+            (config.recorder_endpoint(None)?, None)
+        };
         guard.measurement = Some(
             match MeasurementSession::prepare(
                 MeasurementConfig {
-                    input_endpoint_id: config.input_endpoint_id.clone(),
+                    input_endpoint_id: recorder_endpoint.clone(),
                     max_active_duration: Duration::from_secs(options.seconds),
                     ring_frames: config.ring_frames,
                     max_pcm_bytes: config.max_pcm_bytes,
@@ -616,6 +859,46 @@ pub(super) fn collect(
                 }
             },
         );
+        let prepared_endpoint = &guard
+            .measurement
+            .as_ref()
+            .context("prepared recorder missing")?
+            .info()
+            .input_endpoint_id;
+        if let Some(route) = guard.vad.report.vad_route.as_mut() {
+            route["prepared_recorder_endpoint_id"] = prepared_endpoint.clone().into();
+        }
+        pin_recorder_endpoint(&recorder_endpoint, prepared_endpoint)?;
+        if let Some((stable_id, selected)) = selected_microphone {
+            // Native preparation is fallible and can race endpoint recreation.
+            // Re-resolve the entire owned identity before opening graph/gates;
+            // preserve the attempted check and both observations on refusal.
+            let identity = super::vad::resolve_microphone_identity(stable_id, &root);
+            let route =
+                guard.vad.report.vad_route.as_mut().context(
+                    "microphone route metadata missing during recorder identity recheck",
+                )?;
+            let identity = match identity {
+                Ok(identity) => identity,
+                Err(error) => {
+                    route["recorder_identity_recheck"] = serde_json::json!({
+                        "status": "failed", "error": format!("{error:#}"),
+                    });
+                    return Err(error)
+                        .context("re-resolve owned microphone after recorder preparation");
+                }
+            };
+            let prepared = serde_json::to_value(&identity)?;
+            route["recorder_prepared_microphone"] = prepared.clone();
+            let matched = pin_microphone_identity(&selected, &prepared);
+            route["recorder_identity_recheck"] = match &matched {
+                Ok(()) => serde_json::json!({"status": "matched"}),
+                Err(error) => {
+                    serde_json::json!({"status": "changed", "error": format!("{error:#}")})
+                }
+            };
+            matched?;
+        }
         {
             let CollectionGuard {
                 vad,
@@ -635,30 +918,34 @@ pub(super) fn collect(
             };
             vad.prepare(options, name, root, Some(plan), Some(&mut abort))?;
         }
-        let admitted = guard
-            .vad
-            .admission
-            .as_ref()
-            .context("collection admission missing")?
-            .current
-            .clone();
-        validate_health_with_policy(
-            &admitted,
-            &admitted,
-            guard.vad.report,
-            &mut guard.first_failure_observations,
-            guard.policy,
-            &mut guard.quality,
-        )?;
+        if guard.route == super::vad_route::RouteKind::Physical {
+            let admitted = &guard
+                .vad
+                .admission
+                .as_ref()
+                .context("collection admission missing")?
+                .current;
+            validate_health_with_policy(
+                admitted,
+                admitted,
+                guard.vad.report,
+                &mut guard.first_failure_observations,
+                guard.policy,
+                &mut guard.quality,
+            )?;
+            guard.recorder_admitted = true;
+        }
         // Anchor before the call; a delayed activation return never creates a
         // fresh interval. MeasurementSession's own earlier deadline also wins.
         let activated = Instant::now();
+        let recorder_start_deadline = phases.recorder_start_deadline(activated, guard.policy)?;
         phases.stamp("recorder_activation_requested", Duration::ZERO);
         guard
             .measurement
             .as_mut()
             .context("recorder missing")?
             .activate()?;
+        let mut recorder_start_confirmed = false;
         loop {
             ensure!(
                 activated.elapsed() < phases.ceiling,
@@ -669,6 +956,39 @@ pub(super) fn collect(
                 .as_ref()
                 .context("recorder missing")?
                 .check()?;
+            if !recorder_start_confirmed && matches!(recorder, MeasurementProgress::Running { .. })
+            {
+                progress_deadline(
+                    activated.elapsed(),
+                    Duration::from_secs(5),
+                    "recorder Start deadline",
+                    guard.policy,
+                    &mut guard.quality,
+                )?;
+                // Confirm initial native Running before preroll without adopting
+                // changed stamps or granting a new startup interval.
+                guard
+                    .vad
+                    .confirm_recorder_started(recorder_start_deadline)?;
+                let current = guard.vad.current_health()?;
+                validate_health_with_policy(
+                    &current,
+                    &guard
+                        .vad
+                        .admission
+                        .as_ref()
+                        .context("collection admission missing")?
+                        .current,
+                    guard.vad.report,
+                    &mut guard.first_failure_observations,
+                    guard.policy,
+                    &mut guard.quality,
+                )?;
+                guard.recorder_admitted = true;
+                recorder_start_confirmed = true;
+                phases.admit_recorder(activated.elapsed())?;
+                last_running = Some(current);
+            }
             if let Some(load_id) = guard.controlled_load_id.as_deref()
                 && guard.controlled_load.is_none()
                 && matches!(recorder, MeasurementProgress::Running { .. })
@@ -705,21 +1025,23 @@ pub(super) fn collect(
                     Some(guard.vad.report),
                 )?;
             }
-            let current = guard.vad.current_health()?;
-            validate_health_with_policy(
-                &current,
-                &guard
-                    .vad
-                    .admission
-                    .as_ref()
-                    .context("collection admission missing")?
-                    .current,
-                guard.vad.report,
-                &mut guard.first_failure_observations,
-                guard.policy,
-                &mut guard.quality,
-            )?;
-            last_running = Some(current);
+            if guard.recorder_admitted {
+                let current = guard.vad.current_health()?;
+                validate_health_with_policy(
+                    &current,
+                    &guard
+                        .vad
+                        .admission
+                        .as_ref()
+                        .context("collection admission missing")?
+                        .current,
+                    guard.vad.report,
+                    &mut guard.first_failure_observations,
+                    guard.policy,
+                    &mut guard.quality,
+                )?;
+                last_running = Some(current);
+            }
             match phases.tick_with_policy(
                 activated.elapsed(),
                 matches!(recorder, MeasurementProgress::Running { .. }),
@@ -779,15 +1101,16 @@ pub(super) fn collect(
         {
             append_failure(
                 &mut guard.failures,
-                "independent native/sink evidence unavailable or empty",
+                "selected recorder native/sink evidence unavailable or empty",
             );
         }
     } else {
         append_failure(&mut guard.failures, "measurement outcome unavailable");
     }
     if (phases_complete || guard.vad.report.backend_diagnostics.is_some())
-        && let Err(error) = graph_summary_health_with_policy(
+        && let Err(error) = graph_summary_health_with_route(
             guard.vad.report.backend_diagnostics.as_ref(),
+            guard.route,
             guard.policy,
             &mut guard.quality,
         )
@@ -829,14 +1152,26 @@ pub(super) fn collect(
         "quality_failure": guard.quality.failure,
         "first_quality_observations": guard.quality.first_observations,
         "config": config, "playback_source": provenance, "source": guard.vad.playback_outcome,
-        "graph": { "input_kind": "VirtualPlayback", "stable_endpoint_id": options.stable_endpoint_id,
-            "output_endpoint_id": options.output_endpoint, "engine_block_frames": options.engine_block_frames,
-            "render_queue": super::render_queue(options)?, "virtual_buffer": super::virtual_buffer(options)?,
+        "graph": { "route": guard.route, "input_kind": "VirtualPlayback",
+            "output_kind": if guard.route == super::vad_route::RouteKind::Microphone { "VirtualMicrophone" } else { "Physical" },
+            "stable_endpoint_id": options.stable_endpoint_id,
+            "playback_stable_endpoint_id": options.stable_endpoint_id,
+            "microphone_stable_endpoint_id": options.vad_microphone_id.as_ref().map(|id| id.to_ascii_lowercase()),
+            "output_endpoint_id": options.output_label(), "engine_block_frames": options.engine_block_frames,
+            "pacing": if guard.route == super::vad_route::RouteKind::Microphone { "pure_virtual_realtime" } else { "physical_master" },
+            "boundary": if guard.route == super::vad_route::RouteKind::Microphone { "internal" } else { "unproven_physical" },
+            "qualified": false, "independent_reference": false,
+            "route_evidence": guard.vad.report.vad_route,
+            "render_queue": collection_render_queue(options)?,
+            "physical_render_queue_applicable": guard.route == super::vad_route::RouteKind::Physical,
+            "virtual_buffer": super::virtual_buffer(options)?,
             "telemetry": options.telemetry, "admission": guard.vad.admission,
             "last_running": last_running, "last_observation": guard.vad.last_health,
             "engine": guard.vad.report.engine, "provider": guard.vad.report.vad_provider,
+            "microphone_provider": guard.vad.report.vad_microphone_provider,
             "native_summary": guard.vad.report.backend_diagnostics,
-            "engine_cleanup": guard.vad.report.engine_cleanup, "vad_cleanup": guard.vad.report.vad_cleanup },
+            "engine_cleanup": guard.vad.report.engine_cleanup, "vad_cleanup": guard.vad.report.vad_cleanup,
+            "microphone_cleanup": guard.vad.report.vad_microphone_cleanup },
         "measurement": measurement, "phases": phases.stamps,
         "controlled_load_id": guard.controlled_load_id,
         "controlled_load": guard.controlled_load_evidence,
@@ -846,7 +1181,11 @@ pub(super) fn collect(
         "postroll_complete": phases_complete, "collection_complete": complete,
         "cleanup_complete": guard.cleanup_failures.is_none(), "cleanup_failure": guard.cleanup_failures,
         "failure": guard.failures, "first_failure_observations": guard.first_failure_observations,
-        "evidence_scope": "independent recorder clock and selected endpoint; wiring/reference/calibration unproven; source submission is not played/captured marker detection",
+        "evidence_scope": if guard.route == super::vad_route::RouteKind::Microphone {
+            "internal software playback/Bus/microphone boundary with owned native recorder; no independent reference or delay/calibration claim; duplicated stereo and source submission are not marker detection"
+        } else {
+            "selected independent recorder endpoint; wiring/reference/calibration unproven; source submission is not played/captured marker detection"
+        },
         "control_policy": "Start/grace/roll deadlines use monotonic control time; synchronous provider QUERY, native setup, joins and IO may block; no OS watchdog or physical settling claim",
     }));
     ensure!(
@@ -860,6 +1199,8 @@ pub(super) fn collect(
 #[cfg(windows)]
 struct CollectionGuard<'a> {
     vad: super::native::VadCleanup<'a>,
+    route: super::vad_route::RouteKind,
+    recorder_admitted: bool,
     measurement: Option<crate::measurement::session::MeasurementSession>,
     measurement_outcome: Option<crate::measurement::session::MeasurementOutcome>,
     measurement_preparation_capture: Option<Box<moiren_windows_audio::capture::CaptureReport>>,
@@ -909,10 +1250,13 @@ impl CollectionGuard<'_> {
             );
         }
         let mut failures = None;
-        retire(
+        retire_with_route(
+            self.route,
             |stage| match stage {
                 Retirement::Observe => {
-                    if let Some(admitted) = &self.vad.admission {
+                    if self.recorder_admitted
+                        && let Some(admitted) = &self.vad.admission
+                    {
                         let admitted = admitted.current.clone();
                         let health = self.vad.current_health()?;
                         validate_health_with_policy(
@@ -1221,9 +1565,24 @@ fn graph_summary_health(summary: Option<&serde_json::Value>) -> Result<()> {
     )
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn graph_summary_health_with_policy(
     summary: Option<&serde_json::Value>,
+    policy: ValidationPolicy,
+    quality: &mut Quality,
+) -> Result<()> {
+    graph_summary_health_with_route(
+        summary,
+        super::vad_route::RouteKind::Physical,
+        policy,
+        quality,
+    )
+}
+
+#[cfg(any(windows, test))]
+fn graph_summary_health_with_route(
+    summary: Option<&serde_json::Value>,
+    route: super::vad_route::RouteKind,
     policy: ValidationPolicy,
     quality: &mut Quality,
 ) -> Result<()> {
@@ -1236,11 +1595,15 @@ fn graph_summary_health_with_policy(
     );
     if let Some(version) = summary.get("schema_version") {
         match version.as_u64() {
-            Some(2) => return final_graph_schema2_health(summary, policy, quality),
+            Some(2) => return final_graph_schema2_health(summary, route, policy, quality),
             Some(1) => {}
             _ => anyhow::bail!("unsupported graph native summary schema"),
         }
     }
+    ensure!(
+        route == super::vad_route::RouteKind::Physical,
+        "microphone route requires schema2 final virtual boundary observations"
+    );
     let render = summary
         .get("render")
         .filter(|render| !render.is_null())
@@ -1279,6 +1642,7 @@ fn graph_summary_health_with_policy(
 #[cfg(any(windows, test))]
 fn final_graph_schema2_health(
     summary: &serde_json::Value,
+    route: super::vad_route::RouteKind,
     policy: ValidationPolicy,
     quality: &mut Quality,
 ) -> Result<()> {
@@ -1341,6 +1705,7 @@ fn final_graph_schema2_health(
     let mut seen = std::collections::BTreeSet::new();
     let mut master = None;
     let mut virtual_inputs = std::collections::BTreeSet::new();
+    let mut virtual_outputs = std::collections::BTreeSet::new();
     let mut soft = Vec::new();
     for stream in &professional_streams {
         let id = node(stream)?;
@@ -1370,6 +1735,12 @@ fn final_graph_schema2_health(
             "virtual_microphone" => (false, false, true),
             _ => anyhow::bail!("unknown final native stream kind"),
         };
+        if route == super::vad_route::RouteKind::Microphone {
+            ensure!(
+                matches!(kind, "virtual_playback" | "virtual_microphone"),
+                "microphone route cannot contain physical/master/process streams"
+            );
+        }
         ensure!(
             flag(stream, "input")? == input && flag(stream, "master")? == is_master,
             "final graph native/professional stream shape mismatch"
@@ -1428,6 +1799,9 @@ fn final_graph_schema2_health(
         if kind == "virtual_playback" {
             virtual_inputs.insert(id.clone());
         }
+        if kind == "virtual_microphone" {
+            virtual_outputs.insert(id.clone());
+        }
         for key in [
             "dropped_frames",
             "silent_frames",
@@ -1441,7 +1815,22 @@ fn final_graph_schema2_health(
             }
         }
     }
-    master.context("final graph physical master output missing")?;
+    match route {
+        super::vad_route::RouteKind::Physical => {
+            master.context("final graph physical master output missing")?;
+            ensure!(
+                virtual_outputs.is_empty(),
+                "physical route cannot carry virtual microphone output"
+            );
+        }
+        super::vad_route::RouteKind::Microphone => ensure!(
+            streams.len() == 2
+                && master.is_none()
+                && virtual_inputs.len() == 1
+                && virtual_outputs.len() == 1,
+            "microphone route requires exactly one virtual playback and microphone"
+        ),
+    }
     ensure!(
         !virtual_inputs.is_empty(),
         "final graph VirtualPlayback input missing"
@@ -1593,9 +1982,15 @@ fn final_graph_schema2_health(
         }
     }
     ensure!(
-        virtual_inputs.is_subset(&probes),
-        "final VirtualPlayback boundary probe missing"
+        virtual_inputs.is_subset(&probes) && virtual_outputs.is_subset(&probes),
+        "final virtual playback/microphone boundary probe missing"
     );
+    if route == super::vad_route::RouteKind::Microphone {
+        ensure!(
+            probes.len() == 2 && bridge_nodes.is_empty(),
+            "pure virtual microphone route requires two boundary probes and no physical clock bridges"
+        );
+    }
     let mut renders = std::collections::BTreeSet::new();
     for render in array(native, "render_padding")? {
         let id = node(&render)?;
@@ -1650,6 +2045,33 @@ fn final_graph_schema2_health(
 
 #[cfg(any(windows, test))]
 impl Phases {
+    fn recorder_start_deadline(
+        &self,
+        activated: std::time::Instant,
+        policy: ValidationPolicy,
+    ) -> Result<std::time::Instant> {
+        let budget = Duration::from_secs(5)
+            .saturating_add(policy.progress_grace())
+            .min(self.ceiling);
+        activated
+            .checked_add(budget)
+            .context("recorder Start deadline overflow")
+    }
+
+    fn admit_recorder(&mut self, now: Duration) -> Result<()> {
+        ensure!(
+            self.recorder_ready.is_none() && self.source_requested.is_none(),
+            "initial recorder admission may occur only once before source activation"
+        );
+        ensure!(
+            now < self.ceiling,
+            "recorder admission exceeded collection deadline"
+        );
+        self.recorder_ready = Some(now);
+        self.stamp("recorder_running", now);
+        Ok(())
+    }
+
     fn new(config: Config, frames: u64, seconds: u64) -> Self {
         Self {
             config,
@@ -1711,8 +2133,7 @@ impl Phases {
                 quality,
             )?;
             if recorder_running {
-                self.recorder_ready = Some(now);
-                self.stamp("recorder_running", now);
+                self.admit_recorder(now)?;
             }
         }
         let Some(ready) = self.recorder_ready else {
@@ -2994,12 +3415,428 @@ mod tests {
     }
 
     #[test]
+    fn microphone_route_collection_queue_is_inapplicable_without_parsing_physical_policy() {
+        let mut options = super::super::LiveOptions::default();
+        assert!(collection_render_queue(&options).unwrap().is_some());
+        options.vad_microphone_id = Some("fedcba9876543210fedcba9876543210".into());
+        assert!(collection_render_queue(&options).unwrap().is_none());
+    }
+
+    #[test]
+    fn microphone_route_prepared_recorder_pins_exact_selected_id() {
+        pin_recorder_endpoint("Exact-ID", "Exact-ID").unwrap();
+        for actual in ["exact-id", "default", "Exact-ID ", "", "bad\0id"] {
+            assert!(
+                pin_recorder_endpoint("Exact-ID", actual).is_err(),
+                "{actual:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn microphone_route_post_preparation_resolution_pins_full_identity() {
+        let selected = serde_json::json!({
+            "stable_endpoint_id": "stable", "mmdevice_id": "Exact-ID",
+            "observed_name": "Owned microphone", "adapter_instance": "adapter",
+            "root_instance": "root",
+        });
+        pin_microphone_identity(&selected, &selected).unwrap();
+        for key in [
+            "stable_endpoint_id",
+            "mmdevice_id",
+            "observed_name",
+            "adapter_instance",
+            "root_instance",
+        ] {
+            let mut changed = selected.clone();
+            changed[key] = "changed".into();
+            assert!(
+                pin_microphone_identity(&selected, &changed).is_err(),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn microphone_route_schema2_resolves_omitted_input_without_loosening_schema1() {
+        let mut value = serde_json::to_value(config()).unwrap();
+        value["schema_version"] = 2.into();
+        value.as_object_mut().unwrap().remove("input_endpoint_id");
+        let parsed = serde_json::from_value::<Config>(value);
+        assert!(
+            parsed.is_ok(),
+            "schema2 omitted recorder ID must deserialize"
+        );
+        let mut parsed = parsed.unwrap();
+        parsed.validate(48_000, 14).unwrap();
+        parsed
+            .validate_route(super::super::vad_route::RouteKind::Microphone)
+            .unwrap();
+        assert!(
+            parsed
+                .validate_route(super::super::vad_route::RouteKind::Physical)
+                .is_err()
+        );
+        assert_eq!(
+            parsed.recorder_endpoint(Some("exact-mmdevice")).unwrap(),
+            "exact-mmdevice"
+        );
+        assert!(parsed.recorder_endpoint(None).is_err());
+        parsed.schema_version = 1;
+        assert!(parsed.validate(48_000, 14).is_err());
+        assert!(
+            parsed
+                .validate_route(super::super::vad_route::RouteKind::Microphone)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn microphone_route_recorder_override_requires_exact_discovered_identity() {
+        let mut value = config();
+        value.input_endpoint_id = "Exact-MMDevice".into();
+        assert_eq!(
+            value.recorder_endpoint(Some("Exact-MMDevice")).unwrap(),
+            "Exact-MMDevice"
+        );
+        for resolved in ["exact-mmdevice", " Exact-MMDevice", "default", "", "\0"] {
+            assert!(
+                value.recorder_endpoint(Some(resolved)).is_err(),
+                "{resolved:?}"
+            );
+        }
+        value.schema_version = 2;
+        value.input_endpoint_id.clear();
+        for resolved in ["", " ", "bad\0id"] {
+            assert!(value.recorder_endpoint(Some(resolved)).is_err());
+        }
+    }
+
+    fn microphone_health() -> Health {
+        Health {
+            route: super::super::vad_route::RouteKind::Microphone,
+            microphone: Some(EndpointHealth {
+                stamp: Some([11, 12, 13, 14, 15]),
+                shape: Some(("Stereo".into(), "Some(Float32)".into(), 480)),
+                stream_running: true,
+                provider_ready: true,
+                quality_known: true,
+                ..Default::default()
+            }),
+            ..healthy()
+        }
+    }
+
+    #[test]
+    fn microphone_route_health_requires_both_endpoints_and_stable_generations() {
+        let admitted = microphone_health();
+        admitted.validate(&admitted).unwrap();
+        for variant in 0..10 {
+            let mut current = admitted.clone();
+            match variant {
+                0 => current.microphone = None,
+                1 => current.microphone.as_mut().unwrap().stamp = None,
+                2 => current.microphone.as_mut().unwrap().stamp.as_mut().unwrap()[3] += 1,
+                3 => current.microphone.as_mut().unwrap().shape = None,
+                4 => {
+                    current
+                        .microphone
+                        .as_mut()
+                        .unwrap()
+                        .shape
+                        .as_mut()
+                        .unwrap()
+                        .2 += 1
+                }
+                5 => current.microphone.as_mut().unwrap().provider_ready = false,
+                6 => {
+                    current.microphone.as_mut().unwrap().provider_error =
+                        Some("query failed".into())
+                }
+                7 => current.microphone.as_mut().unwrap().quality_known = false,
+                8 => current.microphone.as_mut().unwrap().quality_faults = 1,
+                _ => current.route = super::super::vad_route::RouteKind::Physical,
+            }
+            assert!(current.validate(&admitted).is_err(), "variant {variant}");
+        }
+        let mut physical = healthy();
+        physical.microphone = admitted.microphone;
+        assert!(physical.require_present().is_err());
+    }
+
+    #[test]
+    fn microphone_route_same_stamp_pause_after_admission_is_hard_in_both_policies() {
+        let admitted = microphone_health();
+        let report = microphone_health_report();
+        let mut paused = admitted.clone();
+        paused.microphone.as_mut().unwrap().stream_running = false;
+        assert_eq!(
+            paused.microphone.as_ref().unwrap().stamp,
+            admitted.microphone.as_ref().unwrap().stamp
+        );
+        assert_eq!(
+            paused.microphone.as_ref().unwrap().shape,
+            admitted.microphone.as_ref().unwrap().shape
+        );
+        let mut accepted_pause = Vec::new();
+        for policy in [ValidationPolicy::default(), correctness()] {
+            validate_health_with_policy(
+                &admitted,
+                &admitted,
+                &report,
+                &mut None,
+                policy,
+                &mut Quality::default(),
+            )
+            .unwrap();
+            let mut first_failure = None;
+            let result = validate_health_with_policy(
+                &paused,
+                &admitted,
+                &report,
+                &mut first_failure,
+                policy,
+                &mut Quality::default(),
+            );
+            if result.is_ok() {
+                accepted_pause.push(policy);
+            } else {
+                assert_eq!(
+                    first_failure.unwrap()["health"]["microphone"]["stream_running"],
+                    false
+                );
+            }
+        }
+        assert!(
+            accepted_pause.is_empty(),
+            "same-stamp Pause accepted by {accepted_pause:?}"
+        );
+        healthy().require_present().unwrap();
+    }
+
+    fn microphone_final_summary() -> serde_json::Value {
+        let mut summary = final_schema2();
+        summary["professional"]["streams"][0]["master"] = false.into();
+        summary["professional"]["streams"][0]["actual"]["buffer_frames"] = 0.into();
+        summary["native"]["streams"][0]["kind"] = "virtual_microphone".into();
+        summary["native"]["streams"][0]["timing"] = serde_json::Value::Null;
+        let mut probe = summary["native"]["boundary_probes"][0].clone();
+        probe["node"] = "output".into();
+        probe["kind"] = "virtual_microphone".into();
+        summary["native"]["boundary_probes"]
+            .as_array_mut()
+            .unwrap()
+            .push(probe);
+        summary["native"]["render_padding"] = serde_json::json!([]);
+        summary
+    }
+
+    #[test]
+    fn microphone_route_final_requires_exact_virtual_pair_and_both_probes() {
+        let summary = microphone_final_summary();
+        graph_summary_health_with_route(
+            Some(&summary),
+            super::super::vad_route::RouteKind::Microphone,
+            correctness(),
+            &mut Quality::default(),
+        )
+        .unwrap();
+        assert!(
+            graph_summary_health(Some(&summary)).is_err(),
+            "physical master must remain mandatory"
+        );
+        for variant in 0..6 {
+            let mut bad = summary.clone();
+            match variant {
+                0 => {
+                    bad["native"]["boundary_probes"]
+                        .as_array_mut()
+                        .unwrap()
+                        .pop();
+                }
+                1 => bad["native"]["streams"][0]["kind"] = "master_output".into(),
+                2 => bad["professional"]["streams"][0]["master"] = true.into(),
+                3 => bad["native"]["streams"][0]["kind"] = "virtual_playback".into(),
+                4 => bad["native"]["boundary_probes"][1]["level_frames"] = 2048.into(),
+                _ => bad["native"]["owner_generation"] = 8.into(),
+            }
+            assert!(
+                graph_summary_health_with_route(
+                    Some(&bad),
+                    super::super::vad_route::RouteKind::Microphone,
+                    correctness(),
+                    &mut Quality::default()
+                )
+                .is_err(),
+                "variant {variant}"
+            );
+        }
+        assert!(
+            graph_summary_health_with_route(
+                Some(&final_schema2()),
+                super::super::vad_route::RouteKind::Microphone,
+                correctness(),
+                &mut Quality::default()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn microphone_route_retirement_releases_capture_client_before_endpoint_removal() {
+        let mut events = Vec::new();
+        let mut failure = None;
+        retire_with_route(
+            super::super::vad_route::RouteKind::Microphone,
+            |stage| {
+                events.push(stage);
+                anyhow::bail!("injected {stage:?}")
+            },
+            &mut failure,
+        );
+        let index = |stage| events.iter().position(|event| *event == stage).unwrap();
+        assert!(index(Retirement::StopSource) < index(Retirement::JoinSource));
+        assert!(index(Retirement::StopMeasurement) < index(Retirement::JoinSource));
+        assert!(index(Retirement::ShutdownHost) < index(Retirement::FinishMeasurement));
+        assert!(index(Retirement::FinishMeasurement) < index(Retirement::Invalidate));
+        assert!(index(Retirement::FinishMeasurement) < index(Retirement::Retire));
+        assert_eq!(events.len(), 10);
+        for stage in events {
+            assert!(failure.as_ref().unwrap().contains(&format!("{stage:?}")));
+        }
+    }
+
+    #[test]
+    fn microphone_route_preroll_begins_after_one_time_recorder_admission() {
+        let mut phases = Phases::new(config(), 48_000, 14);
+        assert_eq!(
+            phases
+                .tick(Duration::from_millis(100), false, false, None)
+                .unwrap(),
+            Action::Wait
+        );
+        phases.admit_recorder(Duration::from_millis(300)).unwrap();
+        assert_eq!(
+            phases
+                .tick(Duration::from_millis(399), true, false, None)
+                .unwrap(),
+            Action::Wait
+        );
+        assert!(phases.admit_recorder(Duration::from_millis(399)).is_err());
+        assert_eq!(
+            phases
+                .tick(Duration::from_millis(400), true, false, None)
+                .unwrap(),
+            Action::ActivateSource
+        );
+        assert_eq!(phases.recorder_ready, Some(Duration::from_millis(300)));
+        assert_eq!(phases.ceiling, Duration::from_secs(14));
+    }
+
+    #[test]
+    fn microphone_route_recorder_start_deadline_uses_activation_and_smallest_budget() {
+        let activated = std::time::Instant::now();
+        for (ceiling, policy, budget_ms) in [
+            (14, ValidationPolicy::default(), 5000),
+            (14, correctness(), 8000),
+            (6, correctness(), 6000),
+            (3, ValidationPolicy::default(), 3000),
+        ] {
+            let phases = Phases::new(config(), 48_000, ceiling);
+            assert_eq!(
+                phases.recorder_start_deadline(activated, policy).unwrap(),
+                activated + Duration::from_millis(budget_ms)
+            );
+        }
+    }
+
+    fn microphone_health_report() -> super::super::NativeReport {
+        let mut report = raw_health_report();
+        report.vad_microphone_provider = report.vad_provider.clone();
+        report.engine.as_mut().unwrap()["observations"] =
+            microphone_final_summary()["native"].clone();
+        report.engine.as_mut().unwrap()["observations"]["running"] = true.into();
+        report
+    }
+
+    #[test]
+    fn microphone_route_correctness_never_relaxes_raw_resets_or_missing_probe() {
+        let admitted = microphone_health();
+        let report = microphone_health_report();
+        validate_health_with_policy(
+            &admitted,
+            &admitted,
+            &report,
+            &mut None,
+            correctness(),
+            &mut Quality::default(),
+        )
+        .unwrap();
+        for variant in 0..5 {
+            let mut report = microphone_health_report();
+            match variant {
+                0 => {
+                    report.vad_microphone_provider.as_mut().unwrap()["telemetry"]["epoch_resets"] =
+                        1.into()
+                }
+                1 => report.vad_microphone_provider = None,
+                2 => {
+                    report.engine.as_mut().unwrap()["observations"]["boundary_probes"]
+                        .as_array_mut()
+                        .unwrap()
+                        .pop();
+                }
+                3 => {
+                    report.vad_microphone_provider.as_mut().unwrap()["snapshot"]["packet_frames"] =
+                        481.into()
+                }
+                _ => {
+                    report.engine.as_mut().unwrap()["observations"]["boundary_probes"][1]["xruns"] =
+                        u64::MAX.into()
+                }
+            }
+            let mut first = None;
+            assert!(
+                validate_health_with_policy(
+                    &admitted,
+                    &admitted,
+                    &report,
+                    &mut first,
+                    correctness(),
+                    &mut Quality::default()
+                )
+                .is_err(),
+                "variant {variant}"
+            );
+            assert!(first.is_some());
+        }
+        let mut soft = microphone_health_report();
+        soft.engine.as_mut().unwrap()["observations"]["boundary_probes"][1]["xruns"] = 3.into();
+        let mut quality = Quality::default();
+        validate_health_with_policy(
+            &admitted,
+            &admitted,
+            &soft,
+            &mut None,
+            correctness(),
+            &mut quality,
+        )
+        .unwrap();
+        assert!(
+            quality.failure.is_some(),
+            "microphone xruns remain quality failures"
+        );
+        let first = quality.first_observations.unwrap();
+        assert!(first.get("microphone_provider").is_some());
+    }
+
+    #[test]
     fn collection_config_checks_budget_caps_and_schema() {
         config().validate(48_000, 14).unwrap();
         for variant in 0..12 {
             let mut value = config();
             match variant {
-                0 => value.schema_version = 2,
+                0 => value.schema_version = 3,
                 1 => value.input_endpoint_id.clear(),
                 2 => value.input_endpoint_id.push('\0'),
                 3 => value.ring_frames = usize::MAX,

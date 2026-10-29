@@ -31,12 +31,18 @@ With --window-policy, exit 0 requires every candidate replayed with no_violation
 Window acceptance is finite caller-supplied queue evidence only; qualified remains false, not safety/stability/latency qualification.
 live-process-loopback --source-pid PID --output ENDPOINT --artifact-dir DIR [--seconds 1..600]
 live-vad --stable-endpoint-id ID --name NAME --output ENDPOINT --artifact-dir DIR [--seconds 1..600]
+live-vad --stable-endpoint-id PLAY_ID --name PLAY_NAME --vad-microphone-id MIC_ID --vad-microphone-name MIC_NAME
+    --source-schedule FILE --vad-collection FILE --artifact-dir DIR --seconds 1..600
+Virtual route is exact playback -> Bus -> microphone, Internal software evidence only, always unqualified.
+Distinct explicit stable IDs; no physical --output/render-only options or calibration. Collection schema2 may omit input_endpoint_id;
+only the exact owned capture endpoint is resolved, and any supplied recorder ID must match. Stereo duplication is not an independent reference.
 record-measurement --input ENDPOINT --artifact-dir NEW_DIR --seconds 1..7200
     --ring-frames N --max-pcm-bytes N --max-metadata-bytes N --max-packets N [--dry-run]
 Independent native capture retains bounded raw PCM/packet metadata; never claims physical qualification.
     [--measurement-boundary internal|wasapi-loopback|physical-cable|external-dual-channel]
     [--measurement-pcm FILE --schedule FILE] [--calibration FILE]
     [--input-target-frames N --input-capacity-frames N --input-jitter-frames N]
+Explicit input capacity/jitter/packet/gap flags require --input-target-frames; omission preserves compatibility.
     [--vad-recovery-cap-periods 1..8] (live-vad only; omitted preserves 8)
 VAD cap limits virtual-clock catch-up, not physical whole-wake demand or measured latency; smaller caps may discard more overdue periods.
     [--vad-minimum-period] (live-vad only; omitted preserves the default exclusive period request)

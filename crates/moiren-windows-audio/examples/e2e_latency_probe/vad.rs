@@ -1,4 +1,4 @@
-//! Native playback client for the live VAD qualification probe.
+//! Native playback client and endpoint identities for the live VAD probe.
 //!
 //! This is deliberately example-local. The production VAD provider owns the
 //! driver PCM worker; this module owns only the external WASAPI client that
@@ -44,7 +44,7 @@ use windows::{
             AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_SHAREMODE_SHARED,
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK, DEVICE_STATE_ACTIVE, IAudioClient,
             IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
-            WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eRender,
+            WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0, eCapture, eRender,
         },
         System::{
             Com::{
@@ -93,6 +93,109 @@ pub struct PlaybackInfo {
     pub adapter_instance: String,
     pub native_buffer_frames: u32,
     pub packet_format: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct MicrophoneIdentity {
+    pub stable_endpoint_id: String,
+    pub mmdevice_id: String,
+    pub observed_name: String,
+    pub adapter_instance: String,
+    pub root_instance: String,
+}
+
+/// Resolve the exact owned capture endpoint without retaining COM or control IO.
+/// The measurement owner must separately initialize and check the pinned ID.
+pub(super) fn resolve_microphone_identity(
+    stable_id: StableEndpointId,
+    root: &str,
+) -> Result<MicrophoneIdentity> {
+    let _apartment = Apartment::new()?;
+    let enumerator: IMMDeviceEnumerator =
+        unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
+    let (device, selected) = resolve_endpoint(&enumerator, stable_id, root, Intent::Microphone)?;
+    // Re-read the selected object before returning only owned identity strings.
+    // This is not a lease: the later measurement open still checks its identity.
+    ensure!(
+        unsafe { device.GetState()? } == DEVICE_STATE_ACTIVE,
+        "selected VAD microphone is no longer active"
+    );
+    let current = candidate(&enumerator, &device, Intent::Microphone)?;
+    ensure!(
+        current == selected && endpoint_matches(&current, stable_id, root, Intent::Microphone),
+        "selected VAD microphone identity changed during resolution"
+    );
+    Ok(MicrophoneIdentity {
+        stable_endpoint_id: stable_id.to_string(),
+        mmdevice_id: current.mmdevice_id,
+        observed_name: current.observed_name,
+        adapter_instance: current.adapter_instance,
+        root_instance: current.root_instance,
+    })
+}
+
+/// Wait only for initial MMDevice publication within the caller's setup budget.
+/// Later identity rechecks must use `resolve_microphone_identity` directly.
+pub(super) fn wait_microphone_identity(
+    stable_id: StableEndpointId,
+    root: &str,
+    deadline: Instant,
+) -> Result<MicrophoneIdentity> {
+    wait_microphone_publication(
+        deadline,
+        || resolve_microphone_identity(stable_id, root),
+        Instant::now,
+        thread::sleep,
+    )
+}
+
+fn wait_microphone_publication<T>(
+    deadline: Instant,
+    mut resolve: impl FnMut() -> Result<T>,
+    mut now: impl FnMut() -> Instant,
+    mut pause: impl FnMut(Duration),
+) -> Result<T> {
+    let timeout = |last_absence: Option<anyhow::Error>| {
+        last_absence
+            .unwrap_or_else(|| anyhow::anyhow!("VAD microphone publication not observed"))
+            .context("VAD microphone MMDevice publication deadline exceeded")
+    };
+    let mut last_absence = None;
+    loop {
+        if now() >= deadline {
+            return Err(timeout(last_absence));
+        }
+        let result = resolve();
+        let completed = now();
+        match result {
+            Ok(identity) => {
+                // A synchronous native query cannot be interrupted. Do not
+                // accept its result if it returned outside the setup budget.
+                return if completed < deadline {
+                    Ok(identity)
+                } else {
+                    Err(timeout(last_absence))
+                };
+            }
+            Err(error) => {
+                if error.downcast_ref::<EndpointNotPublished>().is_none() {
+                    return Err(error);
+                }
+                last_absence = Some(error);
+            }
+        }
+        if completed >= deadline {
+            return Err(timeout(last_absence));
+        }
+        let before_pause = now();
+        if before_pause >= deadline {
+            return Err(timeout(last_absence));
+        }
+        pause((deadline - before_pause).min(Duration::from_millis(100)));
+        if now() >= deadline {
+            return Err(timeout(last_absence));
+        }
+    }
 }
 
 enum PlaybackTarget {
@@ -522,10 +625,20 @@ fn candidate(
     enumerator: &IMMDeviceEnumerator,
     device: &IMMDevice,
     intent: Intent,
-) -> Result<(String, String, String, String, Intent)> {
+) -> Result<EndpointCandidate> {
     // SAFETY: all COM objects remain in this worker apartment and topology is
     // used only to obtain the opaque adapter identity.
     unsafe {
+        let endpoint: windows::Win32::Media::Audio::IMMEndpoint =
+            windows::core::Interface::cast(device)?;
+        let expected_flow = match intent {
+            Intent::Playback => eRender,
+            Intent::Microphone => eCapture,
+        };
+        ensure!(
+            endpoint.GetDataFlow()? == expected_flow,
+            "VAD endpoint direction does not match {intent:?}"
+        );
         let id = take_string(device.GetId()?)?;
         let endpoint_properties = device.OpenPropertyStore(STGM_READ)?;
         let endpoint_name = endpoint_properties.GetValue(&PKEY_Device_FriendlyName)?;
@@ -567,8 +680,76 @@ fn candidate(
         )?;
         let mut parent = 0;
         config(CM_Get_Parent(&mut parent, node, 0), "CM_Get_Parent")?;
-        Ok((id, observed_name, raw_instance, instance(parent)?, intent))
+        Ok(EndpointCandidate {
+            mmdevice_id: id,
+            observed_name,
+            adapter_instance: raw_instance,
+            root_instance: instance(parent)?,
+            intent,
+        })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EndpointCandidate {
+    mmdevice_id: String,
+    observed_name: String,
+    adapter_instance: String,
+    root_instance: String,
+    intent: Intent,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("expected one VAD {intent:?} MMDevice for {stable_id}, found 0")]
+struct EndpointNotPublished {
+    stable_id: StableEndpointId,
+    intent: Intent,
+}
+
+fn endpoint_matches(
+    candidate: &EndpointCandidate,
+    stable_id: StableEndpointId,
+    root: &str,
+    intent: Intent,
+) -> bool {
+    let wanted = stable_id.to_string();
+    candidate
+        .adapter_instance
+        .rsplit_once('\\')
+        .is_some_and(|(hardware, suffix)| {
+            hardware.eq_ignore_ascii_case(r"MOIREN\VAD_RAW")
+                && suffix
+                    .rsplit('&')
+                    .next()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(&wanted))
+        })
+        && candidate.intent == intent
+        && candidate.root_instance.eq_ignore_ascii_case(root)
+}
+
+fn select_endpoint<T>(
+    candidates: impl IntoIterator<Item = Result<(T, EndpointCandidate)>>,
+    stable_id: StableEndpointId,
+    root: &str,
+    intent: Intent,
+) -> Result<(T, EndpointCandidate)> {
+    let mut selected = None;
+    let mut match_count = 0;
+    for candidate in candidates {
+        let (device, candidate) = candidate?;
+        if endpoint_matches(&candidate, stable_id, root, intent) {
+            match_count += 1;
+            selected = Some((device, candidate));
+        }
+    }
+    if match_count == 0 {
+        return Err(EndpointNotPublished { stable_id, intent }.into());
+    }
+    ensure!(
+        match_count == 1,
+        "expected one VAD {intent:?} MMDevice for {stable_id}, found {match_count}"
+    );
+    Ok(selected.expect("one owned VAD endpoint"))
 }
 
 fn resolve_playback(
@@ -576,31 +757,37 @@ fn resolve_playback(
     stable_id: StableEndpointId,
     root: &str,
 ) -> Result<(IMMDevice, String, String, String)> {
-    let devices = unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)? };
-    let wanted = stable_id.to_string();
-    let mut match_count = 0;
-    let mut selected = None;
-    for index in 0..unsafe { devices.GetCount()? } {
-        let device = unsafe { devices.Item(index)? };
-        let (id, observed_name, raw, parent, intent) =
-            candidate(enumerator, &device, Intent::Playback)?;
-        let owned = raw.rsplit_once('\\').is_some_and(|(hardware, suffix)| {
-            hardware.eq_ignore_ascii_case(r"MOIREN\VAD_RAW")
-                && suffix
-                    .rsplit('&')
-                    .next()
-                    .is_some_and(|value| value.eq_ignore_ascii_case(&wanted))
-        });
-        if owned && intent == Intent::Playback && parent.eq_ignore_ascii_case(root) {
-            match_count += 1;
-            selected = Some((device, id, observed_name, raw));
-        }
-    }
-    ensure!(
-        match_count == 1,
-        "expected one VAD playback MMDevice for {wanted}, found {match_count}"
-    );
-    Ok(selected.expect("one owned VAD playback device"))
+    let (device, selected) = resolve_endpoint(enumerator, stable_id, root, Intent::Playback)?;
+    Ok((
+        device,
+        selected.mmdevice_id,
+        selected.observed_name,
+        selected.adapter_instance,
+    ))
+}
+
+fn resolve_endpoint(
+    enumerator: &IMMDeviceEnumerator,
+    stable_id: StableEndpointId,
+    root: &str,
+    intent: Intent,
+) -> Result<(IMMDevice, EndpointCandidate)> {
+    let flow = match intent {
+        Intent::Playback => eRender,
+        Intent::Microphone => eCapture,
+    };
+    let devices = unsafe { enumerator.EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE)? };
+    let count = unsafe { devices.GetCount()? };
+    select_endpoint(
+        (0..count).map(|index| {
+            let device = unsafe { devices.Item(index)? };
+            let candidate = candidate(enumerator, &device, intent)?;
+            Ok((device, candidate))
+        }),
+        stable_id,
+        root,
+        intent,
+    )
 }
 
 fn wait_playback(
@@ -1123,6 +1310,294 @@ mod tests {
         assert_eq!(source.progress, before);
     }
     use super::*;
+
+    fn identity_candidate(stable_id: StableEndpointId, intent: Intent) -> EndpointCandidate {
+        EndpointCandidate {
+            mmdevice_id: "opaque-mmdevice-id".into(),
+            observed_name: "same friendly name for all siblings".into(),
+            adapter_instance: format!(r"MOIREN\VAD_RAW\6&opaque&{stable_id}"),
+            root_instance: r"ROOT\MOIRENVAD\0001".into(),
+            intent,
+        }
+    }
+
+    #[test]
+    fn endpoint_identity_selects_exact_microphone_and_preserves_playback() {
+        let stable_id = StableEndpointId::new(0xabcd, 0xef01);
+        for intent in [Intent::Playback, Intent::Microphone] {
+            let mut candidate = identity_candidate(stable_id, intent);
+            candidate.adapter_instance = candidate.adapter_instance.to_ascii_uppercase();
+            let root = candidate.root_instance.to_ascii_lowercase();
+            let (selected, identity) =
+                select_endpoint([Ok((7, candidate))], stable_id, &root, intent).unwrap();
+            assert_eq!(selected, 7);
+            assert_eq!(identity.mmdevice_id, "opaque-mmdevice-id");
+            assert_eq!(
+                identity.observed_name,
+                "same friendly name for all siblings"
+            );
+            assert_eq!(identity.intent, intent);
+        }
+    }
+
+    #[test]
+    fn endpoint_identity_rejects_wrong_root_id_intent_hardware_and_sibling_suffix() {
+        let stable_id = StableEndpointId::new(0xabcd, 0xef01);
+        for intent in [Intent::Playback, Intent::Microphone] {
+            let wanted = identity_candidate(stable_id, intent);
+            let mut wrong_root = wanted.clone();
+            wrong_root.root_instance.push('2');
+            let wrong_id = identity_candidate(StableEndpointId::new(0xabce, 0xef01), intent);
+            let mut wrong_intent = wanted.clone();
+            wrong_intent.intent = if intent == Intent::Playback {
+                Intent::Microphone
+            } else {
+                Intent::Playback
+            };
+            let mut wrong_hardware = wanted.clone();
+            wrong_hardware.adapter_instance = format!(r"OTHER\VAD_RAW\6&opaque&{stable_id}");
+            let mut suffix_sibling = wanted.clone();
+            suffix_sibling.adapter_instance.push('0');
+            let mut prefix_sibling = wanted.clone();
+            prefix_sibling.adapter_instance = format!(r"MOIREN\VAD_RAW\6&opaque&0{stable_id}");
+            for candidate in [
+                wrong_root,
+                wrong_id,
+                wrong_intent,
+                wrong_hardware,
+                suffix_sibling,
+                prefix_sibling,
+            ] {
+                assert!(
+                    select_endpoint(
+                        [Ok((1, candidate))],
+                        stable_id,
+                        &wanted.root_instance,
+                        intent
+                    )
+                    .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn endpoint_identity_does_not_select_same_name_sibling() {
+        let stable_id = StableEndpointId::new(0xabcd, 0xef01);
+        let wanted = identity_candidate(stable_id, Intent::Microphone);
+        let mut sibling = wanted.clone();
+        sibling.intent = Intent::Playback;
+        let mut other_root = wanted.clone();
+        other_root.root_instance = r"ROOT\MOIRENVAD\0002".into();
+        let (selected, identity) = select_endpoint(
+            [Ok((1, sibling)), Ok((2, wanted)), Ok((3, other_root))],
+            stable_id,
+            r"ROOT\MOIRENVAD\0001",
+            Intent::Microphone,
+        )
+        .unwrap();
+        assert_eq!(selected, 2);
+        assert_eq!(identity.root_instance, r"ROOT\MOIRENVAD\0001");
+    }
+
+    #[test]
+    fn endpoint_identity_rejects_duplicate_exact_matches() {
+        let stable_id = StableEndpointId::new(0xabcd, 0xef01);
+        for intent in [Intent::Playback, Intent::Microphone] {
+            let wanted = identity_candidate(stable_id, intent);
+            let error = select_endpoint(
+                [Ok((1, wanted.clone())), Ok((2, wanted))],
+                stable_id,
+                r"ROOT\MOIRENVAD\0001",
+                intent,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("found 2"));
+        }
+    }
+
+    #[test]
+    fn endpoint_identity_does_not_hide_enumeration_failure_after_a_match() {
+        let stable_id = StableEndpointId::new(0xabcd, 0xef01);
+        let error = select_endpoint(
+            [
+                Ok((1, identity_candidate(stable_id, Intent::Playback))),
+                Err(anyhow::anyhow!("candidate metadata unavailable")),
+            ],
+            stable_id,
+            r"ROOT\MOIRENVAD\0001",
+            Intent::Playback,
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "candidate metadata unavailable");
+    }
+
+    fn unpublished_microphone() -> anyhow::Error {
+        select_endpoint::<()>(
+            std::iter::empty(),
+            StableEndpointId::new(0xabcd, 0xef01),
+            r"ROOT\MOIRENVAD\0001",
+            Intent::Microphone,
+        )
+        .unwrap_err()
+    }
+
+    #[test]
+    fn microphone_publication_wait_retries_typed_absence_then_returns_exact_identity() {
+        let start = Instant::now();
+        let clock = std::cell::Cell::new(start);
+        let mut calls = 0;
+        let mut delays = Vec::new();
+        let selected = wait_microphone_publication(
+            start + Duration::from_secs(1),
+            || {
+                calls += 1;
+                if calls < 3 {
+                    return Err(unpublished_microphone().context("enumerate capture endpoints"));
+                }
+                Ok(identity_candidate(
+                    StableEndpointId::new(0xabcd, 0xef01),
+                    Intent::Microphone,
+                ))
+            },
+            || clock.get(),
+            |delay| {
+                delays.push(delay);
+                clock.set(clock.get() + delay);
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 3);
+        assert_eq!(delays, [Duration::from_millis(100); 2]);
+        assert_eq!(selected.mmdevice_id, "opaque-mmdevice-id");
+        assert_eq!(selected.intent, Intent::Microphone);
+    }
+
+    #[test]
+    fn microphone_publication_wait_does_not_query_an_expired_deadline() {
+        let deadline = Instant::now();
+        let mut calls = 0;
+        let result = wait_microphone_publication(
+            deadline,
+            || {
+                calls += 1;
+                Ok(())
+            },
+            || deadline,
+            |_| panic!("expired setup must not sleep"),
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn microphone_publication_wait_refuses_success_returned_at_or_after_deadline() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(100);
+        for completion in [deadline, deadline + Duration::from_millis(1)] {
+            let clock = std::cell::Cell::new(start);
+            let result = wait_microphone_publication(
+                deadline,
+                || {
+                    clock.set(completion);
+                    Ok(())
+                },
+                || clock.get(),
+                |_| panic!("late success must not sleep"),
+            );
+            assert!(result.unwrap_err().to_string().contains("deadline"));
+        }
+    }
+
+    #[test]
+    fn microphone_publication_wait_caps_delays_and_never_restarts_setup_budget() {
+        let start = Instant::now();
+        let clock = std::cell::Cell::new(start);
+        let mut calls = 0;
+        let mut delays = Vec::new();
+        let result = wait_microphone_publication::<()>(
+            start + Duration::from_millis(230),
+            || {
+                calls += 1;
+                Err(unpublished_microphone())
+            },
+            || clock.get(),
+            |delay| {
+                delays.push(delay);
+                clock.set(clock.get() + delay);
+            },
+        );
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("deadline"));
+        assert!(error.downcast_ref::<EndpointNotPublished>().is_some());
+        assert_eq!(calls, 3);
+        assert_eq!(delays, [100, 100, 30].map(Duration::from_millis));
+    }
+
+    #[test]
+    fn microphone_publication_wait_checks_deadline_after_slow_query_and_delay() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(50);
+        for slow_query in [false, true] {
+            let clock = std::cell::Cell::new(start);
+            let mut calls = 0;
+            let mut delays = 0;
+            let result = wait_microphone_publication::<()>(
+                deadline,
+                || {
+                    calls += 1;
+                    if slow_query {
+                        clock.set(deadline + Duration::from_millis(1));
+                    }
+                    Err(unpublished_microphone())
+                },
+                || clock.get(),
+                |delay| {
+                    assert_eq!(delay, Duration::from_millis(50));
+                    delays += 1;
+                    clock.set(deadline + Duration::from_millis(1));
+                },
+            );
+            assert!(result.unwrap_err().to_string().contains("deadline"));
+            assert_eq!(calls, 1);
+            assert_eq!(delays, usize::from(!slow_query));
+        }
+    }
+
+    #[test]
+    fn microphone_publication_wait_never_retries_ambiguous_identity_or_io_errors() {
+        let stable_id = StableEndpointId::new(0xabcd, 0xef01);
+        let wanted = identity_candidate(stable_id, Intent::Microphone);
+        let ambiguous = select_endpoint(
+            [Ok((1, wanted.clone())), Ok((2, wanted))],
+            stable_id,
+            r"ROOT\MOIRENVAD\0001",
+            Intent::Microphone,
+        )
+        .unwrap_err();
+        for error in [
+            ambiguous,
+            anyhow::anyhow!("selected VAD microphone identity changed during resolution"),
+            anyhow::anyhow!("GetState failed: found 0 devices is not a typed absence"),
+        ] {
+            let message = error.to_string();
+            let mut error = Some(error);
+            let mut calls = 0;
+            let start = Instant::now();
+            let result = wait_microphone_publication::<()>(
+                start + Duration::from_secs(1),
+                || {
+                    calls += 1;
+                    Err(error.take().expect("hard failure must not be retried"))
+                },
+                || start,
+                |_| panic!("hard failure must not sleep"),
+            );
+            assert_eq!(result.unwrap_err().to_string(), message);
+            assert_eq!(calls, 1);
+        }
+    }
+
     #[test]
     fn playback_native_stop_ack_is_distinct_from_join_and_retains_both_errors() {
         let latest = Mutex::new(WorkerState::default());
