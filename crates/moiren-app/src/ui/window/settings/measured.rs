@@ -149,6 +149,7 @@ pub(super) fn editor(shell: &StudioShell, cx: &Context<StudioShell>) -> Div {
                 .id("measured-process-feedback")
                 .role(Role::Label)
                 .aria_label(feedback.clone())
+                .aria_value(feedback.clone())
                 .text_size(px(theme::TEXT_SM))
                 .text_color(if measured.error.is_some() {
                     theme::DANGER
@@ -190,6 +191,7 @@ fn summary(id: &'static str, title: &str, value: String) -> AnyElement {
         .id(id)
         .role(Role::Label)
         .aria_label(format!("{title}: {value}"))
+        .aria_value(format!("{title}: {value}"))
         .text_size(px(theme::TEXT_SM))
         .child(format!("{title}: {value}"))
         .gpui_test_observe()
