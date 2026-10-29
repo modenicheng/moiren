@@ -32,9 +32,10 @@ The exact virtual IO/Bus
 collector now has the separate bounded software receipt below. S2's bounded
 software mechanisms are present under their
 declared/admitted conditions; native/lower-setting qualification remains open.
-S3 remains partial because live observed-window application admission,
-checkpointed long windows, freshness composition and source-time provenance
-remain open. The bounded live-prefix core/native API and audited probe repair have
+S3 remains partial because continuous retained/checkpointed long windows,
+desktop live-window controls, freshness composition and source-time provenance
+remain open. Bounded live-window service/CLI admission, the live-prefix
+core/native API and audited probe repair have
 separate bounded software receipt below.
 
 ## Completed bounded software slices
@@ -51,7 +52,8 @@ separate bounded software receipt below.
 | E2E VAD source period | The actual [E2E minimum-period option](2026-10-29-e2e-vad-minimum-period.md), source receipt `1d3e691`, supports `live-vad --vad-minimum-period`, preserves omission/default behavior, refuses invalid selection without fallback, and retains alignment/partial-failure evidence. | The 15 focused passing period tests establish host selection/evidence behavior, not actual device acceptance or packet cadence. This option is for the external VAD source, not physical render mode/period. |
 | S3 app/API | Validated independent target/capacity/jitter through API, declared and two-phase measured monitor CLI, actual desktop measured selection, prepared owner replacement and truthful requested/active confirmation. See [monitor CLI](2026-10-29-process-monitor-cli.md) and [desktop measured selection](2026-10-29-desktop-measured-process.md). | Desktop/service regressions are distinct from CLI coverage. Experimental 1024/512/256-frame candidates are not qualified presets. Source/sample-age requests are explicitly refused. |
 | S3 retained evaluation | Pinned exact-prefix collection, bounded ordered replay/inventory, finite-window assessment, conservative final whole-drain/whole-wake measurement and opaque retained-native candidate with explicit desktop Apply. See [retained evaluation/Apply](2026-10-29-retained-process-apply.md). | This software workflow is present, not a missing UI button. Imported JSON remains caller-supplied; finite historical approval does not authenticate future service or physical latency. |
-| S3 live-prefix assessment | The [bounded live Process prefix core and pinned native API](2026-10-29-live-process-prefix.md), source `5df48d0`, seal and replay a sequence-one prefix through the production queue while actual writers remain open. Reports preserve explicit policy, origin, actual closure, refusal and observed loss. | Diagnostic reports are not Apply tokens. App/CLI admission and checkpointed continuation beyond 8192 events per writer remain open; no future service or physical latency guarantee follows. |
+| S3 live-prefix assessment | The [bounded live Process prefix core and pinned native API](2026-10-29-live-process-prefix.md), source `5df48d0`, seal and replay a sequence-one prefix through the production queue while actual writers remain open. Reports preserve explicit policy, origin, actual closure, refusal and observed loss. | Diagnostic reports are not Apply tokens. The separately linked service/CLI slice adds opaque native admission; checkpointed continuation beyond8192 events remains open. No future service or physical latency guarantee follows. |
+| S3 live-window application admission | The [explicit service/CLI workflow](2026-10-29-windowed-process-admission.md), sources `88853ab`/`75481a8`, freezes opaque native measured evidence, replays on the bounded Prepare worker and binds successful policy/options to owner replacement with source/settings/predecessor fences. Final full app suite 612 passed / 4 ignored. | Existing per-wake and stopped Apply remain separate. Either 256-event measured history overwriting refuses even below the 8192-event archive cap. Desktop live-window controls and continuous retained/checkpointed windows remain open; no native/physical qualification follows. |
 | S3 production wake reserve | The production backend/Pump admits and publishes complete native-wake demand independently of segmented source reads. See [whole-wake regression](2026-10-29-process-whole-wake.md). | That production receipt does not certify the two separate E2E probe preparation callers; their audit finding is tracked below. |
 | S3 host residence | Optional positive [host-ingress elapsed enforcement](2026-10-29-process-ingress-elapsed.md), finite-prefix recovery, separate loss accounting, exact app persistence/selector/CLI forwarding and requested/active state. `None` preserves compatibility. | This is time since publication began, not source age or hardware presentation. Measured/evaluated/replay combinations currently refuse enabled policy explicitly rather than clearing it. |
 
@@ -103,20 +105,24 @@ those historical runs a fully matched comparison.
   These close the audited software defect, not actual native acceptance or
   waveform qualification. The simpler probe does not copy the production
   Pump's distinct prefetch/rounding reserve.
-- **Observed-window demand/delivery density admission - core implemented,
-  application integration remains:** the [live-prefix receipt](2026-10-29-live-process-prefix.md)
+- **Observed-window demand/delivery density admission - bounded core and
+  service/CLI implemented:** the [live-prefix receipt](2026-10-29-live-process-prefix.md)
   records actual ordered production-queue replay with preserved held/SRC/servo
   state, explicit exposure and feasible/inconclusive/violation outcomes for a
   sealed sequence-one prefix. Its regression detects repeated demand that
   exhausts supply even though each individual wake fits. The pinned native API
   retains its original source/generation; editable archives remain diagnostic.
-  Live measured app/CLI admission still checks per-wake envelopes. It needs
-  explicit window policy and opaque evidence binding, with exact source,
-  settings, rate and demand rechecks before owner replacement. Existing stopped
-  retained evaluation/Apply remains a separate implemented workflow. The new
-  bounded core refuses capped/incomplete evidence. Continuation beyond 8192
-  events per writer still needs checkpoint state rather than an invented
-  empty/full queue at each chunk boundary.
+  The [service/CLI receipt](2026-10-29-windowed-process-admission.md) adds a
+  separate opt-in request with all five explicit policy fields, opaque native
+  preparation, background replay and exact source/settings/rate/whole-wake
+  demand binding before replacement. Joined predecessor and captured settings
+  are rechecked before opening; later requests invalidate in-flight work.
+  Per-wake measured selection and stopped retained evaluation/Apply remain
+  separate workflows. The desktop live-window controls are not yet wired.
+  Continuous measurement is still limited by256 complete-drain/whole-wake
+  history events; overwrite refuses instead of using a suffix. Beyond8192
+  packet/read events, continuous replay also needs checkpoint state rather
+  than invented empty/full queue state at each chunk boundary.
 - **Freshness composition:** measured/evaluated/replay paths honestly refuse
   enabled host-ingress elapsed intent. They do not yet combine the independent
   features. Current queue histories retain the outside read clock endpoints,
@@ -199,3 +205,10 @@ The live-prefix receipt separately records 842 audio passed / 3 ignored,
 compile-only checks with the disclosed cfg warnings and repaired RT compile
 failure. None performs native audio, VM or driver operations or pushes. Unrelated
 `gate.log` remains untouched.
+
+The bounded live-window integration separately records612 app passed /4 ignored,
+851 audio passed /3 ignored,471 probe passed and201 RT harness passed, strict
+app/audio Clippy and Linux audio/RT compile checks. Its receipt preserves the
+initial unrelated UI timeout and passing isolated/full reruns without threshold
+changes, the repaired RT shadow compile failure and Clippy fixes. Batch remote
+delivery is recorded separately; individual source slices do not each push.
