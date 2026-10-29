@@ -357,7 +357,10 @@ pub(crate) fn snapshot(c: &ServiceContext) -> AppSnapshot {
         control: c.control.clone(),
         signal_topics: c.signals.topics.clone(),
         tone_session: c.tone_session,
-        elapsed: c.core.elapsed(),
+        // The chrome clock renders whole seconds; publishing sub-second
+        // precision would change the snapshot on every poll and keep the UI
+        // repainting for as long as the session runs.
+        elapsed: Duration::from_secs(c.core.elapsed().as_secs()),
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -496,5 +499,49 @@ impl ServiceRuntime {
         self.thread
             .join()
             .map_err(|_| ServiceJoinError::ThreadPanicked)
+    }
+}
+
+#[cfg(test)]
+mod snapshot_publish_tests {
+    use super::*;
+
+    fn running_context() -> ServiceContext {
+        let mut c = ServiceContext::default();
+        let spec = SessionSpec {
+            source: InputSelection::Physical {
+                endpoint_id: "probe-input".into(),
+            },
+            output_endpoint_id: "probe-output".into(),
+            limit: RunLimit::UntilStopped,
+            gain: 1.0,
+            pan: 0.0,
+            max_block_frames: 64,
+        };
+        let generation = c.core.start(spec).expect("probe spec validates");
+        c.core.managed_execution(generation, true, None);
+        c
+    }
+
+    #[test]
+    fn snapshot_elapsed_is_quantized_to_whole_seconds() {
+        let c = running_context();
+        let first = snapshot(&c);
+        assert_eq!(first.phase, SessionPhase::Running);
+        assert_eq!(
+            first.elapsed.subsec_nanos(),
+            0,
+            "sub-second precision would churn every publish while running"
+        );
+    }
+
+    #[test]
+    fn same_second_snapshots_are_equal_for_publish_dedup() {
+        let c = running_context();
+        // Fresh graph Arcs must compare by content so an unchanged topology
+        // keeps equality across snapshot builds.
+        let first = snapshot(&c);
+        let second = snapshot(&c);
+        assert_eq!(first, second);
     }
 }

@@ -90,6 +90,28 @@ pub(super) fn saved_maximized(window: &gpui_kit::Window) -> Option<bool> {
     }
 }
 
+/// Whether the window is currently minimized. False whenever the platform
+/// handle cannot be resolved (headless tests, non-Win32 surfaces), which
+/// leaves polling behavior unchanged there.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub(super) fn window_is_iconic(window: &gpui_kit::Window) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::IsIconic};
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return false;
+    };
+    let RawWindowHandle::Win32(raw) = handle.as_raw() else {
+        return false;
+    };
+    unsafe { IsIconic(HWND(raw.hwnd.get() as *mut _)).as_bool() }
+}
+
+#[cfg(not(windows))]
+pub(super) fn window_is_iconic(_window: &gpui_kit::Window) -> bool {
+    false
+}
+
 #[cfg(all(test, windows, feature = "gpui-test"))]
 #[allow(unsafe_code)]
 mod tests {

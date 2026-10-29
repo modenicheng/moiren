@@ -21,6 +21,9 @@ pub(super) struct Desktop {
     state_save: Option<Task<()>>,
     preference_saves: Vec<Task<()>>,
     shutting_down: bool,
+    /// Last poll's minimized state of the main window; a restore transition
+    /// forces one notify so state updated silently while iconic repaints.
+    main_window_minimized: bool,
 }
 
 #[derive(Clone)]
@@ -157,6 +160,7 @@ impl Desktop {
             state_save: None,
             preference_saves: Vec::new(),
             shutting_down: false,
+            main_window_minimized: false,
         }
     }
 
@@ -438,11 +442,24 @@ impl Desktop {
             tray.set_session_active(self.state.read(cx).snapshot.phase == SessionPhase::Running);
         }
         self.dismiss_flyout_on_focus_loss(cx);
+        // A minimized main window has nothing to repaint: while iconic the
+        // poll keeps absorbing snapshot changes silently and skips cx.notify,
+        // so an idle-but-running session leaves the frame pipeline unarmed
+        // instead of waking the main thread per repaint request. One notify
+        // on restore repaints everything absorbed in the meantime. The tray
+        // flyout is its own window and keeps its own notify path below.
+        let iconic = self.window.as_ref().is_some_and(|handle| {
+            handle
+                .update(cx, |_, window, _| native::window_is_iconic(window))
+                .unwrap_or(false)
+        });
+        let restored = self.main_window_minimized && !iconic;
+        self.main_window_minimized = iconic;
         if let Some(shell) = self.shell.clone() {
             let saved = shell.update(cx, |shell, cx| {
                 shell.finish_project_load(cx);
                 let meters_changed = !shell.meter_animation_active(cx) && shell.pump_meters(cx);
-                if changed || meters_changed {
+                if (changed || meters_changed || restored) && !iconic {
                     cx.notify();
                 }
                 shell.window_state.clone()
