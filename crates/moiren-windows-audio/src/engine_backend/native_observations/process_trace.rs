@@ -1,18 +1,15 @@
 //! Opaque provenance boundary around the public, untrusted archive format.
-use super::{NativeObservationReadHandle, NodeId};
-use crate::{
-    clock_bridge::BridgeObserver,
-    process_loopback::{
-        ObservedProcessTrace, ProcessIdentity, ProcessReplayError, ProcessTraceArchive,
-        ProcessTraceCollectionRefusal, ProcessTraceCollector,
-    },
+use super::{NativeObservationReadHandle, NodeId, ProcessDeliverySource};
+use crate::process_loopback::{
+    MeasuredProcessDelivery, ObservedProcessTrace, ProcessIdentity, ProcessReplayError,
+    ProcessTraceArchive, ProcessTraceCollectionRefusal, ProcessTraceCollector,
 };
 
 /// Control-side sequence-one archive pinned to one native source. It retains
 /// observation storage only, never native audio resources or history writers.
 /// Missing/capped prefixes remain refusals; collection never stops audio.
 pub struct NativeProcessTraceCollector {
-    bridge: BridgeObserver,
+    source: ProcessDeliverySource,
     collector: ProcessTraceCollector,
 }
 
@@ -39,7 +36,7 @@ impl NativeObservationReadHandle {
             return Err(ProcessReplayError::IdentityMismatch);
         }
         let mut collector = NativeProcessTraceCollector {
-            bridge: source.bridge.clone(),
+            source: source.clone(),
             collector: ProcessTraceCollector::new(
                 source.process.clone(),
                 self.0.generation,
@@ -68,7 +65,54 @@ impl NativeProcessTraceCollector {
 
     /// Control/cleanup workers only; does not wait for a contended RT writer.
     pub fn poll(&mut self) {
-        self.collector.poll(&self.bridge);
+        self.collector.poll(&self.source.bridge);
+    }
+
+    /// Read the original source's final complete-drain/whole-wake evidence.
+    /// Call after the owning host joins; registry retirement alone is not
+    /// closure. Queue replay remains independently validated and unqualified.
+    pub fn final_measurement(&self) -> Result<MeasuredProcessDelivery, String> {
+        self.ordered_trace().map_err(|error| error.to_string())?;
+        let source = &self.source;
+        let counters = source.bridge.snapshot();
+        let delivery = counters
+            .native_delivery
+            .ok_or("final Process delivery observations are missing")?;
+        let measured = MeasuredProcessDelivery::from_observations(
+            source.process.clone(),
+            self.owner_generation(),
+            source.input_sample_rate,
+            source.consumer_sample_rate,
+            source.prepared_consumer_demand_frames,
+            delivery,
+            source
+                .bridge
+                .delivery_events()
+                .ok_or("final Process drain observations are missing")?,
+            source
+                .consumer
+                .as_ref()
+                .and_then(|observer| observer.snapshot())
+                .ok_or("final Process whole-wake observations are missing")?,
+        )
+        .map_err(|error| error.to_string())?;
+        // Packet publication is bracketed, while delivery/drain observations
+        // use point timestamps. Exact replay must fit the conservative outer
+        // envelope too, including rounding at native frame boundaries.
+        let artifact = self.collector.artifact();
+        let mut gap = 0;
+        for pair in artifact.packet_history.events.windows(2) {
+            let outer = pair[1]
+                .sample
+                .qpc_after_100ns
+                .zip(pair[0].sample.qpc_before_100ns)
+                .and_then(|(after, before)| after.checked_sub(before))
+                .ok_or("final Process publication envelope is unavailable or regressed")?;
+            gap = gap.max(outer);
+        }
+        measured
+            .with_publication_gap_100ns(gap)
+            .map_err(|error| error.to_string())
     }
 
     /// Exported/edited artifacts have caller-supplied provenance, regardless

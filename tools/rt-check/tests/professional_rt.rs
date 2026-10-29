@@ -13,7 +13,6 @@ use moiren_engine::{
     sample::ProcessingSample,
 };
 use moiren_windows_audio::capture;
-use moiren_windows_audio::clock_bridge;
 use moiren_windows_audio::native;
 use moiren_windows_audio::stats;
 use moiren_windows_audio::virtual_owner;
@@ -44,6 +43,9 @@ pub(crate) mod bounded_history;
 #[path = "../../../crates/moiren-windows-audio/src/bridge.rs"]
 #[allow(dead_code)]
 mod bridge;
+#[path = "../../../crates/moiren-windows-audio/src/clock_bridge.rs"]
+#[allow(dead_code)]
+mod clock_bridge;
 #[path = "../../../crates/moiren-windows-audio/src/codec.rs"]
 #[allow(dead_code)]
 mod codec;
@@ -57,6 +59,9 @@ mod packet_service;
 #[path = "../../../crates/moiren-windows-audio/src/process_loopback/bridge.rs"]
 #[allow(dead_code)]
 mod process_bridge;
+#[path = "../../../crates/moiren-windows-audio/src/process_loopback/measured.rs"]
+#[allow(dead_code)]
+mod process_measured;
 #[path = "../../../crates/moiren-windows-audio/src/process_loopback/replay.rs"]
 // Offline replay exports more public report types than this shadow uses.
 #[allow(dead_code, unused_imports)]
@@ -67,10 +72,11 @@ mod latency {
 }
 mod process_loopback {
     pub(crate) use super::process_bridge::ProcessBridgeOptions;
+    pub(crate) use super::process_measured::{MeasuredAdmissionError, MeasuredProcessDelivery};
     pub(crate) use super::process_replay::{
         ObservedProcessTrace, ProcessReplayError, ProcessTraceArchive, ProcessTraceArtifact,
         ProcessTraceCollectionRefusal, ProcessTraceCollector, ProcessTraceDocument,
-        ProcessTraceOrigin,
+        ProcessTraceOrigin, ReplayWindowPolicy, ReplayWindowStatus,
     };
     pub use moiren_windows_audio::process_loopback::*;
 }
@@ -89,7 +95,23 @@ mod windows_owner;
 // Mirror library-internal paths and private replay constructors, instead of
 // widening the production API merely to compile this separate-crate harness.
 mod engine_backend {
+    #[cfg(windows)]
+    pub(crate) use super::native_observations::NativeObservations;
     pub(crate) use super::observations;
+}
+
+// Keep the public capture error contract while shadow-compiling the actual
+// private bridge. No production visibility is widened for the test harness.
+impl From<clock_bridge::ClockBridgeError> for capture::CaptureError {
+    fn from(error: clock_bridge::ClockBridgeError) -> Self {
+        use moiren_windows_audio::clock_bridge::ClockBridgeError as Public;
+        Self::Bridge(match error {
+            clock_bridge::ClockBridgeError::InvalidConfig => Public::InvalidConfig,
+            clock_bridge::ClockBridgeError::BudgetExceeded => Public::BudgetExceeded,
+            clock_bridge::ClockBridgeError::InvalidPacket => Public::InvalidPacket,
+            clock_bridge::ClockBridgeError::InvalidOutput => Public::InvalidOutput,
+        })
+    }
 }
 
 // Mirror the library's shared native helpers without replacing the workers

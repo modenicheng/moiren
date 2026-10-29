@@ -10,6 +10,7 @@ pub(super) struct MeasuredBridgeRequest {
     source_generation: u64,
     evidence: MeasuredProcessDelivery,
     input: TransportInputPolicy,
+    evaluated_envelope: Option<ProcessBridgeOptions>,
 }
 
 impl<S: ProcessingSample> ProfessionalBackend<S> {
@@ -46,8 +47,49 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             source_generation,
             evidence,
             input,
+            evaluated_envelope: None,
         });
         Ok(self)
+    }
+
+    /// Preserve an independently replayed candidate's exact rate/demand envelope.
+    /// Native negotiation may use less demand, but cannot silently grow beyond
+    /// what the historical window assessed, even if the target could fit it.
+    pub fn with_evaluated_process_bridge(
+        self,
+        node: NodeId,
+        expected_process: &ProcessIdentity,
+        source_generation: u64,
+        evidence: MeasuredProcessDelivery,
+        options: ProcessBridgeOptions,
+    ) -> Result<Self, BackendError> {
+        let admitted = evidence
+            .admit_for_consumer(
+                expected_process,
+                source_generation,
+                options.input,
+                options.engine_sample_rate,
+                options.max_demand_frames,
+            )
+            .map_err(unsupported)?;
+        if admitted != options {
+            return Err(unsupported(
+                "evaluated Process options do not match measured admission",
+            ));
+        }
+        let mut backend = self.with_measured_process_bridge(
+            node,
+            expected_process,
+            source_generation,
+            evidence,
+            options.input,
+        )?;
+        backend
+            .measured_process_bridges
+            .last_mut()
+            .unwrap()
+            .evaluated_envelope = Some(options);
+        Ok(backend)
     }
 
     pub(super) fn validate_measured_sources(
@@ -104,6 +146,14 @@ impl<S: ProcessingSample> ProfessionalBackend<S> {
             return Err(unsupported(
                 "measured Process identity no longer matches the input node",
             ));
+        }
+        if let Some(envelope) = request.evaluated_envelope {
+            if rate != envelope.engine_sample_rate || complete_demand > envelope.max_demand_frames {
+                return Err(unsupported(
+                    "native Process demand exceeds the evaluated rate/whole-wake envelope",
+                ));
+            }
+            return Ok(envelope);
         }
         request
             .evidence

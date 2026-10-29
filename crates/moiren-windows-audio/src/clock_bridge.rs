@@ -1,15 +1,20 @@
 //! Backend-owned capture clock adaptation. The graph sees stereo f32 at its
 //! prepared Engine rate; native layout and clock correction stay here.
-use crate::latency::clock::QpcClock;
+use crate::latency::QpcClock;
 use rtrb::RingBuffer;
 use std::sync::Arc;
 use thiserror::Error;
 
+#[path = "clock_bridge/ingress.rs"]
 mod ingress;
+#[path = "clock_bridge/rate.rs"]
 mod rate;
 pub use rate::RateClock;
+#[path = "clock_bridge/source.rs"]
 mod source;
+#[path = "clock_bridge/telemetry.rs"]
 mod telemetry;
+#[path = "clock_bridge/timing.rs"]
 mod timing;
 pub use ingress::{CaptureIngress, CapturePacket};
 pub use source::ClockSource;

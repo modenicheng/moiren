@@ -231,3 +231,204 @@ fn pinned_archive_constructor_captures_current_prefix_before_the_next_control_po
     assert_eq!(collector.artifact().collection_refusal, None);
     assert!(collector.ordered_trace().is_ok());
 }
+
+#[test]
+fn pinned_final_measurement_keeps_original_whole_wake_and_late_delivery_after_registry_replacement()
+{
+    use crate::latency::{
+        InputDeliveryRecorder, events::event_history, transport::TransportInputPolicy,
+    };
+    let mut f = Fixture::new();
+    let handle = f.registry.retain_session().unwrap();
+    let mut source = handle.0.process_delivery[0].clone();
+    let (mut consumer, consumer_observer) = event_history();
+    source.consumer = Some(consumer_observer);
+    source.prepared_consumer_demand_frames = 64;
+    f.registry
+        .publish_with_process(7, vec![], vec![], vec![], vec![], vec![source]);
+    let mut collector = f
+        .registry
+        .retain_session()
+        .unwrap()
+        .process_trace_collector(f.node, &f.process, 7)
+        .unwrap();
+    let mut delivery = InputDeliveryRecorder::new(None).unwrap();
+    for n in 0..4 {
+        f.event(n);
+        let stamp = 1000 + n * 100;
+        delivery.packet(4, Some(stamp));
+        delivery.callback_burst(4);
+        f.ingress.record_native_delivery_event(4, Some(stamp));
+        f.ingress.publish_native_delivery(delivery.snapshot());
+        consumer.record(64, Some(stamp + 10));
+    }
+    assert!(
+        collector.final_measurement().is_err(),
+        "live trace is not final evidence"
+    );
+    f.registry.clear(7);
+    f.registry.publish(8, vec![], vec![], vec![]);
+    f.event(4);
+    delivery.packet(4, Some(1400));
+    delivery.callback_burst(4);
+    f.ingress.record_native_delivery_event(4, Some(1400));
+    f.ingress.publish_native_delivery(delivery.snapshot());
+    consumer.record(128, Some(1410));
+    drop(f.ingress);
+    drop(f.source);
+    drop(consumer);
+    collector.poll();
+    let measured = collector.final_measurement().unwrap();
+    let options = measured
+        .admit_for_consumer(
+            &f.process,
+            7,
+            TransportInputPolicy::Target {
+                capacity_frames: 2048,
+                target_frames: 256,
+                jitter_frames: 0,
+            },
+            48_000,
+            1,
+        )
+        .unwrap();
+    assert_eq!(
+        options.max_demand_frames, 128,
+        "late whole-wake demand survives smaller caller estimate"
+    );
+    assert_eq!(measured.owner_generation(), 7);
+    assert_eq!(f.registry.snapshot().unwrap().owner_generation, 8);
+    assert_eq!(collector.artifact().packet_history.total_events, 5);
+}
+
+#[test]
+fn pinned_final_measurement_refuses_missing_whole_wake_observer() {
+    let mut f = Fixture::new();
+    let mut collector = f
+        .registry
+        .retain_session()
+        .unwrap()
+        .process_trace_collector(f.node, &f.process, 7)
+        .unwrap();
+    f.event(0);
+    f.event(1);
+    drop(f.ingress);
+    drop(f.source);
+    collector.poll();
+    assert!(collector.ordered_trace().is_ok());
+    assert!(
+        collector.final_measurement().is_err(),
+        "queue segments must not fabricate whole-wake evidence"
+    );
+}
+
+#[test]
+fn pinned_final_measurement_replays_exact_empirical_options_with_retained_origin() {
+    use crate::{
+        latency::{
+            InputDeliveryRecorder,
+            events::event_history,
+            transport::{DeliveryTimingSource, TransportInputPolicy},
+        },
+        process_loopback::{ReplayWindowPolicy, ReplayWindowStatus},
+    };
+    let f = Fixture::new();
+    let (mut ingress, mut source, bridge) = capture_bridge(ClockBridgeConfig {
+        capacity_frames: 2048,
+        target_fill_frames: 128,
+        detect_position_gaps: false,
+        ..Default::default()
+    })
+    .unwrap();
+    let (mut consumer, observer) = event_history();
+    let mut metadata = f.registry.retain_session().unwrap().0.process_delivery[0].clone();
+    metadata.bridge = bridge;
+    metadata.consumer = Some(observer);
+    metadata.prepared_consumer_demand_frames = 96;
+    f.registry
+        .publish_with_process(7, vec![], vec![], vec![], vec![], vec![metadata]);
+    let mut collector = f
+        .registry
+        .retain_session()
+        .unwrap()
+        .process_trace_collector(f.node, &f.process, 7)
+        .unwrap();
+    let mut delivery = InputDeliveryRecorder::new(None).unwrap();
+    for n in 0..8 {
+        let stamp = 1_000_000 + n * 20_000;
+        let mut publication = stamp;
+        ingress
+            .push_packet_with_publication_clock(
+                &[],
+                crate::clock_bridge::CapturePacket {
+                    frames: 96,
+                    flags: crate::stats::SILENT,
+                    device_position_frames: 0,
+                    qpc_100ns: 0,
+                },
+                || {
+                    let now = publication;
+                    publication += 1;
+                    Some(now)
+                },
+            )
+            .unwrap();
+        delivery.packet(96, Some(stamp + 20));
+        delivery.callback_burst(96);
+        ingress.record_native_delivery_event(96, Some(stamp + 100));
+        ingress.publish_native_delivery(delivery.snapshot());
+        consumer.record(96, Some(stamp + 1000));
+        source
+            .read_interleaved_with_publication_clock(&mut [0.; 192], || Some(stamp + 1000))
+            .unwrap();
+    }
+    drop(ingress);
+    drop(source);
+    drop(consumer);
+    collector.poll();
+    let options = collector
+        .final_measurement()
+        .unwrap()
+        .admit_for_consumer(
+            &f.process,
+            7,
+            TransportInputPolicy::Target {
+                capacity_frames: 2048,
+                target_frames: 256,
+                jitter_frames: 0,
+            },
+            48_000,
+            96,
+        )
+        .unwrap();
+    let policy = ReplayWindowPolicy {
+        max_initial_unserved_frames: 4096,
+        max_initial_prime_discarded_frames: 4096,
+        min_output_frames: 192,
+        min_output_reads: 2,
+        min_output_span_100ns: 10_000,
+    };
+    let result = collector
+        .ordered_trace()
+        .unwrap()
+        .replay_window(&f.process, 7, options, policy)
+        .unwrap();
+    assert_eq!(result.report.options, options);
+    assert_eq!(options.delivery.unwrap().max_gap_frames, 97);
+    assert_eq!(
+        options.delivery.unwrap().source,
+        DeliveryTimingSource::Empirical
+    );
+    assert_eq!(
+        result.report.trace_origin,
+        ProcessTraceOrigin::RetainedNativeOwner
+    );
+    assert_eq!(
+        result.assessment.status,
+        ReplayWindowStatus::NoViolationInWindow
+    );
+    assert!(
+        !result.report.qualified,
+        "observation-owner provenance is not hardware qualification"
+    );
+}

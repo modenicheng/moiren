@@ -191,6 +191,20 @@ impl MeasuredProcessDelivery {
         &self.process
     }
 
+    /// Closed retained traces also bound publication with two clock reads.
+    /// Widen the measured reserve to their outer envelope, never replace the
+    /// independently measured whole-drain or whole-wake maxima with segments.
+    #[cfg(any(windows, test))]
+    pub(crate) fn with_publication_gap_100ns(
+        mut self,
+        gap: u64,
+    ) -> Result<Self, MeasuredAdmissionError> {
+        self.max_gap_frames = self
+            .max_gap_frames
+            .max(frames_for_gap(gap, self.input_sample_rate)?);
+        Ok(self)
+    }
+
     pub fn owner_generation(&self) -> u64 {
         self.owner_generation
     }
@@ -419,4 +433,5 @@ fn phase_report(
 }
 
 #[cfg(test)]
+#[path = "measured/tests.rs"]
 mod tests;

@@ -1,6 +1,6 @@
 //! Continuous linear interpolation and a bounded fill servo on the render owner.
 use super::{ClockBridgeConfig, ClockBridgeError, Frame, telemetry::Counters};
-use crate::latency::clock::QpcClock;
+use crate::latency::QpcClock;
 use crate::latency::queue::{QueueBoundary, QueueHistoryWriter, QueueReadSample};
 use moiren_engine::{
     boundary::{BoundaryReport, RtAudioSource},

@@ -130,3 +130,36 @@ fn measured_backend_refuses_stale_generation_and_removed_or_replaced_sources() {
     };
     assert!(backend.validate_measured_sources(&project).is_err());
 }
+
+#[test]
+fn evaluated_backend_refuses_growth_beyond_the_exact_replayed_rate_and_whole_wake() {
+    let mut graph = moiren_core::graph::LogicalGraph::new();
+    let node = graph
+        .create_node(moiren_core::graph::NodeKind::Source, 2)
+        .unwrap();
+    let (process, measured) = evidence();
+    let options = measured
+        .admit_for_consumer(&process, 7, target(), 48_000, 96)
+        .unwrap();
+    let backend = ProfessionalBackend::<f32>::new()
+        .unwrap()
+        .with_evaluated_process_bridge(node, &process, 7, measured, options)
+        .unwrap();
+    assert_eq!(
+        backend
+            .process_bridge_for(node, (42, 123), 48_000, 96)
+            .unwrap(),
+        options
+    );
+    assert!(
+        backend
+            .process_bridge_for(node, (42, 123), 48_000, 128)
+            .is_err(),
+        "target could fit128 but that demand was not replayed"
+    );
+    assert!(
+        backend
+            .process_bridge_for(node, (42, 123), 96_000, 96)
+            .is_err()
+    );
+}

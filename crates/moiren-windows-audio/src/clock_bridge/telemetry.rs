@@ -1,7 +1,9 @@
 //! Approximate counters plus independently coherent optional delivery/age DTOs.
 //! The complete snapshot is not a cross-owner audio/metadata transaction.
+#[path = "telemetry/live.rs"]
 mod live;
 #[cfg(test)]
+#[path = "telemetry/tests.rs"]
 mod tests;
 use super::QueuedFrameAge;
 use crate::latency::InputDeliverySnapshot;
