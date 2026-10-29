@@ -3,6 +3,8 @@
 //! starts, so a rejected file fails before audio begins.
 
 use anyhow::{Context, bail, ensure};
+// Only the Windows-gated loader takes a path; the parser tests do not.
+#[cfg(windows)]
 use std::path::Path;
 
 pub(super) const MATERIAL_SAMPLE_RATE: u32 = 48_000;
