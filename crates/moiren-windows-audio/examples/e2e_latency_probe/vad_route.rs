@@ -108,6 +108,43 @@ pub(super) fn minimal_project(
     Ok(project)
 }
 
+#[cfg(any(windows, test))]
+pub(super) fn apply_physical_render_request(
+    project: &mut EngineProject,
+    request: super::render_request::PhysicalRenderRequest,
+) -> Result<Option<moiren_core::graph::NodeId>> {
+    let mut physical = project
+        .nodes
+        .iter()
+        .filter_map(|(node, config)| match config {
+            NodeConfig::Output(output) if matches!(output.target, OutputTarget::Physical(_)) => {
+                Some(*node)
+            }
+            _ => None,
+        });
+    let output = physical.next();
+    ensure!(
+        physical.next().is_none(),
+        "VAD route has ambiguous physical outputs"
+    );
+    let Some(node) = output else {
+        ensure!(
+            request.mode.is_none() && request.period_frames.is_none(),
+            "physical render request cannot apply to virtual microphone output"
+        );
+        return Ok(None);
+    };
+    let NodeConfig::Output(output) = project.nodes.get_mut(&node).expect("selected output") else {
+        unreachable!("selected physical output");
+    };
+    ensure!(
+        output.device.clock_role == ClockRole::Master,
+        "VAD physical output must remain the Master clock"
+    );
+    output.device = request.apply(output.device);
+    Ok(Some(node))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +158,82 @@ mod tests {
 
     const PLAYBACK: &str = "0123456789abcdef0123456789abcdef";
     const MICROPHONE: &str = "fedcba9876543210fedcba9876543210";
+
+    #[test]
+    fn physical_render_project_applies_only_to_physical_master_and_keeps_defaults() {
+        use super::super::render_request::PhysicalRenderRequest;
+        use moiren_engine::{audio_config::SampleFormat, node::DeviceMode};
+        let target = OutputTarget::Physical(EndpointSelector::PinnedEndpoint {
+            endpoint_id: "selected render".into(),
+            stable_id: Some("selected stable".into()),
+        });
+        for mode in [DeviceMode::Shared, DeviceMode::Exclusive] {
+            let mut project = minimal_project(PLAYBACK.parse().unwrap(), target.clone()).unwrap();
+            let original = project.nodes.clone();
+            let expected = apply_physical_render_request(
+                &mut project,
+                PhysicalRenderRequest {
+                    mode: Some(mode),
+                    period_frames: Some(128),
+                },
+            )
+            .unwrap()
+            .unwrap();
+            for (node, config) in &project.nodes {
+                if *node == expected {
+                    let NodeConfig::Output(output) = config else {
+                        panic!("physical sink missing")
+                    };
+                    assert_eq!(output.target, target);
+                    assert_eq!(output.device.mode, mode);
+                    assert_eq!(output.device.period_frames, Some(128));
+                    assert_eq!(output.device.clock_role, ClockRole::Master);
+                    assert_eq!(output.device.sample_format, SampleFormat::Native);
+                    assert!(output.device.hardware_sample_rate.is_none());
+                } else {
+                    assert_eq!(config, &original[node]);
+                }
+            }
+            let mut omitted = minimal_project(PLAYBACK.parse().unwrap(), target.clone()).unwrap();
+            let before = omitted.nodes.clone();
+            assert!(
+                apply_physical_render_request(&mut omitted, PhysicalRenderRequest::default())
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(omitted.nodes, before);
+        }
+    }
+
+    #[test]
+    fn physical_render_project_leaves_virtual_route_unchanged_and_refuses_explicit_intent() {
+        use super::super::render_request::PhysicalRenderRequest;
+        let mut project = minimal_project(
+            PLAYBACK.parse().unwrap(),
+            OutputTarget::VirtualMicrophone {
+                endpoint_id: MICROPHONE.parse().unwrap(),
+            },
+        )
+        .unwrap();
+        let original = project.nodes.clone();
+        assert!(
+            apply_physical_render_request(&mut project, PhysicalRenderRequest::default())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(project.nodes, original);
+        assert!(
+            apply_physical_render_request(
+                &mut project,
+                PhysicalRenderRequest {
+                    period_frames: Some(128),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(project.nodes, original);
+    }
 
     #[test]
     fn route_kind_defaults_physical_and_uses_exact_snake_case_json() {

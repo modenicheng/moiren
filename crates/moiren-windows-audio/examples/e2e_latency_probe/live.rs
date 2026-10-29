@@ -37,6 +37,10 @@ mod source;
 #[path = "vad_route.rs"]
 mod vad_route;
 
+#[path = "render_request.rs"]
+mod render_request;
+use render_request::PhysicalRenderRequest;
+
 #[cfg(any(windows, test))]
 #[path = "process_trace.rs"]
 mod process_trace;
@@ -111,6 +115,7 @@ struct LiveOptions {
     output_endpoint: String,
     output_endpoint_explicit: bool,
     physical_render_options_explicit: bool,
+    physical_render_request: PhysicalRenderRequest,
     input_budget_options_explicit: bool,
     artifact_dir: PathBuf,
     report_path: Option<PathBuf>,
@@ -163,6 +168,7 @@ impl Default for LiveOptions {
             output_endpoint: String::new(),
             output_endpoint_explicit: false,
             physical_render_options_explicit: false,
+            physical_render_request: PhysicalRenderRequest::default(),
             input_budget_options_explicit: false,
             artifact_dir: PathBuf::new(),
             report_path: None,
@@ -277,6 +283,8 @@ struct LiveRunManifest {
     virtual_buffer: Option<VirtualBufferOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     render_queue: Option<RenderQueuePolicy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    physical_render_request: Option<PhysicalRenderRequest>,
     artifacts: ArtifactPaths,
     gaps: Vec<String>,
 }
@@ -291,6 +299,8 @@ struct LiveRunReport {
     qualified: bool,
     source: SourceReport,
     output_endpoint_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    physical_render_request: Option<PhysicalRenderRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vad_route: Option<Value>,
     measurement_boundary: EvidenceBoundary,
@@ -405,6 +415,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
              This limits virtual-clock catch-up only, not physical whole-wake demand or measured latency; smaller caps may discard more overdue periods.\n\
              --vad-minimum-period requests the queried exclusive VAD minimum; omitted preserves the default request.\n\
              Period requests are unqualified; actual buffer and provider packet observations remain separate.\n\
+             --render-mode shared|exclusive --render-period-frames 64|128|256|512|1024|2048|4096\n\
+             selects physical output only in both probe paths; omission preserves existing defaults.\n\
+             Explicit periods refuse unknown/mismatched observations or Shared fallback; Exclusive requires capacity rendering.\n\
              Explicit input capacity/jitter/packet/gap flags require --input-target-frames; omission preserves compatibility.\n\
              --validation-mode latency-sensitive|correctness [--jitter-tolerance-ms 0..3000]\n\
              Correctness retains jitter/underruns without early quality abort; never latency qualification.\n\
@@ -689,6 +702,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             vad_minimum_period: options.vad_minimum_period.then_some(true),
         },
         output_endpoint_id: options.output_label(),
+        physical_render_request: (options.vad_route_kind() == vad_route::RouteKind::Physical)
+            .then_some(options.physical_render_request),
         vad_route: options.route_intent(),
         measurement_boundary: options.measurement_boundary,
         requested_seconds: options.seconds,
@@ -731,6 +746,8 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
             .transpose()?,
         render_queue: (options.vad_route_kind() == vad_route::RouteKind::Physical)
             .then_some(render_queue),
+        physical_render_request: (options.vad_route_kind() == vad_route::RouteKind::Physical)
+            .then_some(options.physical_render_request),
         artifacts: artifact_paths(&paths, &options),
         gaps,
     };
@@ -842,6 +859,8 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
             | "--max-gap-frames"
             | "--vad-recovery-cap-periods"
             | "--render-target-frames"
+            | "--render-mode"
+            | "--render-period-frames"
             | "--wake-margin-frames"
             | "--callback-budget-frames"
             | "--engine-block-frames"
@@ -998,6 +1017,27 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
                     Some(value.parse().context("invalid render target")?)
                 }
             }
+            "--render-mode" => {
+                ensure!(
+                    options.physical_render_request.mode.is_none(),
+                    "duplicate --render-mode"
+                );
+                options.physical_render_options_explicit = true;
+                options.physical_render_request.mode = Some(match value.as_str() {
+                    "shared" => moiren_engine::node::DeviceMode::Shared,
+                    "exclusive" => moiren_engine::node::DeviceMode::Exclusive,
+                    _ => bail!("--render-mode must be shared or exclusive"),
+                });
+            }
+            "--render-period-frames" => {
+                ensure!(
+                    options.physical_render_request.period_frames.is_none(),
+                    "duplicate --render-period-frames"
+                );
+                options.physical_render_options_explicit = true;
+                options.physical_render_request.period_frames =
+                    Some(value.parse().context("invalid physical render period")?);
+            }
             "--wake-margin-frames" => {
                 options.physical_render_options_explicit = true;
                 options.wake_margin_frames = value.parse().context("invalid wake margin")?
@@ -1032,6 +1072,9 @@ fn parse(arguments: Vec<String>) -> Result<LiveOptions> {
 
 fn validate(options: &LiveOptions) -> Result<()> {
     options.validation.validate()?;
+    options
+        .physical_render_request
+        .validate(render_queue(options)?)?;
     ensure!(
         !options.input_budget_options_explicit || options.input_target_frames.is_some(),
         "explicit input capacity/jitter/packet/gap options require --input-target-frames"
@@ -2108,6 +2151,136 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn physical_render_args(directory: &Path, source: &str) -> Vec<String> {
+        let mut args = source_test_args(directory);
+        if source == "process-loopback" {
+            let index = args
+                .iter()
+                .position(|flag| flag == "--source-kind")
+                .unwrap();
+            args[index + 1] = source.into();
+            args.extend(["--source-pid".into(), "42".into()]);
+            let index = args
+                .iter()
+                .position(|flag| flag == "--stable-endpoint-id")
+                .unwrap();
+            args.drain(index..index + 4);
+        }
+        args
+    }
+
+    #[test]
+    fn physical_render_parser_accepts_common_mode_period_for_both_sources() {
+        let directory = temp_dir("physical-render-parser");
+        for source in ["process-loopback", "vad-playback"] {
+            for mode in ["shared", "exclusive"] {
+                for period in ["64", "128", "256", "512", "1024", "2048", "4096"] {
+                    let mut args = physical_render_args(&directory, source);
+                    args.extend(
+                        ["--render-mode", mode, "--render-period-frames", period]
+                            .map(str::to_owned),
+                    );
+                    let options = parse(args).expect("common physical render request must parse");
+                    validate(&options).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn physical_render_rejects_invalid_duplicate_and_conflicting_requests_before_artifacts() {
+        let directory = temp_dir("physical-render-invalid");
+        for extra in [
+            vec!["--render-mode", "Shared"],
+            vec!["--render-mode", ""],
+            vec!["--render-mode", "shared", "--render-mode", "exclusive"],
+            vec![
+                "--render-period-frames",
+                "128",
+                "--render-period-frames",
+                "256",
+            ],
+            vec!["--render-period-frames", "0"],
+            vec!["--render-period-frames", "48"],
+            vec!["--render-period-frames", "480"],
+            vec!["--render-period-frames", "8192"],
+            vec!["--render-period-frames", "-64"],
+            vec!["--render-period-frames", "4294967296"],
+            vec![
+                "--render-mode",
+                "exclusive",
+                "--render-target-frames",
+                "256",
+            ],
+        ] {
+            let mut args = physical_render_args(&directory, "process-loopback");
+            args.extend(extra.into_iter().map(str::to_owned));
+            assert!(run(args).is_err());
+            assert!(
+                !directory.exists(),
+                "invalid native request created artifacts"
+            );
+        }
+    }
+
+    #[test]
+    fn physical_render_controls_are_not_accepted_by_the_microphone_route() {
+        let directory = temp_dir("physical-render-microphone");
+        for extra in [
+            vec!["--render-mode", "shared"],
+            vec!["--render-period-frames", "128"],
+        ] {
+            let mut args = microphone_route_args(&directory);
+            args.extend(extra.into_iter().map(str::to_owned));
+            assert!(run(args).is_err());
+            assert!(!directory.exists());
+        }
+    }
+
+    #[test]
+    fn physical_render_request_is_retained_separately_from_native_observations() {
+        for (case, extra, mode, period) in [
+            ("default", vec![], Value::Null, Value::Null),
+            (
+                "mode-only",
+                vec!["--render-mode", "exclusive"],
+                Value::from("exclusive"),
+                Value::Null,
+            ),
+            (
+                "period-only",
+                vec!["--render-period-frames", "128"],
+                Value::Null,
+                Value::from(128),
+            ),
+            (
+                "explicit",
+                vec![
+                    "--render-mode",
+                    "exclusive",
+                    "--render-period-frames",
+                    "128",
+                ],
+                Value::from("exclusive"),
+                Value::from(128),
+            ),
+        ] {
+            let directory = temp_dir(&format!("physical-render-report-{case}"));
+            let mut args = physical_render_args(&directory, "process-loopback");
+            args.extend(extra.into_iter().map(str::to_owned));
+            assert_eq!(run(args).unwrap(), 1);
+            for name in ["report.json", "manifest.json"] {
+                let value: Value =
+                    serde_json::from_slice(&fs::read(directory.join(name)).unwrap()).unwrap();
+                assert!(value["physical_render_request"].is_object());
+                assert_eq!(value["physical_render_request"]["mode"], mode);
+                assert_eq!(value["physical_render_request"]["period_frames"], period);
+                assert!(value["native"]["render"].is_null());
+            }
+            let _ = fs::remove_dir_all(directory);
+        }
+    }
+
     fn microphone_route_args(directory: &Path) -> Vec<String> {
         [
             "--source-kind",
@@ -2311,6 +2484,8 @@ mod tests {
         let manifest: Value =
             serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap()).unwrap();
         assert!(manifest.get("render_queue").is_none());
+        assert!(manifest.get("physical_render_request").is_none());
+        assert!(report.get("physical_render_request").is_none());
         assert!(!directory.join("measurement.f32le").exists());
         assert_eq!(
             fs::read(directory.join("collection-config.json")).unwrap(),

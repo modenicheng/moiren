@@ -288,12 +288,7 @@ pub fn run(
     let stop = StopSignal::new().context("create shared stop signal")?;
     let gate = ActivationGate::new(stop.clone()).context("create activation gate")?;
     let render = match prepare_render_native_with_gate_returning_with_abort(
-        RenderOptions {
-            queue,
-            endpoint_id: options.output_endpoint.clone(),
-            latency_telemetry: options.telemetry,
-            duration,
-        },
+        RenderOptions::from_live(options, queue, duration),
         stop.clone(),
         gate.clone(),
         || (),
@@ -493,7 +488,7 @@ pub fn run(
                             "capture_finished": capture_session.is_finished(),
                             "render_finished": render_session.is_finished(),
                             "bridge": bridge_observer.snapshot(),
-                            "render_padding": soak::process_padding_observation(&padding),
+                            "render_padding": padding.as_ref().map(soak::process_padding_observation),
                             "timeline": timeline.try_snapshot().map(|value| serde_json::json!({
                                 "frame": value.frame, "epoch": value.epoch, "revision": value.revision,
                             })),
@@ -916,7 +911,7 @@ impl VadCleanup<'_> {
         if let Some(engine) = &engine {
             let mut value = engine_snapshot_value(engine);
             value["observations"] = serde_json::json!(native);
-            self.report.engine = Some(value);
+            replace_engine_observation(&mut self.report.engine, value);
         }
         if self.startup_samples.len() < STARTUP_SAMPLE_LIMIT {
             self.startup_samples.push(serde_json::json!({
@@ -1027,6 +1022,10 @@ impl VadCleanup<'_> {
         } else {
             minimal_vad_project(self.endpoint_id, output)?
         };
+        let physical_output = vad_route::apply_physical_render_request(
+            &mut project,
+            options.physical_render_request,
+        )?;
         project.processing.engine.max_block_frames = options.engine_block_frames as usize;
         let backend = ProfessionalBackend::<f32>::new()
             .context("prepare Professional backend")?
@@ -1043,6 +1042,16 @@ impl VadCleanup<'_> {
         let observer = self.observer.as_ref().expect("prepared host observer");
         wait_engine_running(observer)?;
         let active = observer.snapshot();
+        if let Some(expected_node) = physical_output {
+            let native = self.observations.as_ref().and_then(|view| view.snapshot());
+            retain_and_validate_physical_render(
+                options.physical_render_request,
+                expected_node,
+                &active,
+                native.as_ref(),
+                &mut self.report.engine,
+            )?;
+        }
         let revision = active
             .active_revision
             .context("VAD EngineHost has no active revision")?;
@@ -1263,7 +1272,7 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
                 "timestamp_scope": control_observation::SCOPE,
                 "samples": self.startup_samples,
             });
-            self.report.engine = Some(engine);
+            replace_engine_observation(&mut self.report.engine, engine);
         }
         let exports = self.provider.export_observations();
         each_owned_export(&self.owned_exports, |id| {
@@ -1365,6 +1374,75 @@ impl soak_cleanup::Cleanup for VadCleanup<'_> {
             Ok(())
         })
     }
+}
+
+fn replace_engine_observation(evidence: &mut Option<Value>, mut observation: Value) {
+    // Admission belongs to the pre-gate decision, not the latest poll or
+    // teardown generation. Keep it separate while existing live fields advance.
+    if let Some(previous) = evidence.as_ref() {
+        for key in ["physical_render_request", "physical_render_admission"] {
+            if let Some(retained) = previous.get(key) {
+                observation[key] = retained.clone();
+            }
+        }
+    }
+    *evidence = Some(observation);
+}
+
+fn retain_and_validate_physical_render(
+    request: render_request::PhysicalRenderRequest,
+    expected_node: moiren_core::graph::NodeId,
+    active: &moiren_engine::host::HostSnapshot,
+    native: Option<&moiren_windows_audio::engine_backend::NativeObservationSnapshot>,
+    evidence: &mut Option<Value>,
+) -> Result<()> {
+    use moiren_windows_audio::engine_backend::NativeStreamKind;
+    let mut retained = engine_snapshot_value(active);
+    retained["observations"] = serde_json::json!(native);
+    retained["physical_render_request"] = serde_json::to_value(request)?;
+    let mut admission = retained.clone();
+    admission["expected_output_node"] = format!("{expected_node:?}").into();
+    admission["scope"] = "pre_gate_physical_render_validation".into();
+    let validation = (|| -> Result<()> {
+        let native =
+            native.context("VAD physical render observations unavailable before gate admission")?;
+        ensure!(
+            native.running
+                && native.owner_generation == active.owner_generation
+                && active.execution == ExecutionState::Running
+                && active.active_revision.is_some()
+                && active.fault.is_none()
+                && active.cleanup_error.is_none(),
+            "VAD physical render observations do not belong to the current Running owner"
+        );
+        let mut physical = native.streams.iter().filter(|stream| {
+            matches!(
+                stream.kind,
+                NativeStreamKind::MasterOutput | NativeStreamKind::FollowerOutput
+            )
+        });
+        let output = physical
+            .next()
+            .context("VAD physical render observation missing")?;
+        ensure!(
+            physical.next().is_none()
+                && output.node == expected_node
+                && output.kind == NativeStreamKind::MasterOutput,
+            "VAD physical render observation is ambiguous or not the selected MasterOutput node"
+        );
+        request.validate_observed(
+            output
+                .timing
+                .context("VAD physical render timing unavailable")?,
+            output.shared_period,
+        )
+    })();
+    admission["validation_accepted"] = validation.is_ok().into();
+    admission["failure"] =
+        serde_json::json!(validation.as_ref().err().map(|error| format!("{error:#}")));
+    retained["physical_render_admission"] = admission;
+    *evidence = Some(retained);
+    validation
 }
 
 fn final_backend_evidence(
@@ -1760,6 +1838,281 @@ mod tests {
         VadExportObservation, VadPcmTelemetrySnapshot,
     };
     use std::cell::{Cell, RefCell};
+
+    fn physical_admission_fixture() -> (
+        moiren_core::graph::NodeId,
+        moiren_engine::host::HostSnapshot,
+        moiren_windows_audio::engine_backend::NativeObservationSnapshot,
+    ) {
+        use moiren_windows_audio::engine_backend::{
+            NativeObservationSnapshot, NativeStreamKind, NativeStreamObservation,
+        };
+        use moiren_windows_audio::latency::{
+            NativeStreamTiming,
+            shared_period::{SharedInitializationApi, SharedPeriodReport},
+        };
+        let project = minimal_vad_project(
+            VirtualEndpointId::from_bytes([1; 16]),
+            EndpointSelector::PinnedEndpoint {
+                endpoint_id: "physical target".into(),
+                stable_id: None,
+            },
+        )
+        .unwrap();
+        let expected = project
+            .nodes
+            .iter()
+            .find_map(|(node, config)| matches!(config, NodeConfig::Output(_)).then_some(*node))
+            .unwrap();
+        let active = moiren_engine::host::HostSnapshot {
+            host: moiren_engine::host::HostState::Open,
+            execution: ExecutionState::Running,
+            desired_revision: 1,
+            active_revision: Some(1),
+            plan_revision: Some(1),
+            owner_generation: 7,
+            resource_generation: 1,
+            timeline: Some(moiren_engine::host::OwnerTimeline {
+                epoch: 1,
+                revision: 1,
+                frame: 64,
+            }),
+            update: moiren_engine::host::UpdateState::Idle,
+            fault: None,
+            cleanup_error: None,
+        };
+        let native = NativeObservationSnapshot {
+            owner_generation: 7,
+            running: true,
+            process_delivery: Vec::new(),
+            bridges: Vec::new(),
+            boundary_probes: Vec::new(),
+            render_padding: Vec::new(),
+            streams: vec![NativeStreamObservation {
+                node: expected,
+                kind: NativeStreamKind::MasterOutput,
+                timing: Some(NativeStreamTiming {
+                    sample_rate: 48_000,
+                    period_frames: Some(128),
+                    capacity_frames: 512,
+                }),
+                shared_period: Some(SharedPeriodReport {
+                    requested_period_frames: Some(128),
+                    actual_period_frames: Some(128),
+                    initialization_api: Some(SharedInitializationApi::Client3),
+                    ..Default::default()
+                }),
+                render_queue: None,
+                input_queue: None,
+                virtual_budget: None,
+            }],
+        };
+        (expected, active, native)
+    }
+
+    #[test]
+    fn physical_render_vad_admission_refuses_missing_ambiguous_wrong_or_stale_observations() {
+        use moiren_windows_audio::engine_backend::NativeStreamKind;
+        let request = render_request::PhysicalRenderRequest {
+            period_frames: Some(128),
+            ..Default::default()
+        };
+        for case in 0..8 {
+            let (expected, active, mut native) = physical_admission_fixture();
+            match case {
+                0 => native.streams.clear(),
+                1 => native.streams.push(native.streams[0].clone()),
+                2 => native.streams[0].kind = NativeStreamKind::FollowerOutput,
+                3 => {
+                    let other = minimal_vad_project(
+                        VirtualEndpointId::from_bytes([2; 16]),
+                        EndpointSelector::FollowDefault(
+                            moiren_engine::node::DefaultDeviceRole::Console,
+                        ),
+                    )
+                    .unwrap();
+                    native.streams[0].node = other
+                        .graph
+                        .nodes()
+                        .iter()
+                        .find(|node| matches!(other.nodes[&node.id()], NodeConfig::Input(_)))
+                        .unwrap()
+                        .id();
+                }
+                4 => native.owner_generation += 1,
+                5 => native.running = false,
+                6 => native.streams[0].timing = None,
+                _ => native.streams[0].shared_period = None,
+            }
+            let mut retained = None;
+            assert!(
+                retain_and_validate_physical_render(
+                    request,
+                    expected,
+                    &active,
+                    Some(&native),
+                    &mut retained
+                )
+                .is_err(),
+                "case {case}"
+            );
+            let retained = retained.unwrap();
+            assert_eq!(
+                retained["observations"]["owner_generation"],
+                native.owner_generation
+            );
+            assert_eq!(retained["physical_render_request"]["period_frames"], 128);
+            assert_eq!(
+                retained["physical_render_admission"]["validation_accepted"],
+                false
+            );
+            assert!(retained["physical_render_admission"]["failure"].is_string());
+        }
+        let (expected, active, _) = physical_admission_fixture();
+        let mut retained = None;
+        assert!(
+            retain_and_validate_physical_render(request, expected, &active, None, &mut retained)
+                .is_err()
+        );
+        let retained = retained.unwrap();
+        assert!(retained["observations"].is_null());
+        assert_eq!(
+            retained["physical_render_admission"]["validation_accepted"],
+            false
+        );
+        assert!(
+            retained["physical_render_admission"]["failure"]
+                .as_str()
+                .unwrap()
+                .contains("unavailable")
+        );
+    }
+
+    #[test]
+    fn physical_render_vad_admission_retains_exact_observation_before_fallback_refusal() {
+        use moiren_windows_audio::latency::shared_period::SharedFallbackReason;
+        let (expected, active, mut native) = physical_admission_fixture();
+        let request = render_request::PhysicalRenderRequest {
+            period_frames: Some(128),
+            ..Default::default()
+        };
+        let mut retained = None;
+        retain_and_validate_physical_render(
+            request,
+            expected,
+            &active,
+            Some(&native),
+            &mut retained,
+        )
+        .unwrap();
+        native.streams[0]
+            .shared_period
+            .as_mut()
+            .unwrap()
+            .fallback_reason = Some(SharedFallbackReason::WindowsFormatConversion);
+        assert!(
+            retain_and_validate_physical_render(
+                request,
+                expected,
+                &active,
+                Some(&native),
+                &mut retained
+            )
+            .is_err()
+        );
+        assert_eq!(
+            retained.unwrap()["observations"]["streams"][0]["shared_period"]["fallback_reason"],
+            "windows_format_conversion"
+        );
+    }
+
+    fn assert_physical_render_admission_survives_live_and_cleanup(refused: bool) {
+        use moiren_windows_audio::latency::shared_period::SharedFallbackReason;
+        let (expected, active, mut native) = physical_admission_fixture();
+        let request = render_request::PhysicalRenderRequest {
+            period_frames: Some(128),
+            ..Default::default()
+        };
+        if refused {
+            native.streams[0]
+                .shared_period
+                .as_mut()
+                .unwrap()
+                .fallback_reason = Some(SharedFallbackReason::WindowsFormatConversion);
+        }
+        let mut evidence = None;
+        let result = retain_and_validate_physical_render(
+            request,
+            expected,
+            &active,
+            Some(&native),
+            &mut evidence,
+        );
+        assert_eq!(result.is_err(), refused);
+        let before_gate = evidence.as_ref().unwrap().clone();
+        // Model the actual current_health then observe_final replacements:
+        // their observations must advance, but cannot relabel admission proof.
+        for stage in ["live", "cleanup", "unavailable"] {
+            let mut later = engine_snapshot_value(&active);
+            later["owner_generation"] = 99.into();
+            later["observations"] = serde_json::json!({
+                "owner_generation": 99, "running": false, "streams": [],
+            });
+            if stage == "unavailable" {
+                later["observations"] = Value::Null;
+            }
+            later["stage"] = stage.into();
+            if stage == "cleanup" {
+                later["startup_trace"] = serde_json::json!({"samples": []});
+            }
+            replace_engine_observation(&mut evidence, later.clone());
+            let retained = evidence.as_ref().unwrap();
+            assert_eq!(retained["observations"], later["observations"]);
+            assert_eq!(retained["stage"], stage);
+            assert_eq!(
+                retained["physical_render_request"],
+                before_gate["physical_render_request"]
+            );
+            let admission = &retained["physical_render_admission"];
+            assert_eq!(admission["observations"], before_gate["observations"]);
+            assert_eq!(admission["owner_generation"], active.owner_generation);
+            assert_eq!(
+                admission["physical_render_request"],
+                before_gate["physical_render_request"]
+            );
+            assert_eq!(admission["expected_output_node"], format!("{expected:?}"));
+            assert_eq!(admission["scope"], "pre_gate_physical_render_validation");
+            assert_eq!(admission["validation_accepted"], !refused);
+            if refused {
+                assert!(admission["failure"].as_str().unwrap().contains("fallback"));
+            } else {
+                assert!(admission["failure"].is_null());
+            }
+            assert_eq!(admission, &before_gate["physical_render_admission"]);
+            assert!(admission.get("physical_render_admission").is_none());
+            if stage == "cleanup" {
+                assert_eq!(retained["startup_trace"], later["startup_trace"]);
+            }
+        }
+    }
+
+    #[test]
+    fn physical_render_admission_success_survives_live_and_cleanup_engine_replacement() {
+        assert_physical_render_admission_survives_live_and_cleanup(false);
+    }
+
+    #[test]
+    fn physical_render_admission_refusal_survives_live_and_cleanup_engine_replacement() {
+        assert_physical_render_admission_survives_live_and_cleanup(true);
+    }
+
+    #[test]
+    fn engine_replacement_without_physical_admission_keeps_existing_schema() {
+        let mut evidence = Some(serde_json::json!({"observations": {"old": true}}));
+        let current = serde_json::json!({"observations": {"current": true}});
+        replace_engine_observation(&mut evidence, current.clone());
+        assert_eq!(evidence, Some(current));
+    }
 
     fn endpoint_view(intent: Intent, state: StreamState) -> VadExportObservation {
         endpoint_view_at(intent, state, true, 17, 19)

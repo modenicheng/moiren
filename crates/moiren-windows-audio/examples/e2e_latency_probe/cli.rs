@@ -48,6 +48,10 @@ VAD cap limits virtual-clock catch-up, not physical whole-wake demand or measure
     [--vad-minimum-period] (live-vad only; omitted preserves the default exclusive period request)
 Period requests are unqualified; actual native buffer frames and provider packet observations remain separate.
     [--render-target-frames N --wake-margin-frames N --callback-budget-frames N]
+    [--render-mode shared|exclusive --render-period-frames 64|128|256|512|1024|2048|4096]
+Physical render request is common to Process/VAD physical output, not the external VAD source or virtual microphone.
+Omission preserves existing Shared/default-period behavior. Explicit period must be observed exactly without Shared fallback;
+Exclusive requires full-capacity rendering. Requests, observed period/capacity and measured delay are separate evidence.
     [--validation-mode latency-sensitive|correctness --jitter-tolerance-ms 0..3000]
 Correctness requires --vad-collection or owned --process-collection; timing faults are retained without early abort.
 Correctness exit 0 means operational collection and cleanup completed; quality_passed and qualified stay separate.

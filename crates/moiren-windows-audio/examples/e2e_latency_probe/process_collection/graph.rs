@@ -116,12 +116,7 @@ impl Graph {
         // Prepare while gated, then budget the entire empty-padding wake.
         // Rendering that wake in Engine-sized segments cannot reduce reserve.
         let render = match prepare_render_native_with_gate_returning_with_abort(
-            RenderOptions {
-                queue,
-                endpoint_id: options.output_endpoint.clone(),
-                latency_telemetry: options.telemetry,
-                duration: SessionDuration::UntilStopped,
-            },
+            RenderOptions::from_live(options, queue, SessionDuration::UntilStopped),
             self.stop.clone(),
             self.gate.clone(),
             &mut stop_peers,

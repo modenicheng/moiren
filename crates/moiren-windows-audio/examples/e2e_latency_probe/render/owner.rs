@@ -1,4 +1,5 @@
 use super::renderer::DemandRenderer;
+use crate::live::render_request::PhysicalRenderRequest;
 use anyhow::{Context, Result, anyhow, ensure};
 use moiren_engine::{
     audio_config::SampleFormat,
@@ -40,6 +41,31 @@ pub(in crate::live) struct RenderOptions {
     pub latency_telemetry: TelemetryMode,
     pub endpoint_id: String,
     pub duration: SessionDuration,
+    pub physical_render_request: PhysicalRenderRequest,
+}
+
+impl RenderOptions {
+    pub(in crate::live) fn from_live(
+        options: &crate::live::LiveOptions,
+        queue: RenderQueuePolicy,
+        duration: SessionDuration,
+    ) -> Self {
+        Self {
+            queue,
+            latency_telemetry: options.telemetry,
+            endpoint_id: options.output_endpoint.clone(),
+            duration,
+            physical_render_request: options.physical_render_request,
+        }
+    }
+
+    fn device_options(&self) -> DeviceOptions {
+        self.physical_render_request.apply(DeviceOptions {
+            mode: DeviceMode::Shared,
+            sample_format: SampleFormat::Float32,
+            ..DeviceOptions::default()
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -82,6 +108,7 @@ pub(in crate::live) struct RenderReport {
     channels: Option<usize>,
     timing: Option<NativeStreamTiming>,
     shared_period: Option<SharedPeriodReport>,
+    physical_render_request: PhysicalRenderRequest,
     requested_queue: RenderQueuePolicy,
     queue: Option<PreparedRenderQueue>,
     stream_started: bool,
@@ -163,7 +190,7 @@ pub(in crate::live) struct PreparedNativeRender {
     session: Option<RenderSession>,
     renderer: Option<SyncSender<DemandRenderer>>,
     info: NativeRenderInfo,
-    padding: RenderPaddingObserver,
+    padding: Option<RenderPaddingObserver>,
     queue: RenderQueuePolicy,
 }
 pub(in crate::live) struct RenderOwnerExit {
@@ -257,6 +284,7 @@ pub(in crate::live) fn prepare_render_native_with_gate_returning_with_abort<A>(
             "render requires an explicit endpoint"
         );
         options.queue.validate()?;
+        options.physical_render_request.validate(options.queue)?;
         ensure!(
             options.duration.validate().is_ok(),
             "invalid render duration"
@@ -318,7 +346,7 @@ impl PreparedNativeRender {
     pub(in crate::live) fn info(&self) -> NativeRenderInfo {
         self.info
     }
-    pub(in crate::live) fn padding_observer(&self) -> RenderPaddingObserver {
+    pub(in crate::live) fn padding_observer(&self) -> Option<RenderPaddingObserver> {
         self.padding.clone()
     }
     pub(in crate::live) fn attach_returning_with_abort<A>(
@@ -405,6 +433,7 @@ impl PreparedNativeRender {
             channels: Some(2),
             timing: Some(info.timing),
             shared_period: None,
+            physical_render_request: PhysicalRenderRequest::default(),
             requested_queue,
             queue: Some(info.queue),
             stream_started: false,
@@ -447,7 +476,7 @@ impl PreparedNativeRender {
             }),
             renderer: Some(sender),
             info,
-            padding: RenderPaddingObserver::new(),
+            padding: Some(RenderPaddingObserver::new()),
             queue: requested_queue,
         }
     }
@@ -505,7 +534,80 @@ impl Drop for Mmcss {
         let _ = unsafe { AvRevertMmThreadCharacteristics(self.0) };
     }
 }
-type Ready = std::result::Result<(NativeRenderInfo, RenderPaddingObserver), String>;
+type PreparedRender = (NativeRenderInfo, Option<RenderPaddingObserver>);
+type Ready = std::result::Result<PreparedRender, String>;
+
+impl RenderReport {
+    fn before_open(options: &RenderOptions) -> Self {
+        Self {
+            schema_version: 3,
+            endpoint_id: options.endpoint_id.clone(),
+            status: RenderStatus::Failed,
+            requested_seconds: options.duration.requested_seconds(),
+            elapsed_seconds: 0.0,
+            sample_rate: None,
+            channels: None,
+            timing: None,
+            shared_period: None,
+            physical_render_request: options.physical_render_request,
+            requested_queue: options.queue,
+            queue: None,
+            stream_started: false,
+            stop_succeeded: false,
+            mmcss_registered: false,
+            mmcss_hresult: None,
+            stats: RenderStats::default(),
+            native_stats: None,
+            latency: LatencyRecorder::new(options.latency_telemetry).snapshot(),
+            diagnostics: RenderDiagnosticsSnapshot::default(),
+            clock_frequency: None,
+            clock_frequency_hresult: None,
+            own_session_ducking_opt_out: None,
+            primary_failure: None,
+            stop_error: None,
+            release_error: None,
+            failure: None,
+            terminal_callback: None,
+        }
+    }
+}
+
+fn prepare_render_stream(
+    options: &RenderOptions,
+    report: &mut RenderReport,
+    stream: &mut dyn NativeStream,
+) -> Result<PreparedRender> {
+    let info = stream.info();
+    let timing = stream.prepared_timing();
+    report.sample_rate = Some(info.sample_rate);
+    report.channels = Some(info.channels);
+    report.timing = Some(timing);
+    report.shared_period = stream.shared_period();
+    options
+        .physical_render_request
+        .validate_observed(timing, report.shared_period)?;
+    if let Some(clock) = stream.device_clock_observation() {
+        report.clock_frequency = clock.frequency_hz;
+        report.clock_frequency_hresult = clock.frequency_hresult;
+    }
+    // Retain negotiated timing and the attempted policy if the native
+    // adapter refuses its deadline budget before any audio is started.
+    stream.configure_render_queue(options.queue)?;
+    ensure!(
+        info.sample_rate == 48_000 && info.channels == 2 && info.buffer_frames > 0,
+        "probe render requires negotiated 48k stereo"
+    );
+    let queue = stream
+        .render_queue()
+        .context("native render queue unavailable")?;
+    let padding = stream.render_padding_observer();
+    ensure!(
+        padding.is_some() || options.device_options().mode == DeviceMode::Exclusive,
+        "native Shared padding observer unavailable"
+    );
+    report.queue = Some(queue);
+    Ok((NativeRenderInfo { timing, queue }, padding))
+}
 
 fn owner(
     options: RenderOptions,
@@ -521,73 +623,21 @@ fn owner(
     let mut scratch = Vec::new();
     let mut telemetry = LatencyRecorder::new(options.latency_telemetry);
     let mut diagnostics = None;
-    let mut report = RenderReport {
-        schema_version: 3,
-        endpoint_id: options.endpoint_id.clone(),
-        status: RenderStatus::Failed,
-        requested_seconds: options.duration.requested_seconds(),
-        elapsed_seconds: 0.0,
-        sample_rate: None,
-        channels: None,
-        timing: None,
-        shared_period: None,
-        requested_queue: options.queue,
-        queue: None,
-        stream_started: false,
-        stop_succeeded: false,
-        mmcss_registered: false,
-        mmcss_hresult: None,
-        stats: RenderStats::default(),
-        native_stats: None,
-        latency: telemetry.snapshot(),
-        diagnostics: RenderDiagnosticsSnapshot::default(),
-        clock_frequency: None,
-        clock_frequency_hresult: None,
-        own_session_ducking_opt_out: None,
-        primary_failure: None,
-        stop_error: None,
-        release_error: None,
-        failure: None,
-        terminal_callback: None,
-    };
+    let mut report = RenderReport::before_open(&options);
     // Keep graph and scratch outside this unwind scope. A callback failure
     // stops/releases native services here and returns DSP ownership to control.
     let run = catch_unwind(AssertUnwindSafe(|| -> Result<RenderStatus> {
         stream = Some(WasapiStream::open(WasapiOptions {
-            endpoint_id: options.endpoint_id,
+            endpoint_id: options.endpoint_id.clone(),
             sample_rate: 48_000,
-            device: DeviceOptions {
-                mode: DeviceMode::Shared,
-                sample_format: SampleFormat::Float32,
-                ..DeviceOptions::default()
-            },
+            device: options.device_options(),
             input: false,
         })?);
         let stream = stream.as_mut().expect("opened native stream");
+        let (prepared, padding) = prepare_render_stream(&options, &mut report, stream)?;
+        let timing = prepared.timing;
+        let queue = prepared.queue;
         let info = stream.info();
-        let timing = stream.prepared_timing();
-        report.sample_rate = Some(info.sample_rate);
-        report.channels = Some(info.channels);
-        report.timing = Some(timing);
-        report.shared_period = stream.shared_period();
-        if let Some(clock) = stream.device_clock_observation() {
-            report.clock_frequency = clock.frequency_hz;
-            report.clock_frequency_hresult = clock.frequency_hresult;
-        }
-        // Retain negotiated timing and the attempted policy if the native
-        // adapter refuses its deadline budget before any audio is started.
-        stream.configure_render_queue(options.queue)?;
-        ensure!(
-            info.sample_rate == 48_000 && info.channels == 2 && info.buffer_frames > 0,
-            "probe render requires negotiated 48k stereo"
-        );
-        let queue = stream
-            .render_queue()
-            .context("native render queue unavailable")?;
-        let padding = stream
-            .render_padding_observer()
-            .context("native padding observer unavailable")?;
-        report.queue = Some(queue);
         let frames = usize::try_from(info.buffer_frames)?;
         ensure!(
             frames <= (8 * 1024 * 1024) / size_of::<StereoFrame>(),
@@ -640,7 +690,10 @@ fn owner(
                 .as_ref()
                 .ok()
                 .and_then(|frames| u32::try_from(*frames).ok()),
-            padding_before_frames: padding.try_snapshot().map(|sample| sample.padding_frames),
+            padding_before_frames: padding
+                .as_ref()
+                .and_then(|observer| observer.try_snapshot())
+                .map(|sample| sample.padding_frames),
             submitted_frames_before: report.stats.submitted_frames,
             device_clock: stream.device_clock_observation().map(|clock| clock.sample),
             bridge_before: renderer.bridge_snapshot(),
@@ -705,7 +758,10 @@ fn owner(
                     .ok()
                     .and_then(|frames| u32::try_from(*frames).ok()),
                 padding_before_frames: if demand.is_ok() {
-                    padding.try_snapshot().map(|sample| sample.padding_frames)
+                    padding
+                        .as_ref()
+                        .and_then(|observer| observer.try_snapshot())
+                        .map(|sample| sample.padding_frames)
                 } else {
                     None
                 },
@@ -842,6 +898,183 @@ mod tests {
     use super::*;
     use moiren_engine::host::BackendError;
     use moiren_windows_audio::native::NativeStreamInfo;
+
+    fn physical_options(mode: DeviceMode) -> RenderOptions {
+        RenderOptions {
+            queue: RenderQueuePolicy::FullCapacity,
+            latency_telemetry: TelemetryMode::Disabled,
+            endpoint_id: "selected render".into(),
+            duration: SessionDuration::UntilStopped,
+            physical_render_request: PhysicalRenderRequest {
+                mode: Some(mode),
+                period_frames: Some(128),
+            },
+        }
+    }
+
+    struct PreparedFixture {
+        timing: NativeStreamTiming,
+        shared: Option<SharedPeriodReport>,
+        padding: Option<RenderPaddingObserver>,
+        configured: bool,
+    }
+
+    impl NativeStream for PreparedFixture {
+        fn info(&self) -> NativeStreamInfo {
+            NativeStreamInfo {
+                sample_rate: self.timing.sample_rate,
+                format: SampleFormat::Float32,
+                buffer_frames: self.timing.capacity_frames,
+                channels: 2,
+            }
+        }
+        fn prepared_timing(&self) -> NativeStreamTiming {
+            self.timing
+        }
+        fn shared_period(&self) -> Option<SharedPeriodReport> {
+            self.shared
+        }
+        fn configure_render_queue(
+            &mut self,
+            _: RenderQueuePolicy,
+        ) -> std::result::Result<(), BackendError> {
+            self.configured = true;
+            Ok(())
+        }
+        fn render_queue(&self) -> Option<PreparedRenderQueue> {
+            self.configured.then_some(PreparedRenderQueue {
+                capacity_frames: self.timing.capacity_frames,
+                target_frames: self.timing.capacity_frames,
+                deadline_budget_frames: None,
+            })
+        }
+        fn render_padding_observer(&self) -> Option<RenderPaddingObserver> {
+            self.padding.clone()
+        }
+        fn start(&mut self) -> std::result::Result<(), BackendError> {
+            panic!("preparation must not Start")
+        }
+        fn stop(&mut self) -> std::result::Result<(), BackendError> {
+            unreachable!()
+        }
+        fn wait(&mut self, _: Duration) -> std::result::Result<bool, BackendError> {
+            unreachable!()
+        }
+        fn read(&mut self, _: &mut [StereoFrame]) -> std::result::Result<usize, BackendError> {
+            unreachable!()
+        }
+        fn write(&mut self, _: &[StereoFrame]) -> std::result::Result<usize, BackendError> {
+            panic!("preparation must not write")
+        }
+    }
+
+    fn prepared_fixture(mode: DeviceMode) -> PreparedFixture {
+        PreparedFixture {
+            timing: NativeStreamTiming {
+                sample_rate: 48_000,
+                period_frames: Some(128),
+                capacity_frames: 128,
+            },
+            shared: (mode == DeviceMode::Shared).then_some(SharedPeriodReport {
+                requested_period_frames: Some(128),
+                actual_period_frames: Some(128),
+                initialization_api: Some(
+                    moiren_windows_audio::latency::shared_period::SharedInitializationApi::Client3,
+                ),
+                ..Default::default()
+            }),
+            padding: (mode == DeviceMode::Shared).then(RenderPaddingObserver::new),
+            configured: false,
+        }
+    }
+
+    #[test]
+    fn physical_render_owner_maps_live_request_for_both_process_paths_without_default_drift() {
+        let live = crate::live::LiveOptions {
+            output_endpoint: "exact selected endpoint".into(),
+            physical_render_request: PhysicalRenderRequest {
+                mode: Some(DeviceMode::Exclusive),
+                period_frames: Some(128),
+            },
+            ..Default::default()
+        };
+        for duration in [
+            SessionDuration::UntilStopped,
+            SessionDuration::For(Duration::from_secs(2)),
+        ] {
+            let options =
+                RenderOptions::from_live(&live, RenderQueuePolicy::FullCapacity, duration);
+            assert_eq!(
+                options.physical_render_request,
+                live.physical_render_request
+            );
+            assert_eq!(options.endpoint_id, live.output_endpoint);
+            assert_eq!(options.duration, duration);
+            assert_eq!(
+                options.device_options(),
+                DeviceOptions {
+                    mode: DeviceMode::Exclusive,
+                    period_frames: Some(128),
+                    sample_format: SampleFormat::Float32,
+                    ..Default::default()
+                }
+            );
+        }
+        let omitted = RenderOptions::from_live(
+            &crate::live::LiveOptions::default(),
+            RenderQueuePolicy::FullCapacity,
+            SessionDuration::UntilStopped,
+        );
+        assert_eq!(
+            omitted.device_options(),
+            DeviceOptions {
+                mode: DeviceMode::Shared,
+                sample_format: SampleFormat::Float32,
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn physical_render_owner_exclusive_admits_without_fabricating_padding() {
+        let options = physical_options(DeviceMode::Exclusive);
+        let mut report = RenderReport::before_open(&options);
+        let mut stream = prepared_fixture(DeviceMode::Exclusive);
+        let (info, padding) = prepare_render_stream(&options, &mut report, &mut stream).unwrap();
+        assert!(padding.is_none());
+        assert_eq!(info.timing, stream.timing);
+        assert_eq!(info.queue.target_frames, 128);
+        assert!(stream.configured);
+        assert!(!report.stream_started);
+        assert!(report.shared_period.is_none());
+    }
+
+    #[test]
+    fn physical_render_owner_refusal_keeps_requested_and_negotiated_evidence_before_queue_or_start()
+    {
+        use moiren_windows_audio::latency::shared_period::SharedFallbackReason;
+        let options = physical_options(DeviceMode::Shared);
+        let mut report = RenderReport::before_open(&options);
+        assert_eq!(
+            report.physical_render_request,
+            options.physical_render_request
+        );
+        assert!(report.timing.is_none());
+        let mut stream = prepared_fixture(DeviceMode::Shared);
+        stream.shared.as_mut().unwrap().fallback_reason =
+            Some(SharedFallbackReason::WindowsFormatConversion);
+        assert!(prepare_render_stream(&options, &mut report, &mut stream).is_err());
+        assert_eq!(report.timing, Some(stream.timing));
+        assert_eq!(report.shared_period, stream.shared);
+        assert!(!stream.configured);
+        assert!(!report.stream_started);
+        let value = serde_json::to_value(report).unwrap();
+        assert_eq!(value["physical_render_request"]["period_frames"], 128);
+        assert_eq!(
+            value["shared_period"]["fallback_reason"],
+            "windows_format_conversion"
+        );
+    }
 
     #[test]
     fn cancelled_report_survives_stop_failure() {
