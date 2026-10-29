@@ -74,9 +74,9 @@ mod process_loopback {
     pub(crate) use super::process_bridge::ProcessBridgeOptions;
     pub(crate) use super::process_measured::{MeasuredAdmissionError, MeasuredProcessDelivery};
     pub(crate) use super::process_replay::{
-        ObservedProcessTrace, ProcessReplayError, ProcessTraceArchive, ProcessTraceArtifact,
-        ProcessTraceCollectionRefusal, ProcessTraceCollector, ProcessTraceDocument,
-        ProcessTraceOrigin, ReplayWindowPolicy, ReplayWindowStatus,
+        LiveProcessWindowReport, ObservedProcessTrace, ProcessReplayError, ProcessTraceArchive,
+        ProcessTraceArtifact, ProcessTraceCollectionRefusal, ProcessTraceCollector,
+        ProcessTraceDocument, ProcessTraceOrigin, ReplayWindowPolicy, ReplayWindowStatus,
     };
     pub use moiren_windows_audio::process_loopback::*;
 }

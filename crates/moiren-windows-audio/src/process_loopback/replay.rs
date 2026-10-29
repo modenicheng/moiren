@@ -29,6 +29,9 @@ pub use window::{
     AssessedProcessReplay, ReplayWindowAssessment, ReplayWindowPolicy, ReplayWindowStatus,
     ReplayWindowViolation,
 };
+#[path = "replay/live.rs"]
+mod live;
+pub use live::{LiveProcessPrefix, LiveProcessWindowReport};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ProcessReplayError {
@@ -232,6 +235,34 @@ impl ObservedProcessTrace {
         reads: QueueHistorySnapshot,
         event_limit: usize,
     ) -> Result<Self, ProcessReplayError> {
+        Self::from_sequence_prefix(
+            process,
+            owner_generation,
+            input_rate,
+            consumer_rate,
+            prepared_demand,
+            packets,
+            reads,
+            event_limit,
+            true,
+        )
+    }
+
+    /// Internal live assessment also validates sequence one, conservation and
+    /// canonical writer behavior. Only its separately sealed prefix may use an
+    /// open history; public closed-trace constructors still require closure.
+    #[allow(clippy::too_many_arguments)]
+    fn from_sequence_prefix(
+        process: ProcessIdentity,
+        owner_generation: u64,
+        input_rate: u32,
+        consumer_rate: u32,
+        prepared_demand: u32,
+        packets: PacketHistorySnapshot,
+        reads: QueueHistorySnapshot,
+        event_limit: usize,
+        require_finished: bool,
+    ) -> Result<Self, ProcessReplayError> {
         if process.pid == 0 || process.creation_time_100ns == 0 || owner_generation == 0 {
             return Err(ProcessReplayError::InvalidIdentity);
         }
@@ -242,21 +273,23 @@ impl ObservedProcessTrace {
         {
             return Err(ProcessReplayError::UnsupportedShape);
         }
-        closed_complete(
+        complete_history(
             packets.writer_finished,
             packets.total_events,
             packets.overwritten_events,
             packets.events.len(),
             packets.saturated,
             event_limit,
+            require_finished,
         )?;
-        closed_complete(
+        complete_history(
             reads.writer_finished,
             reads.total_events,
             reads.overwritten_events,
             reads.events.len(),
             reads.saturated,
             event_limit,
+            require_finished,
         )?;
         if packets.unavailable_clocks != 0
             || packets.regressed_clocks != 0
@@ -304,9 +337,13 @@ impl ObservedProcessTrace {
             }
         }
         drop(writer);
-        let canonical = observer
+        let mut canonical = observer
             .snapshot()
             .ok_or(ProcessReplayError::InvalidHistory)?;
+        // This temporary validation writer has been dropped, whereas the
+        // observed native writer may still be open. Compare its payload and
+        // counters without inventing native closure; preserve the input flag.
+        canonical.writer_finished = packets.writer_finished;
         let mut expected = packets.clone();
         expected.events = expected.events[expected.events.len().saturating_sub(256)..].to_vec();
         expected.overwritten_events = expected.total_events - expected.events.len() as u64;
@@ -336,9 +373,10 @@ impl ObservedProcessTrace {
             }
         }
         drop(writer);
-        let canonical = observer
+        let mut canonical = observer
             .snapshot()
             .ok_or(ProcessReplayError::InvalidHistory)?;
+        canonical.writer_finished = reads.writer_finished;
         let mut expected = reads.clone();
         expected.events = expected.events[expected.events.len().saturating_sub(256)..].to_vec();
         expected.overwritten_events = expected.total_events - expected.events.len() as u64;
@@ -591,15 +629,16 @@ impl ObservedProcessTrace {
     }
 }
 
-fn closed_complete(
+fn complete_history(
     finished: bool,
     total: u64,
     overwritten: u64,
     count: usize,
     saturated: bool,
     event_limit: usize,
+    require_finished: bool,
 ) -> Result<(), ProcessReplayError> {
-    if !finished
+    if (require_finished && !finished)
         || saturated
         || total == 0
         || total > event_limit as u64

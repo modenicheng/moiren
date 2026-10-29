@@ -83,6 +83,141 @@ impl Fixture {
     }
 }
 
+fn live_options() -> ProcessBridgeOptions {
+    use crate::latency::transport::{
+        DeliveryTimingSource, InputDeliveryTiming, TransportInputPolicy,
+    };
+    ProcessBridgeOptions {
+        input: TransportInputPolicy::Target {
+            capacity_frames: 64,
+            target_frames: 12,
+            jitter_frames: 0,
+        },
+        delivery: Some(InputDeliveryTiming {
+            sample_rate: 48_000,
+            max_packet_frames: 4,
+            max_gap_frames: 4,
+            source: DeliveryTimingSource::Empirical,
+        }),
+        max_demand_frames: 4,
+        ..Default::default()
+    }
+}
+
+fn live_policy() -> crate::process_loopback::ReplayWindowPolicy {
+    crate::process_loopback::ReplayWindowPolicy {
+        max_initial_unserved_frames: 1000,
+        max_initial_prime_discarded_frames: 1000,
+        min_output_frames: 4,
+        min_output_reads: 2,
+        min_output_span_100ns: 1,
+    }
+}
+
+#[test]
+fn pinned_live_prefix_keeps_original_identity_after_registry_replacement_without_closure() {
+    let mut f = Fixture::new();
+    let mut collector = f
+        .registry
+        .retain_session()
+        .unwrap()
+        .process_trace_collector(f.node, &f.process, 7)
+        .unwrap();
+    for n in 0..24 {
+        f.event(n);
+    }
+    f.registry.clear(7);
+    f.registry.publish(8, vec![], vec![], vec![]);
+    f.event(24);
+    let report = collector
+        .replay_live_window(live_options(), live_policy())
+        .unwrap();
+    assert_eq!(
+        report.status,
+        crate::process_loopback::ReplayWindowStatus::NoViolationInWindow,
+        "{report:?}"
+    );
+    assert_eq!(report.trace_origin, ProcessTraceOrigin::RetainedNativeOwner);
+    let prefix = report.prefix.unwrap();
+    assert_eq!(prefix.observed_packet_events, 25);
+    assert!(!prefix.packet_writer_finished && !prefix.read_writer_finished);
+    let replay = report.replay.unwrap();
+    assert_eq!(replay.report.owner_generation, 7);
+    assert_eq!(
+        replay.report.trace_origin,
+        ProcessTraceOrigin::RetainedNativeOwner
+    );
+    assert!(replay.report.process.same_process(&f.process));
+    assert!(collector.ordered_trace().is_err());
+    let imported = collector
+        .artifact()
+        .replay_live_window(&f.process, 7, live_options(), live_policy())
+        .unwrap();
+    assert_eq!(imported.trace_origin, ProcessTraceOrigin::CallerSupplied);
+    assert_eq!(f.registry.snapshot().unwrap().owner_generation, 8);
+}
+
+#[test]
+fn pinned_live_prefix_cannot_drop_original_ingress_elapsed_intent() {
+    let mut f = Fixture::new();
+    let retained = f.registry.retain_session().unwrap();
+    let mut source = retained.0.process_delivery[0].clone();
+    source.admitted_bridge.max_ingress_elapsed_100ns = Some(100);
+    f.registry
+        .publish_with_process(7, vec![], vec![], vec![], vec![], vec![source]);
+    let mut collector = f
+        .registry
+        .retain_session()
+        .unwrap()
+        .process_trace_collector(f.node, &f.process, 7)
+        .unwrap();
+    for n in 0..4 {
+        f.event(n);
+    }
+    let result = collector.replay_live_window(live_options(), live_policy());
+    assert!(
+        matches!(result, Err(ProcessReplayError::IngressElapsedUnsupported)),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn pinned_live_prefix_stays_immutable_when_only_the_unsealed_consumer_tail_advances() {
+    let mut f = Fixture::new();
+    let mut collector = f
+        .registry
+        .retain_session()
+        .unwrap()
+        .process_trace_collector(f.node, &f.process, 7)
+        .unwrap();
+    for n in 0..24 {
+        f.event(n);
+    }
+    let first = collector
+        .replay_live_window(live_options(), live_policy())
+        .unwrap();
+    for stamp in [5000, 5100, 5200] {
+        f.source
+            .read_interleaved_with_publication_clock(&mut [0.0; 8], || Some(stamp))
+            .unwrap();
+    }
+    let later = collector
+        .replay_live_window(live_options(), live_policy())
+        .unwrap();
+    assert_eq!(
+        first.prefix.as_ref().unwrap().cutoff_100ns,
+        later.prefix.as_ref().unwrap().cutoff_100ns
+    );
+    assert_eq!(
+        later.prefix.as_ref().unwrap().observed_read_events,
+        first.prefix.as_ref().unwrap().observed_read_events + 3
+    );
+    assert_eq!(
+        serde_json::to_value(first.replay).unwrap(),
+        serde_json::to_value(later.replay).unwrap()
+    );
+}
+
 #[test]
 fn pinned_archive_survives_registry_clear_and_late_writes_beyond_native_suffix() {
     let mut f = Fixture::new();

@@ -10,11 +10,11 @@ mod measured;
 pub use measured::{MeasuredAdmissionError, MeasuredProcessDelivery};
 mod replay;
 pub use replay::{
-    AssessedProcessReplay, ObservedProcessTrace, OfferedSupplyAssumption, ProcessReplayError,
-    ProcessReplayReport, ProcessReplayStatus, ProcessTraceArchive, ProcessTraceArtifact,
-    ProcessTraceCollectionRefusal, ProcessTraceCollector, ProcessTraceDocument, ProcessTraceOrigin,
-    ReplayInventoryReport, ReplayWindowAssessment, ReplayWindowPolicy, ReplayWindowStatus,
-    ReplayWindowViolation,
+    AssessedProcessReplay, LiveProcessPrefix, LiveProcessWindowReport, ObservedProcessTrace,
+    OfferedSupplyAssumption, ProcessReplayError, ProcessReplayReport, ProcessReplayStatus,
+    ProcessTraceArchive, ProcessTraceArtifact, ProcessTraceCollectionRefusal,
+    ProcessTraceCollector, ProcessTraceDocument, ProcessTraceOrigin, ReplayInventoryReport,
+    ReplayWindowAssessment, ReplayWindowPolicy, ReplayWindowStatus, ReplayWindowViolation,
 };
 #[cfg(windows)]
 pub(crate) mod activation;

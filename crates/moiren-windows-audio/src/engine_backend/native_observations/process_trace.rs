@@ -51,6 +51,30 @@ impl NativeObservationReadHandle {
 }
 
 impl NativeProcessTraceCollector {
+    /// Assess a sealed sequence-one prefix while its original owner runs.
+    /// Does not stop audio or authenticate any exported/edited archive.
+    pub fn replay_live_window(
+        &mut self,
+        options: crate::process_loopback::ProcessBridgeOptions,
+        policy: crate::process_loopback::ReplayWindowPolicy,
+    ) -> Result<crate::process_loopback::LiveProcessWindowReport, ProcessReplayError> {
+        if self
+            .source
+            .admitted_bridge
+            .max_ingress_elapsed_100ns
+            .is_some()
+        {
+            return Err(ProcessReplayError::IngressElapsedUnsupported);
+        }
+        self.poll();
+        self.collector.artifact().replay_retained_live_window(
+            self.process(),
+            self.owner_generation(),
+            options,
+            policy,
+        )
+    }
+
     pub fn process(&self) -> &ProcessIdentity {
         self.collector.process()
     }
