@@ -228,8 +228,8 @@ exactly48,000frames. Source acknowledgement is1,710,720frames over
 35.6433363seconds, close to nominal progress; no100ms event timeout or native
 failure is reported. This establishes a useful idle source boundary
 diagnostic. It does not explain the earlier app run's gaps or certify the
-source under that different load. A simultaneous source/app recording is
-needed before assigning those gaps to a particular component. The source is
+source under that different load. The simultaneous source/app recording below
+narrows that component boundary. The source is
 intentionally stopped before its40-second schedule completes.
 
 Both children exit normally (source0, unqualified recorder1), with unchanged
@@ -268,8 +268,8 @@ for every prior VAD or Process fault. The source acknowledges4,210,944frames
 over89.8138631seconds, again below nominal progress;100ms event timeouts
 are still zero. Code inspection finds that this example-local external
 source worker omits the Audio MMCSS registration used by capture, render
-and provider workers. The next single-variable diagnostic repair registers
-and reports that source worker; its effect still requires another native run.
+and provider workers. This motivates the separately recorded source-worker
+registration repair and native follow-up below.
 
 All four processes exit normally (app/source0, recorders1/unqualified).
 Output volume/mute and default roles remain unchanged.
@@ -278,6 +278,47 @@ Output volume/mute and default roles remain unchanged.
 All49 files /50 entries are downloaded and verified individually. Raw PCM:
 source`454370B9AE1B83A62AD928DC2CD7C616E22EFC37E25263BEB3B40972E8F27BC7`;
 app`E991F8EF715F40617D65AB9BB3D5F51FFB0A6AA2583556CC98CF61A0A9BC89F3`.
+
+### Source Audio scheduling follow-up
+
+`desktop-dawn-process-pcm3` uses source81eb641 with the
+[owner-local Audio registration repair](2026-10-30-probe-source-scheduling.md).
+The app remains3ac8484 and both recorders remain9313364. The same desktop
+actions,4096/16384/96 policy and pinned Shared DAWN output are used. The
+source's real ready and final receipts confirm`mmcss_registered:true`,
+`mmcss_hresult:null`. The new source is6,985,216bytes, SHA-256
+`03B448A985A974AC1D78A1BE524E2541618ADEF4899FD85459E5886B5FA0B3C9`.
+Host and remote release example suites both pass519 tests; host strict
+example Clippy and an independent review pass before acquisition.
+
+Both recorder owners complete/stop normally: graph35.0009349seconds,
+source35.0010713seconds. Each retains3,498 packets /1,679,040 frames /
+13,432,320bytes, with zero artifact dropped/overflow frames,
+discontinuities or timestamp errors. Position-gap detection remains
+inapplicable to Process capture.
+
+Both recordings have35 detected markers. All34 source intervals are exactly
+48,000frames; graph intervals range47,984..48,058frames. The prior seconds-long
+marker interval is not reproduced in this window. The source acknowledges
+3,318,240frames during69.1344096seconds, close to nominal48 kHz progress;
+it is intentionally stopped before the300-second schedule ends.
+
+This is a useful bounded improvement after repairing the test source,
+not proof that every historical fault had the same cause. Automation timing
+and total source duration differ between serial runs, so this is not a
+repeated controlled-load causality experiment. The recorders have independent
+origins; their offsets are not a physical delay. Finite marker detection and
+zero artifact counters do not establish full continuous-waveform quality,
+calibrated physical E2E, a VAD/Process winner or any lower default.
+
+All four children exit normally, with no forced termination or output
+volume/mute/default-role change. Exact terminal build/native tasks are
+unregistered after verified archival. `dawn-process-pcm3.zip` is269,107bytes,
+SHA-256
+`E1FA8F7586D61F34B647732DD1F7B787DA145599774BF9729BA3542AB1D98170`.
+All60 files /61 entries are downloaded and individually verified. Raw PCM:
+source`23135BF7AEC44C8A2583AF6CFF6851D4A7A3DA59F6A53609991E16918D528FD6`;
+app`AED50FC465D302837152FCA47C5CFD80F3BB76C20C22B74CFD209B9EB5E00F38`.
 
 ## VAD to DAWN diagnostic baseline
 
@@ -376,6 +417,58 @@ All20 files /21 entries are downloaded and verified by exact file set,
 length and SHA-256. Its exact terminal scheduled task is unregistered after
 checking its action and child PIDs; evidence, deployment and shared Cargo
 caches are retained.
+
+### Same VAD budgets after source scheduling repair
+
+`dawn-vad-budget3-mmcss` repeats budget2's two35-second configurations
+with source81eb641; parameters, driver, DAWN and Engine block remain the
+same. Only owned diagnostic endpoint IDs/schedule identity are fresh.
+Both source ready/final reports confirm Audio MMCSS registration. Neither
+once-per-second foreign build/app/probe poll observes another such process;
+this still does not certify zero unrelated system load.
+
+| Case | Bounded native result after source repair | Prior budget2 result |
+| --- | --- | --- |
+| Shared target576 / input1792, source480 | 35.0099343seconds; 3,499 completed provider packets; zero missing slots/gap observations; maximum completion interval10.8818ms; playback xruns/short reads/recovery-prime muted frames all zero | 15 xruns, 72 missing sequence slots, maximum completion interval119.735ms |
+| Exclusive256 / minimum source144 / input1024 | 35.003857seconds; 11,665 completed packets; zero missing slots/gap observations; maximum completion interval3.6013ms; playback xruns/short reads/recovery-prime muted frames all zero | 8 xruns, 56 missing sequence slots, maximum completion interval47.7157ms |
+
+Both submit the entire1,440,000-frame source schedule, retain32 initial
+prime-muted frames separately, and report zero in-run provider
+driver/carrier/quota/stale/drop/silence/reset/recovery counts. Both final
+physical stream reports retain zero native drop/silence frames, and normal
+source Stop/join plus Removed/Dormant/Closed cleanup completes.
+
+The minimum-period case's cumulative driver QUERY snapshot nevertheless
+retains`dropped_packets:1`. Startup samples show0 before first completion
+and1 at the first post-start sample, elapsed0.011535seconds, and it remains1.
+The provider's in-run driver-drop delta stays0. This is a retained startup
+drop, not permission to describe the entire run as zero-fault. The Shared
+case cumulative snapshot has0. Native wait counters are also retained:
+Shared has66 timeouts with3,504 wakes, Exclusive0 timeouts with6,571 wakes;
+they are not silently mapped to PCM loss or physical latency.
+
+The improvement is consistent with fixing the source worker, but these
+short serial diagnostics do not certify the driver under controlled load.
+No PCM is acquired by this diagnostic-soak command, each exit remains1 /
+unqualified, and the latency distribution is null. No default is promoted,
+and neither a1024-frame input target nor a256-frame render period is a
+sub-10-ms E2E result. Cumulative startup faults and waveform/physical gates
+remain open.
+
+`dawn-vad-budget3-mmcss.zip` is75,956bytes, SHA-256
+`2062898B81D8467C4646356A5B927F1759E456C0C6474C2116F4E66D77B0221D`.
+All20 files /21 entries are downloaded and individually verified. Output
+volume/mute and all default roles remain unchanged; no external process is
+stopped and no build overlaps acquisition.
+
+The final audit unregisters this exact terminal task after action/process
+checks. No owned scheduled task or Cargo/rustc/link/app/probe process remains.
+The task build worktree is clean at81eb641; app, original probe, recorder and
+new source hashes still match their deployment receipts. MoirenVad remains
+Running. Shared Cargo target3,407,297,875bytes is retained; D has
+255,046,590,464bytes free and C has7,835,295,744bytes at that snapshot.
+Realtek remains muted at volume0; DAWN remains unmuted at volume1. No volume,
+mute, default-role or clock-setting operation is performed by this task.
 
 DAWN resolves the lack of an authorized physical render endpoint; previous
 muted-Realtek limitations describe historical runs, not current routing.

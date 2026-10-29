@@ -41,6 +41,13 @@ nominal. The two smaller VAD/DAWN budget candidates also retain native gaps
 and playback xruns in an idle-audited window. These diagnostic acquisitions
 close an evidence-collection gap, not the waveform/stability gates. See the
 same DAWN receipt for exact durations, raw hashes and clock-change context.
+The simultaneous source/app follow-up finds a matching long interval already
+upstream of the graph. After the example-local source receives the Audio
+MMCSS registration used by the other owners, one new dual recording finds35
+markers per side without that seconds-long interval. Actual registration,
+normal retirement and zero artifact loss are retained; serial timing and
+Process continuity limitations remain explicit. This repairs a test-source
+confounder rather than qualifying production latency or every prior fault.
 
 The [native packet-period / Engine-block matrix](2026-10-29-vad-period-block-matrix.md)
 adds observed144/480-frame VAD playback packets with128/256-frame Engine

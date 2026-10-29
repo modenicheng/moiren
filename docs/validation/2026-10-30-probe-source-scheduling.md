@@ -26,3 +26,28 @@ suite passes519 tests; strict example Clippy passes. Regressions cover
 registration reporting independently of Start, failure retention and guard
 retirement. Those software receipts do not prove native registration,
 elimination of source gaps, continuous output or physical latency.
+
+## Bounded native follow-up
+
+Source81eb641 is deployed beside the original probe; app3ac8484 and
+recorder9313364 remain unchanged. Both ready and final receipts confirm the
+actual Audio registration succeeds. Host and remote release example suites
+pass519 tests, and independent review finds no issues.
+
+The same source/app dual recording after registration finds35 markers in
+each34.98 nominal seconds of retained PCM. All source intervals are48,000
+frames; graph intervals are47,984..48,058. Neither recorder reports artifact
+loss, discontinuity or timestamp errors; Process position-gap detection is
+inapplicable. The seconds-long interval from the original paired run is
+not reproduced in this finite window. See the linked DAWN receipt for exact
+durations, hashes, serial-comparison limits and normal retirement. This
+supports keeping the source repair; it does not prove a hard scheduling
+guarantee, qualify lower buffers or supply a physical calibration.
+
+Repeating the two smaller VAD budgets with the repaired source likewise
+retains zero in-run playback xruns/short reads and zero provider sequence
+holes in both35-second windows, compared with15/8 xruns and72/56 missing
+slots before. The144-frame source case still has one cumulative driver
+drop appearing at the first post-start sample; its in-run driver-drop delta
+is zero. Preserve that startup fault. Neither diagnostic acquires PCM or
+passes the full waveform/physical gates, and defaults remain unchanged.
