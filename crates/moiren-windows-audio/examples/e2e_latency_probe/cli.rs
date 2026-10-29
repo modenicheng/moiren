@@ -31,6 +31,9 @@ With --window-policy, exit 0 requires every candidate replayed with no_violation
 Window acceptance is finite caller-supplied queue evidence only; qualified remains false, not safety/stability/latency qualification.
 live-process-loopback --source-pid PID --output ENDPOINT --artifact-dir DIR [--seconds 1..600]
 live-vad --stable-endpoint-id ID --name NAME --output ENDPOINT --artifact-dir DIR [--seconds 1..600]
+live-physical --input ID --output ID --recorder-config FILE --artifact-dir NEWDIR --seconds 1..600
+Physical capture -> Bus -> physical render with independent bounded recorder; externally supplied signal and wiring.
+Separate --capture-mode/--capture-period-frames and --render-mode/--render-period-frames; always unqualified.
 live-vad --stable-endpoint-id PLAY_ID --name PLAY_NAME --vad-microphone-id MIC_ID --vad-microphone-name MIC_NAME
     --source-schedule FILE --vad-collection FILE --artifact-dir DIR --seconds 1..600
 Virtual route is exact playback -> Bus -> microphone, Internal software evidence only, always unqualified.
@@ -121,6 +124,9 @@ pub fn run(arguments: Vec<String>) -> Result<i32> {
         return Ok(0);
     }
     let command = &arguments[0];
+    if command == "live-physical" {
+        return live::physical::run(arguments[1..].to_vec());
+    }
     if command == "replay-process" {
         return process_replay::run(arguments[1..].to_vec());
     }

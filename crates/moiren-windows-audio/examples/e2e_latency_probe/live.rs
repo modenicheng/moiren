@@ -41,6 +41,9 @@ mod vad_route;
 mod render_request;
 use render_request::PhysicalRenderRequest;
 
+#[path = "physical.rs"]
+pub(crate) mod physical;
+
 #[cfg(any(windows, test))]
 #[path = "process_trace.rs"]
 mod process_trace;

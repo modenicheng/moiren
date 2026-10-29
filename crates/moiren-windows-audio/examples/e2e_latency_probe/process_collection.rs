@@ -305,13 +305,13 @@ fn append_failure(failure: &mut Option<String>, message: &str) {
 /// Text is bounded independently of run duration and cumulative native counters.
 #[cfg(any(windows, test))]
 #[derive(Default, Serialize)]
-struct QualityDiagnostics {
-    failure: Option<String>,
+pub(super) struct QualityDiagnostics {
+    pub(super) failure: Option<String>,
 }
 
 #[cfg(any(windows, test))]
 impl QualityDiagnostics {
-    fn fault(&mut self, policy: ValidationPolicy, message: &str) -> Result<()> {
+    pub(super) fn fault(&mut self, policy: ValidationPolicy, message: &str) -> Result<()> {
         append_failure(&mut self.failure, message);
         ensure!(policy.is_correctness(), "{message}");
         Ok(())
@@ -556,7 +556,7 @@ fn validate_final_graph_with_policy(
 }
 
 #[cfg(any(windows, test))]
-fn validate_measurement_outcome(
+pub(super) fn validate_measurement_outcome(
     outcome: &crate::measurement::session::MeasurementOutcome,
     policy: ValidationPolicy,
     quality: &mut QualityDiagnostics,
