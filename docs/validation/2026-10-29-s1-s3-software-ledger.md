@@ -42,6 +42,17 @@ null timeline recurs in that run; deterministic RED/GREEN owns that branch's
 regression proof. Driver/app remain unchanged and ~0.85 GiB reusable build
 outputs are retained, not cleaned after archiving.
 
+The [retained-waveform analysis](2026-10-29-vad-retained-waveform-analysis.md)
+runs the unchanged analyzer on that completed recording with explicitly chosen
+diagnostic confidence settings, not a previously qualified production gate.
+All three marker windows refuse confidence, and 487 later packet-QPC intervals
+violate the existing diagnostic policy despite complete stored coverage and
+adjacent device positions. Neither establishes waveform corruption, measured
+PCM loss or physical delay. Fresh read-only catalog again confirms muted/volume0
+Realtek output; common physical reference/calibration remains unavailable.
+This adds waveform evidence without rebuilding, repeating the buffer matrix,
+reinstalling the driver, cleaning caches or claiming S1-S3 complete.
+
 Three bounded software repairs follow those native observations:
 
 - `792f99e` accepts the Engine's legitimate initial resource generation 0 in
