@@ -12,8 +12,8 @@ latency qualification.
 
 **Constraints:** No VM/native audio/driver/deployment. Production queues,
 whole-wake admission and validation/grace policy remain unchanged. Preserve
-unrelated `gate.log`. Make scoped local atomic commits; push the verified
-batch once, not after each commit (updated user instruction).
+unrelated `gate.log`. Make scoped local atomic commits and retain this slice
+locally; batch the next push at a meaningful integration milestone.
 
 ## Task 1: Optional Offline Trend Report
 
@@ -39,8 +39,9 @@ Files: `examples/e2e_latency_probe/pcm.rs`, `pcm/trend.rs`,
 Files: `pcm/packets.rs`, `pcm/trend_tests.rs`, `pcm/rate_tests.rs`,
 `live.rs`, `cli.rs` in the same example.
 
-- [x] Write and run failing tests for gap-only reset/loss, exact half-open
-  boundaries, faults spanning windows and coverage mismatch. Retain exit codes.
+- [x] Write and run a failing gap-only reset test; extend it with exact
+  half-open boundaries, loss/timestamp/flags, spanning faults and coverage
+  mismatch regressions. Retain exit codes.
 - [x] Extend monotone packet traversal in O(packets + windows), annotating a
   break before each window when an invalid span occurs between windows. Fit
   only after invalidating overlapping marker windows. Clean metadata is only
@@ -53,14 +54,15 @@ Files: `pcm/packets.rs`, `pcm/trend_tests.rs`, `pcm/rate_tests.rs`,
 
 ## Task 3: Review And Verification
 
-- [ ] Obtain independent source review; reproduce and fix material findings
+- [x] Obtain independent source review; reproduce and fix material findings
   with failing-then-passing regression tests.
-- [ ] Run full probe tests, audio library tests, strict example Clippy, fmt,
+- [x] Run full probe tests, audio library tests, strict example Clippy, fmt,
   Linux example cross-check and diff checks; report existing warnings honestly.
-- [ ] Record exact commands/results and remaining S1-S3 hardware gates in
+- [x] Record exact commands/results and remaining S1-S3 hardware gates in
   `docs/validation/2026-10-29-segmented-marker-trends.md` and rolling ledger.
-- [ ] Commit validation locally; push the entire verified batch once and
-  compare full local/remote SHA. Do not merge without passing CI.
+- [x] Commit validation locally. Retain this batch without another push for
+  now; combine the next remote update at a meaningful integration milestone.
+  Compare full local/remote SHA when pushed. Do not merge without passing CI.
 
 Full S1-S3 remains active: stable physical sub-10-ms IO/Bus, actual lower native
 periods, source-age provenance and sustained service still need qualification.
