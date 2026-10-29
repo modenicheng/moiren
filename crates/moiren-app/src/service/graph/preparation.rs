@@ -1,5 +1,4 @@
 use super::*;
-use moiren_engine::compiler::{CompileError, NodeBindings};
 
 impl GraphPreparation {
     /// Translate resource intent for every IO node. The first stable sink owns
@@ -315,74 +314,5 @@ impl GraphPreparation {
             primary_node_of(&self.graph, NodeKind::Gain)?.id(),
             primary_node_of(&self.graph, NodeKind::Pan)?.id(),
         ))
-    }
-    #[cfg_attr(not(windows), allow(dead_code))]
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn bind_processors(
-        &self,
-        bindings: &mut NodeBindings<f32>,
-    ) -> Result<(), CompileError> {
-        // This legacy route cannot return a recorder reader or prepare a typed
-        // spectrum publisher. Reject before consuming any existing bindings.
-        for node in self.graph.nodes() {
-            match node.kind() {
-                NodeKind::Recorder => return Err(CompileError::BindingKind { node: node.id() }),
-                NodeKind::Meter => {}
-                NodeKind::SpectrumAnalyzer => return Err(CompileError::SignalsRequireHost),
-                _ => {}
-            }
-            let state = self
-                .nodes
-                .iter()
-                .find(|state| state.id == node.id())
-                .ok_or(CompileError::BindingKind { node: node.id() })?;
-            state
-                .builtin
-                .validate(
-                    node.kind(),
-                    node.inputs().first().map_or(0, |port| port.channels()),
-                    node.channels(),
-                )
-                .map_err(|_| CompileError::BindingKind { node: node.id() })?;
-        }
-        for (node, config) in self.mixer_configs() {
-            bindings.bind_strip(node, config);
-        }
-        for node in self.graph.nodes() {
-            let state = self
-                .nodes
-                .iter()
-                .find(|state| state.id == node.id())
-                .expect("validated node state");
-            match node.kind() {
-                NodeKind::Gain => bindings.bind_gain(node.id(), state.gain)?,
-                NodeKind::Pan => {
-                    bindings.bind_pan_with_stereo(node.id(), state.pan, state.mono, state.swap)?
-                }
-                NodeKind::Compressor => {
-                    bindings.bind_compressor(node.id(), state.compressor.settings())?
-                }
-                _ => match state.builtin.resolved(node.kind()) {
-                    BuiltinState::Eq(settings) => bindings.bind_eq(node.id(), settings)?,
-                    BuiltinState::Gate(settings) => bindings.bind_gate(node.id(), settings)?,
-                    BuiltinState::Limiter(settings) => {
-                        bindings.bind_limiter(node.id(), settings)?
-                    }
-                    BuiltinState::Delay(settings) => bindings.bind_delay(node.id(), settings)?,
-                    BuiltinState::ChannelMapper(settings) => {
-                        bindings.bind_channel_mapper(node.id(), settings)?;
-                    }
-                    BuiltinState::Rack(settings) => bindings.bind_rack(node.id(), settings)?,
-                    BuiltinState::Meter(settings) => {
-                        let _reader = bindings.bind_meter(node.id(), settings)?;
-                    }
-                    BuiltinState::None => {}
-                    BuiltinState::Recorder(_) | BuiltinState::SpectrumAnalyzer(_) => {
-                        unreachable!("managed utilities rejected before binding")
-                    }
-                },
-            }
-        }
-        Ok(())
     }
 }

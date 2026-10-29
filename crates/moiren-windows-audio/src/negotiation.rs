@@ -3,9 +3,7 @@
 //! Single source for the pieces the retired dual stacks had duplicated:
 //! PCM/floating-point sub-format GUIDs, WAVEFORMATEX descriptor parsing, the
 //! IAudioClient3 rejection matrix, endpoint friendly names, and the shared
-//! and exclusive initialization sequences (deliberate divergences stay
-//! explicit parameters; see decision D4 in
-//! `docs/superpowers/plans/2026-10-19-repo-steward-remediation.md`).
+//! and exclusive initialization sequences.
 
 #[cfg(feature = "probe-tools")]
 use windows::Win32::Media::Audio::{EDataFlow, IMMEndpoint};
@@ -18,8 +16,8 @@ use windows::{
         Media::Audio::{
             AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_SHAREMODE_SHARED,
             AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            AUDCLNT_STREAMFLAGS_NOPERSIST, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioClient,
-            IAudioClient3, IMMDevice, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
+            AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, IAudioClient, IAudioClient3, IMMDevice,
+            WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
         },
         System::{Com::STGM_READ, Variant::VT_LPWSTR},
     },
@@ -196,18 +194,6 @@ pub(crate) fn client3_rejects_format(code: windows::core::HRESULT) -> bool {
     )
 }
 
-/// Reaction to [`AUDCLNT_E_ENGINE_PERIODICITY_LOCKED`] from
-/// `InitializeSharedAudioStream` (decision D4: the stacks intentionally
-/// diverge).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EnginePeriodicityPolicy {
-    /// Exact-or-fail: an explicit Shared period is a hard contract, so the
-    /// HRESULT surfaces unchanged. Used by the professional stack, which
-    /// also rejects out-of-range periods before Initialize instead of
-    /// rounding them to a legal one.
-    ExactPeriod,
-}
-
 /// GetSharedModeEnginePeriod frame bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EnginePeriods {
@@ -248,29 +234,14 @@ pub(crate) unsafe fn shared_engine_periods(
     Ok(periods)
 }
 
-/// Explicit legacy (`IAudioClient::Initialize`) flag selection (decision D4:
-/// parameterized, not silently unified).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct LegacySharedInit {
-    /// Add AUTOCONVERTPCM | SRC_DEFAULT_QUALITY so Windows converts between
-    /// the client format and the endpoint mix format.
-    pub auto_convert: bool,
-    /// Add NOPERSIST. The legacy shared stack opts out of persisting session
-    /// state across reboots; the professional stack keeps Windows' default
-    /// persisted-session behavior.
-    pub nopersist: bool,
-}
-
-/// Compose the legacy initialization flags (pure; unit-tested).
-pub(crate) fn legacy_shared_flags(init: LegacySharedInit) -> u32 {
-    let mut flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
-    if init.nopersist {
-        flags |= AUDCLNT_STREAMFLAGS_NOPERSIST;
-    }
-    if init.auto_convert {
-        flags |= AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
-    }
-    flags
+/// Legacy shared (`IAudioClient::Initialize`) flags: event-driven, with
+/// AUTOCONVERTPCM | SRC_DEFAULT_QUALITY so Windows converts between the
+/// client format and the endpoint mix. Session persistence keeps the
+/// Windows default (no NOPERSIST).
+pub(crate) const fn legacy_shared_flags() -> u32 {
+    AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
 }
 
 /// The exclusive event-callback flag used by both the diagnostic probe and
@@ -337,13 +308,12 @@ pub(crate) unsafe fn initialize_legacy_shared(
     client: &IAudioClient,
     format: *const WAVEFORMATEX,
     session_guid: Option<&GUID>,
-    init: LegacySharedInit,
 ) -> windows::core::Result<()> {
     // SAFETY: caller guarantees the descriptor (see above).
     unsafe {
         client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
-            legacy_shared_flags(init),
+            legacy_shared_flags(),
             0,
             0,
             format,
@@ -368,16 +338,15 @@ pub(crate) fn friendly_name(device: &IMMDevice) -> windows::core::Result<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{EXTENSION_BYTES, LegacySharedInit, SUBFORMAT_FLOAT, SUBFORMAT_PCM};
+    use super::{EXTENSION_BYTES, SUBFORMAT_FLOAT, SUBFORMAT_PCM};
     use windows::{
         Win32::{
             Foundation::{E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL},
             Media::Audio::{
                 AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_E_ENGINE_PERIODICITY_LOCKED,
                 AUDCLNT_E_UNSUPPORTED_FORMAT, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_NOPERSIST,
-                AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
-                WAVEFORMATEXTENSIBLE_0,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVEFORMATEXTENSIBLE_0,
             },
             System::Com::CoTaskMemAlloc,
         },
@@ -495,28 +464,10 @@ mod tests {
     }
 
     #[test]
-    fn legacy_flags_compose_each_explicit_decision() {
+    fn legacy_flags_select_conversion_and_default_persistence() {
         assert_eq!(
-            super::legacy_shared_flags(LegacySharedInit {
-                auto_convert: false,
-                nopersist: false,
-            }),
+            super::legacy_shared_flags(),
             AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-        );
-        assert_eq!(
-            super::legacy_shared_flags(LegacySharedInit {
-                auto_convert: false,
-                nopersist: true,
-            }),
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_NOPERSIST
-        );
-        assert_eq!(
-            super::legacy_shared_flags(LegacySharedInit {
-                auto_convert: true,
-                nopersist: true,
-            }),
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                | AUDCLNT_STREAMFLAGS_NOPERSIST
                 | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
                 | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
         );

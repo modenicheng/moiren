@@ -7,6 +7,10 @@ pub(crate) mod bridge;
 pub mod capture;
 #[cfg(any(windows, test))]
 pub(crate) mod capture_packet;
+// Offline clock-fit analysis consumed only by the probe-tools `physical`
+// module; keeping it gated avoids exporting a probe-only analysis surface
+// from library builds.
+#[cfg(all(windows, feature = "probe-tools"))]
 pub mod clock;
 pub mod clock_bridge;
 pub(crate) mod codec;
