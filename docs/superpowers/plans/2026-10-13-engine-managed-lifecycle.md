@@ -1,5 +1,7 @@
 # Engine Managed Lifecycle Implementation Plan
 
+> **交付状态（2026-10-29 核对）：已全量交付。** T1–T8 已全部落地并映射到测试；核对记录见[验收文档](2026-10-14-engine-managed-lifecycle-validation.md)与 `crates/moiren-engine/src/host.rs`。本文 checkboxes 未逐项勾选，工单不再具有待办性。
+
 > For agentic workers: implement one independently testable backend milestone at a time. Use superpowers:executing-plans for inline execution or superpowers:subagent-driven-development when independent implementers are available. Checkboxes track implementation, not completion of this planning document.
 
 **Goal:** 引擎宿主打开后自动运行，图编辑自动更新，宿主释放时自动完成停止和回收。

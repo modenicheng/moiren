@@ -1,5 +1,7 @@
 # Moiren 音频内核时延审计与改进 Implementation Plan
 
+> **快照声明（2026-10-29）：** 本文的代码链接指向 2026-10-13 审计时的版本；`render/` 栈与 `service/parameters.rs` 已在 2026-10-27 单栈化（PR #20）中删除，相关链接失效属预期。结论与改进项的历史价值不受影响，现行状态以代码与[06-consolidation-plan](../../audit/2026-10-27/06-consolidation-plan.md) 执行状态为准。
+
 > **For agentic workers:** 使用 `superpowers:executing-plans` 按任务逐项执行；步骤使用复选框追踪。本次交付范围为审计、实验与改进计划，音频实现改动由后续任务执行。
 
 **Goal:** 在有测量依据和稳定性约束的前提下，压低 Moiren 的输入到输出时延、控制到声音时延及启动等待。

@@ -1,5 +1,7 @@
 # Moiren UI v0.1.0 — Figma "Graph" 设计规格
 
+> 状态：历史规格（Figma v0.1.0 时代）。
+
 来源：Figma 文件 `Moiren-UI-v0.1.0`（node-id 0:1），两个 frame：
 
 - `3:5604` — **完整布局** 1600×956（设计基准）

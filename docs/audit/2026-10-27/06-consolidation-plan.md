@@ -1,5 +1,7 @@
 # 合并与优化总方案（Consolidation Plan）
 
+> **执行状态（2026-10-29 更新）：P0–P4 已全部执行完毕并合并。** P0=PR #18（cccb42a）、P1=PR #19（b240b70）、P3+P4=PR #20（88d2774，含 legacy 栈删除）。遗留的用户决策项（WA-2/3/5/6 重写、D-2/D-3/D-5/D-6/D-7）见同目录各报告与 2026-10-27 会话记录，仍待拍板。
+
 > 本文是本轮审计的落地工单总表：把五份分报告的全部建议按**依赖顺序**与**风险等级**编组为六个阶段，并单列需要用户拍板的决策项。所有工单默认行为保持（behavior-preserving），例外已标注；全部不触碰 RT 热路径（宏/trait 方法等均在控制侧或编译期）。
 > 通用验证门：`cargo fmt --all -- --check`、`cargo clippy --locked --workspace --all-targets -- -D warnings`、受影响 crate 的 `cargo test --locked -p <crate>`；UI 工单加 `cargo test --locked -p moiren-app --features gpui-test`。
 

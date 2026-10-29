@@ -1,5 +1,7 @@
 # Moiren
 
+> 状态：历史草稿（2026-10 早期架构构思；当前结构以各 crate README 与 docs/designs/14 为准）。
+
 **A real-time audio graph for Windows.**
 
 Moiren 是一个面向 Windows 11 的开源实时音频路由与处理软件。

@@ -1,5 +1,7 @@
 # 第一批 gpui 公共组件
 
+> 状态：现行参考（gpui 组件契约；总览见 FRONTEND.md）。
+
 2026-10-14，基于 FRONTEND.md 和当前 Figma 母版实现。母版说明的 Runtime-ready 表示设计与控件契约可用于开发；页面运行时能力仍以 Rust 服务为准。
 
 | Figma 母版 | Rust 组件 | 范围 |
